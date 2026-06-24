@@ -12,26 +12,30 @@ bun install
 
 The canonical source is `examples/imagejob.ts`.
 
-The core handler shape is deliberately small:
+The core handler shape is deliberately small even though it performs real S3-compatible I/O through the AWS SDK:
 
 ```ts
-ImageJob.on.reconcile((job) => {
+ImageJob.on.reconcile(async (job) => {
   job.finalizers.add('media.applik8s.dev/imagejob');
   job.status.phase = 'Processing';
+
+  const source = await readSourceObject(job.spec);
+  const outputs = await writeFormattedOutputs(job.metadata.name, job.spec, source);
+  job.status.phase = 'Complete';
+  job.status.outputUrls = outputs.map((output) => output.url);
 
   const output = job.k8s.ConfigMap({
     name: job.names.dnsSafe(`${job.metadata.name}-output`),
     ...(job.metadata.namespace ? { namespace: job.metadata.namespace } : {}),
-    data: { sourceUrl: job.spec.sourceUrl },
+    data: { outputUrls: outputs.map((output) => output.url).join(',') },
   });
 
   job.apply(output);
-  job.events.normal('ImageJobAccepted', 'Image job accepted for processing');
-  job.requeue({ afterSeconds: 30, reason: 'WaitingForResizeOutputs' });
+  job.events.normal('ImageJobComplete', `Wrote ${outputs.length} image output object(s)`);
 });
 ```
 
-That code does not mutate Kubernetes directly. It records an operation plan that the Rust runtime validates before applying effects.
+That code uses ordinary SDK calls for object-store work, but it does not mutate Kubernetes directly. Kubernetes effects are recorded as an operation plan that the Rust runtime validates before applying.
 
 ## 3. Prove It Locally
 
@@ -39,7 +43,7 @@ That code does not mutate Kubernetes directly. It records an operation plan that
 bun run test:imagejob
 ```
 
-This tests the same source without a cluster. It asserts the CRD schema, RBAC, finalizers, ConfigMap apply/delete, status, Event, requeue policy, generated artifacts, and TypeKro composition shape.
+This tests the same source without a cluster. It runs the AWS SDK against a local S3-compatible fixture and asserts the CRD schema, RBAC, finalizers, ConfigMap apply/delete, status, Event, generated artifacts, and TypeKro composition shape.
 
 ## 4. Build The Operator Bundle
 

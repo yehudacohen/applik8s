@@ -12,10 +12,13 @@ for (const script of ['applik8s', 'build:imagejob', 'test:imagejob', 'test:readm
 const source = await read('examples/imagejob.ts');
 const readme = await read('README.md');
 const requiredSnippets = [
+  "import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';",
+  'ImageJob.on.reconcile(async (job) => {',
+  'const source = await readSourceObject(job.spec);',
+  'const outputs = await writeFormattedOutputs(job.metadata.name, job.spec, source);',
   'const output = job.k8s.ConfigMap({',
   'job.apply(output);',
-  "job.events.normal('ImageJobAccepted'",
-  "job.requeue({ afterSeconds: 30, reason: 'WaitingForResizeOutputs' });",
+  "job.events.normal('ImageJobComplete'",
   'job.delete(job.k8s.ConfigMap({',
 ];
 

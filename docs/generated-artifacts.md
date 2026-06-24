@@ -31,11 +31,11 @@ The canonical `examples/imagejob.ts` handler is intentionally small, but every l
 | --- | --- |
 | `sdk.crd({ apiVersion, kind, spec, status })` | `kubernetes/customresourcedefinition-*.yaml` contains the structural OpenAPI schema, status subresource, and served/storage version metadata. `operator-manifest.json` records the owned CRD and schema posture. |
 | `job.finalizers.add(...)` | Generated RBAC includes owned-CRD finalizer permissions. The runtime applies finalizer adds before child side effects and rejects undeclared finalizer mutations before effects. |
-| `job.status.phase = 'Processing'` | Generated RBAC includes owned-CRD status permissions. The runtime writes handler-authored domain status separately from runtime-authored `Ready` conditions. |
+| `await readSourceObject(job.spec)` | `bundle/handler.js` contains the tree-shaken AWS SDK closure and the WASM component imports WASI HTTP for SDK-backed `fetch` requests. |
+| `job.status.phase = 'Complete'` | Generated RBAC includes owned-CRD status permissions. The runtime writes handler-authored domain status separately from runtime-authored `Ready` conditions. |
 | `job.k8s.ConfigMap({ data })` | The handler produces a normal Kubernetes ConfigMap object with top-level `data`; there is no hidden client call or non-Kubernetes resource model. |
 | `job.apply(output)` | The WASM handler returns an `apply` operation. The Rust host validates RBAC, scope, server-populated metadata, ownership policy, and field-manager behavior before server-side apply. |
 | `job.events.normal(...)` | Generated RBAC includes core `events` create/patch/update. Runtime diagnostics and live E2E prove the Event is emitted for the reconciled object. |
-| `job.requeue(...)` | The operation plan carries a requeue policy; the Rust controller converts it into kube-runtime scheduling behavior and records the decision in structured logs/metrics. |
 | `job.delete(job.k8s.ConfigMap(...))` | The proxy converts the factory-built object to an object reference. The finalize route deletes the child before removing the owned finalizer. |
 | `ImageJob.on.finalize(..., { finalizer })` | `operator-manifest.json` records handler event/finalizer metadata. The Rust host routes deletion-timestamp objects to the matching finalize handler and rejects foreign finalizer ownership. |
 

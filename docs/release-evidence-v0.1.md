@@ -4,8 +4,8 @@ This file packages the evidence needed before announcing v0.1. Keep it updated d
 
 ## Current Candidate
 
-- Candidate: `v0.1.0-rc1`
-- Date: 2026-06-23
+- Candidate: `v0.1.0`
+- Date: 2026-06-24
 - Primary live context used locally: `orbstack`
 - Runtime image posture: local tutorial image built from generated `Dockerfile.applik8s-runtime`; no published runtime image is claimed by default.
 
@@ -23,6 +23,7 @@ Local/static checks:
 - Passed: `bunx vitest run packages/applik8s/test/cli.vertical.test.ts`
 - Passed: `bunx vitest run packages/sdk/test/handler-dispatch.vertical.test.ts packages/testing/test/handler-proxy.proxy.test.ts`
 - Passed: `bunx vitest run --config vitest.character.config.ts examples/test/product-stories.character.test.ts`
+- Passed: `bunx vitest run packages/testing/test/performance-smoke.vertical.test.ts`
 
 Full prerelease gate:
 
@@ -31,20 +32,21 @@ Full prerelease gate:
 Live focused proof:
 
 - Passed: `APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/readme-imagejob-live.e2e.test.ts`
-- Live README proof uses the golden-path `job.k8s.ConfigMap(...)` handler surface.
+- Live README proof uses the AWS S3 SDK inside the WASM handler against Ministack installed in the `media` namespace.
+- Live README proof verifies output objects in the `processed` bucket plus status, Event, finalizer, ConfigMap, runtime logs, and cleanup.
 - Cleanup verified: `namespace/media` absent after cleanup.
 - Cleanup verified: `crd/imagejobs.media.applik8s.dev` absent after cleanup.
 
 Package dry-run evidence:
 
-- `@applik8s/applik8s`: 4 files, 12,846 bytes unpacked
+- `@applik8s/applik8s`: 4 files, 12,844 bytes unpacked
 - `@applik8s/core`: 12 files, 58,880 bytes unpacked
 - `@applik8s/sdk`: 7 files, 83,249 bytes unpacked
-- `@applik8s/compiler`: 16 files, 144,653 bytes unpacked
+- `@applik8s/compiler`: 16 files, 145,033 bytes unpacked
 - `@applik8s/runtime-contract`: 2 files, 13,654 bytes unpacked
 - `@applik8s/runtime`: 4 files, 4,809 bytes unpacked
 - `@applik8s/testing`: 5 files, 55,608 bytes unpacked
-- `@applik8s/typekro-adapter`: 5 files, 66,225 bytes unpacked
+- `@applik8s/typekro-adapter`: 5 files, 65,685 bytes unpacked
 - `@applik8s/typetainer`: 2 files, 3,270 bytes unpacked
 
 Generated `dist/applik8s` artifact listing:

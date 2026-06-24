@@ -148,7 +148,18 @@ describe('TypeKro adapter operation targets', () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       const installed = result.value({ namespace: 'media', replicas: 1 });
-      const image = installed.imageJob({ name: 'hero-image', spec: { sourceUrl: 's3://bucket/hero.png', formats: ['webp'], priority: 'normal' } });
+      const image = installed.imageJob({
+        name: 'hero-image',
+        spec: {
+          endpoint: 'http://ministack.media.svc.cluster.local:4566',
+          region: 'us-east-1',
+          sourceBucket: 'images',
+          sourceKey: 'hero.png',
+          outputBucket: 'processed',
+          formats: ['webp'],
+          priority: 'normal',
+        },
+      });
 
       expect(result.value.crdFactories.ImageJob).toBeTypeOf('function');
       expect(result.value.crdFactories.imageJob).toBeTypeOf('function');

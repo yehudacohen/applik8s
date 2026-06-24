@@ -44,8 +44,8 @@ v0.1 should let a TypeScript developer:
 - Done: document the TypeKro tutorial where an applik8s operator installs like a component, its CRD instantiates like a resource, and status composes through TypeKro-visible fields. Deeper live status-driven downstream composition is post-v0.1 polish.
 - Done: fail closed for unsupported capabilities, unsafe schemas, unsupported runtime concurrency, incompatible ABI/manifest/runtime versions, and unsupported packaging/release claims.
 - Done: publish clear maturity boundaries: v0.1 is for serious evaluation and early operator authoring, not yet a promise of multi-version CRD migration, arbitrary external capabilities, HA production rollout, or stateful cross-cluster failover.
-- `[v0.1-wow]` Enable ordinary async TypeScript handler code to execute in the WASM runtime, including direct `fetch` calls with tree-shaken bundled dependencies, while preserving operation-plan validation and runtime timeout enforcement.
-- `[v0.1-safety]` Define the v0.1 security boundary for direct handler `fetch`: no ambient filesystem/environment access, network enabled only through WASI HTTP, and release docs must distinguish direct fetch from audited declared capabilities.
+- Done: enable ordinary async TypeScript handler code to execute in the WASM runtime, including direct `fetch` calls and SDK-backed tree-shaken bundled dependencies, while preserving operation-plan validation and runtime timeout enforcement.
+- Done: define the v0.1 security boundary for direct handler `fetch`: no ambient filesystem/environment access, network enabled only through WASI HTTP, and release docs distinguish direct fetch from audited declared capabilities.
 
 Release decision: v0.1.0 does not need an RC ceremony. Remaining roadmap items improve depth, portability, and polish after launch; they do not block the first pre-1.0 public evaluation release as long as public docs keep the supported path and unsupported boundaries explicit.
 
@@ -262,13 +262,15 @@ Work:
 - `[v0.1-required]` Make compile and runtime errors actionable.
 - Done: make source-mapped handler failures actionable enough that TypeScript application developers do not need to inspect generated JS/WASM by default.
 - `[v0.1-wow]` Add one excellent golden-path tutorial that proves the core promise end-to-end: typed CRD, proxy handler, generated artifacts, local test, live deploy, status, and cleanup.
-- Done: make the ImageJob tutorial lead with streamlined proxy semantics: status assignment, finalizer add/remove, typed child resource apply/delete through the golden-path `job.k8s.ConfigMap(...)` factory, events, and requeue in one concise handler.
+- Done: make the ImageJob tutorial lead with streamlined proxy semantics plus real SDK-backed work: status assignment, finalizer add/remove, typed child resource apply/delete through the golden-path `job.k8s.ConfigMap(...)` factory, Events, and S3-compatible object processing in one concise handler.
 - Done: add an executable product-story assertion that the primary documented handler shape stays aligned with the real `examples/imagejob.ts` API surface.
 - Done: ensure the documented one-command build path in the golden path remains covered by CLI regression tests and release gates.
 - Done: make the generated-artifact walkthrough connect each tiny TypeScript handler operation to generated YAML, RBAC/runtime validation, status/events/requeue/finalizer behavior, and manifest routing evidence.
 - Done: local `testOperator()` supports honest `expectManifest`, `expectRbac`, `expectSchema`, and `expectExternalEffect` assertions for locally knowable metadata/status without pretending to prove live Kubernetes acceptance.
 - Done: local `testOperator()` supports `expectPatch`, `expectDelete`, and `expectFinalizer` so golden-path tests can assert every stable operation kind without inspecting raw plans.
 - Done: `examples/imagejob.ts` is the canonical golden-path source consumed by the product-story character test, compiler artifact test path, TypeKro adapter test, and docs.
+- Done: upgrade the canonical ImageJob story from placeholder output URLs to real AWS S3 SDK reads/writes against S3-compatible storage, with local fixture tests and Ministack-backed live proof.
+- Done: teach the generic synth/deploy workflow in the README: `applik8s build`, inspect `dist/applik8s`, run the generated apply script locally, set `APPLIK8S_IMAGE`/`APPLIK8S_PUSH_IMAGE` for remote clusters, and apply CR instances with `kubectl`.
 - Done: add `docs/imagejob-golden-path.md`, `docs/generated-artifacts.md`, and `docs/replay-debugging.md` as user-facing walkthroughs tied to executable surfaces.
 - Done: add a thin `applik8s` CLI wrapper for build, diagnostic explain, replay inspect, and test commands over existing compiler/replay/Vitest behavior.
 - Done: add initial docs for plain YAML, TypeKro installation, GitOps consumption, replay artifacts, and security posture.
@@ -279,6 +281,7 @@ Work:
 - `[v0.1-required]` Keep CLI/docs polish behind correctness, but do not let runtime sophistication become inaccessible to TypeScript application developers.
 - Done: add adversarial SDK/local harness normalization tests for mixed proxy/explicit handler results and malformed explicit status returns.
 - Done: add public package/release-readiness work once the API is honest enough to publish: package metadata, exports, semver posture, release notes, and stabilization boundaries.
+- `[post-v0.1]` Add a polished failure/replay first-run chapter that intentionally breaks the ImageJob handler, shows source-mapped TypeScript diagnostics, inspects a replay artifact, and explains how to fix the failure without reading generated JavaScript. Difficulty: 6/10. Impact: 8/10.
 
 ## 7. TypeKro Polish
 
@@ -306,6 +309,7 @@ Work:
 - `[v0.1-required]` Reduce noisy static-status fallback warnings where possible and document the remaining cases honestly.
 - `[v0.1-wow]` Add examples for operator install, CRD factory usage, and status composition.
 - `[v0.1-safety]` Keep TypeKro integration as an extension seam, not a core dependency.
+- `[post-v0.1]` Build a TypeKro-native live tutorial where an applik8s operator is installed as a composition, CRD instances are created through generated factories, and observed `Ready`/domain status drives downstream TypeKro resources without static fallback readiness. Difficulty: 8/10. Impact: 9/10.
 
 ## 8. Schema And CRD Correctness
 
@@ -411,6 +415,8 @@ Work:
 - `[post-v0.1]` Add admission-policy verification fixtures for unsigned/no-SBOM/no-provenance bundles, signed bundles, declared capabilities, runtime compatibility, and least-privilege RBAC posture. Difficulty: 8/10. Impact: 8/10.
 - Done: document the runtime sandbox boundary precisely, including what WASM/ComponentizeJS/host imports do and do not isolate.
 - Done: document that fail-closed capability placeholders are a safety boundary, not yet a usable external effects feature.
+- `[post-v0.1]` Define the production credential and auth posture for direct SDK/fetch examples, including how local emulator credentials differ from AWS/cloud credentials and when authors should prefer declared host capabilities. Difficulty: 7/10. Impact: 8/10.
+- `[post-v0.1]` Decide whether direct SDK/fetch should support optional manifest-declared endpoint/auth/audit metadata so teams can keep SDK ergonomics while gaining policy inspection, redaction posture, and idempotency guidance. Difficulty: 9/10. Impact: 9/10.
 - `[later]` Align with policy/admission ecosystems later.
 
 ## 11. Operational Maturity
@@ -462,6 +468,7 @@ Work:
 - `[post-v0.1]` Add OCI bundle/image story.
 - `[v0.1-required]` Add GitOps-friendly output and docs for committing/reviewing generated YAML without divergent runtime semantics.
 - `[v0.1-safety]` Ensure generated artifacts remain a single underlying operator definition consumable by YAML, TypeKro, GitOps, and future OCI packaging without divergent behavior.
+- `[post-v0.1]` Harden and test remote-registry deployment workflows across local Docker-backed clusters and remote clusters, including generated image tags, push behavior, Deployment patching, image pull policy, and diagnostics when the cluster cannot pull the runtime image. Difficulty: 7/10. Impact: 8/10.
 - `[post-v0.1]` Consider Helm, Kustomize, and OLM once the artifact model is stable.
 - `[v0.1-safety]` Keep deployment orchestration out of core.
 - `[v0.1-safety]` Track feature completeness explicitly without allowing packaging breadth to outrun reconciliation, status, observability, and security correctness.

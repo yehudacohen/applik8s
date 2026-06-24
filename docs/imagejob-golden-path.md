@@ -13,10 +13,10 @@ bun run test:imagejob
 The local harness proves the handler records:
 
 - finalizer add before side effects
+- AWS SDK reads and writes against an S3-compatible endpoint through `fetch`
 - ConfigMap creation through `job.k8s.ConfigMap({ data })` and apply through `job.apply(output)`
 - status update
 - Kubernetes Event
-- requeue policy
 - finalizer cleanup and child delete during finalize with `job.delete(job.k8s.ConfigMap(...))`
 - declared RBAC, CRD schema, and operator manifest metadata that are knowable without a cluster
 
@@ -26,7 +26,7 @@ The important authoring shape is intentionally small:
 const output = job.k8s.ConfigMap({
   name: job.names.dnsSafe(`${job.metadata.name}-output`),
   namespace: job.metadata.namespace,
-  data: { sourceUrl: job.spec.sourceUrl },
+  data: { outputUrls: outputs.map((output) => output.url).join(',') },
 });
 
 job.apply(output);
@@ -57,7 +57,7 @@ await createCompilerPipeline().run({
     deterministicBuild: true,
     allowEnvironmentAccess: false,
     allowFilesystemAccess: false,
-    allowNetworkAccess: false,
+    allowNetworkAccess: true,
     allowedHostImports: [],
     sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
   },
@@ -101,7 +101,11 @@ metadata:
   name: hero-image
   namespace: media
 spec:
-  sourceUrl: s3://bucket/hero.png
+  endpoint: http://ministack.media.svc.cluster.local:4566
+  region: us-east-1
+  sourceBucket: images
+  sourceKey: hero.png
+  outputBucket: processed
   formats: [webp, avif]
   priority: normal
 YAML
@@ -115,4 +119,4 @@ kubectl delete imagejob hero-image --namespace media --ignore-not-found=true
 kubectl delete --filename dist/applik8s/kubernetes --ignore-not-found=true
 ```
 
-The finalize handler deletes the owned output ConfigMap before removing the `media.applik8s.dev/imagejob` finalizer.
+The finalize handler deletes the owned output ConfigMap before removing the `media.applik8s.dev/imagejob` finalizer. Output objects are application data and are not deleted by the example finalizer.

@@ -1,6 +1,8 @@
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { CreateBucketCommand, GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 
 import { buildImplicitRuntimeImage, createCompilerPipeline } from '@applik8s/compiler';
@@ -23,6 +25,7 @@ const imageJobResource = `imagejobs.${apiGroup}`;
 let tempDir: string | undefined;
 let artifactDir: string | undefined;
 let samplePath: string | undefined;
+let ministackForward: PortForward | undefined;
 
 describeLive('README ImageJob live operator acceptance', () => {
   beforeAll(async () => {
@@ -34,6 +37,9 @@ describeLive('README ImageJob live operator acceptance', () => {
     await waitForNamespaceDeleted(namespace);
     await waitForCrdDeleted(imageJobResource);
     await kubectl(['create', 'namespace', namespace]);
+    await installMinistack();
+    ministackForward = await startPortForward(['--namespace', namespace, 'service/ministack', ':4566']);
+    await seedMinistack(ministackForward.endpoint);
 
     tempDir = await mkdtemp(join(tmpdir(), 'applik8s-readme-imagejob-live-'));
     const compiled = await createCompilerPipeline().run({
@@ -46,7 +52,7 @@ describeLive('README ImageJob live operator acceptance', () => {
         deterministicBuild: true,
         allowEnvironmentAccess: false,
         allowFilesystemAccess: false,
-        allowNetworkAccess: false,
+        allowNetworkAccess: true,
         allowedHostImports: [],
         sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
       },
@@ -73,7 +79,11 @@ metadata:
   name: hero-image
   namespace: media
 spec:
-  sourceUrl: s3://bucket/hero.png
+  endpoint: http://ministack.media.svc.cluster.local:4566
+  region: us-east-1
+  sourceBucket: images
+  sourceKey: hero.png
+  outputBucket: processed
   formats:
     - webp
     - avif
@@ -88,6 +98,7 @@ spec:
   }, 600_000);
 
   afterAll(async () => {
+    await ministackForward?.close();
     if (process.env.APPLIK8S_E2E_LIVE === '1') {
       await kubectl(['delete', 'namespace', namespace, '--ignore-not-found=true', '--wait=false']);
       await kubectl(['delete', 'crd', imageJobResource, '--ignore-not-found=true', '--wait=false']);
@@ -106,11 +117,17 @@ spec:
 
     await waitForImageJobStatusWithDiagnostics();
     expect((await kubectl(['get', `${imageJobResource}/hero-image`, '--namespace', namespace, '--output=jsonpath={.metadata.finalizers[0]}'])).stdout.trim()).toBe('media.applik8s.dev/imagejob');
-    expect((await kubectl(['get', 'configmap/hero-image-output', '--namespace', namespace, '--output=jsonpath={.data.sourceUrl}'])).stdout.trim()).toBe('s3://bucket/hero.png');
+    expect((await kubectl(['get', 'configmap/hero-image-output', '--namespace', namespace, '--output=jsonpath={.data.sourceUrl}'])).stdout.trim()).toBe('s3://images/hero.png');
     expect((await kubectl(['get', 'configmap/hero-image-output', '--namespace', namespace, '--output=jsonpath={.data.formats}'])).stdout.trim()).toBe('webp,avif');
+    expect((await kubectl(['get', 'configmap/hero-image-output', '--namespace', namespace, '--output=jsonpath={.data.outputUrls}'])).stdout.trim()).toBe('s3://processed/hero-image.webp,s3://processed/hero-image.avif');
     expect((await kubectl(['get', `${imageJobResource}/hero-image`, '--namespace', namespace, '--output=jsonpath={.status.outputUrls[0]}'])).stdout.trim()).toBe('s3://processed/hero-image.webp');
     expect((await kubectl(['get', `${imageJobResource}/hero-image`, '--namespace', namespace, '--output=jsonpath={.status.outputUrls[1]}'])).stdout.trim()).toBe('s3://processed/hero-image.avif');
-    expect((await kubectl(['get', 'events', '--namespace', namespace, '--field-selector', 'involvedObject.name=hero-image,reason=ImageJobAccepted', '--output=jsonpath={.items[0].reason}'])).stdout.trim()).toBe('ImageJobAccepted');
+    expect((await kubectl(['get', 'events', '--namespace', namespace, '--field-selector', 'involvedObject.name=hero-image,reason=ImageJobComplete', '--output=jsonpath={.items[0].reason}'])).stdout.trim()).toBe('ImageJobComplete');
+    if (!ministackForward) {
+      throw new Error('Ministack port-forward was not started.');
+    }
+    expect(await readS3Text(ministackForward.endpoint, 'processed', 'hero-image.webp')).toBe('applik8s image format=webp\nhero-image-source');
+    expect(await readS3Text(ministackForward.endpoint, 'processed', 'hero-image.avif')).toBe('applik8s image format=avif\nhero-image-source');
     await waitForRuntimeListenerLog('ImageJob.reconcile.0', 'reconcile');
 
     await kubectl(['delete', `${imageJobResource}/hero-image`, '--namespace', namespace, '--wait=false']);
@@ -135,11 +152,12 @@ async function rolloutStatusWithDiagnostics(): Promise<void> {
 
 async function waitForImageJobStatusWithDiagnostics(): Promise<void> {
   try {
-    await kubectl(['wait', `${imageJobResource}/hero-image`, '--namespace', namespace, '--for=jsonpath={.status.phase}=Processing', '--timeout=180s']);
+    await kubectl(['wait', `${imageJobResource}/hero-image`, '--namespace', namespace, '--for=jsonpath={.status.phase}=Complete', '--timeout=180s']);
   } catch (cause) {
     const diagnostics = await Promise.allSettled([
       kubectl(['get', `${imageJobResource}/hero-image`, '--namespace', namespace, '--output=yaml']),
       kubectl(['get', 'configmap/hero-image-output', '--namespace', namespace, '--ignore-not-found=true', '--output=yaml']),
+      kubectl(['logs', '--namespace', namespace, '--selector', 'app=ministack', '--tail=300']),
       kubectl(['logs', '--namespace', namespace, '--selector', 'app.kubernetes.io/name=image-pipeline', '--all-containers=true', '--tail=500']),
       kubectl(['get', 'events', '--namespace', namespace, '--sort-by=.lastTimestamp']),
     ]);
@@ -210,4 +228,83 @@ async function waitForCrdDeleted(name: string): Promise<void> {
     throw new Error(`Timed out waiting for crd/${name} to be deleted after clearing finalizers.`);
   }
   throw new Error(`Timed out waiting for crd/${name} to be deleted.`);
+}
+
+async function installMinistack(): Promise<void> {
+  await docker(['pull', 'ministackorg/ministack'], process.cwd());
+  await kubectl(['create', 'deployment', 'ministack', '--namespace', namespace, '--image=ministackorg/ministack', '--port=4566']);
+  await kubectl(['expose', 'deployment/ministack', '--namespace', namespace, '--port=4566', '--target-port=4566']);
+  await kubectl(['rollout', 'status', 'deployment/ministack', '--namespace', namespace, '--timeout=180s']);
+}
+
+interface PortForward {
+  readonly endpoint: string;
+  close(): Promise<void>;
+}
+
+async function startPortForward(args: readonly string[]): Promise<PortForward> {
+  const child = spawn('kubectl', ['port-forward', ...args], { cwd: process.cwd(), env: process.env });
+  let output = '';
+  const endpoint = await new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(`Timed out starting kubectl port-forward.\n${output}`)), 30_000);
+    const onData = (chunk: Buffer) => {
+      output += chunk.toString();
+      const match = output.match(/Forwarding from 127\.0\.0\.1:(\d+) -> 4566/);
+      if (match?.[1]) {
+        clearTimeout(timeout);
+        resolve(`http://127.0.0.1:${match[1]}`);
+      }
+    };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once('exit', (code) => {
+      clearTimeout(timeout);
+      reject(new Error(`kubectl port-forward exited with code ${code}.\n${output}`));
+    });
+  });
+  return { endpoint, close: () => closePortForward(child) };
+}
+
+async function closePortForward(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (child.exitCode !== null) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    child.once('exit', () => resolve());
+    child.kill('SIGTERM');
+    setTimeout(() => {
+      if (child.exitCode === null) {
+        child.kill('SIGKILL');
+      }
+      resolve();
+    }, 5_000);
+  });
+}
+
+function s3(endpoint: string): S3Client {
+  return new S3Client({
+    endpoint,
+    region: 'us-east-1',
+    forcePathStyle: true,
+    credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+  });
+}
+
+async function seedMinistack(endpoint: string): Promise<void> {
+  const client = s3(endpoint);
+  await client.send(new CreateBucketCommand({ Bucket: 'images' }));
+  await client.send(new CreateBucketCommand({ Bucket: 'processed' }));
+  await client.send(new PutObjectCommand({ Bucket: 'images', Key: 'hero.png', Body: new TextEncoder().encode('hero-image-source') }));
+}
+
+async function readS3Text(endpoint: string, bucket: string, key: string): Promise<string> {
+  const response = await s3(endpoint).send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  if (!response.Body) {
+    throw new Error(`S3 object ${bucket}/${key} had no body.`);
+  }
+  return new TextDecoder().decode(await response.Body.transformToByteArray());
 }

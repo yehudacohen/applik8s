@@ -261,7 +261,8 @@ async function discoverExportedOperators(entrypoint: string): Promise<Result<{ r
       format: 'esm',
       target: 'node22',
       outfile: discoveryBundle,
-      external: ['applik8s:handler/capabilities', '@bytecodealliance/componentize-js', '@kubernetes/client-node', 'arktype', 'esbuild', 'typekro', 'typescript', 'yaml'],
+      packages: 'external',
+      external: ['applik8s:handler/capabilities'],
       plugins: [applik8sWorkspaceSourcePlugin()],
     });
     // static-import-exception: compiler discovery must load the user-provided entrypoint path at runtime.
@@ -366,6 +367,7 @@ function emitStandaloneApplyScript(manifest: OperatorManifest): string {
   }
   const image = imageRefString(container.image);
   const baseImage = container.baseImage ? imageRefString(container.baseImage) : 'ghcr.io/applik8s/applik8s-operator-host:dev';
+  const namespace = manifest.metadata.annotations?.['applik8s.dev/namespace'] ?? '';
   const shDefault = (name: string, fallback: string) => ['$', `{${name}:-${fallback}}`].join('');
   return [
     '#!/usr/bin/env sh',
@@ -374,9 +376,12 @@ function emitStandaloneApplyScript(manifest: OperatorManifest): string {
     'SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"',
     `DOCKER="${shDefault('DOCKER', 'docker')}"`,
     `KUBECTL="${shDefault('KUBECTL', 'kubectl')}"`,
+    `DEFAULT_IMAGE=${JSON.stringify(image)}`,
     `IMAGE="${shDefault('APPLIK8S_IMAGE', image)}"`,
     `BASE_IMAGE="${shDefault('APPLIK8S_BASE_IMAGE', baseImage)}"`,
     `FIELD_MANAGER="${shDefault('APPLIK8S_FIELD_MANAGER', 'applik8s-standalone')}"`,
+    `DEPLOYMENT=${JSON.stringify(manifest.metadata.name)}`,
+    `NAMESPACE=${JSON.stringify(namespace)}`,
     '',
     `if [ "${shDefault('APPLIK8S_BUILD_BASE', '0')}" = "1" ]; then`,
     `  BASE_DOCKERFILE="${shDefault('APPLIK8S_BASE_DOCKERFILE', 'Dockerfile.operator-host')}"`,
@@ -385,10 +390,21 @@ function emitStandaloneApplyScript(manifest: OperatorManifest): string {
     'fi',
     '',
     `"$DOCKER" build --file "$SCRIPT_DIR/${container.build.dockerfile}" --tag "$IMAGE" "$SCRIPT_DIR"`,
+    `if [ "${shDefault('APPLIK8S_PUSH_IMAGE', '0')}" = "1" ]; then`,
+    '  "$DOCKER" push "$IMAGE"',
+    'fi',
     '',
     'for manifest in "$SCRIPT_DIR"/kubernetes/*.yaml; do',
     '  "$KUBECTL" apply --server-side --field-manager="$FIELD_MANAGER" --filename "$manifest"',
     'done',
+    '',
+    'if [ "$IMAGE" != "$DEFAULT_IMAGE" ]; then',
+    '  if [ -n "$NAMESPACE" ]; then',
+    '    "$KUBECTL" set image "deployment/$DEPLOYMENT" "operator-host=$IMAGE" --namespace "$NAMESPACE"',
+    '  else',
+    '    "$KUBECTL" set image "deployment/$DEPLOYMENT" "operator-host=$IMAGE"',
+    '  fi',
+    'fi',
     '',
   ].join('\n');
 }

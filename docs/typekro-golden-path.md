@@ -59,7 +59,11 @@ const installed = composition.value({ namespace: 'media', replicas: 1 });
 const image = installed.imageJob({
   name: 'hero-image',
   spec: {
-    sourceUrl: 's3://bucket/hero.png',
+    endpoint: 'http://ministack.media.svc.cluster.local:4566',
+    region: 'us-east-1',
+    sourceBucket: 'images',
+    sourceKey: 'hero.png',
+    outputBucket: 'processed',
     formats: ['webp'],
     priority: 'normal',
   },
