@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@applik8s/core": ["packages/core/src/index.ts"],
+      "@applik8s/applik8s": ["packages/applik8s/src/index.ts"],
+      "@applik8s/sdk": ["packages/sdk/src/index.ts"],
+      "@applik8s/testing": ["packages/testing/src/index.ts"],
+      "@applik8s/compiler": ["packages/compiler/src/index.ts"],
+      "@applik8s/runtime": ["packages/runtime/src/index.ts"],
+      "@applik8s/runtime-contract": ["packages/runtime-contract/src/index.ts"],
+      "@applik8s/typekro-adapter": ["packages/typekro-adapter/src/index.ts"],
+      "@applik8s/typetainer": ["packages/typetainer/src/index.ts"],
+      "typekro": ["../typekro/src/index.ts"],
+      "typekro/advanced": ["../typekro/src/advanced/index.ts"]
+    }
+  },
+  "include": ["packages/**/*.ts", "scripts/**/*.ts", "vitest.config.ts", "vitest.character.config.ts", "vitest.e2e.config.ts"],
+  "exclude": ["node_modules", "dist", "packages/internal-research"]
+}

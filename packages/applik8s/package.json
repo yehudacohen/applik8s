@@ -1,0 +1,34 @@
+{
+  "name": "@applik8s/applik8s",
+  "version": "0.1.0",
+  "description": "TypeScript framework for programming Kubernetes-native applications and operators.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/applik8s"
+  },
+  "bin": {
+    "applik8s": "src/cli.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@applik8s/compiler": "0.1.0",
+    "@applik8s/core": "0.1.0",
+    "@applik8s/sdk": "0.1.0",
+    "@applik8s/typekro-adapter": "0.1.0",
+    "@applik8s/typetainer": "0.1.0",
+    "commander": "^15.0.0",
+    "esbuild": "^0.28.1"
+  }
+}

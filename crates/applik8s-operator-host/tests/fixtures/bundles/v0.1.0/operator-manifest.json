@@ -1,0 +1,72 @@
+{
+  "apiVersion": "applik8s.operator/v1alpha1",
+  "kind": "OperatorBundle",
+  "metadata": {
+    "name": "image-pipeline",
+    "annotations": {
+      "applik8s.dev/namespace": "media"
+    }
+  },
+  "spec": {
+    "handlerAbi": "applik8s.handler/v1alpha1",
+    "requiresRuntime": "^0.1.0",
+    "handlerArtifact": {
+      "kind": "wasm-component",
+      "path": "wasm/handler.wasm",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    "adapterRequirements": {
+      "kind": "wasmComponent",
+      "wasmComponentModel": true,
+      "hostImports": ["capability-request", "log", "cancel"],
+      "javascript": {
+        "features": ["closures", "asyncFunctions", "promises", "es6Proxy"]
+      }
+    },
+    "handlerExports": [
+      {
+        "handlerId": "ImageJob.reconcile.0",
+        "exportName": "reconcile",
+        "event": "reconcile",
+        "resource": {
+          "apiVersion": "media.applik8s.dev/v1alpha1",
+          "kind": "ImageJob"
+        }
+      }
+    ],
+    "ownedCrds": [
+      {
+        "apiVersion": "media.applik8s.dev/v1alpha1",
+        "kind": "ImageJob",
+        "plural": "imagejobs",
+        "versions": ["v1alpha1"],
+        "storageVersion": "v1alpha1",
+        "scope": "Namespaced"
+      }
+    ],
+    "watches": [
+      {
+        "apiVersion": "media.applik8s.dev/v1alpha1",
+        "kind": "ImageJob",
+        "events": ["reconcile"],
+        "handlers": ["ImageJob.reconcile.0"]
+      }
+    ],
+    "permissions": [],
+    "security": {
+      "capabilities": [],
+      "secrets": {
+        "secretRefs": []
+      },
+      "network": "denied",
+      "filesystem": "readOnlyBundle"
+    },
+    "lifecycle": {
+      "hooks": [],
+      "failurePolicy": "failClosed"
+    },
+    "bundle": {
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "@applik8s/typetainer",
+  "version": "0.1.0",
+  "description": "Typed container image reference utilities for applik8s packages.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/typetainer"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

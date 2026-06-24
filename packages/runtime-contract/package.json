@@ -1,0 +1,21 @@
+{
+  "name": "@applik8s/runtime-contract",
+  "version": "0.1.0",
+  "description": "Canonical runtime contract schemas and WIT for applik8s handlers.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/runtime-contract"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

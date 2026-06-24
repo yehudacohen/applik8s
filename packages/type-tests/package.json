@@ -1,0 +1,5 @@
+{
+  "name": "@applik8s/type-tests",
+  "private": true,
+  "type": "module"
+}

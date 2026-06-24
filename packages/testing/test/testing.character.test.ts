@@ -1,0 +1,17 @@
+import { describeCharacterSuite, type CharacterScenario } from './character.js';
+
+const s = (name: string, userStory: string, arrange: readonly string[], act: readonly string[], assert: readonly string[]): CharacterScenario => ({ name, userStory, arrange, act, assert });
+
+describeCharacterSuite('testing harness character tests', [
+  s('runs an operator locally without a cluster', 'As an application developer, I test reconcile behavior before deploying.', ['Define ImageJob and imagePipeline operator.'], ['Call testOperator(imagePipeline).given(ImageJob(...)).run().'], ['The harness invokes the matching handler and returns handlerResult and normalizedPlan.']),
+  s('accepts multiple initial Kubernetes objects', 'As a handler author, I test observed related state.', ['Create ImageJob, ConfigMap, Secret, and child Job inputs.'], ['Call given(...objects).run().'], ['The handler receives current object and related observed state.']),
+  s('provides fake capability responses', 'As a developer, I test external effects deterministically.', ['Register fake stripe capability responses.'], ['Run a handler that calls invoice.capabilities.stripe.post.'], ['The handler receives fake response and records expected status/effect intent.']),
+  s('matches applied resources structurally', 'As a test author, I assert desired resources without brittle YAML snapshots.', ['Handler applies a Kubernetes Job.'], ['Call expectApply({ kind: "Job", name: "hero-webp" }).run().'], ['The assertion passes when a matching apply operation exists.']),
+  s('matches status output', 'As a test author, I assert durable application progress.', ['Handler sets status phase and message.'], ['Call expectStatus({ phase: "Processing" }).run().'], ['The assertion passes on partial status match.']),
+  s('matches conditions by reason and status', 'As a CRD author, I test machine-readable status.', ['Handler records a Failed condition.'], ['Call expectCondition("DependencyMissing", "False").run().'], ['The assertion reports clear failure if reason or status is absent.']),
+  s('matches external effect records', 'As a distributed app developer, I test side-effect bookkeeping.', ['Handler records charge intent and result.'], ['Call expectExternalEffect(effect).run().'], ['The assertion validates capability name, phase, idempotency key, and digests.']),
+  s('matches events and requeues', 'As a handler author, I test user-visible progress and retry behavior.', ['Handler records event and requeue.'], ['Call expectEvent("Accepted").expectRequeue(30).run().'], ['The assertion validates event reason and requeue delay.']),
+  s('matches RBAC, manifest, schema, ABI, lifecycle, and managed-by metadata', 'As a platform engineer, I test generated operator artifacts.', ['Compile or synthesize operator artifacts.'], ['Use expectRbac, expectManifest, expectSchema, expectAbi, expectLifecycle, and expectManagedBy.'], ['Each assertion validates structural artifact intent with actionable failures.']),
+  s('reports assertion failures clearly', 'As a developer, I can understand why a character test failed.', ['Set expectations that do not match actual handler output.'], ['Run the harness.'], ['TestRunResult contains assertionFailures with expectation, message, and actual value.']),
+  s('replays captured fixtures', 'As a developer, I debug production-like reconciles locally.', ['Create a ReplayFixture with input and expected result paths.'], ['Call replayOperator(operator).replay(fixture).'], ['ReplayRecord is loaded, invoked, and compared without live cluster effects.']),
+]);

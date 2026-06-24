@@ -1,0 +1,77 @@
+{
+  "apiVersion": "applik8s.dev/v1alpha1",
+  "kind": "ReplayArtifact",
+  "metadata": {
+    "replayId": "2026-06-21T00:00:00Z-ImageJob-hero-image-operationApplication",
+    "createdAt": "2026-06-21T00:00:00Z",
+    "redaction": {
+      "policy": "metadata-only",
+      "defaultRedacted": true
+    }
+  },
+  "runtime": {
+    "operatorName": "image-pipeline",
+    "reconcileId": "ImageJob-hero-image",
+    "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "runtimeVersion": "0.1.0",
+    "handlerAbi": "applik8s.handler/v1alpha1"
+  },
+  "handler": {
+    "handlerId": "ImageJob.reconcile.0",
+    "event": "reconcile"
+  },
+  "objectRef": {
+    "apiVersion": "media.applik8s.dev/v1alpha1",
+    "kind": "ImageJob",
+    "name": "hero-image",
+    "namespace": "media"
+  },
+  "failure": {
+    "phase": "operationApplication",
+    "reason": "ApplyFailed",
+    "message": { "redacted": true },
+    "details": {
+      "type": "operationFailed",
+      "operation": {
+        "index": 0,
+        "kind": "apply",
+        "target": "v1/ConfigMap media/hero-child",
+        "fieldManager": "applik8s"
+      },
+      "cause": { "redacted": true }
+    }
+  },
+  "debugArtifacts": {
+    "sourceMapping": {
+      "status": "artifactIdentityOnly",
+      "artifacts": [
+        {
+          "kind": "javascript-bundle",
+          "path": "bundle/handler.js",
+          "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "kind": "javascript-source-map",
+          "path": "bundle/handler.js.map",
+          "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        },
+        {
+          "kind": "esbuild-metafile",
+          "path": "bundle/handler.esbuild-meta.json",
+          "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        }
+      ]
+    }
+  },
+  "input": {
+    "abiVersion": "applik8s.handler/v1alpha1",
+    "handlerId": "ImageJob.reconcile.0",
+    "event": "reconcile",
+    "object": {
+      "apiVersion": "media.applik8s.dev/v1alpha1",
+      "kind": "ImageJob",
+      "metadata": { "name": "hero-image", "namespace": "media" },
+      "spec": { "redacted": true }
+    }
+  }
+}

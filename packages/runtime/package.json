@@ -1,0 +1,24 @@
+{
+  "name": "@applik8s/runtime",
+  "version": "0.1.0",
+  "description": "Runtime interfaces for applik8s operators.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/runtime"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@applik8s/core": "0.1.0"
+  }
+}

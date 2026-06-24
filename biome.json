@@ -1,0 +1,27 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.0/schema.json",
+  "formatter": {
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended",
+      "suspicious": {
+        "noUnusedExpressions": "warn"
+      }
+    }
+  },
+  "files": {
+    "includes": [
+      "packages/**/*.ts",
+      "examples/**/*.ts",
+      "scripts/**/*.ts",
+      "scripts/**/*.mjs",
+      "vitest.config.ts",
+      "vitest.e2e.config.ts",
+      "!node_modules",
+      "!dist"
+    ]
+  }
+}

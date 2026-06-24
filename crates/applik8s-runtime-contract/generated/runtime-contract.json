@@ -1,0 +1,1251 @@
+{
+  "contractVersion": "applik8s.runtime-contract/v1alpha1",
+  "abiVersion": "applik8s.handler/v1alpha1",
+  "runtimeAdapterKind": "wasmComponent",
+  "witPackage": "applik8s:handler",
+  "world": "handler",
+  "witSource": "package applik8s:handler;\n\ninterface capabilities {\n  capability-request: func(request-json: string) -> result<string, string>;\n}\n\nworld handler {\n  import capabilities;\n  import log: func(event-json: string);\n  import cancel: func(reason-json: string);\n\n  export handle: func(input-json: string) -> result<string, string>;\n}\n",
+  "wireFormat": {
+    "inputEncoding": "jsonString",
+    "outputEncoding": "jsonString",
+    "errorEncoding": "jsonString"
+  },
+  "canonical": {
+    "handleExport": "handle",
+    "capabilityRequestImport": "capability-request",
+    "logImport": "log",
+    "cancelImport": "cancel"
+  },
+  "payloadSchemaKinds": [
+    "handlerInput",
+    "normalizedOperationPlan",
+    "operatorManifest",
+    "handlerError",
+    "capabilityRequest",
+    "capabilityResponse"
+  ],
+  "operationKinds": [
+    "apply",
+    "patch",
+    "delete",
+    "status",
+    "event",
+    "finalizer",
+    "requeue"
+  ],
+  "javascriptRuntimeFeatures": [
+    "closures",
+    "asyncFunctions",
+    "promises",
+    "es6Proxy"
+  ],
+  "payloadSchemas": {
+    "handlerInput": {
+      "type": "object",
+      "properties": {
+        "abiVersion": {
+          "const": "applik8s.handler/v1alpha1"
+        },
+        "handlerId": {
+          "type": "string"
+        },
+        "event": {
+          "enum": [
+            "reconcile",
+            "created",
+            "updated",
+            "deleted",
+            "finalize",
+            "statusChanged"
+          ]
+        },
+        "object": {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "metadata": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "namespace": {
+                  "type": "string"
+                },
+                "uid": {
+                  "type": "string"
+                },
+                "resourceVersion": {
+                  "type": "string"
+                },
+                "generation": {
+                  "type": "number"
+                },
+                "labels": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "annotations": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "finalizers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "deletionTimestamp": {
+                  "type": "string"
+                },
+                "creationTimestamp": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "additionalProperties": true
+            },
+            "spec": {
+              "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+            },
+            "status": {
+              "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+            }
+          },
+          "required": [
+            "apiVersion",
+            "kind",
+            "metadata"
+          ],
+          "additionalProperties": true
+        },
+        "previous": {
+          "type": "object",
+          "properties": {
+            "apiVersion": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "metadata": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "namespace": {
+                  "type": "string"
+                },
+                "uid": {
+                  "type": "string"
+                },
+                "resourceVersion": {
+                  "type": "string"
+                },
+                "generation": {
+                  "type": "number"
+                },
+                "labels": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "annotations": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "finalizers": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "deletionTimestamp": {
+                  "type": "string"
+                },
+                "creationTimestamp": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "additionalProperties": true
+            },
+            "spec": {
+              "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+            },
+            "status": {
+              "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+            }
+          },
+          "required": [
+            "apiVersion",
+            "kind",
+            "metadata"
+          ],
+          "additionalProperties": true
+        },
+        "observed": {
+          "type": "object",
+          "properties": {
+            "relatedObjects": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "apiVersion": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "namespace": {
+                        "type": "string"
+                      },
+                      "uid": {
+                        "type": "string"
+                      },
+                      "resourceVersion": {
+                        "type": "string"
+                      },
+                      "generation": {
+                        "type": "number"
+                      },
+                      "labels": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "annotations": {
+                        "type": "object",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "finalizers": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "deletionTimestamp": {
+                        "type": "string"
+                      },
+                      "creationTimestamp": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "name"
+                    ],
+                    "additionalProperties": true
+                  },
+                  "spec": {
+                    "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+                  },
+                  "status": {
+                    "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+                  }
+                },
+                "required": [
+                  "apiVersion",
+                  "kind",
+                  "metadata"
+                ],
+                "additionalProperties": true
+              }
+            },
+            "resourceVersion": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "relatedObjects"
+          ],
+          "additionalProperties": false
+        },
+        "config": {
+          "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+        },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "endpoint": {
+                "type": "string"
+              },
+              "auth": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "secretRef": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "namespace": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "policy": {
+                "type": "object",
+                "properties": {
+                  "timeoutMs": {
+                    "type": "number"
+                  },
+                  "idempotencyKeyRequired": {
+                    "type": "boolean"
+                  },
+                  "failureMode": {
+                    "type": "string"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "execution": {
+                "type": "object",
+                "properties": {
+                  "liveExecution": {
+                    "enum": [
+                      "disabled",
+                      "hostProtocol"
+                    ]
+                  },
+                  "protocol": {
+                    "enum": [
+                      "notImplemented",
+                      "applik8s.capability/v1alpha1"
+                    ]
+                  },
+                  "audit": {
+                    "type": "object",
+                    "properties": {
+                      "recordRequests": {
+                        "type": "boolean"
+                      },
+                      "recordResponses": {
+                        "type": "boolean"
+                      },
+                      "includePayloads": {
+                        "const": false
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "redaction": {
+                    "type": "object",
+                    "properties": {
+                      "requestBody": {
+                        "const": "redacted"
+                      },
+                      "responseBody": {
+                        "const": "redacted"
+                      },
+                      "headers": {
+                        "const": "redacted"
+                      },
+                      "errors": {
+                        "const": "publicMessageOnly"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  },
+                  "idempotency": {
+                    "type": "object",
+                    "properties": {
+                      "requiredForMutations": {
+                        "type": "boolean"
+                      },
+                      "keySource": {
+                        "enum": [
+                          "handlerProvided",
+                          "notApplicable"
+                        ]
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "sensitive": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "kind"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "properties": {
+            "operatorName": {
+              "type": "string"
+            },
+            "reconcileId": {
+              "type": "string"
+            },
+            "bundleDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "runtimeVersion": {
+              "type": "string"
+            },
+            "startedAt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "operatorName",
+            "reconcileId",
+            "bundleDigest",
+            "runtimeVersion",
+            "startedAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "abiVersion",
+        "handlerId",
+        "event",
+        "object",
+        "runtime"
+      ],
+      "additionalProperties": false
+    },
+    "normalizedOperationPlan": {
+      "type": "object",
+      "properties": {
+        "operations": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "apply"
+                  },
+                  "resource": {
+                    "type": "object",
+                    "properties": {
+                      "apiVersion": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "metadata": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "namespace": {
+                            "type": "string"
+                          },
+                          "uid": {
+                            "type": "string"
+                          },
+                          "resourceVersion": {
+                            "type": "string"
+                          },
+                          "generation": {
+                            "type": "number"
+                          },
+                          "labels": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          },
+                          "annotations": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          },
+                          "finalizers": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "deletionTimestamp": {
+                            "type": "string"
+                          },
+                          "creationTimestamp": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ],
+                        "additionalProperties": true
+                      },
+                      "spec": {
+                        "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+                      },
+                      "status": {
+                        "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+                      }
+                    },
+                    "required": [
+                      "apiVersion",
+                      "kind",
+                      "metadata"
+                    ],
+                    "additionalProperties": true
+                  },
+                  "fieldManager": {
+                    "type": "string"
+                  },
+                  "force": {
+                    "type": "boolean"
+                  },
+                  "ownership": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "const": "auto"
+                          }
+                        },
+                        "required": [
+                          "mode"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "const": "none"
+                          }
+                        },
+                        "required": [
+                          "mode"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "const": "reference"
+                          },
+                          "ref": {
+                            "type": "object",
+                            "properties": {
+                              "apiVersion": {
+                                "type": "string"
+                              },
+                              "kind": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "namespace": {
+                                "type": "string"
+                              },
+                              "uid": {
+                                "type": "string"
+                              },
+                              "resourceVersion": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "apiVersion",
+                              "kind",
+                              "name"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "blockOwnerDeletion": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "mode",
+                          "ref"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "resource"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "patch"
+                  },
+                  "ref": {
+                    "type": "object",
+                    "properties": {
+                      "apiVersion": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "namespace": {
+                        "type": "string"
+                      },
+                      "uid": {
+                        "type": "string"
+                      },
+                      "resourceVersion": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "apiVersion",
+                      "kind",
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "patch": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "op": {
+                          "enum": [
+                            "add",
+                            "remove",
+                            "replace",
+                            "move",
+                            "copy",
+                            "test"
+                          ]
+                        },
+                        "path": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+                        },
+                        "from": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "op",
+                        "path"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ref",
+                  "patch"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "delete"
+                  },
+                  "ref": {
+                    "type": "object",
+                    "properties": {
+                      "apiVersion": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "namespace": {
+                        "type": "string"
+                      },
+                      "uid": {
+                        "type": "string"
+                      },
+                      "resourceVersion": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "apiVersion",
+                      "kind",
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "options": {
+                    "type": "object",
+                    "properties": {
+                      "propagationPolicy": {
+                        "enum": [
+                          "Foreground",
+                          "Background",
+                          "Orphan"
+                        ]
+                      },
+                      "gracePeriodSeconds": {
+                        "type": "number"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "ref"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "status"
+                  },
+                  "status": {
+                    "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+                  },
+                  "ref": {
+                    "type": "object",
+                    "properties": {
+                      "apiVersion": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "namespace": {
+                        "type": "string"
+                      },
+                      "uid": {
+                        "type": "string"
+                      },
+                      "resourceVersion": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "apiVersion",
+                      "kind",
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "status"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "event"
+                  },
+                  "type": {
+                    "enum": [
+                      "Normal",
+                      "Warning"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "regarding": {
+                    "type": "object",
+                    "properties": {
+                      "apiVersion": {
+                        "type": "string"
+                      },
+                      "kind": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "namespace": {
+                        "type": "string"
+                      },
+                      "uid": {
+                        "type": "string"
+                      },
+                      "resourceVersion": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "apiVersion",
+                      "kind",
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "type",
+                  "reason",
+                  "message"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "finalizer"
+                  },
+                  "operation": {
+                    "enum": [
+                      "add",
+                      "remove"
+                    ]
+                  },
+                  "finalizer": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "operation",
+                  "finalizer"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "requeue"
+                  },
+                  "policy": {
+                    "type": "object",
+                    "properties": {
+                      "afterSeconds": {
+                        "type": "number"
+                      },
+                      "reason": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kind",
+                  "policy"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "severity": {
+                "enum": [
+                  "info",
+                  "warning",
+                  "error"
+                ]
+              },
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "sourceLocation": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "number"
+                  },
+                  "column": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "file",
+                  "line",
+                  "column"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "severity",
+              "code",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "operations"
+      ],
+      "additionalProperties": false
+    },
+    "operatorManifest": {
+      "type": "object",
+      "properties": {
+        "apiVersion": {
+          "const": "applik8s.operator/v1alpha1"
+        },
+        "kind": {
+          "const": "OperatorBundle"
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "labels": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "annotations": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "additionalProperties": false
+        },
+        "spec": {
+          "type": "object",
+          "properties": {
+            "handlerAbi": {
+              "const": "applik8s.handler/v1alpha1"
+            },
+            "payloadSchemaDigests": {
+              "type": "object"
+            },
+            "requiresRuntime": {
+              "type": "string"
+            },
+            "handlerArtifact": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "const": "wasm-component"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "digest": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "path",
+                "digest"
+              ],
+              "additionalProperties": false
+            },
+            "adapterRequirements": {
+              "type": "object"
+            },
+            "handlerExports": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "handlerId": {
+                    "type": "string"
+                  },
+                  "exportName": {
+                    "type": "string"
+                  },
+                  "event": {
+                    "type": "string"
+                  },
+                  "finalizers": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "handlerId",
+                  "exportName",
+                  "event"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "ownedCrds": {
+              "type": "array"
+            },
+            "watches": {
+              "type": "array"
+            },
+            "permissions": {
+              "type": "array"
+            },
+            "capabilities": {
+              "type": "object"
+            },
+            "security": {
+              "type": "object"
+            },
+            "lifecycle": {
+              "type": "object"
+            },
+            "runtime": {
+              "type": "object"
+            },
+            "bundle": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "handlerAbi",
+            "payloadSchemaDigests",
+            "requiresRuntime",
+            "handlerArtifact",
+            "handlerExports",
+            "ownedCrds",
+            "watches",
+            "permissions",
+            "security",
+            "lifecycle",
+            "bundle"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "apiVersion",
+        "kind",
+        "metadata",
+        "spec"
+      ],
+      "additionalProperties": false
+    },
+    "handlerError": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ]
+        },
+        "contextJson": {
+          "type": "string"
+        },
+        "causeJson": {
+          "type": "string"
+        },
+        "recoveryJson": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "severity",
+        "contextJson"
+      ],
+      "additionalProperties": false
+    },
+    "capabilityRequest": {
+      "type": "object",
+      "properties": {
+        "capabilityName": {
+          "type": "string"
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "DELETE"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "body": {
+          "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+        },
+        "options": {
+          "type": "object",
+          "properties": {
+            "idempotencyKey": {
+              "type": "string"
+            },
+            "timeoutMs": {
+              "type": "number"
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "reconcileId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "capabilityName",
+        "method",
+        "path",
+        "reconcileId"
+      ],
+      "additionalProperties": false
+    },
+    "capabilityResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": true
+            },
+            "value": {
+              "description": "Arbitrary JSON value owned by user schemas or external capability payloads."
+            },
+            "observedAt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "ok",
+            "value"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "const": false
+            },
+            "error": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "ok",
+            "error"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "generatedBy": "@applik8s/runtime-contract"
+}

@@ -1,0 +1,30 @@
+{
+  "name": "@applik8s/compiler",
+  "version": "0.1.0",
+  "description": "Compiler and artifact pipeline for applik8s Kubernetes operators.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/compiler"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@bytecodealliance/componentize-js": "^0.21.0",
+    "@kubernetes/client-node": "^1.3.0",
+    "@applik8s/core": "0.1.0",
+    "@applik8s/runtime-contract": "0.1.0",
+    "@applik8s/typetainer": "0.1.0",
+    "esbuild": "^0.28.1",
+    "yaml": "^2.9.0"
+  }
+}

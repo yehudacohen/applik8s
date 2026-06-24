@@ -1,0 +1,21 @@
+{
+  "name": "@applik8s/core",
+  "version": "0.1.0",
+  "description": "Core types and contracts for applik8s TypeScript Kubernetes operators.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/core"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

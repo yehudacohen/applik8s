@@ -1,0 +1,12 @@
+[workspace]
+members = [
+  "crates/applik8s-operator-host",
+  "crates/applik8s-runtime-bridge",
+  "crates/applik8s-runtime-contract",
+]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/applik8s/applik8s"

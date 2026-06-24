@@ -1,0 +1,29 @@
+{
+  "name": "@applik8s/typekro-adapter",
+  "version": "0.1.0",
+  "description": "TypeKro integration adapter for applik8s operators.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/typekro-adapter"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./targets": "./src/operation-targets.ts"
+  },
+  "dependencies": {
+    "@applik8s/compiler": "0.1.0",
+    "@applik8s/core": "0.1.0",
+    "@applik8s/typetainer": "0.1.0",
+    "arktype": "^2.1.20",
+    "typekro": "^0.8.0"
+  }
+}

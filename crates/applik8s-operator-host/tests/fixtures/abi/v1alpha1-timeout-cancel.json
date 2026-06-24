@@ -1,0 +1,19 @@
+{
+  "apiVersion": "applik8s.operator/v1alpha1",
+  "kind": "OperatorBundle",
+  "metadata": {
+    "name": "image-pipeline"
+  },
+  "spec": {
+    "handlerAbi": "applik8s.handler/v1alpha1",
+    "requiresRuntime": "^0.1.0",
+    "adapterRequirements": {
+      "kind": "wasmComponent",
+      "wasmComponentModel": true,
+      "hostImports": ["capability-request", "log", "cancel"]
+    },
+    "runtime": {
+      "handlerTimeoutSeconds": 7
+    }
+  }
+}

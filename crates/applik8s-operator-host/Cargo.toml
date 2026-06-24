@@ -1,0 +1,34 @@
+[package]
+name = "applik8s-operator-host"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+applik8s-runtime-bridge = { path = "../applik8s-runtime-bridge" }
+applik8s-runtime-contract = { path = "../applik8s-runtime-contract" }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+backoff = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+flate2 = "1"
+futures = "0.3"
+k8s-openapi = { version = "0.28.0", features = ["v1_32"] }
+kube = { version = "4.0.0", default-features = false, features = ["client", "runtime", "rustls-tls"] }
+kube-lease-manager = "0.12.0"
+opentelemetry = { version = "0.32", features = ["metrics", "trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "metrics", "reqwest-blocking-client", "trace"] }
+opentelemetry_sdk = { version = "0.32", features = ["metrics", "trace"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+semver = "1"
+serde_json = "1"
+sourcemap = "9"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+wasmtime = { version = "45.0.2", default-features = false, features = ["async", "component-model", "cranelift", "runtime", "std"] }
+
+[dev-dependencies]
+wat = "1"

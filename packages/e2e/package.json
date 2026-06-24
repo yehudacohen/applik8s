@@ -1,0 +1,5 @@
+{
+  "name": "@applik8s/e2e",
+  "private": true,
+  "type": "module"
+}

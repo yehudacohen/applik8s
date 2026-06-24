@@ -1,0 +1,247 @@
+[
+  {
+    "name": "current-v1alpha1-full-compatible",
+    "runtimeVersion": "0.1.7",
+    "expectedRuntime": "compatible",
+    "expectedHostImports": ["capability-request", "log", "cancel"],
+    "componentImports": ["capability-request", "log", "cancel"],
+    "expectedComponentImports": "compatible",
+    "expectedStatusPlan": "compatible",
+    "manifest": {
+      "apiVersion": "applik8s.operator/v1alpha1",
+      "kind": "OperatorBundle",
+      "metadata": {
+        "name": "image-pipeline",
+        "annotations": {
+          "applik8s.dev/namespace": "media"
+        }
+      },
+      "spec": {
+        "handlerAbi": "applik8s.handler/v1alpha1",
+        "requiresRuntime": ">=0.1.0, <0.2.0",
+        "adapterRequirements": {
+          "kind": "wasmComponent",
+          "wasmComponentModel": true,
+          "hostImports": ["capability-request", "log", "cancel"],
+          "javascript": {
+            "features": ["closures", "asyncFunctions", "promises", "es6Proxy"]
+          }
+        },
+        "handlerExports": [
+          {
+            "handlerId": "ImageJob.reconcile.0",
+            "exportName": "reconcile",
+            "event": "reconcile",
+            "resource": {
+              "apiVersion": "media.applik8s.dev/v1alpha1",
+              "kind": "ImageJob"
+            }
+          }
+        ],
+        "ownedCrds": [
+          {
+            "apiVersion": "media.applik8s.dev/v1alpha1",
+            "kind": "ImageJob",
+            "plural": "imagejobs",
+            "versions": ["v1alpha1"],
+            "storageVersion": "v1alpha1",
+            "scope": "Namespaced",
+            "statusSubresource": true,
+            "statusConvention": {
+              "observedGenerationField": "observedGeneration",
+              "conditionsField": "conditions"
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "legacy-status-convention-implies-status-subresource",
+    "runtimeVersion": "0.1.7",
+    "expectedRuntime": "compatible",
+    "expectedHostImports": ["log"],
+    "componentImports": ["log"],
+    "expectedComponentImports": "compatible",
+    "expectedStatusPlan": "compatible",
+    "manifest": {
+      "apiVersion": "applik8s.operator/v1alpha1",
+      "kind": "OperatorBundle",
+      "metadata": {
+        "name": "image-pipeline",
+        "annotations": {
+          "applik8s.dev/namespace": "media"
+        }
+      },
+      "spec": {
+        "handlerAbi": "applik8s.handler/v1alpha1",
+        "requiresRuntime": "^0.1.0",
+        "adapterRequirements": {
+          "kind": "wasmComponent",
+          "wasmComponentModel": true,
+          "hostImports": ["log"]
+        },
+        "ownedCrds": [
+          {
+            "apiVersion": "media.applik8s.dev/v1alpha1",
+            "kind": "ImageJob",
+            "plural": "imagejobs",
+            "versions": ["v1alpha1"],
+            "storageVersion": "v1alpha1",
+            "scope": "Namespaced",
+            "statusConvention": {
+              "observedGenerationField": "observedGeneration",
+              "conditionsField": "conditions"
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "legacy-without-status-convention-keeps-status-unsupported",
+    "runtimeVersion": "0.1.7",
+    "expectedRuntime": "compatible",
+    "expectedHostImports": ["log"],
+    "componentImports": ["log"],
+    "expectedComponentImports": "compatible",
+    "expectedStatusPlan": "statusSubresourceUnsupported",
+    "manifest": {
+      "apiVersion": "applik8s.operator/v1alpha1",
+      "kind": "OperatorBundle",
+      "metadata": {
+        "name": "image-pipeline",
+        "annotations": {
+          "applik8s.dev/namespace": "media"
+        }
+      },
+      "spec": {
+        "handlerAbi": "applik8s.handler/v1alpha1",
+        "requiresRuntime": "^0.1.0",
+        "adapterRequirements": {
+          "kind": "wasmComponent",
+          "wasmComponentModel": true,
+          "hostImports": ["log"]
+        },
+        "ownedCrds": [
+          {
+            "apiVersion": "media.applik8s.dev/v1alpha1",
+            "kind": "ImageJob",
+            "plural": "imagejobs",
+            "versions": ["v1alpha1"],
+            "storageVersion": "v1alpha1",
+            "scope": "Namespaced"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "future-manifest-version-rejected",
+    "runtimeVersion": "0.1.7",
+    "expectedRuntime": "unsupportedManifestVersion",
+    "manifest": {
+      "apiVersion": "applik8s.operator/v2alpha1",
+      "kind": "OperatorBundle",
+      "metadata": {
+        "name": "image-pipeline"
+      },
+      "spec": {
+        "handlerAbi": "applik8s.handler/v1alpha1",
+        "requiresRuntime": "^0.1.0",
+        "adapterRequirements": {
+          "kind": "wasmComponent",
+          "wasmComponentModel": true,
+          "hostImports": ["log"]
+        }
+      }
+    }
+  },
+  {
+    "name": "future-handler-abi-rejected",
+    "runtimeVersion": "0.1.7",
+    "expectedRuntime": "unsupportedHandlerAbi",
+    "manifest": {
+      "apiVersion": "applik8s.operator/v1alpha1",
+      "kind": "OperatorBundle",
+      "metadata": {
+        "name": "image-pipeline"
+      },
+      "spec": {
+        "handlerAbi": "applik8s.handler/v2alpha1",
+        "requiresRuntime": "^0.1.0",
+        "adapterRequirements": {
+          "kind": "wasmComponent",
+          "wasmComponentModel": true,
+          "hostImports": ["log"]
+        }
+      }
+    }
+  },
+  {
+    "name": "future-runtime-requirement-rejected",
+    "runtimeVersion": "0.1.7",
+    "expectedRuntime": "incompatibleRuntime",
+    "manifest": {
+      "apiVersion": "applik8s.operator/v1alpha1",
+      "kind": "OperatorBundle",
+      "metadata": {
+        "name": "image-pipeline"
+      },
+      "spec": {
+        "handlerAbi": "applik8s.handler/v1alpha1",
+        "requiresRuntime": ">=0.2.0, <0.3.0",
+        "adapterRequirements": {
+          "kind": "wasmComponent",
+          "wasmComponentModel": true,
+          "hostImports": ["log"]
+        }
+      }
+    }
+  },
+  {
+    "name": "missing-host-import-declaration-rejected",
+    "runtimeVersion": "0.1.7",
+    "expectedRuntime": "compatible",
+    "expectedHostImports": "invalidHostImports",
+    "manifest": {
+      "apiVersion": "applik8s.operator/v1alpha1",
+      "kind": "OperatorBundle",
+      "metadata": {
+        "name": "image-pipeline"
+      },
+      "spec": {
+        "handlerAbi": "applik8s.handler/v1alpha1",
+        "requiresRuntime": "^0.1.0",
+        "adapterRequirements": {
+          "kind": "wasmComponent",
+          "wasmComponentModel": true
+        }
+      }
+    }
+  },
+  {
+    "name": "undeclared-future-host-import-rejected",
+    "runtimeVersion": "0.1.7",
+    "expectedRuntime": "compatible",
+    "expectedHostImports": ["log"],
+    "componentImports": ["future-capability"],
+    "expectedComponentImports": "undeclaredHostImport",
+    "manifest": {
+      "apiVersion": "applik8s.operator/v1alpha1",
+      "kind": "OperatorBundle",
+      "metadata": {
+        "name": "image-pipeline"
+      },
+      "spec": {
+        "handlerAbi": "applik8s.handler/v1alpha1",
+        "requiresRuntime": "^0.1.0",
+        "adapterRequirements": {
+          "kind": "wasmComponent",
+          "wasmComponentModel": true,
+          "hostImports": ["log"]
+        }
+      }
+    }
+  }
+]

@@ -1,0 +1,16 @@
+node_modules/
+.old_modules-*/
+
+dist/
+target/
+.applik8s-tmp/
+coverage/
+
+*.log
+*.tmp
+.DS_Store
+
+binary.wasm
+
+roadmap.md
+vision.md

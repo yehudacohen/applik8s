@@ -1,0 +1,25 @@
+{
+  "name": "@applik8s/testing",
+  "version": "0.1.0",
+  "description": "Local testing harness for applik8s operators.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/testing"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@applik8s/core": "0.1.0",
+    "@applik8s/sdk": "0.1.0"
+  }
+}
