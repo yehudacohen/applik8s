@@ -18,7 +18,7 @@ const packageDirs = [
 const dryRun = process.argv.includes('--dry-run');
 
 for (const packageDir of packageDirs) {
-  const args = ['publish', '--access', 'public', '--provenance'];
+  const args = ['publish', '--access', 'public'];
   if (dryRun) {
     args.push('--dry-run');
   }
