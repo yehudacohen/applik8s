@@ -282,7 +282,7 @@ async function discoverExportedOperators(entrypoint: string): Promise<Result<{ r
 }
 
 function generatedDispatcherEntrypoint(userEntrypoint: string, operatorName: string, hasCapabilities: boolean): string {
-  return `${hasCapabilities ? "import { capabilityRequest } from 'applik8s:handler/capabilities';\nimport { dispatchOperatorHandler } from '@applik8s/sdk';" : "import { dispatchOperatorHandlerSync } from '@applik8s/sdk';"}
+  return `${hasCapabilities ? "import { capabilityRequest } from 'applik8s:handler/capabilities';\n" : ''}import { dispatchOperatorHandler } from '@applik8s/sdk';
 import * as userModule from ${JSON.stringify(userEntrypoint)};
 
 const selectedExport = Object.values(userModule).find((value) => Boolean(value && typeof value === 'function' && value.definition?.name === ${JSON.stringify(operatorName)}));
@@ -290,9 +290,9 @@ if (!selectedExport) {
   throw new Error(${JSON.stringify(`Entrypoint does not export an applik8s operator named ${operatorName}.`)});
 }
 
-export ${hasCapabilities ? 'async ' : ''}function handle(inputJson: string)${hasCapabilities ? ': Promise<string>' : ': string'} {
+export async function handle(inputJson: string): Promise<string> {
   try {
-    return ${hasCapabilities ? 'await dispatchOperatorHandler(selectedExport.definition, inputJson, { capabilityRequest })' : 'dispatchOperatorHandlerSync(selectedExport.definition, inputJson)'};
+    return await dispatchOperatorHandler(selectedExport.definition, inputJson${hasCapabilities ? ', { capabilityRequest }' : ''});
   } catch (cause) {
     throw new Error(cause instanceof Error ? (cause.stack ?? cause.message) : 'Handler threw an unknown error.');
   }

@@ -31,7 +31,7 @@ export async function emitWasmComponentArtifact(options: WasmComponentArtifactOp
       sourcePath: options.javascriptBundlePath,
       witPath: options.witPath,
       worldName: options.worldName ?? 'handler',
-      disableFeatures: [...(options.disableFeatures ?? ['stdio', 'random', 'clocks', 'http', 'fetch-event'])],
+      disableFeatures: [...(options.disableFeatures ?? ['stdio', 'random', 'clocks'])],
       env: false,
     });
 

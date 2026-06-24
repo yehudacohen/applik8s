@@ -29,7 +29,7 @@ The sandbox does not make captured application code automatically safe.
 - It does not prevent intentionally returned Kubernetes operation plans unless validation rejects them.
 - It does not turn embedded secrets into safe data.
 - It does not make source maps, replay artifacts, logs, or status messages safe to expose when full payload capture is enabled.
-- It does not provide network, filesystem, or environment access to handlers unless future declared capabilities implement those effects through host imports.
+- It does not provide filesystem or environment access to handlers. Direct `fetch` uses WASI HTTP host imports; richer external-effect policy still belongs in declared capabilities.
 
 Compiler portability checks reduce obvious unsafe captures, but they are not a formal static security proof.
 
@@ -38,7 +38,8 @@ Compiler portability checks reduce obvious unsafe captures, but they are not a f
 Default generated bundles declare a fail-closed portability posture:
 
 - ambient filesystem access: denied.
-- ambient network access: denied.
+- direct `fetch` through WASI HTTP: allowed by policy.
+- Node/raw network APIs such as `node:http`, `net`, `tls`, `dns`, and `WebSocket`: denied.
 - ambient environment access: denied.
 - dynamic module loading: denied.
 - local credential paths: denied.

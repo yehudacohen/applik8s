@@ -124,7 +124,7 @@ async function runBuild(entrypoint: string, options: BuildCommandOptions, io: Cl
       deterministicBuild: true,
       allowEnvironmentAccess: false,
       allowFilesystemAccess: false,
-      allowNetworkAccess: false,
+      allowNetworkAccess: true,
       allowedHostImports: [],
       sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
     },

@@ -500,7 +500,7 @@ export const imagePipeline = sdk.operator({
       const dispatcherPath = join(dir, 'dist/bundle/handler-dispatcher.generated.ts');
       // static-import-exception: this test loads a compiler-generated dispatcher from a temporary output directory.
       const dispatcher = await import(`${pathToFileURL(dispatcherPath).href}?case=handler-error`);
-      expect(() => dispatcher.handle(JSON.stringify({
+      await expect(dispatcher.handle(JSON.stringify({
         abiVersion: 'applik8s.handler/v1alpha1',
         handlerId: 'ImageJob.reconcile.0',
         event: 'reconcile',
@@ -511,7 +511,7 @@ export const imagePipeline = sdk.operator({
           spec: { sourceUrl: 's3://bucket/hero.png' },
         },
         runtime: { reconcileId: 'ImageJob-hero-image' },
-      }))).toThrow(/synthetic handler failure/);
+      }))).rejects.toThrow(/synthetic handler failure/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -651,7 +651,7 @@ export const imagePipeline = sdk.operator({
         'applik8s.dev/rbac-mode': result.value.manifest.spec.security.rbac.mode,
         'applik8s.dev/rbac-least-privilege-reviewed': String(result.value.manifest.spec.security.rbac.leastPrivilegeReviewed),
         'applik8s.dev/rbac-rule-count': String(result.value.manifest.spec.security.rbac.rules.length),
-        'applik8s.dev/host-imports': 'capability-request,log,cancel',
+        'applik8s.dev/host-imports': 'capability-request,log,cancel,wasi:io,wasi:http',
         'applik8s.dev/ambient-environment': 'denied',
         'applik8s.dev/ambient-filesystem': 'denied',
         'applik8s.dev/ambient-network': 'denied',
@@ -1107,7 +1107,7 @@ export function handle(input: string): string {
       }
 
       expect(manifest.value.spec.adapterRequirements?.kind).toBe('wasmComponent');
-      expect(manifest.value.spec.adapterRequirements?.hostImports).toEqual(['capability-request', 'log', 'cancel']);
+      expect(manifest.value.spec.adapterRequirements?.hostImports).toEqual(['capability-request', 'log', 'cancel', 'wasi:io', 'wasi:http']);
       expect(manifest.value.spec.handlerArtifact.digest).toBe(wasm.value.digest);
       expect(manifest.value.spec.bundle.sourceDigest).toBe(runtimeContract.value.digest);
       expect(manifest.value.spec.bundle.artifacts).toEqual([

@@ -3,8 +3,8 @@
     "name": "current-v1alpha1-full-compatible",
     "runtimeVersion": "0.1.7",
     "expectedRuntime": "compatible",
-    "expectedHostImports": ["capability-request", "log", "cancel"],
-    "componentImports": ["capability-request", "log", "cancel"],
+    "expectedHostImports": ["capability-request", "log", "cancel", "wasi:io", "wasi:http"],
+    "componentImports": ["capability-request", "log", "cancel", "wasi:io/error@0.2.10", "wasi:http/types@0.2.10"],
     "expectedComponentImports": "compatible",
     "expectedStatusPlan": "compatible",
     "manifest": {
@@ -22,7 +22,7 @@
         "adapterRequirements": {
           "kind": "wasmComponent",
           "wasmComponentModel": true,
-          "hostImports": ["capability-request", "log", "cancel"],
+          "hostImports": ["capability-request", "log", "cancel", "wasi:io", "wasi:http"],
           "javascript": {
             "features": ["closures", "asyncFunctions", "promises", "es6Proxy"]
           }

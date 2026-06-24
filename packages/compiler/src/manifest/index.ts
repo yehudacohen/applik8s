@@ -106,7 +106,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
       adapterRequirements: {
         kind: 'wasmComponent',
         wasmComponentModel: true,
-        hostImports: ['capability-request', 'log', 'cancel'],
+        hostImports: ['capability-request', 'log', 'cancel', 'wasi:io', 'wasi:http'],
         javascript: { features: ['closures', 'asyncFunctions', 'promises', 'es6Proxy'] },
       },
       handlerExports,

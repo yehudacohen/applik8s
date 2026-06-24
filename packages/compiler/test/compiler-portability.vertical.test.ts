@@ -6,6 +6,28 @@ import { describe, expect, it } from 'vitest';
 import { bundleHandlerEntrypoint } from '../src/index.js';
 
 describe('compiler portability policy', () => {
+  it('allows direct fetch in async handler source', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-compiler-fetch-policy-'));
+
+    try {
+      const entrypoint = join(dir, 'handler-entry.ts');
+      await writeFile(
+        entrypoint,
+        `export async function handle(input: string): Promise<string> {
+  const response = await fetch('https://example.test/healthz');
+  return response.ok ? input : input;
+}
+`
+      );
+
+      const bundle = await bundleHandlerEntrypoint({ entrypoint, outDir: join(dir, 'bundle') });
+
+      expect(bundle.ok).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects obvious ambient entrypoint assumptions before bundling', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-compiler-policy-'));
 

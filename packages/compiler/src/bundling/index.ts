@@ -248,7 +248,7 @@ function validateSourcePortability(source: string, sourceFile: string, policy: H
     }
 
     if (!policy.allowNetworkAccess && (importsAnyModule(node, NETWORK_MODULES) || isRawNetworkApiUse(node))) {
-      diagnostics.push(diagnosticForNode(sourceAst, sourceFile, node, 'Network access must go through a declared capability.'));
+      diagnostics.push(diagnosticForNode(sourceAst, sourceFile, node, 'Raw network access other than fetch must go through a declared capability.'));
     }
 
     if (importsAnyModule(node, UNSUPPORTED_NATIVE_MODULES)) {
@@ -578,7 +578,6 @@ function looksLikeSecretValue(value: string): boolean {
 
 function isRawNetworkApiUse(node: ts.Node): boolean {
   return (
-    (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'fetch') ||
     (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'WebSocket') ||
     (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'WebSocket')
   );

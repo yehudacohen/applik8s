@@ -5,8 +5,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use wasmtime::component::types::ComponentItem;
-use wasmtime::component::{Component, Linker};
+use wasmtime::component::{Component, Linker, ResourceTable};
 use wasmtime::{Engine, Store};
+use wasmtime_wasi::{WasiCtx, WasiCtxView, WasiView};
+use wasmtime_wasi_http::{
+    WasiHttpCtx,
+    p2::{WasiHttpCtxView, WasiHttpView},
+};
 
 use crate::error::RuntimeBridgeError;
 use crate::payload::{
@@ -21,9 +26,41 @@ pub struct HandlerInvocationPayload {
 pub type CapabilityRequestFuture = Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
 pub type CapabilityRequestHandler = Arc<dyn Fn(String) -> CapabilityRequestFuture + Send + Sync>;
 
-#[derive(Clone, Default)]
 struct InvocationState {
     capability_request: Option<CapabilityRequestHandler>,
+    wasi: WasiCtx,
+    http: WasiHttpCtx,
+    table: ResourceTable,
+}
+
+impl InvocationState {
+    fn new(capability_request: Option<CapabilityRequestHandler>) -> Self {
+        Self {
+            capability_request,
+            wasi: WasiCtx::builder().build(),
+            http: WasiHttpCtx::new(),
+            table: ResourceTable::new(),
+        }
+    }
+}
+
+impl WasiView for InvocationState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.wasi,
+            table: &mut self.table,
+        }
+    }
+}
+
+impl WasiHttpView for InvocationState {
+    fn http(&mut self) -> WasiHttpCtxView<'_> {
+        WasiHttpCtxView {
+            ctx: &mut self.http,
+            table: &mut self.table,
+            hooks: Default::default(),
+        }
+    }
 }
 
 pub trait WasmComponentInvoker {
@@ -135,8 +172,10 @@ async fn invoke_handler_component_bytes_with_policy(
     let component = Component::new(engine, component_bytes)?;
     validate_component_host_imports(engine, &component, allowed_host_imports)?;
     let mut linker = Linker::new(engine);
+    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
     define_canonical_host_imports(&mut linker)?;
-    let mut store = Store::new(engine, InvocationState { capability_request });
+    let mut store = Store::new(engine, InvocationState::new(capability_request));
     configure_epoch_deadline(&mut store, timeout);
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let handle = instance.get_func(&mut store, "handle").ok_or_else(|| {
@@ -181,6 +220,7 @@ fn block_on_invocation(
 ) -> Result<NormalizedOperationPlan, RuntimeBridgeError> {
     tokio::runtime::Builder::new_current_thread()
         .enable_time()
+        .enable_io()
         .build()
         .map_err(|error| {
             RuntimeBridgeError::UnsupportedOperation(format!(
@@ -243,6 +283,14 @@ fn is_allowed_host_import(import: &str, allowed_host_imports: &[String]) -> bool
             && allowed_host_imports
                 .iter()
                 .any(|allowed| allowed == "capability-request"))
+        || (import.starts_with("wasi:io/")
+            && allowed_host_imports
+                .iter()
+                .any(|allowed| allowed == "wasi:io"))
+        || (import.starts_with("wasi:http/")
+            && allowed_host_imports
+                .iter()
+                .any(|allowed| allowed == "wasi:http"))
 }
 
 pub fn canonical_host_imports() -> Vec<String> {
@@ -250,6 +298,8 @@ pub fn canonical_host_imports() -> Vec<String> {
         "capability-request".to_string(),
         "log".to_string(),
         "cancel".to_string(),
+        "wasi:io".to_string(),
+        "wasi:http".to_string(),
     ]
 }
 

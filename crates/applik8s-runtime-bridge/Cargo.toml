@@ -13,6 +13,8 @@ serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "time"] }
 wasmtime = { version = "45.0.2", default-features = false, features = ["async", "component-model", "cranelift", "runtime", "std"] }
+wasmtime-wasi = { version = "45.0.2", default-features = false, features = ["p2"] }
+wasmtime-wasi-http = "45.0.2"
 
 [dev-dependencies]
 k8s-openapi = { version = "0.28.0", features = ["v1_32"] }

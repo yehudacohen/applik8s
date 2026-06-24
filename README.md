@@ -103,6 +103,8 @@ The listener reads like application code, but it is control-plane code:
 - `job.requeue(...)` asks the controller to evaluate the object again later.
 - `ImageJob.on.finalize(...)` handles deletion by removing owned resources before the finalizer is removed.
 
+Handlers can also be `async`. The compiler tree-shakes the TypeScript dependency graph into the WASM component, and the Rust host provides WASI HTTP so ordinary `fetch` calls can be awaited from handler code. Kubernetes mutations still return through the operation plan, so the host can validate RBAC, ownership, status, finalizers, and ordering before effects are applied.
+
 ## Build The Operator Bundle
 
 Build the example:

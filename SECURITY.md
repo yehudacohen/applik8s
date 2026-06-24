@@ -15,7 +15,7 @@ Handlers run as WASM components inside the Rust operator host. The host owns Kub
 v0.1 denies by default:
 
 - ambient filesystem access
-- ambient network access
+- Node/raw network access outside direct WASI HTTP `fetch`
 - ambient environment access
 - dynamic module loading
 - undeclared host imports

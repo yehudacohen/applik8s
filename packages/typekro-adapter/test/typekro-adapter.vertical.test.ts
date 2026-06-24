@@ -203,7 +203,7 @@ describe('TypeKro adapter operation targets', () => {
         'applik8s.dev/rbac-mode': manifest.spec.security.rbac.mode,
         'applik8s.dev/rbac-least-privilege-reviewed': String(manifest.spec.security.rbac.leastPrivilegeReviewed),
         'applik8s.dev/rbac-rule-count': String(manifest.spec.security.rbac.rules.length),
-        'applik8s.dev/host-imports': 'capability-request,log,cancel',
+        'applik8s.dev/host-imports': 'capability-request,log,cancel,wasi:io,wasi:http',
         'applik8s.dev/capabilities': '',
         'applik8s.dev/capability-kinds': '',
         'applik8s.dev/capability-protocols': '',

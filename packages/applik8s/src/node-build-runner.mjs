@@ -53,7 +53,7 @@ const result = await createCompilerPipeline().run({
     deterministicBuild: true,
     allowEnvironmentAccess: false,
     allowFilesystemAccess: false,
-    allowNetworkAccess: false,
+    allowNetworkAccess: true,
     allowedHostImports: [],
     sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
   },

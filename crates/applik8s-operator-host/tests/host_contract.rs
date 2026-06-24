@@ -2012,7 +2012,9 @@ fn parses_declared_host_import_allowlist_from_manifest() {
         vec![
             "capability-request".to_string(),
             "log".to_string(),
-            "cancel".to_string()
+            "cancel".to_string(),
+            "wasi:io".to_string(),
+            "wasi:http".to_string()
         ]
     );
 }
@@ -2726,7 +2728,7 @@ fn compatibility_bundle(requires_runtime: &str) -> LoadedOperatorBundle {
                 "handlerAbi": "applik8s.handler/v1alpha1",
                 "requiresRuntime": requires_runtime,
                 "adapterRequirements": {
-                    "hostImports": ["capability-request", "log", "cancel"]
+                    "hostImports": ["capability-request", "log", "cancel", "wasi:io", "wasi:http"]
                 }
             }
         }),

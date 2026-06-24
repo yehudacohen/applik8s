@@ -1,4 +1,6 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -7,9 +9,9 @@ use applik8s_runtime_bridge::{
     RuntimeBridgeError, capability_denied_payload, component_host_imports, component_model_engine,
     decode_handler_input_payload, decode_handler_output_plan_payload,
     invoke_handler_component_bytes, invoke_handler_component_bytes_with_timeout,
-    invoke_handler_component_bytes_with_timeout_and_capabilities_async, retry_after,
-    runtime_abi_version, validate_component_host_imports, validate_handler_input,
-    validate_operation_plan,
+    invoke_handler_component_bytes_with_timeout_and_capabilities_async,
+    invoke_handler_component_bytes_with_timeout_async, retry_after, runtime_abi_version,
+    validate_component_host_imports, validate_handler_input, validate_operation_plan,
 };
 use kube::runtime::controller::Action;
 use wasmtime::Store;
@@ -285,6 +287,7 @@ world handler {
     let component_bytes = fs::read(&wasm_path).expect("emitted component reads");
     let plan = tokio::runtime::Builder::new_current_thread()
         .enable_time()
+        .enable_io()
         .build()
         .expect("test runtime builds")
         .block_on(
@@ -313,6 +316,98 @@ world handler {
 
     assert_eq!(plan.operations.len(), 1);
 
+    fs::remove_dir_all(&temp_dir).expect("test temp directory removes");
+}
+
+#[test]
+fn bridge_invokes_componentize_js_handler_with_direct_fetch() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("test server binds");
+    let addr = listener
+        .local_addr()
+        .expect("test server has local address");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("test server accepts request");
+        let mut request = [0_u8; 1024];
+        let _ = stream
+            .read(&mut request)
+            .expect("test server reads request");
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 14\r\nconnection: close\r\n\r\n{\"ready\":true}",
+            )
+            .expect("test server writes response");
+    });
+
+    let workspace_root = workspace_root();
+    let temp_dir = test_temp_dir("componentize-js-fetch-handler");
+    fs::create_dir_all(&temp_dir).expect("test temp directory creates");
+    let js_path = temp_dir.join("handler.js");
+    let wit_path = temp_dir.join("applik8s-handler.wit");
+    let wasm_path = temp_dir.join("handler.wasm");
+
+    fs::write(
+        &js_path,
+        format!(
+            r#"
+export async function handle(_inputJson) {{
+  const response = await fetch('http://{addr}/healthz');
+  const payload = await response.json();
+  return JSON.stringify({{ operations: [{{ kind: 'status', status: {{ phase: payload.ready ? 'Ready' : 'NotReady' }} }}] }});
+}}
+"#
+        ),
+    )
+    .expect("handler source writes");
+    fs::write(
+        &wit_path,
+        r#"package applik8s:handler;
+
+world handler {
+  export handle: func(input-json: string) -> result<string, string>;
+}
+"#,
+    )
+    .expect("handler WIT writes");
+
+    let output = Command::new("bunx")
+        .arg("componentize-js")
+        .arg(&js_path)
+        .arg("--wit")
+        .arg(&wit_path)
+        .arg("--world-name")
+        .arg("handler")
+        .arg("--disable")
+        .args(["stdio", "random", "clocks"])
+        .arg("--out")
+        .arg(&wasm_path)
+        .current_dir(workspace_root)
+        .output()
+        .expect("componentize-js command starts");
+    assert!(
+        output.status.success(),
+        "componentize-js failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let engine = component_model_engine().expect("component model engine configures");
+    let component_bytes = fs::read(&wasm_path).expect("emitted component reads");
+    let plan = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .enable_io()
+        .build()
+        .expect("test runtime builds")
+        .block_on(invoke_handler_component_bytes_with_timeout_async(
+            &engine,
+            &component_bytes,
+            valid_handler_input_payload(),
+            &applik8s_runtime_bridge::canonical_host_imports(),
+            Duration::from_secs(30),
+        ))
+        .expect("bridge invokes ComponentizeJS-emitted handler with direct fetch");
+
+    assert_eq!(plan.operations.len(), 1);
+    server.join().expect("test server joins");
     fs::remove_dir_all(&temp_dir).expect("test temp directory removes");
 }
 

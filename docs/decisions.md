@@ -8,7 +8,7 @@ Decision: compile TypeScript handlers into WASM component artifacts and run them
 
 Reason: this gives the runtime a narrow invocation boundary, explicit host imports, compatibility checks, timeout/cancellation control, and room for source-mapped diagnostics.
 
-Consequence: handlers must not depend on ambient filesystem, network, or environment access unless the compiler/runtime explicitly support that behavior.
+Consequence: handlers may use direct `fetch` through the WASI HTTP runtime, but must not depend on ambient filesystem, environment, Node-native network APIs, or dynamic imports unless the compiler/runtime explicitly support that behavior.
 
 ## Operation-Plan Effects
 

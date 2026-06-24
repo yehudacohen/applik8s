@@ -40,7 +40,7 @@ Experimental surfaces are documented and tested, but may change before v1.0 if r
 - `operatorBundle()` packaging API.
 - Compiler facade emitters and lifecycle planners that do not have implemented semantics.
 - Arbitrary Kubernetes client access from handlers.
-- Arbitrary filesystem, environment, network, or dynamic import access from handlers.
+- Arbitrary filesystem, environment, Node/raw network, or dynamic import access from handlers. Direct `fetch` through WASI HTTP is part of the v0.1 handler runtime.
 - Multi-version CRD conversion and storage migration APIs.
 - Helm, Kustomize, OLM, and OCI package emitters.
 - Generated typed Kubernetes clients beyond CRD factories and TypeKro resource factories.

@@ -10,7 +10,7 @@ Common reasons:
 - unsupported compiler option
 - invalid runtime config
 - unsupported handler ABI or host import policy
-- local credential or ambient filesystem/network capture
+- local credential, ambient filesystem/environment capture, or unsupported Node/raw network access
 
 What to do:
 

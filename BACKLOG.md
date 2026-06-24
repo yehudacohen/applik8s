@@ -44,6 +44,8 @@ v0.1 should let a TypeScript developer:
 - Done: document the TypeKro tutorial where an applik8s operator installs like a component, its CRD instantiates like a resource, and status composes through TypeKro-visible fields. Deeper live status-driven downstream composition is post-v0.1 polish.
 - Done: fail closed for unsupported capabilities, unsafe schemas, unsupported runtime concurrency, incompatible ABI/manifest/runtime versions, and unsupported packaging/release claims.
 - Done: publish clear maturity boundaries: v0.1 is for serious evaluation and early operator authoring, not yet a promise of multi-version CRD migration, arbitrary external capabilities, HA production rollout, or stateful cross-cluster failover.
+- `[v0.1-wow]` Enable ordinary async TypeScript handler code to execute in the WASM runtime, including direct `fetch` calls with tree-shaken bundled dependencies, while preserving operation-plan validation and runtime timeout enforcement.
+- `[v0.1-safety]` Define the v0.1 security boundary for direct handler `fetch`: no ambient filesystem/environment access, network enabled only through WASI HTTP, and release docs must distinguish direct fetch from audited declared capabilities.
 
 Release decision: v0.1.0 does not need an RC ceremony. Remaining roadmap items improve depth, portability, and polish after launch; they do not block the first pre-1.0 public evaluation release as long as public docs keep the supported path and unsupported boundaries explicit.
 
@@ -396,7 +398,7 @@ Work:
 - Done: add SDK status helpers for durable external-effect records keyed by capability name and idempotency key, including request/response digests, phase, observed time, and optional condition.
 - Done: generated manifests normalize declared capability names, record disabled live-execution posture, and include audit/redaction/idempotency metadata before any real external effects are enabled.
 - Done: manifest generation rejects unsupported live capability execution/protocol declarations until the Rust host implements the external capability protocol.
-- Done: add build-time checks for likely captured local credentials, environment-specific absolute paths, ambient network/filesystem assumptions, and unsupported native modules.
+- Done: add build-time checks for likely captured local credentials, environment-specific absolute paths, unsupported filesystem/environment/raw-network assumptions, and unsupported native modules.
 - Done: add initial policy/admission-facing validation metadata for declared capabilities, RBAC, runtime image provenance posture, and bundle compatibility.
 - Done: generated YAML and TypeKro install resources annotate RBAC posture with mode, least-privilege review flag, and rule count for admission/policy inspection.
 - Done: detect likely local credential or secret capture during bundling where feasible, including common kubeconfig, cloud credential, dotenv, SSH, npm, Docker, and token/private-key patterns.
