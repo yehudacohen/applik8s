@@ -18,7 +18,6 @@ import { type as arktype } from 'arktype';
 import { imageRefString } from '@applik8s/typetainer';
 import { toKubernetesStructuralOpenApiSchema, validateStructuralOpenApiSchema } from '@applik8s/compiler';
 import { createResource, kubernetesComposition } from 'typekro';
-import { DependencyResolver } from 'typekro/advanced';
 import type { AnyResourceDefinition, AnyResourceVersionDefinition, CapabilityClientSet, ConcurrencyConfig, DeleteTargetOptions, JsonObject, ObjectRef, OperatorDefinition, OperatorManifest, PartialStatus, PermissionRule, Result } from '@applik8s/core';
 import type { CallableComposition, Enhanced, KubernetesResource, KroCompatibleType, PublicFactoryOptions, ResourceStatus } from 'typekro';
 import type { Type } from 'arktype';
@@ -697,38 +696,31 @@ function statusProjectionForSource(source: unknown): JsonObject {
 
 function deletionPlanEntriesForSource(source: unknown): readonly TypeKroResourcePlanEntry[] {
   const entries = resourcePlanEntriesForSource(source);
-  const graph = dependencyGraphForSource(source, entries);
+  const graph = dependencyGraphForSource(source);
   if (!graph) {
-    return [...entries].reverse();
+    return entries;
   }
 
-  try {
-    const byId = new Map(entries.map((entry) => [entry.id, entry]));
-    const resolver = new DependencyResolver();
-    // typecast: this adapter accepts TypeKro graph-like values across public and nested-composition surfaces; the deletion resolver only needs getTopologicalOrder/getDependencies here.
-    const deletionPlan = resolver.analyzeDeletionOrder(graph as never);
-    const ordered = deletionPlan.levels.flatMap((level) => level.map((id) => byId.get(id)).filter((entry): entry is TypeKroResourcePlanEntry => Boolean(entry)));
-    return ordered.length === entries.length ? ordered : [...entries].reverse();
-  } catch {
-    return [...entries].reverse();
-  }
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const orderedIds = reverseTopologicalOrder(graph, entries.map((entry) => entry.id));
+  const ordered = orderedIds.map((id) => byId.get(id)).filter((entry): entry is TypeKroResourcePlanEntry => Boolean(entry));
+  return ordered.length === entries.length ? ordered : [...entries].reverse();
 }
 
-function dependencyGraphForSource(source: unknown, entries: readonly TypeKroResourcePlanEntry[]): TypeKroDependencyGraphLike | undefined {
-  if (isRecord(source)) {
-    const dependencyGraph = Reflect.get(source, 'dependencyGraph');
-    if (isDependencyGraphLike(dependencyGraph)) {
-      return dependencyGraph;
-    }
-  }
-
-  try {
-    const resolver = new DependencyResolver();
-    // typecast: TypeKro's dependency resolver accepts deployable Kubernetes resources; plan entries preserve resource ids and JSON-compatible manifest fields needed for dependency analysis.
-    return resolver.buildDependencyGraph(entries.map((entry) => entry.deployable) as never) as TypeKroDependencyGraphLike;
-  } catch {
+function dependencyGraphForSource(source: unknown): TypeKroDependencyGraphLike | undefined {
+  if (!isRecord(source)) {
     return undefined;
   }
+  const dependencyGraph = Reflect.get(source, 'dependencyGraph');
+  return isDependencyGraphLike(dependencyGraph) ? dependencyGraph : undefined;
+}
+
+function reverseTopologicalOrder(graph: TypeKroDependencyGraphLike, ids: readonly string[]): readonly string[] {
+  const order = graph.getTopologicalOrder().filter((id) => ids.includes(id));
+  if (order.length !== ids.length) {
+    return [...ids].reverse();
+  }
+  return [...order].reverse();
 }
 
 function resourcePlanEntry(input: unknown, index: number): TypeKroResourcePlanEntry {
