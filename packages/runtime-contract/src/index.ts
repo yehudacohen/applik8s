@@ -236,6 +236,7 @@ export const canonicalRuntimeContractSchema = arkType({
   canonical: {
     handleExport: '"handle"',
     capabilityRequestImport: '"capability-request"',
+    kubernetesReadImport: '"kubernetes-read"',
     logImport: '"log"',
     cancelImport: '"cancel"',
   },
@@ -253,8 +254,13 @@ interface capabilities {
   capability-request: func(request-json: string) -> result<string, string>;
 }
 
+interface kubernetes {
+  kubernetes-read: func(request-json: string) -> result<string, string>;
+}
+
 world handler {
   import capabilities;
+  import kubernetes;
   import log: func(event-json: string);
   import cancel: func(reason-json: string);
 
@@ -279,6 +285,7 @@ export function canonicalRuntimeContract() {
     canonical: {
       handleExport: 'handle',
       capabilityRequestImport: 'capability-request',
+      kubernetesReadImport: 'kubernetes-read',
       logImport: 'log',
       cancelImport: 'cancel',
     },

@@ -201,7 +201,7 @@ spec:
 
 function tenantOperatorSource(apiGroup: string, operatorNamespace: string): string {
   return `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/sdk/src/index.ts'))};
-import { operationTarget } from '@applik8s/typekro-adapter/targets';
+import { operationTarget, permissions } from '@applik8s/typekro-adapter/targets';
 
 interface TenantSpec { plan: 'free' | 'pro' }
 interface TenantStatus { phase?: 'Provisioning' }
@@ -232,13 +232,7 @@ export const Tenant = sdk.crd<TenantSpec, TenantStatus>({
 export const tenantOperator = sdk.operator({
   name: 'tenant-operator',
   deployment: { namespace: ${JSON.stringify(operatorNamespace)}, replicas: 1 },
-  permissions: [
-    { apiGroups: [${JSON.stringify(apiGroup)}], resources: ['tenants'], verbs: ['get', 'list', 'watch', 'patch'] },
-    { apiGroups: [${JSON.stringify(apiGroup)}], resources: ['tenants/status'], verbs: ['get', 'patch', 'update'] },
-    { apiGroups: [${JSON.stringify(apiGroup)}], resources: ['tenants/finalizers'], verbs: ['get', 'patch', 'update'] },
-    { apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'create', 'update', 'patch', 'delete'] },
-    { apiGroups: [''], resources: ['events'], verbs: ['create', 'patch', 'update'] },
-  ],
+  permissions: permissions(tenantStack('__permissions__', ${JSON.stringify(operatorNamespace)}, 'pro', false)),
   resources: { Tenant },
   handlers: [Tenant.on.created((tenant) => {
     const stack = tenantStack(tenant.metadata.name, tenant.metadata.namespace ?? 'default', tenant.spec.plan, tenant.metadata.name === 'denied-tenant');

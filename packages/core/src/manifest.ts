@@ -1,7 +1,7 @@
 import type { ConversionStrategy, HandlerAbiVersion, HandlerEventType, HandlerTrustLevel, Kind, KubernetesName, NamespaceName, OperatorManifestVersion, OperatorName, PluralName, ResourceScope, Result, SemverRange, Sha256Digest, SignatureAlgorithm, StatusConvention, Timestamp } from './common.js';
 import type { CapabilityClientSet, CapabilityDescriptor, CapabilityExecutionPolicy } from './capability.js';
 import type { EffectPolicy, HandlerRegistrationForResources } from './handler.js';
-import type { AnyResourceDefinition, DeleteResult, PermissionRule } from './resource.js';
+import type { AnyResourceDefinition, DeleteResult, LabelSelector, PermissionRule } from './resource.js';
 import type { DomainDataPolicy } from './lifecycle.js';
 import type { RuntimeAdapterRequirement, RuntimeConfig } from './runtime.js';
 import type { RuntimePayloadSchemaDigests } from './schema.js';
@@ -17,7 +17,7 @@ export interface HandlerExport { readonly handlerId: import('./common.js').Handl
 export interface ResourceTypeRef { readonly apiVersion: import('./common.js').ApiVersion; readonly kind: Kind; }
 export interface OwnedCrd { readonly apiVersion: import('./common.js').ApiVersion; readonly kind: Kind; readonly plural: PluralName; readonly scope: ResourceScope; readonly versions: readonly string[]; readonly storageVersion: string; readonly conversionStrategy: ConversionStrategy; readonly versioning: CrdVersioningPosture; readonly statusSubresource: boolean; readonly statusConvention?: StatusConvention; }
 export interface CrdVersioningPosture { readonly multiVersion: 'unsupported' | 'singleVersion'; readonly conversionWebhook: 'unsupported' | 'notConfigured'; readonly storageMigration: 'notRequired' | 'unsupported'; readonly rollbackSafety: 'schemaCompatibleOnly'; }
-export interface WatchRegistration { readonly apiVersion: import('./common.js').ApiVersion; readonly kind: Kind; readonly namespace?: NamespaceName; readonly events: readonly HandlerEventType[]; readonly handlers: readonly import('./common.js').HandlerId[]; }
+export interface WatchRegistration { readonly apiVersion: import('./common.js').ApiVersion; readonly kind: Kind; readonly plural?: PluralName; readonly scope?: ResourceScope; readonly namespace?: NamespaceName; readonly name?: KubernetesName; readonly names?: readonly KubernetesName[]; readonly labelSelector?: LabelSelector; readonly fieldSelector?: string; readonly events: readonly HandlerEventType[]; readonly handlers: readonly import('./common.js').HandlerId[]; }
 export interface BundleMetadata { readonly digest: Sha256Digest; readonly sourceDigest: Sha256Digest; readonly compilerVersion: string; readonly createdAt: Timestamp; readonly artifacts: readonly BundleArtifact[]; readonly supplyChain: SupplyChainMetadata; readonly portability?: PortabilityMetadata; }
 export interface BundleArtifact { readonly kind: BundleArtifactKind; readonly path: string; readonly digest: Sha256Digest; }
 export type BundleArtifactKind = 'wasm-component' | 'runtime-contract' | 'handler-wit' | 'javascript-bundle' | 'javascript-source-map' | 'esbuild-metafile' | 'kubernetes-yaml' | 'operator-manifest';

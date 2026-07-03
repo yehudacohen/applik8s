@@ -52,6 +52,8 @@ Use `BACKLOG.md` milestone tags:
 - `[v0.1-required]`
 - `[v0.1-wow]`
 - `[v0.1-safety]`
+- `[v0.2-typekro]`
+- `[movement-v0.1]`
 - `[post-v0.1]`
 - `[later]`
 

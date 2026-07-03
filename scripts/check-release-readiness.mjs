@@ -37,7 +37,7 @@ const requiredDocs = [
   'docs/future-surface.md',
   'docs/decisions.md',
   'docs/maintainer-policy.md',
-  'docs/release-evidence-v0.1.md',
+  'docs/release-evidence-v0.2.md',
   'docs/kubernetes-compatibility.md',
 ];
 
@@ -67,7 +67,9 @@ const publicReleaseFiles = [
   'docs/schema-evolution.md',
   'docs/contract-evolution.md',
   'examples/imagejob.ts',
+  'examples/guestbook.ts',
   'examples/test/product-stories.character.test.ts',
+  'packages/e2e/test/typekro-guestbook.e2e.test.ts',
 ];
 
 const privateBrand = ['ska', 'tes'].join('');
@@ -77,6 +79,7 @@ const privatePatterns = [
   new RegExp(`${privateBrand} operator`, 'i'),
   new RegExp(`${privateBrand} dogfood`, 'i'),
   new RegExp(`${privateBrand} portability`, 'i'),
+  new RegExp(`\\b${privateBrand}\\b`, 'i'),
   new RegExp(`${privateBrand}\\.dev`, 'i'),
   new RegExp(`${privateBrand}\\.run`, 'i'),
   new RegExp(`${privateBrand}-run`, 'i'),
@@ -108,8 +111,8 @@ for (const path of publishablePackages) {
   if (manifest.private === true) {
     failures.push(`${path}: publishable package must not set private: true.`);
   }
-  if (manifest.version !== '0.1.0') {
-    failures.push(`${path}: expected version 0.1.0, got ${manifest.version}.`);
+  if (manifest.version !== '0.2.0') {
+    failures.push(`${path}: expected version 0.2.0, got ${manifest.version}.`);
   }
   if (manifest.license !== 'Apache-2.0') {
     failures.push(`${path}: expected Apache-2.0 license, got ${manifest.license}.`);
@@ -131,14 +134,14 @@ for (const path of requiredDocs) {
   try {
     await readFile(path, 'utf8');
   } catch {
-    failures.push(`${path}: required v0.1 release document is missing.`);
+    failures.push(`${path}: required v0.2 release document is missing.`);
   }
 }
 
 for (const path of disallowedPublicPaths) {
   try {
     await access(path);
-    failures.push(`${path}: internal-only package path must not be present in the public v0.1 tree.`);
+    failures.push(`${path}: internal-only package path must not be present in the public v0.2 tree.`);
   } catch {
     // Missing is expected.
   }

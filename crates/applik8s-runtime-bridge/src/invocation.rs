@@ -25,18 +25,25 @@ pub struct HandlerInvocationPayload {
 
 pub type CapabilityRequestFuture = Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
 pub type CapabilityRequestHandler = Arc<dyn Fn(String) -> CapabilityRequestFuture + Send + Sync>;
+pub type KubernetesReadFuture = Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
+pub type KubernetesReadHandler = Arc<dyn Fn(String) -> KubernetesReadFuture + Send + Sync>;
 
 struct InvocationState {
     capability_request: Option<CapabilityRequestHandler>,
+    kubernetes_read: Option<KubernetesReadHandler>,
     wasi: WasiCtx,
     http: WasiHttpCtx,
     table: ResourceTable,
 }
 
 impl InvocationState {
-    fn new(capability_request: Option<CapabilityRequestHandler>) -> Self {
+    fn new(
+        capability_request: Option<CapabilityRequestHandler>,
+        kubernetes_read: Option<KubernetesReadHandler>,
+    ) -> Self {
         Self {
             capability_request,
+            kubernetes_read,
             wasi: WasiCtx::builder().build(),
             http: WasiHttpCtx::new(),
             table: ResourceTable::new(),
@@ -86,6 +93,7 @@ pub fn invoke_handler_component_bytes(
         &canonical_host_imports(),
         None,
         None,
+        None,
     ))
 }
 
@@ -100,6 +108,7 @@ pub fn invoke_handler_component_bytes_with_allowed_imports(
         component_bytes,
         input,
         allowed_host_imports,
+        None,
         None,
         None,
     ))
@@ -119,6 +128,7 @@ pub fn invoke_handler_component_bytes_with_timeout(
         allowed_host_imports,
         Some(timeout),
         None,
+        None,
     ))
 }
 
@@ -135,6 +145,7 @@ pub async fn invoke_handler_component_bytes_with_timeout_async(
         input,
         allowed_host_imports,
         Some(timeout),
+        None,
         None,
     )
     .await
@@ -155,6 +166,28 @@ pub async fn invoke_handler_component_bytes_with_timeout_and_capabilities_async(
         allowed_host_imports,
         Some(timeout),
         Some(capability_request),
+        None,
+    )
+    .await
+}
+
+pub async fn invoke_handler_component_bytes_with_timeout_and_host_imports_async(
+    engine: &Engine,
+    component_bytes: &[u8],
+    input: Value,
+    allowed_host_imports: &[String],
+    timeout: Duration,
+    capability_request: CapabilityRequestHandler,
+    kubernetes_read: KubernetesReadHandler,
+) -> Result<NormalizedOperationPlan, RuntimeBridgeError> {
+    invoke_handler_component_bytes_with_policy(
+        engine,
+        component_bytes,
+        input,
+        allowed_host_imports,
+        Some(timeout),
+        Some(capability_request),
+        Some(kubernetes_read),
     )
     .await
 }
@@ -166,6 +199,7 @@ async fn invoke_handler_component_bytes_with_policy(
     allowed_host_imports: &[String],
     timeout: Option<Duration>,
     capability_request: Option<CapabilityRequestHandler>,
+    kubernetes_read: Option<KubernetesReadHandler>,
 ) -> Result<NormalizedOperationPlan, RuntimeBridgeError> {
     validate_handler_input(&input)?;
 
@@ -175,7 +209,10 @@ async fn invoke_handler_component_bytes_with_policy(
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
     define_canonical_host_imports(&mut linker)?;
-    let mut store = Store::new(engine, InvocationState::new(capability_request));
+    let mut store = Store::new(
+        engine,
+        InvocationState::new(capability_request, kubernetes_read),
+    );
     configure_epoch_deadline(&mut store, timeout);
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let handle = instance.get_func(&mut store, "handle").ok_or_else(|| {
@@ -283,6 +320,10 @@ fn is_allowed_host_import(import: &str, allowed_host_imports: &[String]) -> bool
             && allowed_host_imports
                 .iter()
                 .any(|allowed| allowed == "capability-request"))
+        || (import == "applik8s:handler/kubernetes"
+            && allowed_host_imports
+                .iter()
+                .any(|allowed| allowed == "kubernetes-read"))
         || (import.starts_with("wasi:io/")
             && allowed_host_imports
                 .iter()
@@ -296,6 +337,7 @@ fn is_allowed_host_import(import: &str, allowed_host_imports: &[String]) -> bool
 pub fn canonical_host_imports() -> Vec<String> {
     vec![
         "capability-request".to_string(),
+        "kubernetes-read".to_string(),
         "log".to_string(),
         "cancel".to_string(),
         "wasi:io".to_string(),
@@ -334,6 +376,36 @@ fn define_canonical_host_imports(
                 Box::new(async move {
                     let Some(handler) = store.data_mut().capability_request.clone() else {
                         return Ok((Err::<String, String>(capability_denied_payload()),));
+                    };
+                    Ok((handler(request_json).await,))
+                })
+            },
+        )?;
+    linker.root().func_wrap_async(
+        "kubernetes-read",
+        |mut store, (request_json,): (String,)| {
+            Box::new(async move {
+                let Some(handler) = store.data_mut().kubernetes_read.clone() else {
+                    return Ok((Err::<String, String>(
+                        "Kubernetes read host import is not implemented by this runtime host."
+                            .to_string(),
+                    ),));
+                };
+                Ok((handler(request_json).await,))
+            })
+        },
+    )?;
+    linker
+        .instance("applik8s:handler/kubernetes")?
+        .func_wrap_async(
+            "kubernetes-read",
+            |mut store, (request_json,): (String,)| {
+                Box::new(async move {
+                    let Some(handler) = store.data_mut().kubernetes_read.clone() else {
+                        return Ok((Err::<String, String>(
+                            "Kubernetes read host import is not implemented by this runtime host."
+                                .to_string(),
+                        ),));
                     };
                     Ok((handler(request_json).await,))
                 })

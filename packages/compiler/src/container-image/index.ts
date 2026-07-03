@@ -31,7 +31,7 @@ export async function buildImplicitRuntimeImage(request: RuntimeImageBuildReques
       recipe.build.dockerfile,
       '--tag',
       image,
-      recipe.build.context,
+      '.',
     ], {
       cwd: recipe.build.context,
       env: process.env,

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { AnyHandlerRegistration, AnyResourceDefinition, BundleArtifact, CapabilityDescriptor, CapabilityExecutionPolicy, CapabilityKind, ConcurrencyConfig, HandlerEventType, HandlerId, OperatorDefinition, OperatorManifest, PermissionRule, Result, RetryPolicy, RuntimePayloadSchemaDigests, SecretRef } from '@applik8s/core';
+import type { AnyHandlerRegistration, AnyResourceDefinition, BundleArtifact, CapabilityDescriptor, CapabilityExecutionPolicy, CapabilityKind, ConcurrencyConfig, HandlerEventType, HandlerId, OperatorDefinition, OperatorManifest, PermissionRule, ResourceWatchAddress, Result, RetryPolicy, RuntimePayloadSchemaDigests, SecretRef } from '@applik8s/core';
 import { canonicalRuntimeContract } from '@applik8s/runtime-contract';
 import type { ContainerRecipe } from '@applik8s/typetainer';
 import { canonicalBundleArtifacts, computeBundleDigest } from './bundle-digest.js';
@@ -53,13 +53,15 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     ...(handler.finalizers && handler.finalizers.length > 0 ? { finalizers: [...handler.finalizers] } : {}),
   }));
   const resources = Object.values(request.operator.resources);
+  const ownedResources = resources.filter(isOwnedResource);
   const permissions = runtimePermissions(request.operator, mergePermissionRules([
     ...inferRuntimeResourcePermissions(resources, resourceHandlers),
+    ...handlerDeclaredPermissions(resourceHandlers),
     ...(request.operator.permissions ?? []),
   ]));
   const capabilities = normalizedCapabilities(request.operator.capabilities ?? {});
   const schemaDigests = payloadSchemaDigests(contract.payloadSchemas);
-  const ownedCrds = resources.map(ownedCrdManifestEntry);
+  const ownedCrds = ownedResources.map(ownedCrdManifestEntry);
   const artifactInventory = canonicalBundleArtifacts([
     { kind: 'wasm-component', path: request.handlerArtifactPath, digest: request.handlerArtifactDigest },
     { kind: 'runtime-contract', path: request.runtimeContractPath, digest: request.runtimeContractDigest },
@@ -79,6 +81,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     payloadSchemaDigests: schemaDigests,
   });
   const container = implicitRuntimeContainer(request.operator.name, bundleDigest, request.containerBuildContext ?? '.');
+  const hostImports = canonicalHostImports();
   const manifest: OperatorManifest = {
     apiVersion: 'applik8s.operator/v1alpha1',
     kind: 'OperatorBundle',
@@ -106,7 +109,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
       adapterRequirements: {
         kind: 'wasmComponent',
         wasmComponentModel: true,
-        hostImports: ['capability-request', 'log', 'cancel', 'wasi:io', 'wasi:http'],
+        hostImports,
         javascript: { features: ['closures', 'asyncFunctions', 'promises', 'es6Proxy'] },
       },
       handlerExports,
@@ -137,7 +140,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
           operatorIdentity: request.operator.name,
           bundleDigest,
           runtimeAbi: contract.abiVersion,
-          crdVersions: resources.flatMap((resource) => resource.versions.map((version) => `${resource.apiVersion}/${version.name}`)),
+          crdVersions: ownedResources.flatMap((resource) => resource.versions.map((version) => `${resource.apiVersion}/${version.name}`)),
           labels: { 'app.kubernetes.io/managed-by': 'applik8s' },
         },
       },
@@ -150,6 +153,19 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
   }
 
   return { ok: true, value: manifest };
+}
+
+function canonicalHostImports(): readonly string[] {
+  return [
+    'capability-request',
+    // componentize-js imports every interface in the canonical WIT world, so the
+    // manifest must declare kubernetes-read even when handlers do not call it.
+    'kubernetes-read',
+    'log',
+    'cancel',
+    'wasi:io',
+    'wasi:http',
+  ];
 }
 
 function implicitRuntimeContainer(operatorName: string, bundleDigest: string, context: string): ContainerRecipe {
@@ -197,6 +213,10 @@ function ownedCrdManifestEntry(resource: AnyResourceDefinition): OperatorManifes
     statusSubresource: resource.statusSubresource,
     ...(resource.statusConvention ? { statusConvention: resource.statusConvention } : {}),
   };
+}
+
+function isOwnedResource(resource: AnyResourceDefinition): boolean {
+  return resource.resourceOwnership !== 'external';
 }
 
 function securityContract(operator: OperatorDefinition, permissions: readonly PermissionRule[], capabilities: Readonly<Record<string, CapabilityDescriptor>>, portability: ManifestPortabilityPolicy | undefined): OperatorManifest['spec']['security'] {
@@ -489,6 +509,9 @@ function validateManifestBuildRequest(request: ManifestBuildRequest, resourceHan
 
 function validateCrdVersioning(operator: OperatorDefinition): Result<never> | undefined {
   for (const resource of Object.values(operator.resources)) {
+    if (!isOwnedResource(resource)) {
+      continue;
+    }
     if (resource.versions.length !== 1) {
       return crdVersioningError(operator, resource.kind, `CRD ${resource.apiVersion}/${resource.kind} declares ${resource.versions.length} versions; applik8s currently supports exactly one CRD version until conversion and migration compatibility are implemented.`);
     }
@@ -714,6 +737,7 @@ interface ResourceHandlerIdentity {
   readonly event: HandlerEventType;
   readonly resource: Pick<AnyResourceDefinition, 'apiVersion' | 'kind'>;
   readonly finalizers?: readonly string[];
+  readonly watch?: ResourceWatchAddress;
 }
 
 interface AmbiguousHandlerRoute {
@@ -725,7 +749,7 @@ interface AmbiguousHandlerRoute {
 function firstAmbiguousHandlerRoute(handlers: readonly ResourceHandlerIdentity[]): AmbiguousHandlerRoute | undefined {
   const routes = new Map<string, ResourceHandlerIdentity[]>();
   for (const handler of handlers) {
-    const key = `${handler.resource.apiVersion}\u0000${handler.resource.kind}\u0000${handler.event}`;
+    const key = `${handler.resource.apiVersion}\u0000${handler.resource.kind}\u0000${handler.event}\u0000${watchAddressKey(handler)}`;
     routes.set(key, [...(routes.get(key) ?? []), handler]);
   }
 
@@ -758,16 +782,66 @@ function firstAmbiguousHandlerRoute(handlers: readonly ResourceHandlerIdentity[]
 }
 
 function watchRegistrations(resources: readonly AnyResourceDefinition[], handlers: readonly ResourceHandlerIdentity[]): OperatorManifest['spec']['watches'] {
-  return resources.map((resource) => {
+  return resources.flatMap((resource) => {
     const resourceHandlers = handlers.filter((handler) => 'resource' in handler && handler.resource.apiVersion === resource.apiVersion && handler.resource.kind === resource.kind);
-    const events = unique(resourceHandlers.map((handler) => handler.event));
-    return {
-      apiVersion: resource.apiVersion,
-      kind: resource.kind,
-      events: events.length > 0 ? events : ['reconcile'],
-      handlers: resourceHandlers.map((handler) => handler.id),
-    };
+    if (resourceHandlers.length === 0) {
+      return [{ apiVersion: resource.apiVersion, kind: resource.kind, plural: resource.plural, scope: resource.scope, events: ['reconcile'], handlers: [] }];
+    }
+    return unique(resourceHandlers.map(watchAddressKey)).map((key) => {
+      const watchHandlers = resourceHandlers.filter((handler) => watchAddressKey(handler) === key);
+      const first = watchHandlers[0];
+      const watch = canonicalWatchAddress(first?.watch);
+      const events = unique(watchHandlers.map((handler) => handler.event));
+      return {
+        apiVersion: resource.apiVersion,
+        kind: resource.kind,
+        plural: resource.plural,
+        scope: resource.scope,
+        ...(watch?.namespace ? { namespace: watch.namespace } : {}),
+        ...(watch?.name ? { name: watch.name } : {}),
+        ...(watch?.names && watch.names.length > 0 ? { names: watch.names } : {}),
+        ...(watch?.labelSelector ? { labelSelector: watch.labelSelector } : {}),
+        ...(watch?.fieldSelector ? { fieldSelector: watch.fieldSelector } : {}),
+        events: events.length > 0 ? events : ['reconcile'],
+        handlers: watchHandlers.map((handler) => handler.id),
+      };
+    });
   });
+}
+
+function watchAddressKey(handler: ResourceHandlerIdentity): string {
+  return JSON.stringify(canonicalWatchAddress(handler.watch) ?? {});
+}
+
+function canonicalWatchAddress(watch: ResourceWatchAddress | undefined): ResourceWatchAddress | undefined {
+  if (!watch) {
+    return undefined;
+  }
+  return {
+    ...(watch.namespace ? { namespace: watch.namespace } : {}),
+    ...(watch.name ? { name: watch.name } : {}),
+    ...(watch.names && watch.names.length > 0 ? { names: [...unique(watch.names)].sort() } : {}),
+    ...(watch.labelSelector ? { labelSelector: canonicalJsonValue(watch.labelSelector) } : {}),
+    ...(watch.fieldSelector ? { fieldSelector: watch.fieldSelector } : {}),
+  };
+}
+
+function canonicalJsonValue<T>(value: T): T {
+  if (Array.isArray(value)) {
+    // typecast: sorting selector arrays by canonical JSON preserves their value shape while making equivalent selectors stable.
+    return value.map(canonicalJsonValue).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))) as T;
+  }
+  if (value && typeof value === 'object') {
+    // typecast: canonicalization only reads enumerable JSON-like selector fields after the object guard.
+    const record = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      sorted[key] = canonicalJsonValue(record[key]);
+    }
+    // typecast: object key ordering is normalized without changing the selector's structural type.
+    return sorted as T;
+  }
+  return value;
 }
 
 function hasResourceHandlerIdentity(handler: AnyHandlerRegistration): handler is AnyHandlerRegistration & ResourceHandlerIdentity {
@@ -782,9 +856,13 @@ function inferRuntimeResourcePermissions(resources: readonly AnyResourceDefiniti
     const finalizers = handlers.some((handler) => handlerTargetsResource(handler, resource) && (handler.event === 'finalize' || (handler.finalizers?.length ?? 0) > 0))
       ? [finalizerPermission(resource), finalizerObjectPatchPermission(resource)]
       : [];
-    return [watch, patchStatus].flatMap((permission) => (permission.ok ? [permission.value] : [])).concat(finalizers);
+    return [watch, patchStatus, ...finalizers];
   });
   return handlers.length > 0 ? [...resourcePermissions, eventPermission()] : resourcePermissions;
+}
+
+function handlerDeclaredPermissions(handlers: readonly AnyHandlerRegistration[]): readonly PermissionRule[] {
+  return handlers.flatMap((handler) => handler.permissions ?? []);
 }
 
 function handlerTargetsResource(handler: AnyHandlerRegistration, resource: AnyResourceDefinition): boolean {

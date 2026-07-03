@@ -29,7 +29,7 @@ for (const packageDir of publishablePackages) {
   requireSomePackedFile(manifest.name, files, 'src/');
 
   for (const target of exportTargets(manifest.exports)) {
-    requirePackedFile(manifest.name, files, stripDotSlash(target));
+    requirePackedTarget(manifest.name, files, stripDotSlash(target));
   }
 
   for (const target of Object.values(manifest.bin ?? {})) {
@@ -51,6 +51,20 @@ function requirePackedFile(packageName, files, path) {
   if (!files.has(path)) {
     failures.push(`${packageName}: npm pack output is missing ${path}`);
   }
+}
+
+function requirePackedTarget(packageName, files, path) {
+  if (!path.includes('*')) {
+    requirePackedFile(packageName, files, path);
+    return;
+  }
+  const matcher = wildcardPathMatcher(path);
+  for (const file of files) {
+    if (matcher.test(file)) {
+      return;
+    }
+  }
+  failures.push(`${packageName}: npm pack output is missing files matching ${path}`);
 }
 
 function requireSomePackedFile(packageName, files, prefix) {
@@ -85,4 +99,12 @@ function exportTargets(exports) {
 
 function stripDotSlash(path) {
   return path.startsWith('./') ? path.slice(2) : path;
+}
+
+function wildcardPathMatcher(path) {
+  return new RegExp(`^${path.split('*').map(escapeRegex).join('[^/]+')}$`);
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

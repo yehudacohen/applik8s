@@ -15,8 +15,8 @@ import type {
   PermissionRule,
   ResourceDefinition,
   ResourceEventSources,
-  ResourceVersionDefinition,
   ResourceObject,
+  ResourceVersionDefinition,
   Result,
   SecretRef,
 } from '@applik8s/core';
@@ -35,6 +35,24 @@ export interface RunnableHandlerRegistration<TSpec extends object = object, TSta
   readonly handler: StoredHandler;
 }
 
+export type OperatorDeploymentInterceptor = <TCapabilities extends CapabilityClientSet, TResources extends Readonly<Record<string, AnyResourceDefinition<TCapabilities>>>>(
+  definition: OperatorDefinition<TCapabilities, TResources>,
+  deployment: OperatorDeploymentOptions,
+  next: () => unknown
+) => unknown | undefined;
+
+let operatorDeploymentInterceptor: OperatorDeploymentInterceptor | undefined;
+
+export function setOperatorDeploymentInterceptor(interceptor: OperatorDeploymentInterceptor | undefined): () => void {
+  const previous = operatorDeploymentInterceptor;
+  operatorDeploymentInterceptor = interceptor
+    ? (definition, deployment, next) => interceptor(definition, deployment, () => previous ? previous(definition, deployment, next) : next())
+    : undefined;
+  return () => {
+    operatorDeploymentInterceptor = previous;
+  };
+}
+
 type ResourceHandlers<TSpec extends object, TStatus extends object, TCapabilities extends CapabilityClientSet> = {
   readonly registrations: readonly RunnableHandlerRegistration<TSpec, TStatus, TCapabilities>[];
   register(event: HandlerEventType, handlerStyle: 'proxy' | 'context', handler: StoredHandler, options?: FinalizeHandlerOptions): HandlerRegistration<TSpec, TStatus, TCapabilities>;
@@ -44,6 +62,8 @@ export const sdk: Applik8sSdk = {
   crd,
   operator,
   secretRef,
+  withPermissions,
+  permissions: builtInPermissions(),
   schema: {
     fromArkType: (source) => ok(toRuntimeSchema(source)),
     fromJsonSchema: (source) => ok(toRuntimeSchema(source)),
@@ -92,6 +112,7 @@ export function crd<TSpec extends object, TStatus extends object>(options: CrdOp
   // typecast: createEventSources stores handler closures in local runnable registrations while preserving the public ResourceEventSources call shape.
   const on = createEventSources(handlers) as unknown as ResourceEventSources<TSpec, TStatus, CapabilityClientSet>;
 
+  // typecast: resource ownership is a literal marker added to the callable CRD factory object.
   definition = Object.assign(factory, {
     apiVersion: options.apiVersion,
     kind: options.kind,
@@ -106,8 +127,49 @@ export function crd<TSpec extends object, TStatus extends object>(options: CrdOp
     permissions: permissionFactory(options.apiVersion, plural),
     on,
     eventMetadata: [],
+    instance: factory,
+    index: (name: string, indexOptions: import('@applik8s/core').ResourceIndexOptions) => createResourceIndex(definition, name, indexOptions),
+    create: unavailableResourceAction(options.kind, 'create'),
+    get: unavailableResourceAction(options.kind, 'get'),
+    query: unavailableResourceAction(options.kind, 'query'),
+    patch: unavailableResourceAction(options.kind, 'patch'),
+    delete: unavailableResourceAction(options.kind, 'delete'),
+    increment: unavailableResourceAction(options.kind, 'increment'),
+    resourceOwnership: 'owned' as const, // typecast: literal ownership marker distinguishes SDK-owned CRDs from external TypeKro resources.
+  });
+  Object.defineProperties(definition, {
+    instance: { value: factory, enumerable: false },
+    index: { value: (name: string, indexOptions: import('@applik8s/core').ResourceIndexOptions) => createResourceIndex(definition, name, indexOptions), enumerable: false },
+    create: { value: unavailableResourceAction(options.kind, 'create'), enumerable: false },
+    get: { value: unavailableResourceAction(options.kind, 'get'), enumerable: false },
+    query: { value: unavailableResourceAction(options.kind, 'query'), enumerable: false },
+    patch: { value: unavailableResourceAction(options.kind, 'patch'), enumerable: false },
+    delete: { value: unavailableResourceAction(options.kind, 'delete'), enumerable: false },
+    increment: { value: unavailableResourceAction(options.kind, 'increment'), enumerable: false },
   });
   return definition;
+}
+
+function createResourceIndex<TSpec extends object, TStatus extends object>(resource: ResourceDefinition<TSpec, TStatus>, name: string, options: import('@applik8s/core').ResourceIndexOptions): import('@applik8s/core').ResourceIndex<TSpec, TStatus> {
+  return {
+    name,
+    resource: {
+      apiVersion: resource.apiVersion,
+      kind: resource.kind,
+      plural: resource.plural,
+      scope: resource.scope,
+    },
+    options,
+    async query() {
+      throw new Error(`Resource.index(${JSON.stringify(name)}) query requires the generated applik8s index runtime.`);
+    },
+  };
+}
+
+function unavailableResourceAction(kind: string, action: string) {
+  return async () => {
+    throw new Error(`${kind}.${action}(...) is only available inside a generated applik8s runtime scope.`);
+  };
 }
 
 export function operator<TCapabilities extends CapabilityClientSet = CapabilityClientSet, TResources extends Readonly<Record<string, AnyResourceDefinition<TCapabilities>>> = Readonly<Record<string, AnyResourceDefinition<TCapabilities>>>>(
@@ -126,6 +188,7 @@ export function operator<TCapabilities extends CapabilityClientSet = CapabilityC
   };
 
   const deploy = (deployment: OperatorDeploymentOptions) => {
+    const defaultDeploy = () => {
     const mergedDefinition: OperatorDefinition<TCapabilities, TResources> = {
       ...definition,
       deployment: { ...definition.deployment, ...deployment },
@@ -133,8 +196,17 @@ export function operator<TCapabilities extends CapabilityClientSet = CapabilityC
     // typecast: deployed local factories erase capability-specific resource maps while preserving runtime resource identity.
     const factories = deployedFactories(options.resources as unknown as Readonly<Record<string, AnyResourceDefinition>>, deployment.namespace);
 
-    const deployed = Object.assign(
+      const deployed = Object.assign(
       {
+        installKind: 'applik8sOperatorDeployment',
+        operatorName: definition.name,
+        operator: mergedDefinition,
+        deployment: mergedDefinition.deployment,
+        status: {
+          ready: false,
+          phase: 'Pending',
+          message: `${definition.name} deployment has not been reconciled by a runtime.`
+        },
         definition: mergedDefinition,
         ...(deployment.namespace ? { namespace: deployment.namespace } : {}),
         crdFactories: factories,
@@ -151,6 +223,13 @@ export function operator<TCapabilities extends CapabilityClientSet = CapabilityC
     );
     // typecast: deployed callable operators attach erased local factories at runtime while the public return type preserves the exact resource map.
     return deployed as ReturnType<CallableOperator<TCapabilities, TResources>>;
+    };
+    const intercepted = operatorDeploymentInterceptor?.(definition, deployment, defaultDeploy);
+    if (intercepted !== undefined) {
+      // typecast: extension interceptors can provide an alternate deployment binding while preserving the callable operator public surface.
+      return intercepted as ReturnType<CallableOperator<TCapabilities, TResources>>;
+    }
+    return defaultDeploy();
   };
 
   // typecast: the concrete local operator carries the exact definition and erased runtime factories; public generics are compile-time API guarantees.
@@ -163,6 +242,10 @@ export function secretRef(name: string, key: string, namespace?: string): Secret
     key,
     ...(namespace ? { namespace } : {}),
   };
+}
+
+export function withPermissions<TRegistration extends HandlerRegistration<object, object, CapabilityClientSet>>(registration: TRegistration, permissions: readonly PermissionRule[]): TRegistration {
+  return { ...registration, permissions: [...(registration.permissions ?? []), ...permissions] };
 }
 
 export function isRunnableHandlerRegistration(value: unknown): value is RunnableHandlerRegistration {
@@ -226,7 +309,7 @@ function deployedFactories<TCapabilities extends CapabilityClientSet, TResources
 }
 
 function createResourceObject<TCapabilities extends CapabilityClientSet>(resource: AnyResourceDefinition<TCapabilities>, input: CrdInstanceInput<object>): KubernetesObject<object, object> {
-  return {
+  const object = {
     apiVersion: resource.apiVersion,
     kind: resource.kind,
     metadata: {
@@ -237,6 +320,16 @@ function createResourceObject<TCapabilities extends CapabilityClientSet>(resourc
     },
     spec: input.spec,
   };
+  const eventSources = Reflect.get(resource, 'on');
+  if (!eventSources) {
+    return object;
+  }
+  Object.defineProperty(object, 'on', {
+    value: eventSources,
+    enumerable: false,
+    configurable: false,
+  });
+  return object;
 }
 
 function withDefaultNamespace<TSpec extends object>(input: CrdInstanceInput<TSpec>, defaultNamespace?: string): CrdInstanceInput<TSpec> {
@@ -248,14 +341,54 @@ function withDefaultNamespace<TSpec extends object>(input: CrdInstanceInput<TSpe
 
 function permissionFactory(apiVersion: string, plural: string) {
   const apiGroup = apiVersion.includes('/') ? apiVersion.split('/')[0] ?? '' : '';
-  const rule = (verbs: readonly string[]): Result<PermissionRule> => ok({ apiGroups: [apiGroup], resources: [plural], verbs });
+  const rule = (verbs: readonly string[]): PermissionRule => ({ apiGroups: [apiGroup], resources: [plural], verbs });
   return {
     watch: () => rule(['get', 'list', 'watch']),
     read: () => rule(['get', 'list']),
     apply: () => rule(['create', 'update', 'patch']),
     patch: () => rule(['patch']),
-    patchStatus: () => ok({ apiGroups: [apiGroup], resources: [`${plural}/status`], verbs: ['get', 'patch', 'update'] }),
+    patchStatus: () => ({ apiGroups: [apiGroup], resources: [`${plural}/status`], verbs: ['get', 'patch', 'update'] }),
     delete: () => rule(['delete']),
+    finalize: () => ({ apiGroups: [apiGroup], resources: [`${plural}/finalizers`], verbs: ['patch', 'update'] }),
+    manage: () => [
+      { apiGroups: [apiGroup], resources: [plural], verbs: ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete'] },
+      { apiGroups: [apiGroup], resources: [`${plural}/status`], verbs: ['get', 'patch', 'update'] },
+      { apiGroups: [apiGroup], resources: [`${plural}/finalizers`], verbs: ['patch', 'update'] },
+    ],
+  };
+}
+
+function builtInPermissions() {
+  return {
+    k8s: {
+      ConfigMap: builtInResourcePermissions('', 'configmaps'),
+      Secret: builtInResourcePermissions('', 'secrets'),
+      Service: builtInResourcePermissions('', 'services'),
+      Deployment: builtInResourcePermissions('apps', 'deployments'),
+      StatefulSet: builtInResourcePermissions('apps', 'statefulsets'),
+      Job: builtInResourcePermissions('batch', 'jobs'),
+    },
+    events: {
+      write: () => ({ apiGroups: [''], resources: ['events'], verbs: ['create', 'patch', 'update'] }),
+    },
+  };
+}
+
+function builtInResourcePermissions(apiGroup: string, resource: string) {
+  const rule = (verbs: readonly string[]): PermissionRule => ({ apiGroups: [apiGroup], resources: [resource], verbs });
+  return {
+    read: () => rule(['get', 'list']),
+    watch: () => rule(['get', 'list', 'watch']),
+    apply: () => rule(['get', 'create', 'update', 'patch']),
+    patch: () => rule(['get', 'patch']),
+    patchStatus: () => ({ apiGroups: [apiGroup], resources: [`${resource}/status`], verbs: ['get', 'patch', 'update'] }),
+    delete: () => rule(['get', 'delete']),
+    finalize: () => ({ apiGroups: [apiGroup], resources: [`${resource}/finalizers`], verbs: ['patch', 'update'] }),
+    manage: () => [
+      rule(['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']),
+      { apiGroups: [apiGroup], resources: [`${resource}/status`], verbs: ['get', 'patch', 'update'] },
+      { apiGroups: [apiGroup], resources: [`${resource}/finalizers`], verbs: ['patch', 'update'] },
+    ],
   };
 }
 

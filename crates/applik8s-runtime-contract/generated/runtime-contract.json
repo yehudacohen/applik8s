@@ -4,7 +4,7 @@
   "runtimeAdapterKind": "wasmComponent",
   "witPackage": "applik8s:handler",
   "world": "handler",
-  "witSource": "package applik8s:handler;\n\ninterface capabilities {\n  capability-request: func(request-json: string) -> result<string, string>;\n}\n\nworld handler {\n  import capabilities;\n  import log: func(event-json: string);\n  import cancel: func(reason-json: string);\n\n  export handle: func(input-json: string) -> result<string, string>;\n}\n",
+  "witSource": "package applik8s:handler;\n\ninterface capabilities {\n  capability-request: func(request-json: string) -> result<string, string>;\n}\n\ninterface kubernetes {\n  kubernetes-read: func(request-json: string) -> result<string, string>;\n}\n\nworld handler {\n  import capabilities;\n  import kubernetes;\n  import log: func(event-json: string);\n  import cancel: func(reason-json: string);\n\n  export handle: func(input-json: string) -> result<string, string>;\n}\n",
   "wireFormat": {
     "inputEncoding": "jsonString",
     "outputEncoding": "jsonString",
@@ -13,6 +13,7 @@
   "canonical": {
     "handleExport": "handle",
     "capabilityRequestImport": "capability-request",
+    "kubernetesReadImport": "kubernetes-read",
     "logImport": "log",
     "cancelImport": "cancel"
   },

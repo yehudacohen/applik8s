@@ -11,11 +11,12 @@ use applik8s_operator_host::{
     CapabilitySecretRef, HandlerRoute, KubeRuntimeControllerStrategy, LoadedOperatorBundle,
     OperatorHostError, OperatorHostPaths, OperatorMetrics, ReplayArtifactContext, RetryPolicy,
     RuntimeLeaderElectionConfig, RuntimeReadiness, StatusConvention, controller_framework,
-    execute_capability_request, execute_capability_request_with_secret_resolver, host_role,
-    probe_response, reconcile_error_details, reconcile_error_details_with_source_map,
-    reconcile_failure_status, reconcile_log_event, reconcile_metadata, reconcile_otel_attributes,
-    reconcile_stale_status, reconcile_success_status, reconcile_trace_dimensions, replay_artifact,
-    retry_decision, retry_exhausted_status, retry_log_event, validate_plan_finalizer_ownership,
+    execute_capability_request, execute_capability_request_with_secret_resolver,
+    execute_kubernetes_read_request, host_role, probe_response, reconcile_error_details,
+    reconcile_error_details_with_source_map, reconcile_failure_status, reconcile_log_event,
+    reconcile_metadata, reconcile_otel_attributes, reconcile_stale_status,
+    reconcile_success_status, reconcile_trace_dimensions, replay_artifact, retry_decision,
+    retry_exhausted_status, retry_log_event, validate_plan_finalizer_ownership,
     validate_plan_status_subresources, write_replay_artifact,
 };
 use applik8s_runtime_bridge::{
@@ -1164,6 +1165,139 @@ fn accepts_operation_plans_with_declared_rbac_permissions() {
         .expect("declared permissions allow plan");
 }
 
+#[tokio::test]
+async fn rejects_kubernetes_read_for_undeclared_resource_before_live_api() {
+    let bundle = rbac_bundle(vec![serde_json::json!({
+        "apiGroups": ["demo.applik8s.dev"],
+        "resources": ["guestbookentries"],
+        "verbs": ["list"]
+    })]);
+
+    let response = kubernetes_read_error(
+        &bundle.manifest,
+        serde_json::json!({
+            "operation": "list",
+            "apiVersion": "demo.applik8s.dev/v1alpha1",
+            "kind": "GuestBookEntry",
+            "plural": "guestbookentries",
+            "scope": "Namespaced",
+            "query": { "namespace": "demo" }
+        }),
+    )
+    .await;
+
+    assert_eq!(response["error"]["code"], "KUBERNETES_READ_DENIED");
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not declared")
+    );
+}
+
+#[tokio::test]
+async fn rejects_kubernetes_read_without_declared_rbac_before_live_api() {
+    let bundle = rbac_bundle(vec![]);
+
+    let response = kubernetes_read_error(
+        &bundle.manifest,
+        serde_json::json!({
+            "operation": "list",
+            "apiVersion": "media.applik8s.dev/v1alpha1",
+            "kind": "ImageJob",
+            "plural": "imagejobs",
+            "scope": "Namespaced",
+            "query": { "namespace": "media" }
+        }),
+    )
+    .await;
+
+    assert!(response["error"]["message"].as_str().unwrap().contains(
+        "Kubernetes read requires undeclared RBAC permission: media.applik8s.dev/imagejobs/list."
+    ));
+}
+
+#[tokio::test]
+async fn rejects_namespaced_kubernetes_read_without_namespace_before_live_api() {
+    let bundle = rbac_bundle(vec![serde_json::json!({
+        "apiGroups": ["media.applik8s.dev"],
+        "resources": ["imagejobs"],
+        "verbs": ["get"]
+    })]);
+
+    let response = kubernetes_read_error(
+        &bundle.manifest,
+        serde_json::json!({
+            "operation": "get",
+            "apiVersion": "media.applik8s.dev/v1alpha1",
+            "kind": "ImageJob",
+            "plural": "imagejobs",
+            "scope": "Namespaced",
+            "query": { "name": "hero" }
+        }),
+    )
+    .await;
+
+    assert!(response["error"]["message"].as_str().unwrap().contains(
+        "Kubernetes read for namespaced resource media.applik8s.dev/v1alpha1/ImageJob requires query.namespace."
+    ));
+}
+
+#[tokio::test]
+async fn rejects_cluster_kubernetes_read_with_namespace_before_live_api() {
+    let bundle = rbac_bundle(vec![serde_json::json!({
+        "apiGroups": ["media.applik8s.dev"],
+        "resources": ["imagejobs"],
+        "verbs": ["get"]
+    })]);
+
+    let response = kubernetes_read_error(
+        &bundle.manifest,
+        serde_json::json!({
+            "operation": "get",
+            "apiVersion": "media.applik8s.dev/v1alpha1",
+            "kind": "ImageJob",
+            "plural": "imagejobs",
+            "scope": "Cluster",
+            "query": { "name": "hero", "namespace": "media" }
+        }),
+    )
+    .await;
+
+    assert!(response["error"]["message"].as_str().unwrap().contains(
+        "Kubernetes read for cluster-scoped resource media.applik8s.dev/v1alpha1/ImageJob must not set query.namespace."
+    ));
+}
+
+#[tokio::test]
+async fn rejects_unlowerable_kubernetes_read_label_selectors_before_live_api() {
+    let bundle = rbac_bundle(vec![serde_json::json!({
+        "apiGroups": ["media.applik8s.dev"],
+        "resources": ["imagejobs"],
+        "verbs": ["list"]
+    })]);
+
+    let response = kubernetes_read_error(
+        &bundle.manifest,
+        serde_json::json!({
+            "operation": "list",
+            "apiVersion": "media.applik8s.dev/v1alpha1",
+            "kind": "ImageJob",
+            "plural": "imagejobs",
+            "scope": "Namespaced",
+            "query": {
+                "namespace": "media",
+                "labelSelector": { "matchExpressions": [{ "key": "app", "operator": "Contains", "values": ["demo"] }] }
+            }
+        }),
+    )
+    .await;
+
+    assert!(response["error"]["message"].as_str().unwrap().contains(
+        "Kubernetes read query.labelSelector must lower to a Kubernetes label selector."
+    ));
+}
+
 #[test]
 fn accepts_declared_finalizer_mutations_before_effects() {
     let bundle = declared_finalizer_routing_bundle();
@@ -1544,6 +1678,10 @@ fn loads_manifest_and_wasm_artifact_from_generated_runtime_paths() {
             plural: "imagejobs".to_string(),
             scope: "Namespaced".to_string(),
             namespace: Some("media".to_string()),
+            name: None,
+            names: Vec::new(),
+            label_selector: None,
+            field_selector: None,
         }]
     );
 
@@ -2126,6 +2264,10 @@ fn validates_persisted_generated_bundle_fixture_against_current_host() {
             plural: "imagejobs".to_string(),
             scope: "Namespaced".to_string(),
             namespace: Some("media".to_string()),
+            name: None,
+            names: Vec::new(),
+            label_selector: None,
+            field_selector: None,
         }]
     );
     assert_eq!(
@@ -2140,6 +2282,94 @@ fn validates_persisted_generated_bundle_fixture_against_current_host() {
             handler_id: "ImageJob.reconcile.0".to_string(),
             event: "reconcile".to_string(),
         }
+    );
+}
+
+#[test]
+fn loads_scoped_manifest_watches_for_external_resources() {
+    let bundle = LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1",
+            "kind": "OperatorBundle",
+            "metadata": { "name": "platform-controller" },
+            "spec": {
+                "ownedCrds": [],
+                "watches": [{
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "plural": "deployments",
+                    "scope": "Namespaced",
+                    "namespace": "apps",
+                    "fieldSelector": "metadata.name=api",
+                    "labelSelector": { "matchLabels": { "app.kubernetes.io/part-of": "platform" } },
+                    "events": ["updated"],
+                    "handlers": ["Deployment.updated.0"]
+                }]
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    };
+
+    assert_eq!(
+        bundle
+            .manifest_resource_watches()
+            .expect("manifest watches parse"),
+        [applik8s_operator_host::OwnedResourceWatch {
+            api_version: "apps/v1".to_string(),
+            kind: "Deployment".to_string(),
+            plural: "deployments".to_string(),
+            scope: "Namespaced".to_string(),
+            namespace: Some("apps".to_string()),
+            name: None,
+            names: Vec::new(),
+            label_selector: Some(
+                serde_json::json!({ "matchLabels": { "app.kubernetes.io/part-of": "platform" } })
+            ),
+            field_selector: Some("metadata.name=api".to_string()),
+        }]
+    );
+}
+
+#[test]
+fn defaults_namespaced_manifest_watches_to_operator_namespace() {
+    let bundle = LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1",
+            "kind": "OperatorBundle",
+            "metadata": {
+                "name": "html-renderer",
+                "annotations": { "applik8s.dev/namespace": "sites" }
+            },
+            "spec": {
+                "ownedCrds": [],
+                "watches": [{
+                    "apiVersion": "ssr.applik8s.dev/v1alpha1",
+                    "kind": "HtmlSite",
+                    "plural": "htmlsites",
+                    "scope": "Namespaced",
+                    "events": ["reconcile"],
+                    "handlers": ["HtmlSite.reconcile.0"]
+                }]
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    };
+
+    assert_eq!(
+        bundle
+            .manifest_resource_watches()
+            .expect("manifest watches parse"),
+        [applik8s_operator_host::OwnedResourceWatch {
+            api_version: "ssr.applik8s.dev/v1alpha1".to_string(),
+            kind: "HtmlSite".to_string(),
+            plural: "htmlsites".to_string(),
+            scope: "Namespaced".to_string(),
+            namespace: Some("sites".to_string()),
+            name: None,
+            names: Vec::new(),
+            label_selector: None,
+            field_selector: None,
+        }]
     );
 }
 
@@ -2495,6 +2725,30 @@ fn routes_observed_status_objects_to_status_changed_handler_when_registered() {
 }
 
 #[test]
+fn routes_external_status_objects_without_observed_generation_to_status_changed_handler() {
+    let bundle = external_generationless_routing_bundle();
+
+    let route = bundle
+        .handler_route_for_object(
+            "v1",
+            "Service",
+            &serde_json::json!({
+                "metadata": { "name": "api", "namespace": "apps", "generation": 3 },
+                "status": { "loadBalancer": { "ingress": [{ "ip": "127.0.0.1" }] } }
+            }),
+        )
+        .expect("external status route resolves");
+
+    assert_eq!(
+        route,
+        HandlerRoute {
+            handler_id: "Service.statusChanged.0".to_string(),
+            event: "statusChanged".to_string(),
+        }
+    );
+}
+
+#[test]
 fn routes_stale_status_objects_to_generation_handler_before_status_changed() {
     let bundle = routing_bundle();
 
@@ -2557,6 +2811,263 @@ fn routes_deletion_timestamp_objects_to_deleted_before_generation_events() {
             handler_id: "ImageJob.deleted.4".to_string(),
             event: "deleted".to_string(),
         }
+    );
+}
+
+#[test]
+fn routes_manifest_watch_handlers_only_when_scope_matches_object() {
+    let bundle = scoped_watch_routing_bundle();
+    let matching = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": "api",
+            "namespace": "apps",
+            "generation": 2,
+            "labels": { "app.kubernetes.io/part-of": "platform" }
+        }
+    });
+    let wrong_name = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": "other",
+            "namespace": "apps",
+            "generation": 2,
+            "labels": { "app.kubernetes.io/part-of": "platform" }
+        }
+    });
+    let wrong_label = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": "api",
+            "namespace": "apps",
+            "generation": 2,
+            "labels": { "app.kubernetes.io/part-of": "other" }
+        }
+    });
+
+    let route = bundle
+        .handler_route_for_object("apps/v1", "Deployment", &matching)
+        .expect("matching scoped watch route resolves");
+
+    assert!(
+        bundle
+            .object_matches_runtime_watch("apps/v1", "Deployment", &matching)
+            .expect("matching watch preflight resolves")
+    );
+    assert!(
+        !bundle
+            .object_matches_runtime_watch("apps/v1", "Deployment", &wrong_name)
+            .expect("wrong-name watch preflight resolves")
+    );
+    assert!(
+        !bundle
+            .object_matches_runtime_watch("apps/v1", "Deployment", &wrong_label)
+            .expect("wrong-label watch preflight resolves")
+    );
+    assert_eq!(
+        route,
+        HandlerRoute {
+            handler_id: "Deployment.updated.0".to_string(),
+            event: "updated".to_string(),
+        }
+    );
+    assert!(matches!(
+        bundle.handler_route_for_object("apps/v1", "Deployment", &wrong_name,),
+        Err(OperatorHostError::HandlerNotFound { .. })
+    ));
+    assert!(matches!(
+        bundle.handler_route_for_object("apps/v1", "Deployment", &wrong_label,),
+        Err(OperatorHostError::HandlerNotFound { .. })
+    ));
+}
+
+#[test]
+fn identifies_external_events_outside_declared_watch_event_interest_before_handler_routing() {
+    let bundle = scoped_watch_routing_bundle();
+    let initial_list_object = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": "api",
+            "namespace": "apps",
+            "generation": 1,
+            "labels": { "app.kubernetes.io/part-of": "platform" }
+        }
+    });
+    let updated_object = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+            "name": "api",
+            "namespace": "apps",
+            "generation": 2,
+            "labels": { "app.kubernetes.io/part-of": "platform" }
+        }
+    });
+
+    assert!(
+        bundle
+            .object_matches_runtime_watch("apps/v1", "Deployment", &initial_list_object)
+            .expect("initial object watch preflight resolves")
+    );
+    assert!(bundle.object_is_outside_external_event_interest(
+        "apps/v1",
+        "Deployment",
+        &initial_list_object
+    ));
+    assert!(!bundle.object_is_outside_external_event_interest(
+        "apps/v1",
+        "Deployment",
+        &updated_object
+    ));
+    assert!(matches!(
+        bundle.handler_route_for_object("apps/v1", "Deployment", &initial_list_object,),
+        Err(OperatorHostError::HandlerNotFound { .. })
+    ));
+}
+
+#[test]
+fn identifies_objects_outside_finite_names_watch_scope_before_handler_routing() {
+    let bundle = LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1",
+            "kind": "OperatorBundle",
+            "metadata": { "name": "platform-controller" },
+            "spec": {
+                "ownedCrds": [],
+                "handlerExports": [
+                    { "handlerId": "Deployment.updated.0", "event": "updated", "resource": { "apiVersion": "apps/v1", "kind": "Deployment" } }
+                ],
+                "watches": [{
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "plural": "deployments",
+                    "scope": "Namespaced",
+                    "namespace": "apps",
+                    "names": ["api", "worker"],
+                    "events": ["updated"],
+                    "handlers": ["Deployment.updated.0"]
+                }]
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    };
+    let api = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": { "name": "api", "namespace": "apps", "generation": 2 }
+    });
+    let worker = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": { "name": "worker", "namespace": "apps", "generation": 2 }
+    });
+    let database = serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": { "name": "database", "namespace": "apps", "generation": 2 }
+    });
+
+    assert!(
+        bundle
+            .object_matches_runtime_watch("apps/v1", "Deployment", &api)
+            .expect("api watch preflight resolves")
+    );
+    assert!(
+        bundle
+            .object_matches_runtime_watch("apps/v1", "Deployment", &worker)
+            .expect("worker watch preflight resolves")
+    );
+    assert!(
+        !bundle
+            .object_matches_runtime_watch("apps/v1", "Deployment", &database)
+            .expect("database watch preflight resolves")
+    );
+}
+
+#[test]
+fn routes_owned_crd_handlers_when_manifest_also_has_unrelated_external_watches() {
+    let bundle = mixed_external_watch_and_owned_crd_routing_bundle();
+
+    let route = bundle
+        .handler_route_for_object(
+            "media.applik8s.dev/v1alpha1",
+            "ImageJob",
+            &serde_json::json!({ "metadata": { "name": "hero", "generation": 2 } }),
+        )
+        .expect("owned CRD route resolves independently of unrelated watches");
+
+    assert_eq!(
+        route,
+        HandlerRoute {
+            handler_id: "ImageJob.updated.0".to_string(),
+            event: "updated".to_string(),
+        }
+    );
+}
+
+#[test]
+fn routes_generationless_external_objects_to_updated_handler_when_registered() {
+    let bundle = external_generationless_routing_bundle();
+
+    let route = bundle
+        .handler_route_for_object(
+            "v1",
+            "ConfigMap",
+            &serde_json::json!({
+                "metadata": { "name": "settings", "namespace": "apps", "resourceVersion": "12" },
+                "data": { "mode": "active" }
+            }),
+        )
+        .expect("generationless external route resolves");
+
+    assert_eq!(
+        route,
+        HandlerRoute {
+            handler_id: "ConfigMap.updated.0".to_string(),
+            event: "updated".to_string(),
+        }
+    );
+}
+
+#[test]
+fn rejects_ambiguous_runtime_routes_when_multiple_watch_scopes_match() {
+    let bundle = ambiguous_scoped_watch_routing_bundle();
+
+    let error = bundle
+        .handler_route_for_object(
+            "apps/v1",
+            "Deployment",
+            &serde_json::json!({
+                "metadata": {
+                    "name": "api",
+                    "namespace": "apps",
+                    "generation": 2,
+                    "labels": { "app.kubernetes.io/part-of": "platform" }
+                }
+            }),
+        )
+        .expect_err("overlapping watches fail closed");
+
+    assert!(matches!(
+        error,
+        OperatorHostError::AmbiguousHandlerRoute { ref api_version, ref kind, ref event, ref handler_ids }
+            if api_version == "apps/v1"
+                && kind == "Deployment"
+                && event == "updated"
+                && handler_ids == &vec!["Deployment.updated.exact".to_string(), "Deployment.updated.selector".to_string()]
+    ));
+    let details = reconcile_error_details(&error).expect("ambiguous route details");
+    assert_eq!(details["type"], "ambiguousHandlerRoute");
+    assert_eq!(details["apiVersion"], "apps/v1");
+    assert_eq!(details["kind"], "Deployment");
+    assert_eq!(details["event"], "updated");
+    assert_eq!(
+        details["handlerIds"],
+        serde_json::json!(["Deployment.updated.exact", "Deployment.updated.selector"])
     );
 }
 
@@ -2758,6 +3269,33 @@ fn rbac_bundle(permissions: Vec<serde_json::Value>) -> LoadedOperatorBundle {
     }
 }
 
+async fn kubernetes_read_error(
+    manifest: &serde_json::Value,
+    request: serde_json::Value,
+) -> serde_json::Value {
+    let response =
+        execute_kubernetes_read_request(manifest, mock_kube_client(), &request.to_string())
+            .await
+            .expect("read validation returns structured host response");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&response).expect("valid read response JSON");
+    assert_eq!(parsed["ok"], false);
+    parsed
+}
+
+fn mock_kube_client() -> kube::Client {
+    let service = tower::service_fn(|_request: http::Request<kube::client::Body>| async move {
+        Err::<http::Response<kube::client::Body>, tower::BoxError>(
+            std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "mock kube client should not be called by validation-only tests",
+            )
+            .into(),
+        )
+    });
+    kube::Client::new(service, "default")
+}
+
 fn k8s_object(
     api_version: &str,
     kind: &str,
@@ -2836,6 +3374,155 @@ fn readme_lifecycle_routing_bundle() -> LoadedOperatorBundle {
                 "handlerExports": [
                     { "handlerId": "ImageJob.reconcile.0", "event": "reconcile", "resource": { "apiVersion": "media.applik8s.dev/v1alpha1", "kind": "ImageJob" } },
                     { "handlerId": "ImageJob.finalize.1", "event": "finalize", "resource": { "apiVersion": "media.applik8s.dev/v1alpha1", "kind": "ImageJob" }, "finalizers": ["media.applik8s.dev/imagejob"] }
+                ]
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    }
+}
+
+fn scoped_watch_routing_bundle() -> LoadedOperatorBundle {
+    LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1",
+            "kind": "OperatorBundle",
+            "metadata": { "name": "platform-controller" },
+            "spec": {
+                "handlerExports": [
+                    { "handlerId": "Deployment.updated.0", "event": "updated", "resource": { "apiVersion": "apps/v1", "kind": "Deployment" } }
+                ],
+                "watches": [{
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "plural": "deployments",
+                    "scope": "Namespaced",
+                    "namespace": "apps",
+                    "fieldSelector": "metadata.name=api",
+                    "labelSelector": { "matchLabels": { "app.kubernetes.io/part-of": "platform" } },
+                    "events": ["updated"],
+                    "handlers": ["Deployment.updated.0"]
+                }]
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    }
+}
+
+fn mixed_external_watch_and_owned_crd_routing_bundle() -> LoadedOperatorBundle {
+    LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1",
+            "kind": "OperatorBundle",
+            "metadata": { "name": "mixed-controller" },
+            "spec": {
+                "handlerExports": [
+                    { "handlerId": "ImageJob.updated.0", "event": "updated", "resource": { "apiVersion": "media.applik8s.dev/v1alpha1", "kind": "ImageJob" } },
+                    { "handlerId": "Deployment.updated.0", "event": "updated", "resource": { "apiVersion": "apps/v1", "kind": "Deployment" } }
+                ],
+                "ownedCrds": [{
+                    "apiVersion": "media.applik8s.dev/v1alpha1",
+                    "kind": "ImageJob",
+                    "plural": "imagejobs",
+                    "scope": "Namespaced",
+                    "versions": ["v1alpha1"],
+                    "storageVersion": "v1alpha1",
+                    "conversionStrategy": "none",
+                    "versioning": {
+                        "multiVersion": "singleVersion",
+                        "conversionWebhook": "notConfigured",
+                        "storageMigration": "notRequired",
+                        "rollbackSafety": "schemaCompatibleOnly"
+                    },
+                    "statusSubresource": true
+                }],
+                "watches": [{
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "plural": "deployments",
+                    "scope": "Namespaced",
+                    "namespace": "apps",
+                    "name": "api",
+                    "events": ["updated"],
+                    "handlers": ["Deployment.updated.0"]
+                }]
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    }
+}
+
+fn external_generationless_routing_bundle() -> LoadedOperatorBundle {
+    LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1",
+            "kind": "OperatorBundle",
+            "metadata": { "name": "external-controller" },
+            "spec": {
+                "handlerExports": [
+                    { "handlerId": "ConfigMap.updated.0", "event": "updated", "resource": { "apiVersion": "v1", "kind": "ConfigMap" } },
+                    { "handlerId": "Service.statusChanged.0", "event": "statusChanged", "resource": { "apiVersion": "v1", "kind": "Service" } }
+                ],
+                "ownedCrds": [],
+                "watches": [
+                    {
+                        "apiVersion": "v1",
+                        "kind": "ConfigMap",
+                        "plural": "configmaps",
+                        "scope": "Namespaced",
+                        "namespace": "apps",
+                        "name": "settings",
+                        "events": ["updated"],
+                        "handlers": ["ConfigMap.updated.0"]
+                    },
+                    {
+                        "apiVersion": "v1",
+                        "kind": "Service",
+                        "plural": "services",
+                        "scope": "Namespaced",
+                        "namespace": "apps",
+                        "name": "api",
+                        "events": ["statusChanged"],
+                        "handlers": ["Service.statusChanged.0"]
+                    }
+                ]
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    }
+}
+
+fn ambiguous_scoped_watch_routing_bundle() -> LoadedOperatorBundle {
+    LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1",
+            "kind": "OperatorBundle",
+            "metadata": { "name": "platform-controller" },
+            "spec": {
+                "handlerExports": [
+                    { "handlerId": "Deployment.updated.exact", "event": "updated", "resource": { "apiVersion": "apps/v1", "kind": "Deployment" } },
+                    { "handlerId": "Deployment.updated.selector", "event": "updated", "resource": { "apiVersion": "apps/v1", "kind": "Deployment" } }
+                ],
+                "watches": [
+                    {
+                        "apiVersion": "apps/v1",
+                        "kind": "Deployment",
+                        "plural": "deployments",
+                        "scope": "Namespaced",
+                        "namespace": "apps",
+                        "name": "api",
+                        "events": ["updated"],
+                        "handlers": ["Deployment.updated.exact"]
+                    },
+                    {
+                        "apiVersion": "apps/v1",
+                        "kind": "Deployment",
+                        "plural": "deployments",
+                        "scope": "Namespaced",
+                        "namespace": "apps",
+                        "labelSelector": { "matchLabels": { "app.kubernetes.io/part-of": "platform" } },
+                        "events": ["updated"],
+                        "handlers": ["Deployment.updated.selector"]
+                    }
                 ]
             }
         }),

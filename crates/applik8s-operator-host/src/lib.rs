@@ -1,7 +1,7 @@
 use applik8s_runtime_bridge::{
     AppliedOperationSummary, KubeOperationPlanApplier, KubeRuntimeBridge, OperationProgress,
     RuntimeBridgeError, component_model_engine,
-    invoke_handler_component_bytes_with_timeout_and_capabilities_async,
+    invoke_handler_component_bytes_with_timeout_and_host_imports_async,
     validate_component_host_imports,
 };
 use applik8s_runtime_contract::{ApplyOwnership, NormalizedOperationPlan, ObjectRef, Operation};
@@ -16,7 +16,7 @@ use flate2::read::GzDecoder;
 use futures::{FutureExt, StreamExt, future::join_all};
 use k8s_openapi::api::core::v1::Secret;
 use kube::Client;
-use kube::api::{Api, DynamicObject};
+use kube::api::{Api, DynamicObject, ListParams};
 use kube::core::dynamic::ApiResource;
 use kube::core::gvk::GroupVersionKind;
 use kube::runtime::controller::{Action, Controller};
@@ -30,7 +30,7 @@ use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use semver::{Version, VersionReq};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::future::Future;
 use std::io::Read;
@@ -80,6 +80,10 @@ pub struct OwnedResourceWatch {
     pub plural: String,
     pub scope: String,
     pub namespace: Option<String>,
+    pub name: Option<String>,
+    pub names: Vec<String>,
+    pub label_selector: Option<Value>,
+    pub field_selector: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -361,6 +365,13 @@ pub enum OperatorHostError {
     InvalidOwnedCrd(String),
     #[error("no reconcile handler is registered for {api_version}/{kind}")]
     HandlerNotFound { api_version: String, kind: String },
+    #[error("multiple handlers match {api_version}/{kind} {event}: {handler_ids:?}")]
+    AmbiguousHandlerRoute {
+        api_version: String,
+        kind: String,
+        event: String,
+        handler_ids: Vec<String>,
+    },
     #[error("operator bundle requires runtime {required}, but host runtime is {actual}")]
     IncompatibleRuntime { required: String, actual: String },
     #[error("operator bundle runtime compatibility declaration is invalid: {0}")]
@@ -642,13 +653,39 @@ impl OperatorHost {
             .and_then(Value::as_str)
             .ok_or_else(|| OperatorHostError::InvalidOwnedCrd("object missing kind".to_string()))?;
         let owner = object_ref_from_value(&object_json)?;
-        let handler_route = bundle.handler_route_for_object(api_version, kind, &object_json)?;
-        let status_convention = bundle.status_convention_for_object(api_version, kind)?;
         let operator_name = bundle
             .manifest
             .pointer("/metadata/name")
             .and_then(Value::as_str)
             .unwrap_or("applik8s-operator");
+        if !bundle.object_matches_runtime_watch(api_version, kind, &object_json)? {
+            event!(
+                Level::DEBUG,
+                operator_name,
+                resource_api_version = api_version,
+                resource_kind = kind,
+                resource_namespace = owner.namespace.as_deref().unwrap_or(""),
+                resource_name = owner.name.as_str(),
+                handler_abi = SUPPORTED_HANDLER_ABI,
+                "skipping object outside declared applik8s watch scope"
+            );
+            return Ok(Action::await_change());
+        }
+        if bundle.object_is_outside_external_event_interest(api_version, kind, &object_json) {
+            event!(
+                Level::DEBUG,
+                operator_name,
+                resource_api_version = api_version,
+                resource_kind = kind,
+                resource_namespace = owner.namespace.as_deref().unwrap_or(""),
+                resource_name = owner.name.as_str(),
+                handler_abi = SUPPORTED_HANDLER_ABI,
+                "skipping external object event outside declared applik8s listener events"
+            );
+            return Ok(Action::await_change());
+        }
+        let handler_route = bundle.handler_route_for_object(api_version, kind, &object_json)?;
+        let status_convention = bundle.status_convention_for_object(api_version, kind)?;
         let bundle_digest = bundle
             .manifest
             .pointer("/spec/bundle/digest")
@@ -728,14 +765,24 @@ impl OperatorHost {
                 .await
             }) as applik8s_runtime_bridge::CapabilityRequestFuture
         });
+        let kubernetes_read_manifest = bundle.manifest.clone();
+        let kubernetes_read_client = self.bridge.client().clone();
+        let kubernetes_read_handler = Arc::new(move |request_json: String| {
+            let manifest = kubernetes_read_manifest.clone();
+            let client = kubernetes_read_client.clone();
+            Box::pin(async move {
+                execute_kubernetes_read_request(&manifest, client, &request_json).await
+            }) as applik8s_runtime_bridge::KubernetesReadFuture
+        });
         record_reconcile_otel_phase(&mut reconcile_span, "handler.invoke");
-        let plan = match invoke_handler_component_bytes_with_timeout_and_capabilities_async(
+        let plan = match invoke_handler_component_bytes_with_timeout_and_host_imports_async(
             self.bridge.engine(),
             &bundle.handler_wasm,
             input.clone(),
             &allowed_host_imports,
             handler_timeout,
             capability_handler,
+            kubernetes_read_handler,
         )
         .await
         {
@@ -2180,6 +2227,18 @@ pub fn reconcile_error_details_with_source_map(
                 "kind": kind,
             }))
         }
+        OperatorHostError::AmbiguousHandlerRoute {
+            api_version,
+            kind,
+            event,
+            handler_ids,
+        } => Some(serde_json::json!({
+            "type": "ambiguousHandlerRoute",
+            "apiVersion": api_version,
+            "kind": kind,
+            "event": event,
+            "handlerIds": handler_ids,
+        })),
         _ => None,
     }
 }
@@ -2594,6 +2653,7 @@ fn reconcile_failure_reason(error: &OperatorHostError) -> &'static str {
         }
         OperatorHostError::UndeclaredPermission(_) => "UndeclaredPermission",
         OperatorHostError::UndeclaredFinalizer { .. } => "UndeclaredFinalizer",
+        OperatorHostError::AmbiguousHandlerRoute { .. } => "AmbiguousHandlerRoute",
         _ => "ReconcileFailed",
     }
 }
@@ -2665,6 +2725,160 @@ impl LoadedOperatorBundle {
                         default_namespace.clone()
                     },
                     scope,
+                    name: None,
+                    names: Vec::new(),
+                    label_selector: None,
+                    field_selector: None,
+                })
+            })
+            .collect()
+    }
+
+    pub fn runtime_resource_watches(&self) -> Result<Vec<OwnedResourceWatch>, OperatorHostError> {
+        let mut watches = self.owned_resource_watches()?;
+        watches.extend(self.manifest_resource_watches()?);
+        Ok(deduplicate_resource_watches(watches))
+    }
+
+    pub fn object_matches_runtime_watch(
+        &self,
+        api_version: &str,
+        kind: &str,
+        object: &Value,
+    ) -> Result<bool, OperatorHostError> {
+        let mut watches = match self.owned_resource_watches() {
+            Ok(watches) => watches,
+            Err(OperatorHostError::MissingOwnedCrds) => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        watches.extend(self.manifest_resource_watches()?);
+        Ok(deduplicate_resource_watches(watches)
+            .iter()
+            .any(|watch| runtime_watch_matches_object(watch, api_version, kind, object)))
+    }
+
+    pub fn object_is_outside_external_event_interest(
+        &self,
+        api_version: &str,
+        kind: &str,
+        object: &Value,
+    ) -> bool {
+        if resource_is_owned_crd(&self.manifest, api_version, kind)
+            || !has_manifest_watch_for_resource(&self.manifest, api_version, kind)
+        {
+            return false;
+        }
+        if object.pointer("/metadata/deletionTimestamp").is_some() {
+            return !manifest_watch_matches_object_for_event(
+                &self.manifest,
+                api_version,
+                kind,
+                "finalize",
+                object,
+            ) && !manifest_watch_matches_object_for_event(
+                &self.manifest,
+                api_version,
+                kind,
+                "deleted",
+                object,
+            ) && !manifest_watch_matches_object_for_event(
+                &self.manifest,
+                api_version,
+                kind,
+                "reconcile",
+                object,
+            );
+        }
+        if status_changed_candidate(&self.manifest, api_version, kind, object)
+            && manifest_watch_matches_object_for_event(
+                &self.manifest,
+                api_version,
+                kind,
+                "statusChanged",
+                object,
+            )
+        {
+            return false;
+        }
+        if let Some(event) = generation_event(&self.manifest, api_version, kind, object) {
+            if manifest_watch_matches_object_for_event(
+                &self.manifest,
+                api_version,
+                kind,
+                event,
+                object,
+            ) {
+                return false;
+            }
+        }
+        !manifest_watch_matches_object_for_event(
+            &self.manifest,
+            api_version,
+            kind,
+            "reconcile",
+            object,
+        )
+    }
+
+    pub fn manifest_resource_watches(&self) -> Result<Vec<OwnedResourceWatch>, OperatorHostError> {
+        let Some(manifest_watches) = self
+            .manifest
+            .pointer("/spec/watches")
+            .and_then(Value::as_array)
+        else {
+            return Ok(Vec::new());
+        };
+        let default_namespace = default_watch_namespace(&self.manifest);
+
+        manifest_watches
+            .iter()
+            .map(|watch| {
+                let api_version = required_string(watch, "apiVersion")?;
+                let kind = required_string(watch, "kind")?;
+                let scope = watch
+                    .get("scope")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Namespaced")
+                    .to_string();
+                let namespace = watch
+                    .get("namespace")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let watch_namespace = if scope == "Cluster" {
+                    None
+                } else {
+                    namespace.or_else(|| default_namespace.clone())
+                };
+                Ok(OwnedResourceWatch {
+                    api_version,
+                    plural: watch
+                        .get("plural")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| pluralize_kind(&kind)),
+                    kind,
+                    scope,
+                    namespace: watch_namespace,
+                    name: watch
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    names: watch
+                        .get("names")
+                        .and_then(Value::as_array)
+                        .map(|names| {
+                            names
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    label_selector: watch.get("labelSelector").cloned(),
+                    field_selector: watch
+                        .get("fieldSelector")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 })
             })
             .collect()
@@ -2990,7 +3204,7 @@ impl LoadedOperatorBundle {
     }
 
     pub fn controllers(&self, client: Client) -> Result<Vec<RuntimeController>, OperatorHostError> {
-        self.owned_resource_watches()?
+        self.runtime_resource_watches()?
             .into_iter()
             .map(|watch| {
                 let api_resource = api_resource_for_watch(&watch)?;
@@ -3003,7 +3217,7 @@ impl LoadedOperatorBundle {
                     None => Api::<DynamicObject>::all_with(client.clone(), &api_resource),
                 };
                 let controller =
-                    Controller::new_with(api, watcher::Config::default(), api_resource);
+                    Controller::new_with(api, watcher_config_for_watch(&watch), api_resource);
                 Ok(RuntimeController { watch, controller })
             })
             .collect()
@@ -3022,17 +3236,19 @@ impl LoadedOperatorBundle {
                     event: "finalize".to_string(),
                 });
             }
-            if let Some(handler_id) = self.handler_id_for_event(api_version, kind, "deleted")? {
+            if let Some(handler_id) =
+                self.handler_id_for_event(api_version, kind, "deleted", object)?
+            {
                 return Ok(HandlerRoute {
                     handler_id,
                     event: "deleted".to_string(),
                 });
             }
-            return self.reconcile_route(api_version, kind);
+            return self.reconcile_route(api_version, kind, object);
         }
         if status_changed_candidate(&self.manifest, api_version, kind, object) {
             if let Some(handler_id) =
-                self.handler_id_for_event(api_version, kind, "statusChanged")?
+                self.handler_id_for_event(api_version, kind, "statusChanged", object)?
             {
                 return Ok(HandlerRoute {
                     handler_id,
@@ -3040,23 +3256,24 @@ impl LoadedOperatorBundle {
                 });
             }
         }
-        if let Some(event) = generation_event(object) {
-            if let Some(handler_id) = self.handler_id_for_event(api_version, kind, event)? {
+        if let Some(event) = generation_event(&self.manifest, api_version, kind, object) {
+            if let Some(handler_id) = self.handler_id_for_event(api_version, kind, event, object)? {
                 return Ok(HandlerRoute {
                     handler_id,
                     event: event.to_string(),
                 });
             }
         }
-        self.reconcile_route(api_version, kind)
+        self.reconcile_route(api_version, kind, object)
     }
 
     fn reconcile_route(
         &self,
         api_version: &str,
         kind: &str,
+        object: &Value,
     ) -> Result<HandlerRoute, OperatorHostError> {
-        self.handler_id_for_event(api_version, kind, "reconcile")?
+        self.handler_id_for_event(api_version, kind, "reconcile", object)?
             .map(|handler_id| HandlerRoute {
                 handler_id,
                 event: "reconcile".to_string(),
@@ -3077,7 +3294,7 @@ impl LoadedOperatorBundle {
             return Ok(None);
         }
 
-        let handlers = self.handlers_for_event(api_version, kind, "finalize")?;
+        let handlers = self.handlers_for_event(api_version, kind, "finalize", object)?;
         if handlers.is_empty() {
             return Ok(None);
         }
@@ -3117,9 +3334,22 @@ impl LoadedOperatorBundle {
         api_version: &str,
         kind: &str,
         event: &str,
+        object: &Value,
     ) -> Result<Option<String>, OperatorHostError> {
-        Ok(self
-            .handlers_for_event(api_version, kind, event)?
+        let handlers = self.handlers_for_event(api_version, kind, event, object)?;
+        if handlers.len() > 1 {
+            return Err(OperatorHostError::AmbiguousHandlerRoute {
+                api_version: api_version.to_string(),
+                kind: kind.to_string(),
+                event: event.to_string(),
+                handler_ids: handlers
+                    .iter()
+                    .filter_map(|handler| handler.get("handlerId").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect(),
+            });
+        }
+        Ok(handlers
             .first()
             .and_then(|handler| handler.get("handlerId"))
             .and_then(Value::as_str)
@@ -3131,6 +3361,7 @@ impl LoadedOperatorBundle {
         api_version: &str,
         kind: &str,
         event: &str,
+        object: &Value,
     ) -> Result<Vec<&Value>, OperatorHostError> {
         let handlers = self
             .manifest
@@ -3141,6 +3372,9 @@ impl LoadedOperatorBundle {
                 kind: kind.to_string(),
             })?;
 
+        let matching_watch_handlers =
+            self.matching_watch_handler_ids(api_version, kind, event, object);
+
         Ok(handlers
             .iter()
             .filter(|handler| {
@@ -3150,8 +3384,60 @@ impl LoadedOperatorBundle {
                         .and_then(Value::as_str)
                         == Some(api_version)
                     && handler.pointer("/resource/kind").and_then(Value::as_str) == Some(kind)
+                    && matching_watch_handlers
+                        .as_ref()
+                        .map(|handler_ids| {
+                            handler
+                                .get("handlerId")
+                                .and_then(Value::as_str)
+                                .is_some_and(|handler_id| handler_ids.contains(handler_id))
+                        })
+                        .unwrap_or(true)
             })
             .collect())
+    }
+
+    fn matching_watch_handler_ids(
+        &self,
+        api_version: &str,
+        kind: &str,
+        event: &str,
+        object: &Value,
+    ) -> Option<HashSet<String>> {
+        let watches = self.manifest.pointer("/spec/watches")?.as_array()?;
+        let event_watches: Vec<&Value> = watches
+            .iter()
+            .filter(|watch| {
+                watch.get("apiVersion").and_then(Value::as_str) == Some(api_version)
+                    && watch.get("kind").and_then(Value::as_str) == Some(kind)
+                    && watch
+                        .get("events")
+                        .and_then(Value::as_array)
+                        .is_some_and(|events| {
+                            events
+                                .iter()
+                                .any(|candidate| candidate.as_str() == Some(event))
+                        })
+            })
+            .collect();
+        if event_watches.is_empty() {
+            return None;
+        }
+        Some(
+            event_watches
+                .into_iter()
+                .filter(|watch| watch_scope_matches_object(watch, object))
+                .flat_map(|watch| {
+                    watch
+                        .get("handlers")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect(),
+        )
     }
 }
 
@@ -3186,8 +3472,197 @@ fn handler_finalizers(handler: &Value) -> Option<Vec<String>> {
     })
 }
 
-fn generation_event(object: &Value) -> Option<&'static str> {
-    let generation = object.pointer("/metadata/generation")?.as_f64()?;
+fn watch_scope_matches_object(watch: &Value, object: &Value) -> bool {
+    let object_name = object.pointer("/metadata/name").and_then(Value::as_str);
+    let object_namespace = object
+        .pointer("/metadata/namespace")
+        .and_then(Value::as_str);
+    if watch
+        .get("namespace")
+        .and_then(Value::as_str)
+        .is_some_and(|namespace| object_namespace != Some(namespace))
+    {
+        return false;
+    }
+    if watch
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| object_name != Some(name))
+    {
+        return false;
+    }
+    if let Some(names) = watch.get("names").and_then(Value::as_array) {
+        if !names
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|name| object_name == Some(name))
+        {
+            return false;
+        }
+    }
+    if watch
+        .get("labelSelector")
+        .is_some_and(|selector| !label_selector_matches_object(selector, object))
+    {
+        return false;
+    }
+    if watch
+        .get("fieldSelector")
+        .and_then(Value::as_str)
+        .is_some_and(|selector| !field_selector_matches_object(selector, object))
+    {
+        return false;
+    }
+    true
+}
+
+fn runtime_watch_matches_object(
+    watch: &OwnedResourceWatch,
+    api_version: &str,
+    kind: &str,
+    object: &Value,
+) -> bool {
+    if watch.api_version != api_version || watch.kind != kind {
+        return false;
+    }
+    let object_name = object.pointer("/metadata/name").and_then(Value::as_str);
+    let object_namespace = object
+        .pointer("/metadata/namespace")
+        .and_then(Value::as_str);
+    if watch
+        .namespace
+        .as_deref()
+        .is_some_and(|namespace| object_namespace != Some(namespace))
+    {
+        return false;
+    }
+    if watch
+        .name
+        .as_deref()
+        .is_some_and(|name| object_name != Some(name))
+    {
+        return false;
+    }
+    if !watch.names.is_empty()
+        && !watch
+            .names
+            .iter()
+            .any(|name| object_name == Some(name.as_str()))
+    {
+        return false;
+    }
+    if watch
+        .label_selector
+        .as_ref()
+        .is_some_and(|selector| !label_selector_matches_object(selector, object))
+    {
+        return false;
+    }
+    if watch
+        .field_selector
+        .as_deref()
+        .is_some_and(|selector| !field_selector_matches_object(selector, object))
+    {
+        return false;
+    }
+    true
+}
+
+fn label_selector_matches_object(selector: &Value, object: &Value) -> bool {
+    let labels = object
+        .pointer("/metadata/labels")
+        .and_then(Value::as_object);
+    if let Some(match_labels) = selector.get("matchLabels").and_then(Value::as_object) {
+        for (key, expected) in match_labels {
+            let Some(expected) = expected.as_str() else {
+                return false;
+            };
+            if labels
+                .and_then(|labels| labels.get(key))
+                .and_then(Value::as_str)
+                != Some(expected)
+            {
+                return false;
+            }
+        }
+    }
+    if let Some(expressions) = selector.get("matchExpressions").and_then(Value::as_array) {
+        for expression in expressions {
+            if !label_selector_expression_matches_object(expression, labels) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn label_selector_expression_matches_object(
+    expression: &Value,
+    labels: Option<&serde_json::Map<String, Value>>,
+) -> bool {
+    let Some(key) = expression.get("key").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(operator) = expression.get("operator").and_then(Value::as_str) else {
+        return false;
+    };
+    let actual = labels
+        .and_then(|labels| labels.get(key))
+        .and_then(Value::as_str);
+    let values: Vec<&str> = expression
+        .get("values")
+        .and_then(Value::as_array)
+        .map(|values| values.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    match operator {
+        "In" => actual.is_some_and(|actual| values.contains(&actual)),
+        "NotIn" => actual.is_none_or(|actual| !values.contains(&actual)),
+        "Exists" => actual.is_some(),
+        "DoesNotExist" => actual.is_none(),
+        _ => false,
+    }
+}
+
+fn field_selector_matches_object(selector: &str, object: &Value) -> bool {
+    selector.split(',').all(|requirement| {
+        let requirement = requirement.trim();
+        if requirement.is_empty() {
+            return false;
+        }
+        let Some((field, expected)) = requirement
+            .split_once("==")
+            .or_else(|| requirement.split_once('='))
+        else {
+            return false;
+        };
+        let actual = match field.trim() {
+            "metadata.name" => object.pointer("/metadata/name").and_then(Value::as_str),
+            "metadata.namespace" => object
+                .pointer("/metadata/namespace")
+                .and_then(Value::as_str),
+            _ => return false,
+        };
+        actual == Some(expected.trim())
+    })
+}
+
+fn generation_event(
+    manifest: &Value,
+    api_version: &str,
+    kind: &str,
+    object: &Value,
+) -> Option<&'static str> {
+    let Some(generation) = object
+        .pointer("/metadata/generation")
+        .and_then(Value::as_f64)
+    else {
+        if !resource_is_owned_crd(manifest, api_version, kind)
+            && has_manifest_watch_for_event(manifest, api_version, kind, "updated")
+        {
+            return Some("updated");
+        }
+        return None;
+    };
     if generation <= 1.0 {
         Some("created")
     } else {
@@ -3213,8 +3688,91 @@ fn status_changed_candidate(
     else {
         return true;
     };
-    status_observed_generation_for_route(manifest, api_version, kind, object)
-        .is_some_and(|observed_generation| observed_generation >= generation)
+    let observed_generation =
+        status_observed_generation_for_route(manifest, api_version, kind, object);
+    if !resource_is_owned_crd(manifest, api_version, kind)
+        && observed_generation.is_none()
+        && has_manifest_watch_for_event(manifest, api_version, kind, "statusChanged")
+    {
+        return true;
+    }
+    observed_generation.is_some_and(|observed_generation| observed_generation >= generation)
+}
+
+fn has_manifest_watch_for_event(
+    manifest: &Value,
+    api_version: &str,
+    kind: &str,
+    event: &str,
+) -> bool {
+    manifest
+        .pointer("/spec/watches")
+        .and_then(Value::as_array)
+        .is_some_and(|watches| {
+            watches.iter().any(|watch| {
+                watch.get("apiVersion").and_then(Value::as_str) == Some(api_version)
+                    && watch.get("kind").and_then(Value::as_str) == Some(kind)
+                    && watch
+                        .get("events")
+                        .and_then(Value::as_array)
+                        .is_some_and(|events| {
+                            events
+                                .iter()
+                                .any(|candidate| candidate.as_str() == Some(event))
+                        })
+            })
+        })
+}
+
+fn has_manifest_watch_for_resource(manifest: &Value, api_version: &str, kind: &str) -> bool {
+    manifest
+        .pointer("/spec/watches")
+        .and_then(Value::as_array)
+        .is_some_and(|watches| {
+            watches.iter().any(|watch| {
+                watch.get("apiVersion").and_then(Value::as_str) == Some(api_version)
+                    && watch.get("kind").and_then(Value::as_str) == Some(kind)
+            })
+        })
+}
+
+fn manifest_watch_matches_object_for_event(
+    manifest: &Value,
+    api_version: &str,
+    kind: &str,
+    event: &str,
+    object: &Value,
+) -> bool {
+    manifest
+        .pointer("/spec/watches")
+        .and_then(Value::as_array)
+        .is_some_and(|watches| {
+            watches.iter().any(|watch| {
+                watch.get("apiVersion").and_then(Value::as_str) == Some(api_version)
+                    && watch.get("kind").and_then(Value::as_str) == Some(kind)
+                    && watch
+                        .get("events")
+                        .and_then(Value::as_array)
+                        .is_some_and(|events| {
+                            events
+                                .iter()
+                                .any(|candidate| candidate.as_str() == Some(event))
+                        })
+                    && watch_scope_matches_object(watch, object)
+            })
+        })
+}
+
+fn resource_is_owned_crd(manifest: &Value, api_version: &str, kind: &str) -> bool {
+    manifest
+        .pointer("/spec/ownedCrds")
+        .and_then(Value::as_array)
+        .is_some_and(|crds| {
+            crds.iter().any(|crd| {
+                crd.get("apiVersion").and_then(Value::as_str) == Some(api_version)
+                    && crd.get("kind").and_then(Value::as_str) == Some(kind)
+            })
+        })
 }
 
 fn status_observed_generation_for_route(
@@ -3343,6 +3901,224 @@ pub async fn execute_capability_request(
     request_json: &str,
 ) -> Result<String, String> {
     execute_capability_request_with_secret_resolver(manifest, request_json, None).await
+}
+
+pub async fn execute_kubernetes_read_request(
+    manifest: &Value,
+    client: Client,
+    request_json: &str,
+) -> Result<String, String> {
+    let request: Value = match serde_json::from_str(request_json) {
+        Ok(request) => request,
+        Err(error) => {
+            return Ok(kubernetes_read_error_response(
+                "KUBERNETES_READ_REQUEST_INVALID",
+                &format!("Kubernetes read request JSON is invalid: {error}"),
+            ));
+        }
+    };
+    match execute_kubernetes_read_value(manifest, client, &request).await {
+        Ok(value) => Ok(serde_json::json!({ "ok": true, "value": value }).to_string()),
+        Err(message) => Ok(kubernetes_read_error_response(
+            "KUBERNETES_READ_DENIED",
+            &message,
+        )),
+    }
+}
+
+async fn execute_kubernetes_read_value(
+    manifest: &Value,
+    client: Client,
+    request: &Value,
+) -> Result<Value, String> {
+    let operation = required_read_request_string(request, "operation")?;
+    let api_version = required_read_request_string(request, "apiVersion")?;
+    let kind = required_read_request_string(request, "kind")?;
+    let plural = required_read_request_string(request, "plural")?;
+    let scope = required_read_request_string(request, "scope")?;
+    let query = request.get("query").unwrap_or(&Value::Null);
+    if operation != "get" && operation != "list" {
+        return Err(format!(
+            "Unsupported Kubernetes read operation {operation}."
+        ));
+    }
+    if scope != "Namespaced" && scope != "Cluster" {
+        return Err(format!("Unsupported Kubernetes read scope {scope}."));
+    }
+    if !manifest_declares_read_resource(manifest, &api_version, &kind, &plural) {
+        return Err(format!(
+            "Kubernetes read for {api_version}/{kind} is not declared by this operator."
+        ));
+    }
+    let verb = if operation == "get" { "get" } else { "list" };
+    let required = RequiredPermission {
+        api_group: api_group(&api_version).map_err(|error| error.to_string())?,
+        resource: plural.clone(),
+        verb: verb.to_string(),
+    };
+    if !manifest_allows_permission(manifest, &required) {
+        return Err(format!(
+            "Kubernetes read requires undeclared RBAC permission: {}/{}/{}.",
+            required.api_group, required.resource, required.verb
+        ));
+    }
+    let namespace = query.get("namespace").and_then(Value::as_str);
+    if scope == "Namespaced" && namespace.is_none() {
+        return Err(format!(
+            "Kubernetes read for namespaced resource {api_version}/{kind} requires query.namespace."
+        ));
+    }
+    if scope == "Cluster" && namespace.is_some() {
+        return Err(format!(
+            "Kubernetes read for cluster-scoped resource {api_version}/{kind} must not set query.namespace."
+        ));
+    }
+
+    let api_resource = api_resource_for_read(&api_version, &kind, &plural)?;
+    let api = match namespace {
+        Some(namespace) => Api::<DynamicObject>::namespaced_with(client, namespace, &api_resource),
+        None => Api::<DynamicObject>::all_with(client, &api_resource),
+    };
+    if operation == "get" {
+        let name = query
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Kubernetes get read requires query.name.".to_string())?;
+        return match api.get(name).await {
+            Ok(object) => serde_json::to_value(object).map_err(|error| error.to_string()),
+            Err(kube::Error::Api(error)) if error.code == 404 => Ok(Value::Null),
+            Err(error) => Err(format!("Kubernetes get read failed: {error}")),
+        };
+    }
+
+    let mut params = ListParams::default();
+    if let Some(field_selector) = query.get("fieldSelector").and_then(Value::as_str) {
+        params = params.fields(field_selector);
+    }
+    if let Some(label_selector) = read_label_selector(query)? {
+        params = params.labels(&label_selector);
+    }
+    if let Some(limit) = query.get("limit").and_then(Value::as_u64) {
+        params = params.limit(limit.min(500) as u32);
+    }
+    if let Some(continue_token) = query.get("continueToken").and_then(Value::as_str) {
+        params = params.continue_token(continue_token);
+    }
+    let list = api
+        .list(&params)
+        .await
+        .map_err(|error| format!("Kubernetes list read failed: {error}"))?;
+    let mut items: Vec<Value> = list
+        .items
+        .into_iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    if query.get("orderBy").and_then(Value::as_str) == Some("metadata.creationTimestamp") {
+        items.sort_by(|left, right| {
+            left.pointer("/metadata/creationTimestamp")
+                .and_then(Value::as_str)
+                .cmp(
+                    &right
+                        .pointer("/metadata/creationTimestamp")
+                        .and_then(Value::as_str),
+                )
+        });
+    } else if query.get("orderBy").and_then(Value::as_str) == Some("metadata.name") {
+        items.sort_by(|left, right| {
+            left.pointer("/metadata/name")
+                .and_then(Value::as_str)
+                .cmp(&right.pointer("/metadata/name").and_then(Value::as_str))
+        });
+    }
+    Ok(serde_json::json!({
+        "items": items,
+        "continueToken": list.metadata.continue_.unwrap_or_default(),
+    }))
+}
+
+fn manifest_declares_read_resource(
+    manifest: &Value,
+    api_version: &str,
+    kind: &str,
+    plural: &str,
+) -> bool {
+    manifest
+        .pointer("/spec/ownedCrds")
+        .and_then(Value::as_array)
+        .is_some_and(|crds| {
+            crds.iter().any(|crd| {
+                crd.get("apiVersion").and_then(Value::as_str) == Some(api_version)
+                    && crd.get("kind").and_then(Value::as_str) == Some(kind)
+                    && crd.get("plural").and_then(Value::as_str) == Some(plural)
+            })
+        })
+}
+
+fn read_label_selector(query: &Value) -> Result<Option<String>, String> {
+    if let Some(labels) = query.get("labels") {
+        let Some(labels) = labels.as_object() else {
+            return Err("Kubernetes read query.labels must be an object.".to_string());
+        };
+        if labels.is_empty() {
+            return Ok(None);
+        }
+        let selector = labels
+            .iter()
+            .map(|(key, value)| {
+                value
+                    .as_str()
+                    .map(|value| format!("{key}={value}"))
+                    .ok_or_else(|| {
+                        "Kubernetes read query.labels values must be strings.".to_string()
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join(",");
+        return Ok(Some(selector));
+    }
+    if let Some(selector) = query.get("labelSelector") {
+        return label_selector_to_kubernetes_selector(selector)
+            .map(Some)
+            .ok_or_else(|| {
+                "Kubernetes read query.labelSelector must lower to a Kubernetes label selector."
+                    .to_string()
+            });
+    }
+    Ok(None)
+}
+
+fn api_resource_for_read(
+    api_version: &str,
+    kind: &str,
+    plural: &str,
+) -> Result<ApiResource, String> {
+    let (group, version) = split_api_version(api_version).map_err(|error| error.to_string())?;
+    let gvk = GroupVersionKind::gvk(&group, &version, kind);
+    let mut api_resource = ApiResource::from_gvk(&gvk);
+    api_resource.plural = plural.to_string();
+    Ok(api_resource)
+}
+
+fn required_read_request_string(value: &Value, field: &str) -> Result<String, String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| format!("Kubernetes read request field {field} is required."))
+}
+
+fn kubernetes_read_error_response(code: &str, message: &str) -> String {
+    serde_json::json!({
+        "ok": false,
+        "error": {
+            "code": code,
+            "message": message,
+            "severity": "error",
+            "context": {}
+        }
+    })
+    .to_string()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4422,6 +5198,76 @@ fn api_resource_for_watch(watch: &OwnedResourceWatch) -> Result<ApiResource, Ope
     let mut api_resource = ApiResource::from_gvk(&gvk);
     api_resource.plural = watch.plural.clone();
     Ok(api_resource)
+}
+
+fn watcher_config_for_watch(watch: &OwnedResourceWatch) -> watcher::Config {
+    let mut config = watcher::Config::default();
+    if let Some(name) = &watch.name {
+        config = config.fields(&format!("metadata.name={name}"));
+    } else if watch.names.len() == 1 {
+        config = config.fields(&format!("metadata.name={}", watch.names[0]));
+    } else if let Some(field_selector) = &watch.field_selector {
+        config = config.fields(field_selector);
+    }
+    if let Some(label_selector) = watch
+        .label_selector
+        .as_ref()
+        .and_then(label_selector_to_kubernetes_selector)
+    {
+        config = config.labels(&label_selector);
+    }
+    config
+}
+
+fn label_selector_to_kubernetes_selector(selector: &Value) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(match_labels) = selector.get("matchLabels").and_then(Value::as_object) {
+        for (key, value) in match_labels {
+            parts.push(format!("{}={}", key, value.as_str()?));
+        }
+    }
+    if let Some(expressions) = selector.get("matchExpressions").and_then(Value::as_array) {
+        for expression in expressions {
+            let key = expression.get("key").and_then(Value::as_str)?;
+            let operator = expression.get("operator").and_then(Value::as_str)?;
+            let values: Vec<&str> = expression
+                .get("values")
+                .and_then(Value::as_array)
+                .map(|values| values.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            match operator {
+                "In" => parts.push(format!("{} in ({})", key, values.join(","))),
+                "NotIn" => parts.push(format!("{} notin ({})", key, values.join(","))),
+                "Exists" => parts.push(key.to_string()),
+                "DoesNotExist" => parts.push(format!("!{key}")),
+                _ => return None,
+            }
+        }
+    }
+    Some(parts.join(","))
+}
+
+fn deduplicate_resource_watches(watches: Vec<OwnedResourceWatch>) -> Vec<OwnedResourceWatch> {
+    let mut seen = HashSet::new();
+    let mut deduplicated = Vec::new();
+    for watch in watches {
+        let key = serde_json::json!({
+            "apiVersion": &watch.api_version,
+            "kind": &watch.kind,
+            "plural": &watch.plural,
+            "scope": &watch.scope,
+            "namespace": &watch.namespace,
+            "name": &watch.name,
+            "names": &watch.names,
+            "labelSelector": &watch.label_selector,
+            "fieldSelector": &watch.field_selector,
+        })
+        .to_string();
+        if seen.insert(key) {
+            deduplicated.push(watch);
+        }
+    }
+    deduplicated
 }
 
 fn split_api_version(api_version: &str) -> Result<(String, String), OperatorHostError> {

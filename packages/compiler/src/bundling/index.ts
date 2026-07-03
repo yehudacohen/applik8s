@@ -1,11 +1,9 @@
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
+import type { Diagnostic, Result } from '@applik8s/core';
 import { build, type Plugin } from 'esbuild';
 import ts from 'typescript';
-
-import type { Diagnostic, Result } from '@applik8s/core';
 
 export interface HandlerBundleRequest {
   readonly entrypoint: string;
@@ -55,7 +53,7 @@ export async function bundleHandlerEntrypoint(request: HandlerBundleRequest): Pr
       conditions: ['browser'],
       mainFields: ['browser', 'module', 'main'],
       target: 'es2022',
-      external: ['applik8s:handler/capabilities'],
+      external: ['applik8s:handler/capabilities', 'applik8s:handler/kubernetes'],
       outfile: javascriptBundlePath,
       metafile: true,
       sourcemap: true,

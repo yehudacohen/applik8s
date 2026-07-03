@@ -1,6 +1,6 @@
 # applik8s Backlog
 
-Last updated: 2026-06-22
+Last updated: 2026-07-03
 
 This backlog prioritizes correctness, excellence, and the public developer experience over feature completeness.
 
@@ -19,11 +19,15 @@ Each roadmap item has two scores from 1 to 10:
 
 ## Milestone Tags
 
-Roadmap work should use these tags so v0.1 scope stays ambitious but honest:
+Roadmap work should use these tags so each milestone scope stays ambitious but honest:
 
 - `[v0.1-required]`: must be true before a public v0.1 announcement.
 - `[v0.1-wow]`: not strictly required for safety, but central to making v0.1 feel exceptional.
 - `[v0.1-safety]`: release-blocking correctness, security, compatibility, or operational safety work.
+- `[v0.2-typekro]`: required for applik8s v0.2 full TypeKro integration and the single-package integrated UX.
+- `[v0.2-api]`: required for applik8s v0.2 typed Kubernetes API, application DSL, CRUD ergonomics, and permission bundle UX.
+- `[v0.3-framework]`: required for applik8s v0.3 as a serious infrastructure-from-code framework, including typed models, explicit storage semantics, migrations, and production-grade app runtime behavior.
+- `[movement-v0.1]`: required for the first serious workload-movement operator built after applik8s v0.3 foundation work.
 - `[post-v0.1]`: important, but should not block the first public release.
 - `[later]`: strategic future work that should stay visible without expanding v0.1.
 
@@ -54,8 +58,120 @@ v0.1 should not require:
 - `[post-v0.1]` Helm, Kustomize, OLM, or OCI bundle distribution.
 - `[post-v0.1]` Multi-version CRDs, conversion webhooks, or storage migration.
 - `[post-v0.1]` General cloud/database/queue/object-store/identity capabilities.
-- `[v0.1-safety]` Any multi-cluster application movement or disaster-recovery work, demos, APIs, docs, package metadata, or roadmap commitments.
+- `[v0.1-safety]` Any multi-cluster application movement or disaster-recovery work, demos, APIs, docs, package metadata, or v0.1 release commitments.
 - `[post-v0.1]` Formal SLSA-level provenance enforcement, as long as unsigned/no-SBOM/no-provenance posture is explicit.
+
+## v0.2 TypeKro And Typed Kubernetes API Release Bar
+
+Purpose: make applik8s feel like one coherent TypeKro-native product and a typed Kubernetes application DSL while preserving the clean adapter boundary, explicit operation plans, fail-closed permissions, and shared runtime guarantees.
+
+Positioning: v0.2 is allowed to be the memorable Kubernetes-native proof. GuestBook can remain CRD-backed because it demonstrates the machinery clearly, but the release must not imply that CRDs are a general-purpose application database. Public examples and docs should state the boundary: CRDs are appropriate for Kubernetes/control-plane resources and low/moderate Kubernetes-native domain state; high-volume product data belongs in explicit storage-backed models planned for v0.3.
+
+applik8s v0.2 should let a TypeKro and operator author:
+
+- Done: install one package, `@applik8s/applik8s`, and get the integrated SDK, compiler-facing authoring APIs, TypeKro adapter, and TypeKro factory re-exports.
+- Done: import TypeKro factories from `@applik8s/applik8s/factories`, including `simple`, `kubernetes`, `helm`, and supported ecosystem factory namespaces that are safe to re-export.
+- Done: import the grouping-aware TypeKro surface from `@applik8s/applik8s` or `@applik8s/applik8s/typekro`, including wrapped `kubernetesComposition`, `resource`, `resources`, `composition`, `operationTarget`, `targetFactory`, and `graphAdapter`.
+- Done: support both explicit and implied application authoring for the v0.2 slice: the golden path infers generated servers, listener grouping, indexes, aggregations, RBAC, and TypeKro install relationships from the enclosing composition when unambiguous; explicit forms remain available for advanced control, libraries, custom boundaries, and ambiguity resolution.
+- Done: read registered owned CRDs from handlers through typed live clients, e.g. `resource.read.resource(GuestBookEntry).get(...)` and `.list({ namespace, labels })`, returning typed objects instead of untyped Kubernetes JSON.
+- Done: keep reads and writes semantically distinct: typed reads perform live Kubernetes reads through declared host support, while `apply`, `patch`, `delete`, status assignment, finalizers, events, and TypeKro operation targets append explicit operation-plan entries.
+- Done: provide typed CRUD helpers around registered CRDs without hiding effects: handler writes remain explicit operation-plan entries, while generated app-server actions are resource-centric runtime calls with inferred RBAC and fail-closed dynamic access checks.
+- Done: expose permission bundles as public API so common authoring code does not require hand-writing raw RBAC: `Resource.permissions.read()`, `watch()`, `apply()`, `patch()`, `patchStatus()`, `delete()`, `finalize()`, `manage()`, plus built-in bundles such as `sdk.permissions.k8s.ConfigMap.apply()` and `sdk.permissions.events.write()`.
+- Done: infer safe permission bundles where usage is statically or declaratively known, and require explicit bundles where dynamic usage would otherwise be ambiguous; unsupported inferred permissions fail closed at compile/manifest generation time.
+- Done: validate live read permissions before handler execution and validate planned write permissions before Kubernetes effects, with diagnostics that name the missing resource/verb path.
+- Done: add runtime host support for typed CRD `get`/`list` reads with namespace, exact name, label selector, field selector, pagination token, and bounded result-size behavior.
+- Done: keep the typed client generated from the operator's registered resources and declared external resources; no ambient cluster-wide dynamic Kubernetes client in the golden path.
+- Done: make applik8s `operator(...)` results directly callable inside applik8s-wrapped `kubernetesComposition(...)`, so `const installed = imagePipeline({ namespace, replicas })` installs the operator and returns TypeKro-visible CRD factories/status.
+- Done: preserve the rule of thumb: outside applik8s `kubernetesComposition(...)`, a callable operator is an operator object; inside it, calling the operator means install this operator as part of the TypeKro composition.
+- Done: resolve callable operator install bindings at compile time into ordinary applik8s artifacts: CRDs, RBAC, ServiceAccount, Deployment, bundle/runtime metadata, generated CRD factories, and status projections.
+- Done: keep plain YAML as the inspectable substrate while TypeKro becomes the preferred integrated application deployment experience.
+- Done: use TypeKro resource instances as listener sources through `const deployment = Deployment(args); deployment.on.updated(handler)` without defining duplicate applik8s CRDs.
+- Done: default TypeKro-backed listener grouping to the enclosing applik8s-wrapped `typeKro.kubernetesComposition(...)` and synthesize one operator manifest/RBAC/runtime bundle for that composition.
+- Done: override listener grouping explicitly through `resource.on.updated(operator, handler)` for cross-composition or library-authored listener registration.
+- Done: support scoped listener groups: `Resource.instances([...]).on.event(handler)`, `Resource.where(selector).on.event(handler)`, and `typeKro.resources([...]).on.event(handler)`.
+- Done: lower listener scopes to explicit manifest watch scopes: exact namespace/name, finite address sets, label selectors, and field selectors where Kubernetes can enforce them.
+- Done: reject selector/predicate forms that cannot be lowered to Kubernetes watch semantics or generated labels; no hidden global listener registration and no JavaScript-object-identity watch semantics.
+- Done: infer watch/list/read/status/finalizer/event RBAC from TypeKro-backed listener sources and prove permissions through shared compiler/runtime gates.
+- Done: prove permission bundle output through generated manifests and host preflight tests for read/list/watch/apply/patch/delete/status/finalizer/event cases.
+- Done: make external TypeKro-backed resources visible in manifests and RBAC as watched resources while never emitting them as owned CRDs.
+- Done: route runtime handler invocations according to the manifest watch scope, not only GVK/event.
+- Done: preserve TypeKro operation-target apply/delete semantics in handlers, including reverse dependency ordering and RBAC inference.
+- Done: provide character, vertical, generated-manifest, and live e2e tests for listener authoring, grouping, duplicate-scope diagnostics, scoped watch routing, RBAC inference, TypeKro operation targets, and TypeKro install composition.
+- Done: replace the static SSR demo with a GuestBook flagship that uses `GuestBook`, `GuestBookEntry`, and `GuestBookPageViewBucket` CRDs; typed live reads; generated server/indexer/aggregate workloads; status updates; events; typed permission bundles; and buffered counters.
+- Done: publish docs showing the typed CRUD mental model: live reads are explicit and permissioned, writes are planned and validated, generated RBAC is inspectable, and unsupported dynamic usage fails closed.
+- Done: publish docs showing the single-package UX: infrastructure composition and event handlers in one TypeScript file using TypeKro factories plus applik8s listener semantics.
+- Done: live TypeKro-native tutorial proves generated operator install through TypeKro artifacts, CRD factory-created `ImageJob` instances, status-composed downstream `ConfigMap`, and scoped external `Deployment` listener routing.
+- Done: keep TypeKro itself independent from applik8s; the dependency direction remains adapter depends on TypeKro, not TypeKro depends on applik8s.
+- Done: add composition-scoped application servers through `app.server(...)`, generating HTTP runtime bundles, Deployments, Services, ServiceAccounts, RBAC, generated source maps, and route diagnostics from the enclosing `kubernetesComposition(...)`. Optional ingress/gateway exposure remains post-v0.2.
+- Done: add resource-centric runtime actions for app/server scopes: `Resource.create(...)`, `Resource.get(...)`, `Resource.query(...)`, `Resource.patch(...)`, `Resource.delete(...)`, and `Resource.increment(...)`, while preserving explicit permission validation and fail-closed dynamic access checks.
+- Done: add cache-backed `Resource.index(...)` declarations for selector-compatible, sorted, and paginated read models so public request paths do not rely on unindexed list-all Kubernetes API calls.
+- Done: add `app.aggregate(...)` for batched/debounced derived status updates over resource event streams. Hot-target/conflicting-aggregation diagnostics are post-v0.2 hardening.
+- Done: add first-class bucketed counter primitives for traffic-style metrics, including page-view buckets, so high-frequency user actions do not become per-request Kubernetes writes.
+- Done: make resource event examples demonstrate visible domain behavior such as moderation, status transitions, and counters, not only bookkeeping.
+- Done: provide a whole-app TypeKro install surface for composed apps that includes CRDs, desired instances, generated servers, indexers, aggregations, handlers, RBAC, and status projection as one typed unit.
+- Done: document GuestBook as a Kubernetes-native proof rather than a database pattern, including explicit guidance on when to use CRDs, when to use cache-backed indexes, and when future `model(...)`/database-backed state is the right abstraction. `entity(...)` and `app.crd(entity, ...)` are present; `app.model(entity)` fails closed until v0.3 storage semantics are real.
+
+v0.2 should not require:
+
+- `[later]` TypeKro core changes or global monkey-patching of TypeKro factories.
+- `[later]` Arbitrary JavaScript predicate lowering beyond selectors or generated-label semantics.
+- `[later]` Ambient untyped Kubernetes clients, broad dynamic API discovery from handlers, or direct in-handler Kubernetes writes outside operation plans.
+- `[later]` Production multi-cluster movement guarantees outside the supported workload-movement scope.
+
+## v0.3 Infrastructure-From-Code Framework Release Bar
+
+Purpose: turn the v0.2 TypeKro-native application proof into a serious infrastructure-from-code framework with honest state semantics, typed app-data models, real storage backends, production-grade generated server/runtime behavior, and migration/diagnostic discipline.
+
+applik8s v0.3 should let an infrastructure/application author:
+
+- `[v0.3-framework]` Define reusable typed shapes with schema-first `entity(...)`, then materialize them inside `app(...)` through `app.crd(entity)` or `app.model(entity)`, where both return objects that implement the same core resource-like ergonomics for `create`, `get`, `query`, `patch`, `delete`, `index`, and `on.created/on.updated/on.deleted` where those semantics are supported.
+- `[v0.3-framework]` Keep backend semantics explicit at app materialization time: `app.crd(entity)` means Kubernetes control-plane resource; `app.model(entity)` means application data backed by an explicit `ModelStore` provider.
+- `[v0.3-framework]` Treat `app(...)` as the distributed application context and dependency injection boundary, with `app.defaults(...)` and `app.provide(...)` binding typed capability interfaces such as `ModelStore`, `IndexStore`, `CounterStore`, `EventSource`, `Secret`, `Queue`, `ObjectStorage`, and `HttpExposure` to concrete providers.
+- `[v0.3-framework]` Provide at least one production-plausible storage-backed model implementation, likely Postgres first, provisioned through TypeKro/Kubernetes resources and surfaced through generated app runtime clients.
+- `[v0.3-framework]` Add model schema migration primitives with generated, inspectable migration jobs and compatibility checks.
+- `[v0.3-framework]` Support typed database constraints and indexes for model-backed entities without pretending they are portable to CRD-backed resources.
+- `[v0.3-framework]` Replace prototype generated app server source-string execution with real bundle extraction, runtime dispatch, closure/module semantics, source maps, and route/action-level diagnostics.
+- `[v0.3-framework]` Add first-class typed `config(...)` and `secret(...)` primitives for environment variables, mounted files, Kubernetes Secret/ConfigMap references, generated RBAC, and redaction-aware diagnostics.
+- `[v0.3-framework]` Add explicit `expose(...)` or equivalent ingress/gateway primitives for Service, Gateway/Ingress, TLS/cert-manager, hostnames, and status URL projection.
+- `[v0.3-framework]` Add `job(...)` and `schedule(...)` primitives for durable background work, retries, cleanup, maintenance, and migration-style tasks.
+- `[v0.3-framework]` Add basic observability declarations for generated servers, indexers, jobs, and operators: health/readiness, structured logs, metrics hooks, events, replay artifacts where applicable, and source-mapped failure reports.
+- `[v0.3-framework]` Make unsupported cross-backend assumptions fail closed. Shared ergonomics must not hide differences between Kubernetes watches, SQL transactions, cache consistency, and generated model events.
+- `[v0.3-framework]` Provide a serious flagship or pressure test, likely a workload-movement or tenant/platform control-plane application, showing CRDs for control-plane state, models for app data where needed, real storage, generated servers, jobs, and TypeKro infrastructure as one typed unit.
+
+v0.3 should not require:
+
+- `[later]` Transparent portability of arbitrary model code across CRD, SQL, document, queue, and cache backends.
+- `[later]` Hiding Kubernetes, TypeKro, database, or cache operational semantics behind one universal object model.
+- `[later]` Building a general web framework unrelated to Kubernetes/infrastructure composition.
+
+## Post-v0.3 Workload Movement Release Bar
+
+Purpose: build the first serious workload-movement operator after the applik8s v0.3 framework foundation and prove that the applik8s TypeKro integration is strong enough for real workload movement, not only tutorial operators.
+
+The workload-movement proof depends on the applik8s v0.3 foundation. It should act as the pressure-test application for TypeKro listeners, watch scopes, RBAC, runtime, storage semantics, jobs, diagnostics, and packaging surfaces.
+
+The workload-movement release should let an operator user:
+
+- `[movement-v0.1]` Install the workload-movement operator built with applik8s TypeKro factory/reconciliation APIs.
+- `[movement-v0.1]` Model source and target environments, movement plans, workload selections, dependency ordering, policy gates, and movement status as Kubernetes resources with clear schemas and status conditions.
+- `[movement-v0.1]` Move stateless workloads according to the supported spec, including Deployments, ReplicaSets where relevant, Services, ConfigMaps, Secrets by reference policy, ServiceAccounts, RBAC objects, Ingress/Gateway-facing resources where supported, PodDisruptionBudgets, and related selectors/labels/annotations.
+- `[movement-v0.1]` Move stateful workloads according to the supported spec, including StatefulSets, PVC/PV relationships, StorageClasses where policy allows, volume snapshot/restore or equivalent data-transfer hooks, stable identity, ordering, readiness, and rollback/abort behavior.
+- `[movement-v0.1]` Preserve workload dependency ordering so infrastructure, identity, configuration, networking, storage, and workloads are planned and applied in a safe sequence.
+- `[movement-v0.1]` Expose dry-run/plan output before effects, with explicit apply/delete/status/finalizer operation plans visible through applik8s diagnostics.
+- `[movement-v0.1]` Provide finalizer-driven cleanup and abort semantics so partially moved workloads have durable status and safe teardown behavior.
+- `[movement-v0.1]` Track per-workload and whole-plan status with `Ready`, phase, observed generation, progress, errors, last successful step, and actionable recovery guidance.
+- `[movement-v0.1]` Handle stateless cutover, stateful preflight, stateful data movement, readiness verification, and post-cutover validation as explicit phases rather than hidden side effects.
+- `[movement-v0.1]` Use applik8s TypeKro listeners to watch selected workload resources and dependent resources through exact, finite, and selector scopes.
+- `[movement-v0.1]` Use applik8s operation targets to render and apply TypeKro/Kubernetes desired target resources while preserving validation and RBAC preflight.
+- `[movement-v0.1]` Generate least-privilege RBAC for all watched, read, apply, patch, delete, status, finalizer, event, and storage/snapshot resources used by the movement plan.
+- `[movement-v0.1]` Include local, character, vertical, generated-manifest, and live e2e tests that prove stateless movement, stateful movement, failure diagnostics, abort/finalize behavior, and idempotent reruns.
+- `[movement-v0.1]` Document the supported workload kinds, unsupported kinds, storage assumptions, cluster/version assumptions, credential boundaries, and safety limits without implying generic disaster recovery beyond the implemented spec.
+
+The workload-movement release should not require:
+
+- `[later]` Full arbitrary workload portability for every Kubernetes API or third-party CRD.
+- `[later]` Transparent data-plane replication without explicit storage/snapshot/data-transfer semantics.
+- `[later]` Production disaster-recovery claims beyond the supported movement spec and tested environments.
 
 ## 1. Reconciliation Correctness Contract
 
@@ -285,31 +401,47 @@ Work:
 
 ## 7. TypeKro Polish
 
-Status: in progress
+Status: v0.2 release slice complete; broader polish continues after v0.2
 Difficulty: 8/10
 Impact: 8/10
 
 Purpose: make operators feel like first-class TypeKro components.
 
 Work:
-- `[v0.1-required]` Hide remaining internal seams in `asComposition()`.
-- `[v0.1-required]` Document and stabilize direct/kro readiness behavior.
-- `[v0.1-safety]` Preserve TypeKro graph teardown semantics for operation-target deletes, including reverse-topological deletion and resource scopes where applicable.
+- Done: hide remaining internal seams in `asComposition()` for the v0.1 install-composition path.
+- Done: document and stabilize direct/kro readiness behavior as part of the integrated TypeKro UX.
+- Done: preserve TypeKro graph teardown semantics for operation-target deletes, including reverse-topological deletion and resource scopes where applicable.
 - Done: add vertical tests proving `ctx.delete(typeKroTarget)` deletes dependents before dependencies and preserves delete options through handler/proxy and generated-dispatcher normalization.
-- `[v0.1-safety]` Add TypeKro operation-target delete e2e proving reverse-topological teardown against live Kubernetes resources.
-- `[v0.1-required]` Make TypeKro status composition consume runtime `Ready`/`observedGeneration` conventions naturally in live compositions.
+- Done: add TypeKro operation-target apply/delete e2e proving live runtime operation-target semantics against Kubernetes resources.
+- Done: make TypeKro status composition consume runtime `Ready`/`observedGeneration` conventions naturally in live compositions.
 - Done: add a TypeKro status-composition contract test proving graph status projections can be mapped into handler status without relying on static fallback readiness.
-- `[v0.1-wow]` Add TypeKro-native live status composition proof where operator CR status drives a downstream TypeKro resource without static fallback readiness.
-- `[v0.1-required]` Make callable operator install/status ergonomics match the public product phrase: operators install like components, CRDs instantiate like resources, statuses compose like TypeKro resources.
-- `[v0.1-wow]` Make the TypeKro-facing golden path match the public product story: install the operator as a callable composition, instantiate the operator CRD through generated resource factories, and consume status through TypeKro expressions without adapter-shaped ceremony.
+- Done: add TypeKro-native live status composition proof where operator CR status drives a downstream TypeKro resource without static fallback readiness.
+- Done: make callable operator install/status ergonomics match the public product phrase for the v0.1 `typeKro.composition(...)` path: operators install like components, CRDs instantiate like resources, statuses compose like TypeKro resources.
+- Done: make the integrated TypeKro-facing golden path use one package: TypeKro factories, applik8s-wrapped `kubernetesComposition`, resource listeners, operator install, CRD factory usage, and status composition in one user experience.
+- Done: `[v0.2-typekro]` Make the flagship operator install story direct-call authoring: `const pipeline = imagePipeline({ namespace, replicas })` inside applik8s `kubernetesComposition(...)`, followed by `pipeline.imageJob(...)` and status composition.
+- Done: `[v0.2-typekro]` Add compile-time lowering for operator install bindings captured in applik8s TypeKro compositions, with diagnostics when compiled artifacts, manifests, runtime metadata, or CRD factories cannot be resolved.
 - Done: make TypeKro operation targets inside applik8s handlers public v0.1 surface through ergonomic aliases: `typeKro.operationTarget()`, `typeKro.targetFactory()`, `typeKro.graphAdapter()`, and `typeKro.composition()`, while preserving precise lower-level aliases for integration authors.
 - Done: add API docs, public type inference coverage, character-test language, and adapter vertical tests for the ergonomic TypeKro handler-target surface.
-- `[v0.1-safety]` Add live validation for `ctx.apply(typeKroTarget)` and `ctx.delete(typeKroTarget)` semantics before announcing this as a release-highlight path.
-- `[v0.1-safety]` Prove RBAC inference, reverse-topological deletion, status mapping, and failure diagnostics through shared compiler/runtime gates rather than adapter-only tests.
-- `[v0.1-required]` Reduce noisy static-status fallback warnings where possible and document the remaining cases honestly.
-- `[v0.1-wow]` Add examples for operator install, CRD factory usage, and status composition.
-- `[v0.1-safety]` Keep TypeKro integration as an extension seam, not a core dependency.
-- `[post-v0.1]` Build a TypeKro-native live tutorial where an applik8s operator is installed as a composition, CRD instances are created through generated factories, and observed `Ready`/domain status drives downstream TypeKro resources without static fallback readiness. Difficulty: 8/10. Impact: 9/10.
+- Done: add live validation for `ctx.apply(typeKroTarget)` and `ctx.delete(typeKroTarget)` semantics before announcing this as a release-highlight path.
+- Done: prove RBAC inference, reverse-topological deletion, status mapping, and failure diagnostics through shared compiler/runtime gates rather than adapter-only tests.
+- Done: reduce noisy static-status fallback warnings where practical and document remaining TypeKro fallback analyzer messages as expected for unsupported status-builder patterns.
+- Done: add examples for operator install, CRD factory usage, status composition, TypeKro factory re-exports, and listener-backed composition authoring.
+- Done: keep TypeKro integration as an extension seam, not a core dependency.
+- Done: integrate the upstream TypeKro KRO-factory lifecycle seam for generated-CRD prerequisites through public `kroPrerequisites.resources`; applik8s does not depend on private TypeKro internals.
+- Done: build a TypeKro-native live tutorial where an applik8s operator is installed as a composition, CRD instances are created through generated factories, observed `Ready`/domain status drives downstream TypeKro resources, and TypeKro resource listeners reconcile external watched resources. Difficulty: 9/10. Impact: 10/10.
+- Done: expose instance-scoped `.on.*` handlers on CRD resources returned from direct-call operator install bindings, e.g. `const image = pipeline.imageJob(...); image.on.reconcile(handler)`, grouped by the enclosing wrapped `kubernetesComposition(...)` or an explicit operator/group override.
+- Done: let composition authors add generated-CRD handlers outside the original `sdk.operator({ handlers: [...] })` block, while preserving owned-CRD semantics, scoped watches, RBAC inference, and duplicate route diagnostics.
+- Done: `[v0.2-typekro]` Add a live direct-call composition proof where `applik8s build --typekro` compiles a mixed TypeKro/operator entrypoint, generated resources install the operator, and the generated CRD instance reconciles on a pinned Kubernetes context.
+- Done: `[v0.2-typekro]` Harden mixed TypeKro/operator entrypoint compilation for self-contained handlers by using a static nested dispatcher instead of importing TypeKro's Node-only composition runtime into the WASM handler bundle.
+- Done: add a TypeKro-native resource listener bridge so TypeKro resource instances expose applik8s-compatible `.on.reconcile`, `.on.created`, `.on.updated`, `.on.deleted`, `.on.finalize`, and `.on.statusChanged` handlers without requiring users to define duplicate applik8s CRDs.
+- Done: default TypeKro-backed listener grouping to the enclosing applik8s-wrapped `kubernetesComposition`, so handlers declared on resource instances in one composition lower into one generated operator manifest/RBAC/runtime bundle.
+- Done: support an explicit operator/grouping argument on TypeKro-backed listener registration, e.g. `deployment.on.updated(platformOperator, handler)`, so users can force grouping across composition boundaries or resolve ambiguous grouping instead of relying on hidden global registration.
+- Done: make TypeKro listener registration instance-addressed by namespace/name when the TypeKro resource instance exposes concrete metadata; avoid misleading factory-level `.on.*` semantics.
+- Done: `[v0.2-typekro]` Make generated TypeKro build artifacts deploy KRO graphs safely with `typekro/apply.sh`: generated CRDs first, wait for establishment, KRO `ResourceGraphDefinition` resources next, then retry remaining resources while KRO-generated APIs and client discovery settle.
+- Done: add finite and selector-scoped listener groups through `Resource.instances([...])`, `Resource.where(selector)`, and `typeKro.resources([...])`.
+- Done: infer watch/list/read/status/finalizer/event RBAC from TypeKro-backed listener sources and prove those permissions through compiler gates, generated manifest tests, and live handler-routing e2e.
+- Done: add TypeKro listener authoring character scenarios plus executable vertical/generated/live tests for registration-only form, operator-grouped form, duplicate scope rejection, addressed/selector watch routing, and handler grouping diagnostics.
+- Done: add umbrella-package exports for `@applik8s/applik8s/factories` and `@applik8s/applik8s/typekro`, including package export maps, type declarations, and bundle tests.
 
 ## 8. Schema And CRD Correctness
 
@@ -483,13 +615,13 @@ Purpose: make the first public release focused, honest, and free of private stra
 
 Work:
 - `[v0.1-safety]` Keep public v0.1 limited to the applik8s author/test/build/deploy/diagnose/TypeKro path.
-- `[v0.1-safety]` Do not publish multi-cluster application movement or disaster-recovery APIs, docs, examples, tests, packages, roadmap sections, or demos.
+- `[v0.1-safety]` Do not publish multi-cluster application movement or disaster-recovery APIs, docs, examples, tests, packages, or demos as part of the v0.1 release surface.
 - `[v0.1-safety]` Do not publish private research packages or product-story tests as part of the v0.1 release surface.
 - `[v0.1-safety]` Do not use private product names, domains, package scopes, repository orgs, or CRD API groups in public v0.1 artifacts.
 - Done: public examples and tutorials use `media.applik8s.dev` API groups and `@applik8s/*` package imports.
 - Done: release readiness checks fail on private branding and workload-mobility terms in public release files.
 - Done: move internal-only packages out of the public tree rather than relying only on package-publish exclusions.
-- Done: release readiness fails if internal-only package paths reappear in the public v0.1 tree.
+- Done: release readiness fails if internal-only package paths reappear in the public release tree.
 
 ## 16. Public Release Readiness
 

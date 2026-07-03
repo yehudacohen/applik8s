@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/applik8s",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript framework for programming Kubernetes-native applications and operators.",
   "license": "Apache-2.0",
   "type": "module",
@@ -20,15 +20,21 @@
   },
   "exports": {
     ".": "./src/index.ts",
+    "./dsl": "./src/dsl.ts",
+    "./typekro": "./src/typekro.ts",
+    "./factories": "./src/factories.ts",
+    "./factories/*": "./src/factories/*.ts",
     "./cli": "./src/cli.ts"
   },
   "dependencies": {
-    "@applik8s/compiler": "0.1.0",
-    "@applik8s/core": "0.1.0",
-    "@applik8s/sdk": "0.1.0",
-    "@applik8s/typekro-adapter": "0.1.0",
-    "@applik8s/typetainer": "0.1.0",
+    "@applik8s/compiler": "0.2.0",
+    "@applik8s/core": "0.2.0",
+    "@applik8s/sdk": "0.2.0",
+    "@applik8s/typekro-adapter": "0.2.0",
+    "@applik8s/typetainer": "0.2.0",
     "commander": "^15.0.0",
-    "esbuild": "^0.28.1"
+    "esbuild": "^0.28.1",
+    "hono": "^4.10.7",
+    "typekro": "^0.21.1"
   }
 }

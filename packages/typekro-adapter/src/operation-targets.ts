@@ -31,6 +31,29 @@ export const graphAdapter = createGraphAdapter;
 export const operationTarget = toOperationTarget;
 export const targetFactory = asOperationTargetFactory;
 
+export function inferRbac<TGraphSpec extends KroCompatibleType = JsonObject, TGraphStatus extends KroCompatibleType = JsonObject, THandlerStatus extends object = TGraphStatus>(
+  source: TypeKroOperationTargetSource<TGraphSpec, TGraphStatus> | TypeKroOperationTarget<TGraphSpec, TGraphStatus, THandlerStatus>
+): Result<readonly PermissionRule[]> {
+  try {
+    if (isOperationTarget(source)) {
+      return source.adapter.inferRbac(source);
+    }
+    return ok(rbacForResources(resourcePlanEntriesForSource(sourceAsGraph(source)).map((entry) => entry.resource)));
+  } catch (cause) {
+    return err(cause instanceof Error ? cause.message : 'Failed to infer TypeKro RBAC permissions.');
+  }
+}
+
+export function permissions<TGraphSpec extends KroCompatibleType = JsonObject, TGraphStatus extends KroCompatibleType = JsonObject, THandlerStatus extends object = TGraphStatus>(
+  source: TypeKroOperationTargetSource<TGraphSpec, TGraphStatus> | TypeKroOperationTarget<TGraphSpec, TGraphStatus, THandlerStatus>
+): readonly PermissionRule[] {
+  const inferred = inferRbac(source);
+  if (!inferred.ok) {
+    throw new Error(inferred.error.message);
+  }
+  return inferred.value;
+}
+
 export function createGraphAdapter<TGraphSpec extends KroCompatibleType = JsonObject, TGraphStatus extends KroCompatibleType = JsonObject, THandlerStatus extends object = TGraphStatus>(
   options?: TypeKroGraphAdapterOptions<TGraphStatus, THandlerStatus>
 ): TypeKroGraphAdapter<TGraphSpec, TGraphStatus, THandlerStatus> {
@@ -265,10 +288,18 @@ function isDependencyGraphLike(value: unknown): value is TypeKroDependencyGraphL
   return Boolean(value && typeof value === 'object' && 'getTopologicalOrder' in value && typeof value.getTopologicalOrder === 'function' && 'getDependencies' in value && typeof value.getDependencies === 'function');
 }
 
+function isOperationTarget<TGraphSpec extends KroCompatibleType, TGraphStatus extends KroCompatibleType, THandlerStatus extends object>(value: unknown): value is TypeKroOperationTarget<TGraphSpec, TGraphStatus, THandlerStatus> {
+  return Boolean(value && typeof value === 'object' && 'targetKind' in value && value.targetKind === 'operationTarget' && 'adapter' in value && isRecord(value.adapter));
+}
+
 function isKubernetesLikeResource(value: unknown): value is KubernetesLikeResource {
   return Boolean(value && typeof value === 'object' && 'apiVersion' in value && typeof value.apiVersion === 'string' && 'kind' in value && typeof value.kind === 'string' && 'metadata' in value && value.metadata && typeof value.metadata === 'object' && 'name' in value.metadata && typeof value.metadata.name === 'string');
 }
 
 function ok<T>(value: T): Result<T> {
   return { ok: true, value };
+}
+
+function err(message: string): Result<never> {
+  return { ok: false, error: { code: 'BUNDLE_INVALID', message, severity: 'error', context: {}, recovery: { summary: message } } };
 }

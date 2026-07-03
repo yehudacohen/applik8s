@@ -1,6 +1,6 @@
 # API Reference
 
-This is the supported public surface for `applik8s` v0.1.
+This is the supported public surface for `applik8s` v0.2.
 
 ## Packages
 
@@ -18,7 +18,7 @@ This is the supported public surface for `applik8s` v0.1.
 
 Use `sdk.crd()` to define a Kubernetes custom resource shape from a supported schema source.
 
-Supported v0.1 schema sources:
+Supported schema sources:
 
 - JSON Schema in the supported Kubernetes structural subset
 - ArkType schemas that normalize into that structural subset
@@ -36,11 +36,11 @@ Use `sdk.operator()` to define:
 
 Handlers may use proxy-first mutation syntax. The SDK records mutations as operation plans; handlers do not receive an ambient Kubernetes client.
 
-Proxy handlers include small Kubernetes object factories for common built-ins used in examples. For example, `job.k8s.ConfigMap({ name, namespace, data })` returns a real ConfigMap object with top-level `data`, `job.apply(object)` records a server-side apply operation for it, and `job.delete(object)` records a delete by object reference. The older `job.batch.*` alias remains available for existing examples, but `job.k8s.*` is the v0.1 golden-path spelling.
+Proxy handlers include small Kubernetes object factories for common built-ins used in examples. For example, `job.k8s.ConfigMap({ name, namespace, data })` returns a real ConfigMap object with top-level `data`, `job.apply(object)` records a server-side apply operation for it, and `job.delete(object)` records a delete by object reference. The older `job.batch.*` alias remains available for existing examples, but `job.k8s.*` is the golden-path spelling.
 
 ## Operation Plans
 
-v0.1 operation kinds are:
+Operation kinds are:
 
 - `apply`
 - `patch`
@@ -54,7 +54,7 @@ The Rust host validates the normalized plan before effects. Invalid operation or
 
 ## Status Helpers
 
-`@applik8s/sdk` exports helpers for common condition and status patterns. v0.1 generated CRDs can admit runtime-authored `Ready` conditions, `observedGeneration`, phase/reason/message fields, and durable external-effect records.
+`@applik8s/sdk` exports helpers for common condition and status patterns. Generated CRDs can admit runtime-authored `Ready` conditions, `observedGeneration`, phase/reason/message fields, and durable external-effect records.
 
 ## Testing Harness
 
@@ -84,18 +84,50 @@ The compiler emits:
 - `Dockerfile.applik8s-runtime`
 - `apply.sh`
 
-Unsupported compiler options fail closed or are documented as unsupported. v0.1 does not silently ignore unsupported runtime, ABI, schema, host-import, or packaging semantics.
+For `applik8s build <entrypoint> --typekro`, the compiler also emits `typekro/apply.sh`. That script applies TypeKro composition resources in CRD-first phases and retries later resources so KRO-generated APIs can become discoverable before graph instances are applied. Programmatic `factory('kro').deploy(...)` flows use TypeKro's public `kroPrerequisites.resources` support so generated applik8s CRDs are established before the ResourceGraphDefinition that references their custom resources.
+
+Unsupported compiler options fail closed or are documented as unsupported. applik8s does not silently ignore unsupported runtime, ABI, schema, host-import, or packaging semantics.
 
 ## CLI
 
 The `applik8s` CLI is intentionally thin:
 
-- `applik8s build <entrypoint>` compiles generated artifacts.
+- `applik8s build <entrypoint>` compiles generated operator artifacts.
+- `applik8s build <entrypoint> --typekro [--composition-name <export>]` compiles an exported applik8s TypeKro composition and emits inspectable composition resources.
 - `applik8s explain <reason>` explains known diagnostics.
 - `applik8s replay inspect <artifact>` inspects or executes replay artifacts.
 - `applik8s test [...args]` forwards to Vitest.
 
-No v0.1 `dev` or `package` command is promised.
+The workspace also exposes the flagship TypeKro example through `examples/guestbook.ts`. It is a pure applik8s/TypeKro composition: `GuestBook` reconciles a rendered website from typed live `GuestBookEntry` reads, serves cached entries through an `app.server(...)`, buffers page-view counters with `GuestBookPageViewBucket.increment(...)`, and projects entry/page-view aggregates into status. Build its artifacts with `bun run build:guestbook`.
+
+No `dev` or `package` command is promised in v0.2.
+
+## Resource Operations
+
+Generated `app.server(...)` routes can call typed resource helpers such as `Resource.create(...)`, `Resource.get(...)`, `Resource.query(...)`, `Resource.patch(...)`, `Resource.delete(...)`, and `Resource.increment(...)`. `increment(...)` is generated-runtime-only: route code declares the target resource, object identity, spec fields, labels, and numeric field, while the generated server batches increments and flushes them with create-on-miss and patch-on-existing-object semantics.
+
+Server RBAC is inferred from direct helper calls. `Resource.increment(...)` requires `create`, `get`, and `patch` on the target resource.
+
+## App-Scoped Entities
+
+`@applik8s/applik8s/dsl` exports `entity(name, { spec, status })` as the schema-first definition shape for the v0.3 framework direction. In v0.2, entities can be materialized honestly as Kubernetes control-plane resources with `app.crd(entity, { apiVersion, ... })`; the returned resource supports the same CRD actions, indexes, listeners, and permission inference as `sdk.crd(...)`.
+
+`app.model(entity)` and `app.provide(ModelStore, ...)` intentionally fail closed in v0.2. Storage-backed model semantics need explicit stores, migrations, constraints, and diagnostics; applik8s does not silently treat CRDs as a hidden database.
+
+## Permission Bundles
+
+Every `sdk.crd(...)` resource exposes typed permission bundles for common Kubernetes operations:
+
+- `Resource.permissions.read()` for `get`/`list`
+- `Resource.permissions.watch()` for `get`/`list`/`watch`
+- `Resource.permissions.apply()` for create/update/patch-style object writes
+- `Resource.permissions.patch()` for JSON patch writes
+- `Resource.permissions.patchStatus()` for status subresource writes
+- `Resource.permissions.delete()` for deletes
+- `Resource.permissions.finalize()` for finalizer subresource writes
+- `Resource.permissions.manage()` for the full object/status/finalizer rule family
+
+Built-in bundles are available under `sdk.permissions.k8s.*`, and Events use `sdk.permissions.events.write()`. These helpers return plain Kubernetes RBAC rules that can be passed directly to `sdk.operator({ permissions })` or `app.server({ permissions })`.
 
 ## TypeKro Adapter
 
@@ -108,17 +140,30 @@ The adapter provides:
 - CRD instance factories for owned CRDs
 - `typeKro.operationTarget(graph, spec, options)` for values that can be passed directly to `ctx.apply()`, `ctx.delete()`, proxy `resource.apply()`, and proxy `resource.delete()`
 - `typeKro.targetFactory(graph, options)` for reusable graph factories such as `const stack = tenantStack(tenant.spec)`
+- `typeKro.inferRbac(graphOrTarget)` for fail-closed RBAC inference as a `Result`
+- `typeKro.permissions(graphOrTarget)` for ergonomic RBAC rules, throwing if the graph or target cannot be inspected. Pass them at operator scope with `sdk.operator({ permissions })`, or keep them local to the handler with `sdk.withPermissions(handlerRegistration, typeKro.permissions(target))`.
 - operation-target apply/delete rendering with reverse dependency ordering where TypeKro graph dependencies are available
+- `typeKro.resource(factory, options)` for TypeKro resource factories whose returned resource instances expose addressed applik8s listener methods such as `deployment.on.updated(handler)`
+- `typeKro.kubernetesComposition(...)` and `composition.listenerOperator(...)` for grouping TypeKro-backed instance listeners by composition
+- explicit operator grouping overrides such as `deployment.on.updated(platformOperator, handler)`
+- finite listener scopes through `Resource.instances([api, worker]).on.updated(handler)`
+- selector listener scopes through `Resource.where({ namespace, labels }).on.updated(handler)`
+- mixed-resource listener groups through `typeKro.resources([api, worker, service]).on.deleted(handler)`
+- `cel` re-exported from the integrated package for TypeKro string expressions such as `ConfigMap({ data: { phase: cel\`${imageStatus.phase}\` } })`
+
+TypeKro listener registration is instance-based. The adapter attaches `.on.*` to the resource returned by the bridged factory, captures concrete `metadata.namespace`/`metadata.name` when present, and emits those addresses into manifest watches. Selector and mixed-resource scopes lower to explicit watch metadata and generated RBAC when Kubernetes can enforce them. The factory itself does not expose `.on.*`, and unsupported predicates fail before artifact emission.
+
+KRO validates ResourceGraphDefinition schemas before applying instances. Graphs that include custom resources from generated applik8s CRDs need those CRDs established before the KRO graph containing the custom resources is accepted; resolved applik8s TypeKro compositions pass those CRDs through TypeKro's public KRO prerequisite resource API.
 
 The precise aliases `toOperationTarget()`, `asOperationTargetFactory()`, and `createGraphAdapter()` remain available for integration authors that need the lower-level adapter vocabulary.
 
-Handler bundles should import operation-target helpers from `@applik8s/typekro-adapter/targets`. That subpath is intentionally lightweight and does not pull TypeKro install/deployment tooling into WASM handler bundles.
+Plain operator handler bundles should import operation-target helpers from `@applik8s/typekro-adapter/targets`, including `operationTarget`, `targetFactory`, `inferRbac`, and `permissions`. That subpath is intentionally lightweight and does not pull TypeKro install/deployment tooling into WASM handler bundles.
 
 TypeKro integration is an optional package. Core SDK, compiler, manifest, and runtime contracts remain TypeKro-neutral.
 
 ## Capabilities
 
-v0.1 supports a narrow HTTP JSON capability protocol with explicit idempotency requirements and SecretRef bearer auth. Other capability kinds, protocols, and auth descriptors fail closed.
+v0.2 supports a narrow HTTP JSON capability protocol with explicit idempotency requirements and SecretRef bearer auth. Other capability kinds, protocols, and auth descriptors fail closed.
 
 ## Stability
 

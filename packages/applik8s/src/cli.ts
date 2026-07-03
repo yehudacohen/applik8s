@@ -13,6 +13,8 @@ interface CliIo {
 interface BuildCommandOptions {
   readonly outDir?: string;
   readonly operatorName?: string;
+  readonly typekro?: boolean;
+  readonly compositionName?: string;
 }
 
 interface ChildProcessOptions {
@@ -53,6 +55,8 @@ function createProgram(io: CliIo): Command {
     .argument('<entrypoint>', 'operator entrypoint module')
     .option('--out-dir <dir>', 'output directory')
     .option('--operator-name <name>', 'operator export name when the entrypoint exports more than one operator')
+    .option('--typekro', 'compile an exported applik8s TypeKro composition instead of a single operator')
+    .option('--composition-name <name>', 'TypeKro composition export name when the entrypoint exports more than one composition')
     .action(async (entrypoint: string, options: BuildCommandOptions) => {
       const code = await runBuild(entrypoint, options, io);
       if (code !== 0) {
@@ -112,11 +116,13 @@ async function runBuild(entrypoint: string, options: BuildCommandOptions, io: Cl
   }
 
   // static-import-exception: Bun CLI must not eagerly load the compiler because ComponentizeJS requires Node APIs before build delegation can run.
-  const { createCompilerPipeline } = await import('@applik8s/compiler');
-  const result = await createCompilerPipeline().run({
+  const { compileTypeKroComposition, createCompilerPipeline } = await import('@applik8s/compiler');
+  // typecast: preserve literal compiler option types across the lazy compiler import without importing runtime compiler types into the CLI entrypoint.
+  const request = {
     entrypoint,
     ...(options.outDir ? { outDir: options.outDir } : {}),
     ...(options.operatorName ? { operatorName: options.operatorName } : {}),
+    ...(options.compositionName ? { compositionName: options.compositionName } : {}),
     runtimeVersionRange: '^0.1.0',
     handlerAbiVersion: 'applik8s.handler/v1alpha1',
     adapter: 'wasmComponent',
@@ -128,7 +134,22 @@ async function runBuild(entrypoint: string, options: BuildCommandOptions, io: Cl
       allowedHostImports: [],
       sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
     },
-  });
+  } as const;
+  if (options.typekro) {
+    const typeKroResult = await compileTypeKroComposition(request);
+    if (!typeKroResult.ok) {
+      io.stderr(typeKroResult.error.message);
+      return 1;
+    }
+    io.stdout(`Built TypeKro composition ${typeKroResult.value.artifacts.manifest.metadata.name}`);
+    io.stdout(`Composition: ${typeKroResult.value.artifacts.manifestJsonPath}`);
+    io.stdout(`Resources: ${typeKroResult.value.artifacts.combinedYamlPath}`);
+    io.stdout(`Apply: ${typeKroResult.value.artifacts.applyScriptPath}`);
+    io.stdout(`Operators: ${typeKroResult.value.artifacts.operatorArtifacts.length}`);
+    return 0;
+  }
+
+  const result = await createCompilerPipeline().run(request);
   if (!result.ok) {
     io.stderr(result.error.message);
     return 1;

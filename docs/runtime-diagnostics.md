@@ -69,7 +69,11 @@ Local replay execution uses Node's maintained `node:module.setSourceMapsEnabled`
 
 ## Event Routing Notes
 
-`statusChanged` is a best-effort reconciliation predicate, not a durable event stream. The runtime routes to `statusChanged` only when the current object has non-empty status and that status appears to have observed the current generation. Stale status routes through `created` or `updated` first. Handlers may still run more than once for the same status state and must remain idempotent.
+`created`, `updated`, and `statusChanged` are reconciliation predicates, not durable watch-edge events. The runtime does not promise exactly-once delivery for Kubernetes create/update/status transitions; handlers may run more than once for the same current object state and must remain idempotent.
+
+For owned CRDs, `created` and `updated` are based on `metadata.generation`: generation `<= 1` routes to `created`, generation `> 1` routes to `updated`, and stale status routes through generation-based handlers before `statusChanged`. `statusChanged` routes only when the current object has non-empty status and that status appears to have observed the current generation.
+
+For external watched resources, including TypeKro-backed Kubernetes resources, generationless objects can route to `updated` when the manifest explicitly declares a matching external watch for that GVK/event. External resources with non-empty status but no `status.observedGeneration` can route to `statusChanged` when the manifest explicitly declares a matching external `statusChanged` watch. This makes resources such as `ConfigMap` and `Service` usable without pretending kube-runtime supplies a lossless update/status event stream.
 
 ## Correlation Fields
 

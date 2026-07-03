@@ -1,6 +1,6 @@
 # Release Gates
 
-v0.1 release readiness has two layers: local gates and pre-release live gates.
+v0.2 release readiness has two layers: local gates and pre-release live gates.
 
 ## Local Gates
 
@@ -41,7 +41,7 @@ bun run check:release
 The checker verifies:
 
 - publishable package metadata
-- version `0.1.0`
+- version `0.2.0`
 - Apache-2.0 license metadata
 - public publish config
 - no `file:` dependency ranges in publishable packages
@@ -63,6 +63,8 @@ This runs local gates and then live E2E suites for:
 - CRD schema acceptance
 - live reconcile
 - TypeKro deploy
+- TypeKro GuestBook flagship
+- TypeKro-native tutorial/status/listener composition
 - live adversarial behavior
 - partial operation failure
 
@@ -76,19 +78,20 @@ For local development only, live E2E may be skipped explicitly:
 APPLIK8S_RELEASE_ALLOW_SKIP_LIVE_E2E=1 bun run check:prerelease
 ```
 
-Do not use this for an actual v0.1 release announcement.
+Do not use this for an actual v0.2 release announcement.
 
-## Required Evidence For v0.1
+## Required Evidence For v0.2
 
-Before announcing v0.1, capture:
+Before announcing v0.2, capture:
 
 - local gate output
 - pre-release live gate output with context name
+- live GuestBook output for `packages/e2e/test/typekro-guestbook.e2e.test.ts`
 - generated `dist/applik8s` artifact listing
 - generated runtime image build/publish decision
 - release notes diff
 - package publish dry-run output
-- updated `docs/release-evidence-v0.1.md`
+- updated `docs/release-evidence-v0.2.md`
 
 ## CI Evidence
 
@@ -98,7 +101,7 @@ Before announcing v0.1, capture:
 
 ## Publishing
 
-Publishing is tag-driven. Push a tag such as `v0.1.0` to run the deploy workflow. The workflow requires npm trusted publishing to be configured for each `@applik8s/*` package and this repository workflow.
+Publishing is tag-driven. Push a tag such as `v0.2.0` to run the deploy workflow. The workflow requires npm trusted publishing to be configured for each `@applik8s/*` package and this repository workflow.
 
 Local publish command, for maintainers only:
 

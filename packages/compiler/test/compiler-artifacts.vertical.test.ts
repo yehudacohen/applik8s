@@ -4,14 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import type { CapabilityDescriptor, JsonSchemaSource, PermissionRule, RuntimeConfig } from '@applik8s/core';
+import { sdk } from '@applik8s/sdk';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
-
-import type { CapabilityDescriptor, JsonSchemaSource, RuntimeConfig } from '@applik8s/core';
-import { sdk } from '@applik8s/sdk';
 import {
   buildOperatorManifest,
   bundleHandlerEntrypoint,
+  compileTypeKroComposition,
   createCompilerPipeline,
   emitHandlerWitArtifact,
   emitOperatorKubernetesYaml,
@@ -114,6 +114,92 @@ describe('compiler artifact vertical slice', () => {
     expect(manifest.ok).toBe(false);
     if (!manifest.ok) {
       expect(manifest.error.message).toContain('deployment.replicas greater than 1');
+    }
+  });
+
+  it('declares kubernetes-read host import and typed-read RBAC when handlers use typed reads', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: imageSpecSchema,
+      status: imageStatusSchema,
+    });
+    const operator = sdk.operator({
+      name: 'read-aware-pipeline',
+      deployment: { namespace: 'media', replicas: 1 },
+      resources: { ImageJob },
+      handlers: [
+        ImageJob.on.reconcile(async (job) => {
+          await job.read.resource(ImageJob).get({ name: job.metadata.name, namespace: job.metadata.namespace ?? 'default' });
+          job.status.phase = 'Processing';
+        }),
+      ],
+    });
+
+    const manifest = buildOperatorManifest({
+      operator: operator.definition,
+      handlerArtifactPath: 'wasm/handler.wasm',
+      handlerArtifactDigest: `sha256:${'a'.repeat(64)}`,
+      runtimeContractPath: 'runtime-contract.json',
+      runtimeContractDigest: `sha256:${'b'.repeat(64)}`,
+    });
+
+    expect(manifest.ok).toBe(true);
+    if (manifest.ok) {
+      expect(manifest.value.spec.adapterRequirements?.hostImports).toContain('kubernetes-read');
+      expect(manifest.value.spec.permissions).toContainEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['get', 'list', 'watch'] });
+    }
+  });
+
+  it('emits declared typed permission bundles into the operator manifest', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: imageSpecSchema,
+      status: imageStatusSchema,
+    });
+    const permissions: PermissionRule[] = [
+      ImageJob.permissions.read(),
+      ImageJob.permissions.watch(),
+      ImageJob.permissions.apply(),
+      ImageJob.permissions.patch(),
+      ImageJob.permissions.patchStatus(),
+      ImageJob.permissions.delete(),
+      ImageJob.permissions.finalize(),
+      sdk.permissions.k8s.ConfigMap.apply(),
+      sdk.permissions.k8s.Deployment.patchStatus(),
+      sdk.permissions.events.write(),
+    ];
+    const operator = sdk.operator({
+      name: 'permission-bundle-pipeline',
+      deployment: { namespace: 'media', replicas: 1 },
+      resources: { ImageJob },
+      permissions,
+      handlers: [],
+    });
+
+    const manifest = buildOperatorManifest({
+      operator: operator.definition,
+      handlerArtifactPath: 'wasm/handler.wasm',
+      handlerArtifactDigest: `sha256:${'a'.repeat(64)}`,
+      runtimeContractPath: 'runtime-contract.json',
+      runtimeContractDigest: `sha256:${'b'.repeat(64)}`,
+    });
+
+    expect(manifest.ok).toBe(true);
+    if (manifest.ok) {
+      expect(manifest.value.spec.permissions).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          apiGroups: ['media.applik8s.dev'],
+          resources: ['imagejobs'],
+          verbs: expect.arrayContaining(['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']),
+        }),
+        { apiGroups: ['media.applik8s.dev'], resources: ['imagejobs/status'], verbs: ['get', 'patch', 'update'] },
+        { apiGroups: ['media.applik8s.dev'], resources: ['imagejobs/finalizers'], verbs: ['patch', 'update'] },
+        { apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'create', 'update', 'patch'] },
+        { apiGroups: ['apps'], resources: ['deployments/status'], verbs: ['get', 'patch', 'update'] },
+        { apiGroups: [''], resources: ['events'], verbs: ['create', 'patch', 'update'] },
+      ]));
     }
   });
 
@@ -443,6 +529,183 @@ export const imagePipeline = sdk.operator({
     }
   }, 120_000);
 
+  it('emits GuestBook direct-call app artifacts, route diagnostics, and buffered page-view counters', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-guestbook-typekro-artifacts-'));
+
+    try {
+      const result = await compileTypeKroComposition({
+        entrypoint: join(process.cwd(), 'examples/guestbook.ts'),
+        compositionName: 'guestBookStack',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: {
+          deterministicBuild: true,
+          allowEnvironmentAccess: false,
+          allowFilesystemAccess: false,
+          allowNetworkAccess: false,
+          allowedHostImports: [],
+          sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
+        },
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        return;
+      }
+
+      const serverRole = result.value.artifacts.resources.find((resource) => resource.kind === 'Role' && resource.metadata.name === 'main-web' && resource.metadata.namespace === 'guestbook');
+      const serverSource = result.value.artifacts.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'main-server-source' && resource.metadata.namespace === 'guestbook');
+      expect(result.value.artifacts.operatorArtifacts.map((artifact) => artifact.operatorName)).toContain('guestbook-renderer');
+      expect(result.value.artifacts.resources).toContainEqual(expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'guestbook-renderer', namespace: 'guestbook' }) }));
+      expect(result.value.artifacts.resources).toContainEqual(expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'main-server', namespace: 'guestbook' }) }));
+      expect(serverRole).toMatchObject({
+        rules: expect.arrayContaining([
+          expect.objectContaining({
+            apiGroups: ['guestbook.applik8s.dev'],
+            resources: ['guestbookpageviewbuckets'],
+            verbs: expect.arrayContaining(['create', 'get', 'patch']),
+          }),
+        ]),
+      });
+
+      const source = JSON.stringify(serverSource);
+      expect(source).toContain('GuestBookPageViewBucket.increment');
+      expect(source).toContain('bufferResourceCounterIncrement');
+      expect(source).toContain('applik8s-server-counter-flush-failure');
+      expect(source).toContain('routes.manifest.json');
+      expect(source).toContain('route-get-root-0.mjs');
+      expect(source).toContain('route-post-entries-1.mjs');
+      expect(source).toContain('applik8s-server-route-failure');
+      expect(source).toContain('sourceLocation');
+      expect(source).toContain('bundleInputs');
+      expect(source).toContain('sourceKind');
+      expect(source).toContain('applik8s-route-source-kind: source');
+      expect(source).toContain('publishedGuestBookEntries.query');
+      expect(source).toContain('main-server-index.guestbook.svc.cluster.local');
+      expect(source).not.toContain('GuestBookPageViewBucket.get');
+      expect(source).not.toContain('GuestBookPageViewBucket.create');
+      expect(source).not.toContain('GuestBookPageViewBucket.patch');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('statically serializes operators that use raw ArkType schemas with inferred CRD types', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-arktype-static-'));
+
+    try {
+      const entrypoint = join(dir, 'operator-entry.ts');
+      await writeFile(
+        entrypoint,
+        `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/sdk/src/index.ts'))};
+import { type } from 'arktype';
+
+const spec = type({ title: 'string', message: 'string?' });
+const status = type({ phase: "('Pending' | 'Rendered')?", entryCount: 'number?' });
+const entrySpec = type({ guestbook: 'string', author: 'string', message: 'string' });
+const entryStatus = type({ phase: "('Published' | 'Rejected')?" });
+
+export const GuestBook = sdk.crd({ apiVersion: 'demo.applik8s.dev/v1alpha1', kind: 'GuestBook', spec, status });
+export const GuestBookEntry = sdk.crd({ apiVersion: 'demo.applik8s.dev/v1alpha1', kind: 'GuestBookEntry', spec: entrySpec, status: entryStatus });
+export const guestBook = sdk.operator({
+  name: 'guestbook',
+  deployment: { namespace: 'demo', replicas: 1 },
+  resources: { GuestBook, GuestBookEntry },
+  handlers: [GuestBook.on.reconcile(async (book) => {
+    const entries = await book.read.resource(GuestBookEntry).list({ namespace: book.metadata.namespace ?? 'default', labels: { 'guestbook.applik8s.dev/book': book.metadata.name } });
+    book.status.phase = 'Rendered';
+    book.status.entryCount = entries.items.length;
+  })],
+});
+`
+      );
+
+      const result = await createCompilerPipeline().run({
+        entrypoint,
+        operatorName: 'guestbook',
+        dispatcherMode: 'staticSerializable',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: {
+          deterministicBuild: true,
+          allowEnvironmentAccess: false,
+          allowFilesystemAccess: false,
+          allowNetworkAccess: false,
+          allowedHostImports: [],
+          sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
+        },
+      });
+
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value.manifest.spec.ownedCrds[0]?.kind).toBe('GuestBook');
+        const dispatcher = await readFile(join(dir, 'dist', 'bundle', 'handler.js'), 'utf8');
+        expect(dispatcher).toContain('const GuestBookEntry = __operator.resources["GuestBookEntry"]');
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('does not treat URL-like strings as free identifiers during static handler serialization', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-static-handler-literals-'));
+
+    try {
+      const entrypoint = join(dir, 'operator-entry.ts');
+      await writeFile(
+        entrypoint,
+        `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/sdk/src/index.ts'))};
+import { type } from 'arktype';
+
+const spec = type({ message: 'string' });
+const status = type({ phase: "('Published' | 'Rejected')?", message: 'string?' });
+
+export const GuestBookEntry = sdk.crd({ apiVersion: 'demo.applik8s.dev/v1alpha1', kind: 'GuestBookEntry', spec, status });
+export const guestBook = sdk.operator({
+  name: 'guestbook-literals',
+  deployment: { namespace: 'demo', replicas: 1 },
+  resources: { GuestBookEntry },
+  handlers: [GuestBookEntry.on.reconcile((entry) => {
+    if (entry.spec.message.includes('http://') || entry.spec.message.includes('https://')) {
+      entry.status.phase = 'Rejected';
+      entry.status.message = 'Rejected because links are disabled for this GuestBook.';
+      return;
+    }
+    entry.status.phase = 'Published';
+    entry.status.message = 'Published GuestBookEntry for this book.';
+  })],
+});
+`
+      );
+
+      const result = await createCompilerPipeline().run({
+        entrypoint,
+        operatorName: 'guestbook-literals',
+        dispatcherMode: 'staticSerializable',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: {
+          deterministicBuild: true,
+          allowEnvironmentAccess: false,
+          allowFilesystemAccess: false,
+          allowNetworkAccess: false,
+          allowedHostImports: [],
+          sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
+        },
+      });
+
+      expect(result.ok).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('throws handler failures from the generated WIT dispatcher', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-dispatcher-errors-'));
 
@@ -498,8 +761,12 @@ export const imagePipeline = sdk.operator({
       }
 
       const dispatcherPath = join(dir, 'dist/bundle/handler-dispatcher.generated.ts');
+      const dispatcherTestPath = join(dir, 'dist/bundle/handler-dispatcher.node-test.ts');
+      const dispatcherSource = await readFile(dispatcherPath, 'utf8');
+      expect(dispatcherSource).toContain("import { kubernetesRead } from 'applik8s:handler/kubernetes';");
+      await writeFile(dispatcherTestPath, dispatcherSource.replace("import { kubernetesRead } from 'applik8s:handler/kubernetes';\n", "const kubernetesRead = () => { throw new Error('unexpected kubernetes-read'); };\n"));
       // static-import-exception: this test loads a compiler-generated dispatcher from a temporary output directory.
-      const dispatcher = await import(`${pathToFileURL(dispatcherPath).href}?case=handler-error`);
+      const dispatcher = await import(`${pathToFileURL(dispatcherTestPath).href}?case=handler-error`);
       await expect(dispatcher.handle(JSON.stringify({
         abiVersion: 'applik8s.handler/v1alpha1',
         handlerId: 'ImageJob.reconcile.0',
@@ -651,7 +918,7 @@ export const imagePipeline = sdk.operator({
         'applik8s.dev/rbac-mode': result.value.manifest.spec.security.rbac.mode,
         'applik8s.dev/rbac-least-privilege-reviewed': String(result.value.manifest.spec.security.rbac.leastPrivilegeReviewed),
         'applik8s.dev/rbac-rule-count': String(result.value.manifest.spec.security.rbac.rules.length),
-        'applik8s.dev/host-imports': 'capability-request,log,cancel,wasi:io,wasi:http',
+        'applik8s.dev/host-imports': 'capability-request,kubernetes-read,log,cancel,wasi:io,wasi:http',
         'applik8s.dev/ambient-environment': 'denied',
         'applik8s.dev/ambient-filesystem': 'denied',
         'applik8s.dev/ambient-network': 'denied',
@@ -1107,7 +1374,7 @@ export function handle(input: string): string {
       }
 
       expect(manifest.value.spec.adapterRequirements?.kind).toBe('wasmComponent');
-      expect(manifest.value.spec.adapterRequirements?.hostImports).toEqual(['capability-request', 'log', 'cancel', 'wasi:io', 'wasi:http']);
+      expect(manifest.value.spec.adapterRequirements?.hostImports).toEqual(['capability-request', 'kubernetes-read', 'log', 'cancel', 'wasi:io', 'wasi:http']);
       expect(manifest.value.spec.handlerArtifact.digest).toBe(wasm.value.digest);
       expect(manifest.value.spec.bundle.sourceDigest).toBe(runtimeContract.value.digest);
       expect(manifest.value.spec.bundle.artifacts).toEqual([
@@ -1197,6 +1464,81 @@ export function handle(input: string): string {
       expect(firstHandler).toBeDefined();
       if (!firstHandler) {
         return;
+      }
+
+      const invalidExactAndSelectorWatch = validateOperatorManifest({
+        ...manifest.value,
+        spec: {
+          ...manifest.value.spec,
+          watches: [{
+            apiVersion: ImageJob.apiVersion,
+            kind: ImageJob.kind,
+            scope: 'Namespaced',
+            name: 'hero',
+            labelSelector: { matchLabels: { app: 'image' } },
+            events: ['reconcile'],
+            handlers: [firstHandler.id],
+          }],
+        },
+      });
+      const invalidClusterNamespaceWatch = validateOperatorManifest({
+        ...manifest.value,
+        spec: {
+          ...manifest.value.spec,
+          watches: [{
+            apiVersion: ImageJob.apiVersion,
+            kind: ImageJob.kind,
+            scope: 'Cluster',
+            namespace: 'media',
+            events: ['reconcile'],
+            handlers: [firstHandler.id],
+          }],
+        },
+      });
+      const invalidFieldSelectorWatch = validateOperatorManifest({
+        ...manifest.value,
+        spec: {
+          ...manifest.value.spec,
+          watches: [{
+            apiVersion: ImageJob.apiVersion,
+            kind: ImageJob.kind,
+            scope: 'Namespaced',
+            fieldSelector: 'spec.priority=high',
+            events: ['reconcile'],
+            handlers: [firstHandler.id],
+          }],
+        },
+      });
+      const invalidLabelSelectorWatch = validateOperatorManifest({
+        ...manifest.value,
+        spec: {
+          ...manifest.value.spec,
+          watches: [{
+            apiVersion: ImageJob.apiVersion,
+            kind: ImageJob.kind,
+            scope: 'Namespaced',
+            labelSelector: JSON.parse('{"matchExpressions":[{"key":"app","operator":"Exists","values":{"not":"an-array"}}]}'),
+            events: ['reconcile'],
+            handlers: [firstHandler.id],
+          }],
+        },
+      });
+
+      expect(invalidExactAndSelectorWatch.ok).toBe(false);
+      if (!invalidExactAndSelectorWatch.ok) {
+        expect(invalidExactAndSelectorWatch.error.message).toContain('must not combine exact name/names scope with selector scope');
+      }
+      expect(invalidClusterNamespaceWatch.ok).toBe(false);
+      if (!invalidClusterNamespaceWatch.ok) {
+        expect(invalidClusterNamespaceWatch.error.message).toContain('cluster-scoped and must not declare namespace');
+      }
+      expect(invalidFieldSelectorWatch.ok).toBe(false);
+      if (!invalidFieldSelectorWatch.ok) {
+        expect(invalidFieldSelectorWatch.error.message).toContain('fieldSelector field spec.priority is not supported');
+      }
+      expect(invalidLabelSelectorWatch.ok).toBe(false);
+      if (!invalidLabelSelectorWatch.ok) {
+        expect(invalidLabelSelectorWatch.error.message).toContain('labelSelector Exists expressions must not declare values');
       }
 
       const duplicateHandlerManifest = buildOperatorManifest({

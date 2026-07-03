@@ -1,4 +1,4 @@
-import type { BundleArtifact, Diagnostic, HandlerId, OperatorManifest, Result } from '@applik8s/core';
+import type { BundleArtifact, Diagnostic, HandlerId, LabelSelector, OperatorManifest, Result, WatchRegistration } from '@applik8s/core';
 import { computeBundleDigest } from './bundle-digest.js';
 
 export function validateOperatorManifest(manifest: OperatorManifest): Result<readonly Diagnostic[]> {
@@ -31,6 +31,7 @@ export function validateOperatorManifest(manifest: OperatorManifest): Result<rea
 
   const exportedHandlerIds = new Set<HandlerId>(handlerIds);
   for (const watch of manifest.spec.watches) {
+    validateWatchRegistration(watch, diagnostics);
     for (const handlerId of watch.handlers) {
       if (!exportedHandlerIds.has(handlerId)) {
         diagnostics.push(error(`Watch for ${watch.apiVersion}/${watch.kind} references unknown handler ${handlerId}.`));
@@ -38,10 +39,13 @@ export function validateOperatorManifest(manifest: OperatorManifest): Result<rea
     }
   }
 
-  const ownedResources = new Set(manifest.spec.ownedCrds.map((crd) => `${crd.apiVersion}/${crd.kind}`));
+  const knownResources = new Set([
+    ...manifest.spec.ownedCrds.map((crd) => `${crd.apiVersion}/${crd.kind}`),
+    ...manifest.spec.watches.map((watch) => `${watch.apiVersion}/${watch.kind}`),
+  ]);
   for (const handler of manifest.spec.handlerExports) {
-    if (!ownedResources.has(`${handler.resource.apiVersion}/${handler.resource.kind}`)) {
-      diagnostics.push(error(`Handler ${handler.handlerId} targets ${handler.resource.apiVersion}/${handler.resource.kind}, which is not listed in ownedCrds.`));
+    if (!knownResources.has(`${handler.resource.apiVersion}/${handler.resource.kind}`)) {
+      diagnostics.push(error(`Handler ${handler.handlerId} targets ${handler.resource.apiVersion}/${handler.resource.kind}, which is not listed in ownedCrds or watches.`));
     }
   }
 
@@ -88,6 +92,96 @@ export function validateOperatorManifest(manifest: OperatorManifest): Result<rea
   }
 
   return { ok: true, value: diagnostics };
+}
+
+function validateWatchRegistration(watch: WatchRegistration, diagnostics: Diagnostic[]): void {
+  const label = `${watch.apiVersion}/${watch.kind}`;
+  if (watch.scope === 'Cluster' && watch.namespace) {
+    diagnostics.push(error(`Watch for ${label} is cluster-scoped and must not declare namespace ${watch.namespace}.`));
+  }
+  if (watch.name && watch.names && watch.names.length > 0) {
+    diagnostics.push(error(`Watch for ${label} must use either name or names, not both.`));
+  }
+  if (watch.names && watch.names.length === 0) {
+    diagnostics.push(error(`Watch for ${label} names must not be empty.`));
+  }
+  const duplicateName = watch.names ? firstDuplicate(watch.names) : undefined;
+  if (duplicateName) {
+    diagnostics.push(error(`Watch for ${label} names contains duplicate ${duplicateName}.`));
+  }
+  if ((watch.name || (watch.names && watch.names.length > 0)) && (watch.labelSelector || watch.fieldSelector)) {
+    diagnostics.push(error(`Watch for ${label} must not combine exact name/names scope with selector scope.`));
+  }
+  if (watch.labelSelector) {
+    validateLabelSelector(watch.labelSelector, label, diagnostics);
+  }
+  if (watch.fieldSelector !== undefined) {
+    validateFieldSelector(watch.fieldSelector, label, diagnostics);
+  }
+}
+
+function validateLabelSelector(selector: LabelSelector, label: string, diagnostics: Diagnostic[]): void {
+  if (!selector || typeof selector !== 'object' || Array.isArray(selector)) {
+    diagnostics.push(error(`Watch for ${label} labelSelector must be an object.`));
+    return;
+  }
+  if (selector.matchLabels !== undefined) {
+    if (!selector.matchLabels || typeof selector.matchLabels !== 'object' || Array.isArray(selector.matchLabels)) {
+      diagnostics.push(error(`Watch for ${label} labelSelector.matchLabels must be an object.`));
+    } else {
+      for (const [key, value] of Object.entries(selector.matchLabels)) {
+        if (key.length === 0 || typeof value !== 'string') {
+          diagnostics.push(error(`Watch for ${label} labelSelector.matchLabels must contain non-empty string keys and string values.`));
+          break;
+        }
+      }
+    }
+  }
+  if (selector.matchExpressions !== undefined) {
+    if (!Array.isArray(selector.matchExpressions)) {
+      diagnostics.push(error(`Watch for ${label} labelSelector.matchExpressions must be an array.`));
+    } else {
+      for (const expression of selector.matchExpressions) {
+        if (!expression || typeof expression !== 'object' || Array.isArray(expression) || typeof expression.key !== 'string' || expression.key.length === 0) {
+          diagnostics.push(error(`Watch for ${label} labelSelector.matchExpressions entries must declare a non-empty string key.`));
+          break;
+        }
+        if (!['In', 'NotIn', 'Exists', 'DoesNotExist'].includes(expression.operator)) {
+          diagnostics.push(error(`Watch for ${label} labelSelector.matchExpressions operator ${String(expression.operator)} is not supported.`));
+          break;
+        }
+        const values = expression.values;
+        if (expression.operator === 'In' || expression.operator === 'NotIn') {
+          if (!Array.isArray(values) || values.length === 0 || values.some((value) => typeof value !== 'string')) {
+            diagnostics.push(error(`Watch for ${label} labelSelector ${expression.operator} expressions require non-empty string values.`));
+            break;
+          }
+        } else if (values !== undefined && (!Array.isArray(values) || values.length > 0)) {
+          diagnostics.push(error(`Watch for ${label} labelSelector ${expression.operator} expressions must not declare values.`));
+          break;
+        }
+      }
+    }
+  }
+}
+
+function validateFieldSelector(selector: string, label: string, diagnostics: Diagnostic[]): void {
+  if (selector.trim().length === 0) {
+    diagnostics.push(error(`Watch for ${label} fieldSelector must not be empty.`));
+    return;
+  }
+  for (const requirement of selector.split(',')) {
+    const trimmed = requirement.trim();
+    const [field, expected] = trimmed.split(/==|=/, 2).map((part) => part.trim());
+    if (!field || expected === undefined || expected.length === 0) {
+      diagnostics.push(error(`Watch for ${label} fieldSelector requirement ${trimmed} must use field=value syntax.`));
+      return;
+    }
+    if (field !== 'metadata.name' && field !== 'metadata.namespace') {
+      diagnostics.push(error(`Watch for ${label} fieldSelector field ${field} is not supported; use metadata.name or metadata.namespace.`));
+      return;
+    }
+  }
 }
 
 function validateBundleArtifacts(manifest: OperatorManifest, diagnostics: Diagnostic[]): void {

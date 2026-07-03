@@ -1,5 +1,6 @@
 import type {
   AnyKubernetesObject,
+  AnyResourceDefinition,
   Applik8sErrorCode,
   ApplyOperation,
   ApplyOperationInput,
@@ -12,6 +13,7 @@ import type {
   CapabilityRequestPayload,
   CapabilityResponsePayload,
   ConfigMapFactoryConfig,
+  DeleteOperationInput,
   DeleteOptions,
   DeleteTargetInput,
   DeleteTargetOptions,
@@ -26,22 +28,26 @@ import type {
   NormalizedOperationPlan,
   ObjectRef,
   Operation,
-  OperationTarget,
   OperationPlanInput,
-  DeleteOperationInput,
+  OperationTarget,
   OperatorDefinition,
   RequeuePolicy,
   ResourceDefinition,
+  ResourceGetQuery,
   ResourceObject,
+  ResourceReadClient,
+  ResourceReadQuery,
   Result,
 } from '@applik8s/core';
 import { isRunnableHandlerRegistration, type RunnableHandlerRegistration } from './runtime.js';
 
 export interface HandlerDispatchHostImports {
   readonly capabilityRequest?: CapabilityRequestImport;
+  readonly kubernetesRead?: KubernetesReadImport;
 }
 
 export type CapabilityRequestImport = (requestJson: string) => CapabilityImportResult;
+export type KubernetesReadImport = (requestJson: string) => CapabilityImportResult;
 
 type CapabilityImportResult = string | { readonly tag: 'ok' | 'err'; readonly val: string } | { readonly ok: true; readonly value: string } | { readonly ok: false; readonly error: string };
 
@@ -57,7 +63,7 @@ export async function dispatchOperatorHandler(operator: OperatorDefinition, inpu
   }
 
   const reconcileId = input.runtime?.reconcileId ?? 'runtime-reconcile';
-  const invocation = await invokeRunnableHandler(registration, input.object, input.event, reconcileId, capabilityClients(input.capabilities ?? {}, reconcileId, hostImports));
+  const invocation = await invokeRunnableHandler(registration, input.object, input.event, reconcileId, capabilityClients(input.capabilities ?? {}, reconcileId, hostImports), operator.resources, hostImports.kubernetesRead);
   if (!invocation.ok) {
     throw new Error(invocation.error.message);
   }
@@ -76,7 +82,7 @@ export function dispatchOperatorHandlerSync(operator: OperatorDefinition, inputJ
   }
 
   const reconcileId = input.runtime?.reconcileId ?? 'runtime-reconcile';
-  const invocation = invokeRunnableHandlerSync(registration, input.object, input.event, reconcileId, capabilityClients(input.capabilities ?? {}, reconcileId, hostImports));
+  const invocation = invokeRunnableHandlerSync(registration, input.object, input.event, reconcileId, capabilityClients(input.capabilities ?? {}, reconcileId, hostImports), operator.resources, hostImports.kubernetesRead);
   if (!invocation.ok) {
     throw new Error(invocation.error.message);
   }
@@ -96,8 +102,8 @@ interface InvocationResult {
   readonly plan: NormalizedOperationPlan;
 }
 
-async function invokeRunnableHandler(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet): Promise<Result<InvocationResult>> {
-  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities });
+async function invokeRunnableHandler(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, resources: Readonly<Record<string, AnyResourceDefinition>>, kubernetesRead?: KubernetesReadImport): Promise<Result<InvocationResult>> {
+  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
   try {
     if (registration.handlerStyle === 'context') {
       const returned = await registration.handler(toResourceObject(object), createContext(recorder, object));
@@ -121,8 +127,8 @@ async function invokeRunnableHandler(registration: RunnableHandlerRegistration, 
   }
 }
 
-function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet): Result<InvocationResult> {
-  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities });
+function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, resources: Readonly<Record<string, AnyResourceDefinition>>, kubernetesRead?: KubernetesReadImport): Result<InvocationResult> {
+  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
   try {
     if (registration.handlerStyle === 'context') {
       const returned = registration.handler(toResourceObject(object), createContext(recorder, object));
@@ -258,6 +264,78 @@ function compactCapabilityRequest(request: Readonly<Record<string, unknown>>): C
   return Object.fromEntries(Object.entries(request).filter(([, value]) => value !== undefined)) as unknown as CapabilityRequestPayload;
 }
 
+function createReadClients(resources: Readonly<Record<string, AnyResourceDefinition>>, reconcileId: string, kubernetesRead: KubernetesReadImport | undefined) {
+  const clients: Record<string, unknown> = {};
+  const readFor = <TSpec extends object, TStatus extends object>(resource: ResourceDefinition<TSpec, TStatus>) => readClient(resource, reconcileId, kubernetesRead);
+  Object.defineProperty(clients, 'resource', {
+    value: readFor,
+    enumerable: false,
+  });
+  Object.defineProperty(clients, 'kind', {
+    value: <TSpec extends object, TStatus extends object>(kindOrAlias: string) => {
+      const client = clients[kindOrAlias];
+      if (!client) {
+        throw new Error(`Unknown typed read resource kind or alias: ${kindOrAlias}`);
+      }
+      // typecast: clients are registered from operator resources; callers supply the compile-time spec/status they expect for the selected kind or alias.
+      return client as ResourceReadClient<TSpec, TStatus>;
+    },
+    enumerable: false,
+  });
+  for (const [alias, resource] of Object.entries(resources)) {
+    // typecast: resource registry entries are normalized AnyResourceDefinition values, and readFor only needs the structural ResourceDefinition fields.
+    clients[alias] = readFor(resource as ResourceDefinition<object, object>);
+    clients[resource.kind] = clients[alias];
+    clients[uncapitalize(resource.kind)] = clients[alias];
+  }
+  return clients;
+}
+
+function readClient<TSpec extends object, TStatus extends object>(resource: ResourceDefinition<TSpec, TStatus>, reconcileId: string, kubernetesRead: KubernetesReadImport | undefined) {
+  const request = async (operation: 'get' | 'list', query: ResourceGetQuery | ResourceReadQuery | undefined) => {
+    if (!kubernetesRead) {
+      throw new Error('Typed Kubernetes reads require the kubernetes-read host import, but this runtime did not provide it.');
+    }
+    const response = decodeCapabilityImportResult(kubernetesRead(JSON.stringify({
+      operation,
+      apiVersion: resource.apiVersion,
+      kind: resource.kind,
+      plural: resource.plural,
+      scope: resource.scope,
+      query: query ?? {},
+      reconcileId,
+    })));
+    if (!response.ok) {
+      throw new Error(response.error.message);
+    }
+    return response.value;
+  };
+  return {
+    async get(query: ResourceGetQuery) {
+      const value = await request('get', query);
+      if (value === null || value === undefined) {
+        return undefined;
+      }
+      // typecast: kubernetes-read returns JSON for the requested resource; toResourceObject validates Kubernetes object shape before exposing typed spec/status.
+      return toResourceObject(value as AnyKubernetesObject) as ResourceObject<TSpec, TStatus>;
+    },
+    async list(query?: ResourceReadQuery) {
+      const value = await request('list', query);
+      if (!value || typeof value !== 'object' || !Array.isArray(Reflect.get(value, 'items'))) {
+        throw new Error('kubernetes-read host returned an invalid list response.');
+      }
+      // typecast: Array.isArray above proves the reflected items field is an array before iterating it.
+      const items = Reflect.get(value, 'items') as unknown[];
+      const continueToken = Reflect.get(value, 'continueToken');
+      return {
+        // typecast: each list item came from the requested Kubernetes resource; toResourceObject validates object shape before typed spec/status exposure.
+        items: items.map((item) => toResourceObject(item as AnyKubernetesObject) as ResourceObject<TSpec, TStatus>),
+        ...(typeof continueToken === 'string' && continueToken.length > 0 ? { continueToken } : {}),
+      };
+    },
+  };
+}
+
 interface Recorder<TSpec extends object = object, TStatus extends object = object> {
   readonly scope: HandlerProxyScope<TSpec, TStatus>;
   result(): HandlerResult<TStatus>;
@@ -267,6 +345,8 @@ interface RecorderOptions {
   readonly event: HandlerEventType;
   readonly reconcileId: string;
   readonly capabilities: CapabilityClientSet;
+  readonly resources: Readonly<Record<string, AnyResourceDefinition>>;
+  readonly kubernetesRead?: KubernetesReadImport;
 }
 
 function createRecorder<TSpec extends object, TStatus extends object>(object: ResourceObject<TSpec, TStatus>, options: RecorderOptions): Recorder<TSpec, TStatus> {
@@ -287,6 +367,7 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
     ConfigMap: (config: ConfigMapFactoryConfig) => configMapFactory(config),
     StatefulSet: (config: KubernetesFactoryConfig) => kubernetesFactory('apps/v1', 'StatefulSet', config),
   };
+  const read = createReadClients(options.resources, options.reconcileId, options.kubernetesRead);
 
   // typecast: the literal object implements the overloaded HandlerProxyScope surface used by generated dispatcher calls.
   const scope = {
@@ -296,6 +377,7 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
     event: options.event,
     reconcileId: options.reconcileId,
     capabilities: options.capabilities,
+    read,
     names: {
       dnsSafe(input: string, nameOptions?: { readonly maxLength?: number }) {
         return input.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, nameOptions?.maxLength ?? 63);
@@ -535,6 +617,7 @@ function createContext(recorder: Recorder, object: AnyKubernetesObject): Handler
     event: recorder.scope.event,
     reconcileId: recorder.scope.reconcileId,
     capabilities: recorder.scope.capabilities,
+    read: recorder.scope.read,
     names: recorder.scope.names,
     k8s: recorder.scope.k8s,
     batch: recorder.scope.batch,
@@ -833,6 +916,10 @@ function stableHash(input: string): string {
     hash = (hash * 33) ^ input.charCodeAt(index);
   }
   return (hash >>> 0).toString(16);
+}
+
+function uncapitalize(value: string): string {
+  return `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`;
 }
 
 function cloneJson<T>(value: T): T {

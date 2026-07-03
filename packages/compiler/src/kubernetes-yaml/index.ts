@@ -38,13 +38,14 @@ export async function emitOperatorKubernetesYaml(request: KubernetesYamlRequest)
     const serviceAccountName = request.operator.deployment?.serviceAccountName ?? `${request.operator.name}-controller`;
     const image = request.manifest.spec.container ? imageRefString(request.manifest.spec.container.image) : 'ghcr.io/applik8s/applik8s-operator-host:dev';
     const resources = Object.values(request.operator.resources);
+    const ownedResources = resources.filter(isOwnedResource);
     const clusterRbac = requiresClusterRbac(resources);
     if (clusterRbac && !namespace) {
       throw new Error('Operators that own cluster-scoped resources must set deployment.namespace so ClusterRoleBinding can reference the ServiceAccount namespace.');
     }
     validateDeploymentOperationalSafety(request.operator, request.manifest);
     const documents = [
-      ...resources.map((resource) => crdDocument(resource, request.manifest)),
+      ...ownedResources.map((resource) => crdDocument(resource, request.manifest)),
       serviceAccountDocument(serviceAccountName, namespace, request.manifest),
       rbacRoleDocument(request.operator.name, request.manifest.spec.permissions, namespace, clusterRbac, request.manifest),
       rbacBindingDocument(request.operator.name, serviceAccountName, namespace, clusterRbac, request.manifest),
@@ -164,6 +165,10 @@ function crdDocument(resource: AnyResourceDefinition, manifest: OperatorManifest
       versions: resource.versions.map((version) => crdVersionDocument(resource, version)),
     },
   };
+}
+
+function isOwnedResource(resource: AnyResourceDefinition): boolean {
+  return resource.resourceOwnership !== 'external';
 }
 
 function crdVersionDocument(resource: AnyResourceDefinition, version: AnyResourceVersionDefinition) {

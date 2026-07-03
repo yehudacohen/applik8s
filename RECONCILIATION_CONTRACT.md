@@ -251,13 +251,15 @@ Target behavior:
 Current status:
 - Live runtime routes non-deleting objects with `metadata.generation <= 1` to a registered `created` handler when one exists, otherwise it falls back to `reconcile`.
 - Live runtime routes non-deleting objects with `metadata.generation > 1` to a registered `updated` handler when one exists, otherwise it falls back to `reconcile`.
+- For external watched resources that are not listed in `ownedCrds`, the runtime routes generationless objects to a registered `updated` handler only when the manifest explicitly declares a matching external watch for that GVK/event. This keeps `ConfigMap`, `Secret`, and other generationless Kubernetes resources reachable without weakening owned-CRD generation semantics.
 - Live runtime routes non-deleting objects with non-empty status to a registered `statusChanged` handler when the current status appears to have observed the current generation. This is a best-effort predicate over current object state, not a durable status event log.
+- For external watched resources with status but no `status.observedGeneration`, the runtime treats non-empty status as a best-effort `statusChanged` candidate only when the manifest explicitly declares a matching external `statusChanged` watch. This supports Kubernetes resources such as `Service` whose status does not follow applik8s owned-CRD observed-generation conventions.
 - Stale status, where `status.observedGeneration` is behind `metadata.generation`, routes to generation-based `created`/`updated` handlers before `statusChanged` so spec reconciliation is not skipped.
 - Deletion-timestamp objects do not route to generation-based `created` or `updated`; they route through `finalize`, then best-effort `deleted`, then reconcile fallback.
 - Host routing selects `finalize` first for deletion-timestamp objects with non-empty finalizers and a registered finalize handler. When generated handler metadata declares owned finalizer names, routing requires one of those finalizers to be present on the object.
 - Host preflight enforces declared finalizer ownership for finalizer mutations before effects, so a declared finalize handler cannot remove or add unrelated finalizers even if the operator has RBAC to patch the `/finalizers` subresource.
 - Host routing selects a registered `deleted` handler for other deletion-timestamp objects, including objects without finalizers.
-- Host contract tests prove `created`, `updated`, `statusChanged`, stale-status precedence, and reconcile fallback routing.
+- Host contract tests prove `created`, `updated`, `statusChanged`, stale-status precedence, external generationless updated routing, external status without observed-generation routing, scoped-watch routing, and reconcile fallback routing.
 - Live OrbStack e2e proves a generated `created` handler receives `event: "created"` for generation-1 objects.
 - Live OrbStack e2e proves a spec patch increments generation and dispatches to a generated `updated` handler receiving `event: "updated"`.
 - Runtime records core/v1 Event objects.

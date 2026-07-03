@@ -6,6 +6,24 @@ You write typed Kubernetes APIs and event listeners. `applik8s` compiles them in
 
 The result is not a sidecar script or a long-running Node process. Your TypeScript becomes reconciler logic evaluated by Kubernetes events through a WASM component loaded by a Rust operator.
 
+## v0.2 Flagship: TypeKro-Native GuestBook
+
+v0.2 adds the integrated application-composition path. `examples/guestbook.ts` is the flagship proof: one TypeScript program defines CRDs, installs an operator through a wrapped TypeKro composition, generates an HTTP server, serves cached indexed CRD data, buffers page-view counters, aggregates status, emits inspectable YAML/RBAC, and passes live local-cluster validation.
+
+Build the flagship artifacts:
+
+```sh
+bun run build:guestbook
+```
+
+Run the live GuestBook proof against an explicit local Kubernetes context:
+
+```sh
+APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/typekro-guestbook.e2e.test.ts
+```
+
+The important v0.2 boundary is honesty: GuestBook is Kubernetes-native application state, not a claim that CRDs are a general-purpose database. High-volume product data and storage-backed `app.model(...)` semantics are v0.3 work; v0.2 keeps those APIs fail-closed rather than pretending.
+
 ## A Kubernetes App In TypeScript
 
 This is the shape of the canonical example in `examples/imagejob.ts`: an `ImageJob` API where users point at an S3-compatible object store, ask for image formats, and the control plane drives the work.
@@ -237,17 +255,23 @@ APPLIK8S_E2E=1 APPLIK8S_E2E_CONTEXT=orbstack bun run test:e2e
 
 For the README live test, Ministack is installed from Docker Hub inside the test namespace and exposed at `http://ministack.media.svc.cluster.local:4566`.
 
+For a release-candidate pass, run the full v0.2 prerelease gate with live E2E enabled:
+
+```sh
+APPLIK8S_RELEASE_LIVE_E2E=1 APPLIK8S_E2E_CONTEXT=orbstack bun run check:prerelease
+```
+
 ## Documentation
 
 - `docs/imagejob-golden-path.md`
 - `docs/first-run.md`
 - `docs/typekro-golden-path.md`
 - `docs/generated-artifacts.md`
+- `docs/release-evidence-v0.2.md`
 - `docs/runtime-diagnostics.md`
 - `docs/api-reference.md`
 - `docs/troubleshooting.md`
 - `docs/kubernetes-compatibility.md`
-- `docs/release-evidence-v0.1.md`
 - `RECONCILIATION_CONTRACT.md`
 - `TESTING.md`
 - `RELEASE_NOTES.md`
