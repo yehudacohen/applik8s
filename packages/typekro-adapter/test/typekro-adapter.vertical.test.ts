@@ -273,6 +273,18 @@ describe('TypeKro adapter operation targets', () => {
     }
   });
 
+  it('builds generated operator install infrastructure on existing TypeKro Kubernetes factories', async () => {
+    const source = await readFile(new URL('../src/runtime.ts', import.meta.url), 'utf8');
+
+    expect(source).toContain("from 'typekro/kubernetes'");
+    expect(source).toContain('customResourceDefinition as typeKroCustomResourceDefinition');
+    expect(source).toContain('serviceAccount as typeKroServiceAccount');
+    expect(source).toContain('clusterRoleBinding as typeKroClusterRoleBinding');
+    expect(source).toContain('deployment as typeKroDeployment');
+    expect(source).toContain('function createKnownInstallResource');
+    expect(source).toContain('return withInstallReadiness(resource, createResource(');
+  });
+
   it('fails closed when TypeKro install specs request multiple operator replicas', () => {
     const { operator, manifest } = imageOperatorFixture();
     const result = asComposition(operator, manifest, { compositionName: 'image-pipeline', defaultNamespace: 'media-system' });

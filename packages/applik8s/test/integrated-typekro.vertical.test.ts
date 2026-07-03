@@ -1,10 +1,12 @@
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
-import { app, cel, IndexStore, inferRbac, kubernetesComposition, ModelStore, permissions, providers, resolveOperatorInstalls, resources, sdk, typeKro } from '@applik8s/applik8s';
+import { app, applicationGraphFor, cel, CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ModelStore, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, sdk, Secret, typeKro } from '@applik8s/applik8s';
+import type { ApplicationModelStoreProvider, ApplicationProviderToken } from '@applik8s/applik8s';
+import { serializeApplicationGraph } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { entity, field, label, metadata, type } from '../src/dsl.js';
 import * as kubernetesFactories from '../src/factories/kubernetes.js';
-import { simple, valkey } from '../src/factories.js';
+import { cnpg, simple, valkey } from '../src/factories.js';
 import { decoratedRouteMessage } from './fixtures/route-helpers.js';
 
 interface GeneratedRouteHandler {
@@ -87,6 +89,13 @@ describe('integrated TypeKro package surface', () => {
     expect(sdk.kubernetesComposition).toBe(kubernetesComposition);
     expect(providers.IndexStore).toBe(IndexStore);
     expect(providers.ModelStore).toBe(ModelStore);
+    expect(providers.CounterStore).toBe(CounterStore);
+    expect(providers.EventSource).toBe(EventSource);
+    expect(providers.Secret).toBe(Secret);
+    expect(providers.Queue).toBe(Queue);
+    expect(providers.ObjectStorage).toBe(ObjectStorage);
+    expect(providers.HttpExposure).toBe(HttpExposure);
+    expect(providers.CredentialStore).toBe(CredentialStore);
     expect(cel).toBeTypeOf('function');
   });
 
@@ -143,6 +152,133 @@ describe('integrated TypeKro package surface', () => {
       app.defaults({ models: 'postgres' });
       return { ready: true };
     })).toThrow(/app\.defaults\(\{ models: \.\.\. \}\) requires storage-backed app\.model semantics/);
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-counter-default-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesCounterDefaultApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.defaults({ counters: 'valkey' });
+      return { ready: true };
+    })).toThrow(/app\.defaults\(\{ counters: \.\.\. \}\) requires a storage-backed CounterStore implementation/);
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-events-default-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesEventsDefaultApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.defaults({ events: 'watch' });
+      return { ready: true };
+    })).toThrow(/app\.defaults\(\{ events: \.\.\. \}\) requires an EventSource implementation/);
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-expose-default-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesExposeDefaultApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.defaults({ expose: 'ingress' });
+      return { ready: true };
+    })).toThrow(/app\.defaults\(\{ expose: \.\.\. \}\) requires an HttpExposure implementation/);
+
+    const postgresModelStore: ApplicationModelStoreProvider = { kind: 'postgres', database: 'notes' };
+    const modelProviderComposition = sdk.kubernetesComposition({
+      name: 'notes-model-provider-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesModelProviderApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      const provider = app.provide(ModelStore, postgresModelStore);
+      expect(provider).toEqual({ kind: 'applicationProvider', token: ModelStore, implementation: postgresModelStore });
+      return { ready: true };
+    });
+    expect(applicationGraphFor(modelProviderComposition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore', implementation: 'postgres' }),
+    ]));
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-model-provider-does-not-enable-model-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesModelProviderDoesNotEnableModelApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      const provider = app.provide(ModelStore, postgresModelStore);
+      app.model(NoteEntity, { store: provider });
+      return { ready: true };
+    })).toThrow(/app\.model\("Note"\) requires a storage-backed ModelStore implementation/);
+
+    const untypedModelStoreToken: ApplicationProviderToken<unknown> = { name: 'ModelStore' };
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-postgres-model-provider-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesPostgresModelProviderApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.provide(untypedModelStoreToken, 'postgres');
+      return { ready: true };
+    })).toThrow(/app\.provide\(ModelStore, \.\.\.\) currently supports only the typed Postgres ModelStore provider declaration/);
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-counter-provider-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesCounterProviderApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.provide(CounterStore, 'valkey');
+      return { ready: true };
+    })).toThrow(/app\.provide\(CounterStore, \.\.\.\) requires a generated provider adapter/);
+
+    const reservedProviderTokens: readonly [ApplicationProviderToken<unknown>, string][] = [
+      [EventSource, 'EventSource'],
+      [Secret, 'Secret'],
+      [Queue, 'Queue'],
+      [ObjectStorage, 'ObjectStorage'],
+      [HttpExposure, 'HttpExposure'],
+      [CredentialStore, 'CredentialStore'],
+    ];
+    for (const [token, tokenName] of reservedProviderTokens) {
+      expect(() => sdk.kubernetesComposition({
+        name: `notes-${tokenName.toLowerCase()}-provider-app`,
+        apiVersion: 'notes.applik8s.dev/v1alpha1',
+        kind: `Notes${tokenName}ProviderApp`,
+        spec: type({}),
+        status: type({ ready: 'boolean' }),
+      }, (_spec, app) => {
+        app.provide(token, 'reserved');
+        return { ready: true };
+      })).toThrow(new RegExp(`app\\.provide\\(${tokenName}, \\.\\.\\.\\) requires a generated provider adapter`));
+    }
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-job-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesJobApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.job('migrate', { taskKind: 'migration' });
+      return { ready: true };
+    })).toThrow(/app\.job\("migrate"\) requires generated job runtime/);
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-schedule-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesScheduleApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.schedule('cleanup', { cron: '0 * * * *' });
+      return { ready: true };
+    })).toThrow(/app\.schedule\("cleanup"\) requires generated scheduled job runtime/);
   });
 
   it('supports composition-scoped app authoring with explicit operator and server registration', () => {
@@ -215,6 +351,12 @@ describe('integrated TypeKro package surface', () => {
     expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'RoleBinding', metadata: expect.objectContaining({ name: 'web-indexer' }) }));
     expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'web-indexer-source' }) }));
     expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'web-indexer' }) }));
+    expect(applicationGraphFor(composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'operator', name: 'notes-controller' }),
+    ]));
+    expect(applicationGraphFor(composition)?.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: { nodeId: 'operator.notes-controller' }, relationship: 'owns' }),
+    ]));
     const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
     const indexerSourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-indexer-source');
     const serverRole = composition.resources.find((resource) => resource.kind === 'Role' && resource.metadata.name === 'web');
@@ -260,6 +402,86 @@ describe('integrated TypeKro package surface', () => {
     expect(kroYaml).toContain('availableReplicas');
     expect(kroYaml).toContain('webDeployment.status.availableReplicas >= webDeployment.spec.replicas');
     expect(kroYaml).toContain('phase: "${webDeployment.status.availableReplicas >= webDeployment.spec.replicas ?');
+  });
+
+  it('attaches an inspectable application graph before TypeKro emits Kubernetes resources', () => {
+    const Note = sdk.crd({
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'Note',
+      spec: type({ message: 'string', count: 'number?' }),
+      status: type({ count: 'number?' }),
+    });
+    const byBook = Note.index('byBook', {
+      partitionBy: label('notes.applik8s.dev/book'),
+      orderBy: metadata.creationTimestamp.desc(),
+    });
+
+    const composition = sdk.kubernetesComposition({
+      name: 'notes-app-graph',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesAppGraph',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.defaults({ indexes: 'valkey' });
+      const appConfig = app.infra(kubernetesFactories.configMap({
+        id: 'appConfig',
+        apiVersion: 'v1',
+        kind: 'ConfigMap',
+        metadata: { name: 'app-config' },
+        data: { mode: 'graph-test' },
+      }));
+      expect(appConfig.kind).toBe('ConfigMap');
+      app.server('web', { resources: { Note }, indexes: { byBook } }, (server) => {
+        server.get('/notes', async () => byBook.query('main', { limit: 10 }));
+        server.post('/views', async () => Note.increment({ name: 'main', spec: { message: 'main' } }));
+      });
+      app.aggregate('noteStats', {
+        source: byBook,
+        target: {
+          resource: Note,
+          name: 'main',
+          status: (stats: { readonly count: number }) => ({ count: stats.count }),
+        },
+        initial: { count: 0 },
+        reduce: (stats: { readonly count: number }) => ({ count: stats.count + 1 }),
+      });
+      return { ready: true };
+    });
+
+    expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'web' }) }));
+    expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'note-stats-aggregate' }) }));
+    expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'app-config' }) }));
+    expect(composition.factory('kro').toYaml()).toContain('notes-app-graph');
+
+    const graph = applicationGraphFor(composition);
+    expect(graph).toMatchObject({
+      apiVersion: 'applik8s.appGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'notes-app-graph' },
+    });
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'server', name: 'web' }),
+      expect.objectContaining({ kind: 'crd', name: 'Note' }),
+      expect.objectContaining({ kind: 'index', name: 'byBook' }),
+      expect.objectContaining({ kind: 'provider', name: 'IndexStore', implementation: 'valkey' }),
+      expect.objectContaining({ kind: 'aggregate', name: 'noteStats' }),
+      expect.objectContaining({ kind: 'counter', name: 'web.Note' }),
+      expect.objectContaining({ kind: 'typeKroResource', name: 'app-config' }),
+    ]));
+    expect(graph?.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ relationship: 'dependsOn' }),
+      expect.objectContaining({ from: { nodeId: 'provider.index-store' }, to: { nodeId: 'index.by-book' }, relationship: 'provides' }),
+      expect.objectContaining({ relationship: 'reads' }),
+      expect.objectContaining({ relationship: 'emits' }),
+    ]));
+    const nodeIds = graph?.nodes.map((node) => node.id) ?? [];
+    const edgeIds = graph?.edges.map((edge) => `${edge.from.nodeId}:${edge.relationship}:${edge.to.nodeId}`) ?? [];
+    expect(nodeIds).toEqual([...nodeIds].sort());
+    expect(edgeIds).toEqual([...edgeIds].sort());
+    expect(graph ? serializeApplicationGraph(graph) : '').toContain('"kind":"ApplicationGraph"');
+    expect(graph?.compatibility.documentedInternalContracts).toContain('ApplicationGraph');
+    expect(graph?.compatibility.postV3Surfaces).toContain('workload-movement-operator');
   });
 
   it('infers app.server resource CRUD RBAC from typed resource actions', () => {
@@ -375,9 +597,16 @@ describe('integrated TypeKro package surface', () => {
     });
 
     const valkey = composition.resources.find((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'shared-index');
+    const valkeyService = composition.resources.find((resource) => resource.kind === 'Service' && resource.metadata.name === 'shared-index');
+    const valkeyConnection = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'shared-index-applik8s-index');
     const indexer = composition.resources.find((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'web-indexer');
     const serverSource = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
-    expect(valkey).toMatchObject({ metadata: { name: 'shared-index' } });
+    expect(valkey).toMatchObject({
+      metadata: { name: 'shared-index' },
+      spec: { template: { spec: { containers: [expect.objectContaining({ name: 'valkey', image: 'valkey/valkey:8.1-alpine' })] } } },
+    });
+    expect(valkeyService).toMatchObject({ spec: { ports: [{ name: 'valkey', port: 6379, targetPort: 6379 }] } });
+    expect(valkeyConnection).toMatchObject({ data: { backend: 'valkey', host: 'shared-index.default.svc.cluster.local', port: '6379' } });
     expect(indexer).toMatchObject({ metadata: { name: 'web-indexer' } });
     expect(JSON.stringify(serverSource)).toContain('shared-index.default.svc.cluster.local');
     expect(composition.factory('kro').toYaml()).toContain('availableReplicas');
@@ -805,9 +1034,19 @@ describe('integrated TypeKro package surface', () => {
   });
 
   it('re-exports TypeKro factories through the applik8s factories surface', () => {
+    expect(cnpg.cluster).toBeTypeOf('function');
     expect(simple.Deployment).toBeTypeOf('function');
     expect(valkey.valkey).toBeTypeOf('function');
     expect(kubernetesFactories).toBeTypeOf('object');
+  });
+
+  it('builds generated app infrastructure on existing TypeKro Kubernetes factories', async () => {
+    const source = await readFile(new URL('../src/application.ts', import.meta.url), 'utf8');
+
+    expect(source).toContain("from 'typekro/kubernetes'");
+    expect(source).toContain('deployment as typeKroDeployment');
+    expect(source).toContain('serviceAccount as typeKroServiceAccount');
+    expect(source).not.toMatch(/\bcreateResource\s*\(/);
   });
 
   it('declares package exports for the v0.2 TypeKro integration subpaths', async () => {

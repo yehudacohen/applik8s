@@ -70,6 +70,22 @@ The required v0.2 TypeKro story is one package for infrastructure composition an
 - verify schema-first `entity(...)` can materialize as CRDs through `app.crd(entity, { apiVersion, ... })`
 - verify `app.model(entity)` and `ModelStore` fail closed until real storage-backed model semantics are implemented
 
+## applik8s v0.3 Substrate-Freeze Product Stories
+
+The required v0.3 framework story is stable enough that a future workload-movement operator can depend on applik8s contracts without large rewrites after v0.3:
+
+- define schema-first entities and materialize them as either CRDs or storage-backed models with explicit backend semantics
+- bind app-scoped providers through `app.defaults(...)` and `app.provide(...)` using stable capability interfaces such as `ModelStore`, `IndexStore`, `CounterStore`, `EventSource`, `Secret`, `Queue`, `ObjectStorage`, `HttpExposure`, and credential material
+- compile an app into an explicit app graph IR before emitting Kubernetes, TypeKro, generated runtime, RBAC, and diagnostics artifacts
+- inspect generated artifacts and see the same app graph relationships represented in manifests, runtime metadata, route/job diagnostics, and provider dependencies
+- define generated jobs for preflight, migration, cleanup, repair, and maintenance-style tasks without hand-authoring Deployments or one-off scripts
+- model durable phase/status progress with observed generation, step status, retry policy, idempotency key, last successful step, terminal failure, blocked/progressing/ready/finalized conditions, and partial-failure diagnostics
+- use stable operation-target contracts for `ctx.apply(ref)`, `ctx.delete(ref)`, TypeKro operation targets, dry-run/plan output, owner references, finalizers, and RBAC inference
+- use stable watch/scope contracts for exact objects, finite object sets, label selectors, field selectors, mixed TypeKro resource groups, and external watched resources
+- prove CRD/schema compatibility rules for v0.3-era domain CRDs without requiring conversion webhooks or stored-version migration in v0.3
+- prove generated server, model, indexer, aggregate, counter, job, Kubernetes-client, diagnostics, and provider-adapter runtimes are modular artifacts or templates with focused tests rather than one monolithic DSL implementation
+- publish a v0.3 compatibility boundary that marks stable public APIs, documented internal contracts, experimental seams, and post-v0.3 surfaces
+
 ## Post-v0.3 Workload Movement Product Stories
 
 The required workload-movement story is a real operator built after the applik8s v0.3 framework foundation:
@@ -129,6 +145,20 @@ The v0.2 character and vertical suites should add these boundaries:
 - generated app-server route inference rejects computed resource access unless explicit permissions make the boundary unambiguous
 - generated server source ConfigMaps are KRO-template-safe and fail closed if raw JavaScript template placeholders remain
 - generated TypeKro apply scripts wait for KRO-created stack APIs before applying graph instances
+
+## v0.3 Substrate-Freeze Safety Tests
+
+The v0.3 character, vertical, generated-artifact, and live suites should add these boundaries:
+
+- app graph IR is deterministic, inspectable, and stable across generated YAML, TypeKro resources, runtime metadata, and diagnostics
+- provider bindings fail closed when a model, index, counter, event source, secret, queue, object storage, HTTP exposure, or credential requirement is missing or ambiguous
+- model-backed entities expose storage, migration, constraint, index, transaction, retention, and query semantics without pretending they are portable to CRD-backed resources
+- generated jobs are idempotent, restart-safe, permissioned, and observable through durable phase/status conditions
+- operation targets preserve ordering, dry-run/plan output, owner/finalizer semantics, and RBAC inference across handlers, jobs, generated servers, and TypeKro resources
+- watch scopes reject unlowerable predicates and route only exact, finite, selector, field-selector, or mixed-resource scopes that the manifest/runtime can enforce
+- CRD/schema compatibility fixtures distinguish stable v0.3 rules from explicitly post-v0.3 conversion-webhook or stored-version migration support
+- generated runtime modules share Kubernetes clients, diagnostics, source maps, and failure taxonomy instead of duplicating unsafe ad hoc clients
+- post-v0.3 surfaces such as workload movement, generic workflow orchestration, broad provider ecosystems, Helm/OLM/OCI, and SLSA/SBOM/admission enforcement remain absent or explicitly experimental
 
 ## Post-v0.3 Workload Movement Safety Tests
 

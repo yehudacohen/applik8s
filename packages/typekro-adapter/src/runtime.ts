@@ -7,6 +7,7 @@ import type { Type } from 'arktype';
 import { type as arktype } from 'arktype';
 import type { CallableComposition, Enhanced, KroCompatibleType, KubernetesResource, MagicAssignableShape, PublicFactoryOptions, ResourceStatus, SerializationOptions } from 'typekro';
 import { createResource, kubernetesComposition as createTypeKroComposition } from 'typekro';
+import { clusterRole as typeKroClusterRole, clusterRoleBinding as typeKroClusterRoleBinding, customResourceDefinition as typeKroCustomResourceDefinition, deployment as typeKroDeployment, role as typeKroRole, roleBinding as typeKroRoleBinding, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import type {
   Applik8sTypeKroAdapterApi,
   InferTypeKroRbacFunction,
@@ -1065,8 +1066,44 @@ function createCrdFactories<TCapabilities extends CapabilityClientSet, TResource
 }
 
 function createInstallResource(resource: KubernetesManifestResource): Enhanced<JsonObject, JsonObject> {
+  const factoryResource = createKnownInstallResource(resource);
+  if (factoryResource) {
+    return withInstallReadiness(resource, factoryResource);
+  }
   // typecast: the adapter emits plain Kubernetes resources with supported top-level fields; TypeKro's KubernetesResource type is generated from client models and is stricter than this JSON manifest boundary.
   return withInstallReadiness(resource, createResource(resource as unknown as KubernetesResource<JsonObject, JsonObject>, { scope: resourceScope(resource) }));
+}
+
+function createKnownInstallResource(resource: KubernetesManifestResource): Enhanced<JsonObject, JsonObject> | undefined {
+  if (resource.kind === 'CustomResourceDefinition') {
+    // typecast: install manifests are validated Kubernetes JSON documents; the TypeKro CRD factory expects the generated Kubernetes client model shape for the same document.
+    return typeKroCustomResourceDefinition(resource as never) as unknown as Enhanced<JsonObject, JsonObject>;
+  }
+  if (resource.kind === 'ServiceAccount') {
+    // typecast: install manifests are validated Kubernetes JSON documents; the TypeKro ServiceAccount factory expects the generated Kubernetes client model shape for the same document.
+    return typeKroServiceAccount(resource as never) as unknown as Enhanced<JsonObject, JsonObject>;
+  }
+  if (resource.kind === 'Role') {
+    // typecast: install manifests are validated Kubernetes JSON documents; the TypeKro Role factory expects the generated Kubernetes client model shape for the same document.
+    return typeKroRole(resource as never) as unknown as Enhanced<JsonObject, JsonObject>;
+  }
+  if (resource.kind === 'ClusterRole') {
+    // typecast: install manifests are validated Kubernetes JSON documents; the TypeKro ClusterRole factory expects the generated Kubernetes client model shape for the same document.
+    return typeKroClusterRole(resource as never) as unknown as Enhanced<JsonObject, JsonObject>;
+  }
+  if (resource.kind === 'RoleBinding') {
+    // typecast: install manifests are validated Kubernetes JSON documents; the TypeKro RoleBinding factory expects the generated Kubernetes client model shape for the same document.
+    return typeKroRoleBinding(resource as never) as unknown as Enhanced<JsonObject, JsonObject>;
+  }
+  if (resource.kind === 'ClusterRoleBinding') {
+    // typecast: install manifests are validated Kubernetes JSON documents; the TypeKro ClusterRoleBinding factory expects the generated Kubernetes client model shape for the same document.
+    return typeKroClusterRoleBinding(resource as never) as unknown as Enhanced<JsonObject, JsonObject>;
+  }
+  if (resource.kind === 'Deployment') {
+    // typecast: install manifests are validated Kubernetes JSON documents; the TypeKro Deployment factory expects the generated Kubernetes client model shape for the same document.
+    return typeKroDeployment(resource as never) as unknown as Enhanced<JsonObject, JsonObject>;
+  }
+  return undefined;
 }
 
 function withInstallReadiness(resource: KubernetesManifestResource, enhanced: Enhanced<JsonObject, JsonObject>): Enhanced<JsonObject, JsonObject> {

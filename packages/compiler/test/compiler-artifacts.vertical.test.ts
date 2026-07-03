@@ -587,10 +587,109 @@ export const imagePipeline = sdk.operator({
       expect(source).not.toContain('GuestBookPageViewBucket.get');
       expect(source).not.toContain('GuestBookPageViewBucket.create');
       expect(source).not.toContain('GuestBookPageViewBucket.patch');
+
+      expect(result.value.artifacts.applicationGraphJsonPath).toBe(join(dir, 'dist', 'typekro', 'application-graph.json'));
+      const graph = JSON.parse(await readFile(result.value.artifacts.applicationGraphJsonPath ?? '', 'utf8'));
+      expect(graph).toMatchObject({ apiVersion: 'applik8s.appGraph/v1alpha1', kind: 'ApplicationGraph', metadata: { name: 'guestbook-stack' } });
+      expect(graph.nodes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'server', name: 'web' }),
+        expect.objectContaining({ kind: 'counter', name: 'web.GuestBookPageViewBucket' }),
+        expect.objectContaining({ kind: 'provider', interface: 'IndexStore' }),
+      ]));
+      expect(graph.edges).toEqual(expect.arrayContaining([
+        expect.objectContaining({ relationship: 'provides' }),
+        expect.objectContaining({ relationship: 'emits' }),
+      ]));
+      expect(graph.nodes.map((node: { readonly id: string }) => node.id)).toEqual([...graph.nodes.map((node: { readonly id: string }) => node.id)].sort());
+      expect(graph.edges.map((edge: { readonly from: { readonly nodeId: string }; readonly relationship: string; readonly to: { readonly nodeId: string } }) => `${edge.from.nodeId}:${edge.relationship}:${edge.to.nodeId}`)).toEqual([...graph.edges.map((edge: { readonly from: { readonly nodeId: string }; readonly relationship: string; readonly to: { readonly nodeId: string } }) => `${edge.from.nodeId}:${edge.relationship}:${edge.to.nodeId}`)].sort());
+      expect(graph.compatibility).toMatchObject({
+        documentedInternalContracts: expect.arrayContaining(['ApplicationGraph']),
+        stablePublicApis: expect.arrayContaining(['Resource.increment', 'app.aggregate', 'app.crd', 'app.server', 'sdk.kubernetesComposition']),
+        experimentalSurfaces: expect.arrayContaining(['app.job', 'app.model', 'provider.ModelStore']),
+        postV3Surfaces: expect.arrayContaining(['workload-movement-operator']),
+      });
+      expect(result.value.artifacts.manifest.spec.applicationGraph).toMatchObject({
+        apiVersion: 'applik8s.appGraph/v1alpha1',
+        path: result.value.artifacts.applicationGraphJsonPath,
+        digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   }, 120_000);
+
+  it('fails TypeKro composition compilation when the attached app graph has invalid provider bindings', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-bad-app-graph-'));
+    try {
+      const entrypoint = join(dir, 'entrypoint.ts');
+      await writeFile(entrypoint, `
+const composition = {
+  operatorInstalls: [],
+  resources: [],
+  resolveOperatorInstalls() {
+    return { ok: true, value: composition };
+  },
+};
+
+Object.defineProperty(composition, '__applik8sApplicationGraph', {
+  value: {
+    apiVersion: 'applik8s.appGraph/v1alpha1',
+    kind: 'ApplicationGraph',
+    metadata: { name: 'bad-provider-graph' },
+    nodes: [
+      {
+        id: 'model.entry',
+        kind: 'model',
+        name: 'Entry',
+        stability: 'experimental',
+        entity: { name: 'Entry' },
+        store: { interface: 'ModelStore', nodeId: 'provider.model.missing' },
+        schema: { identity: ['id'], constraints: [], indexes: [], migrations: { strategy: 'none', compatibility: 'schemaCompatibleOnly' }, transactions: 'supported' },
+        materialization: {
+          mode: 'providerBacked',
+          provider: { interface: 'ModelStore', nodeId: 'provider.model.missing' },
+          backingResources: [],
+          connection: {},
+          reconciliation: { ownership: 'application', schemaDrift: 'failClosed', deletionPolicy: 'retain' },
+        },
+      },
+    ],
+    edges: [],
+    compatibility: { stablePublicApis: [], documentedInternalContracts: ['ApplicationGraph'], experimentalSurfaces: [], postV3Surfaces: [] },
+  },
+});
+
+export const badProviderGraph = composition;
+`);
+
+      const result = await compileTypeKroComposition({
+        entrypoint,
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: {
+          deterministicBuild: true,
+          allowEnvironmentAccess: false,
+          allowFilesystemAccess: false,
+          allowNetworkAccess: false,
+          allowedHostImports: [],
+          sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
+        },
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toMatchObject({
+          code: 'COMPATIBILITY_FAILED',
+          message: expect.stringContaining('Application graph provider bindings are invalid'),
+        });
+        expect(result.error.message).toContain('provider.model.missing');
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 
   it('statically serializes operators that use raw ArkType schemas with inferred CRD types', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-arktype-static-'));

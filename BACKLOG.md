@@ -26,7 +26,7 @@ Roadmap work should use these tags so each milestone scope stays ambitious but h
 - `[v0.1-safety]`: release-blocking correctness, security, compatibility, or operational safety work.
 - `[v0.2-typekro]`: required for applik8s v0.2 full TypeKro integration and the single-package integrated UX.
 - `[v0.2-api]`: required for applik8s v0.2 typed Kubernetes API, application DSL, CRUD ergonomics, and permission bundle UX.
-- `[v0.3-framework]`: required for applik8s v0.3 as a serious infrastructure-from-code framework, including typed models, explicit storage semantics, migrations, and production-grade app runtime behavior.
+- `[v0.3-framework]`: required for applik8s v0.3 as a serious infrastructure-from-code framework and substrate-freeze release, including typed models, explicit storage semantics, migrations, generated jobs, stable app graph/runtime contracts, and production-grade app behavior.
 - `[movement-v0.1]`: required for the first serious workload-movement operator built after applik8s v0.3 foundation work.
 - `[post-v0.1]`: important, but should not block the first public release.
 - `[later]`: strategic future work that should stay visible without expanding v0.1.
@@ -118,9 +118,9 @@ v0.2 should not require:
 - `[later]` Ambient untyped Kubernetes clients, broad dynamic API discovery from handlers, or direct in-handler Kubernetes writes outside operation plans.
 - `[later]` Production multi-cluster movement guarantees outside the supported workload-movement scope.
 
-## v0.3 Infrastructure-From-Code Framework Release Bar
+## v0.3 Infrastructure-From-Code Framework And Substrate-Freeze Release Bar
 
-Purpose: turn the v0.2 TypeKro-native application proof into a serious infrastructure-from-code framework with honest state semantics, typed app-data models, real storage backends, production-grade generated server/runtime behavior, and migration/diagnostic discipline.
+Purpose: turn the v0.2 TypeKro-native application proof into a serious infrastructure-from-code framework with honest state semantics, typed app-data models, real storage backends, production-grade generated server/runtime behavior, and migration/diagnostic discipline. v0.3 should also freeze the applik8s substrate contracts that a future workload-movement operator can depend on without large API rewrites after v0.3.
 
 applik8s v0.3 should let an infrastructure/application author:
 
@@ -134,15 +134,27 @@ applik8s v0.3 should let an infrastructure/application author:
 - `[v0.3-framework]` Add first-class typed `config(...)` and `secret(...)` primitives for environment variables, mounted files, Kubernetes Secret/ConfigMap references, generated RBAC, and redaction-aware diagnostics.
 - `[v0.3-framework]` Add explicit `expose(...)` or equivalent ingress/gateway primitives for Service, Gateway/Ingress, TLS/cert-manager, hostnames, and status URL projection.
 - `[v0.3-framework]` Add `job(...)` and `schedule(...)` primitives for durable background work, retries, cleanup, maintenance, and migration-style tasks.
+- `[v0.3-framework]` Define and test a stable app graph IR for servers, operators, CRDs, models, indexes, aggregates, counters, jobs, providers, permissions, generated workloads, and TypeKro resources before lowering to Kubernetes/TypeKro artifacts.
+- `[v0.3-framework]` Stabilize provider interfaces for `ModelStore`, `IndexStore`, `CounterStore`, `EventSource`, `Secret`, `Queue`, `ObjectStorage`, `HttpExposure`, and credential material so applications depend on contracts rather than concrete infrastructure helpers.
+- `[v0.3-framework]` Add durable phase/status semantics for generated jobs and app-level processes: phase, step status, observed generation, retry policy, idempotency key, last successful step, terminal failure, blocked/progressing/ready/finalized conditions, and partial-failure diagnostics.
+- `[v0.3-framework]` Stabilize operation-target contracts for `ctx.apply(ref)`, `ctx.delete(ref)`, TypeKro operation targets, dry-run/plan output, owner references, finalizers, and RBAC inference.
+- `[v0.3-framework]` Stabilize watch/scope contracts for exact objects, finite object sets, label selectors, field selectors, mixed TypeKro resource groups, and external watched resources.
+- `[v0.3-framework]` Define CRD/schema compatibility rules for v0.3-era domain CRDs, including what is stable before conversion webhooks or stored-version migration land.
+- `[v0.3-framework]` Split generated app/runtime implementation into maintainable modules for server runtime, model runtime, indexer, aggregate worker, counter flushing, job runner, Kubernetes client, diagnostics, and provider adapters.
+- `[v0.3-framework]` Publish a v0.3 release compatibility policy that marks stable public APIs, documented internal contracts, experimental seams, and post-v0.3 surfaces.
 - `[v0.3-framework]` Add basic observability declarations for generated servers, indexers, jobs, and operators: health/readiness, structured logs, metrics hooks, events, replay artifacts where applicable, and source-mapped failure reports.
 - `[v0.3-framework]` Make unsupported cross-backend assumptions fail closed. Shared ergonomics must not hide differences between Kubernetes watches, SQL transactions, cache consistency, and generated model events.
-- `[v0.3-framework]` Provide a serious flagship or pressure test, likely a workload-movement or tenant/platform control-plane application, showing CRDs for control-plane state, models for app data where needed, real storage, generated servers, jobs, and TypeKro infrastructure as one typed unit.
+- `[v0.3-framework]` Provide a serious substrate pressure test, likely a tenant/platform control-plane application rather than workload movement itself, showing CRDs for control-plane state, models for app data where needed, real storage, generated servers, jobs, and TypeKro infrastructure as one typed unit.
 
 v0.3 should not require:
 
 - `[later]` Transparent portability of arbitrary model code across CRD, SQL, document, queue, and cache backends.
 - `[later]` Hiding Kubernetes, TypeKro, database, or cache operational semantics behind one universal object model.
 - `[later]` Building a general web framework unrelated to Kubernetes/infrastructure composition.
+- `[movement-v0.1]` Building the workload-movement operator itself, or implementing full stateless/stateful movement, beyond freezing the applik8s contracts it will depend on.
+- `[later]` Generic workflow orchestration beyond Kubernetes-native generated jobs and durable phase/status primitives.
+- `[later]` Broad external provider ecosystem coverage beyond the concrete providers needed to prove stable v0.3 seams.
+- `[later]` Helm, Kustomize, OLM, OCI, SLSA, SBOM, or admission-policy enforcement, unless needed only as documented compatibility posture.
 
 ## Post-v0.3 Workload Movement Release Bar
 

@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
 import type {
   AnyResourceDefinition,
+  ApplicationGraph,
+  ApplicationGraphArtifactReference,
   BundleArtifact,
   Diagnostic,
   JsonObject,
@@ -13,6 +15,7 @@ import type {
   OperatorManifest,
   Result,
 } from '@applik8s/core';
+import { applicationGraphArtifactFileName, applicationGraphMetadataProperty, serializeApplicationGraph, validateApplicationGraphProviderBindings } from '@applik8s/core';
 import { imageRefString } from '@applik8s/typetainer';
 import { build } from 'esbuild';
 import { parseAllDocuments, stringify } from 'yaml';
@@ -111,6 +114,7 @@ export interface TypeKroCompositionBundleManifest extends JsonObject {
     readonly exportName?: string;
     readonly resourceCount: number;
     readonly operators: readonly TypeKroCompositionOperatorArtifactReference[];
+    readonly applicationGraph?: ApplicationGraphArtifactReference;
   };
 }
 
@@ -129,6 +133,7 @@ export interface TypeKroCompositionArtifacts {
   readonly applyScriptPath: string;
   readonly resourceYamlPaths: readonly string[];
   readonly instanceYamlPaths: readonly string[];
+  readonly applicationGraphJsonPath?: string;
   readonly operatorArtifacts: readonly TypeKroCompositionOperatorArtifacts[];
 }
 
@@ -155,6 +160,7 @@ interface EmitTypeKroCompositionArtifactsRequest {
   readonly exportName?: string;
   readonly composition: CompiledTypeKroComposition;
   readonly operatorCompiles: readonly CompileResult[];
+  readonly applicationGraph?: ApplicationGraph;
 }
 
 const defaultStages: readonly CompilerPipelineStageName[] = [
@@ -234,11 +240,19 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
   if (!resolvedComposition.ok) {
     return resolvedComposition;
   }
+  const applicationGraph = applicationGraphForComposition(composition.value);
+  if (applicationGraph) {
+    const graphDiagnostics = validateApplicationGraphProviderBindings(applicationGraph);
+    if (graphDiagnostics.length > 0) {
+      return error('COMPATIBILITY_FAILED', `Application graph provider bindings are invalid: ${graphDiagnostics.map((diagnostic) => diagnostic.message).join('; ')}`);
+    }
+  }
   const artifacts = await emitTypeKroCompositionArtifacts({
     entrypoint: request.entrypoint,
     outDir: join(outputDirectory(request), 'typekro'),
     composition: resolvedComposition.value,
     operatorCompiles,
+    ...(applicationGraph ? { applicationGraph } : {}),
     ...(composition.value.name ? { exportName: composition.value.name } : {}),
   });
   if (!artifacts.ok) {
@@ -274,10 +288,15 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const combinedYamlPath = join(request.outDir, 'resources.yaml');
     const applyScriptPath = join(request.outDir, 'apply.sh');
     const templateManifestListPath = join(request.outDir, 'template-manifests.txt');
+    const applicationGraphJsonPath = request.applicationGraph ? join(request.outDir, applicationGraphArtifactFileName) : undefined;
     const resourceYamlPaths: string[] = [];
     const instanceYamlPaths: string[] = [];
     const templateFingerprints = typeKroTemplateResourceFingerprints(resources);
     const templateManifestFileNames: string[] = [];
+    if (request.applicationGraph && applicationGraphJsonPath) {
+      await writeFile(applicationGraphJsonPath, serializeApplicationGraph(request.applicationGraph));
+    }
+    const applicationGraphDigest = applicationGraphJsonPath ? await digestFile(applicationGraphJsonPath) : undefined;
 
     const manifest: TypeKroCompositionBundleManifest = {
       apiVersion: 'applik8s.dev/v1alpha1',
@@ -289,6 +308,13 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         entrypoint: request.entrypoint,
         ...(request.exportName ? { exportName: request.exportName } : {}),
         resourceCount: resources.length,
+        ...(request.applicationGraph && applicationGraphJsonPath && applicationGraphDigest ? {
+          applicationGraph: {
+            apiVersion: request.applicationGraph.apiVersion,
+            path: applicationGraphJsonPath,
+            digest: applicationGraphDigest,
+          },
+        } : {}),
         operators: request.operatorCompiles.map((compiled) => ({
           name: compiled.manifest.metadata.name,
           manifest: compiled.artifacts.manifestJsonPath,
@@ -332,6 +358,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         applyScriptPath,
         resourceYamlPaths,
         instanceYamlPaths,
+        ...(applicationGraphJsonPath ? { applicationGraphJsonPath } : {}),
         operatorArtifacts: request.operatorCompiles.map((compiled) => ({
           operatorName: compiled.manifest.metadata.name,
           outDir: dirname(compiled.artifacts.manifestJsonPath),
@@ -342,6 +369,14 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
   } catch (cause) {
     return error('BUNDLE_INVALID', cause instanceof Error ? cause.message : 'Failed to emit TypeKro composition artifacts.');
   }
+}
+
+function applicationGraphForComposition(composition: object): ApplicationGraph | undefined {
+  const graph = Reflect.get(composition, applicationGraphMetadataProperty);
+  return graph && typeof graph === 'object' && Reflect.get(graph, 'apiVersion') === 'applik8s.appGraph/v1alpha1' && Reflect.get(graph, 'kind') === 'ApplicationGraph'
+    // typecast: composition graph metadata is attached by @applik8s/applik8s using the shared core property key and is structurally checked before narrowing here.
+    ? graph as ApplicationGraph
+    : undefined;
 }
 
 function compiledTypeKroComposition(value: unknown): Result<CompiledTypeKroComposition> {

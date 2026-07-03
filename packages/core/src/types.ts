@@ -7,3 +7,5 @@ export type * from './handler.js';
 export type * from './runtime.js';
 export type * from './manifest.js';
 export type * from './lifecycle.js';
+export type * from './application-graph.js';
+export { applicationGraphArtifactFileName, applicationGraphMetadataProperty, applicationGraphNodeKinds, applicationProviderInterfaceKinds, isApplicationGraphNodeKind, isApplicationProviderInterfaceKind, normalizeApplicationGraph, serializeApplicationGraph, validateApplicationGraphProviderBindings } from './application-graph.js';

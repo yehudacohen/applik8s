@@ -1,16 +1,23 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { AnyResourceDefinition, JsonValue, OperatorDeploymentOptions, ResourceDefinition, ResourceIndex } from '@applik8s/core';
+import { applicationGraphMetadataProperty } from '@applik8s/core';
+import type { AnyResourceDefinition, ApplicationGraph, ApplicationProviderInterfaceKind, JsonValue, OperatorDeploymentOptions, ResourceDefinition, ResourceIndex } from '@applik8s/core';
 import type { CrdOptions } from '@applik8s/sdk';
 import { sdk as baseSdk, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
 import type { TypeKroListenerComposition, TypeKroListenerCompositionDefinition } from '@applik8s/typekro-adapter';
 import { typeKro } from '@applik8s/typekro-adapter';
 import { buildSync, transformSync } from 'esbuild';
 import type { Enhanced, KroCompatibleType, MagicAssignableShape, SerializationOptions } from 'typekro';
-import { createResource } from 'typekro';
+import { configMap as typeKroConfigMap, deployment as typeKroDeployment, role as typeKroRole, roleBinding as typeKroRoleBinding, service as typeKroService, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import { valkey as typeKroValkey } from 'typekro/valkey';
+import { addApplicationGraphEdge, addApplicationGraphNode, applicationGraphFromState, isApplicationGraph, type ApplicationGraphState } from './application-graph-state.js';
+import { applyApplicationProvider, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, defaultApplicationIndexBackend, defaultApplicationIndexProvider, isValkeyIndexDefault } from './application-providers.js';
+import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
 import type { EntityDefinition } from './dsl.js';
+
+export { CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, providers, Queue, Secret } from './application-providers.js';
+export type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationPostgresModelStoreProvider, ApplicationProviderBinding, ApplicationProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
 
 export interface KubernetesApplicationScope {
   readonly api: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
@@ -18,6 +25,9 @@ export interface KubernetesApplicationScope {
   operator<TBinding>(operator: (options: OperatorDeploymentOptions) => TBinding, options: OperatorDeploymentOptions): TBinding;
   crd<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options: ApplicationCrdOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus>;
   model<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options?: ApplicationModelOptions): never;
+  infra<TResource extends object>(resource: TResource): TResource;
+  job(name: string, options?: ApplicationJobOptions): never;
+  schedule(name: string, options?: ApplicationScheduleOptions): never;
   defaults(defaults: ApplicationDefaults): ApplicationDefaultsBinding;
   provide<TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): ApplicationProviderBinding<TImplementation>;
   aggregate<TStats extends object, TEvent extends object>(name: string, options: ApplicationAggregateOptions<TStats, TEvent>): ApplicationAggregateBinding<TStats, TEvent>;
@@ -31,7 +41,18 @@ export type ApplicationCrdOptions<TSpec extends object, TStatus extends object> 
 
 export interface ApplicationModelOptions {
   readonly name?: string;
-  readonly store?: unknown;
+  readonly store?: ApplicationModelStoreProvider | ApplicationProviderBinding<ApplicationModelStoreProvider>;
+}
+
+export interface ApplicationJobOptions {
+  readonly taskKind?: 'preflight' | 'migration' | 'cleanup' | 'repair' | 'maintenance' | 'custom';
+  readonly image?: string;
+  readonly command?: readonly string[];
+  readonly args?: readonly string[];
+}
+
+export interface ApplicationScheduleOptions extends ApplicationJobOptions {
+  readonly cron?: string;
 }
 
 export interface ApplicationServerOptions {
@@ -57,20 +78,6 @@ export interface ApplicationServerOptions {
   readonly captures?: Readonly<Record<string, ApplicationServerCaptureValue>>;
   readonly cache?: readonly ResourceIndex<object, object>[];
   readonly indexBackend?: ApplicationIndexBackend;
-}
-
-export type ApplicationIndexBackend = ApplicationValkeyIndexBackend;
-
-export interface ApplicationValkeyIndexBackend {
-  readonly kind: 'valkey';
-  readonly provisioner?: 'deployment' | 'hyperspike';
-  readonly name?: string;
-  readonly namespace?: string;
-  readonly host?: string;
-  readonly port?: number;
-  readonly image?: string;
-  readonly provision?: boolean;
-  readonly spec?: Readonly<Record<string, unknown>>;
 }
 
 export interface ApplicationPermissionRule {
@@ -179,11 +186,9 @@ interface ApplicationServerPermissionInferenceRequest {
   readonly explicit: readonly ApplicationPermissionRule[];
 }
 
-interface ApplicationScopeState {
+interface ApplicationScopeState extends ApplicationGraphState, ApplicationProviderState {
   readonly resources: Record<string, AnyResourceDefinition>;
   readonly indexes: Record<string, ResourceIndex<object, object>>;
-  readonly defaults: { indexes?: unknown };
-  readonly providers: { indexes?: unknown };
 }
 
 interface ApplicationContext {
@@ -259,44 +264,6 @@ export interface ApplicationFormData {
   string(name: string): string;
 }
 
-export interface ApplicationDefaults {
-  readonly models?: unknown;
-  readonly indexes?: unknown;
-  readonly counters?: unknown;
-  readonly events?: unknown;
-  readonly expose?: unknown;
-}
-
-export interface ApplicationDefaultsBinding {
-  readonly kind: 'applicationDefaults';
-  readonly defaults: ApplicationDefaults;
-}
-
-export interface ApplicationProviderToken<TImplementation = unknown> {
-  readonly name?: string;
-  readonly description?: string;
-  readonly __implementation?: TImplementation;
-}
-
-export interface ApplicationProviderBinding<TImplementation = unknown> {
-  readonly kind: 'applicationProvider';
-  readonly token: ApplicationProviderToken<TImplementation>;
-  readonly implementation: TImplementation;
-}
-
-export const IndexStore: ApplicationProviderToken<ApplicationIndexBackend | 'valkey'> = {
-  name: 'IndexStore',
-  description: 'Default app-scoped index backend provider.',
-};
-
-export const ModelStore: ApplicationProviderToken<unknown> = {
-  name: 'ModelStore',
-  description: 'Default app-scoped storage-backed model provider.',
-};
-
-// typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, ModelStore } as const;
-
 export interface ApplicationAggregateOptions<TStats extends object, TEvent extends object> {
   readonly source: ResourceIndex<object, object>;
   readonly target: ApplicationAggregateStatusTarget<TStats>;
@@ -324,34 +291,54 @@ export type KubernetesApplicationCompositionFunction = <TSpec extends KroCompati
   options?: SerializationOptions
 ) => TypeKroListenerComposition<TSpec, TStatus>;
 
-export const kubernetesComposition: KubernetesApplicationCompositionFunction = (definition, compositionFn, options) => typeKro.kubernetesComposition(
-  definition,
-  applicationCompositionWrapper(compositionFn),
-  options
-);
+const applicationGraphByComposition = new WeakMap<object, ApplicationGraph>();
+let lastApplicationGraph: ApplicationGraph | undefined;
 
-export const app: KubernetesApplicationCompositionFunction = kubernetesComposition;
-
-export const sdk = Object.assign({}, baseSdk, { app, kubernetesComposition });
+export function applicationGraphFor(composition: object): ApplicationGraph | undefined {
+  const attached = Reflect.get(composition, applicationGraphMetadataProperty);
+  return isApplicationGraph(attached) ? attached : applicationGraphByComposition.get(composition);
+}
 
 function applicationCompositionWrapper<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
-  compositionFn: (spec: TSpec, app: KubernetesApplicationScope) => MagicAssignableShape<TStatus>
+  compositionFn: (spec: TSpec, app: KubernetesApplicationScope) => MagicAssignableShape<TStatus>,
+  graphName: string
 ): (spec: TSpec) => MagicAssignableShape<TStatus> {
   const wrapped = (spec: TSpec) => {
     const context = createApplicationContext();
-    return withApplicationOperatorResourceCollection(context.state, () => compositionFn(spec, context.scope));
+    const result = withApplicationOperatorResourceCollection(context.state, () => compositionFn(spec, context.scope));
+    lastApplicationGraph = applicationGraphFromState(kubernetesNameSegment(graphName), context.state);
+    return result;
   };
   Object.defineProperty(wrapped, 'toString', { value: () => compositionFn.toString() });
   return wrapped;
 }
 
+export const kubernetesComposition: KubernetesApplicationCompositionFunction = (definition, compositionFn, options) => {
+  lastApplicationGraph = undefined;
+  const composition = typeKro.kubernetesComposition(
+    definition,
+    applicationCompositionWrapper(compositionFn, definition.name),
+    options
+  );
+  if (lastApplicationGraph) {
+    applicationGraphByComposition.set(composition, lastApplicationGraph);
+    Object.defineProperty(composition, applicationGraphMetadataProperty, { value: lastApplicationGraph, enumerable: false, configurable: false });
+  }
+  return composition;
+};
+
+export const app: KubernetesApplicationCompositionFunction = kubernetesComposition;
+
+export const sdk = Object.assign({}, baseSdk, { app, kubernetesComposition });
+
 function createApplicationContext(): ApplicationContext {
   const servers: Record<string, ApplicationServerBinding> = {};
-  const state: ApplicationScopeState = { resources: {}, indexes: {}, defaults: {}, providers: {} };
+  const state: ApplicationScopeState = { resources: {}, indexes: {}, defaults: {}, providers: {}, graphNodes: [], graphEdges: [] };
   const server = (name: string, options: ApplicationServerOptions, configure: (server: ApplicationServer) => void) => {
     const routes: ApplicationServerRoute[] = [];
     configure(createRouteRecorder(routes));
     const resolvedOptions = applicationServerOptionsWithScope(state, options, routes);
+    recordApplicationServerGraph(state, name, resolvedOptions, routes);
     const workload = emitApplicationServerResources(name, resolvedOptions, routes);
     const binding = applicationServerBinding(name, resolvedOptions, routes, workload);
     servers[name] = binding;
@@ -366,6 +353,7 @@ function createApplicationContext(): ApplicationContext {
     server: server as ApplicationServerRegistrar & Record<string, ApplicationServerBinding>,
     operator(operator, options) {
       collectApplicationResources(state, applicationOperatorResources(operator));
+      recordApplicationOperatorGraph(state, operator);
       return operator(options);
     },
     crd(entity, options) {
@@ -376,26 +364,49 @@ function createApplicationContext(): ApplicationContext {
         ...(entity.status ? { status: entity.status } : {}),
       });
       collectApplicationResources(state, { [entity.name]: resource });
+      recordApplicationCrdGraph(state, entity.name, resource);
       return resource;
     },
     model(entity, _options) {
       throw new Error(`app.model(${JSON.stringify(entity.name)}) requires a storage-backed ModelStore implementation. v0.2 intentionally fails closed for model-backed application data; use app.crd(entity, { apiVersion, ... }) for Kubernetes control-plane state until app.model storage semantics land in v0.3.`);
     },
+    infra(resource) {
+      recordApplicationTypeKroResourceGraph(state, resource);
+      return resource;
+    },
+    job(name, _options) {
+      throw new Error(`app.job(${JSON.stringify(name)}) requires generated job runtime and durable phase/status semantics, which are not enabled yet. Define the contract before enabling v0.3 jobs.`);
+    },
+    schedule(name, _options) {
+      throw new Error(`app.schedule(${JSON.stringify(name)}) requires generated scheduled job runtime and durable phase/status semantics, which are not enabled yet. Define the contract before enabling v0.3 schedules.`);
+    },
     defaults(defaults) {
       if ('models' in defaults) {
         throw new Error('app.defaults({ models: ... }) requires storage-backed app.model semantics, which are not enabled in v0.2. Use app.crd(entity, ...) for Kubernetes control-plane state or defer model-backed data to v0.3.');
       }
+      if ('counters' in defaults) {
+        throw new Error('app.defaults({ counters: ... }) requires a storage-backed CounterStore implementation, which is not enabled yet. This fails closed so counter durability semantics stay explicit.');
+      }
+      if ('events' in defaults) {
+        throw new Error('app.defaults({ events: ... }) requires an EventSource implementation, which is not enabled yet. This fails closed so event delivery semantics stay explicit.');
+      }
+      if ('expose' in defaults) {
+        throw new Error('app.defaults({ expose: ... }) requires an HttpExposure implementation, which is not enabled yet. This fails closed so exposure, TLS, and hostname semantics stay explicit.');
+      }
       if ('indexes' in defaults) {
         state.defaults.indexes = defaults.indexes;
+        recordApplicationProviderGraph(state, 'IndexStore', 'default', defaults.indexes);
       }
       return { kind: 'applicationDefaults', defaults };
     },
     provide(token, implementation) {
       applyApplicationProvider(state, token, implementation);
+      recordApplicationProviderGraph(state, applicationProviderTokenName(token), 'provided', implementation);
       return { kind: 'applicationProvider', token, implementation };
     },
     aggregate(name, options) {
       collectApplicationIndexes(state, { [options.source.name]: options.source });
+      recordApplicationAggregateGraph(state, name, options);
       const workload = emitApplicationAggregateResources(name, options);
       return applicationAggregateBinding(name, options, workload);
     },
@@ -468,60 +479,206 @@ function inferredApplicationServerIndexesFromCache(
   return inferred;
 }
 
-function defaultApplicationIndexBackend(state: ApplicationScopeState, options: ApplicationServerOptions, indexes: Readonly<Record<string, ResourceIndex<object, object>>>): ApplicationIndexBackend | undefined {
-  const provider = defaultApplicationIndexProvider(state);
-  if ((options.cache?.length ?? 0) > 0 || (Object.keys(indexes).length > 0 && isValkeyIndexDefault(provider))) {
-    return applicationIndexBackend(provider) ?? { kind: 'valkey' };
-  }
-  return undefined;
-}
-
-function defaultApplicationIndexProvider(state: ApplicationScopeState): unknown {
-  return state.defaults.indexes ?? state.providers.indexes;
-}
-
-function applicationIndexBackend(value: unknown): ApplicationIndexBackend | undefined {
-  if (value === 'valkey') {
-    return { kind: 'valkey' };
-  }
-  if (value && typeof value === 'object' && Reflect.get(value, 'kind') === 'valkey') {
-    // typecast: app.provide/defaults accept structurally typed provider values; this narrows the supported v0.2 IndexStore provider slice.
-    return value as ApplicationIndexBackend;
-  }
-  return undefined;
-}
-
-function isValkeyIndexDefault(value: unknown): boolean {
-  return value === 'valkey' || Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'valkey');
-}
-
-function applyApplicationProvider<TImplementation>(state: ApplicationScopeState, token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): void {
-  if (applicationProviderTokenName(token) === 'IndexStore') {
-    if (!isValkeyIndexDefault(implementation)) {
-      throw new Error('app.provide(IndexStore, ...) currently supports only the Valkey index backend provider slice. Use "valkey" or { kind: "valkey", ... } for v0.2.');
-    }
-    state.providers.indexes = implementation;
-    return;
-  }
-  if (applicationProviderTokenName(token) === 'ModelStore') {
-    throw new Error('app.provide(ModelStore, ...) requires storage-backed app.model semantics, which are not enabled in v0.2. This fails closed so CRDs are not treated as a hidden database.');
-  }
-}
-
-function applicationProviderTokenName(token: ApplicationProviderToken<unknown>): string | undefined {
-  return token.name;
-}
-
 function collectApplicationResources(state: ApplicationScopeState, resources: Readonly<Record<string, AnyResourceDefinition>>): void {
   for (const [name, resource] of Object.entries(resources)) {
     state.resources[name] = resource;
+    recordApplicationCrdGraph(state, name, resource);
   }
 }
 
 function collectApplicationIndexes(state: ApplicationScopeState, indexes: Readonly<Record<string, ResourceIndex<object, object>>>): void {
   for (const [name, index] of Object.entries(indexes)) {
     state.indexes[name] = index;
+    recordApplicationIndexGraph(state, name, index);
   }
+}
+
+function recordApplicationCrdGraph(state: ApplicationScopeState, name: string, resource: Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>): void {
+  addApplicationGraphNode(state, {
+    id: applicationGraphNodeId('crd', name),
+    kind: 'crd',
+    name,
+    stability: 'experimental',
+    materialization: 'kubernetes-crd',
+    resource: applicationResourceContract(resource),
+  });
+}
+
+function recordApplicationOperatorGraph(state: ApplicationScopeState, operator: unknown): void {
+  const definition = operator && typeof operator === 'function' ? Reflect.get(operator, 'definition') : undefined;
+  const reflectedName = definition && typeof definition === 'object' ? Reflect.get(definition, 'name') : undefined;
+  const name = typeof reflectedName === 'string' ? reflectedName : 'operator';
+  const resources = applicationOperatorResources(operator);
+  const nodeId = applicationGraphNodeId('operator', name);
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'operator',
+    name,
+    stability: 'experimental',
+    resources: Object.values(resources).map((resource) => applicationResourceRef(resource)),
+    watches: [],
+  });
+  for (const [resourceName] of Object.entries(resources)) {
+    addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: applicationGraphNodeId('crd', resourceName) }, relationship: 'owns' });
+  }
+}
+
+function recordApplicationProviderGraph(state: ApplicationScopeState, tokenName: string | undefined, bindingKind: string, implementation: unknown): void {
+  const providerInterface = applicationProviderInterface(tokenName);
+  if (!providerInterface) {
+    return;
+  }
+  const nodeId = applicationProviderNodeId(providerInterface);
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'provider',
+    name: providerInterface,
+    stability: 'experimental',
+    interface: providerInterface,
+    implementation: applicationProviderImplementationName(implementation),
+    config: { bindingKind, provider: applicationProviderImplementationName(implementation) },
+  });
+}
+
+function recordApplicationTypeKroResourceGraph(state: ApplicationScopeState, resource: unknown): void {
+  const ref = applicationTypeKroResourceRef(resource);
+  if (!ref) {
+    throw new Error('app.infra(...) requires a TypeKro/Kubernetes resource with apiVersion, kind, and metadata.name. Create infrastructure with an existing @applik8s/applik8s/factories helper before passing it to app.infra(...).');
+  }
+  addApplicationGraphNode(state, {
+    id: applicationGraphNodeId('typeKroResource', ref.name ?? ref.kind),
+    kind: 'typeKroResource',
+    name: ref.name ?? ref.kind,
+    stability: 'experimental',
+    resource: ref,
+  });
+}
+
+function applicationTypeKroResourceRef(resource: unknown): { readonly apiVersion: string; readonly kind: string; readonly name?: string; readonly namespace?: string } | undefined {
+  if (!resource || typeof resource !== 'object') {
+    return undefined;
+  }
+  const apiVersion = Reflect.get(resource, 'apiVersion');
+  const kind = Reflect.get(resource, 'kind');
+  const metadata = Reflect.get(resource, 'metadata');
+  const name = metadata && typeof metadata === 'object' ? Reflect.get(metadata, 'name') : undefined;
+  const namespace = metadata && typeof metadata === 'object' ? Reflect.get(metadata, 'namespace') : undefined;
+  if (typeof apiVersion !== 'string' || typeof kind !== 'string' || typeof name !== 'string') {
+    return undefined;
+  }
+  return { apiVersion, kind, name, ...(typeof namespace === 'string' ? { namespace } : {}) };
+}
+
+function recordApplicationServerGraph(state: ApplicationScopeState, name: string, options: ApplicationServerOptions, routes: readonly ApplicationServerRoute[]): void {
+  const nodeId = applicationGraphNodeId('server', name);
+  const indexRefs = Object.keys(options.indexes ?? {}).map((indexName) => ({ nodeId: applicationGraphNodeId('index', indexName) }));
+  for (const [resourceName, resource] of Object.entries(options.resources ?? {})) {
+    recordApplicationCrdGraph(state, resourceName, resource);
+  }
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'server',
+    name,
+    stability: 'experimental',
+    routes: routes.map((route) => ({ id: route.id, method: route.method, path: route.path, ...(route.handlerSourceLocation ? { sourceLocation: route.handlerSourceLocation } : {}) })),
+    resources: Object.values(options.resources ?? {}).map((resource) => applicationResourceRef(resource)),
+    indexes: indexRefs,
+  });
+  for (const resourceName of Object.keys(options.resources ?? {})) {
+    addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: applicationGraphNodeId('crd', resourceName) }, relationship: 'dependsOn' });
+  }
+  for (const [indexName, index] of Object.entries(options.indexes ?? {})) {
+    recordApplicationIndexGraph(state, indexName, index);
+    addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: applicationGraphNodeId('index', indexName) }, relationship: 'reads' });
+  }
+  recordApplicationCounterGraphs(state, name, options.resources ?? {}, routes);
+  const permissions = inferApplicationServerPermissions({ routes, resources: options.resources ?? {}, indexes: options.indexes ?? {}, indexBackend: runtimeIndexBackendConfig(options.indexBackend, options.namespace, options.resourceName ?? name), cache: options.cache ?? [], explicit: options.permissions ?? [] });
+  if (permissions.length > 0) {
+    const permissionNodeId = applicationGraphNodeId('permission', `${name}-permissions`);
+    addApplicationGraphNode(state, { id: permissionNodeId, kind: 'permission', name: `${name}-permissions`, stability: 'experimental', owner: { nodeId }, mode: options.permissions && options.permissions.length > 0 ? 'explicitAndInferred' : 'inferred', rules: permissions });
+    addApplicationGraphEdge(state, { from: { nodeId: permissionNodeId }, to: { nodeId }, relationship: 'writes' });
+  }
+}
+
+function recordApplicationCounterGraphs(state: ApplicationScopeState, serverName: string, resources: Readonly<Record<string, AnyResourceDefinition>>, routes: readonly ApplicationServerRoute[]): void {
+  const analyses = routes.map((route) => analyzeApplicationServerRouteSource(route.handlerSource));
+  const serverNodeId = applicationGraphNodeId('server', serverName);
+  for (const [resourceName, resource] of Object.entries(resources)) {
+    if (!analyses.some((analysis) => routeAnalysisCallsMethod(analysis, resourceName, 'increment'))) {
+      continue;
+    }
+    const nodeId = applicationGraphNodeId('counter', `${serverName}-${resourceName}`);
+    addApplicationGraphNode(state, {
+      id: nodeId,
+      kind: 'counter',
+      name: `${serverName}.${resourceName}`,
+      stability: 'experimental',
+      target: applicationResourceRef(resource),
+      flush: { everyMs: 1000 },
+    });
+    addApplicationGraphEdge(state, { from: { nodeId: serverNodeId }, to: { nodeId }, relationship: 'emits' });
+    addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: applicationGraphNodeId('crd', resourceName) }, relationship: 'writes' });
+  }
+}
+
+function recordApplicationIndexGraph(state: ApplicationScopeState, name: string, index: ResourceIndex<object, object>): void {
+  const providerNodeId = applicationProviderNodeId('IndexStore');
+  const nodeId = applicationGraphNodeId('index', name);
+  recordApplicationCrdGraph(state, index.resource.kind, index.resource);
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'index',
+    name,
+    stability: 'experimental',
+    source: applicationResourceRef(index.resource),
+    provider: { interface: 'IndexStore', nodeId: providerNodeId },
+    ...(index.options.partitionBy ? { partitionBy: applicationExpressionContract(index.options.partitionBy) } : {}),
+    ...(index.options.filter ? { filter: applicationExpressionContract(index.options.filter) } : {}),
+    ...(index.options.orderBy ? { orderBy: applicationExpressionContract(index.options.orderBy) } : {}),
+  });
+  addApplicationGraphEdge(state, { from: { nodeId: providerNodeId }, to: { nodeId }, relationship: 'provides' });
+  addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: applicationGraphNodeId('crd', index.resource.kind) }, relationship: 'reads' });
+}
+
+function recordApplicationAggregateGraph<TStats extends object, TEvent extends object>(state: ApplicationScopeState, name: string, options: ApplicationAggregateOptions<TStats, TEvent>): void {
+  const sourceNodeId = applicationGraphNodeId('index', options.source.name);
+  const nodeId = applicationGraphNodeId('aggregate', name);
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'aggregate',
+    name,
+    stability: 'experimental',
+    source: { nodeId: sourceNodeId },
+    target: { resource: applicationResourceRef(options.target.resource), statusPath: 'status' },
+    flush: { everyMs: parseDurationMs(options.flush?.every ?? '2s'), ...(options.flush?.maxEvents ? { maxEvents: options.flush.maxEvents } : {}) },
+  });
+  addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: sourceNodeId }, relationship: 'reads' });
+}
+
+function applicationResourceContract(resource: Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>) {
+  return { apiVersion: resource.apiVersion, kind: resource.kind, plural: resource.plural, scope: resource.scope };
+}
+
+function applicationResourceRef(resource: Pick<AnyResourceDefinition, 'apiVersion' | 'kind'>): { readonly apiVersion: string; readonly kind: string } {
+  return { apiVersion: resource.apiVersion, kind: resource.kind };
+}
+
+function applicationExpressionContract(expression: unknown): { readonly kind: 'field' | 'label' | 'literal' | 'ordering' | 'predicate'; readonly source: string } {
+  const reflectedKind = expression && typeof expression === 'object' ? Reflect.get(expression, 'expressionKind') : undefined;
+  const kind = typeof reflectedKind === 'string' ? reflectedKind : 'literal';
+  return { kind: applicationExpressionKind(kind), source: JSON.stringify(expression) };
+}
+
+function applicationExpressionKind(kind: string): 'field' | 'label' | 'literal' | 'ordering' | 'predicate' {
+  return kind === 'field' || kind === 'label' || kind === 'ordering' || kind === 'predicate' ? kind : 'literal';
+}
+
+function applicationProviderNodeId(providerInterface: ApplicationProviderInterfaceKind): string {
+  return applicationGraphNodeId('provider', providerInterface);
+}
+
+function applicationGraphNodeId(kind: string, name: string): string {
+  return `${kind}.${kubernetesNameSegment(name)}`;
 }
 
 function applicationOperatorResources(operator: unknown): Readonly<Record<string, AnyResourceDefinition>> {
@@ -611,7 +768,7 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
     ...(options.volumes ?? []),
   ];
 
-  createResource({
+  typeKroServiceAccount({
     id: id('serviceAccount'),
     apiVersion: 'v1',
     kind: 'ServiceAccount',
@@ -619,7 +776,7 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
   });
 
   if (serverPermissions.length > 0) {
-    createResource({
+    typeKroRole({
       id: id('role'),
       apiVersion: 'rbac.authorization.k8s.io/v1',
       kind: 'Role',
@@ -631,7 +788,7 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
         ...(rule.resourceNames ? { resourceNames: [...rule.resourceNames] } : {}),
       })),
     });
-    createResource({
+    typeKroRoleBinding({
       id: id('roleBinding'),
       apiVersion: 'rbac.authorization.k8s.io/v1',
       kind: 'RoleBinding',
@@ -642,7 +799,7 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
   }
 
   if (sourceBundle) {
-    createResource({
+    typeKroConfigMap({
       id: id('source'),
       apiVersion: 'v1',
       kind: 'ConfigMap',
@@ -654,7 +811,7 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
   emitIndexBackendResources(resourceName, namespace, labels, options.indexBackend);
   emitValkeyIndexerResources(resourceName, namespace, labels, runtimeIndexBackend, options.indexes ?? {}, options.cache ?? []);
 
-  const deployment = createResource<ApplicationDeploymentSpecProjection, ApplicationDeploymentStatusProjection>({
+  const deployment = typeKroDeployment({
     id: id('deployment'),
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -669,8 +826,8 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
           containers: [{
             name: 'server',
             image: options.image ?? 'node:22-alpine',
-            command: options.command ?? ['node', `/app/${sourceFileName}`],
-            ...(options.args ? { args: options.args } : {}),
+            command: [...(options.command ?? ['node', `/app/${sourceFileName}`])],
+            ...(options.args ? { args: [...options.args] } : {}),
             env: Object.entries(env).map(([envName, value]) => ({ name: envName, value })),
             ports: [{ name: 'http', containerPort: 8080 }],
             ...(appVolumeMounts.length > 0 ? { volumeMounts: appVolumeMounts } : {}),
@@ -681,7 +838,7 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
     },
   });
 
-  createResource({
+  typeKroService({
     id: id('service'),
     apiVersion: 'v1',
     kind: 'Service',
@@ -691,7 +848,8 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
       ports: [{ name: 'http', port: options.service?.port ?? 80, targetPort: 8080 }],
     },
   });
-  return { deployment };
+  // typecast: TypeKro's Kubernetes deployment factory exposes the full Kubernetes Deployment shape; app.server only relies on this narrower readiness projection.
+  return { deployment: deployment as unknown as Enhanced<ApplicationDeploymentSpecProjection, ApplicationDeploymentStatusProjection> };
 }
 
 function emitApplicationAggregateResources<TStats extends object, TEvent extends object>(name: string, options: ApplicationAggregateOptions<TStats, TEvent>): ApplicationGeneratedWorkloadBinding {
@@ -732,20 +890,20 @@ function emitApplicationAggregateResources<TStats extends object, TEvent extends
     { apiGroups: [apiGroupForApiVersion(target.resource.apiVersion)], resources: [`${target.resource.plural}/status`], verbs: ['patch'] },
   ]);
 
-  createResource({
+  typeKroServiceAccount({
     id: id('serviceAccount'),
     apiVersion: 'v1',
     kind: 'ServiceAccount',
     metadata: { name: serviceAccountName, ...(namespace ? { namespace } : {}), labels },
   });
-  createResource({
+  typeKroRole({
     id: id('role'),
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'Role',
     metadata: { name: serviceAccountName, ...(namespace ? { namespace } : {}), labels },
     rules: permissions.map((rule) => ({ apiGroups: [...rule.apiGroups], resources: [...rule.resources], verbs: [...rule.verbs] })),
   });
-  createResource({
+  typeKroRoleBinding({
     id: id('roleBinding'),
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'RoleBinding',
@@ -753,14 +911,14 @@ function emitApplicationAggregateResources<TStats extends object, TEvent extends
     subjects: [{ kind: 'ServiceAccount', name: serviceAccountName, ...(namespace ? { namespace } : {}) }],
     roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: serviceAccountName },
   });
-  createResource({
+  typeKroConfigMap({
     id: id('source'),
     apiVersion: 'v1',
     kind: 'ConfigMap',
     metadata: { name: sourceConfigMapName, ...(namespace ? { namespace } : {}), labels },
     data: sourceBundle,
   });
-  const deployment = createResource<ApplicationDeploymentSpecProjection, ApplicationDeploymentStatusProjection>({
+  const deployment = typeKroDeployment({
     id: id('deployment'),
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -784,7 +942,8 @@ function emitApplicationAggregateResources<TStats extends object, TEvent extends
       },
     },
   });
-  return { deployment };
+  // typecast: TypeKro's Kubernetes deployment factory exposes the full Kubernetes Deployment shape; app.aggregate only relies on this narrower readiness projection.
+  return { deployment: deployment as unknown as Enhanced<ApplicationDeploymentSpecProjection, ApplicationDeploymentStatusProjection> };
 }
 
 function assertApplicationAggregateTarget(name: string, target: ApplicationAggregateStatusTarget<object>): void {
@@ -1690,7 +1849,7 @@ function emitHyperspikeValkeyResource(resourceName: string, namespace: string | 
     // typecast: TypeKro's Valkey factory accepts its CRD spec shape; applik8s keeps the backend option structurally typed to avoid leaking the provider package into public API types.
     spec: spec as never,
   });
-  createResource({
+  typeKroConfigMap({
     id: graphResourceId(resourceName, 'valkeyIndexServiceReference'),
     apiVersion: 'v1',
     kind: 'ConfigMap',
@@ -1712,7 +1871,7 @@ function emitStandaloneValkeyResources(resourceName: string, namespace: string |
     'app.kubernetes.io/managed-by': 'applik8s',
   };
   const id = (suffix: string) => graphResourceId(name, suffix);
-  createResource({
+  typeKroDeployment({
     id: id('deployment'),
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -1733,7 +1892,7 @@ function emitStandaloneValkeyResources(resourceName: string, namespace: string |
       },
     },
   });
-  createResource({
+  typeKroService({
     id: id('service'),
     apiVersion: 'v1',
     kind: 'Service',
@@ -1743,7 +1902,7 @@ function emitStandaloneValkeyResources(resourceName: string, namespace: string |
       ports: [{ name: 'valkey', port: backend.port ?? 6379, targetPort: backend.port ?? 6379 }],
     },
   });
-  createResource({
+  typeKroConfigMap({
     id: graphResourceId(resourceName, 'valkeyIndexServiceReference'),
     apiVersion: 'v1',
     kind: 'ConfigMap',
@@ -1776,13 +1935,13 @@ function emitValkeyIndexerResources(
   const sourceName = `${indexerName}-source`;
   const id = (suffix: string) => graphResourceId(indexerName, suffix);
 
-  createResource({
+  typeKroServiceAccount({
     id: id('serviceAccount'),
     apiVersion: 'v1',
     kind: 'ServiceAccount',
     metadata: { name: indexerName, ...(namespace ? { namespace } : {}), labels: indexerLabels },
   });
-  createResource({
+  typeKroRole({
     id: id('role'),
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'Role',
@@ -1794,7 +1953,7 @@ function emitValkeyIndexerResources(
       ...(rule.resourceNames ? { resourceNames: [...rule.resourceNames] } : {}),
     })),
   });
-  createResource({
+  typeKroRoleBinding({
     id: id('roleBinding'),
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'RoleBinding',
@@ -1802,14 +1961,14 @@ function emitValkeyIndexerResources(
     subjects: [{ kind: 'ServiceAccount', name: indexerName, ...(namespace ? { namespace } : {}) }],
     roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: indexerName },
   });
-  createResource({
+  typeKroConfigMap({
     id: id('source'),
     apiVersion: 'v1',
     kind: 'ConfigMap',
     metadata: { name: sourceName, ...(namespace ? { namespace } : {}), labels: indexerLabels },
     data: { 'indexer.mjs': generatedValkeyIndexerSource(cachedIndexes) },
   });
-  createResource({
+  typeKroDeployment({
     id: id('deployment'),
     apiVersion: 'apps/v1',
     kind: 'Deployment',
