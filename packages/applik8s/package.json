@@ -33,8 +33,10 @@
     "@applik8s/typekro-adapter": "0.2.0",
     "@applik8s/typetainer": "0.2.0",
     "commander": "^15.0.0",
+    "drizzle-orm": "^0.45.1",
     "esbuild": "^0.28.1",
     "hono": "^4.10.7",
+    "postgres": "^3.4.7",
     "typekro": "^0.21.1"
   }
 }

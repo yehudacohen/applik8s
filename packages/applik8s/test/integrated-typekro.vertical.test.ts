@@ -1,8 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { app, applicationGraphFor, cel, CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ModelStore, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, sdk, Secret, typeKro } from '@applik8s/applik8s';
-import type { ApplicationModelStoreProvider, ApplicationProviderToken } from '@applik8s/applik8s';
+import type { ApplicationModelBinding, ApplicationModelStoreProvider, ApplicationProviderToken } from '@applik8s/applik8s';
 import { serializeApplicationGraph } from '@applik8s/core';
+import { transformSync } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { entity, field, label, metadata, type } from '../src/dsl.js';
 import * as kubernetesFactories from '../src/factories/kubernetes.js';
@@ -106,7 +107,14 @@ describe('integrated TypeKro package surface', () => {
     expect(entity('Note', { spec: type({ message: 'string' }) })).toMatchObject({ kind: 'applik8sEntity', name: 'Note' });
   });
 
-  it('materializes schema-first entities as app-scoped CRDs and fails closed for model-backed storage', () => {
+  it('exposes the future app.model resource-like contract without enabling model runtime', () => {
+    type NoteModel = ApplicationModelBinding<{ readonly message: string }, { readonly phase?: string }>;
+    const modelBindingKeys: readonly (keyof NoteModel)[] = ['kind', 'name', 'entity', 'backend', 'create', 'get', 'query', 'patch', 'delete', 'index', 'on'];
+
+    expect(modelBindingKeys).toEqual(expect.arrayContaining(['create', 'get', 'query', 'patch', 'delete', 'index', 'on', 'backend']));
+  });
+
+  it('materializes schema-first entities as app-scoped CRDs and graph-visible Postgres models', async () => {
     const NoteEntity = entity('Note', {
       spec: type({ message: 'string' }),
       status: type({ phase: 'string?' }),
@@ -140,18 +148,21 @@ describe('integrated TypeKro package surface', () => {
     }, (_spec, app) => {
       app.model(NoteEntity);
       return { ready: true };
-    })).toThrow(/app\.model\("Note"\) requires a storage-backed ModelStore implementation/);
+    })).toThrow(/app\.model\("Note"\) requires a typed ModelStore provider/);
 
-    expect(() => sdk.kubernetesComposition({
+    const modelDefaultComposition = sdk.kubernetesComposition({
       name: 'notes-model-default-app',
       apiVersion: 'notes.applik8s.dev/v1alpha1',
       kind: 'NotesModelDefaultApp',
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.defaults({ models: 'postgres' });
+      app.defaults({ models: { kind: 'postgres' } });
       return { ready: true };
-    })).toThrow(/app\.defaults\(\{ models: \.\.\. \}\) requires storage-backed app\.model semantics/);
+    });
+    expect(applicationGraphFor(modelDefaultComposition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore', implementation: 'postgres', config: { bindingKind: 'default', provider: 'postgres' } }),
+    ]));
 
     expect(() => sdk.kubernetesComposition({
       name: 'notes-counter-default-app',
@@ -186,7 +197,54 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     })).toThrow(/app\.defaults\(\{ expose: \.\.\. \}\) requires an HttpExposure implementation/);
 
-    const postgresModelStore: ApplicationModelStoreProvider = { kind: 'postgres', database: 'notes' };
+    const postgresModelStore: ApplicationModelStoreProvider = {
+      kind: 'postgres',
+      name: 'notes-db',
+      database: 'notes',
+      migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob', jobName: 'notes-model-migration' },
+      runtime: {
+        env: { DATABASE_URL_SECRET: 'notes-db-app' },
+        secretRefs: [{ apiVersion: 'v1', kind: 'Secret', name: 'notes-db-app' }],
+        readiness: { dependencies: [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'notes-db' }], condition: 'Ready', timeoutSeconds: 300 },
+      },
+      readiness: { waitForClusterReady: true, condition: 'Ready', timeoutSeconds: 300 },
+    };
+    const defaultProviderModelComposition = sdk.kubernetesComposition({
+      name: 'notes-model-default-provider-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesModelDefaultProviderApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.defaults({ models: postgresModelStore });
+      app.model(NoteEntity, {
+        schema: {
+          identity: ['id'],
+          constraints: [{ name: 'note-message-unique', kind: 'unique', fields: ['message'] }],
+          indexes: [{ name: 'notes-by-message', partitionBy: 'message', unique: true }],
+          transactions: 'required',
+          retention: { mode: 'retain' },
+        },
+      });
+      return { ready: true };
+    });
+    expect(applicationGraphFor(defaultProviderModelComposition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', implementation: 'postgres', config: { bindingKind: 'modelStore', provider: 'postgres' } }),
+      expect.objectContaining({
+        id: 'model.note',
+        schema: expect.objectContaining({
+          guarantees: {
+            identity: 'stableId',
+            uniqueness: 'databaseConstraint',
+            indexes: 'declaredSecondaryIndexes',
+            transactions: 'required',
+            retention: 'retain',
+            migrationOwnership: 'generatedJob',
+          },
+        }),
+      }),
+      expect.objectContaining({ id: 'job.notes-model-migration', kind: 'job', task: { taskKind: 'migration' } }),
+    ]));
     const modelProviderComposition = sdk.kubernetesComposition({
       name: 'notes-model-provider-app',
       apiVersion: 'notes.applik8s.dev/v1alpha1',
@@ -198,11 +256,90 @@ describe('integrated TypeKro package surface', () => {
       expect(provider).toEqual({ kind: 'applicationProvider', token: ModelStore, implementation: postgresModelStore });
       return { ready: true };
     });
-    expect(applicationGraphFor(modelProviderComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore', implementation: 'postgres' }),
+    const modelProviderGraph = applicationGraphFor(modelProviderComposition);
+    expect(modelProviderGraph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore', implementation: 'postgres', config: { bindingKind: 'provided', provider: 'postgres' } }),
     ]));
+    if (!modelProviderGraph) {
+      throw new Error('expected notes-model-provider-app to attach an application graph');
+    }
+    expect(serializeApplicationGraph(modelProviderGraph)).toContain('"provider.model-store"');
 
-    expect(() => sdk.kubernetesComposition({
+    let directModel: ApplicationModelBinding<{ readonly message: string }, { readonly phase?: string }> | undefined;
+    const directProviderModelComposition = sdk.kubernetesComposition({
+      name: 'notes-model-direct-provider-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesModelDirectProviderApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      directModel = app.model(NoteEntity, { store: postgresModelStore });
+      expect(directModel.kind).toBe('applicationModel');
+      return { ready: true };
+    });
+    const directProviderModelGraph = applicationGraphFor(directProviderModelComposition);
+    expect(directProviderModelGraph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'model.note', kind: 'model', name: 'Note', store: { interface: 'ModelStore', nodeId: 'provider.model-store' } }),
+      expect.objectContaining({ id: 'job.notes-model-migration', kind: 'job', task: { taskKind: 'migration' } }),
+    ]));
+    expect(directProviderModelGraph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'model.note',
+        materialization: expect.objectContaining({
+          mode: 'providerBacked',
+          backingResources: [expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'notes-db' })],
+          connection: expect.objectContaining({
+            env: expect.objectContaining({ DATABASE_URL_SECRET: 'notes-db-app' }),
+            secretRefs: expect.arrayContaining([expect.objectContaining({ apiVersion: 'v1', kind: 'Secret', name: 'notes-db-app' })]),
+            readiness: expect.objectContaining({ condition: 'Ready', timeoutSeconds: 300 }),
+          }),
+          runtimeBoundary: { serializedCallbacks: 'generatedRuntimeClient', scriptExecution: 'scriptRuntimeClient' },
+          reconciliation: { ownership: 'application', schemaDrift: 'generatedMigrationJob', deletionPolicy: 'retain' },
+        }),
+        generatedResources: expect.arrayContaining([
+          expect.objectContaining({ role: 'providerDependency', resource: expect.objectContaining({ kind: 'Cluster', name: 'notes-db' }) }),
+        ]),
+      }),
+      expect.objectContaining({
+        id: 'job.notes-model-migration',
+        runtime: expect.objectContaining({
+          materialization: 'kubernetes-job',
+          idempotency: { keySource: 'metadata.generation', conflictPolicy: 'skipCompleted' },
+          phaseStatus: expect.objectContaining({ statusPath: 'status.applik8s.jobs.notes-model-migration' }),
+          permissions: expect.arrayContaining([expect.objectContaining({ apiGroups: ['batch'], resources: ['jobs'], verbs: ['create', 'get', 'list', 'watch'] })]),
+          environment: expect.objectContaining({ secretRefs: expect.arrayContaining([expect.objectContaining({ name: 'notes-db-app' })]) }),
+        }),
+        generatedResources: expect.arrayContaining([
+          expect.objectContaining({ role: 'migration', resource: expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', name: 'notes-model-migration' }) }),
+          expect.objectContaining({ role: 'jobDiagnostics', artifact: expect.objectContaining({ kind: 'jobDiagnostics' }) }),
+        ]),
+      }),
+    ]));
+    expect(directProviderModelGraph?.providerRequirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'requirement.model.note.store', interface: 'ModelStore', consumer: { nodeId: 'model.note' }, provider: { interface: 'ModelStore', nodeId: 'provider.model-store' } }),
+    ]));
+    expect(directProviderModelGraph?.providerBindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        requirement: 'requirement.model.note.store',
+        provider: { interface: 'ModelStore', nodeId: 'provider.model-store' },
+        generatedResources: expect.arrayContaining([expect.objectContaining({ kind: 'Cluster', name: 'notes-db' })]),
+        runtime: expect.objectContaining({
+          env: expect.objectContaining({ DATABASE_URL_SECRET: 'notes-db-app' }),
+          readiness: expect.objectContaining({ dependencies: [expect.objectContaining({ kind: 'Cluster', name: 'notes-db' })] }),
+        }),
+        metadataLinks: expect.arrayContaining([expect.objectContaining({ purpose: 'providerDependency', graphNode: { nodeId: 'provider.model-store' } })]),
+      }),
+    ]));
+    expect(directProviderModelGraph?.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: { nodeId: 'provider.model-store' }, to: { nodeId: 'model.note' }, relationship: 'provides' }),
+      expect.objectContaining({ from: { nodeId: 'job.notes-model-migration' }, to: { nodeId: 'model.note' }, relationship: 'dependsOn' }),
+    ]));
+    if (!directModel) {
+      throw new Error('expected app.model to return a model binding for explicit Postgres provider');
+    }
+    await expect(directModel.create({ spec: { message: 'hi' } })).rejects.toThrow(/script-execution ModelStore runtime/);
+
+    const providedModelComposition = sdk.kubernetesComposition({
       name: 'notes-model-provider-does-not-enable-model-app',
       apiVersion: 'notes.applik8s.dev/v1alpha1',
       kind: 'NotesModelProviderDoesNotEnableModelApp',
@@ -210,9 +347,18 @@ describe('integrated TypeKro package surface', () => {
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
       const provider = app.provide(ModelStore, postgresModelStore);
-      app.model(NoteEntity, { store: provider });
+      const model = app.model(NoteEntity, { store: provider });
+      expect(model.backend).toMatchObject({
+        interface: 'ModelStore',
+        runtimeBoundary: { serializedCallbacks: 'generatedRuntimeClient', scriptExecution: 'scriptRuntimeClient' },
+        transactions: 'supported',
+      });
       return { ready: true };
-    })).toThrow(/app\.model\("Note"\) requires a storage-backed ModelStore implementation/);
+    });
+    expect(applicationGraphFor(providedModelComposition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', implementation: 'postgres' }),
+      expect.objectContaining({ id: 'model.note', kind: 'model', materialization: expect.objectContaining({ mode: 'providerBacked' }) }),
+    ]));
 
     const untypedModelStoreToken: ApplicationProviderToken<unknown> = { name: 'ModelStore' };
     expect(() => sdk.kubernetesComposition({
@@ -258,27 +404,471 @@ describe('integrated TypeKro package surface', () => {
       })).toThrow(new RegExp(`app\\.provide\\(${tokenName}, \\.\\.\\.\\) requires a generated provider adapter`));
     }
 
-    expect(() => sdk.kubernetesComposition({
+    const jobComposition = sdk.kubernetesComposition({
       name: 'notes-job-app',
       apiVersion: 'notes.applik8s.dev/v1alpha1',
       kind: 'NotesJobApp',
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.job('migrate', { taskKind: 'migration' });
+      const job = app.job('migrate', { taskKind: 'migration', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo migrate'] });
+      expect(job).toMatchObject({ kind: 'applicationJob', resourceName: 'migrate', diagnosticsConfigMapName: 'migrate-diagnostics', statusPath: 'status.applik8s.jobs.migrate' });
       return { ready: true };
-    })).toThrow(/app\.job\("migrate"\) requires generated job runtime/);
+    });
+    expect(jobComposition.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', metadata: expect.objectContaining({ name: 'migrate' }) }),
+      expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'migrate-diagnostics' }), data: expect.objectContaining({ phaseStatusPath: 'status.applik8s.jobs.migrate' }) }),
+      expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'migrate-status-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('runGeneratedJobStatusReconciler'), 'status-runtime.json': expect.stringContaining('notesjobapps') }) }),
+      expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-job-app-status-reconciler-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('discoverApplicationResourceIdentity'), 'status-runtime.json': expect.stringContaining('"statusConfigMapName"') }) }),
+      expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-job-app-status-reconciler-status' }), data: expect.objectContaining({ 'status.json': '{}', 'applik8s-jobs.json': '{}' }) }),
+      expect.objectContaining({ apiVersion: 'v1', kind: 'ServiceAccount', metadata: expect.objectContaining({ name: 'notes-job-app-status-reconciler' }) }),
+      expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'notes-job-app-status-reconciler' }), rules: expect.arrayContaining([
+        expect.objectContaining({ apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'patch', 'update'] }),
+        expect.objectContaining({ apiGroups: ['batch'], resources: ['jobs'], verbs: ['get', 'list', 'watch'] }),
+        expect.objectContaining({ apiGroups: ['notes.applik8s.dev'], resources: ['notesjobapps'], verbs: ['get', 'list'] }),
+        expect.objectContaining({ apiGroups: ['notes.applik8s.dev'], resources: ['notesjobapps/status'], verbs: ['get', 'patch', 'update'] }),
+      ]) }),
+      expect.objectContaining({ apiVersion: 'apps/v1', kind: 'Deployment', metadata: expect.objectContaining({ name: 'notes-job-app-status-reconciler' }), spec: expect.objectContaining({ template: expect.objectContaining({ spec: expect.objectContaining({ serviceAccountName: 'notes-job-app-status-reconciler' }) }) }) }),
+    ]));
+    const jobRuntimeConfigMap = jobComposition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'notes-job-app-status-reconciler-runtime');
+    expect(() => transformSync(String(jobRuntimeConfigMap?.data?.['runtime__job-runner.mjs'] ?? ''), { loader: 'js', format: 'esm' })).not.toThrow();
+    const jobDiagnostics = jobComposition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'migrate-diagnostics');
+    expect(jobDiagnostics?.data?.phaseStatusContract).toContain('observedGeneration');
+    expect(jobDiagnostics?.data?.phaseStatusContract).toContain('metadata.generation');
+    expect(jobDiagnostics?.data?.terminalFailureStatus).toContain('partialEffects');
+    expect(applicationGraphFor(jobComposition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'job.migrate', kind: 'job', name: 'migrate', task: expect.objectContaining({ taskKind: 'migration' }), runtime: expect.objectContaining({ materialization: 'kubernetes-job', phaseStatus: expect.objectContaining({ statusPath: 'status.applik8s.jobs.migrate' }), durableStatusUpdater: expect.objectContaining({ runtimeModule: { kind: 'jobRunnerRuntime', name: 'generated-job-status-updater' } }) }) }),
+    ]));
 
-    expect(() => sdk.kubernetesComposition({
+    const scheduleComposition = sdk.kubernetesComposition({
       name: 'notes-schedule-app',
       apiVersion: 'notes.applik8s.dev/v1alpha1',
       kind: 'NotesScheduleApp',
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.schedule('cleanup', { cron: '0 * * * *' });
+      const schedule = app.schedule('cleanup', { taskKind: 'cleanup', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+      expect(schedule).toMatchObject({ kind: 'applicationJob', resourceName: 'cleanup', diagnosticsConfigMapName: 'cleanup-diagnostics', statusPath: 'status.applik8s.jobs.cleanup' });
       return { ready: true };
-    })).toThrow(/app\.schedule\("cleanup"\) requires generated scheduled job runtime/);
+    });
+    expect(scheduleComposition.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiVersion: 'batch/v1', kind: 'CronJob', metadata: expect.objectContaining({ name: 'cleanup' }), spec: expect.objectContaining({ schedule: '0 * * * *', concurrencyPolicy: 'Forbid' }) }),
+      expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'cleanup-diagnostics' }), data: expect.objectContaining({ materialization: 'kubernetes-cronjob' }) }),
+      expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'notes-schedule-app-status-reconciler' }), rules: expect.arrayContaining([
+        expect.objectContaining({ apiGroups: ['batch'], resources: ['cronjobs'], verbs: ['get', 'list', 'watch'] }),
+      ]) }),
+      expect.objectContaining({ apiVersion: 'apps/v1', kind: 'Deployment', metadata: expect.objectContaining({ name: 'notes-schedule-app-status-reconciler' }), spec: expect.objectContaining({ template: expect.objectContaining({ spec: expect.objectContaining({ containers: expect.arrayContaining([
+        expect.objectContaining({ command: expect.arrayContaining(['node', '--input-type=module']), env: expect.arrayContaining([
+          expect.objectContaining({ name: 'APPLIK8S_APP_PLURAL', value: 'notesscheduleapps' }),
+        ]) }),
+      ]) }) }) }) }),
+    ]));
+    expect(applicationGraphFor(scheduleComposition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'job.cleanup', kind: 'job', schedule: expect.objectContaining({ cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' }), runtime: expect.objectContaining({ materialization: 'kubernetes-cronjob' }) }),
+    ]));
+
+    const multiJobComposition = sdk.kubernetesComposition({
+      name: 'notes-maintenance-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesMaintenanceApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.job('compact', { taskKind: 'maintenance' });
+      app.schedule('sweep', { taskKind: 'cleanup', cron: '*/5 * * * *' });
+      return { ready: true };
+    });
+    const maintenanceReconcilers = multiJobComposition.resources.filter((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'notes-maintenance-app-status-reconciler');
+    expect(maintenanceReconcilers).toHaveLength(1);
+    expect(multiJobComposition.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-maintenance-app-status-reconciler-runtime' }), data: expect.objectContaining({ 'status-runtime.json': expect.stringContaining('compact'), 'runtime__job-runner.mjs': expect.stringContaining('deepMerge') }) }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-maintenance-app-status-reconciler-runtime' }), data: expect.objectContaining({ 'status-runtime.json': expect.stringContaining('sweep') }) }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-maintenance-app-status-reconciler-status' }), data: expect.objectContaining({ 'applik8s-jobs.json': '{}' }) }),
+      expect.objectContaining({ kind: 'Role', metadata: expect.objectContaining({ name: 'notes-maintenance-app-status-reconciler' }), rules: expect.arrayContaining([
+        expect.objectContaining({ apiGroups: ['batch'], resources: ['jobs', 'cronjobs'], verbs: ['get', 'list', 'watch'] }),
+      ]) }),
+    ]));
+  });
+
+  it('emits Postgres ModelStore backing resources as concrete TypeKro/Kubernetes resources', () => {
+    const NoteEntity = entity('Note', {
+      spec: type({ message: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+    const composition = sdk.kubernetesComposition({
+      name: 'notes-model-resource-emission-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesModelResourceEmissionApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.model(NoteEntity, { store: { kind: 'postgres', name: 'notes-db', namespace: 'notes', database: 'notes' } });
+      return { ready: true };
+    });
+
+    expect(composition.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'notes-db', namespace: 'notes' }) }),
+      expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'notes-model-store', namespace: 'notes' }) }),
+    ]));
+    expect(composition.resources).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiVersion: 'v1', kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }),
+    ]));
+  });
+
+  it('records model schema constraints, indexes, retention, and external provider ownership in the app graph', () => {
+    const NoteEntity = entity('Note', {
+      spec: type({ message: 'string', author: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+    const composition = sdk.kubernetesComposition({
+      name: 'notes-model-schema-contract-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesModelSchemaContractApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.model(NoteEntity, {
+        name: 'Entry',
+        store: {
+          kind: 'postgres',
+          provision: false,
+          cluster: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'shared-db', namespace: 'data' },
+          connectionSecret: { apiVersion: 'v1', kind: 'Secret', name: 'shared-db-app', namespace: 'data' },
+        },
+        schema: {
+          identity: ['id'],
+          constraints: [{ name: 'entry-message-author-unique', kind: 'unique', fields: ['message', 'author'] }],
+          indexes: [{ name: 'entries-by-author', partitionBy: 'author', orderBy: ['message'], unique: false }],
+          transactions: 'required',
+          retention: { mode: 'ttl', ttlSeconds: 86_400 },
+        },
+      });
+      return { ready: true };
+    });
+
+    expect(composition.resources).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'shared-db' }) }),
+    ]));
+    expect(applicationGraphFor(composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'model.entry',
+        schema: expect.objectContaining({
+          identity: ['id'],
+          constraints: [{ name: 'entry-message-author-unique', kind: 'unique', fields: ['message', 'author'] }],
+          indexes: [{ name: 'entries-by-author', fields: ['author', 'message'] }],
+          transactions: 'required',
+          retention: { mode: 'ttl', ttlSeconds: 86_400 },
+        }),
+        materialization: expect.objectContaining({
+          backingResources: [expect.objectContaining({ kind: 'Cluster', name: 'shared-db', namespace: 'data' })],
+          runtimeBoundary: { serializedCallbacks: 'generatedRuntimeClient', scriptExecution: 'scriptRuntimeClient' },
+          reconciliation: expect.objectContaining({ ownership: 'external' }),
+        }),
+      }),
+    ]));
+  });
+
+  it('generates server runtime ModelStore clients backed by a singleton app-scoped CNPG provider', () => {
+    const AccountEntity = entity('Account', {
+      spec: type({ email: 'string', displayName: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+    const ProfileEntity = entity('Profile', {
+      spec: type({ accountId: 'string', bio: 'string?' }),
+      status: type({ phase: 'string?' }),
+    });
+
+    const composition = sdk.kubernetesComposition({
+      name: 'accounts-model-runtime-app',
+      apiVersion: 'platform.applik8s.dev/v1alpha1',
+      kind: 'AccountsModelRuntimeApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      const store = app.provide(ModelStore, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app' });
+      const Account = app.model(AccountEntity, {
+        store,
+        schema: {
+          constraints: [{ name: 'account-email-unique', kind: 'unique', fields: ['email'] }],
+          indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }],
+        },
+      });
+      app.model(ProfileEntity, { store });
+      app.server('web', { namespace: 'platform' }, (server) => {
+        server.post('/accounts', async () => Account.create({ spec: { email: 'ada@example.com', displayName: 'Ada' } }));
+        server.get('/accounts', async () => Account.query({ where: { email: 'ada@example.com' }, limit: 10 }));
+      });
+      return { ready: true };
+    });
+
+    const clusters = composition.resources.filter((resource) => resource.apiVersion === 'postgresql.cnpg.io/v1' && resource.kind === 'Cluster' && resource.metadata.name === 'app-db');
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0]).toMatchObject({ metadata: { namespace: 'platform' }, spec: { bootstrap: { initdb: { database: 'app', owner: 'app' } } } });
+    const deployment = composition.resources.find((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'web');
+    expect(deployment).toMatchObject({
+      spec: { template: { spec: { containers: [expect.objectContaining({
+        env: expect.arrayContaining([
+          expect.objectContaining({ name: 'APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL', valueFrom: { secretKeyRef: { name: 'app-db-app', key: 'uri' } } }),
+        ]),
+      })] } } },
+    });
+    const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
+    const serverSource = String(sourceConfigMap?.data?.['server.mjs'] ?? '');
+    expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const Account = modelClients["Account"];') } });
+    expect(() => transformSync(String(sourceConfigMap?.data?.['server.mjs'] ?? ''), { loader: 'js', format: 'esm' })).not.toThrow();
+    expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain("from './runtime/model-store-postgres.mjs'");
+    expect(String(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs'] ?? '')).toContain('createPostgresModelClient');
+    expect(String(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs'] ?? '')).toContain('drizzle-orm/postgres-js');
+    expect(serverSource).not.toContain('ensureModelTable');
+    expect(serverSource).not.toContain('modelStoreTableReady');
+    expect(JSON.stringify(sourceConfigMap)).toContain('Account.create');
+    expect(JSON.stringify(sourceConfigMap)).toContain('Account.query');
+    const modelRuntimeSource = String(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs'] ?? '');
+    expect(modelRuntimeSource).toContain('modelPostgresError(error)');
+    expect(modelRuntimeSource).toContain('current = current.cause');
+    expect(modelRuntimeSource).toContain('modelDefaultUniqueConstraint(model)');
+  });
+
+  it('generates ModelStore migrations, constraint diagnostics, index queries, and credential diagnostics', () => {
+    const AccountEntity = entity('Account', {
+      spec: type({ email: 'string', displayName: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+
+    const composition = sdk.kubernetesComposition({
+      name: 'accounts-model-runtime-contract-app',
+      apiVersion: 'platform.applik8s.dev/v1alpha1',
+      kind: 'AccountsModelRuntimeContractApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      const store = app.provide(ModelStore, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob' } });
+      const Account = app.model(AccountEntity, {
+        store,
+        schema: {
+          identity: ['id'],
+          constraints: [{ name: 'account-email-unique', kind: 'unique', fields: ['email'] }],
+          indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }],
+          transactions: 'required',
+        },
+      });
+      app.server('web', { namespace: 'platform' }, (server) => {
+        server.post('/accounts', async () => Account.create({ spec: { email: 'ada@example.com', displayName: 'Ada' } }));
+        server.get('/accounts', async () => Account.index('accounts-by-email', { partitionBy: 'email', unique: true }).query('ada@example.com'));
+      });
+      return { ready: true };
+    });
+
+    const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
+    const migrationConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'account-migration-migration');
+    const source = JSON.stringify(sourceConfigMap);
+    const serverSource = String(sourceConfigMap?.data?.['server.mjs'] ?? '');
+    const migrationSql = String(migrationConfigMap?.data?.['migration.sql'] ?? '');
+    expect(migrationSql).toContain('CREATE TABLE IF NOT EXISTS "applik8s_account"');
+    expect(migrationSql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "account-email-unique"');
+    expect(migrationSql).toContain('(("spec"->>\'email\'))');
+    expect(migrationSql).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "accounts-by-email"');
+    expect(source).toContain('accounts-by-email');
+    expect(source).toContain('23505');
+    expect(source).toContain('applik8s-model-duplicate-key');
+    expect(JSON.stringify(composition.resources)).toContain('applik8s-model-migration applying');
+    expect(source).toContain('APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL');
+    expect(source).toContain('applik8s-modelstore-missing-credentials');
+    expect(source).toContain('applik8s-model-migration-missing');
+    expect(serverSource).not.toContain('ensureModelTable');
+    expect(serverSource).not.toContain('modelStoreTableReady');
+  });
+
+  it('emits generated server, model, job, diagnostics, and provider runtime modules as focused artifacts', () => {
+    const AccountEntity = entity('Account', {
+      spec: type({ email: 'string', displayName: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+
+    const composition = sdk.kubernetesComposition({
+      name: 'accounts-runtime-module-boundary-app',
+      apiVersion: 'platform.applik8s.dev/v1alpha1',
+      kind: 'AccountsRuntimeModuleBoundaryApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      const store = app.provide(ModelStore, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob' } });
+      const Account = app.model(AccountEntity, { store, schema: { indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }] } });
+      app.server('web', { namespace: 'platform' }, (server) => {
+        server.post('/accounts', async () => Account.create({ spec: { email: 'ada@example.com', displayName: 'Ada' } }));
+      });
+      return { ready: true };
+    });
+
+    const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
+    const deployment = composition.resources.find((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'web');
+    const sourceDataKeys = Object.keys(sourceConfigMap?.data ?? {});
+    expect(sourceDataKeys.every((key) => !key.includes('/'))).toBe(true);
+    expect(sourceConfigMap?.data).toMatchObject({
+      'runtime__server.mjs': expect.stringContaining('serverRuntime'),
+      'runtime__model-store-postgres.mjs': expect.stringContaining('modelRuntime'),
+      'runtime__diagnostics.mjs': expect.stringContaining('diagnostics'),
+      'runtime__providers__postgres.mjs': expect.stringContaining('providerAdapter'),
+    });
+    expect(sourceConfigMap?.data?.['runtime__server.mjs']).toContain('export const runtimeModule');
+    expect(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs']).toContain('"kind":"modelRuntime"');
+    expect(sourceConfigMap?.data?.['runtime__job-runner.mjs']).toContain('"kind":"jobRunnerRuntime"');
+    expect(sourceConfigMap?.data?.['runtime__job-runner.mjs']).toContain('createJobStatusUpdater');
+    expect(sourceConfigMap?.data?.['runtime__diagnostics.mjs']).toContain('"kind":"diagnostics"');
+    expect(sourceConfigMap?.data?.['runtime__providers__postgres.mjs']).toContain('"kind":"providerAdapter"');
+    expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain('createRuntimeBindings');
+    expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain('modelClients');
+    expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain("from './runtime/model-store-postgres.mjs'");
+    expect(String(sourceConfigMap?.data?.['bindings.mjs'] ?? '')).toContain("import { createRuntimeBindings } from './runtime.mjs'");
+    expect(String(sourceConfigMap?.data?.['routes.mjs'] ?? '')).toContain("from './route-");
+    expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).toContain('./routes.mjs');
+    expect(deployment).toMatchObject({ spec: { template: { spec: { volumes: expect.arrayContaining([
+      expect.objectContaining({ name: 'applik8s-server-source', configMap: { name: 'web-source', items: expect.arrayContaining([
+        expect.objectContaining({ key: 'runtime__server.mjs', path: 'runtime/server.mjs' }),
+        expect.objectContaining({ key: 'runtime__model-store-postgres.mjs', path: 'runtime/model-store-postgres.mjs' }),
+        expect.objectContaining({ key: 'runtime__job-runner.mjs', path: 'runtime/job-runner.mjs' }),
+        expect.objectContaining({ key: 'runtime__diagnostics.mjs', path: 'runtime/diagnostics.mjs' }),
+        expect.objectContaining({ key: 'runtime__providers__postgres.mjs', path: 'runtime/providers/postgres.mjs' }),
+      ]) } }),
+    ]) } } } });
+    expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).not.toContain('function createModelClient');
+    expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).not.toContain('function createPostgresModelClient');
+  });
+
+  it('emits migration compatibility plans, history table metadata, and fail-closed drift diagnostics', () => {
+    const AccountEntity = entity('Account', {
+      spec: type({ email: 'string', displayName: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+
+    const composition = sdk.kubernetesComposition({
+      name: 'accounts-migration-compatibility-app',
+      apiVersion: 'platform.applik8s.dev/v1alpha1',
+      kind: 'AccountsMigrationCompatibilityApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      const store = app.provide(ModelStore, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob', jobName: 'accounts-model-migration' } });
+      app.model(AccountEntity, {
+        store,
+        schema: {
+          constraints: [{ name: 'account-email-unique', kind: 'unique', fields: ['email'] }],
+          indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }],
+        },
+      });
+      return { ready: true };
+    });
+
+    const migrationConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'accounts-model-migration-migration');
+    const diagnosticsConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'accounts-model-migration-diagnostics');
+    const migrationSql = String(migrationConfigMap?.data?.['migration.sql'] ?? '');
+
+    expect(migrationSql).toContain('CREATE TABLE IF NOT EXISTS "applik8s_model_migrations"');
+    expect(migrationSql).toContain('INSERT INTO "applik8s_model_migrations"');
+    expect(diagnosticsConfigMap?.data).toMatchObject({
+      compatibilityPolicy: expect.stringContaining('explicitPlanRequired'),
+      driftPolicy: 'failClosed',
+      phaseStatusContract: expect.stringContaining('observedGeneration'),
+      durableStatusTemplate: expect.stringContaining('provider-readiness'),
+      terminalFailureStatus: expect.stringContaining('partialEffects'),
+      migrationPlan: expect.stringContaining('account-email-unique'),
+      failureModes: expect.stringContaining('missingCredentials'),
+      driftDiagnostic: expect.stringContaining('SchemaDriftDetected'),
+      failureDiagnostic: expect.stringContaining('applik8s-model-migration-failed'),
+    });
+    expect(diagnosticsConfigMap?.data?.failureModes).toContain('badSql');
+    expect(diagnosticsConfigMap?.data?.failureModes).toContain('incompatibleTableOrIndex');
+    expect(diagnosticsConfigMap?.data?.failureModes).toContain('destructiveChange');
+    expect(diagnosticsConfigMap?.data?.migrationPlan).toContain('destructive-change');
+    expect(diagnosticsConfigMap?.data?.migrationPlan).toContain('schema-drift');
+    expect(migrationSql).not.toContain('DROP TABLE');
+    expect(migrationSql).not.toContain('DROP INDEX');
+  });
+
+  it.fails('executes generated model CRUD and query methods through ModelStore runtime clients', async () => {
+    const NoteEntity = entity('Note', {
+      spec: type({ message: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+    let model: ApplicationModelBinding<{ readonly message: string }, { readonly phase?: string }> | undefined;
+    sdk.kubernetesComposition({
+      name: 'notes-model-runtime-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesModelRuntimeApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      model = app.model(NoteEntity, { store: { kind: 'postgres', name: 'notes-db', database: 'notes' } });
+      return { ready: true };
+    });
+    if (!model) {
+      throw new Error('expected model binding');
+    }
+
+    await expect(model.create({ spec: { message: 'hello' } })).resolves.toMatchObject({ id: expect.any(String), spec: { message: 'hello' } });
+    await expect(model.get({ id: 'note-1' })).resolves.toMatchObject({ id: 'note-1', spec: expect.any(Object) });
+    await expect(model.query({ where: { message: 'hello' }, limit: 10 })).resolves.toMatchObject({ items: expect.any(Array) });
+    await expect(model.patch({ id: 'note-1' }, { status: { phase: 'Accepted' } })).resolves.toMatchObject({ id: 'note-1', status: { phase: 'Accepted' } });
+    await expect(model.index('byMessage', { partitionBy: 'message' }).query('hello')).resolves.toMatchObject({ items: expect.any(Array) });
+  });
+
+  it('emits migration jobs with durable phase status and observable diagnostics as concrete resources', () => {
+    const NoteEntity = entity('Note', {
+      spec: type({ message: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+    const composition = sdk.kubernetesComposition({
+      name: 'notes-model-migration-artifacts-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesModelMigrationArtifactsApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.model(NoteEntity, { store: { kind: 'postgres', name: 'notes-db', namespace: 'notes', database: 'notes', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob', jobName: 'notes-model-migration' } } });
+      return { ready: true };
+    });
+
+    expect(composition.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: expect.objectContaining({ name: 'notes-model-migration' }),
+        spec: expect.objectContaining({
+          template: expect.objectContaining({
+            spec: expect.objectContaining({
+              restartPolicy: 'OnFailure',
+              containers: expect.arrayContaining([
+                expect.objectContaining({
+                  image: 'postgres:16-alpine',
+                  command: expect.arrayContaining(['sh', '-c', expect.stringContaining('psql "$DATABASE_URL"')]),
+                  env: expect.arrayContaining([
+                    expect.objectContaining({ name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: 'notes-db-app', key: 'uri' } } }),
+                    expect.objectContaining({ name: 'APPLIK8S_MODEL_STORE_MODEL', value: 'Note' }),
+                  ]),
+                  volumeMounts: expect.arrayContaining([expect.objectContaining({ name: 'applik8s-model-migration', mountPath: '/migrations', readOnly: true })]),
+                }),
+              ]),
+              volumes: expect.arrayContaining([expect.objectContaining({ name: 'applik8s-model-migration', configMap: { name: 'notes-model-migration-migration' } })]),
+            }),
+          }),
+        }),
+      }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-migration' }), data: expect.objectContaining({ 'migration.sql': expect.stringContaining('CREATE TABLE IF NOT EXISTS "applik8s_note"') }) }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-diagnostics' }), data: expect.objectContaining({ phaseStatusContract: expect.stringContaining('status.applik8s.jobs.notes-model-migration'), terminalFailureStatus: expect.stringContaining('runMigrationJob') }) }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-status-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('patchApplicationStatus'), 'status-runtime.json': expect.stringContaining('notesmodelmigrationartifactsapps') }) }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-artifacts-app-status-reconciler-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('patchGeneratedStatusConfigMap'), 'status-runtime.json': expect.stringContaining('notes-model-migration') }) }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-artifacts-app-status-reconciler-status' }), data: expect.objectContaining({ 'status.json': '{}', 'applik8s-jobs.json': '{}' }) }),
+      expect.objectContaining({ kind: 'ClusterRole', metadata: expect.objectContaining({ name: 'notes-notes-model-migration-artifacts-app-status-reconciler' }), rules: expect.arrayContaining([
+        expect.objectContaining({ apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'patch', 'update'] }),
+        expect.objectContaining({ apiGroups: ['notes.applik8s.dev'], resources: ['notesmodelmigrationartifactsapps/status'], verbs: ['get', 'patch', 'update'] }),
+      ]) }),
+      expect.objectContaining({ kind: 'ClusterRoleBinding', metadata: expect.objectContaining({ name: 'notes-notes-model-migration-artifacts-app-status-reconciler' }) }),
+      expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'notes-model-migration-artifacts-app-status-reconciler' }), spec: expect.objectContaining({ template: expect.objectContaining({ spec: expect.objectContaining({ serviceAccountName: 'notes-model-migration-artifacts-app-status-reconciler' }) }) }) }),
+    ]));
+    const migrationRuntimeConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'notes-model-migration-artifacts-app-status-reconciler-runtime');
+    expect(() => transformSync(String(migrationRuntimeConfigMap?.data?.['runtime__job-runner.mjs'] ?? ''), { loader: 'js', format: 'esm' })).not.toThrow();
+    expect(JSON.stringify(composition.resources)).not.toContain('${APPLIK8S_MODEL_STORE_MODEL}');
+    expect(JSON.stringify(composition.resources)).not.toContain('${attempt}');
   });
 
   it('supports composition-scoped app authoring with explicit operator and server registration', () => {
@@ -480,8 +1070,15 @@ describe('integrated TypeKro package surface', () => {
     expect(nodeIds).toEqual([...nodeIds].sort());
     expect(edgeIds).toEqual([...edgeIds].sort());
     expect(graph ? serializeApplicationGraph(graph) : '').toContain('"kind":"ApplicationGraph"');
+    expect(graph?.providerRequirements).toEqual([]);
+    expect(graph?.providerBindings).toEqual([]);
     expect(graph?.compatibility.documentedInternalContracts).toContain('ApplicationGraph');
     expect(graph?.compatibility.postV3Surfaces).toContain('workload-movement-operator');
+    expect(graph?.compatibility.labels).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'ApplicationGraph', surface: 'documentedInternalContract' }),
+      expect.objectContaining({ name: 'app.model', surface: 'stablePublicApi' }),
+      expect.objectContaining({ name: 'provider.ModelStore', surface: 'stablePublicApi' }),
+    ]));
   });
 
   it('infers app.server resource CRUD RBAC from typed resource actions', () => {
@@ -635,6 +1232,24 @@ describe('integrated TypeKro package surface', () => {
     })).toThrow(/app\.server route GET \/ cannot serialize closure identifier\(s\): prefix/);
   });
 
+  it('allows generated server routes to return Web Response objects', () => {
+    const composition = sdk.kubernetesComposition({
+      name: 'notes-app-response-route',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesAppResponseRoute',
+      spec: type({ namespace: 'string?' }),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.server('web', {}, (server) => {
+        server.get('/missing', async () => new Response('not found', { status: 404 }));
+      });
+      return { ready: true };
+    });
+
+    const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
+    expect(sourceConfigMap).toMatchObject({ data: { 'route-get-missing-0.mjs': expect.stringContaining('new Response') } });
+  });
+
   it('serializes explicit generated server route captures separately from permissions', () => {
     const Note = sdk.crd({
       apiVersion: 'notes.applik8s.dev/v1alpha1',
@@ -662,10 +1277,10 @@ describe('integrated TypeKro package surface', () => {
     const role = composition.resources.find((resource) => resource.kind === 'Role' && resource.metadata.name === 'web');
     const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
     expect(role).toBeUndefined();
-    expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const captures = {};') } });
-    expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const pageSize = captures["pageSize"] = 10;') } });
-    expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const prefix = captures["prefix"] = "page";') } });
-    expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const label = captures["label"] = (') } });
+    expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const captures={};') } });
+    expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const pageSize=captures["pageSize"]=10;') } });
+    expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const prefix=captures["prefix"]="page";') } });
+    expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const label=captures["label"]=') } });
     expect(sourceConfigMap).toMatchObject({ data: { 'route-get-config-0.mjs': expect.stringContaining("from './bindings.mjs';") } });
     expect(sourceConfigMap).toMatchObject({ data: { 'route-get-config-0.mjs': expect.stringContaining('export const route_get_config_0') } });
   });
@@ -698,7 +1313,7 @@ describe('integrated TypeKro package surface', () => {
     expect(sourceConfigMap).toMatchObject({ data: { 'routes.manifest.json': expect.stringContaining('"sourceKind": "source"') } });
     expect(sourceConfigMap).toMatchObject({ data: { 'routes.mjs': expect.stringContaining('sourceLocation') } });
     expect(sourceConfigMap).toMatchObject({ data: { 'server.mjs': expect.stringContaining('routeDiagnostics(route)') } });
-    expect(sourceConfigMap).toMatchObject({ data: { 'server.mjs': expect.stringContaining('error.stack ?') } });
+    expect(sourceConfigMap).toMatchObject({ data: { 'server.mjs': expect.stringContaining('error.stack?') } });
   });
 
   it('infers app-scoped operator resources and bundles module-scope route helpers', () => {

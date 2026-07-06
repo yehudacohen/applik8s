@@ -124,6 +124,8 @@ Purpose: turn the v0.2 TypeKro-native application proof into a serious infrastru
 
 applik8s v0.3 should let an infrastructure/application author:
 
+- Decision: v0.3-required app/provider APIs are stable public APIs for the pre-v1 line, not experimental user-facing seams. Missing implementation may still fail closed, but the public contract should be shaped and tested before broad implementation.
+- Decision: model operations inside callbacks that applik8s serializes into generated runtimes must execute through generated runtime clients. The same model operations in ordinary callbacks or async functions are script execution and must execute through an explicit script-execution runtime path rather than being silently treated as generated-runtime calls.
 - `[v0.3-framework]` Define reusable typed shapes with schema-first `entity(...)`, then materialize them inside `app(...)` through `app.crd(entity)` or `app.model(entity)`, where both return objects that implement the same core resource-like ergonomics for `create`, `get`, `query`, `patch`, `delete`, `index`, and `on.created/on.updated/on.deleted` where those semantics are supported.
 - `[v0.3-framework]` Keep backend semantics explicit at app materialization time: `app.crd(entity)` means Kubernetes control-plane resource; `app.model(entity)` means application data backed by an explicit `ModelStore` provider.
 - `[v0.3-framework]` Treat `app(...)` as the distributed application context and dependency injection boundary, with `app.defaults(...)` and `app.provide(...)` binding typed capability interfaces such as `ModelStore`, `IndexStore`, `CounterStore`, `EventSource`, `Secret`, `Queue`, `ObjectStorage`, and `HttpExposure` to concrete providers.
@@ -145,6 +147,25 @@ applik8s v0.3 should let an infrastructure/application author:
 - `[v0.3-framework]` Add basic observability declarations for generated servers, indexers, jobs, and operators: health/readiness, structured logs, metrics hooks, events, replay artifacts where applicable, and source-mapped failure reports.
 - `[v0.3-framework]` Make unsupported cross-backend assumptions fail closed. Shared ergonomics must not hide differences between Kubernetes watches, SQL transactions, cache consistency, and generated model events.
 - `[v0.3-framework]` Provide a serious substrate pressure test, likely a tenant/platform control-plane application rather than workload movement itself, showing CRDs for control-plane state, models for app data where needed, real storage, generated servers, jobs, and TypeKro infrastructure as one typed unit.
+
+Current prep status:
+
+- Done: add core contract fixtures for migration plans, compatibility checks, migration history metadata, runtime module boundaries, diagnostic taxonomy, and v0.3 provider requirement breadth.
+- Done: promote the first Postgres `ModelStore` vertical from placeholder to real generated infrastructure: CNPG Cluster, generated migration Job, SQL ConfigMap, diagnostics ConfigMap, generated server runtime client, and live E2E coverage.
+- Done: support typed `app.defaults({ models })`, `app.provide(ModelStore, ...)`, and explicit model store bindings as stable app-scoped provider paths for the Postgres ModelStore slice.
+- Done: freeze public `GeneratedJobContract`, generated phase/status, and ModelStore guarantee contracts with type, graph, integration, and character coverage.
+- Done: add runtime-module artifact boundary coverage for server, model runtime, job runner, diagnostics, and provider adapter modules, including Kubernetes-safe ConfigMap key mapping.
+- Done: add migration compatibility/history/failure-mode diagnostics contracts for missing credentials, bad SQL/job failure, schema drift, incompatible table/index shape, and destructive-change rejection.
+- Done: enable the first public `app.job(...)` and `app.schedule(...)` slice as generated Kubernetes Job/CronJob resources with graph nodes, diagnostics ConfigMaps, durable status metadata, terminal-failure diagnostic templates, and public binding types.
+- Done: route generated job and model-migration diagnostics through shared generated-job status/idempotency helpers so diagnostics encode phase, observed generation, retry count, status target, idempotency key, and partial effects.
+- Done: add v0.3 runtime module ABI metadata and generated durable status-updater interfaces, plus emitted status-runtime ConfigMaps for public jobs and model migration jobs.
+- Done: add the first executing generated-job status reconciler slice: consolidated app-level status-runtime Deployments, ServiceAccounts, RBAC, Kubernetes Job/CronJob observation, durable status calculation, KRO instance discovery, application status patch attempts, and durable generated status ConfigMap fallback.
+- Done: prepare v0.3 freeze-interface tests for operation-target lowering, watch-scope lowering, migration drift checks, and the integrated pressure-test gate before broad implementation continues.
+- Done: live TypeKro/CNPG/Postgres ModelStore E2E now validates the consolidated status reconciler through the generated durable status ConfigMap. Current KRO-generated app CRDs prune custom `status.applik8s` fields, so the reconciler keeps app `/status` patching best-effort and persists durable job status in the generated ConfigMap until the app CRD status schema path is solved upstream or in compiler lowering.
+- Remaining: durable generated job status is live-confirmed for the Postgres migration path, but still needs production hardening around status schema ownership, conflict behavior, history retention, metrics/logging, and broader multi-job/cronjob scenarios before it is generalized.
+- Remaining: operation-target, watch-scope, migration-drift, and pressure-test contracts are now shaped and tested, but their runtime/compiler implementations are still pending.
+- Remaining: script-execution `ModelStore` runtime remains absent; ordinary direct model CRUD still fails closed.
+- Remaining: generated runtime implementation still needs deeper modularization beyond the first runtime-module source extraction before the v0.3 excellence bar is met.
 
 v0.3 should not require:
 

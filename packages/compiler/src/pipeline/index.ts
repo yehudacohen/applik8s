@@ -15,7 +15,7 @@ import type {
   OperatorManifest,
   Result,
 } from '@applik8s/core';
-import { applicationGraphArtifactFileName, applicationGraphMetadataProperty, serializeApplicationGraph, validateApplicationGraphProviderBindings } from '@applik8s/core';
+import { applicationGraphArtifactFileName, applicationGraphMetadataProperty, serializeApplicationGraph, validateApplicationGraph } from '@applik8s/core';
 import { imageRefString } from '@applik8s/typetainer';
 import { build } from 'esbuild';
 import { parseAllDocuments, stringify } from 'yaml';
@@ -242,9 +242,9 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
   }
   const applicationGraph = applicationGraphForComposition(composition.value);
   if (applicationGraph) {
-    const graphDiagnostics = validateApplicationGraphProviderBindings(applicationGraph);
+    const graphDiagnostics = validateApplicationGraph(applicationGraph);
     if (graphDiagnostics.length > 0) {
-      return error('COMPATIBILITY_FAILED', `Application graph provider bindings are invalid: ${graphDiagnostics.map((diagnostic) => diagnostic.message).join('; ')}`);
+      return error('COMPATIBILITY_FAILED', `Application graph is invalid: ${graphDiagnostics.map((diagnostic) => diagnostic.message).join('; ')}`);
     }
   }
   const artifacts = await emitTypeKroCompositionArtifacts({

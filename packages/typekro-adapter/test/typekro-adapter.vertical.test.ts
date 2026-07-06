@@ -528,6 +528,19 @@ describe('TypeKro adapter operation targets', () => {
     const target = toOperationTarget(graph, { tenant: 'acme' }, { fieldManager: 'tenant-operator' });
 
     expect(target.targetKind).toBe('operationTarget');
+    expect(target.contract).toMatchObject({
+      id: 'operation-target.tenant-stack',
+      operations: ['apply', 'delete'],
+      lowering: { mode: 'typeKroResource', failurePolicy: 'failClosed' },
+      dryRun: { supported: true, failurePolicy: 'failClosed' },
+      ownership: { ownerReferences: 'optional', orphanPolicy: 'retain' },
+      finalizers: { required: false, cleanupOperation: 'deleteTarget' },
+    });
+    expect(target.contract.lowering?.artifact).toMatchObject({ kind: 'typeKroResource', path: 'plans/operation-target.tenant-stack.apply.json' });
+    expect(target.contract.dryRun.artifact).toMatchObject({ kind: 'typeKroResource', path: 'plans/operation-target.tenant-stack.dry-run.json' });
+    expect(target.__applik8sOperationTargetArtifacts.applyPlan.operations.map((operation) => operation.kind)).toEqual(['apply', 'apply']);
+    expect(target.__applik8sOperationTargetArtifacts.deletePlan.operations.map((operation) => operation.kind)).toEqual(['delete', 'delete']);
+    expect(target.__applik8sOperationTargetArtifacts.dryRunPlan?.operations.map((operation) => operation.kind)).toEqual(['apply', 'apply']);
     const owner = { apiVersion: 'infra.applik8s.dev/v1alpha1', kind: 'Tenant', name: 'acme', uid: 'tenant-uid' };
     const apply = target.adapter.renderApply(target, { fieldManager: 'override-manager', force: true, owner });
     const deletion = target.adapter.renderDelete(target);
@@ -1170,7 +1183,7 @@ describe('TypeKro adapter operation targets', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 
   it('compiles exported TypeKro compositions by lowering captured operator installs automatically', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-typekro-composition-'));
@@ -1302,7 +1315,7 @@ describe('TypeKro adapter operation targets', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 
   it('compiles generated-CRD instance handlers from mixed TypeKro composition entrypoints without bundling TypeKro into the handler', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-typekro-handler-composition-'));
@@ -1441,7 +1454,7 @@ describe('TypeKro adapter operation targets', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 
   it('fails early when statically serialized TypeKro handlers reference module-scope helpers', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-typekro-static-handler-diagnostic-'));

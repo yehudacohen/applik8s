@@ -1,4 +1,4 @@
-import type { DeleteTargetOptions, JsonObject, ObjectRef, PartialStatus, PermissionRule, Result } from '@applik8s/core';
+import type { DeleteTargetOptions, JsonObject, NormalizedOperationPlan, ObjectRef, PartialStatus, PermissionRule, Result } from '@applik8s/core';
 import type {
   TypeKroGraph,
   TypeKroGraphAdapter,
@@ -90,11 +90,29 @@ export function toOperationTarget<TGraphSpec extends KroCompatibleType = JsonObj
   const graph = sourceAsGraph(source);
   const applyResources = resourcePlanEntriesForSource(graph).map((entry) => entry.resource);
   const deleteRefs = deletionPlanEntriesForSource(graph).map((entry) => objectRefForResource(entry.resource));
+  const targetId = operationTargetId(graph);
+  const permissions = rbacForResources(applyResources);
+  // typecast: TypeKro operation target apply/delete plans are status-agnostic Kubernetes operation plans.
+  const applyPlan = { operations: applyResources.map((resource) => ({ kind: 'apply' as const, resource })) } as NormalizedOperationPlan<THandlerStatus>;
+  // typecast: TypeKro operation target delete plans are status-agnostic Kubernetes operation plans.
+  const deletePlan = { operations: deleteRefs.map((ref) => ({ kind: 'delete' as const, ref })) } as NormalizedOperationPlan<THandlerStatus>;
   // typecast: the object implements the OperationTarget contract plus TypeKro-specific source/spec fields.
   return {
     targetKind: 'operationTarget',
     __applik8sApplyResources: applyResources,
     __applik8sDeleteRefs: deleteRefs,
+    __applik8sOperationTargetArtifacts: { applyPlan, deletePlan, dryRunPlan: applyPlan },
+    contract: {
+      id: targetId,
+      target: { nodeId: targetId.replace(/^operation-target\./, 'typeKroResource.') },
+      operations: ['apply', 'delete'],
+      lowering: { mode: 'typeKroResource', artifact: { kind: 'typeKroResource', path: `plans/${targetId}.apply.json` }, failurePolicy: 'failClosed' },
+      dryRun: { supported: true, artifact: { kind: 'typeKroResource', path: `plans/${targetId}.dry-run.json` }, failurePolicy: 'failClosed' },
+      ownership: { ownerReferences: 'optional', orphanPolicy: 'retain' },
+      finalizers: { required: false, cleanupOperation: 'deleteTarget' },
+      permissions,
+      diagnostics: [],
+    },
     adapter: {
       renderApply(target, renderOptions) {
         // typecast: TypeKro operation targets store the original spec with the same generic TGraphSpec accepted by this adapter.
@@ -134,6 +152,15 @@ export function toOperationTarget<TGraphSpec extends KroCompatibleType = JsonObj
     source,
     spec,
   } as TypeKroOperationTarget<TGraphSpec, TGraphStatus, THandlerStatus>;
+}
+
+function operationTargetId(source: unknown): string {
+  const name = isRecord(source) && typeof source.name === 'string' ? source.name : 'typekro-target';
+  return `operation-target.${kubernetesNameSegment(name)}`;
+}
+
+function kubernetesNameSegment(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '') || 'target';
 }
 
 export function asOperationTargetFactory<TGraphSpec extends KroCompatibleType = JsonObject, TGraphStatus extends KroCompatibleType = JsonObject, THandlerStatus extends object = TGraphStatus>(

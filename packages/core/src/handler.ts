@@ -2,6 +2,7 @@ import type { CapabilityClientSet } from './capability.js';
 import type { EffectExecutionMode, HandlerApiStyle, HandlerEventType, HandlerId, JsonObject, JsonPrimitive, KubernetesName, NamespaceName, ObjectMeta, ObjectRef, ReconcileId, Result, SourceLocation } from './common.js';
 import type { ApplyOwnership, DeleteOptions, EventOperation, HandlerResult, JsonPatch, NormalizedOperationPlan, OperationPlanInput, PartialStatus, PatchOperation, RequeueOperation, RequeuePolicy, StatusOperation } from './operation-plan.js';
 import type { AnyKubernetesObject, AnyResourceDefinition, LabelSelector, PermissionRule, ResourceDefinition, ResourceObject, ResourceReadClient } from './resource.js';
+import type { ApplicationOperationTargetContract } from './application-graph.js';
 
 export type MaybePromise<T> = T | Promise<T>;
 export type DraftValue<T> = T extends JsonPrimitive ? T : T extends ReadonlyArray<infer U> ? DraftValue<U>[] : T extends object ? { -readonly [K in keyof T]: DraftValue<T[K]> } : T;
@@ -35,8 +36,9 @@ export interface ApplyTargetOptions { readonly fieldManager?: string; readonly f
 export interface DeleteTargetOptions extends DeleteOptions { readonly owner?: ObjectRef; }
 export interface ApplyTargetInput<TStatus extends object = object> { readonly target: OperationTarget<TStatus>; readonly options?: ApplyTargetOptions; }
 export interface DeleteTargetInput<TStatus extends object = object> { readonly target: OperationTarget<TStatus>; readonly options?: DeleteTargetOptions; }
-export interface OperationTarget<TStatus extends object = object> { readonly targetKind: 'operationTarget'; readonly adapter: OperationTargetAdapter<this, TStatus>; }
+export interface OperationTarget<TStatus extends object = object> { readonly targetKind: 'operationTarget'; readonly adapter: OperationTargetAdapter<this, TStatus>; readonly contract?: ApplicationOperationTargetContract; readonly __applik8sOperationTargetArtifacts?: OperationTargetLoweringArtifacts<TStatus>; }
 export interface OperationTargetAdapter<TTarget extends OperationTarget<TStatus>, TStatus extends object = object> { renderApply(target: TTarget, options?: ApplyTargetOptions): Result<NormalizedOperationPlan<TStatus>>; renderDelete(target: TTarget, options?: DeleteTargetOptions): Result<NormalizedOperationPlan<TStatus>>; inferRbac(target: TTarget): Result<readonly PermissionRule[]>; }
+export interface OperationTargetLoweringArtifacts<TStatus extends object = object> { readonly applyPlan: NormalizedOperationPlan<TStatus>; readonly deletePlan: NormalizedOperationPlan<TStatus>; readonly dryRunPlan?: NormalizedOperationPlan<TStatus>; }
 export interface EffectPolicy { readonly mode: EffectExecutionMode; readonly reason?: string; readonly replayable: boolean; }
 export interface NameHelpers { dnsSafe(input: string, options?: NameOptions): KubernetesName; withHash(prefix: string, input: string, options?: NameOptions): KubernetesName; }
 export interface NameOptions { readonly maxLength?: number; readonly collisionSuffixLength?: number; }

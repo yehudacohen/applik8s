@@ -602,11 +602,19 @@ export const imagePipeline = sdk.operator({
       ]));
       expect(graph.nodes.map((node: { readonly id: string }) => node.id)).toEqual([...graph.nodes.map((node: { readonly id: string }) => node.id)].sort());
       expect(graph.edges.map((edge: { readonly from: { readonly nodeId: string }; readonly relationship: string; readonly to: { readonly nodeId: string } }) => `${edge.from.nodeId}:${edge.relationship}:${edge.to.nodeId}`)).toEqual([...graph.edges.map((edge: { readonly from: { readonly nodeId: string }; readonly relationship: string; readonly to: { readonly nodeId: string } }) => `${edge.from.nodeId}:${edge.relationship}:${edge.to.nodeId}`)].sort());
+      expect(graph.providerRequirements).toEqual([]);
+      expect(graph.providerBindings).toEqual([]);
       expect(graph.compatibility).toMatchObject({
         documentedInternalContracts: expect.arrayContaining(['ApplicationGraph']),
-        stablePublicApis: expect.arrayContaining(['Resource.increment', 'app.aggregate', 'app.crd', 'app.server', 'sdk.kubernetesComposition']),
-        experimentalSurfaces: expect.arrayContaining(['app.job', 'app.model', 'provider.ModelStore']),
+        stablePublicApis: expect.arrayContaining(['Resource.increment', 'app.aggregate', 'app.crd', 'app.defaults', 'app.job', 'app.model', 'app.provide', 'app.schedule', 'app.server', 'provider.ModelStore', 'sdk.kubernetesComposition']),
+        experimentalSurfaces: expect.arrayContaining(['app.graph']),
         postV3Surfaces: expect.arrayContaining(['workload-movement-operator']),
+        labels: expect.arrayContaining([
+          expect.objectContaining({ name: 'ApplicationGraph', surface: 'documentedInternalContract' }),
+          expect.objectContaining({ name: 'app.model', surface: 'stablePublicApi' }),
+          expect.objectContaining({ name: 'provider.ModelStore', surface: 'stablePublicApi' }),
+          expect.objectContaining({ name: 'workload-movement-operator', surface: 'postV3Surface' }),
+        ]),
       });
       expect(result.value.artifacts.manifest.spec.applicationGraph).toMatchObject({
         apiVersion: 'applik8s.appGraph/v1alpha1',
@@ -654,8 +662,10 @@ Object.defineProperty(composition, '__applik8sApplicationGraph', {
         },
       },
     ],
-    edges: [],
-    compatibility: { stablePublicApis: [], documentedInternalContracts: ['ApplicationGraph'], experimentalSurfaces: [], postV3Surfaces: [] },
+    edges: [{ from: { nodeId: 'server.missing' }, to: { nodeId: 'model.entry' }, relationship: 'dependsOn' }],
+    providerRequirements: [],
+    providerBindings: [],
+    compatibility: { stablePublicApis: [], documentedInternalContracts: ['ApplicationGraph'], experimentalSurfaces: [], postV3Surfaces: [], labels: [] },
   },
 });
 
@@ -682,14 +692,112 @@ export const badProviderGraph = composition;
       if (!result.ok) {
         expect(result.error).toMatchObject({
           code: 'COMPATIBILITY_FAILED',
-          message: expect.stringContaining('Application graph provider bindings are invalid'),
+          message: expect.stringContaining('Application graph is invalid'),
         });
+        expect(result.error.message).toContain('server.missing:dependsOn:model.entry');
         expect(result.error.message).toContain('provider.model.missing');
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('lowers app.model Postgres provider graph contracts into concrete generated artifacts', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-model-graph-lowering-'));
+    try {
+      const entrypoint = join(dir, 'entrypoint.ts');
+      await writeFile(entrypoint, `
+import { ModelStore, sdk } from ${JSON.stringify(join(process.cwd(), 'packages/applik8s/src/index.ts'))};
+import { entity, type } from ${JSON.stringify(join(process.cwd(), 'packages/applik8s/src/dsl.ts'))};
+
+const Note = entity('Note', {
+  spec: type({ message: 'string' }),
+  status: type({ phase: 'string?' }),
+});
+
+export const notesModelApp = sdk.kubernetesComposition({
+  name: 'notes-model-stack',
+  apiVersion: 'notes.applik8s.dev/v1alpha1',
+  kind: 'NotesModelStack',
+  spec: type({}),
+  status: type({ ready: 'boolean' }),
+}, (_spec, app) => {
+  const store = app.provide(ModelStore, {
+    kind: 'postgres',
+    name: 'notes-db',
+    namespace: 'notes',
+    database: 'notes',
+    migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob', jobName: 'notes-model-migration' },
+  });
+  app.model(Note, { store });
+  return { ready: true };
+});
+`);
+
+      const result = await compileTypeKroComposition({
+        entrypoint,
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: {
+          deterministicBuild: true,
+          allowEnvironmentAccess: false,
+          allowFilesystemAccess: false,
+          allowNetworkAccess: false,
+          allowedHostImports: [],
+          sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
+        },
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
+        expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'notes-db', namespace: 'notes' }) }),
+        expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', metadata: expect.objectContaining({ name: 'notes-model-migration', namespace: 'notes' }) }),
+        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'notes-model-store', namespace: 'notes' }) }),
+      ]));
+      expect(result.value.artifacts.resources).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ apiVersion: 'v1', kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }),
+      ]));
+      expect(result.value.artifacts.applicationGraphJsonPath).toBe(join(dir, 'dist', 'typekro', 'application-graph.json'));
+      const graph = JSON.parse(await readFile(result.value.artifacts.applicationGraphJsonPath ?? '', 'utf8'));
+      const artifactResourceKeys = new Set(result.value.artifacts.resources.map((resource) => `${resource.apiVersion}:${resource.kind}:${resource.metadata?.namespace ?? ''}:${resource.metadata?.name ?? ''}`));
+      type GraphGeneratedResource = { readonly resource?: { readonly apiVersion?: string; readonly kind?: string; readonly namespace?: string; readonly name?: string } };
+      type GraphNodeWithGeneratedResources = { readonly generatedResources?: readonly GraphGeneratedResource[] };
+      // typecast: JSON.parse returns unknown graph node shapes; this narrows just the generatedResources field for test assertions.
+      const graphResourceKeys = new Set((graph.nodes as readonly GraphNodeWithGeneratedResources[]).flatMap((node) => node.generatedResources ?? [])
+        .map((generated) => generated.resource)
+        .filter((resource): resource is { readonly apiVersion: string; readonly kind: string; readonly namespace?: string; readonly name?: string } => Boolean(resource?.apiVersion && resource.kind && resource.name))
+        .map((resource) => `${resource.apiVersion}:${resource.kind}:${resource.namespace ?? ''}:${resource.name ?? ''}`));
+      for (const expected of [
+        'postgresql.cnpg.io/v1:Cluster:notes:notes-db',
+        'batch/v1:Job:notes:notes-model-migration',
+      ]) {
+        expect(artifactResourceKeys.has(expected)).toBe(true);
+        expect(graphResourceKeys.has(expected)).toBe(true);
+      }
+      expect(graph.providerRequirements).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: 'requirement.model.note.store', consumer: { nodeId: 'model.note' } }),
+      ]));
+      expect(graph.providerBindings).toEqual(expect.arrayContaining([
+        expect.objectContaining({ requirement: 'requirement.model.note.store', generatedResources: expect.arrayContaining([expect.objectContaining({ kind: 'Cluster', name: 'notes-db', namespace: 'notes' })]) }),
+      ]));
+      expect(graph.nodes).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: 'job.notes-model-migration',
+          generatedResources: expect.arrayContaining([
+            expect.objectContaining({ artifact: expect.objectContaining({ kind: 'kubernetesManifest', name: 'notes-model-migration.yaml' }) }),
+            expect.objectContaining({ artifact: expect.objectContaining({ kind: 'jobDiagnostics', name: 'notes-model-migration-diagnostics' }) }),
+          ]),
+        }),
+      ]));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it('statically serializes operators that use raw ArkType schemas with inferred CRD types', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-arktype-static-'));

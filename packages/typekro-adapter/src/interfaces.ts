@@ -17,6 +17,7 @@ import type { Type } from 'arktype';
 import type {
   AnyResourceDefinition,
   AnyKubernetesObject,
+  ApplicationOperationTargetContract,
   CapabilityClientSet,
   FinalizeHandlerOptions,
   Handler,
@@ -27,6 +28,7 @@ import type {
   NormalizedOperationPlan,
   OperationTarget,
   OperationTargetAdapter,
+  OperationTargetLoweringArtifacts,
   ObjectRef,
   OperatorDefinition,
   OperatorDeploymentOptions,
@@ -261,6 +263,8 @@ export interface TypeKroOperationTarget<
 > extends OperationTarget<THandlerStatus> {
   readonly __applik8sApplyResources: readonly AnyKubernetesObject[];
   readonly __applik8sDeleteRefs: readonly ObjectRef[];
+  readonly __applik8sOperationTargetArtifacts: OperationTargetLoweringArtifacts<THandlerStatus>;
+  readonly contract: ApplicationOperationTargetContract;
   readonly source: TypeKroOperationTargetSource<TGraphSpec, TGraphStatus>;
   readonly spec: TypeKroOperationTargetSpec<TGraphSpec>;
   readonly adapter: TypeKroOperationTargetAdapter<TGraphSpec, TGraphStatus, THandlerStatus>;

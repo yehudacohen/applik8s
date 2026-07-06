@@ -74,6 +74,8 @@ The required v0.2 TypeKro story is one package for infrastructure composition an
 
 The required v0.3 framework story is stable enough that a future workload-movement operator can depend on applik8s contracts without large rewrites after v0.3:
 
+- treat v0.3-required app/provider APIs as stable public APIs for the pre-v1 line, while keeping unimplemented behavior fail-closed until it is real
+- execute model operations in serialized generated callbacks through generated runtime clients, and execute the same typed model operations in ordinary script callbacks/functions through an explicit script-execution runtime path
 - define schema-first entities and materialize them as either CRDs or storage-backed models with explicit backend semantics
 - bind app-scoped providers through `app.defaults(...)` and `app.provide(...)` using stable capability interfaces such as `ModelStore`, `IndexStore`, `CounterStore`, `EventSource`, `Secret`, `Queue`, `ObjectStorage`, `HttpExposure`, and credential material
 - compile an app into an explicit app graph IR before emitting Kubernetes, TypeKro, generated runtime, RBAC, and diagnostics artifacts
@@ -159,6 +161,19 @@ The v0.3 character, vertical, generated-artifact, and live suites should add the
 - CRD/schema compatibility fixtures distinguish stable v0.3 rules from explicitly post-v0.3 conversion-webhook or stored-version migration support
 - generated runtime modules share Kubernetes clients, diagnostics, source maps, and failure taxonomy instead of duplicating unsafe ad hoc clients
 - post-v0.3 surfaces such as workload movement, generic workflow orchestration, broad provider ecosystems, Helm/OLM/OCI, and SLSA/SBOM/admission enforcement remain absent or explicitly experimental
+
+Current prep status:
+
+- Added core interface fixtures for migration plans, compatibility checks, migration history metadata, runtime module boundaries, diagnostic taxonomy, every v0.3 provider requirement interface, generated job contracts, generated phase/status contracts, and ModelStore guarantees.
+- Promoted the first Postgres `ModelStore` character/integration path to real generated resources and runtime behavior: CNPG Cluster, migration Job, SQL ConfigMap, diagnostics ConfigMap, generated server runtime client, and live E2E coverage.
+- Added typed `app.defaults({ models })`, `app.provide(ModelStore, ...)`, explicit model store binding, invalid alias, and reserved provider-token coverage.
+- Added character and integration coverage for public `app.job(...)` and `app.schedule(...)` authoring as generated Kubernetes Job/CronJob resources with diagnostics, durable status metadata, terminal-failure templates, and partial-effect diagnostics.
+- Added shared generated-job status/idempotency diagnostics for generated model migration jobs without changing the live migration execution path.
+- Added v0.3 runtime module ABI and generated durable status-updater contracts, with status-runtime ConfigMap artifacts for generated jobs and migrations.
+- Added the first executing generated-job status reconciler character/integration/live slice, including consolidated status-runtime Deployments, RBAC, runtime entrypoint metadata, KRO app-instance discovery, best-effort app-status patching, and a durable generated status ConfigMap fallback because current KRO-generated app CRDs prune custom `status.applik8s` fields.
+- Added v0.3 freeze-interface coverage for operation-target lowering, watch-scope lowering, migration drift checks, and the integrated pressure-test readiness gate.
+- Added integration contracts for runtime module content/mount boundaries and migration failure/drift diagnostics.
+- Remaining product promises: production-hardened durable phase/status reconciliation beyond the live-confirmed Postgres migration path, app CRD status-schema ownership, operation-target and watch-scope implementation, script-execution ModelStore runtime, deeper migration drift enforcement, the pressure-test app, and broader runtime modularization.
 
 ## Post-v0.3 Workload Movement Safety Tests
 

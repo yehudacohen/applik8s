@@ -9,25 +9,34 @@ import type { TypeKroListenerComposition, TypeKroListenerCompositionDefinition }
 import { typeKro } from '@applik8s/typekro-adapter';
 import { buildSync, transformSync } from 'esbuild';
 import type { Enhanced, KroCompatibleType, MagicAssignableShape, SerializationOptions } from 'typekro';
-import { configMap as typeKroConfigMap, deployment as typeKroDeployment, role as typeKroRole, roleBinding as typeKroRoleBinding, service as typeKroService, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
+import { cluster as typeKroCnpgCluster } from 'typekro/cnpg';
+import { configMap as typeKroConfigMap, cronJob as typeKroCronJob, deployment as typeKroDeployment, job as typeKroJob, role as typeKroRole, roleBinding as typeKroRoleBinding, service as typeKroService, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import { valkey as typeKroValkey } from 'typekro/valkey';
 import { addApplicationGraphEdge, addApplicationGraphNode, applicationGraphFromState, isApplicationGraph, type ApplicationGraphState } from './application-graph-state.js';
-import { applyApplicationProvider, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, defaultApplicationIndexBackend, defaultApplicationIndexProvider, isValkeyIndexDefault } from './application-providers.js';
+import { applicationModelBinding, applicationModelMigrationPlan, applicationModelMigrationSql, applicationRuntimeModelContract, recordApplicationModelGraph, resolveApplicationModelStore } from './application-models.js';
+import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationRuntimeModelContract } from './application-models.js';
+import { applicationGeneratedJobDurableStatus, applicationGeneratedJobPhase, applicationGeneratedJobPhaseStatusContract, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
+import { applicationModelStoreImplementation, applyApplicationProvider, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, defaultApplicationIndexBackend, defaultApplicationIndexProvider, isValkeyIndexDefault, ModelStore } from './application-providers.js';
 import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
+import { generatedApplicationServerRuntimeSource, runtimeIndexTable } from './application-server-runtime.js';
 import type { EntityDefinition } from './dsl.js';
+import { generatedApplicationRuntimeModuleBundle, generatedJobStatusRuntimeBundle } from './application-runtime-modules.js';
+import { applicationStatusReconcilerName, emitApplicationGeneratedJobStatusReconcilers } from './application-status-reconciler.js';
+import type { ApplicationGeneratedJobStatusTarget, ApplicationStatusReconcilerAppResourceTarget } from './application-status-reconciler.js';
 
 export { CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, providers, Queue, Secret } from './application-providers.js';
-export type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationPostgresModelStoreProvider, ApplicationProviderBinding, ApplicationProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
+export type { ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
+export type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationIndexBackend, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
 
 export interface KubernetesApplicationScope {
   readonly api: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
   readonly server: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
   operator<TBinding>(operator: (options: OperatorDeploymentOptions) => TBinding, options: OperatorDeploymentOptions): TBinding;
   crd<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options: ApplicationCrdOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus>;
-  model<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options?: ApplicationModelOptions): never;
+  model<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options?: ApplicationModelOptions<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus>;
   infra<TResource extends object>(resource: TResource): TResource;
-  job(name: string, options?: ApplicationJobOptions): never;
-  schedule(name: string, options?: ApplicationScheduleOptions): never;
+  job(name: string, options?: ApplicationJobOptions): ApplicationJobBinding;
+  schedule(name: string, options?: ApplicationScheduleOptions): ApplicationJobBinding;
   defaults(defaults: ApplicationDefaults): ApplicationDefaultsBinding;
   provide<TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): ApplicationProviderBinding<TImplementation>;
   aggregate<TStats extends object, TEvent extends object>(name: string, options: ApplicationAggregateOptions<TStats, TEvent>): ApplicationAggregateBinding<TStats, TEvent>;
@@ -39,20 +48,29 @@ export type ApplicationCrdOptions<TSpec extends object, TStatus extends object> 
   readonly kind?: string;
 };
 
-export interface ApplicationModelOptions {
-  readonly name?: string;
-  readonly store?: ApplicationModelStoreProvider | ApplicationProviderBinding<ApplicationModelStoreProvider>;
-}
-
 export interface ApplicationJobOptions {
   readonly taskKind?: 'preflight' | 'migration' | 'cleanup' | 'repair' | 'maintenance' | 'custom';
+  readonly namespace?: string;
   readonly image?: string;
   readonly command?: readonly string[];
   readonly args?: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export interface ApplicationScheduleOptions extends ApplicationJobOptions {
   readonly cron?: string;
+  readonly timezone?: string;
+  readonly concurrencyPolicy?: 'allow' | 'forbid' | 'replace';
+  readonly missedRunPolicy?: 'skip' | 'startLate' | 'failClosed';
+  readonly startingDeadlineSeconds?: number;
+}
+
+export interface ApplicationJobBinding {
+  readonly kind: 'applicationJob';
+  readonly name: string;
+  readonly resourceName: string;
+  readonly diagnosticsConfigMapName: string;
+  readonly statusPath: string;
 }
 
 export interface ApplicationServerOptions {
@@ -75,10 +93,13 @@ export interface ApplicationServerOptions {
   readonly service?: { readonly port: number };
   readonly resources?: Readonly<Record<string, AnyResourceDefinition>>;
   readonly indexes?: Readonly<Record<string, ResourceIndex<object, object>>>;
+  readonly models?: Readonly<Record<string, ApplicationServerModelBinding>>;
   readonly captures?: Readonly<Record<string, ApplicationServerCaptureValue>>;
   readonly cache?: readonly ResourceIndex<object, object>[];
   readonly indexBackend?: ApplicationIndexBackend;
 }
+
+export type ApplicationServerModelBinding = ApplicationRuntimeModelContract | ApplicationModelRuntimeBinding;
 
 export interface ApplicationPermissionRule {
   readonly apiGroups: readonly string[];
@@ -189,7 +210,13 @@ interface ApplicationServerPermissionInferenceRequest {
 interface ApplicationScopeState extends ApplicationGraphState, ApplicationProviderState {
   readonly resources: Record<string, AnyResourceDefinition>;
   readonly indexes: Record<string, ResourceIndex<object, object>>;
+  readonly models: Record<string, ApplicationRuntimeModelContract>;
+  readonly emittedModelStores: Set<string>;
+  readonly appResource: ApplicationCompositionResourceTarget;
+  readonly generatedJobStatusTargets: ApplicationGeneratedJobStatusTarget[];
 }
+
+interface ApplicationCompositionResourceTarget extends ApplicationStatusReconcilerAppResourceTarget {}
 
 interface ApplicationContext {
   readonly scope: KubernetesApplicationScope;
@@ -300,12 +327,14 @@ export function applicationGraphFor(composition: object): ApplicationGraph | und
 }
 
 function applicationCompositionWrapper<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
+  definition: TypeKroListenerCompositionDefinition<TSpec, TStatus>,
   compositionFn: (spec: TSpec, app: KubernetesApplicationScope) => MagicAssignableShape<TStatus>,
   graphName: string
 ): (spec: TSpec) => MagicAssignableShape<TStatus> {
   const wrapped = (spec: TSpec) => {
-    const context = createApplicationContext();
+    const context = createApplicationContext(definition);
     const result = withApplicationOperatorResourceCollection(context.state, () => compositionFn(spec, context.scope));
+    emitApplicationGeneratedJobStatusReconcilers(context.state, { graphResourceId, kubernetesNameSegment, apiGroupForApiVersion });
     lastApplicationGraph = applicationGraphFromState(kubernetesNameSegment(graphName), context.state);
     return result;
   };
@@ -317,7 +346,7 @@ export const kubernetesComposition: KubernetesApplicationCompositionFunction = (
   lastApplicationGraph = undefined;
   const composition = typeKro.kubernetesComposition(
     definition,
-    applicationCompositionWrapper(compositionFn, definition.name),
+    applicationCompositionWrapper(definition, compositionFn, definition.name),
     options
   );
   if (lastApplicationGraph) {
@@ -331,9 +360,9 @@ export const app: KubernetesApplicationCompositionFunction = kubernetesCompositi
 
 export const sdk = Object.assign({}, baseSdk, { app, kubernetesComposition });
 
-function createApplicationContext(): ApplicationContext {
+function createApplicationContext<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(definition: TypeKroListenerCompositionDefinition<TSpec, TStatus>): ApplicationContext {
   const servers: Record<string, ApplicationServerBinding> = {};
-  const state: ApplicationScopeState = { resources: {}, indexes: {}, defaults: {}, providers: {}, graphNodes: [], graphEdges: [] };
+  const state: ApplicationScopeState = { resources: {}, indexes: {}, models: {}, emittedModelStores: new Set(), appResource: applicationCompositionResourceTarget(definition), generatedJobStatusTargets: [], defaults: {}, providers: {}, graphNodes: [], graphEdges: [], providerRequirements: [], providerBindings: [] };
   const server = (name: string, options: ApplicationServerOptions, configure: (server: ApplicationServer) => void) => {
     const routes: ApplicationServerRoute[] = [];
     configure(createRouteRecorder(routes));
@@ -367,22 +396,32 @@ function createApplicationContext(): ApplicationContext {
       recordApplicationCrdGraph(state, entity.name, resource);
       return resource;
     },
-    model(entity, _options) {
-      throw new Error(`app.model(${JSON.stringify(entity.name)}) requires a storage-backed ModelStore implementation. v0.2 intentionally fails closed for model-backed application data; use app.crd(entity, { apiVersion, ... }) for Kubernetes control-plane state until app.model storage semantics land in v0.3.`);
+    model(entity, options) {
+      const modelStore = resolveApplicationModelStore(state, entity.name, options?.store);
+      const runtimeModel = applicationRuntimeModelContract(entity, modelStore, options);
+      emitApplicationModelStoreResources(state, runtimeModel, modelStore);
+      recordApplicationModelGraph(state, entity, modelStore, options);
+      state.models[runtimeModel.name] = runtimeModel;
+      return applicationModelBinding(entity, modelStore, options, runtimeModel);
     },
     infra(resource) {
       recordApplicationTypeKroResourceGraph(state, resource);
       return resource;
     },
-    job(name, _options) {
-      throw new Error(`app.job(${JSON.stringify(name)}) requires generated job runtime and durable phase/status semantics, which are not enabled yet. Define the contract before enabling v0.3 jobs.`);
+    job(name, options) {
+      return emitApplicationGeneratedJob(state, name, options ?? {}, undefined);
     },
-    schedule(name, _options) {
-      throw new Error(`app.schedule(${JSON.stringify(name)}) requires generated scheduled job runtime and durable phase/status semantics, which are not enabled yet. Define the contract before enabling v0.3 schedules.`);
+    schedule(name, options) {
+      return emitApplicationGeneratedJob(state, name, options ?? {}, options?.cron ?? '* * * * *');
     },
     defaults(defaults) {
       if ('models' in defaults) {
-        throw new Error('app.defaults({ models: ... }) requires storage-backed app.model semantics, which are not enabled in v0.2. Use app.crd(entity, ...) for Kubernetes control-plane state or defer model-backed data to v0.3.');
+        const modelStore = applicationModelStoreImplementation(defaults.models);
+        if (!modelStore) {
+          throw new Error('app.defaults({ models: ... }) currently supports only the typed Postgres ModelStore provider declaration. Use { kind: "postgres", ... } or app.provide(ModelStore, { kind: "postgres", ... }) until additional ModelStore providers are implemented.');
+        }
+        state.defaults.models = defaults.models;
+        recordApplicationProviderGraph(state, 'ModelStore', 'default', modelStore);
       }
       if ('counters' in defaults) {
         throw new Error('app.defaults({ counters: ... }) requires a storage-backed CounterStore implementation, which is not enabled yet. This fails closed so counter durability semantics stay explicit.');
@@ -435,17 +474,31 @@ function applicationServerOptionsWithScope(state: ApplicationScopeState, options
     ...inferredApplicationServerIndexes(state.indexes, routeAnalyses),
     ...inferredApplicationServerIndexesFromCache(cacheIndexes, routeAnalyses, state.indexes, options.indexes ?? {}),
   };
+  const inferredModels = inferredApplicationServerModels(state.models, routeAnalyses);
   const resources = { ...inferredResources, ...(options.resources ?? {}) };
   const indexes = { ...inferredIndexes, ...(options.indexes ?? {}) };
+  const models = { ...inferredModels, ...applicationServerRuntimeModels(options.models ?? {}) };
   const indexBackend = options.indexBackend ?? defaultApplicationIndexBackend(state, options, indexes);
   const cache = options.cache ?? (indexBackend && isValkeyIndexDefault(defaultApplicationIndexProvider(state)) ? Object.values(indexes) : undefined);
   return {
     ...options,
     ...(Object.keys(resources).length > 0 ? { resources } : {}),
     ...(Object.keys(indexes).length > 0 ? { indexes } : {}),
+    ...(Object.keys(models).length > 0 ? { models } : {}),
     ...(cache && cache.length > 0 ? { cache } : {}),
     ...(indexBackend ? { indexBackend } : {}),
   };
+}
+
+function applicationServerRuntimeModels(models: Readonly<Record<string, ApplicationServerModelBinding>>): Readonly<Record<string, ApplicationRuntimeModelContract>> {
+  return Object.fromEntries(Object.entries(models).map(([name, model]) => [name, applicationServerRuntimeModel(model)]));
+}
+
+function applicationServerRuntimeModel(model: ApplicationServerModelBinding): ApplicationRuntimeModelContract {
+  if ('provider' in model) {
+    return model;
+  }
+  return model.runtime;
 }
 
 function inferredApplicationServerResources(resources: Readonly<Record<string, AnyResourceDefinition>>, analyses: readonly ApplicationServerRouteSourceAnalysis[]): Readonly<Record<string, AnyResourceDefinition>> {
@@ -454,6 +507,10 @@ function inferredApplicationServerResources(resources: Readonly<Record<string, A
 
 function inferredApplicationServerIndexes(indexes: Readonly<Record<string, ResourceIndex<object, object>>>, analyses: readonly ApplicationServerRouteSourceAnalysis[]): Readonly<Record<string, ResourceIndex<object, object>>> {
   return Object.fromEntries(Object.entries(indexes).filter(([name]) => analyses.some((analysis) => analysis.freeIdentifiers.includes(name) || routeAnalysisCallsMethod(analysis, name, 'query'))));
+}
+
+function inferredApplicationServerModels(models: Readonly<Record<string, ApplicationRuntimeModelContract>>, analyses: readonly ApplicationServerRouteSourceAnalysis[]): Readonly<Record<string, ApplicationRuntimeModelContract>> {
+  return Object.fromEntries(Object.entries(models).filter(([name]) => analyses.some((analysis) => analysis.freeIdentifiers.includes(name) || ['create', 'get', 'query', 'patch', 'delete', 'index'].some((method) => routeAnalysisCallsMethod(analysis, name, method)))));
 }
 
 function inferredApplicationServerIndexesFromCache(
@@ -677,6 +734,22 @@ function applicationProviderNodeId(providerInterface: ApplicationProviderInterfa
   return applicationGraphNodeId('provider', providerInterface);
 }
 
+function applicationCompositionResourceTarget<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(definition: TypeKroListenerCompositionDefinition<TSpec, TStatus>): ApplicationCompositionResourceTarget {
+  const apiVersion = definition.apiVersion ?? (definition.group ? `${definition.group}/v1alpha1` : 'applik8s.dev/v1alpha1');
+  return { apiVersion, kind: definition.kind, plural: pluralizeKubernetesKind(definition.kind) };
+}
+
+function pluralizeKubernetesKind(kind: string): string {
+  const segment = kubernetesNameSegment(kind).replaceAll('-', '');
+  if (segment.endsWith('y')) {
+    return `${segment.slice(0, -1)}ies`;
+  }
+  if (segment.endsWith('s')) {
+    return `${segment}es`;
+  }
+  return `${segment}s`;
+}
+
 function applicationGraphNodeId(kind: string, name: string): string {
   return `${kind}.${kubernetesNameSegment(name)}`;
 }
@@ -711,6 +784,369 @@ function applicationAggregateBinding<TStats extends object, TEvent extends objec
   };
 }
 
+function emitApplicationGeneratedJob(state: ApplicationScopeState, name: string, options: ApplicationJobOptions | ApplicationScheduleOptions, cron: string | undefined): ApplicationJobBinding {
+  const resourceName = kubernetesNameSegment(name);
+  const namespace = options.namespace;
+  const nodeId = applicationGraphNodeId('job', resourceName);
+  const statusPath = `status.applik8s.jobs.${resourceName}`;
+  const diagnosticsConfigMapName = `${resourceName}-diagnostics`;
+  const statusRuntimeConfigMapName = `${resourceName}-status-runtime`;
+  const labels = {
+    'app.kubernetes.io/name': resourceName,
+    'app.kubernetes.io/component': cron ? 'generated-scheduled-job' : 'generated-job',
+    'app.kubernetes.io/managed-by': 'applik8s',
+    'applik8s.dev/job': resourceName,
+  };
+  const missedRunPolicy = isApplicationScheduleOptions(options) ? options.missedRunPolicy : undefined;
+  const annotations = missedRunPolicy ? { 'applik8s.dev/missed-run-policy': missedRunPolicy } : undefined;
+  const container = applicationGeneratedJobContainer(resourceName, statusPath, options);
+  const materialization = cron ? 'kubernetes-cronjob' : 'kubernetes-job';
+  const resourceRef = { apiVersion: 'batch/v1', kind: cron ? 'CronJob' : 'Job', name: resourceName, ...(namespace ? { namespace } : {}) };
+  const phaseStatusTarget = { resource: { nodeId }, statusPath };
+  const permissions = [{ apiGroups: ['batch'], resources: [cron ? 'cronjobs' : 'jobs'], verbs: ['create', 'get', 'list', 'watch', 'patch'] }];
+  const phaseStatusContract = applicationGeneratedJobPhaseStatusContract({
+    statusResource: { nodeId },
+    statusPath,
+    statusShape: applicationGeneratedJobDurableStatus({ jobName: resourceName, idempotencyKey: 'metadata.generation' }),
+  });
+  const terminalFailureStatus = applicationGeneratedJobDurableStatus({
+    jobName: resourceName,
+    phase: 'Failed',
+    idempotencyKey: 'metadata.generation',
+    retryCount: applicationGeneratedJobRetry().maxAttempts ?? 0,
+    terminalFailure: {
+      reason: 'GeneratedJobFailed',
+      message: `Generated job ${resourceName} failed. Inspect ${cron ? 'cronjob' : 'job'}/${resourceName} and its pod logs.`,
+      failedStep: 'runJob',
+      partialEffects: [{ operation: 'runJob', ref: resourceRef, status: 'visible' }],
+    },
+    conditions: [{ type: 'Failed', status: 'True', reason: 'GeneratedJobFailed', message: `Generated job ${resourceName} reached a terminal failure.`, observedGeneration: 0 }],
+  });
+  const durableStatusUpdater = applicationGeneratedJobStatusUpdater({
+    jobName: resourceName,
+    observes: [resourceRef],
+    writes: phaseStatusTarget,
+    statusShape: phaseStatusContract.statusShape,
+  });
+  const schedule = cron ? {
+    cron,
+    ...(isApplicationScheduleOptions(options) && options.timezone ? { timezone: options.timezone } : {}),
+    ...(isApplicationScheduleOptions(options) && options.concurrencyPolicy ? { concurrencyPolicy: options.concurrencyPolicy } : {}),
+    ...(missedRunPolicy ? { missedRunPolicy } : {}),
+    ...(isApplicationScheduleOptions(options) && options.startingDeadlineSeconds !== undefined ? { startingDeadlineSeconds: options.startingDeadlineSeconds } : {}),
+  } : undefined;
+
+  if (cron) {
+    typeKroCronJob({
+      id: graphResourceId(resourceName, 'generatedCronJob'),
+      apiVersion: 'batch/v1',
+      kind: 'CronJob',
+      metadata: { name: resourceName, ...(namespace ? { namespace } : {}), labels, ...(annotations ? { annotations } : {}) },
+      spec: {
+        schedule: cron,
+        ...(isApplicationScheduleOptions(options) && options.timezone ? { timeZone: options.timezone } : {}),
+        ...(isApplicationScheduleOptions(options) && options.concurrencyPolicy ? { concurrencyPolicy: kubernetesCronJobConcurrencyPolicy(options.concurrencyPolicy) } : {}),
+        ...(isApplicationScheduleOptions(options) && options.startingDeadlineSeconds !== undefined ? { startingDeadlineSeconds: options.startingDeadlineSeconds } : {}),
+        jobTemplate: { spec: applicationGeneratedJobSpec(labels, container) },
+      },
+    });
+  } else {
+    typeKroJob({
+      id: graphResourceId(resourceName, 'generatedJob'),
+      apiVersion: 'batch/v1',
+      kind: 'Job',
+      metadata: { name: resourceName, ...(namespace ? { namespace } : {}), labels },
+      spec: applicationGeneratedJobSpec(labels, container),
+    });
+  }
+
+  typeKroConfigMap({
+    id: graphResourceId(resourceName, 'generatedJobDiagnostics'),
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: { name: diagnosticsConfigMapName, ...(namespace ? { namespace } : {}), labels },
+    data: {
+      job: resourceName,
+      materialization,
+      phaseStatusPath: statusPath,
+      phaseStatusContract: JSON.stringify(phaseStatusContract, null, 2),
+      durableStatusTemplate: JSON.stringify(phaseStatusContract.statusShape, null, 2),
+      terminalFailureStatus: JSON.stringify(terminalFailureStatus, null, 2),
+      retryPolicy: JSON.stringify(applicationGeneratedJobRetry(), null, 2),
+      failureDiagnostic: JSON.stringify({ event: 'applik8s-job-terminal-failure', severity: 'error', reason: 'GeneratedJobFailed', message: `Generated job ${resourceName} failed. Inspect ${cron ? 'cronjob' : 'job'}/${resourceName} and its pod logs.`, retryable: true }, null, 2),
+    },
+  });
+
+  typeKroConfigMap({
+    id: graphResourceId(resourceName, 'generatedJobStatusRuntime'),
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: { name: statusRuntimeConfigMapName, ...(namespace ? { namespace } : {}), labels },
+    data: generatedJobStatusRuntimeBundle([{ jobName: resourceName, jobKind: cron ? 'CronJob' : 'Job', statusPath, materialization }], state.appResource),
+  });
+
+  const statusReconcilerName = applicationStatusReconcilerName(state.appResource, kubernetesNameSegment);
+  registerApplicationGeneratedJobStatusTarget(state, {
+    resourceName,
+    namespace,
+    statusPath,
+    jobKind: cron ? 'CronJob' : 'Job',
+    materialization,
+  });
+
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'job',
+    name: resourceName,
+    stability: 'stable',
+    task: {
+      taskKind: options.taskKind ?? 'custom',
+      ...(options.image ? { image: options.image } : {}),
+      ...(options.command ? { command: options.command } : {}),
+      ...(options.args ? { args: options.args } : {}),
+    },
+    ...(schedule ? { schedule } : {}),
+    phase: applicationGeneratedJobPhase(),
+    resources: [resourceRef],
+    retry: applicationGeneratedJobRetry(),
+    runtime: applicationGeneratedJobRuntime({
+      materialization,
+      statusResource: { nodeId },
+      statusPath,
+      permissions,
+      durableStatusUpdater,
+      metadataLinks: [{ graphNode: { nodeId }, artifact: { kind: 'jobDiagnostics', name: diagnosticsConfigMapName }, purpose: 'jobDiagnostics' }],
+    }),
+    generatedResources: [
+      { role: 'workload', graphNode: { nodeId }, resource: resourceRef, artifact: { kind: 'kubernetesManifest', name: `${resourceName}.yaml` } },
+      { role: 'runtimeBundle', graphNode: { nodeId }, resource: { apiVersion: 'v1', kind: 'ConfigMap', name: statusRuntimeConfigMapName, ...(namespace ? { namespace } : {}) }, artifact: { kind: 'runtimeModule', name: statusRuntimeConfigMapName } },
+      { role: 'runtimeBundle', graphNode: { nodeId }, resource: { apiVersion: 'apps/v1', kind: 'Deployment', name: statusReconcilerName, ...(namespace ? { namespace } : {}) }, artifact: { kind: 'runtimeModule', name: statusReconcilerName } },
+      { role: 'jobDiagnostics', graphNode: { nodeId }, resource: { apiVersion: 'v1', kind: 'ConfigMap', name: diagnosticsConfigMapName, ...(namespace ? { namespace } : {}) }, artifact: { kind: 'jobDiagnostics', name: diagnosticsConfigMapName } },
+    ],
+  });
+
+  return { kind: 'applicationJob', name, resourceName, diagnosticsConfigMapName, statusPath };
+}
+
+function registerApplicationGeneratedJobStatusTarget(state: ApplicationScopeState, target: ApplicationGeneratedJobStatusTarget): void {
+  state.generatedJobStatusTargets.push(target);
+}
+
+function applicationGeneratedJobSpec(labels: Readonly<Record<string, string>>, container: ReturnType<typeof applicationGeneratedJobContainer>) {
+  return {
+    backoffLimit: 3,
+    template: {
+      metadata: { labels },
+      spec: {
+        restartPolicy: 'OnFailure',
+        containers: [container],
+      },
+    },
+  };
+}
+
+function applicationGeneratedJobContainer(resourceName: string, statusPath: string, options: ApplicationJobOptions) {
+  return {
+    name: 'job',
+    image: options.image ?? 'busybox:1.36',
+    command: [...(options.command ?? ['sh', '-c'])],
+    args: [...(options.args ?? [`echo "applik8s generated job ${resourceName}"`])],
+    env: [
+      { name: 'APPLIK8S_JOB_NAME', value: resourceName },
+      { name: 'APPLIK8S_JOB_STATUS_PATH', value: statusPath },
+      ...Object.entries(options.env ?? {}).map(([name, value]) => ({ name, value })),
+    ],
+  };
+}
+
+function isApplicationScheduleOptions(options: ApplicationJobOptions | ApplicationScheduleOptions): options is ApplicationScheduleOptions {
+  return 'cron' in options || 'timezone' in options || 'concurrencyPolicy' in options || 'missedRunPolicy' in options || 'startingDeadlineSeconds' in options;
+}
+
+function kubernetesCronJobConcurrencyPolicy(policy: 'allow' | 'forbid' | 'replace'): 'Allow' | 'Forbid' | 'Replace' {
+  if (policy === 'forbid') {
+    return 'Forbid';
+  }
+  if (policy === 'replace') {
+    return 'Replace';
+  }
+  return 'Allow';
+}
+
+function emitApplicationModelStoreResources(state: ApplicationScopeState, model: ApplicationRuntimeModelContract, provider: ApplicationModelStoreProvider): void {
+  if (provider.kind !== 'postgres' || provider.provision === false || provider.cluster) {
+    return;
+  }
+  const modelName = model.name;
+  const resourceName = kubernetesNameSegment(modelName);
+  const clusterName = provider.name ?? `${resourceName}-db`;
+  const namespace = provider.namespace;
+  const database = provider.database ?? resourceName;
+  const secretName = provider.connectionSecret?.name ?? `${clusterName}-app`;
+  const secretKey = provider.connectionSecretKey ?? 'uri';
+  const modelStoreKey = `${namespace ?? ''}:${clusterName}:${database}:${secretName}:${secretKey}`;
+  if (state.emittedModelStores.has(modelStoreKey)) {
+    if (provider.migrations?.strategy === 'generatedJob' || provider.migrations?.apply === 'generatedJob') {
+      emitApplicationModelMigrationResources(state, model, provider, clusterName, secretName, secretKey, database, namespace, {
+        'app.kubernetes.io/name': clusterName,
+        'app.kubernetes.io/component': 'model-store',
+        'app.kubernetes.io/managed-by': 'applik8s',
+        'applik8s.dev/model': resourceName,
+      });
+    }
+    return;
+  }
+  state.emittedModelStores.add(modelStoreKey);
+  const labels = {
+    'app.kubernetes.io/name': clusterName,
+    'app.kubernetes.io/component': 'model-store',
+    'app.kubernetes.io/managed-by': 'applik8s',
+    'applik8s.dev/model': resourceName,
+  };
+
+  typeKroCnpgCluster({
+    id: graphResourceId(resourceName, 'modelStoreCluster'),
+    name: clusterName,
+    ...(namespace ? { namespace } : {}),
+    spec: {
+      instances: 1,
+      storage: { size: '1Gi' },
+      bootstrap: { initdb: { database, owner: 'app' } },
+    },
+  });
+
+  typeKroRole({
+    id: graphResourceId(resourceName, 'modelStoreRole'),
+    apiVersion: 'rbac.authorization.k8s.io/v1',
+    kind: 'Role',
+    metadata: { name: `${kubernetesNameSegment(database)}-model-store`, ...(namespace ? { namespace } : {}), labels },
+    rules: [
+      { apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: [secretName] },
+      { apiGroups: ['postgresql.cnpg.io'], resources: ['clusters'], verbs: ['get', 'list', 'watch'] },
+    ],
+  });
+
+  if (provider.migrations?.strategy === 'generatedJob' || provider.migrations?.apply === 'generatedJob') {
+    emitApplicationModelMigrationResources(state, model, provider, clusterName, secretName, secretKey, database, namespace, labels);
+  }
+}
+
+function emitApplicationModelMigrationResources(state: ApplicationScopeState, model: ApplicationRuntimeModelContract, provider: ApplicationModelStoreProvider, clusterName: string, secretName: string, secretKey: string, database: string, namespace: string | undefined, labels: Readonly<Record<string, string>>): void {
+  const resourceName = kubernetesNameSegment(model.name);
+  const jobName = provider.migrations?.jobName ?? `${resourceName}-migration`;
+  const statusPath = `status.applik8s.jobs.${jobName}`;
+  const migrationConfigMapName = `${jobName}-migration`;
+  const statusRuntimeConfigMapName = `${jobName}-status-runtime`;
+  const migrationPlan = applicationModelMigrationPlan(model);
+  const migrationSql = applicationModelMigrationSql(model);
+  const migrationJobRef = { apiVersion: 'batch/v1', kind: 'Job', name: jobName, ...(namespace ? { namespace } : {}) };
+  const clusterRef = { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: clusterName, ...(namespace ? { namespace } : {}) };
+  const phaseStatusContract = applicationGeneratedJobPhaseStatusContract({
+    statusResource: clusterRef,
+    statusPath,
+    statusShape: applicationGeneratedJobDurableStatus({ jobName, idempotencyKey: 'metadata.generation', currentStep: 'provider-readiness' }),
+  });
+  const terminalFailureStatus = applicationGeneratedJobDurableStatus({
+    jobName,
+    phase: 'Failed',
+    idempotencyKey: 'metadata.generation',
+    currentStep: 'schema-drift',
+    retryCount: applicationGeneratedJobRetry().maxAttempts ?? 0,
+    terminalFailure: {
+      reason: 'GeneratedMigrationFailed',
+      message: `Generated migration for model ${model.name} failed. Inspect job/${jobName} logs and the migration SQL ConfigMap.`,
+      failedStep: 'schema-drift',
+      partialEffects: [
+        { operation: 'runMigrationJob', ref: migrationJobRef, status: 'visible' },
+        { operation: 'readMigrationSql', ref: { apiVersion: 'v1', kind: 'ConfigMap', name: migrationConfigMapName, ...(namespace ? { namespace } : {}) }, status: 'visible' },
+      ],
+    },
+    conditions: [{ type: 'Failed', status: 'True', reason: 'GeneratedMigrationFailed', message: `Generated migration for model ${model.name} reached a terminal failure.`, observedGeneration: 0 }],
+  });
+  typeKroConfigMap({
+    id: graphResourceId(jobName, 'modelMigrationSql'),
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: { name: migrationConfigMapName, ...(namespace ? { namespace } : {}), labels },
+    data: { 'migration.sql': migrationSql },
+  });
+
+  typeKroJob({
+    id: graphResourceId(jobName, 'modelMigrationJob'),
+    apiVersion: 'batch/v1',
+    kind: 'Job',
+    metadata: { name: jobName, ...(namespace ? { namespace } : {}), labels },
+    spec: {
+      backoffLimit: 3,
+      template: {
+        metadata: { labels },
+        spec: {
+          restartPolicy: 'OnFailure',
+          containers: [{
+            name: 'migration',
+            image: 'postgres:16-alpine',
+            command: ['sh', '-c', 'echo "applik8s-model-migration applying $APPLIK8S_MODEL_STORE_MODEL"; for attempt in $(seq 1 60); do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/migration.sql && exit 0; echo "applik8s-model-migration retry $attempt"; sleep 5; done; exit 1'],
+            env: [
+              { name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: secretName, key: secretKey } } },
+              { name: 'DATABASE_URL_SECRET_KEY', value: secretKey },
+              { name: 'APPLIK8S_MODEL_STORE_CLUSTER', value: clusterName },
+              { name: 'APPLIK8S_MODEL_STORE_DATABASE', value: database },
+              { name: 'APPLIK8S_MODEL_STORE_MODEL', value: model.name },
+              { name: 'APPLIK8S_MIGRATION_STATUS_PATH', value: statusPath },
+            ],
+            volumeMounts: [{ name: 'applik8s-model-migration', mountPath: '/migrations', readOnly: true }],
+          }],
+          volumes: [{ name: 'applik8s-model-migration', configMap: { name: migrationConfigMapName } }],
+        },
+      },
+    },
+  });
+
+  typeKroConfigMap({
+    id: graphResourceId(jobName, 'modelMigrationDiagnostics'),
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: { name: `${jobName}-diagnostics`, ...(namespace ? { namespace } : {}), labels },
+    data: {
+      model: resourceName,
+      database,
+      cluster: clusterName,
+      connectionSecret: secretName,
+      connectionSecretKey: secretKey,
+      phaseStatusResource: `postgresql.cnpg.io/v1/Cluster/${namespace ? `${namespace}/` : ''}${clusterName}`,
+      phaseStatusPath: statusPath,
+      phaseStatusContract: JSON.stringify(phaseStatusContract, null, 2),
+      durableStatusTemplate: JSON.stringify(phaseStatusContract.statusShape, null, 2),
+      terminalFailureStatus: JSON.stringify(terminalFailureStatus, null, 2),
+      semantics: 'generatedIdempotentPostgresMigration',
+      migrationConfigMap: migrationConfigMapName,
+      migrationSql,
+      compatibilityPolicy: JSON.stringify({ mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' }),
+      driftPolicy: 'failClosed',
+      migrationPlan: JSON.stringify(migrationPlan, null, 2),
+      failureModes: JSON.stringify({ missingCredentials: 'blockBeforeSql', badSql: 'terminalFailureWithJobLogs', incompatibleTableOrIndex: 'schemaDriftFailClosed', destructiveChange: 'rejectWithoutExplicitPlan' }, null, 2),
+      driftDiagnostic: JSON.stringify({ event: 'applik8s-model-migration-failed', severity: 'error', reason: 'SchemaDriftDetected', message: `Generated migration for model ${model.name} detected existing database schema drift or incompatible table/index shape. Provide an explicit migration plan or repair the database before retrying.`, retryable: false }, null, 2),
+      failureDiagnostic: JSON.stringify({ event: 'applik8s-model-migration-failed', severity: 'error', reason: 'GeneratedMigrationFailed', message: `Generated migration for model ${model.name} failed. Inspect job/${jobName} logs and the migration SQL ConfigMap.`, retryable: true }, null, 2),
+    },
+  });
+
+  typeKroConfigMap({
+    id: graphResourceId(jobName, 'modelMigrationStatusRuntime'),
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: { name: statusRuntimeConfigMapName, ...(namespace ? { namespace } : {}), labels },
+    data: generatedJobStatusRuntimeBundle([{ jobName, jobKind: 'Job', statusPath, materialization: 'kubernetes-job' }], state.appResource),
+  });
+
+  registerApplicationGeneratedJobStatusTarget(state, {
+    resourceName: jobName,
+    namespace,
+    statusPath,
+    jobKind: 'Job',
+    materialization: 'kubernetes-job',
+  });
+}
+
 function emitApplicationServerResources(name: string, options: ApplicationServerOptions, routes: readonly ApplicationServerRoute[]): ApplicationGeneratedWorkloadBinding {
   const resourceName = options.resourceName ?? name;
   const serviceName = options.serviceName ?? resourceName;
@@ -719,21 +1155,23 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
   const sourceFileName = options.sourceFileName ?? 'server.mjs';
   const namespace = options.namespace;
   const runtimeIndexBackend = runtimeIndexBackendConfig(options.indexBackend, namespace, resourceName);
+  const runtimeModels = applicationServerRuntimeModels(options.models ?? {});
   const captures = serializeApplicationServerCaptures(options.captures ?? {});
   const captureAliases = serializedApplicationServerCaptureAliases(captures);
-  assertRuntimeBindingNames({ ...(options.resources ?? {}), ...(options.indexes ?? {}), ...captures, ...captureAliases });
-  assertDistinctRuntimeBindingNames({ resources: options.resources ?? {}, indexes: options.indexes ?? {}, captures, captureAliases });
+  assertRuntimeBindingNames({ ...(options.resources ?? {}), ...(options.indexes ?? {}), ...(options.models ?? {}), ...captures, ...captureAliases });
+  assertDistinctRuntimeBindingNames({ resources: options.resources ?? {}, indexes: options.indexes ?? {}, models: options.models ?? {}, captures, captureAliases });
   const serializedRoutes = serializeApplicationServerRoutes(
     routes,
-    new Set([...Object.keys(options.resources ?? {}), ...Object.keys(options.indexes ?? {}), ...Object.keys(captures), ...Object.keys(captureAliases)]),
-    new Set([...Object.keys(options.resources ?? {}), ...Object.keys(options.indexes ?? {})])
+    new Set([...Object.keys(options.resources ?? {}), ...Object.keys(options.indexes ?? {}), ...Object.keys(options.models ?? {}), ...Object.keys(captures), ...Object.keys(captureAliases)]),
+    new Set([...Object.keys(options.resources ?? {}), ...Object.keys(options.indexes ?? {}), ...Object.keys(options.models ?? {})])
   );
   const rawSourceBundle = options.source
     ? { [sourceFileName]: options.source }
     : options.command
       ? undefined
-      : generatedApplicationServerBundle(sourceFileName, serializedRoutes, options.resources ?? {}, options.indexes ?? {}, captures, runtimeIndexBackend, options.cache ?? []);
+      : generatedApplicationServerBundle(sourceFileName, serializedRoutes, options.resources ?? {}, options.indexes ?? {}, runtimeModels, captures, runtimeIndexBackend, options.cache ?? []);
   const sourceBundle = rawSourceBundle ? kroSafeJavaScriptSourceBundle(rawSourceBundle) : undefined;
+  const mountedSourceBundle = sourceBundle ? mountedConfigMapSourceBundle(sourceBundle) : undefined;
   const serverPermissions = inferApplicationServerPermissions({
     routes,
     resources: options.resources ?? {},
@@ -764,7 +1202,7 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
     ...(options.volumeMounts ?? []),
   ];
   const appVolumes = [
-    ...(sourceBundle ? [{ name: 'applik8s-server-source', configMap: { name: sourceConfigMapName } }] : []),
+    ...(mountedSourceBundle ? [{ name: 'applik8s-server-source', configMap: { name: sourceConfigMapName, items: mountedSourceBundle.items } }] : []),
     ...(options.volumes ?? []),
   ];
 
@@ -804,7 +1242,7 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
       apiVersion: 'v1',
       kind: 'ConfigMap',
       metadata: { name: sourceConfigMapName, ...(namespace ? { namespace } : {}), labels },
-      data: sourceBundle,
+      data: mountedSourceBundle?.data ?? sourceBundle,
     });
   }
 
@@ -828,7 +1266,10 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
             image: options.image ?? 'node:22-alpine',
             command: [...(options.command ?? ['node', `/app/${sourceFileName}`])],
             ...(options.args ? { args: [...options.args] } : {}),
-            env: Object.entries(env).map(([envName, value]) => ({ name: envName, value })),
+            env: [
+              ...Object.entries(env).map(([envName, value]) => ({ name: envName, value })),
+              ...modelStoreEnvironmentVariables(runtimeModels, namespace),
+            ],
             ports: [{ name: 'http', containerPort: 8080 }],
             ...(appVolumeMounts.length > 0 ? { volumeMounts: appVolumeMounts } : {}),
           }],
@@ -1007,6 +1448,22 @@ function applicationRuntimeResource(resource: Pick<AnyResourceDefinition, 'apiVe
     plural: resource.plural,
     scope: resource.scope,
   };
+}
+
+function modelStoreEnvironmentVariables(models: Readonly<Record<string, ApplicationRuntimeModelContract>>, serverNamespace: string | undefined): readonly { readonly name: string; readonly valueFrom: { readonly secretKeyRef: { readonly name: string; readonly key: string } } }[] {
+  const byEnvName = new Map<string, { readonly name: string; readonly valueFrom: { readonly secretKeyRef: { readonly name: string; readonly key: string } } }>();
+  for (const model of Object.values(models)) {
+    const secretNamespace = model.secretNamespace ?? 'default';
+    const podNamespace = serverNamespace ?? 'default';
+    if (secretNamespace !== podNamespace) {
+      throw new Error(`app.server cannot bind model ${JSON.stringify(model.name)} because its ModelStore Secret ${model.secretName} is in namespace ${secretNamespace}, but the server is in namespace ${podNamespace}. Run the server in the same namespace or provide a same-namespace connectionSecret.`);
+    }
+    byEnvName.set(model.connectionEnvName, {
+      name: model.connectionEnvName,
+      valueFrom: { secretKeyRef: { name: model.secretName, key: model.secretKey } },
+    });
+  }
+  return [...byEnvName.values()];
 }
 
 function assertRuntimeBindingNames(bindings: Readonly<Record<string, unknown>>): void {
@@ -1307,6 +1764,7 @@ function unsupportedRouteFreeIdentifiers(analysis: ApplicationServerRouteSourceA
     'Object',
     'Promise',
     'RegExp',
+    'Response',
     'String',
     'any',
     'boolean',
@@ -3041,6 +3499,7 @@ function generatedApplicationServerBundle(
   routes: readonly SerializedApplicationServerRouteWithDependencies[],
   resources: Readonly<Record<string, AnyResourceDefinition>>,
   indexes: Readonly<Record<string, ResourceIndex<object, object>>>,
+  models: Readonly<Record<string, ApplicationRuntimeModelContract>>,
   captures: SerializedApplicationServerCaptures,
   indexBackend: ApplicationRuntimeIndexBackend | undefined,
   cache: readonly ResourceIndex<object, object>[]
@@ -3048,15 +3507,16 @@ function generatedApplicationServerBundle(
   const routeModules = generatedApplicationServerRouteModules(routes);
   const bundledEntrypoint = bundleApplicationServerEntrypoint(
     sourceFileName,
-    generatedApplicationServerHonoEntrypointSource(routeModules, resources, indexes, captures, indexBackend, cache)
+    generatedApplicationServerHonoEntrypointSource()
   );
   return {
     ...bundledEntrypoint,
-    'runtime.mjs': generatedApplicationServerRuntimeSource(resources, indexes, indexBackend, cache),
-    'bindings.mjs': generatedApplicationServerBindingsSource(resources, indexes, captures),
+    'runtime.mjs': generatedApplicationServerRuntimeSource(resources, indexes, models, indexBackend, cache),
+    ...generatedApplicationRuntimeModuleBundle(),
+    'bindings.mjs': generatedApplicationServerBindingsSource(resources, indexes, models, captures),
     'routes.mjs': generatedApplicationServerRoutesSource(routeModules),
     'routes.manifest.json': `${JSON.stringify(routeModules.map(routeManifestEntry), null, 2)}\n`,
-    ...Object.fromEntries(routeModules.map((module) => [module.fileName, generatedApplicationServerRouteModuleSource(module, resources, indexes, captures)])),
+    ...Object.fromEntries(routeModules.map((module) => [module.fileName, generatedApplicationServerRouteModuleSource(module, resources, indexes, models, captures)])),
   };
 }
 
@@ -3065,6 +3525,39 @@ function kroSafeJavaScriptSourceBundle(bundle: Readonly<Record<string, string>>)
     fileName,
     isJavaScriptSourceFile(fileName) ? lowerTemplateLiteralsForKro(fileName, source) : source,
   ]));
+}
+
+function mountedConfigMapSourceBundle(bundle: Readonly<Record<string, string>>): { readonly data: Readonly<Record<string, string>>; readonly items: { key: string; path: string }[] } {
+  const usedKeys = new Set<string>();
+  const data: Record<string, string> = {};
+  const items: { key: string; path: string }[] = [];
+
+  for (const [fileName, source] of Object.entries(bundle)) {
+    assertSafeConfigMapVolumePath(fileName);
+    const key = configMapSourceKey(fileName, usedKeys);
+    usedKeys.add(key);
+    data[key] = source;
+    items.push({ key, path: fileName });
+  }
+
+  return { data, items };
+}
+
+function configMapSourceKey(fileName: string, usedKeys: ReadonlySet<string>): string {
+  const baseKey = fileName.replaceAll('/', '__').replace(/[^A-Za-z0-9._-]/g, '_') || 'source';
+  let key = baseKey;
+  let attempt = 2;
+  while (usedKeys.has(key)) {
+    key = `${baseKey}-${attempt}`;
+    attempt += 1;
+  }
+  return key;
+}
+
+function assertSafeConfigMapVolumePath(fileName: string): void {
+  if (fileName.startsWith('/') || fileName.split('/').some((part) => part.length === 0 || part === '..')) {
+    throw new Error(`Generated server source file ${JSON.stringify(fileName)} is not a safe ConfigMap volume path.`);
+  }
 }
 
 function isJavaScriptSourceFile(fileName: string): boolean {
@@ -3081,10 +3574,11 @@ function lowerTemplateLiteralsForKro(fileName: string, source: string): string {
     format: 'esm',
     target: 'node22',
     legalComments: 'none',
+    minifyWhitespace: true,
     supported: { 'template-literal': false },
   }).code;
-  const withoutBlockComments = stripJavaScriptBlockComments(transformed);
-  const output = diagnosticHeader && !withoutBlockComments.startsWith(diagnosticHeader) ? `${diagnosticHeader}${withoutBlockComments}` : withoutBlockComments;
+  const withoutComments = stripJavaScriptLineComments(stripJavaScriptBlockComments(transformed));
+  const output = diagnosticHeader && !withoutComments.startsWith(diagnosticHeader) ? `${diagnosticHeader}${withoutComments}` : withoutComments;
   if (output.includes('${')) {
     const index = output.indexOf('${');
     const context = output.slice(Math.max(0, index - 80), index + 120).replace(/\s+/g, ' ');
@@ -3093,14 +3587,60 @@ function lowerTemplateLiteralsForKro(fileName: string, source: string): string {
   return output;
 }
 
-function stripJavaScriptBlockComments(source: string): string {
+function stripJavaScriptLineComments(source: string): string {
   let output = '';
   let index = 0;
-  let quote: 'single' | 'double' | 'template' | undefined;
+  let mode: 'single' | 'double' | 'template' | 'regex' | undefined;
+  let regexCharacterClass = false;
   while (index < source.length) {
     const character = source[index] ?? '';
     const next = source[index + 1] ?? '';
-    if (!quote && character === '/' && next === '*') {
+    if (!mode && character === '/' && next === '/') {
+      while (index < source.length && source[index] !== '\n') {
+        index += 1;
+      }
+      continue;
+    }
+    output += character;
+    if (mode) {
+      if (character === '\\') {
+        index += 1;
+        output += source[index] ?? '';
+      } else if (mode === 'regex') {
+        if (character === '[') {
+          regexCharacterClass = true;
+        } else if (character === ']') {
+          regexCharacterClass = false;
+        } else if (character === '/' && !regexCharacterClass) {
+          mode = undefined;
+        }
+      } else if ((mode === 'single' && character === "'") || (mode === 'double' && character === '"') || (mode === 'template' && character === '`')) {
+        mode = undefined;
+      }
+    } else if (character === "'") {
+      mode = 'single';
+    } else if (character === '"') {
+      mode = 'double';
+    } else if (character === '`') {
+      mode = 'template';
+    } else if (character === '/' && next !== '*' && canStartJavaScriptRegexLiteral(previousSignificantCharacter(output.slice(0, -1)))) {
+      mode = 'regex';
+      regexCharacterClass = false;
+    }
+    index += 1;
+  }
+  return output;
+}
+
+function stripJavaScriptBlockComments(source: string): string {
+  let output = '';
+  let index = 0;
+  let mode: 'single' | 'double' | 'template' | 'regex' | undefined;
+  let regexCharacterClass = false;
+  while (index < source.length) {
+    const character = source[index] ?? '';
+    const next = source[index + 1] ?? '';
+    if (!mode && character === '/' && next === '*') {
       index += 2;
       while (index < source.length && !(source[index] === '*' && source[index + 1] === '/')) {
         index += 1;
@@ -3109,23 +3649,48 @@ function stripJavaScriptBlockComments(source: string): string {
       continue;
     }
     output += character;
-    if (quote) {
+    if (mode) {
       if (character === '\\') {
         index += 1;
         output += source[index] ?? '';
-      } else if ((quote === 'single' && character === "'") || (quote === 'double' && character === '"') || (quote === 'template' && character === '`')) {
-        quote = undefined;
+      } else if (mode === 'regex') {
+        if (character === '[') {
+          regexCharacterClass = true;
+        } else if (character === ']') {
+          regexCharacterClass = false;
+        } else if (character === '/' && !regexCharacterClass) {
+          mode = undefined;
+        }
+      } else if ((mode === 'single' && character === "'") || (mode === 'double' && character === '"') || (mode === 'template' && character === '`')) {
+        mode = undefined;
       }
     } else if (character === "'") {
-      quote = 'single';
+      mode = 'single';
     } else if (character === '"') {
-      quote = 'double';
+      mode = 'double';
     } else if (character === '`') {
-      quote = 'template';
+      mode = 'template';
+    } else if (character === '/' && next !== '/' && canStartJavaScriptRegexLiteral(previousSignificantCharacter(output.slice(0, -1)))) {
+      mode = 'regex';
+      regexCharacterClass = false;
     }
     index += 1;
   }
   return output;
+}
+
+function previousSignificantCharacter(source: string): string | undefined {
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    const character = source[index];
+    if (character && !/\s/.test(character)) {
+      return character;
+    }
+  }
+  return undefined;
+}
+
+function canStartJavaScriptRegexLiteral(previous: string | undefined): boolean {
+  return !previous || '({[=,:;!&|?+-*~^<>'.includes(previous);
 }
 
 function generatedApplicationServerRouteModules(routes: readonly SerializedApplicationServerRouteWithDependencies[]): readonly GeneratedApplicationServerRouteModule[] {
@@ -3149,6 +3714,7 @@ function bundleApplicationServerEntrypoint(sourceFileName: string, source: strin
     format: 'esm',
     platform: 'node',
     target: 'node22',
+    external: ['./routes.mjs', './runtime.mjs', './bindings.mjs', './route-*.mjs', './runtime/*'],
     legalComments: 'none',
     minifySyntax: true,
     supported: { 'template-literal': false },
@@ -3165,30 +3731,13 @@ function bundleApplicationServerEntrypoint(sourceFileName: string, source: strin
   return { [sourceFileName]: bundledSource, [`${sourceFileName}.map`]: sourceMap };
 }
 
-function generatedApplicationServerHonoEntrypointSource(
-  routeModules: readonly GeneratedApplicationServerRouteModule[],
-  resources: Readonly<Record<string, AnyResourceDefinition>>,
-  indexes: Readonly<Record<string, ResourceIndex<object, object>>>,
-  captures: SerializedApplicationServerCaptures,
-  indexBackend: ApplicationRuntimeIndexBackend | undefined,
-  cache: readonly ResourceIndex<object, object>[]
-): string {
-  const runtimeSource = stripGeneratedServerModuleSyntax(generatedApplicationServerRuntimeSource(resources, indexes, indexBackend, cache));
-  const bindingsSource = stripGeneratedServerModuleSyntax(generatedApplicationServerBindingsSource(resources, indexes, captures));
-  const routeSources = routeModules.map((module) => stripGeneratedServerModuleSyntax(generatedApplicationServerRouteModuleSource(module, resources, indexes, captures))).join('\n');
-  const routesSource = stripGeneratedServerModuleSyntax(generatedApplicationServerRoutesSource(routeModules));
+function generatedApplicationServerHonoEntrypointSource(): string {
   return `
 import { Hono } from 'hono';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
-import { request as httpsRequest } from 'node:https';
-import { createConnection } from 'node:net';
+import { routes } from './routes.mjs';
 
 const applik8sServerRuntime = 'hono';
-${runtimeSource}
-${bindingsSource}
-${routeSources}
-${routesSource}
 
 const app = new Hono();
 
@@ -3203,9 +3752,10 @@ for (const route of routes) {
       return honoResponse(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const statusCode = error && typeof error === 'object' && 'statusCode' in error && typeof error.statusCode === 'number' ? error.statusCode : 500;
       const stack = error instanceof Error && error.stack ? error.stack.split('\\n').slice(0, 12) : undefined;
-      console.error(JSON.stringify({ level: 'error', component: 'applik8s-server', event: 'applik8s-server-route-failure', runtime: applik8sServerRuntime, route: routeDiagnostics(route), message, ...(stack ? { stack } : {}) }));
-      return context.text('Route ' + route.id + ' (' + route.method + ' ' + route.path + ') failed: ' + message, 500);
+      console.error(JSON.stringify({ level: 'error', component: 'applik8s-server', event: 'applik8s-server-route-failure', runtime: applik8sServerRuntime, route: routeDiagnostics(route), message, statusCode, diagnostic: error && typeof error === 'object' && 'diagnostic' in error ? error.diagnostic : undefined, ...(stack ? { stack } : {}) }));
+      return context.text('Route ' + route.id + ' (' + route.method + ' ' + route.path + ') failed: ' + message, statusCode);
     }
   });
 }
@@ -3298,10 +3848,6 @@ function routeDiagnostics(route) {
 `.trimStart();
 }
 
-function stripGeneratedServerModuleSyntax(source: string): string {
-  return source.replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-}
-
 function generatedApplicationServerRoutesSource(routeModules: readonly GeneratedApplicationServerRouteModule[]): string {
   const imports = routeModules.map((module) => `import { ${module.exportName} } from './${module.fileName}';`).join('\n');
   const routeEntries = routeModules.map((module) => `  { ${routeRuntimeMetadataProperties(module)}, handler: ${module.exportName} }`).join(',\n');
@@ -3351,18 +3897,21 @@ function routeBundleInputs(module: GeneratedApplicationServerRouteModule): reado
 function generatedApplicationServerBindingsSource(
   resources: Readonly<Record<string, AnyResourceDefinition>>,
   indexes: Readonly<Record<string, ResourceIndex<object, object>>>,
+  models: Readonly<Record<string, ApplicationRuntimeModelContract>>,
   captures: SerializedApplicationServerCaptures
 ): string {
   const resourceBindings = Object.keys(resources).map((name) => `const ${name} = resourceClients[${JSON.stringify(name)}];`).join('\n');
   const indexBindings = Object.keys(indexes).map((name) => `const ${name} = indexClients[${JSON.stringify(name)}];`).join('\n');
+  const modelBindings = Object.keys(models).map((name) => `const ${name} = modelClients[${JSON.stringify(name)}];`).join('\n');
   const captureBindings = generatedApplicationServerCaptureBindings(captures);
-  const exports = generatedApplicationServerBindingNames(resources, indexes, captures);
+  const exports = generatedApplicationServerBindingNames(resources, indexes, models, captures);
   return `
 import { createRuntimeBindings } from './runtime.mjs';
 
-const { resourceClients, indexClients } = createRuntimeBindings();
+const { resourceClients, indexClients, modelClients } = createRuntimeBindings();
 ${resourceBindings}
 ${indexBindings}
+${modelBindings}
 ${captureBindings}
 
 ${exports.length > 0 ? `export { ${exports.join(', ')} };` : 'export {};'}
@@ -3373,9 +3922,10 @@ function generatedApplicationServerRouteModuleSource(
   module: GeneratedApplicationServerRouteModule,
   resources: Readonly<Record<string, AnyResourceDefinition>>,
   indexes: Readonly<Record<string, ResourceIndex<object, object>>>,
+  models: Readonly<Record<string, ApplicationRuntimeModelContract>>,
   captures: SerializedApplicationServerCaptures
 ): string {
-  const imports = generatedApplicationServerBindingNames(resources, indexes, captures);
+  const imports = generatedApplicationServerBindingNames(resources, indexes, models, captures);
   const sourceLocation = module.route.handlerSourceLocation ? `${module.route.handlerSourceLocation.file}:${module.route.handlerSourceLocation.line}:${module.route.handlerSourceLocation.column}` : 'unavailable';
   const bindingImport = imports.length > 0 ? `import { ${imports.join(', ')} } from './bindings.mjs';\n` : '';
   const bundledRoute = module.route.handlerDependencySource ? bundledApplicationServerRouteModuleSource(module, bindingImport) : undefined;
@@ -3424,9 +3974,10 @@ export const ${module.exportName} = (${module.route.handlerSource});
 function generatedApplicationServerBindingNames(
   resources: Readonly<Record<string, AnyResourceDefinition>>,
   indexes: Readonly<Record<string, ResourceIndex<object, object>>>,
+  models: Readonly<Record<string, ApplicationRuntimeModelContract>>,
   captures: SerializedApplicationServerCaptures
 ): readonly string[] {
-  const names = new Set<string>([...Object.keys(resources), ...Object.keys(indexes), ...Object.keys(captures)]);
+  const names = new Set<string>([...Object.keys(resources), ...Object.keys(indexes), ...Object.keys(models), ...Object.keys(captures)]);
   for (const capture of Object.values(captures)) {
     if (capture.kind === 'function' && capture.aliasName) {
       names.add(capture.aliasName);
@@ -3445,516 +3996,4 @@ function generatedApplicationServerCaptureBindings(captures: SerializedApplicati
     }
   }
   return bindings.join('\n');
-}
-
-function generatedApplicationServerRuntimeSource(
-  resources: Readonly<Record<string, AnyResourceDefinition>>,
-  indexes: Readonly<Record<string, ResourceIndex<object, object>>>,
-  indexBackend: ApplicationRuntimeIndexBackend | undefined,
-  cache: readonly ResourceIndex<object, object>[]
-): string {
-  const resourceTable = JSON.stringify(runtimeResourceTable(resources));
-  const indexTable = JSON.stringify(runtimeIndexTable(indexes, indexBackend, cache));
-  return `
-import { readFile } from 'node:fs/promises';
-import { request as httpsRequest } from 'node:https';
-import { createConnection } from 'node:net';
-
-const runtimeResources = ${resourceTable};
-const runtimeIndexes = ${indexTable};
-
-export function createRuntimeBindings() {
-  return {
-    resourceClients: Object.fromEntries(Object.entries(runtimeResources).map(([name, resource]) => [name, createResourceClient(resource)])),
-    indexClients: Object.fromEntries(Object.entries(runtimeIndexes).map(([name, index]) => [name, createIndexClient(index)])),
-  };
-}
-
-export async function formData(request) {
-  const body = await readBody(request);
-  const params = new URLSearchParams(body);
-  return { string: (name) => params.get(name) ?? '' };
-}
-
-async function readBody(request) {
-  let body = '';
-  for await (const chunk of request) {
-    body += chunk;
-  }
-  return body;
-}
-
-function createResourceClient(resource) {
-  return {
-    async create(input) {
-      const object = asKubernetesObject(resource, input);
-      return kubernetesRequest({ method: 'POST', path: collectionPath(resource, object.metadata?.namespace), body: object });
-    },
-    async get(query) {
-      try {
-        return await kubernetesRequest({ method: 'GET', path: objectPath(resource, query.namespace, query.name) });
-      } catch (error) {
-        if (error && typeof error === 'object' && error.statusCode === 404) {
-          return undefined;
-        }
-        throw error;
-      }
-    },
-    async query(query = {}) {
-      const response = await kubernetesRequest({ method: 'GET', path: listPath(resource, query) });
-      const items = Array.isArray(response.items) ? response.items : [];
-      return { items: sortItems(items, query.orderBy), continueToken: response.metadata?.continue };
-    },
-    async patch(query, patch) {
-      return kubernetesRequest({ method: 'PATCH', path: objectPath(resource, query.namespace, query.name), body: patch, contentType: 'application/json-patch+json' });
-    },
-    async delete(query) {
-      await kubernetesRequest({ method: 'DELETE', path: objectPath(resource, query.namespace, query.name) });
-      return { ref: { apiVersion: resource.apiVersion, kind: resource.kind, name: query.name, namespace: query.namespace }, deleted: true };
-    },
-    async increment(input) {
-      return bufferResourceCounterIncrement(resource, input);
-    },
-  };
-}
-
-const resourceCounterBuffers = new Map();
-let resourceCounterFlushTimer;
-let resourceCounterFlushInFlight = false;
-
-function bufferResourceCounterIncrement(resource, input) {
-  if (!input || !input.name) {
-    throw new Error(resource.kind + '.increment(...) requires a resource name.');
-  }
-  const amount = Number(input.amount ?? 1);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error(resource.kind + '.increment(...) amount must be a positive finite number.');
-  }
-  const field = input.field || 'spec.count';
-  const key = JSON.stringify({ apiVersion: resource.apiVersion, kind: resource.kind, namespace: input.namespace || defaultNamespace(), name: input.name, field });
-  const existing = resourceCounterBuffers.get(key);
-  const entry = existing || { resource, input: { ...input, field }, pending: 0 };
-  entry.input = { ...entry.input, ...input, field };
-  entry.pending += amount;
-  resourceCounterBuffers.set(key, entry);
-  ensureResourceCounterFlushTimer(input.flushMs);
-  return { buffered: true, pending: entry.pending };
-}
-
-function ensureResourceCounterFlushTimer(flushMs) {
-  if (resourceCounterFlushTimer) {
-    return;
-  }
-  const interval = Number.isFinite(Number(flushMs)) && Number(flushMs) > 0 ? Number(flushMs) : 1000;
-  resourceCounterFlushTimer = setInterval(() => {
-    flushResourceCounterBuffers().catch((error) => {
-      console.error(JSON.stringify({ event: 'applik8s-server-counter-flush-failure', message: error instanceof Error ? error.message : String(error) }));
-    });
-  }, interval);
-  resourceCounterFlushTimer.unref?.();
-}
-
-async function flushResourceCounterBuffers() {
-  if (resourceCounterFlushInFlight || resourceCounterBuffers.size === 0) {
-    return;
-  }
-  resourceCounterFlushInFlight = true;
-  const entries = [...resourceCounterBuffers.entries()];
-  for (const [key, entry] of entries) {
-    resourceCounterBuffers.delete(key);
-  }
-  try {
-    const results = await Promise.allSettled(entries.map(([, entry]) => flushResourceCounterBuffer(entry)));
-    const failures = [];
-    for (const [index, result] of results.entries()) {
-      if (result.status === 'fulfilled') {
-        continue;
-      }
-      const [key, failedEntry] = entries[index];
-      const current = resourceCounterBuffers.get(key);
-      if (current) {
-        current.pending += failedEntry.pending;
-      } else {
-        resourceCounterBuffers.set(key, failedEntry);
-      }
-      failures.push(result.reason);
-    }
-    if (failures.length > 0) {
-      throw new Error(failures.map((failure) => failure instanceof Error ? failure.message : String(failure)).join('; '));
-    }
-  } finally {
-    resourceCounterFlushInFlight = false;
-  }
-}
-
-async function flushResourceCounterBuffer(entry) {
-  const { resource, input, pending } = entry;
-  const field = input.field || 'spec.count';
-  const query = { name: input.name, namespace: input.namespace };
-  try {
-    const current = await kubernetesRequest({ method: 'GET', path: objectPath(resource, query.namespace, query.name) });
-    const currentValue = valueAtPath(current, field);
-    const nextValue = Number(currentValue ?? 0) + pending;
-    const operation = currentValue === undefined ? 'add' : 'replace';
-    await kubernetesRequest({ method: 'PATCH', path: objectPath(resource, query.namespace, query.name), body: [{ op: operation, path: jsonPointerForPath(field), value: nextValue }], contentType: 'application/json-patch+json' });
-  } catch (error) {
-    if (!error || typeof error !== 'object' || error.statusCode !== 404) {
-      throw error;
-    }
-    const object = asKubernetesObject(resource, {
-      name: input.name,
-      namespace: input.namespace,
-      labels: input.labels,
-      annotations: input.annotations,
-      spec: input.spec || {},
-    });
-    const currentValue = valueAtPath(object, field);
-    setValueAtPath(object, field, Number(currentValue ?? 0) + pending);
-    await kubernetesRequest({ method: 'POST', path: collectionPath(resource, object.metadata?.namespace), body: object });
-  }
-}
-
-function jsonPointerForPath(path) {
-  return '/' + path.split('.').map((part) => part.replaceAll('~', '~0').replaceAll('/', '~1')).join('/');
-}
-
-function setValueAtPath(source, path, value) {
-  const parts = path.split('.');
-  let current = source;
-  for (const part of parts.slice(0, -1)) {
-    if (!current[part] || typeof current[part] !== 'object') {
-      current[part] = {};
-    }
-    current = current[part];
-  }
-  current[parts[parts.length - 1]] = value;
-}
-
-process.once('SIGTERM', () => {
-  flushResourceCounterBuffers().finally(() => process.exit(0));
-});
-
-function createIndexClient(index) {
-  return {
-    async query(partition, query = {}) {
-      const labels = indexLabels(index, partition);
-      if (Object.keys(labels).length === 0) {
-        throw new Error('Index ' + index.name + ' cannot be queried from a request path without a label partition or label filter.');
-      }
-      if (index.backend?.kind === 'valkey') {
-        return queryValkeyIndex(index, partition, query);
-      }
-      const response = await kubernetesRequest({ method: 'GET', path: listPath(index.resource, { ...query, labels }) });
-      const filtered = applyIndexFilter(Array.isArray(response.items) ? response.items : [], index.options.filter);
-      const ordered = sortIndexedItems(filtered, index.options.orderBy);
-      const offset = query.cursor ? Number(query.cursor) : 0;
-      const limit = query.limit ?? ordered.length;
-      const items = ordered.slice(offset, offset + limit);
-      const nextOffset = offset + items.length;
-      const nextCursor = nextOffset < ordered.length ? String(nextOffset) : undefined;
-      return { items, ...(nextCursor ? { nextCursor } : {}) };
-    },
-  };
-}
-
-async function queryValkeyIndex(index, partition, query) {
-  const namespace = query.namespace || defaultNamespace();
-  const offset = query.cursor ? Number(query.cursor) : 0;
-  const limit = query.limit ?? 50;
-  const start = Number.isFinite(offset) && offset > 0 ? offset : 0;
-  const stop = start + Math.max(1, limit) - 1;
-  const key = valkeyPartitionKey(index, namespace, partition);
-  const descending = index.options.orderBy?.direction === 'desc';
-  const members = await valkeyCommand(index.backend, descending ? ['ZREVRANGE', key, String(start), String(stop)] : ['ZRANGE', key, String(start), String(stop)]);
-  if (!Array.isArray(members) || members.length === 0) {
-    return { items: [] };
-  }
-  const objectKeys = members.map((member) => valkeyObjectKey(index, String(member)));
-  const objects = await valkeyCommand(index.backend, ['MGET', ...objectKeys]);
-  const items = (Array.isArray(objects) ? objects : []).map((value) => value ? JSON.parse(String(value)) : undefined).filter(Boolean);
-  const nextCursor = items.length === limit ? String(start + items.length) : undefined;
-  return { items, ...(nextCursor ? { nextCursor } : {}) };
-}
-
-function valkeyPartitionKey(index, namespace, partition) {
-  return 'applik8s:index:' + index.name + ':partition:' + namespace + ':' + String(partition);
-}
-
-function valkeyObjectKey(index, member) {
-  return 'applik8s:index:' + index.name + ':object:' + member;
-}
-
-function indexLabels(index, partition) {
-  const labels = {};
-  const partitionExpression = index.options.partitionBy;
-  if (partitionExpression?.expressionKind === 'label') {
-    labels[partitionExpression.value] = String(partition);
-  }
-  const filter = index.options.filter;
-  if (filter?.expressionKind === 'predicate' && filter.operator === 'eq' && filter.left?.expressionKind === 'label') {
-    labels[filter.left.value] = String(filter.right);
-  }
-  return labels;
-}
-
-function applyIndexFilter(items, filter) {
-  if (!filter || filter.expressionKind !== 'predicate' || filter.operator !== 'eq') {
-    return items;
-  }
-  if (filter.left?.expressionKind === 'label') {
-    return items.filter((item) => item.metadata?.labels?.[filter.left.value] === String(filter.right));
-  }
-  if (filter.left?.expressionKind === 'field') {
-    return items.filter((item) => valueAtPath(item, filter.left.value) === filter.right);
-  }
-  return items;
-}
-
-function valueAtPath(source, path) {
-  return path.split('.').reduce((current, part) => current && typeof current === 'object' ? current[part] : undefined, source);
-}
-
-function sortIndexedItems(items, orderBy) {
-  if (!orderBy || orderBy.expressionKind !== 'ordering') {
-    return items;
-  }
-  const path = orderBy.expression?.value;
-  const direction = orderBy.direction === 'desc' ? -1 : 1;
-  return [...items].sort((left, right) => String(valueAtPath(left, path) || '').localeCompare(String(valueAtPath(right, path) || '')) * direction);
-}
-
-function asKubernetesObject(resource, input) {
-  if (input && typeof input === 'object' && input.apiVersion && input.kind && input.metadata) {
-    return input;
-  }
-  return {
-    apiVersion: resource.apiVersion,
-    kind: resource.kind,
-    metadata: {
-      name: input.name,
-      ...(input.namespace ? { namespace: input.namespace } : {}),
-      ...(input.labels ? { labels: input.labels } : {}),
-      ...(input.annotations ? { annotations: input.annotations } : {}),
-    },
-    spec: input.spec,
-  };
-}
-
-function listPath(resource, query) {
-  const params = new URLSearchParams();
-  if (query.labels) {
-    params.set('labelSelector', Object.entries(query.labels).map(([key, value]) => key + '=' + value).join(','));
-  } else if (query.labelSelector) {
-    params.set('labelSelector', labelSelectorString(query.labelSelector));
-  }
-  if (query.fieldSelector) {
-    params.set('fieldSelector', query.fieldSelector);
-  }
-  if (query.limit) {
-    params.set('limit', String(query.limit));
-  }
-  if (query.continueToken) {
-    params.set('continue', query.continueToken);
-  }
-  const queryString = params.toString();
-  return collectionPath(resource, query.namespace) + (queryString ? '?' + queryString : '');
-}
-
-function labelSelectorString(selector) {
-  const labels = selector.matchLabels ? Object.entries(selector.matchLabels).map(([key, value]) => key + '=' + value) : [];
-  const expressions = (selector.matchExpressions || []).map((expression) => {
-    if (expression.operator === 'Exists' || expression.operator === 'DoesNotExist') {
-      return expression.operator === 'DoesNotExist' ? '!' + expression.key : expression.key;
-    }
-    return expression.key + ' ' + (expression.operator === 'In' ? 'in' : 'notin') + ' (' + (expression.values || []).join(',') + ')';
-  });
-  return [...labels, ...expressions].join(',');
-}
-
-function sortItems(items, orderBy) {
-  if (orderBy === 'metadata.name') {
-    return [...items].sort((left, right) => String(left.metadata?.name || '').localeCompare(String(right.metadata?.name || '')));
-  }
-  if (orderBy === 'metadata.creationTimestamp') {
-    return [...items].sort((left, right) => String(left.metadata?.creationTimestamp || '').localeCompare(String(right.metadata?.creationTimestamp || '')));
-  }
-  return items;
-}
-
-function collectionPath(resource, namespace) {
-  const prefix = apiPrefix(resource.apiVersion);
-  if (resource.scope === 'Namespaced') {
-    return prefix + '/namespaces/' + encodeURIComponent(namespace || defaultNamespace()) + '/' + encodeURIComponent(resource.plural);
-  }
-  return prefix + '/' + encodeURIComponent(resource.plural);
-}
-
-function objectPath(resource, namespace, name) {
-  return collectionPath(resource, namespace) + '/' + encodeURIComponent(name);
-}
-
-function apiPrefix(apiVersion) {
-  if (!apiVersion.includes('/')) {
-    return '/api/' + encodeURIComponent(apiVersion);
-  }
-  const [group, version] = apiVersion.split('/');
-  return '/apis/' + encodeURIComponent(group) + '/' + encodeURIComponent(version);
-}
-
-function defaultNamespace() {
-  return process.env.APPLIK8S_SERVER_NAMESPACE || 'default';
-}
-
-async function kubernetesRequest({ method, path, body, contentType = 'application/json' }) {
-  const token = await readFile('/var/run/secrets/kubernetes.io/serviceaccount/token', 'utf8');
-  const ca = await readFile('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt');
-  const payload = body === undefined ? undefined : JSON.stringify(body);
-  const response = await new Promise((resolve, reject) => {
-    const request = httpsRequest({
-      hostname: process.env.KUBERNETES_SERVICE_HOST || 'kubernetes.default.svc',
-      port: Number(process.env.KUBERNETES_SERVICE_PORT || 443),
-      method,
-      path,
-      ca,
-      headers: {
-        authorization: 'Bearer ' + token,
-        accept: 'application/json',
-        ...(payload ? { 'content-type': contentType, 'content-length': Buffer.byteLength(payload) } : {}),
-      },
-    }, (response) => {
-      let data = '';
-      response.setEncoding('utf8');
-      response.on('data', (chunk) => { data += chunk; });
-      response.on('end', () => resolve({ statusCode: response.statusCode || 0, data }));
-    });
-    request.on('error', reject);
-    if (payload) {
-      request.write(payload);
-    }
-    request.end();
-  });
-  const parsed = response.data ? JSON.parse(response.data) : undefined;
-  if (response.statusCode < 200 || response.statusCode >= 300) {
-    const error = new Error(parsed?.message || 'Kubernetes request failed with HTTP ' + response.statusCode);
-    error.statusCode = response.statusCode;
-    throw error;
-  }
-  return parsed;
-}
-
-async function valkeyCommand(backend, parts) {
-  const response = await new Promise((resolve, reject) => {
-    const socket = createConnection({ host: backend.host, port: backend.port }, () => {
-      socket.write(encodeResp(parts));
-    });
-    let buffer = '';
-    socket.setEncoding('utf8');
-    socket.on('data', (chunk) => {
-      buffer += chunk;
-      try {
-        const parsed = parseResp(buffer);
-        socket.end();
-        resolve(parsed.value);
-      } catch (error) {
-        if (!(error instanceof IncompleteRespError)) {
-          socket.destroy();
-          reject(error);
-        }
-      }
-    });
-    socket.on('error', reject);
-  });
-  return response;
-}
-
-function encodeResp(parts) {
-  return '*' + parts.length + '\\r\\n' + parts.map((part) => {
-    const value = String(part);
-    return '$' + Buffer.byteLength(value) + '\\r\\n' + value + '\\r\\n';
-  }).join('');
-}
-
-class IncompleteRespError extends Error {}
-
-function parseResp(input, offset = 0) {
-  if (offset >= input.length) {
-    throw new IncompleteRespError('Incomplete RESP value');
-  }
-  const type = input[offset];
-  const lineEnd = input.indexOf('\\r\\n', offset);
-  if (lineEnd === -1) {
-    throw new IncompleteRespError('Incomplete RESP line');
-  }
-  const line = input.slice(offset + 1, lineEnd);
-  const next = lineEnd + 2;
-  if (type === '+') {
-    return { value: line, offset: next };
-  }
-  if (type === ':') {
-    return { value: Number(line), offset: next };
-  }
-  if (type === '-') {
-    throw new Error(line);
-  }
-  if (type === '$') {
-    const length = Number(line);
-    if (length < 0) {
-      return { value: undefined, offset: next };
-    }
-    const end = next + length;
-    if (input.length < end + 2) {
-      throw new IncompleteRespError('Incomplete RESP bulk string');
-    }
-    return { value: input.slice(next, end), offset: end + 2 };
-  }
-  if (type === '*') {
-    const count = Number(line);
-    const values = [];
-    let current = next;
-    for (let index = 0; index < count; index += 1) {
-      const parsed = parseResp(input, current);
-      values.push(parsed.value);
-      current = parsed.offset;
-    }
-    return { value: values, offset: current };
-  }
-  throw new Error('Unsupported RESP type ' + type);
-}
-
-export function writeResponse(response, result) {
-  if (result && typeof result === 'object' && 'redirect' in result) {
-    response.writeHead(303, { location: String(result.redirect) });
-    response.end();
-    return;
-  }
-  if (result && typeof result === 'object' && typeof result.html === 'string') {
-    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-    response.end(result.html);
-    return;
-  }
-  response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-  response.end(JSON.stringify(result ?? null));
-}
-`.trimStart();
-}
-
-function runtimeResourceTable(resources: Readonly<Record<string, AnyResourceDefinition>>): Readonly<Record<string, ApplicationServerRuntimeResource>> {
-  // typecast: Object.fromEntries loses the keyed resource metadata shape, but each entry is built from AnyResourceDefinition fields above.
-  return Object.fromEntries(Object.entries(resources).map(([name, resource]) => [name, {
-    apiVersion: resource.apiVersion,
-    kind: resource.kind,
-    plural: resource.plural,
-    scope: resource.scope,
-  }])) as Readonly<Record<string, ApplicationServerRuntimeResource>>;
-}
-
-function runtimeIndexTable(indexes: Readonly<Record<string, ResourceIndex<object, object>>>, backend: ApplicationRuntimeIndexBackend | undefined, cache: readonly ResourceIndex<object, object>[]): Readonly<Record<string, ApplicationServerRuntimeIndex>> {
-  const cached = new Set(cache);
-  // typecast: Object.fromEntries loses the keyed index metadata shape, but each entry is built from ResourceIndex fields above.
-  return Object.fromEntries(Object.entries(indexes).map(([name, index]) => [name, {
-    name: index.name,
-    resource: index.resource,
-    options: index.options,
-    ...(cached.has(index) && backend ? { backend } : {}),
-  }])) as Readonly<Record<string, ApplicationServerRuntimeIndex>>;
 }

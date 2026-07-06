@@ -1,4 +1,4 @@
-import type { ApplicationProviderInterfaceKind, ApplicationResourceRef } from '@applik8s/core';
+import type { ApplicationMigrationContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef } from '@applik8s/core';
 
 export interface ApplicationIndexBackendSelectionOptions {
   readonly cache?: readonly unknown[];
@@ -16,6 +16,21 @@ export interface ApplicationPostgresModelStoreProvider {
   readonly provision?: boolean;
   readonly cluster?: ApplicationResourceRef;
   readonly connectionSecret?: ApplicationResourceRef;
+  readonly connectionSecretKey?: string;
+  readonly migrations?: ApplicationModelStoreMigrationPolicy;
+  readonly runtime?: ApplicationProviderRuntimeContract;
+  readonly readiness?: ApplicationPostgresReadinessPolicy;
+}
+
+export interface ApplicationModelStoreMigrationPolicy extends ApplicationMigrationContract {
+  readonly jobName?: string;
+  readonly apply?: 'manual' | 'generatedJob';
+}
+
+export interface ApplicationPostgresReadinessPolicy {
+  readonly waitForClusterReady?: boolean;
+  readonly timeoutSeconds?: number;
+  readonly condition?: string;
 }
 
 export interface ApplicationValkeyIndexBackend {
@@ -31,7 +46,7 @@ export interface ApplicationValkeyIndexBackend {
 }
 
 export interface ApplicationDefaults {
-  readonly models?: unknown;
+  readonly models?: ApplicationModelStoreProvider | ApplicationProviderBinding<ApplicationModelStoreProvider>;
   readonly indexes?: unknown;
   readonly counters?: unknown;
   readonly events?: unknown;
@@ -145,7 +160,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
   }
   if (applicationProviderTokenName(token) === 'ModelStore') {
     if (!isPostgresModelStoreProvider(implementation)) {
-      throw new Error('app.provide(ModelStore, ...) currently supports only the typed Postgres ModelStore provider declaration. Use { kind: "postgres", ... } until storage-backed app.model semantics are enabled.');
+      throw new Error('app.provide(ModelStore, ...) currently supports only the typed Postgres ModelStore provider declaration. Use { kind: "postgres", ... } until additional ModelStore providers are implemented.');
     }
     state.providers.models = implementation;
     return;
@@ -158,6 +173,20 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
 
 export function isPostgresModelStoreProvider(value: unknown): value is ApplicationPostgresModelStoreProvider {
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'postgres');
+}
+
+export function applicationModelStoreImplementation(store: unknown): ApplicationModelStoreProvider | undefined {
+  if (isPostgresModelStoreProvider(store)) {
+    return store;
+  }
+  if (isApplicationProviderBinding(store) && store.token === ModelStore && isPostgresModelStoreProvider(store.implementation)) {
+    return store.implementation;
+  }
+  return undefined;
+}
+
+function isApplicationProviderBinding(value: unknown): value is ApplicationProviderBinding<ApplicationModelStoreProvider> {
+  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'applicationProvider');
 }
 
 export function applicationProviderTokenName(token: ApplicationProviderToken<unknown>): string | undefined {
