@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applicationGraphMetadataProperty } from '@applik8s/core';
-import type { AnyResourceDefinition, ApplicationGraph, ApplicationProviderInterfaceKind, JsonValue, OperatorDeploymentOptions, ResourceDefinition, ResourceIndex } from '@applik8s/core';
+import type { AnyResourceDefinition, ApplicationDiagnosticContract, ApplicationGraph, ApplicationProviderInterfaceKind, ApplicationWatchScope, ApplicationWatchScopeLoweringContract, HandlerRegistration, JsonValue, OperatorDeploymentOptions, PermissionRule, ResourceDefinition, ResourceIndex, ResourceWatchAddress } from '@applik8s/core';
 import type { CrdOptions } from '@applik8s/sdk';
 import { sdk as baseSdk, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
 import type { TypeKroListenerComposition, TypeKroListenerCompositionDefinition } from '@applik8s/typekro-adapter';
@@ -13,10 +13,10 @@ import { cluster as typeKroCnpgCluster } from 'typekro/cnpg';
 import { configMap as typeKroConfigMap, cronJob as typeKroCronJob, deployment as typeKroDeployment, job as typeKroJob, role as typeKroRole, roleBinding as typeKroRoleBinding, service as typeKroService, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import { valkey as typeKroValkey } from 'typekro/valkey';
 import { addApplicationGraphEdge, addApplicationGraphNode, applicationGraphFromState, isApplicationGraph, type ApplicationGraphState } from './application-graph-state.js';
-import { applicationModelBinding, applicationModelMigrationPlan, applicationModelMigrationSql, applicationRuntimeModelContract, recordApplicationModelGraph, resolveApplicationModelStore } from './application-models.js';
+import { applicationModelBinding, applicationModelMigrationPlan, applicationModelMigrationPreflightSql, applicationModelMigrationSql, applicationRuntimeModelContract, recordApplicationModelGraph, resolveApplicationModelStore } from './application-models.js';
 import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationRuntimeModelContract } from './application-models.js';
-import { applicationGeneratedJobDurableStatus, applicationGeneratedJobPhase, applicationGeneratedJobPhaseStatusContract, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
-import { applicationModelStoreImplementation, applyApplicationProvider, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, defaultApplicationIndexBackend, defaultApplicationIndexProvider, isValkeyIndexDefault, ModelStore } from './application-providers.js';
+import { applicationGeneratedJobDurableStatus, applicationGeneratedJobPhase, applicationGeneratedJobPhaseStatusContract, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
+import { applicationModelStoreImplementation, applyApplicationProvider, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, defaultApplicationIndexBackend, defaultApplicationIndexProvider, isValkeyIndexDefault } from './application-providers.js';
 import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
 import { generatedApplicationServerRuntimeSource, runtimeIndexTable } from './application-server-runtime.js';
 import type { EntityDefinition } from './dsl.js';
@@ -566,6 +566,7 @@ function recordApplicationOperatorGraph(state: ApplicationScopeState, operator: 
   const reflectedName = definition && typeof definition === 'object' ? Reflect.get(definition, 'name') : undefined;
   const name = typeof reflectedName === 'string' ? reflectedName : 'operator';
   const resources = applicationOperatorResources(operator);
+  const watchContracts = applicationOperatorWatchScopeContracts(name, operator);
   const nodeId = applicationGraphNodeId('operator', name);
   addApplicationGraphNode(state, {
     id: nodeId,
@@ -573,11 +574,92 @@ function recordApplicationOperatorGraph(state: ApplicationScopeState, operator: 
     name,
     stability: 'experimental',
     resources: Object.values(resources).map((resource) => applicationResourceRef(resource)),
-    watches: [],
+    watches: watchContracts.map((contract) => contract.scope),
+    ...(watchContracts.length > 0 ? { watchContracts } : {}),
   });
   for (const [resourceName] of Object.entries(resources)) {
     addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: applicationGraphNodeId('crd', resourceName) }, relationship: 'owns' });
   }
+}
+
+function applicationOperatorWatchScopeContracts(operatorName: string, operator: unknown): readonly ApplicationWatchScopeLoweringContract[] {
+  return applicationOperatorHandlers(operator).filter((handler) => Boolean(handler.watch)).map((handler) => applicationWatchScopeLoweringContract(operatorName, handler));
+}
+
+function applicationWatchScopeLoweringContract(operatorName: string, handler: HandlerRegistration<object, object>): ApplicationWatchScopeLoweringContract {
+  const resource = handler.resource;
+  const watch = handler.watch;
+  const subject = applicationResourceRef(resource);
+  if (!watch) {
+    return applicationFailClosedWatchScopeContract({ kind: 'mixed', scopes: [] }, subject, 'MissingWatchScope', `Operator ${operatorName} handler ${handler.id} did not declare a watch scope.`);
+  }
+  const diagnostics = applicationWatchScopeDiagnostics(operatorName, handler, watch, subject);
+  const scope = applicationWatchScopeForHandler(handler, watch, diagnostics.length > 0);
+  return {
+    scope,
+    lowering: applicationWatchScopeLowering(scope),
+    runtime: { mode: scope.kind === 'finite' || scope.kind === 'exact' ? 'directWatch' : 'sharedInformer', resyncPolicy: scope.kind === 'exact' ? 'none' : 'bounded', cancellation: 'onScopeRemoved' },
+    permissions: diagnostics.length > 0 ? [] : applicationWatchScopePermissions(handler),
+    failurePolicy: 'failClosed',
+    diagnostics,
+  };
+}
+
+function applicationWatchScopeForHandler(handler: HandlerRegistration<object, object>, watch: ResourceWatchAddress, hasDiagnostics: boolean): ApplicationWatchScope {
+  const resource = handler.resource;
+  if (hasDiagnostics) {
+    return { kind: 'mixed', scopes: [] };
+  }
+  if (watch.names && watch.names.length > 0) {
+    return { kind: 'finite', refs: watch.names.map((name) => ({ apiVersion: resource.apiVersion, kind: resource.kind, name, ...(watch.namespace ? { namespace: watch.namespace } : {}) })) };
+  }
+  if (watch.name) {
+    return { kind: 'exact', ref: { apiVersion: resource.apiVersion, kind: resource.kind, name: watch.name, ...(watch.namespace ? { namespace: watch.namespace } : {}) } };
+  }
+  if (watch.fieldSelector) {
+    return { kind: 'fieldSelector', apiVersion: resource.apiVersion, resourceKind: resource.kind, ...(watch.namespace ? { namespace: watch.namespace } : {}), fieldSelector: watch.fieldSelector };
+  }
+  const labels = watch.labelSelector?.matchLabels;
+  if (labels && Object.keys(labels).length > 0) {
+    return { kind: 'labelSelector', apiVersion: resource.apiVersion, resourceKind: resource.kind, ...(watch.namespace ? { namespace: watch.namespace } : {}), labels };
+  }
+  return { kind: 'mixed', scopes: [] };
+}
+
+function applicationWatchScopeDiagnostics(operatorName: string, handler: HandlerRegistration<object, object>, watch: ResourceWatchAddress, subject: ReturnType<typeof applicationResourceRef>): readonly ApplicationDiagnosticContract[] {
+  const diagnostics: ApplicationDiagnosticContract[] = [];
+  if (watch.labelSelector?.matchExpressions && watch.labelSelector.matchExpressions.length > 0) {
+    diagnostics.push(applicationWatchScopeDiagnostic(subject, 'UnsupportedLabelSelectorExpression', `Operator ${operatorName} handler ${handler.id} uses label selector expressions, which are not lowered into v0.3 watch scopes yet.`));
+  }
+  if (watch.labelSelector && !watch.labelSelector.matchLabels && !watch.labelSelector.matchExpressions) {
+    diagnostics.push(applicationWatchScopeDiagnostic(subject, 'EmptyLabelSelector', `Operator ${operatorName} handler ${handler.id} uses an empty label selector.`));
+  }
+  if (watch.names && watch.names.length === 0) {
+    diagnostics.push(applicationWatchScopeDiagnostic(subject, 'EmptyFiniteWatchScope', `Operator ${operatorName} handler ${handler.id} uses an empty finite watch scope.`));
+  }
+  if (watch.fieldSelector !== undefined && watch.fieldSelector.trim() === '') {
+    diagnostics.push(applicationWatchScopeDiagnostic(subject, 'EmptyFieldSelector', `Operator ${operatorName} handler ${handler.id} uses an empty field selector.`));
+  }
+  return diagnostics;
+}
+
+function applicationFailClosedWatchScopeContract(scope: ApplicationWatchScope, subject: ReturnType<typeof applicationResourceRef>, reason: string, message: string): ApplicationWatchScopeLoweringContract {
+  return { scope, lowering: applicationWatchScopeLowering(scope), permissions: [], failurePolicy: 'failClosed', diagnostics: [applicationWatchScopeDiagnostic(subject, reason, message)] };
+}
+
+function applicationWatchScopeDiagnostic(subject: ReturnType<typeof applicationResourceRef>, reason: string, message: string): ApplicationDiagnosticContract {
+  return { event: 'applik8s-watch-scope-unlowerable', severity: 'error', subject, reason, message, likelyFix: 'Use exact names, finite instances, matchLabels, or a non-empty fieldSelector for v0.3 watch scopes.', retryable: false };
+}
+
+function applicationWatchScopePermissions(handler: HandlerRegistration<object, object>): readonly PermissionRule[] {
+  if (handler.permissions && handler.permissions.length > 0) {
+    return handler.permissions;
+  }
+  return [{ apiGroups: [apiGroupForApiVersion(handler.resource.apiVersion)], resources: [handler.resource.plural], verbs: ['get', 'list', 'watch'] }];
+}
+
+function applicationWatchScopeLowering(scope: ApplicationWatchScope): ApplicationWatchScopeLoweringContract['lowering'] {
+  return scope.kind === 'labelSelector' ? 'labelSelector' : scope.kind === 'fieldSelector' ? 'fieldSelector' : scope.kind;
 }
 
 function recordApplicationProviderGraph(state: ApplicationScopeState, tokenName: string | undefined, bindingKind: string, implementation: unknown): void {
@@ -761,6 +843,16 @@ function applicationOperatorResources(operator: unknown): Readonly<Record<string
   return resources && typeof resources === 'object' ? resources as Readonly<Record<string, AnyResourceDefinition>> : {};
 }
 
+function applicationOperatorHandlers(operator: unknown): readonly HandlerRegistration<object, object>[] {
+  const definition = operator && typeof operator === 'function' ? Reflect.get(operator, 'definition') : undefined;
+  const handlers = definition && typeof definition === 'object' ? Reflect.get(definition, 'handlers') : undefined;
+  if (!Array.isArray(handlers)) {
+    return [];
+  }
+  // typecast: app graph extraction only reads handler metadata fields emitted by the SDK operator definition.
+  return handlers as readonly HandlerRegistration<object, object>[];
+}
+
 function applicationServerBinding(name: string, options: ApplicationServerOptions, routes: readonly ApplicationServerRoute[], workload: ApplicationGeneratedWorkloadBinding): ApplicationServerBinding {
   const serviceName = options.serviceName ?? options.resourceName ?? name;
   const namespace = options.namespace ?? 'default';
@@ -828,6 +920,8 @@ function emitApplicationGeneratedJob(state: ApplicationScopeState, name: string,
     writes: phaseStatusTarget,
     statusShape: phaseStatusContract.statusShape,
   });
+  const statusReconcilerName = applicationStatusReconcilerName(state.appResource, kubernetesNameSegment);
+  const statusStoreConfigMapName = `${statusReconcilerName}-status`;
   const schedule = cron ? {
     cron,
     ...(isApplicationScheduleOptions(options) && options.timezone ? { timezone: options.timezone } : {}),
@@ -885,7 +979,6 @@ function emitApplicationGeneratedJob(state: ApplicationScopeState, name: string,
     data: generatedJobStatusRuntimeBundle([{ jobName: resourceName, jobKind: cron ? 'CronJob' : 'Job', statusPath, materialization }], state.appResource),
   });
 
-  const statusReconcilerName = applicationStatusReconcilerName(state.appResource, kubernetesNameSegment);
   registerApplicationGeneratedJobStatusTarget(state, {
     resourceName,
     namespace,
@@ -915,6 +1008,7 @@ function emitApplicationGeneratedJob(state: ApplicationScopeState, name: string,
       statusPath,
       permissions,
       durableStatusUpdater,
+      statusLifecycle: applicationGeneratedJobStatusLifecycle({ jobName: resourceName, materialization, statusConfigMapName: statusStoreConfigMapName }),
       metadataLinks: [{ graphNode: { nodeId }, artifact: { kind: 'jobDiagnostics', name: diagnosticsConfigMapName }, purpose: 'jobDiagnostics' }],
     }),
     generatedResources: [
@@ -1038,6 +1132,7 @@ function emitApplicationModelMigrationResources(state: ApplicationScopeState, mo
   const migrationConfigMapName = `${jobName}-migration`;
   const statusRuntimeConfigMapName = `${jobName}-status-runtime`;
   const migrationPlan = applicationModelMigrationPlan(model);
+  const migrationPreflightSql = applicationModelMigrationPreflightSql(model);
   const migrationSql = applicationModelMigrationSql(model);
   const migrationJobRef = { apiVersion: 'batch/v1', kind: 'Job', name: jobName, ...(namespace ? { namespace } : {}) };
   const clusterRef = { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: clusterName, ...(namespace ? { namespace } : {}) };
@@ -1068,7 +1163,7 @@ function emitApplicationModelMigrationResources(state: ApplicationScopeState, mo
     apiVersion: 'v1',
     kind: 'ConfigMap',
     metadata: { name: migrationConfigMapName, ...(namespace ? { namespace } : {}), labels },
-    data: { 'migration.sql': migrationSql },
+    data: { 'preflight.sql': migrationPreflightSql, 'migration.sql': migrationSql },
   });
 
   typeKroJob({
@@ -1085,7 +1180,7 @@ function emitApplicationModelMigrationResources(state: ApplicationScopeState, mo
           containers: [{
             name: 'migration',
             image: 'postgres:16-alpine',
-            command: ['sh', '-c', 'echo "applik8s-model-migration applying $APPLIK8S_MODEL_STORE_MODEL"; for attempt in $(seq 1 60); do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/migration.sql && exit 0; echo "applik8s-model-migration retry $attempt"; sleep 5; done; exit 1'],
+            command: ['sh', '-c', 'echo "applik8s-model-migration preflight $APPLIK8S_MODEL_STORE_MODEL"; psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/preflight.sql || exit 1; echo "applik8s-model-migration applying $APPLIK8S_MODEL_STORE_MODEL"; for attempt in $(seq 1 60); do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/migration.sql && exit 0; echo "applik8s-model-migration retry $attempt"; sleep 5; done; exit 1'],
             env: [
               { name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: secretName, key: secretKey } } },
               { name: 'DATABASE_URL_SECRET_KEY', value: secretKey },
@@ -1120,12 +1215,13 @@ function emitApplicationModelMigrationResources(state: ApplicationScopeState, mo
       terminalFailureStatus: JSON.stringify(terminalFailureStatus, null, 2),
       semantics: 'generatedIdempotentPostgresMigration',
       migrationConfigMap: migrationConfigMapName,
+      migrationPreflightSql,
       migrationSql,
-      compatibilityPolicy: JSON.stringify({ mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' }),
+      compatibilityPolicy: JSON.stringify({ mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob', enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' } }),
       driftPolicy: 'failClosed',
       migrationPlan: JSON.stringify(migrationPlan, null, 2),
-      failureModes: JSON.stringify({ missingCredentials: 'blockBeforeSql', badSql: 'terminalFailureWithJobLogs', incompatibleTableOrIndex: 'schemaDriftFailClosed', destructiveChange: 'rejectWithoutExplicitPlan' }, null, 2),
-      driftDiagnostic: JSON.stringify({ event: 'applik8s-model-migration-failed', severity: 'error', reason: 'SchemaDriftDetected', message: `Generated migration for model ${model.name} detected existing database schema drift or incompatible table/index shape. Provide an explicit migration plan or repair the database before retrying.`, retryable: false }, null, 2),
+      failureModes: JSON.stringify({ missingCredentials: 'blockBeforeSql', providerReadiness: 'preflightSelectOne', lockBehavior: 'providerNativeAdvisoryLock', missingHistoryTable: 'schemaDriftFailClosed', badSql: 'terminalFailureWithJobLogs', incompatibleColumn: 'schemaDriftFailClosed', incompatibleIndex: 'schemaDriftFailClosed', unknownExistingObject: 'schemaDriftFailClosed', destructiveChange: 'rejectWithoutExplicitPlan' }, null, 2),
+      driftDiagnostic: JSON.stringify({ event: 'applik8s-model-migration-drift-detected', severity: 'error', reason: 'SchemaDriftDetected', message: `Generated migration for model ${model.name} detected existing database schema drift or incompatible table/index shape. Provide an explicit migration plan or repair the database before retrying.`, retryable: false }, null, 2),
       failureDiagnostic: JSON.stringify({ event: 'applik8s-model-migration-failed', severity: 'error', reason: 'GeneratedMigrationFailed', message: `Generated migration for model ${model.name} failed. Inspect job/${jobName} logs and the migration SQL ConfigMap.`, retryable: true }, null, 2),
     },
   });

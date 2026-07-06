@@ -983,13 +983,12 @@ export function toOperationTarget<TGraphSpec extends KroCompatibleType = JsonObj
   const deletePlan = { operations: deleteRefs.map((ref) => ({ kind: 'delete' as const, ref })) } as NormalizedOperationPlan<THandlerStatus>;
   return {
     targetKind: 'operationTarget',
-    __applik8sApplyResources: applyResources,
-    __applik8sDeleteRefs: deleteRefs,
-    __applik8sOperationTargetArtifacts: { applyPlan, deletePlan, dryRunPlan: applyPlan },
+    operationTargetArtifacts: { applyPlan, deletePlan, dryRunPlan: applyPlan },
     contract: {
       id: targetId,
       target: { nodeId: targetId.replace(/^operation-target\./, 'typeKroResource.') },
       operations: ['apply', 'delete'],
+      execution: { contexts: ['handler', 'generatedServer', 'generatedJob', 'typeKro'], ordering: 'dependencyAware', runtimeValidation: 'beforeEffects', failurePolicy: 'failClosed' },
       lowering: { mode: 'typeKroResource', artifact: { kind: 'typeKroResource', path: `plans/${targetId}.apply.json` }, failurePolicy: 'failClosed' },
       dryRun: { supported: true, artifact: { kind: 'typeKroResource', path: `plans/${targetId}.dry-run.json` }, failurePolicy: 'failClosed' },
       ownership: { ownerReferences: 'optional', orphanPolicy: 'retain' },

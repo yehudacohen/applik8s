@@ -25,7 +25,7 @@ import type {
 import type { Applik8sTestingApi } from '@applik8s/testing';
 import type { Applik8sTypeKroAdapterApi, TypeKroGraph } from '@applik8s/typekro-adapter';
 import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
-import { CounterStore, IndexStore, ModelStore, Secret, sdk as appSdk, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationModelStoreProvider } from '@applik8s/applik8s';
+import { CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, Queue, Secret, sdk as appSdk, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationModelStoreProvider } from '@applik8s/applik8s';
 import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import { operationTarget as handlerOperationTargetFactory, targetFactory as handlerTargetFactory } from '@applik8s/typekro-adapter/targets';
 
@@ -182,7 +182,7 @@ const operationTargetContract = {
   diagnostics: [{ event: 'applik8s-operation-target-invalid', severity: 'error', subject: { nodeId: 'typeKroResource.accounts-stack' }, reason: 'OperationTargetNotLowerable', message: 'Operation target must lower before effects.', retryable: false }],
 } satisfies ApplicationOperationTargetContract;
 
-const operationTargetLoweringArtifacts = handlerOperationTarget.__applik8sOperationTargetArtifacts;
+const operationTargetLoweringArtifacts = handlerOperationTarget.operationTargetArtifacts;
 
 const watchScopeLoweringContract = {
   scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', namespace: 'accounts', labels: { 'app.kubernetes.io/part-of': 'accounts' } },
@@ -217,13 +217,13 @@ const v03PressureTestContract = {
 expectTypeUsage(modelStoreGuarantees, generatedJobContract, generatedJobPhaseStatusContract, generatedJobStatusUpdaterContract, generatedRuntimeModuleContract, operationTargetContract, operationTargetLoweringArtifacts, watchScopeLoweringContract, migrationDriftCheckContract, v03PressureTestContract);
 
 // @ts-expect-error ModelStore providers must use the typed provider object, not a string alias.
-const invalidStringModelStoreProvider: ApplicationModelStoreProvider = 'postgres';
+const _invalidStringModelStoreProvider: ApplicationModelStoreProvider = 'postgres';
 
 // @ts-expect-error ModelStore providers must declare the supported provider kind.
-const invalidMissingKindModelStoreProvider: ApplicationModelStoreProvider = { name: 'accounts-db' };
+const _invalidMissingKindModelStoreProvider: ApplicationModelStoreProvider = { name: 'accounts-db' };
 
 // @ts-expect-error only the typed Postgres ModelStore provider is supported for the v0.3 substrate contract.
-const invalidProviderKindModelStoreProvider: ApplicationModelStoreProvider = { kind: 'mysql', name: 'accounts-db' };
+const _invalidProviderKindModelStoreProvider: ApplicationModelStoreProvider = { kind: 'mysql', name: 'accounts-db' };
 
 let accountModelForScriptExecution: ApplicationModelBinding<AccountSpec, AccountStatus> | undefined;
 
@@ -302,7 +302,19 @@ appSdk.kubernetesComposition({
 }, (_spec, app) => {
   const counterProvider = app.provide(CounterStore, { kind: 'counter-store-placeholder' });
   const secretProvider = app.provide(Secret, { kind: 'secret-store-placeholder' });
-  expectTypeUsage(counterProvider, secretProvider);
+  const eventProvider = app.provide(EventSource, { kind: 'event-source-placeholder' });
+  const queueProvider = app.provide(Queue, { kind: 'queue-placeholder' });
+  const objectStorageProvider = app.provide(ObjectStorage, { kind: 'object-storage-placeholder' });
+  const httpExposureProvider = app.provide(HttpExposure, { kind: 'http-exposure-placeholder' });
+  const credentialProvider = app.provide(CredentialStore, { kind: 'credential-store-placeholder' });
+  expectTypeUsage(counterProvider, secretProvider, eventProvider, queueProvider, objectStorageProvider, httpExposureProvider, credentialProvider);
+
+  // @ts-expect-error config(...) is not a stable v0.3 app primitive until the public contract is implemented.
+  app.config('database-url', { env: 'DATABASE_URL' });
+  // @ts-expect-error secret(...) is not a stable v0.3 app primitive until the public contract is implemented.
+  app.secret('database-url', { secretName: 'db-app', key: 'uri' });
+  // @ts-expect-error expose(...) is not a stable v0.3 app primitive until the public contract is implemented.
+  app.expose('web', { hostnames: ['app.example.test'] });
 
   return { ready: true };
 });

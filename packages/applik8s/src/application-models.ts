@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
-import type { ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelStoreGuaranteesContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy } from '@applik8s/core';
+import type { ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelStoreGuaranteesContract, ApplicationModelStoreSemanticsContract, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy } from '@applik8s/core';
 import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement, type ApplicationGraphState } from './application-graph-state.js';
 import { applicationModelStoreImplementation, applicationProviderImplementationName, applicationProviderInterface } from './application-providers.js';
 import type { ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderState } from './application-providers.js';
 import type { EntityDefinition } from './dsl.js';
-import { applicationGeneratedJobDurableStatus, applicationGeneratedJobPhase, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
+import { applicationGeneratedJobDurableStatus, applicationGeneratedJobPhase, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
+import { createPostgresModelClient } from './model-store-postgres-runtime.js';
 
 export interface ApplicationModelOptions<TSpec extends object = object, TStatus extends object = Record<string, never>> {
   readonly name?: string;
@@ -214,6 +215,24 @@ function applicationModelStoreGuarantees<TSpec extends object, TStatus extends o
     transactions: schema?.transactions ?? 'supported',
     retention: schema?.retention?.mode === 'ttl' ? 'ttl' : schema?.retention?.mode === 'deleteWithOwner' ? 'deleteWithApplication' : 'retain',
     migrationOwnership: migration.strategy === 'generatedJob' ? 'generatedJob' : migration.strategy === 'external' ? 'external' : 'none',
+    semantics: applicationModelStoreSemantics(schema),
+  };
+}
+
+function applicationModelStoreSemantics<TSpec extends object, TStatus extends object>(schema: ApplicationModelSchemaOptions<TSpec, TStatus> | undefined): ApplicationModelStoreSemanticsContract {
+  const retentionMode = schema?.retention?.mode === 'ttl' ? 'ttl' : schema?.retention?.mode === 'deleteWithOwner' ? 'deleteWithApplication' : 'retain';
+  return {
+    generatedRuntimeParity: 'required',
+    scriptRuntimeParity: 'required',
+    query: { defaultLimit: 50, maxLimit: 500, cursor: 'offset', unsupportedFilters: 'failClosed' },
+    indexes: { partitionRequired: true, uniqueEnforcedBy: 'databaseConstraint', unsupportedOrderBy: 'failClosed' },
+    constraints: { duplicateKeyDiagnostic: 'applik8s-model-duplicate-key', enforcement: 'databaseConstraint' },
+    migrationHistory: { tableName: 'applik8s_model_migrations', revisionColumn: 'revision', appliedAtColumn: 'applied_at' },
+    retention: {
+      mode: retentionMode,
+      ...(schema?.retention?.mode === 'ttl' ? { ttlSeconds: schema.retention.ttlSeconds } : {}),
+      deletionPolicy: schema?.retention?.mode === 'deleteWithOwner' ? 'ownerDeletion' : 'explicitOnly',
+    },
   };
 }
 
@@ -225,6 +244,7 @@ export interface ApplicationModelRuntimeBinding {
 
 export function applicationModelBinding<TSpec extends object, TStatus extends object>(entity: EntityDefinition<TSpec, TStatus>, _provider: ApplicationModelStoreProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined, runtime: ApplicationRuntimeModelContract): ApplicationModelBinding<TSpec, TStatus> {
   const name = options?.name ?? entity.name;
+  const scriptClient = () => createPostgresModelClient<TSpec, TStatus>(runtime);
   return {
     kind: 'applicationModel',
     name,
@@ -236,30 +256,25 @@ export function applicationModelBinding<TSpec extends object, TStatus extends ob
       transactions: 'supported',
       queryConsistency: 'providerDefined',
       eventSemantics: 'unsupported',
-      limitations: ['model CRUD/query calls inside serialized generated callbacks lower to generated runtime clients; ordinary script execution requires an explicit script-execution ModelStore runtime client'],
+      limitations: ['model CRUD/query calls inside serialized generated callbacks lower to generated runtime clients; ordinary script execution uses the same Postgres ModelStore runtime and requires database credentials plus generated migrations'],
     },
-    async create() {
-      return applicationModelRuntimeMethod(name, 'create');
+    async create(input) {
+      return scriptClient().create(input);
     },
-    async get() {
-      return applicationModelRuntimeMethod(name, 'get');
+    async get(ref) {
+      return scriptClient().get(ref);
     },
-    async query() {
-      return applicationModelRuntimeMethod(name, 'query');
+    async query(query) {
+      return scriptClient().query(query);
     },
-    async patch() {
-      return applicationModelRuntimeMethod(name, 'patch');
+    async patch(ref, patch) {
+      return scriptClient().patch(ref, patch);
     },
-    async delete() {
-      return applicationModelRuntimeMethod(name, 'delete');
+    async delete(ref) {
+      return scriptClient().delete(ref);
     },
-    index(indexName, _indexOptions) {
-      return {
-        name: indexName,
-        async query() {
-          return applicationModelRuntimeMethod(name, `index(${JSON.stringify(indexName)}).query`);
-        },
-      } satisfies ApplicationModelIndexBinding<TSpec, TStatus>;
+    index(indexName, indexOptions) {
+      return scriptClient().index(indexName, indexOptions) satisfies ApplicationModelIndexBinding<TSpec, TStatus>;
     },
     on: {
       created: () => applicationModelRuntimeEvent(name, 'created'),
@@ -301,6 +316,101 @@ export function applicationModelMigrationSql(model: ApplicationRuntimeModelContr
     `INSERT INTO ${quoteSqlIdentifier('applik8s_model_migrations')} (id, model, revision, plan) VALUES (${quoteSqlLiteral(migrationPlan.id)}, ${quoteSqlLiteral(model.name)}, ${quoteSqlLiteral(migrationPlan.toRevision)}, ${quoteSqlLiteral(JSON.stringify(migrationPlan))}::jsonb) ON CONFLICT (id) DO UPDATE SET revision = EXCLUDED.revision, plan = EXCLUDED.plan, applied_at = now();`,
   ];
   return `${statements.join('\n\n')}\n`;
+}
+
+export function applicationModelMigrationPreflightSql(model: ApplicationRuntimeModelContract): string {
+  const migrationPlan = applicationModelMigrationPlan(model);
+  const expectedColumns = [
+    { name: 'id', type: 'text' },
+    { name: 'spec', type: 'jsonb' },
+    { name: 'status', type: 'jsonb' },
+    { name: 'revision', type: 'text' },
+    { name: 'created_at', type: 'timestamp with time zone' },
+    { name: 'updated_at', type: 'timestamp with time zone' },
+  ];
+  const indexChecks = [...model.constraints.filter((constraint) => constraint.kind === 'unique').map((constraint) => ({ name: constraint.name, fields: constraint.fields, unique: true })), ...model.indexes].map((index) => `
+  IF EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = ${quoteSqlLiteral(index.name)} AND tablename <> ${quoteSqlLiteral(model.tableName)}) THEN
+    RAISE EXCEPTION 'applik8s-model-migration-drift-detected: incompatibleIndex index % exists on a different table', ${quoteSqlLiteral(index.name)};
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = ${quoteSqlLiteral(index.name)} AND tablename = ${quoteSqlLiteral(model.tableName)} AND indexdef NOT ILIKE ${quoteSqlLiteral(`%${index.fields[0] ?? index.name}%`)}) THEN
+    RAISE EXCEPTION 'applik8s-model-migration-drift-detected: incompatibleIndex index % does not match generated model schema', ${quoteSqlLiteral(index.name)};
+  END IF;`).join('\n');
+
+  return `-- applik8s-model-migration-preflight
+-- providerReadiness: fail closed before schema effects when Postgres is unavailable.
+SELECT 1 AS provider_readiness;
+
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtext(${quoteSqlLiteral(`applik8s:model-migration:${model.tableName}`)}));
+
+DO $applik8s_migration_preflight$
+DECLARE
+  model_table_exists boolean;
+  history_table_exists boolean;
+  latest_revision text;
+  missing_column text;
+  incompatible_column text;
+  unknown_column text;
+BEGIN
+  SELECT to_regclass(${quoteSqlLiteral(`public.${model.tableName}`)}) IS NOT NULL INTO model_table_exists;
+  SELECT to_regclass(${quoteSqlLiteral('public.applik8s_model_migrations')}) IS NOT NULL INTO history_table_exists;
+
+  IF model_table_exists AND NOT history_table_exists THEN
+    RAISE EXCEPTION 'applik8s-model-migration-drift-detected: missingHistoryTable existing model table % has no applik8s_model_migrations history table', ${quoteSqlLiteral(model.tableName)};
+  END IF;
+
+  IF history_table_exists THEN
+    SELECT revision INTO latest_revision
+    FROM applik8s_model_migrations
+    WHERE model = ${quoteSqlLiteral(model.name)}
+    ORDER BY applied_at DESC
+    LIMIT 1;
+    IF latest_revision IS NOT NULL AND latest_revision <> ${quoteSqlLiteral(migrationPlan.toRevision)} THEN
+      RAISE EXCEPTION 'applik8s-model-migration-drift-detected: destructiveChange model % has recorded revision % but generated revision is %; provide an explicit migration plan', ${quoteSqlLiteral(model.name)}, latest_revision, ${quoteSqlLiteral(migrationPlan.toRevision)};
+    END IF;
+  END IF;
+
+  IF model_table_exists THEN
+    SELECT expected.column_name INTO missing_column
+    FROM (VALUES ${expectedColumns.map((column) => `(${quoteSqlLiteral(column.name)}, ${quoteSqlLiteral(column.type)})`).join(', ')}) AS expected(column_name, data_type)
+    LEFT JOIN information_schema.columns actual
+      ON actual.table_schema = 'public'
+      AND actual.table_name = ${quoteSqlLiteral(model.tableName)}
+      AND actual.column_name = expected.column_name
+    WHERE actual.column_name IS NULL
+    LIMIT 1;
+    IF missing_column IS NOT NULL THEN
+      RAISE EXCEPTION 'applik8s-model-migration-drift-detected: incompatibleColumn model table % is missing required column %', ${quoteSqlLiteral(model.tableName)}, missing_column;
+    END IF;
+
+    SELECT expected.column_name INTO incompatible_column
+    FROM (VALUES ${expectedColumns.map((column) => `(${quoteSqlLiteral(column.name)}, ${quoteSqlLiteral(column.type)})`).join(', ')}) AS expected(column_name, data_type)
+    JOIN information_schema.columns actual
+      ON actual.table_schema = 'public'
+      AND actual.table_name = ${quoteSqlLiteral(model.tableName)}
+      AND actual.column_name = expected.column_name
+    WHERE actual.data_type <> expected.data_type
+    LIMIT 1;
+    IF incompatible_column IS NOT NULL THEN
+      RAISE EXCEPTION 'applik8s-model-migration-drift-detected: incompatibleColumn model table % has an incompatible column %', ${quoteSqlLiteral(model.tableName)}, incompatible_column;
+    END IF;
+
+    SELECT actual.column_name INTO unknown_column
+    FROM information_schema.columns actual
+    WHERE actual.table_schema = 'public'
+      AND actual.table_name = ${quoteSqlLiteral(model.tableName)}
+      AND actual.column_name NOT IN (${expectedColumns.map((column) => quoteSqlLiteral(column.name)).join(', ')})
+    LIMIT 1;
+    IF unknown_column IS NOT NULL THEN
+      RAISE EXCEPTION 'applik8s-model-migration-drift-detected: unknownExistingObject model table % has unmanaged column %', ${quoteSqlLiteral(model.tableName)}, unknown_column;
+    END IF;
+${indexChecks}
+  END IF;
+END
+$applik8s_migration_preflight$;
+
+COMMIT;
+`;
 }
 
 export interface GeneratedApplicationModelMigrationPlan extends Readonly<Record<string, unknown>> {
@@ -443,6 +553,7 @@ function recordApplicationModelMigrationJobGraph(state: ApplicationGraphState, m
       permissions: [{ apiGroups: ['batch'], resources: ['jobs'], verbs: ['create', 'get', 'list', 'watch'] }],
       environment: applicationModelStoreRuntime(provider, modelName, resources),
       durableStatusUpdater,
+      statusLifecycle: applicationGeneratedJobStatusLifecycle({ jobName, materialization: 'kubernetes-job' }),
       metadataLinks: [{ graphNode: { nodeId }, artifact: { kind: 'jobDiagnostics', name: `${jobName}-diagnostics` }, purpose: 'jobDiagnostics' }],
     }),
     generatedResources: [
@@ -467,8 +578,19 @@ function recordApplicationProviderGraph(state: ApplicationGraphState, tokenName:
     stability: 'experimental',
     interface: providerInterface,
     implementation: applicationProviderImplementationName(implementation),
+    contract: applicationProviderInterfaceContract(providerInterface, implementation),
     config: { bindingKind, provider: applicationProviderImplementationName(implementation) },
   });
+}
+
+function applicationProviderInterfaceContract(providerInterface: ApplicationProviderInterfaceKind, implementation: unknown): ApplicationProviderInterfaceContract {
+  const implemented = providerInterface === 'ModelStore' && applicationProviderImplementationName(implementation) === 'postgres';
+  return {
+    interface: providerInterface,
+    surface: 'stablePublicApi',
+    support: implemented ? 'implemented' : 'failClosedReserved',
+    diagnostics: implemented ? [] : [{ event: 'applik8s-provider-requirement-missing', severity: 'error', subject: { nodeId: applicationProviderNodeId(providerInterface) }, reason: 'ProviderInterfaceReserved', message: `${providerInterface} is reserved as a stable v0.3 provider interface but no generated provider adapter is enabled for this binding.`, retryable: false }],
+  };
 }
 
 function applicationProviderNodeId(providerInterface: ApplicationProviderInterfaceKind): string {
@@ -496,10 +618,6 @@ function applicationModelRuntimeBoundary(): ApplicationModelBackendContract['run
     serializedCallbacks: 'generatedRuntimeClient',
     scriptExecution: 'scriptRuntimeClient',
   };
-}
-
-function applicationModelRuntimeMethod(modelName: string, methodName: string): never {
-  throw new Error(`app.model(${JSON.stringify(modelName)}) runtime method ${methodName} requires a ModelStore runtime client. Inside serialized app callbacks this is provided by generated runtime clients; during ordinary script execution configure an explicit script-execution ModelStore runtime.`);
 }
 
 function applicationModelRuntimeEvent(modelName: string, event: 'created' | 'updated' | 'deleted'): ApplicationModelEventBinding {

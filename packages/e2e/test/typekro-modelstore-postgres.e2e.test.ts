@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,6 +20,12 @@ const appPlural = pluralizeKubernetesKind(stackKind);
 const statusReconcilerName = `${kubernetesNameSegment(stackKind)}-status-reconciler`;
 const statusConfigMapName = `${statusReconcilerName}-status`;
 const cnpgInstallUrl = process.env.APPLIK8S_E2E_CNPG_INSTALL_URL ?? 'https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.26/releases/cnpg-1.26.0.yaml';
+const driftNamespace = process.env.APPLIK8S_E2E_DRIFT_NAMESPACE ?? `applik8s-modelstore-drift-${process.pid}`;
+const driftStackName = `accounts-modelstore-drift-${process.pid}`;
+const driftStackKind = `AccountsModelStoreDrift${process.pid}`;
+const driftDatabaseName = 'accounts-drift-db';
+const driftMigrationJobName = 'accounts-drift-model-migration';
+const accountModelTableName = 'applik8s_account';
 
 let tempDir: string | undefined;
 let outDir: string | undefined;
@@ -93,6 +99,109 @@ describeLive('live TypeKro Postgres ModelStore runtime', () => {
   }, 420_000);
 });
 
+describeLive('live TypeKro Postgres ModelStore migration drift preflight', () => {
+  let driftTempDir: string | undefined;
+  let driftOutDir: string | undefined;
+
+  beforeAll(async () => {
+    await assertExpectedKubectlContext();
+    await ensureCnpgOperator();
+    await ensureNamespace(driftNamespace);
+
+    driftTempDir = await mkdtemp(join(tmpdir(), 'applik8s-modelstore-drift-'));
+    driftOutDir = join(driftTempDir, 'dist');
+    const entrypoint = join(driftTempDir, 'modelstore-drift-live.ts');
+    await writeFile(entrypoint, liveEntrypointSource({ namespace: driftNamespace, stackName: driftStackName, stackKind: driftStackKind, databaseName: driftDatabaseName, migrationJobName: driftMigrationJobName }));
+    await exec('bun', ['run', 'applik8s', 'build', entrypoint, '--typekro', '--composition-name', 'accountsStack', '--out-dir', driftOutDir], process.cwd());
+    await applyCnpgCluster(driftNamespace, driftDatabaseName);
+    await waitForCnpgClusterReady(driftNamespace, driftDatabaseName);
+    await waitForCnpgAppSecret(driftNamespace, driftDatabaseName);
+  }, 720_000);
+
+  afterAll(async () => {
+    if (process.env.APPLIK8S_E2E_LIVE === '1') {
+      await kubectl(['delete', 'namespace', driftNamespace, '--ignore-not-found=true', '--wait=false']);
+    }
+    if (driftTempDir && process.env.APPLIK8S_KEEP_TMP !== '1') {
+      await rm(driftTempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed before schema effects for existing schema drift in real Postgres', async () => {
+    const preflightSql = await generatedPreflightSql(requiredDriftOutDir(driftOutDir));
+
+    const cases: readonly MigrationDriftCase[] = [
+      {
+        name: 'missing-history-table',
+        expectedReason: 'missingHistoryTable',
+        seedSql: `
+DROP TABLE IF EXISTS "applik8s_model_migrations" CASCADE;
+DROP TABLE IF EXISTS "${accountModelTableName}" CASCADE;
+CREATE TABLE "${accountModelTableName}" (
+  id text PRIMARY KEY,
+  spec jsonb NOT NULL,
+  status jsonb,
+  revision text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+`,
+      },
+      {
+        name: 'incompatible-index',
+        expectedReason: 'incompatibleIndex',
+        seedSql: `${resetDriftSchemaSql()}
+CREATE TABLE "applik8s_drift_index_holder" (email text);
+CREATE INDEX "accounts-by-email" ON "applik8s_drift_index_holder" (email);
+`,
+      },
+      {
+        name: 'incompatible-column',
+        expectedReason: 'incompatibleColumn',
+        seedSql: `
+DROP TABLE IF EXISTS "applik8s_model_migrations" CASCADE;
+DROP TABLE IF EXISTS "${accountModelTableName}" CASCADE;
+CREATE TABLE "applik8s_model_migrations" (
+  id text PRIMARY KEY,
+  model text NOT NULL,
+  revision text NOT NULL,
+  plan jsonb NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE "${accountModelTableName}" (
+  id text PRIMARY KEY,
+  spec jsonb NOT NULL,
+  revision text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+`,
+      },
+      {
+        name: 'unknown-existing-object',
+        expectedReason: 'unknownExistingObject',
+        seedSql: `${resetDriftSchemaSql()}
+ALTER TABLE "${accountModelTableName}" ADD COLUMN unmanaged text;
+`,
+      },
+      {
+        name: 'destructive-change',
+        expectedReason: 'destructiveChange',
+        seedSql: `${resetDriftSchemaSql()}
+INSERT INTO "applik8s_model_migrations" (id, model, revision, plan) VALUES ('drift', 'Account', 'sha256:previous', '{}'::jsonb);
+`,
+      },
+    ];
+
+    for (const testCase of cases) {
+      await runSqlJob({ namespace: driftNamespace, databaseName: driftDatabaseName, name: `seed-${testCase.name}`, sql: testCase.seedSql, expectFailure: false });
+      const logs = await runSqlJob({ namespace: driftNamespace, databaseName: driftDatabaseName, name: `preflight-${testCase.name}`, sql: preflightSql, expectFailure: true });
+      expect(logs).toContain('applik8s-model-migration-drift-detected');
+      expect(logs).toContain(testCase.expectedReason);
+    }
+  }, 420_000);
+});
+
 interface ModelObjectPayload {
   readonly id: string;
   readonly spec: Readonly<Record<string, unknown>>;
@@ -110,6 +219,30 @@ interface PortForward {
 interface AppInstanceRef {
   readonly name: string;
   readonly namespace: string;
+}
+
+interface MigrationDriftCase {
+  readonly name: string;
+  readonly expectedReason: string;
+  readonly seedSql: string;
+}
+
+interface SqlJobOptions {
+  readonly namespace: string;
+  readonly databaseName: string;
+  readonly name: string;
+  readonly sql: string;
+  readonly expectFailure: boolean;
+}
+
+interface EntrypointSourceOptions {
+  readonly namespace: string;
+  readonly stackName: string;
+  readonly stackKind: string;
+  readonly databaseName: string;
+  readonly migrationJobName: string;
+  readonly serverName?: string;
+  readonly serviceName?: string;
 }
 
 async function ensureKroRuntime(): Promise<void> {
@@ -144,44 +277,234 @@ async function ensureNamespace(name: string): Promise<void> {
   }
 }
 
+async function applyCnpgCluster(targetNamespace: string, targetDatabaseName: string): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'applik8s-cnpg-cluster-'));
+  try {
+    const manifestPath = join(dir, 'cluster.yaml');
+    await writeFile(manifestPath, `
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: ${targetDatabaseName}
+  namespace: ${targetNamespace}
+spec:
+  instances: 1
+  bootstrap:
+    initdb:
+      database: accounts
+      owner: app
+  storage:
+    size: 1Gi
+`.trimStart());
+    await kubectl(['apply', '--server-side', '--field-manager=applik8s-modelstore-drift-e2e', '--filename', manifestPath]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function generatedPreflightSql(targetOutDir: string): Promise<string> {
+  const resourcesPath = join(targetOutDir, 'typekro', 'resources.json');
+  const parsed: unknown = JSON.parse(await readFile(resourcesPath, 'utf8'));
+  if (!Array.isArray(parsed)) {
+    throw new Error(`Expected TypeKro resources array at ${resourcesPath}.`);
+  }
+  for (const resource of parsed) {
+    const object = objectRecord(resource);
+    const metadata = objectRecord(object?.metadata);
+    const data = objectRecord(object?.data);
+    if (object?.kind === 'ConfigMap' && metadata?.name === `${driftMigrationJobName}-migration` && typeof data?.['preflight.sql'] === 'string') {
+      return data['preflight.sql'];
+    }
+  }
+  throw new Error(`Generated migration ConfigMap ${driftMigrationJobName}-migration with preflight.sql was not found in ${resourcesPath}.`);
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  // typecast: runtime guard above narrows to a non-array object for JSON object field access.
+  return value as Record<string, unknown>;
+}
+
+function resetDriftSchemaSql(): string {
+  return `
+DROP TABLE IF EXISTS "applik8s_drift_index_holder" CASCADE;
+DROP TABLE IF EXISTS "applik8s_model_migrations" CASCADE;
+DROP TABLE IF EXISTS "${accountModelTableName}" CASCADE;
+CREATE TABLE "applik8s_model_migrations" (
+  id text PRIMARY KEY,
+  model text NOT NULL,
+  revision text NOT NULL,
+  plan jsonb NOT NULL,
+  applied_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE "${accountModelTableName}" (
+  id text PRIMARY KEY,
+  spec jsonb NOT NULL,
+  status jsonb,
+  revision text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+`;
+}
+
+async function runSqlJob(options: SqlJobOptions): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'applik8s-sql-job-'));
+  const configMapName = `${options.name}-sql`;
+  try {
+    const manifestPath = join(dir, `${options.name}.yaml`);
+    await writeFile(manifestPath, `
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ${configMapName}
+  namespace: ${options.namespace}
+data:
+  script.sql: |
+${indentYamlBlock(options.sql.trimEnd(), 4)}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${options.name}
+  namespace: ${options.namespace}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: psql
+          image: postgres:16
+          command:
+            - sh
+            - -c
+            - 'psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /sql/script.sql'
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: ${options.databaseName}-app
+                  key: uri
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+      volumes:
+        - name: sql
+          configMap:
+            name: ${configMapName}
+`.trimStart());
+    await kubectl(['delete', 'job', options.name, '--namespace', options.namespace, '--ignore-not-found=true', '--wait=false']);
+    await kubectl(['delete', 'configmap', configMapName, '--namespace', options.namespace, '--ignore-not-found=true', '--wait=false']);
+    await kubectl(['apply', '--server-side', '--field-manager=applik8s-modelstore-drift-e2e', '--filename', manifestPath]);
+    await waitForSqlJobCondition(options.namespace, options.name, options.expectFailure ? 'Failed' : 'Complete');
+    return await sqlJobLogs(options.namespace, options.name);
+  } catch (cause) {
+    const diagnostics = await Promise.allSettled([
+      kubectl(['describe', `job/${options.name}`, '--namespace', options.namespace]),
+      kubectl(['logs', '--namespace', options.namespace, `job/${options.name}`, '--all-containers=true', '--tail=300']),
+      kubectl(['get', 'pods', '--namespace', options.namespace, '--selector', `job-name=${options.name}`, '--output=wide']),
+      kubectl(['describe', 'pods', '--namespace', options.namespace, '--selector', `job-name=${options.name}`]),
+      kubectl(['get', 'events', '--namespace', options.namespace, '--sort-by=.lastTimestamp']),
+    ]);
+    throw new Error(`${cause instanceof Error ? cause.message : `SQL job ${options.name} failed unexpectedly.`}\n${diagnostics.map(formatSettledOutput).join('\n')}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function waitForSqlJobCondition(targetNamespace: string, jobName: string, expectedType: 'Complete' | 'Failed'): Promise<void> {
+  const started = Date.now();
+  let lastStatus = '';
+  while (Date.now() - started < 180_000) {
+    try {
+      const output = (await kubectl(['get', `job/${jobName}`, '--namespace', targetNamespace, '--output=json'])).stdout;
+      const status = sqlJobConditionStatus(output, expectedType);
+      lastStatus = status.summary;
+      if (status.matched) {
+        return;
+      }
+      if (status.terminalMismatch) {
+        throw new Error(`SQL job ${jobName} reached ${status.oppositeType}; expected ${expectedType}.`);
+      }
+    } catch (error) {
+      lastStatus = error instanceof Error ? error.message : String(error);
+    }
+    await sleep(2_000);
+  }
+  throw new Error(`Timed out waiting for SQL job ${jobName} condition ${expectedType}. Last status: ${lastStatus}`);
+}
+
+function sqlJobConditionStatus(output: string, expectedType: 'Complete' | 'Failed'): { readonly matched: boolean; readonly terminalMismatch: boolean; readonly oppositeType: 'Complete' | 'Failed'; readonly summary: string } {
+  const parsed: unknown = JSON.parse(output);
+  const job = objectRecord(parsed);
+  const status = objectRecord(job?.status);
+  const conditions = status?.conditions;
+  const oppositeType = expectedType === 'Complete' ? 'Failed' : 'Complete';
+  if (!Array.isArray(conditions)) {
+    return { matched: false, terminalMismatch: false, oppositeType, summary: JSON.stringify(status ?? {}) };
+  }
+  const matched = conditions.some((condition) => {
+    const object = objectRecord(condition);
+    return object?.type === expectedType && object.status === 'True';
+  });
+  const terminalMismatch = conditions.some((condition) => {
+    const object = objectRecord(condition);
+    return object?.type === oppositeType && object.status === 'True';
+  });
+  return { matched, terminalMismatch, oppositeType, summary: JSON.stringify(conditions) };
+}
+
+async function sqlJobLogs(targetNamespace: string, jobName: string): Promise<string> {
+  return (await kubectl(['logs', '--namespace', targetNamespace, `job/${jobName}`, '--all-containers=true', '--tail=300'])).stdout;
+}
+
+function indentYamlBlock(value: string, spaces: number): string {
+  const indentation = ' '.repeat(spaces);
+  return value.split('\n').map((line) => `${indentation}${line}`).join('\n');
+}
+
 async function runGeneratedTypeKroApplyScript(): Promise<void> {
   await exec('sh', [join(requiredOutDir(), 'typekro', 'apply.sh')], process.cwd());
 }
 
-async function waitForCnpgClusterReady(): Promise<void> {
+async function waitForCnpgClusterReady(targetNamespace = namespace, targetDatabaseName = databaseName): Promise<void> {
   try {
-    await waitForCnpgClusterExists();
-    await kubectl(['wait', `clusters.postgresql.cnpg.io/${databaseName}`, '--namespace', namespace, '--for=condition=Ready', '--timeout=300s']);
+    await waitForCnpgClusterExists(targetNamespace, targetDatabaseName);
+    await kubectl(['wait', `clusters.postgresql.cnpg.io/${targetDatabaseName}`, '--namespace', targetNamespace, '--for=condition=Ready', '--timeout=300s']);
   } catch (cause) {
     const diagnostics = await Promise.allSettled([
-      kubectl(['get', `clusters.postgresql.cnpg.io/${databaseName}`, '--namespace', namespace, '--ignore-not-found=true', '--output=yaml']),
-      kubectl(['get', 'pods', '--namespace', namespace, '--output=wide']),
-      kubectl(['describe', 'pods', '--namespace', namespace]),
+      kubectl(['get', `clusters.postgresql.cnpg.io/${targetDatabaseName}`, '--namespace', targetNamespace, '--ignore-not-found=true', '--output=yaml']),
+      kubectl(['get', 'pods', '--namespace', targetNamespace, '--output=wide']),
+      kubectl(['describe', 'pods', '--namespace', targetNamespace]),
       kubectl(['logs', '--namespace', 'cnpg-system', '--selector', 'app.kubernetes.io/name=cloudnative-pg', '--all-containers=true', '--tail=500']),
-      kubectl(['get', 'events', '--namespace', namespace, '--sort-by=.lastTimestamp']),
+      kubectl(['get', 'events', '--namespace', targetNamespace, '--sort-by=.lastTimestamp']),
     ]);
     throw new Error(`${cause instanceof Error ? cause.message : 'CNPG cluster did not become Ready.'}\n${diagnostics.map(formatSettledOutput).join('\n')}`);
   }
 }
 
-async function waitForCnpgClusterExists(): Promise<void> {
+async function waitForCnpgClusterExists(targetNamespace = namespace, targetDatabaseName = databaseName): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < 180_000) {
     try {
-      await kubectl(['get', `clusters.postgresql.cnpg.io/${databaseName}`, '--namespace', namespace]);
+      await kubectl(['get', `clusters.postgresql.cnpg.io/${targetDatabaseName}`, '--namespace', targetNamespace]);
       return;
     } catch {
       await sleep(2_000);
     }
   }
-  throw new Error(`Timed out waiting for CNPG Cluster ${databaseName} to be created in namespace ${namespace}.`);
+  throw new Error(`Timed out waiting for CNPG Cluster ${targetDatabaseName} to be created in namespace ${targetNamespace}.`);
 }
 
-async function waitForCnpgAppSecret(): Promise<void> {
+async function waitForCnpgAppSecret(targetNamespace = namespace, targetDatabaseName = databaseName): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < 120_000) {
     try {
-      const key = (await kubectl(['get', `secret/${databaseName}-app`, '--namespace', namespace, '--output=jsonpath={.data.uri}'])).stdout.trim();
+      const key = (await kubectl(['get', `secret/${targetDatabaseName}-app`, '--namespace', targetNamespace, '--output=jsonpath={.data.uri}'])).stdout.trim();
       if (key) {
         return;
       }
@@ -191,10 +514,10 @@ async function waitForCnpgAppSecret(): Promise<void> {
     await sleep(2_000);
   }
   const diagnostics = await Promise.allSettled([
-    kubectl(['get', 'secrets', '--namespace', namespace, '--output=yaml']),
-    kubectl(['get', `clusters.postgresql.cnpg.io/${databaseName}`, '--namespace', namespace, '--output=yaml']),
+    kubectl(['get', 'secrets', '--namespace', targetNamespace, '--output=yaml']),
+    kubectl(['get', `clusters.postgresql.cnpg.io/${targetDatabaseName}`, '--namespace', targetNamespace, '--output=yaml']),
   ]);
-  throw new Error(`Timed out waiting for CNPG app Secret ${databaseName}-app with key uri.\n${diagnostics.map(formatSettledOutput).join('\n')}`);
+  throw new Error(`Timed out waiting for CNPG app Secret ${targetDatabaseName}-app with key uri.\n${diagnostics.map(formatSettledOutput).join('\n')}`);
 }
 
 async function rolloutStatusWithDiagnostics(deployment: string): Promise<void> {
@@ -446,6 +769,13 @@ function requiredOutDir(): string {
   return outDir;
 }
 
+function requiredDriftOutDir(value: string | undefined): string {
+  if (!value) {
+    throw new Error('Drift output directory was not initialized.');
+  }
+  return value;
+}
+
 function kubernetesNameSegment(value: string): string {
   return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '') || 'app';
 }
@@ -461,7 +791,9 @@ function pluralizeKubernetesKind(kind: string): string {
   return `${segment}s`;
 }
 
-function liveEntrypointSource(): string {
+function liveEntrypointSource(options: EntrypointSourceOptions = { namespace, stackName, stackKind, databaseName, migrationJobName, serverName, serviceName }): string {
+  const generatedServerName = options.serverName ?? serverName;
+  const generatedServiceName = options.serviceName ?? serviceName;
   return `
 import { ModelStore, sdk } from ${JSON.stringify(join(process.cwd(), 'packages/applik8s/src/index.ts'))};
 import { entity, type } from ${JSON.stringify(join(process.cwd(), 'packages/applik8s/src/dsl.ts'))};
@@ -472,18 +804,18 @@ const AccountEntity = entity('Account', {
 });
 
 export const accountsStack = sdk.kubernetesComposition({
-  name: ${JSON.stringify(stackName)},
+  name: ${JSON.stringify(options.stackName)},
   apiVersion: 'modelstore.applik8s.dev/v1alpha1',
-  kind: ${JSON.stringify(stackKind)},
+  kind: ${JSON.stringify(options.stackKind)},
   spec: type({}),
   status: type({ ready: 'boolean', applik8s: 'object?' }),
 }, (_spec, app) => {
   const store = app.provide(ModelStore, {
     kind: 'postgres',
-    name: ${JSON.stringify(databaseName)},
-    namespace: ${JSON.stringify(namespace)},
+    name: ${JSON.stringify(options.databaseName)},
+    namespace: ${JSON.stringify(options.namespace)},
     database: 'accounts',
-    migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob', jobName: ${JSON.stringify(migrationJobName)} },
+    migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob', jobName: ${JSON.stringify(options.migrationJobName)} },
   });
   const Account = app.model(AccountEntity, {
     store,
@@ -494,9 +826,9 @@ export const accountsStack = sdk.kubernetesComposition({
       transactions: 'supported',
     },
   });
-  app.server(${JSON.stringify(serverName)}, {
-    namespace: ${JSON.stringify(namespace)},
-    serviceName: ${JSON.stringify(serviceName)},
+  app.server(${JSON.stringify(generatedServerName)}, {
+    namespace: ${JSON.stringify(options.namespace)},
+    serviceName: ${JSON.stringify(generatedServiceName)},
     service: { port: 80 },
   }, (server) => {
     server.post('/accounts', async (request) => {

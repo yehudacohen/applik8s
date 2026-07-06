@@ -460,32 +460,36 @@ function isOperationTarget<TStatus extends object>(value: unknown): value is Ope
 }
 
 function precomputedApplyOperations<TStatus extends object>(target: OperationTarget<TStatus>, options?: ApplyTargetOptions): Operation<TStatus>[] | undefined {
-  // typecast: TypeKro targets may carry pre-rendered Kubernetes resources for component-safe execution.
-  const resources = (target as { readonly __applik8sApplyResources?: unknown }).__applik8sApplyResources;
-  if (!Array.isArray(resources)) {
+  const operations = target.operationTargetArtifacts?.applyPlan.operations;
+  if (!operations) {
     return undefined;
   }
-  // typecast: precomputed target resources are validated by the target constructor and normalized to operation-plan entries here.
-  return resources.map((resource) => applyInput(resource as AnyKubernetesObject, options) as Operation<TStatus>);
+  return operations.map((operation) => operation.kind === 'apply'
+    // typecast: artifact apply operations are valid normalized operations for any handler status type.
+    ? applyInput(operation.resource, options) as Operation<TStatus>
+    : operation);
 }
 
 function precomputedDeleteOperations<TStatus extends object>(target: OperationTarget<TStatus>, options?: DeleteTargetOptions): Operation<TStatus>[] | undefined {
-  // typecast: TypeKro targets may carry pre-rendered object refs for component-safe deletion.
-  const refs = (target as { readonly __applik8sDeleteRefs?: unknown }).__applik8sDeleteRefs;
-  if (!Array.isArray(refs)) {
+  const operations = target.operationTargetArtifacts?.deletePlan.operations;
+  if (!operations) {
     return undefined;
   }
-  return refs.map((ref) => {
-    // typecast: precomputed target delete refs are object references emitted by the target constructor.
-    const operation: { kind: 'delete'; ref: ObjectRef; options?: DeleteOptions } = { kind: 'delete', ref: ref as ObjectRef };
+  return operations.map((operation) => {
+    if (operation.kind !== 'delete') {
+      return operation;
+    }
+    const next: { kind: 'delete'; ref: ObjectRef; options?: DeleteOptions } = { kind: 'delete', ref: operation.ref };
     if (options?.propagationPolicy || options?.gracePeriodSeconds !== undefined) {
-      operation.options = {
+      next.options = {
         ...(options.propagationPolicy ? { propagationPolicy: options.propagationPolicy } : {}),
         ...(options.gracePeriodSeconds !== undefined ? { gracePeriodSeconds: options.gracePeriodSeconds } : {}),
       };
+    } else if (operation.options) {
+      next.options = operation.options;
     }
-    // typecast: delete operations are valid normalized operations for any handler status type.
-    return operation as Operation<TStatus>;
+    // typecast: artifact delete operations are valid normalized operations for any handler status type.
+    return next as Operation<TStatus>;
   });
 }
 

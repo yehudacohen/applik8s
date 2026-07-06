@@ -1,4 +1,4 @@
-import type { ApplicationRuntimeModuleKind } from '@applik8s/core';
+import type { ApplicationRuntimeModuleExportContract, ApplicationRuntimeModuleInterfaceContract, ApplicationRuntimeModuleKind, ApplicationRuntimeModuleRef } from '@applik8s/core';
 
 export const generatedRuntimeModuleApiVersion = 'applik8s.runtime/v1alpha1';
 
@@ -20,6 +20,7 @@ export function generatedApplicationRuntimeModuleBundle(): Readonly<Record<strin
     'runtime/server.mjs': generatedApplicationRuntimeModuleSource('serverRuntime'),
     'runtime/model-store-postgres.mjs': generatedApplicationRuntimeModuleSource('modelRuntime'),
     'runtime/job-runner.mjs': generatedApplicationRuntimeModuleSource('jobRunnerRuntime'),
+    'runtime/kubernetes-client.mjs': generatedApplicationRuntimeModuleSource('kubernetesClient'),
     'runtime/diagnostics.mjs': generatedApplicationRuntimeModuleSource('diagnostics'),
     'runtime/providers/postgres.mjs': generatedApplicationRuntimeModuleSource('providerAdapter'),
   };
@@ -49,7 +50,8 @@ export function generatedApplicationRuntimeModuleSource(kind: ApplicationRuntime
     return generatedPostgresModelRuntimeModuleSource();
   }
   const entrypoint = runtimeModuleEntrypoint(kind);
-  return `export const runtimeModule = ${JSON.stringify({ apiVersion: generatedRuntimeModuleApiVersion, kind, entrypoint, exports: [entrypoint] })};\nexport function ${entrypoint}(options = {}) {\n  return { runtimeModule, options };\n}\n`;
+  const moduleExports = [{ name: entrypoint, kind: 'function', stability: 'stable' }] satisfies readonly ApplicationRuntimeModuleExportContract[];
+  return `export const runtimeModule = ${JSON.stringify({ apiVersion: generatedRuntimeModuleApiVersion, kind, entrypoint, exports: [entrypoint], interface: runtimeModuleInterface([], moduleExports, kind === 'diagnostics' ? 'notApplicable' : 'required') })};\nexport function ${entrypoint}(options = {}) {\n  return { runtimeModule, options };\n}\n`;
 }
 
 function generatedPostgresModelRuntimeModuleSource(): string {
@@ -58,7 +60,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import postgres from 'postgres';
 
-export const runtimeModule = ${JSON.stringify({ apiVersion: generatedRuntimeModuleApiVersion, kind: 'modelRuntime', entrypoint: 'createModelRuntime', exports: ['createModelRuntime', 'createPostgresModelClient'] })};
+export const runtimeModule = ${JSON.stringify({ apiVersion: generatedRuntimeModuleApiVersion, kind: 'modelRuntime', entrypoint: 'createModelRuntime', exports: ['createModelRuntime', 'createPostgresModelClient'], interface: runtimeModuleInterface([{ kind: 'providerAdapter', name: 'postgres' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createModelRuntime', kind: 'function', stability: 'stable' }, { name: 'createPostgresModelClient', kind: 'function', stability: 'stable' }], 'required') })};
 
 export function createModelRuntime(options = {}) {
   return { runtimeModule, options, createPostgresModelClient };
@@ -289,7 +291,7 @@ function generatedJobRunnerRuntimeModuleSource(): string {
   return `import { readFileSync } from 'node:fs';
 import { request } from 'node:https';
 
-export const runtimeModule = ${JSON.stringify({ apiVersion: generatedRuntimeModuleApiVersion, kind: 'jobRunnerRuntime', entrypoint: 'runGeneratedJobStatusReconciler', exports: ['createJobStatusUpdater', 'generatedJobStatusFromResource', 'runGeneratedJobStatusReconciler'] })};
+export const runtimeModule = ${JSON.stringify({ apiVersion: generatedRuntimeModuleApiVersion, kind: 'jobRunnerRuntime', entrypoint: 'runGeneratedJobStatusReconciler', exports: ['createJobStatusUpdater', 'generatedJobStatusFromResource', 'runGeneratedJobStatusReconciler'], interface: runtimeModuleInterface([{ kind: 'kubernetesClient', name: 'kubernetes' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createJobStatusUpdater', kind: 'function', stability: 'stable' }, { name: 'generatedJobStatusFromResource', kind: 'function', stability: 'stable' }, { name: 'runGeneratedJobStatusReconciler', kind: 'function', stability: 'stable' }], 'required') })};
 
 export function createJobStatusUpdater(options = {}) {
   const statusPath = options.statusPath || 'status.applik8s.jobs.unknown';
@@ -687,4 +689,15 @@ function runtimeModuleEntrypoint(kind: ApplicationRuntimeModuleKind): string {
     return 'createCounterFlusherRuntime';
   }
   return 'createRuntimeModule';
+}
+
+function runtimeModuleInterface(imports: readonly ApplicationRuntimeModuleRef[], exports: readonly ApplicationRuntimeModuleExportContract[], sourceMaps: ApplicationRuntimeModuleInterfaceContract['sourceMaps']): ApplicationRuntimeModuleInterfaceContract {
+  return {
+    apiVersion: generatedRuntimeModuleApiVersion,
+    imports,
+    exports,
+    diagnostics: 'structured',
+    sourceMaps,
+    failurePolicy: 'failClosed',
+  };
 }

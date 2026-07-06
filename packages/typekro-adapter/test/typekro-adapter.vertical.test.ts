@@ -531,6 +531,7 @@ describe('TypeKro adapter operation targets', () => {
     expect(target.contract).toMatchObject({
       id: 'operation-target.tenant-stack',
       operations: ['apply', 'delete'],
+      execution: { contexts: expect.arrayContaining(['handler', 'generatedServer', 'generatedJob', 'typeKro']), ordering: 'dependencyAware', runtimeValidation: 'beforeEffects', failurePolicy: 'failClosed' },
       lowering: { mode: 'typeKroResource', failurePolicy: 'failClosed' },
       dryRun: { supported: true, failurePolicy: 'failClosed' },
       ownership: { ownerReferences: 'optional', orphanPolicy: 'retain' },
@@ -538,9 +539,11 @@ describe('TypeKro adapter operation targets', () => {
     });
     expect(target.contract.lowering?.artifact).toMatchObject({ kind: 'typeKroResource', path: 'plans/operation-target.tenant-stack.apply.json' });
     expect(target.contract.dryRun.artifact).toMatchObject({ kind: 'typeKroResource', path: 'plans/operation-target.tenant-stack.dry-run.json' });
-    expect(target.__applik8sOperationTargetArtifacts.applyPlan.operations.map((operation) => operation.kind)).toEqual(['apply', 'apply']);
-    expect(target.__applik8sOperationTargetArtifacts.deletePlan.operations.map((operation) => operation.kind)).toEqual(['delete', 'delete']);
-    expect(target.__applik8sOperationTargetArtifacts.dryRunPlan?.operations.map((operation) => operation.kind)).toEqual(['apply', 'apply']);
+    expect(target.operationTargetArtifacts.applyPlan.operations.map((operation) => operation.kind)).toEqual(['apply', 'apply']);
+    expect(target.operationTargetArtifacts.deletePlan.operations.map((operation) => operation.kind)).toEqual(['delete', 'delete']);
+    expect(target.operationTargetArtifacts.dryRunPlan?.operations.map((operation) => operation.kind)).toEqual(['apply', 'apply']);
+    expect(Object.hasOwn(target, '__applik8sApplyResources')).toBe(false);
+    expect(Object.hasOwn(target, '__applik8sDeleteRefs')).toBe(false);
     const owner = { apiVersion: 'infra.applik8s.dev/v1alpha1', kind: 'Tenant', name: 'acme', uid: 'tenant-uid' };
     const apply = target.adapter.renderApply(target, { fieldManager: 'override-manager', force: true, owner });
     const deletion = target.adapter.renderDelete(target);
@@ -692,10 +695,10 @@ describe('TypeKro adapter operation targets', () => {
     const permissions = typeKro.permissions(target);
     const graphPermissions = typeKro.inferRbac(graph);
 
-    expect(Reflect.get(target, '__applik8sApplyResources')).toHaveLength(2);
-    expect(Reflect.get(target, '__applik8sDeleteRefs')).toEqual([
-      { apiVersion: 'apps/v1', kind: 'Deployment', name: 'tenant-app', namespace: 'tenants' },
-      { apiVersion: 'v1', kind: 'Service', name: 'tenant-app', namespace: 'tenants' },
+    expect(target.operationTargetArtifacts.applyPlan.operations).toHaveLength(2);
+    expect(target.operationTargetArtifacts.deletePlan.operations).toEqual([
+      { kind: 'delete', ref: { apiVersion: 'apps/v1', kind: 'Deployment', name: 'tenant-app', namespace: 'tenants' } },
+      { kind: 'delete', ref: { apiVersion: 'v1', kind: 'Service', name: 'tenant-app', namespace: 'tenants' } },
     ]);
     expect(graphPermissions.ok).toBe(true);
     if (!graphPermissions.ok) {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   applicationGraphNodeKinds,
@@ -7,20 +8,29 @@ import {
   normalizeApplicationGraph,
   resolveApplicationGraphProviderRequirement,
   serializeApplicationGraph,
+  validateApplicationCrdSchemaCompatibilityContract,
   validateApplicationDurableStatusOwnershipContract,
   validateApplicationGraph,
+  validateApplicationGraphCompatibilityPolicy,
   validateApplicationGraphProviderBindings,
   validateApplicationGraphStructure,
+  validateApplicationJobStatusLifecycleContract,
   validateApplicationMigrationDriftCheckContract,
+  validateApplicationModelStoreSemanticsContract,
   validateApplicationOperationTargetContract,
+  validateApplicationProviderInterfaceContract,
+  validateApplicationRuntimeModuleInterfaceContract,
   validateApplicationV03PressureTestContract,
   validateApplicationWatchScopeLoweringContract,
   type ApplicationGraph,
   type ApplicationDurableStatusOwnershipContract,
   type ApplicationGeneratedResourceContract,
   type ApplicationModelStoreGuaranteesContract,
+  type ApplicationModelStoreSemanticsContract,
   type ApplicationJobRuntimeContract,
+  type ApplicationJobStatusLifecycleContract,
   type ApplicationDiagnosticContract,
+  type ApplicationCrdSchemaCompatibilityContract,
   type ApplicationMigrationDriftCheckContract,
   type ApplicationMigrationContract,
   type ApplicationMigrationPlanContract,
@@ -29,9 +39,11 @@ import {
   type ApplicationPhaseStatus,
   type ApplicationProviderBindingContract,
   type ApplicationProviderInterfaceKind,
+  type ApplicationProviderInterfaceContract,
   type ApplicationProviderNode,
   type ApplicationProviderRequirement,
   type ApplicationRuntimeModuleContract,
+  type ApplicationRuntimeModuleInterfaceContract,
   type ApplicationScheduleContract,
   type ApplicationV03PressureTestContract,
   type ApplicationWatchScopeLoweringContract,
@@ -151,7 +163,7 @@ describe('application graph substrate contract', () => {
   it('records ModelStore guarantees on model schema contracts', () => {
     const graph = guestBookSubstrateGraph();
     const model = graph.nodes.find((node) => node.id === 'model.entry' && node.kind === 'model');
-    if (!model || model.kind !== 'model') {
+    if (model?.kind !== 'model') {
       throw new Error('test fixture missing model.entry');
     }
     const guarantees: ApplicationModelStoreGuaranteesContract = model.schema.guarantees ?? {
@@ -171,6 +183,7 @@ describe('application graph substrate contract', () => {
       transactions: 'supported',
       retention: 'retain',
       migrationOwnership: 'generatedJob',
+      semantics: modelStoreSemantics(),
     });
   });
 
@@ -322,11 +335,11 @@ describe('application graph substrate contract', () => {
 
   it('defines generated runtime module boundaries and diagnostic taxonomy before runtime extraction', () => {
     const modules: readonly ApplicationRuntimeModuleContract[] = [
-      { apiVersion: 'applik8s.runtime/v1alpha1', kind: 'serverRuntime', name: 'web', artifact: { kind: 'runtimeModule', path: 'runtime/server/web.mjs' }, entrypoint: 'createServerRuntime', exports: [{ name: 'createServerRuntime', kind: 'function', stability: 'stable' }], imports: [{ kind: 'modelRuntime', name: 'postgres-models' }, { kind: 'diagnostics', name: 'diagnostics' }] },
-      { apiVersion: 'applik8s.runtime/v1alpha1', kind: 'modelRuntime', name: 'postgres-models', artifact: { kind: 'runtimeModule', path: 'runtime/model/postgres.mjs' }, entrypoint: 'createModelRuntime', exports: [{ name: 'createModelRuntime', kind: 'function', stability: 'stable' }], imports: [{ kind: 'providerAdapter', name: 'postgres' }, { kind: 'diagnostics', name: 'diagnostics' }] },
-      { apiVersion: 'applik8s.runtime/v1alpha1', kind: 'jobRunnerRuntime', name: 'migration-job', artifact: { kind: 'runtimeModule', path: 'runtime/jobs/migration.mjs' }, entrypoint: 'createJobStatusUpdater', exports: [{ name: 'createJobStatusUpdater', kind: 'function', stability: 'stable' }], imports: [{ kind: 'kubernetesClient', name: 'kubernetes' }, { kind: 'diagnostics', name: 'diagnostics' }] },
-      { apiVersion: 'applik8s.runtime/v1alpha1', kind: 'diagnostics', name: 'diagnostics', artifact: { kind: 'runtimeModule', path: 'runtime/diagnostics.mjs' }, exports: [{ name: 'diagnosticEvent', kind: 'function', stability: 'stable' }] },
-      { apiVersion: 'applik8s.runtime/v1alpha1', kind: 'providerAdapter', name: 'postgres', artifact: { kind: 'runtimeModule', path: 'runtime/providers/postgres.mjs' }, exports: [{ name: 'createPostgresProvider', kind: 'function', stability: 'stable' }] },
+      { apiVersion: 'applik8s.runtime/v1alpha1', kind: 'serverRuntime', name: 'web', artifact: { kind: 'runtimeModule', path: 'runtime/server/web.mjs' }, interface: runtimeModuleInterface([{ kind: 'modelRuntime', name: 'postgres-models' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createServerRuntime', kind: 'function', stability: 'stable' }], 'required'), entrypoint: 'createServerRuntime', exports: [{ name: 'createServerRuntime', kind: 'function', stability: 'stable' }], imports: [{ kind: 'modelRuntime', name: 'postgres-models' }, { kind: 'diagnostics', name: 'diagnostics' }] },
+      { apiVersion: 'applik8s.runtime/v1alpha1', kind: 'modelRuntime', name: 'postgres-models', artifact: { kind: 'runtimeModule', path: 'runtime/model/postgres.mjs' }, interface: runtimeModuleInterface([{ kind: 'providerAdapter', name: 'postgres' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createModelRuntime', kind: 'function', stability: 'stable' }], 'required'), entrypoint: 'createModelRuntime', exports: [{ name: 'createModelRuntime', kind: 'function', stability: 'stable' }], imports: [{ kind: 'providerAdapter', name: 'postgres' }, { kind: 'diagnostics', name: 'diagnostics' }] },
+      { apiVersion: 'applik8s.runtime/v1alpha1', kind: 'jobRunnerRuntime', name: 'migration-job', artifact: { kind: 'runtimeModule', path: 'runtime/jobs/migration.mjs' }, interface: runtimeModuleInterface([{ kind: 'kubernetesClient', name: 'kubernetes' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createJobStatusUpdater', kind: 'function', stability: 'stable' }], 'required'), entrypoint: 'createJobStatusUpdater', exports: [{ name: 'createJobStatusUpdater', kind: 'function', stability: 'stable' }], imports: [{ kind: 'kubernetesClient', name: 'kubernetes' }, { kind: 'diagnostics', name: 'diagnostics' }] },
+      { apiVersion: 'applik8s.runtime/v1alpha1', kind: 'diagnostics', name: 'diagnostics', artifact: { kind: 'runtimeModule', path: 'runtime/diagnostics.mjs' }, interface: runtimeModuleInterface([], [{ name: 'diagnosticEvent', kind: 'function', stability: 'stable' }], 'notApplicable'), exports: [{ name: 'diagnosticEvent', kind: 'function', stability: 'stable' }] },
+      { apiVersion: 'applik8s.runtime/v1alpha1', kind: 'providerAdapter', name: 'postgres', artifact: { kind: 'runtimeModule', path: 'runtime/providers/postgres.mjs' }, interface: runtimeModuleInterface([{ kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createPostgresProvider', kind: 'function', stability: 'stable' }], 'required'), exports: [{ name: 'createPostgresProvider', kind: 'function', stability: 'stable' }] },
     ];
     const duplicateKey: ApplicationDiagnosticContract = {
       event: 'applik8s-model-duplicate-key',
@@ -342,7 +355,51 @@ describe('application graph substrate contract', () => {
     expect(modules[0]?.imports).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'modelRuntime' })]));
     expect(modules[2]?.entrypoint).toBe('createJobStatusUpdater');
     expect(modules[2]?.exports).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'createJobStatusUpdater', stability: 'stable' })]));
+    expect(modules.flatMap((module) => module.interface ? validateApplicationRuntimeModuleInterfaceContract(module.interface) : [])).toEqual([]);
+    expect(validateApplicationRuntimeModuleInterfaceContract({ apiVersion: 'applik8s.runtime/v1alpha1', imports: [], exports: [], diagnostics: 'structured', sourceMaps: 'required', failurePolicy: 'failClosed' })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Application runtime module interface must declare at least one export.' }),
+    ]));
     expect(duplicateKey).toMatchObject({ event: 'applik8s-model-duplicate-key', retryable: false });
+  });
+
+  it('freezes ModelStore semantic contracts for generated and script runtimes before broad implementation', () => {
+    const semantics = modelStoreSemantics();
+
+    expect(semantics).toMatchObject({ generatedRuntimeParity: 'required', scriptRuntimeParity: 'required' });
+    expect(semantics.query).toEqual({ defaultLimit: 50, maxLimit: 500, cursor: 'offset', unsupportedFilters: 'failClosed' });
+    expect(semantics.indexes).toMatchObject({ partitionRequired: true, uniqueEnforcedBy: 'databaseConstraint' });
+    expect(semantics.constraints.duplicateKeyDiagnostic).toBe('applik8s-model-duplicate-key');
+    expect(semantics.migrationHistory.tableName).toBe('applik8s_model_migrations');
+    expect(semantics.retention).toEqual({ mode: 'retain', deletionPolicy: 'explicitOnly' });
+    expect(validateApplicationModelStoreSemanticsContract(semantics)).toEqual([]);
+    expect(validateApplicationModelStoreSemanticsContract({ ...semantics, query: { ...semantics.query, defaultLimit: 0, maxLimit: 0 }, indexes: { ...semantics.indexes, partitionRequired: false }, constraints: { ...semantics.constraints, duplicateKeyDiagnostic: 'applik8s-model-migration-missing' } })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Application ModelStore query semantics require maxLimit >= defaultLimit >= 1.' }),
+      expect.objectContaining({ message: 'Application ModelStore index semantics must require explicit partitions for v0.3.' }),
+      expect.objectContaining({ message: 'Application ModelStore duplicate constraint semantics must use applik8s-model-duplicate-key diagnostics.' }),
+    ]));
+  });
+
+  it('labels provider interfaces as implemented or fail-closed reserved for the v0.3 boundary', () => {
+    const contracts: readonly ApplicationProviderInterfaceContract[] = applicationProviderInterfaceKinds.map((providerInterface) => providerInterface === 'ModelStore'
+      ? { interface: providerInterface, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] }
+      : { interface: providerInterface, surface: 'stablePublicApi', support: 'failClosedReserved', diagnostics: [{ event: 'applik8s-provider-requirement-missing', severity: 'error', subject: { nodeId: `provider.${providerInterface}` }, reason: 'ProviderInterfaceReserved', message: `${providerInterface} is a stable v0.3 provider interface but has no generated adapter in the current slice.`, retryable: false }] });
+
+    expect(contracts.map((contract) => `${contract.interface}:${contract.support}`)).toEqual([
+      'ModelStore:implemented',
+      'IndexStore:failClosedReserved',
+      'CounterStore:failClosedReserved',
+      'EventSource:failClosedReserved',
+      'Secret:failClosedReserved',
+      'Queue:failClosedReserved',
+      'ObjectStorage:failClosedReserved',
+      'HttpExposure:failClosedReserved',
+      'CredentialStore:failClosedReserved',
+    ]);
+    expect(contracts.flatMap(validateApplicationProviderInterfaceContract)).toEqual([]);
+    expect(validateApplicationProviderInterfaceContract({ interface: 'Queue', surface: 'stablePublicApi', support: 'failClosedReserved', diagnostics: [] })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Application provider interface Queue is stable but fail-closed reserved without diagnostics.' }),
+      expect.objectContaining({ message: 'Application provider interface Queue fail-closed reservation must use provider requirement diagnostics.' }),
+    ]));
   });
 
   it('defines provider requirement contracts for every v0.3 capability interface', () => {
@@ -390,6 +447,7 @@ describe('application graph substrate contract', () => {
         materialization: 'kubernetes-cronjob',
         idempotency: { keySource: 'metadata.generation', conflictPolicy: 'skipCompleted' },
         phaseStatus: { resource: { apiVersion: 'platform.applik8s.dev/v1alpha1', kind: 'AccountsPlatform' }, statusPath: 'status.applik8s.jobs.compactAccountsHourly' },
+        statusLifecycle: jobStatusLifecycle('job.compact-accounts-hourly', 'accounts-platform-status-reconciler-status', 'latestRunAndHistory'),
         permissions: [
           { apiGroups: ['batch'], resources: ['cronjobs'], verbs: ['create', 'get', 'list', 'watch', 'patch'] },
           { apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: ['accounts-db-app'] },
@@ -441,6 +499,9 @@ describe('application graph substrate contract', () => {
     expect(scheduledJob.schedule).toMatchObject({ cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
     expect(scheduledJob.retry).toMatchObject({ mode: 'boundedExponentialBackoff', maxAttempts: 4 });
     expect(scheduledJob.runtime.phaseStatus.statusPath).toBe('status.applik8s.jobs.compactAccountsHourly');
+    expect(scheduledJob.runtime.statusLifecycle?.multiJob).toBe('appLevelReconciler');
+    expect(scheduledJob.runtime.statusLifecycle?.cronJob).toBe('latestRunAndHistory');
+    expect(scheduledJob.runtime.statusLifecycle ? validateApplicationJobStatusLifecycleContract(scheduledJob.runtime.statusLifecycle) : []).toEqual([]);
     expect(scheduledJob.runtime.permissions).toEqual(expect.arrayContaining([expect.objectContaining({ resources: ['cronjobs'] })]));
     expect(scheduledJob.generatedResources).toEqual(expect.arrayContaining([expect.objectContaining({ role: 'jobDiagnostics' })]));
     expect(statusContract.statusShape.terminalFailure?.partialEffects?.[0]?.status).toBe('visible');
@@ -485,11 +546,77 @@ describe('application graph substrate contract', () => {
     ]));
   });
 
+  it('rejects stable public API compatibility policy drift', () => {
+    const graph = guestBookSubstrateGraph();
+    const completeGraph: ApplicationGraph = {
+      ...graph,
+      compatibility: {
+        ...graph.compatibility,
+        labels: [
+          ...graph.compatibility.labels,
+          { name: 'app', surface: 'stablePublicApi', since: 'v0.3', rationale: 'Application authoring context implementation.' },
+          { name: 'app.crd', surface: 'stablePublicApi', since: 'v0.3', rationale: 'CRD materialization implementation.' },
+          { name: 'app.job', surface: 'stablePublicApi', since: 'v0.3', rationale: 'Generated Kubernetes Job implementation.' },
+          { name: 'app.schedule', surface: 'stablePublicApi', since: 'v0.3', rationale: 'Generated Kubernetes CronJob implementation.' },
+          { name: 'app.defaults', surface: 'stablePublicApi', since: 'v0.3', rationale: 'Provider defaults fail-closed when unsupported provider interfaces are requested.' },
+          { name: 'app.provide', surface: 'stablePublicApi', since: 'v0.3', rationale: 'Provider binding fails closed when unsupported provider interfaces are requested.' },
+          { name: 'provider.ModelStore', surface: 'stablePublicApi', since: 'v0.3', rationale: 'ModelStore provider interface implemented by the Postgres provider slice.' },
+        ],
+      },
+    };
+    expect(validateApplicationGraphCompatibilityPolicy(completeGraph)).toEqual([]);
+
+    const unlabeled: ApplicationGraph = { ...completeGraph, compatibility: { ...completeGraph.compatibility, stablePublicApis: [...completeGraph.compatibility.stablePublicApis, 'provider.Secret'] } };
+    expect(validateApplicationGraphCompatibilityPolicy(unlabeled)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Application graph stable public API provider.Secret must have a stablePublicApi compatibility label.' }),
+    ]));
+
+    const missingFailClosed: ApplicationGraph = {
+      ...completeGraph,
+      compatibility: {
+        ...completeGraph.compatibility,
+        stablePublicApis: [...completeGraph.compatibility.stablePublicApis, 'provider.Queue'],
+        labels: [...completeGraph.compatibility.labels, { name: 'provider.Queue', surface: 'stablePublicApi', since: 'v0.3', rationale: 'Reserved provider API not implemented yet.' }],
+      },
+    };
+    expect(validateApplicationGraphCompatibilityPolicy(missingFailClosed)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Application graph stable public API provider.Queue describes missing implementation without documented fail-closed behavior.' }),
+    ]));
+  });
+
+  it('freezes v0.3 CRD schema compatibility fixtures without conversion webhook promises', () => {
+    const compatibility: ApplicationCrdSchemaCompatibilityContract = {
+      resource: { apiVersion: 'platform.applik8s.dev/v1alpha1', kind: 'Tenant', plural: 'tenants', scope: 'Namespaced' },
+      currentVersion: 'v1alpha1',
+      nextVersion: 'v1alpha1',
+      policy: {
+        mode: 'additiveOnly',
+        conversionWebhook: 'postV3Required',
+        storedVersionMigration: 'postV3Required',
+        unknownFieldPolicy: 'rejectNewUnknownFields',
+        failurePolicy: 'failClosed',
+      },
+      allowedChanges: ['addOptionalField', 'widenType', 'addEnumValue'],
+      rejectedChanges: ['addRequiredField', 'removeField', 'renameField', 'narrowType', 'removeEnumValue'],
+      postV3Requirements: ['conversionWebhook', 'storedVersionMigration', 'multiVersionStorage'],
+      diagnostics: [{ event: 'applik8s-crd-schema-incompatible', severity: 'error', subject: { apiVersion: 'platform.applik8s.dev/v1alpha1', kind: 'Tenant' }, reason: 'CrdSchemaCompatibilityViolation', message: 'v0.3 domain CRD schema changes must be additive unless an explicit compatibility authority is declared.', retryable: false }],
+    };
+
+    expect(validateApplicationCrdSchemaCompatibilityContract(compatibility)).toEqual([]);
+    expect(validateApplicationCrdSchemaCompatibilityContract({ ...compatibility, allowedChanges: [...compatibility.allowedChanges, 'removeField'], diagnostics: [], postV3Requirements: ['multiVersionStorage'] })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Application CRD schema compatibility for Tenant additiveOnly policy must not allow removeField.' }),
+      expect.objectContaining({ message: 'Application CRD schema compatibility for Tenant defers conversion webhooks but does not list conversionWebhook as a post-v0.3 requirement.' }),
+      expect.objectContaining({ message: 'Application CRD schema compatibility for Tenant defers stored-version migration but does not list storedVersionMigration as a post-v0.3 requirement.' }),
+      expect.objectContaining({ message: 'Application CRD schema compatibility for Tenant fails closed but has no diagnostic.' }),
+    ]));
+  });
+
   it('freezes operation-target contracts for apply/delete planning before workload movement depends on them', () => {
     const target: ApplicationOperationTargetContract = {
       id: 'operation-target.tenant-stack',
       target: { nodeId: 'typeKroResource.tenant-stack' },
       operations: ['apply', 'delete', 'status'],
+      execution: { contexts: ['handler', 'generatedJob', 'generatedServer', 'typeKro'], ordering: 'dependencyAware', runtimeValidation: 'beforeEffects', failurePolicy: 'failClosed' },
       lowering: { mode: 'typeKroResource', artifact: { kind: 'typeKroResource', path: 'plans/tenant-stack.apply.json' }, failurePolicy: 'failClosed' },
       dryRun: { supported: true, artifact: { kind: 'typeKroResource', path: 'plans/tenant-stack.dry-run.json' }, failurePolicy: 'failClosed' },
       ownership: { ownerReferences: 'required', orphanPolicy: 'retain' },
@@ -505,10 +632,17 @@ describe('application graph substrate contract', () => {
     expect(target.ownership.ownerReferences).toBe('required');
     expect(target.finalizers.cleanupOperation).toBe('deleteTarget');
     expect(target.permissions).toEqual(expect.arrayContaining([expect.objectContaining({ verbs: expect.arrayContaining(['delete']) })]));
+    expect(target.execution).toEqual(expect.objectContaining({ contexts: expect.arrayContaining(['generatedJob', 'generatedServer']), runtimeValidation: 'beforeEffects' }));
+    expect(target.lowering?.artifact?.path).toBe('plans/tenant-stack.apply.json');
+    expect(target.dryRun.artifact?.path).toBe('plans/tenant-stack.dry-run.json');
+    expect(target.permissions.flatMap((rule) => rule.verbs)).toEqual(expect.arrayContaining(['create', 'patch', 'delete']));
     expect(validateApplicationOperationTargetContract(target)).toEqual([]);
-    expect(validateApplicationOperationTargetContract({ ...target, operations: [], finalizers: { required: true, cleanupOperation: 'deleteTarget' } })).toEqual(expect.arrayContaining([
+    expect(validateApplicationOperationTargetContract({ ...target, operations: [], permissions: [], diagnostics: [], dryRun: { supported: true, failurePolicy: 'failClosed' }, ownership: { ownerReferences: 'required', orphanPolicy: 'delete' }, finalizers: { required: true, cleanupOperation: 'deleteTarget' } })).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: 'Application operation target operation-target.tenant-stack must declare at least one operation.' }),
+      expect.objectContaining({ message: 'Application operation target operation-target.tenant-stack supports dry-run but does not declare a dry-run artifact.' }),
+      expect.objectContaining({ message: 'Application operation target operation-target.tenant-stack cannot require ownerReferences while deleting orphans implicitly.' }),
       expect.objectContaining({ message: 'Application operation target operation-target.tenant-stack requires a finalizer but does not name one.' }),
+      expect.objectContaining({ message: 'Application operation target operation-target.tenant-stack must declare permissions or a fail-closed diagnostic.' }),
     ]));
   });
 
@@ -562,25 +696,33 @@ describe('application graph substrate contract', () => {
     ]));
   });
 
-  it('defines the v0.3 pressure-test contract before building the pressure-test app', () => {
+  it('defines the v0.3 pressure-test contract from a concrete app graph fixture', () => {
+    const graph = guestBookSubstrateGraph();
+    const graphDigest = `sha256:${createHash('sha256').update(serializeApplicationGraph(graph)).digest('hex')}`;
+    const graphNodeKinds = [...new Set(graph.nodes.map((node) => node.kind))];
     const pressureTest: ApplicationV03PressureTestContract = {
       name: 'tenant-platform-pressure-test',
-      graph: { apiVersion: 'applik8s.appGraph/v1alpha1', path: 'application-graph.json', digest: 'sha256:tenant-platform' },
-      requiredNodes: ['crd', 'model', 'server', 'job', 'provider', 'permission', 'typeKroResource'],
+      graph: { apiVersion: graph.apiVersion, path: 'application-graph.json', digest: graphDigest },
+      requiredNodes: graphNodeKinds,
       requiredProviders: ['ModelStore', 'IndexStore', 'Secret', 'HttpExposure', 'CredentialStore'],
       requiredRuntimeModules: ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'],
-      requiredOperationTargets: [{ id: 'operation-target.tenant-stack', target: { nodeId: 'typeKroResource.tenant-stack' }, operations: ['apply', 'delete'], lowering: { mode: 'typeKroResource', artifact: { kind: 'typeKroResource', path: 'plans/tenant-stack.apply.json' }, failurePolicy: 'failClosed' }, dryRun: { supported: true, artifact: { kind: 'typeKroResource', path: 'plans/tenant-stack.dry-run.json' }, failurePolicy: 'failClosed' }, ownership: { ownerReferences: 'required', orphanPolicy: 'retain' }, finalizers: { required: true, finalizer: 'platform.applik8s.dev/tenant-stack', cleanupOperation: 'deleteTarget' }, permissions: [{ apiGroups: ['platform.applik8s.dev'], resources: ['tenantstacks'], verbs: ['create', 'patch', 'delete'] }], diagnostics: [] }],
+      requiredOperationTargets: [{ id: 'operation-target.tenant-stack', target: { nodeId: 'typeKroResource.tenant-stack' }, operations: ['apply', 'delete'], execution: { contexts: ['handler', 'generatedJob', 'generatedServer', 'typeKro'], ordering: 'dependencyAware', runtimeValidation: 'beforeEffects', failurePolicy: 'failClosed' }, lowering: { mode: 'typeKroResource', artifact: { kind: 'typeKroResource', path: 'plans/tenant-stack.apply.json' }, failurePolicy: 'failClosed' }, dryRun: { supported: true, artifact: { kind: 'typeKroResource', path: 'plans/tenant-stack.dry-run.json' }, failurePolicy: 'failClosed' }, ownership: { ownerReferences: 'required', orphanPolicy: 'retain' }, finalizers: { required: true, finalizer: 'platform.applik8s.dev/tenant-stack', cleanupOperation: 'deleteTarget' }, permissions: [{ apiGroups: ['platform.applik8s.dev'], resources: ['tenantstacks'], verbs: ['create', 'patch', 'delete'] }], diagnostics: [] }],
       requiredWatchScopes: [{ scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', labels: { 'tenant.applik8s.dev/name': 'tenant-a' } }, lowering: 'labelSelector', runtime: { mode: 'sharedInformer', resyncPolicy: 'bounded', cancellation: 'onScopeRemoved' }, permissions: [{ apiGroups: ['apps'], resources: ['deployments'], verbs: ['list', 'watch'] }], failurePolicy: 'failClosed', diagnostics: [] }],
       requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'ModelStore', nodeId: 'provider.model-store' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'accounts-db' }, expectedRevision: 'sha256:accounts-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Schema drift blocks migration.', retryable: false }] }],
+      requiredModelStoreSemantics: [modelStoreSemantics()],
+      requiredRuntimeModuleInterfaces: [runtimeModuleInterface([{ kind: 'modelRuntime', name: 'postgres-models' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createServerRuntime', kind: 'function', stability: 'stable' }], 'required')],
+      requiredProviderInterfaces: [{ interface: 'ModelStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] }, { interface: 'IndexStore', surface: 'stablePublicApi', support: 'failClosedReserved', diagnostics: [{ event: 'applik8s-provider-requirement-missing', severity: 'error', subject: { nodeId: 'provider.IndexStore' }, reason: 'ProviderInterfaceReserved', message: 'IndexStore is stable but fail-closed until the generated adapter lands.', retryable: false }] }],
       requiredStatusOwnership: [{ primary: 'applicationStatus', fallback: 'generatedStatusConfigMap', appStatusSchema: 'bestEffort', durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'tenant-platform-pressure-test-status-reconciler-status' }, conflictPolicy: 'mergePatch', diagnostics: [{ event: 'applik8s-status-schema-pruned', severity: 'warning', subject: { nodeId: 'job.accounts-model-migration' }, reason: 'ApplicationStatusSchemaMayPruneCustomFields', message: 'Durable job status falls back to ConfigMap when app status pruning applies.', retryable: false }] }],
       liveValidation: { contextEnv: 'APPLIK8S_E2E_CONTEXT', requiredResources: [{ apiVersion: 'batch/v1', kind: 'Job', name: 'accounts-model-migration' }], requiredAssertions: ['migration job completes', 'server becomes ready', 'duplicate key returns 409', 'job status is patched'] },
     };
 
-    expect(pressureTest.requiredNodes).toEqual(expect.arrayContaining(['model', 'job', 'typeKroResource']));
+    expect(pressureTest.graph.digest).toBe(graphDigest);
+    expect(pressureTest.requiredNodes).toEqual(expect.arrayContaining(['model', 'server', 'job', 'provider']));
     expect(pressureTest.requiredRuntimeModules).toContain('jobRunnerRuntime');
     expect(pressureTest.liveValidation?.requiredAssertions).toContain('job status is patched');
     expect(validateApplicationV03PressureTestContract(pressureTest)).toEqual([]);
-    expect(validateApplicationV03PressureTestContract({ ...pressureTest, requiredRuntimeModules: ['serverRuntime'], requiredProviders: ['ModelStore'] })).toEqual(expect.arrayContaining([
+    expect(validateApplicationV03PressureTestContract({ ...pressureTest, graph: { ...pressureTest.graph, digest: '' }, requiredRuntimeModules: ['serverRuntime'], requiredProviders: ['ModelStore'] })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: 'Application v0.3 pressure test tenant-platform-pressure-test must reference an emitted application graph artifact path and digest.' }),
       expect.objectContaining({ message: 'Application v0.3 pressure test tenant-platform-pressure-test must require CredentialStore.' }),
       expect.objectContaining({ message: 'Application v0.3 pressure test tenant-platform-pressure-test must require modelRuntime.' }),
     ]));
@@ -940,6 +1082,47 @@ function diagnostic(event: ApplicationDiagnosticContract['event'], nodeId: strin
   };
 }
 
+function modelStoreSemantics(): ApplicationModelStoreSemanticsContract {
+  return {
+    generatedRuntimeParity: 'required',
+    scriptRuntimeParity: 'required',
+    query: { defaultLimit: 50, maxLimit: 500, cursor: 'offset', unsupportedFilters: 'failClosed' },
+    indexes: { partitionRequired: true, uniqueEnforcedBy: 'databaseConstraint', unsupportedOrderBy: 'failClosed' },
+    constraints: { duplicateKeyDiagnostic: 'applik8s-model-duplicate-key', enforcement: 'databaseConstraint' },
+    migrationHistory: { tableName: 'applik8s_model_migrations', revisionColumn: 'revision', appliedAtColumn: 'applied_at' },
+    retention: { mode: 'retain', deletionPolicy: 'explicitOnly' },
+  };
+}
+
+function runtimeModuleInterface(imports: ApplicationRuntimeModuleContract['imports'], exports: NonNullable<ApplicationRuntimeModuleContract['exports']>, sourceMaps: ApplicationRuntimeModuleInterfaceContract['sourceMaps']): ApplicationRuntimeModuleInterfaceContract {
+  return {
+    apiVersion: 'applik8s.runtime/v1alpha1',
+    imports: imports ?? [],
+    exports,
+    diagnostics: 'structured',
+    sourceMaps,
+    failurePolicy: 'failClosed',
+  };
+}
+
+function jobStatusLifecycle(nodeId: string, configMapName: string, cronJob: ApplicationJobStatusLifecycleContract['cronJob']): ApplicationJobStatusLifecycleContract {
+  return {
+    ownership: {
+      primary: 'applicationStatus',
+      fallback: 'generatedStatusConfigMap',
+      appStatusSchema: 'bestEffort',
+      durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: configMapName },
+      conflictPolicy: 'mergePatch',
+      diagnostics: [{ event: 'applik8s-status-schema-pruned', severity: 'warning', subject: { nodeId }, reason: 'ApplicationStatusSchemaMayPruneCustomFields', message: 'Generated job status falls back to ConfigMap when app status pruning applies.', retryable: false }],
+    },
+    conflictPolicy: 'mergePatch',
+    historyRetention: { maxEntries: 20, terminalRetention: 'retain' },
+    multiJob: 'appLevelReconciler',
+    cronJob,
+    fallback: 'generatedStatusConfigMap',
+  };
+}
+
 function guestBookSubstrateGraph(): ApplicationGraph {
   return {
     apiVersion: 'applik8s.appGraph/v1alpha1',
@@ -953,6 +1136,7 @@ function guestBookSubstrateGraph(): ApplicationGraph {
         stability: 'stable',
         interface: 'ModelStore',
         implementation: 'postgres',
+        contract: { interface: 'ModelStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
         config: { database: 'guestbook' },
       },
       {
@@ -976,6 +1160,7 @@ function guestBookSubstrateGraph(): ApplicationGraph {
             transactions: 'supported',
             retention: 'retain',
             migrationOwnership: 'generatedJob',
+            semantics: modelStoreSemantics(),
           },
         },
         materialization: {
@@ -1003,6 +1188,7 @@ function guestBookSubstrateGraph(): ApplicationGraph {
           materialization: 'kubernetes-job',
           idempotency: { keySource: 'metadata.generation', conflictPolicy: 'skipCompleted' },
           phaseStatus: { resource: { apiVersion: 'guestbook.applik8s.dev/v1alpha1', kind: 'GuestBook' }, statusPath: 'status.jobs.entryMigration' },
+          statusLifecycle: jobStatusLifecycle('job.entry-migration', 'guestbook-status-reconciler-status', 'unsupported'),
           permissions: [{ apiGroups: ['batch'], resources: ['jobs'], verbs: ['create', 'get', 'list', 'watch'] }],
           metadataLinks: [
             { graphNode: { nodeId: 'job.entry-migration' }, artifact: { kind: 'jobDiagnostics', path: 'jobs/entry-migration/diagnostics.json' }, purpose: 'jobDiagnostics' },

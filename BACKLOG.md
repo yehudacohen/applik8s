@@ -161,10 +161,12 @@ Current prep status:
 - Done: add v0.3 runtime module ABI metadata and generated durable status-updater interfaces, plus emitted status-runtime ConfigMaps for public jobs and model migration jobs.
 - Done: add the first executing generated-job status reconciler slice: consolidated app-level status-runtime Deployments, ServiceAccounts, RBAC, Kubernetes Job/CronJob observation, durable status calculation, KRO instance discovery, application status patch attempts, and durable generated status ConfigMap fallback.
 - Done: prepare v0.3 freeze-interface tests for operation-target lowering, watch-scope lowering, migration drift checks, and the integrated pressure-test gate before broad implementation continues.
+- Done: add v0.3 cleanup contract tests for concrete pressure-test graph/artifact anchoring, operation-target artifact-only lowering, compatibility-policy labels, CRD schema compatibility fixtures, Kubernetes-client runtime module separation, and fail-closed broad-watch rejection.
+- Done: add `test:modelstore:script-runtime:live` as the opt-in live Postgres script-runtime ModelStore validation command. Set `APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL` to run the live CRUD/diagnostic assertions.
 - Done: live TypeKro/CNPG/Postgres ModelStore E2E now validates the consolidated status reconciler through the generated durable status ConfigMap. Current KRO-generated app CRDs prune custom `status.applik8s` fields, so the reconciler keeps app `/status` patching best-effort and persists durable job status in the generated ConfigMap until the app CRD status schema path is solved upstream or in compiler lowering.
 - Remaining: durable generated job status is live-confirmed for the Postgres migration path, but still needs production hardening around status schema ownership, conflict behavior, history retention, metrics/logging, and broader multi-job/cronjob scenarios before it is generalized.
-- Remaining: operation-target, watch-scope, migration-drift, and pressure-test contracts are now shaped and tested, but their runtime/compiler implementations are still pending.
-- Remaining: script-execution `ModelStore` runtime remains absent; ordinary direct model CRUD still fails closed.
+- Remaining: operation-target, watch-scope, migration-drift, and pressure-test contracts are now shaped and tested, but their runtime/compiler implementations still need broader end-to-end closure.
+- Remaining: script-execution `ModelStore` runtime now has a real Postgres client path and fail-closed credential diagnostics, but it still needs full live validation, parity checks against generated runtime clients, transaction/query/index hardening, and release-policy documentation before v0.3.
 - Remaining: generated runtime implementation still needs deeper modularization beyond the first runtime-module source extraction before the v0.3 excellence bar is met.
 
 v0.3 should not require:

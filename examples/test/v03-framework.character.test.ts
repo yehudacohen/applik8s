@@ -1,4 +1,5 @@
-import { validateApplicationV03PressureTestContract } from '@applik8s/core';
+import { createHash } from 'node:crypto';
+import { serializeApplicationGraph, validateApplicationV03PressureTestContract } from '@applik8s/core';
 import { applicationGraphFor, ModelStore, sdk, type ApplicationModelBinding, type ApplicationV03PressureTestContract } from '@applik8s/applik8s';
 import { describe, expect, it } from 'vitest';
 import { entity, type } from '../../packages/applik8s/src/dsl.js';
@@ -71,17 +72,33 @@ describe('v0.3 infrastructure-from-code product story', () => {
     ]));
   });
 
-  it.fails('executes model CRUD in ordinary script execution through a script runtime client', async () => {
+  it('fails closed for ordinary script model CRUD when no Postgres credentials are configured', async () => {
     const { accounts } = accountsModelApp();
     if (!accounts) {
       throw new Error('expected Account model binding');
     }
 
-    const created = await accounts.create({ spec: { email: 'ada@example.com', displayName: 'Ada' } });
-    await expect(accounts.get({ id: created.id })).resolves.toMatchObject({ spec: { email: 'ada@example.com' } });
-    await expect(accounts.query({ where: { email: 'ada@example.com' } })).resolves.toMatchObject({ items: [expect.objectContaining({ id: created.id })] });
-    await expect(accounts.patch({ id: created.id }, { status: { phase: 'Active' } })).resolves.toMatchObject({ status: { phase: 'Active' } });
-    await expect(accounts.index('accounts-by-email', { partitionBy: 'email', unique: true }).query('ada@example.com')).resolves.toMatchObject({ items: [expect.objectContaining({ id: created.id })] });
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    const previousModelUrl = process.env.APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    delete process.env.APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL;
+    try {
+      await expect(accounts.create({ spec: { email: 'ada@example.com', displayName: 'Ada' } })).rejects.toMatchObject({
+        message: expect.stringContaining('applik8s-modelstore-missing-credentials'),
+        diagnostic: expect.objectContaining({ event: 'applik8s-modelstore-missing-credentials', model: 'Account', env: 'APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL' }),
+      });
+    } finally {
+      if (previousDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = previousDatabaseUrl;
+      }
+      if (previousModelUrl === undefined) {
+        delete process.env.APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL;
+      } else {
+        process.env.APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL = previousModelUrl;
+      }
+    }
   });
 
   it('emits migration jobs that apply real schema migrations instead of fail-closed placeholders', () => {
@@ -125,6 +142,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
       'runtime__server.mjs',
       'runtime__model-store-postgres.mjs',
       'runtime__job-runner.mjs',
+      'runtime__kubernetes-client.mjs',
       'runtime__diagnostics.mjs',
     ]));
     expect(Object.keys(sourceConfigMap?.data ?? {}).every((key) => !key.includes('/'))).toBe(true);
@@ -139,6 +157,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
         expect.objectContaining({ key: 'runtime__server.mjs', path: 'runtime/server.mjs' }),
         expect.objectContaining({ key: 'runtime__model-store-postgres.mjs', path: 'runtime/model-store-postgres.mjs' }),
         expect.objectContaining({ key: 'runtime__job-runner.mjs', path: 'runtime/job-runner.mjs' }),
+        expect.objectContaining({ key: 'runtime__kubernetes-client.mjs', path: 'runtime/kubernetes-client.mjs' }),
         expect.objectContaining({ key: 'runtime__diagnostics.mjs', path: 'runtime/diagnostics.mjs' }),
       ]) } }),
     ]) } } } });
@@ -198,10 +217,16 @@ describe('v0.3 infrastructure-from-code product story', () => {
   });
 
   it('defines the v0.3 pressure-test gates before broad implementation continues', () => {
+    const { composition } = accountsModelApp();
+    const graph = applicationGraphFor(composition);
+    if (!graph) {
+      throw new Error('expected pressure-test app graph fixture');
+    }
+    const graphDigest = `sha256:${createHash('sha256').update(serializeApplicationGraph(graph)).digest('hex')}`;
     const pressureTest = {
       name: 'accounts-platform-pressure-test',
-      graph: { apiVersion: 'applik8s.appGraph/v1alpha1', path: 'application-graph.json', digest: 'sha256:accounts-platform' },
-      requiredNodes: ['crd', 'model', 'server', 'job', 'provider', 'permission', 'typeKroResource'],
+      graph: { apiVersion: graph.apiVersion, path: 'application-graph.json', digest: graphDigest },
+      requiredNodes: [...new Set(graph.nodes.map((node) => node.kind))],
       requiredProviders: ['ModelStore', 'IndexStore', 'Secret', 'HttpExposure', 'CredentialStore'],
       requiredRuntimeModules: ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'],
       requiredOperationTargets: [{ id: 'operation-target.accounts-stack', target: { nodeId: 'typeKroResource.accounts-stack' }, operations: ['apply', 'delete'], lowering: { mode: 'typeKroResource', artifact: { kind: 'typeKroResource', path: 'plans/accounts-stack.apply.json' }, failurePolicy: 'failClosed' }, dryRun: { supported: true, artifact: { kind: 'typeKroResource', path: 'plans/accounts-stack.dry-run.json' }, failurePolicy: 'failClosed' }, ownership: { ownerReferences: 'required', orphanPolicy: 'retain' }, finalizers: { required: true, finalizer: 'platform.applik8s.dev/accounts-stack', cleanupOperation: 'deleteTarget' }, permissions: [{ apiGroups: ['platform.applik8s.dev'], resources: ['accountsstacks'], verbs: ['create', 'patch', 'delete'] }], diagnostics: [] }],
@@ -211,7 +236,18 @@ describe('v0.3 infrastructure-from-code product story', () => {
       liveValidation: { contextEnv: 'APPLIK8S_E2E_CONTEXT', requiredResources: [{ apiVersion: 'batch/v1', kind: 'Job', name: 'accounts-model-migration', namespace: 'platform' }], requiredAssertions: ['migration job completes', 'server becomes ready', 'job status is patched', 'unsupported watch predicates fail closed'] },
     } satisfies ApplicationV03PressureTestContract;
 
-    expect(pressureTest.requiredNodes).toEqual(expect.arrayContaining(['model', 'server', 'job', 'typeKroResource']));
+    expect(pressureTest.graph.digest).toBe(graphDigest);
+    expect(pressureTest.requiredNodes).toEqual(expect.arrayContaining(['model', 'server', 'job', 'provider']));
+    expect(graph.nodes.map((node) => node.kind)).toEqual(expect.arrayContaining(pressureTest.requiredNodes));
+    expect(graph.providerRequirements.map((requirement) => requirement.interface)).toEqual(expect.arrayContaining(['ModelStore']));
+    expect(graph.providerBindings.flatMap((binding) => binding.generatedResources.map((resource) => resource.kind))).toEqual(expect.arrayContaining(['Cluster']));
+    expect(composition.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'accounts-db', namespace: 'platform' }) }),
+      expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', metadata: expect.objectContaining({ name: 'accounts-model-migration', namespace: 'platform' }) }),
+      expect.objectContaining({ apiVersion: 'apps/v1', kind: 'Deployment', metadata: expect.objectContaining({ name: 'accounts-web', namespace: 'platform' }) }),
+    ]));
+    const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'accounts-web-source');
+    expect(Object.keys(sourceConfigMap?.data ?? {})).toEqual(expect.arrayContaining(['runtime__server.mjs', 'runtime__model-store-postgres.mjs', 'runtime__job-runner.mjs', 'runtime__kubernetes-client.mjs', 'runtime__diagnostics.mjs']));
     expect(pressureTest.requiredOperationTargets[0]?.dryRun.failurePolicy).toBe('failClosed');
     expect(pressureTest.requiredWatchScopes[0]?.failurePolicy).toBe('failClosed');
     expect(pressureTest.requiredMigrationDriftChecks[0]?.policy.driftPolicy).toBe('failClosed');

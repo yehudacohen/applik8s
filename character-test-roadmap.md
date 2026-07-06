@@ -173,7 +173,9 @@ Current prep status:
 - Added the first executing generated-job status reconciler character/integration/live slice, including consolidated status-runtime Deployments, RBAC, runtime entrypoint metadata, KRO app-instance discovery, best-effort app-status patching, and a durable generated status ConfigMap fallback because current KRO-generated app CRDs prune custom `status.applik8s` fields.
 - Added v0.3 freeze-interface coverage for operation-target lowering, watch-scope lowering, migration drift checks, and the integrated pressure-test readiness gate.
 - Added integration contracts for runtime module content/mount boundaries and migration failure/drift diagnostics.
-- Remaining product promises: production-hardened durable phase/status reconciliation beyond the live-confirmed Postgres migration path, app CRD status-schema ownership, operation-target and watch-scope implementation, script-execution ModelStore runtime, deeper migration drift enforcement, the pressure-test app, and broader runtime modularization.
+- Added cleanup coverage for concrete pressure-test graph/artifact anchoring, compatibility-policy labels, CRD schema compatibility fixtures, artifact-only operation-target lowering, Kubernetes-client runtime module separation, and fail-closed rejection of broad watch selectors.
+- Added the opt-in `test:modelstore:script-runtime:live` command for live Postgres script-execution ModelStore validation when `APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL` is set.
+- Remaining product promises: production-hardened durable phase/status reconciliation beyond the live-confirmed Postgres migration path, app CRD status-schema ownership, operation-target and watch-scope implementation closure, full live/parity validation for the Postgres script-execution ModelStore runtime, deeper migration drift enforcement, the pressure-test app, and broader runtime modularization.
 
 ## Post-v0.3 Workload Movement Safety Tests
 

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { app, applicationGraphFor, cel, CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ModelStore, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, sdk, Secret, typeKro } from '@applik8s/applik8s';
 import type { ApplicationModelBinding, ApplicationModelStoreProvider, ApplicationProviderToken } from '@applik8s/applik8s';
-import { serializeApplicationGraph } from '@applik8s/core';
+import { serializeApplicationGraph, validateApplicationJobStatusLifecycleContract, validateApplicationModelStoreSemanticsContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract } from '@applik8s/core';
 import { transformSync } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { entity, field, label, metadata, type } from '../src/dsl.js';
@@ -233,14 +233,15 @@ describe('integrated TypeKro package surface', () => {
       expect.objectContaining({
         id: 'model.note',
         schema: expect.objectContaining({
-          guarantees: {
+          guarantees: expect.objectContaining({
             identity: 'stableId',
             uniqueness: 'databaseConstraint',
             indexes: 'declaredSecondaryIndexes',
             transactions: 'required',
             retention: 'retain',
             migrationOwnership: 'generatedJob',
-          },
+            semantics: expect.objectContaining({ generatedRuntimeParity: 'required', scriptRuntimeParity: 'required' }),
+          }),
         }),
       }),
       expect.objectContaining({ id: 'job.notes-model-migration', kind: 'job', task: { taskKind: 'migration' } }),
@@ -337,7 +338,10 @@ describe('integrated TypeKro package surface', () => {
     if (!directModel) {
       throw new Error('expected app.model to return a model binding for explicit Postgres provider');
     }
-    await expect(directModel.create({ spec: { message: 'hi' } })).rejects.toThrow(/script-execution ModelStore runtime/);
+    await expect(directModel.create({ spec: { message: 'hi' } })).rejects.toMatchObject({
+      message: expect.stringMatching(/applik8s-modelstore-missing-credentials/),
+      diagnostic: expect.objectContaining({ event: 'applik8s-modelstore-missing-credentials', model: 'Note', env: 'APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL' }),
+    });
 
     const providedModelComposition = sdk.kubernetesComposition({
       name: 'notes-model-provider-does-not-enable-model-app',
@@ -437,8 +441,10 @@ describe('integrated TypeKro package surface', () => {
     expect(jobDiagnostics?.data?.phaseStatusContract).toContain('metadata.generation');
     expect(jobDiagnostics?.data?.terminalFailureStatus).toContain('partialEffects');
     expect(applicationGraphFor(jobComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'job.migrate', kind: 'job', name: 'migrate', task: expect.objectContaining({ taskKind: 'migration' }), runtime: expect.objectContaining({ materialization: 'kubernetes-job', phaseStatus: expect.objectContaining({ statusPath: 'status.applik8s.jobs.migrate' }), durableStatusUpdater: expect.objectContaining({ runtimeModule: { kind: 'jobRunnerRuntime', name: 'generated-job-status-updater' } }) }) }),
+      expect.objectContaining({ id: 'job.migrate', kind: 'job', name: 'migrate', task: expect.objectContaining({ taskKind: 'migration' }), runtime: expect.objectContaining({ materialization: 'kubernetes-job', phaseStatus: expect.objectContaining({ statusPath: 'status.applik8s.jobs.migrate' }), statusLifecycle: expect.objectContaining({ multiJob: 'appLevelReconciler', fallback: 'generatedStatusConfigMap' }), durableStatusUpdater: expect.objectContaining({ runtimeModule: { kind: 'jobRunnerRuntime', name: 'generated-job-status-updater' } }) }) }),
     ]));
+    const jobGraphNode = applicationGraphFor(jobComposition)?.nodes.find((node) => node.kind === 'job' && node.id === 'job.migrate');
+    expect(jobGraphNode?.kind === 'job' && jobGraphNode.runtime.statusLifecycle ? validateApplicationJobStatusLifecycleContract(jobGraphNode.runtime.statusLifecycle) : []).toEqual([]);
 
     const scheduleComposition = sdk.kubernetesComposition({
       name: 'notes-schedule-app',
@@ -464,7 +470,7 @@ describe('integrated TypeKro package surface', () => {
       ]) }) }) }) }),
     ]));
     expect(applicationGraphFor(scheduleComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'job.cleanup', kind: 'job', schedule: expect.objectContaining({ cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' }), runtime: expect.objectContaining({ materialization: 'kubernetes-cronjob' }) }),
+      expect.objectContaining({ id: 'job.cleanup', kind: 'job', schedule: expect.objectContaining({ cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' }), runtime: expect.objectContaining({ materialization: 'kubernetes-cronjob', statusLifecycle: expect.objectContaining({ cronJob: 'latestRunAndHistory' }) }) }),
     ]));
 
     const multiJobComposition = sdk.kubernetesComposition({
@@ -558,6 +564,16 @@ describe('integrated TypeKro package surface', () => {
           indexes: [{ name: 'entries-by-author', fields: ['author', 'message'] }],
           transactions: 'required',
           retention: { mode: 'ttl', ttlSeconds: 86_400 },
+          guarantees: expect.objectContaining({
+            transactions: 'required',
+            retention: 'ttl',
+            semantics: expect.objectContaining({
+              generatedRuntimeParity: 'required',
+              scriptRuntimeParity: 'required',
+              query: { defaultLimit: 50, maxLimit: 500, cursor: 'offset', unsupportedFilters: 'failClosed' },
+              retention: { mode: 'ttl', ttlSeconds: 86_400, deletionPolicy: 'explicitOnly' },
+            }),
+          }),
         }),
         materialization: expect.objectContaining({
           backingResources: [expect.objectContaining({ kind: 'Cluster', name: 'shared-db', namespace: 'data' })],
@@ -566,6 +582,11 @@ describe('integrated TypeKro package surface', () => {
         }),
       }),
     ]));
+    const graph = applicationGraphFor(composition);
+    const modelNode = graph?.nodes.find((node) => node.kind === 'model' && node.id === 'model.entry');
+    expect(modelNode?.kind === 'model' && modelNode.schema.guarantees?.semantics ? validateApplicationModelStoreSemanticsContract(modelNode.schema.guarantees.semantics) : []).toEqual([]);
+    const providerNode = graph?.nodes.find((node) => node.kind === 'provider' && node.id === 'provider.model-store');
+    expect(providerNode?.kind === 'provider' && providerNode.contract ? validateApplicationProviderInterfaceContract(providerNode.contract) : []).toEqual([]);
   });
 
   it('generates server runtime ModelStore clients backed by a singleton app-scoped CNPG provider', () => {
@@ -707,13 +728,18 @@ describe('integrated TypeKro package surface', () => {
     expect(sourceConfigMap?.data).toMatchObject({
       'runtime__server.mjs': expect.stringContaining('serverRuntime'),
       'runtime__model-store-postgres.mjs': expect.stringContaining('modelRuntime'),
+      'runtime__kubernetes-client.mjs': expect.stringContaining('kubernetesClient'),
       'runtime__diagnostics.mjs': expect.stringContaining('diagnostics'),
       'runtime__providers__postgres.mjs': expect.stringContaining('providerAdapter'),
     });
     expect(sourceConfigMap?.data?.['runtime__server.mjs']).toContain('export const runtimeModule');
     expect(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs']).toContain('"kind":"modelRuntime"');
+    expect(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs']).toContain('"interface"');
+    expect(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs']).toContain('"failurePolicy":"failClosed"');
     expect(sourceConfigMap?.data?.['runtime__job-runner.mjs']).toContain('"kind":"jobRunnerRuntime"');
+    expect(sourceConfigMap?.data?.['runtime__job-runner.mjs']).toContain('"kubernetesClient"');
     expect(sourceConfigMap?.data?.['runtime__job-runner.mjs']).toContain('createJobStatusUpdater');
+    expect(sourceConfigMap?.data?.['runtime__kubernetes-client.mjs']).toContain('"kind":"kubernetesClient"');
     expect(sourceConfigMap?.data?.['runtime__diagnostics.mjs']).toContain('"kind":"diagnostics"');
     expect(sourceConfigMap?.data?.['runtime__providers__postgres.mjs']).toContain('"kind":"providerAdapter"');
     expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain('createRuntimeBindings');
@@ -727,12 +753,15 @@ describe('integrated TypeKro package surface', () => {
         expect.objectContaining({ key: 'runtime__server.mjs', path: 'runtime/server.mjs' }),
         expect.objectContaining({ key: 'runtime__model-store-postgres.mjs', path: 'runtime/model-store-postgres.mjs' }),
         expect.objectContaining({ key: 'runtime__job-runner.mjs', path: 'runtime/job-runner.mjs' }),
+        expect.objectContaining({ key: 'runtime__kubernetes-client.mjs', path: 'runtime/kubernetes-client.mjs' }),
         expect.objectContaining({ key: 'runtime__diagnostics.mjs', path: 'runtime/diagnostics.mjs' }),
         expect.objectContaining({ key: 'runtime__providers__postgres.mjs', path: 'runtime/providers/postgres.mjs' }),
       ]) } }),
     ]) } } } });
     expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).not.toContain('function createModelClient');
     expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).not.toContain('function createPostgresModelClient');
+    const runtimeModule = JSON.parse(String(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs'] ?? '').match(/export const runtimeModule = (\{.*\});/)?.[1] ?? '{}');
+    expect(validateApplicationRuntimeModuleInterfaceContract(runtimeModule.interface)).toEqual([]);
   });
 
   it('emits migration compatibility plans, history table metadata, and fail-closed drift diagnostics', () => {
@@ -761,8 +790,19 @@ describe('integrated TypeKro package surface', () => {
 
     const migrationConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'accounts-model-migration-migration');
     const diagnosticsConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'accounts-model-migration-diagnostics');
+    const preflightSql = String(migrationConfigMap?.data?.['preflight.sql'] ?? '');
     const migrationSql = String(migrationConfigMap?.data?.['migration.sql'] ?? '');
 
+    expect(preflightSql).toContain('applik8s-model-migration-preflight');
+    expect(preflightSql).toContain('SELECT 1 AS provider_readiness');
+    expect(preflightSql).toContain('pg_advisory_xact_lock');
+    expect(preflightSql).toContain('missingHistoryTable');
+    expect(preflightSql).toContain('incompatibleColumn');
+    expect(preflightSql).toContain('incompatibleIndex');
+    expect(preflightSql).toContain('unknownExistingObject');
+    expect(preflightSql).toContain('destructiveChange');
+    expect(preflightSql).toContain('account-email-unique');
+    expect(preflightSql).toContain('accounts-by-email');
     expect(migrationSql).toContain('CREATE TABLE IF NOT EXISTS "applik8s_model_migrations"');
     expect(migrationSql).toContain('INSERT INTO "applik8s_model_migrations"');
     expect(diagnosticsConfigMap?.data).toMatchObject({
@@ -773,19 +813,26 @@ describe('integrated TypeKro package surface', () => {
       terminalFailureStatus: expect.stringContaining('partialEffects'),
       migrationPlan: expect.stringContaining('account-email-unique'),
       failureModes: expect.stringContaining('missingCredentials'),
-      driftDiagnostic: expect.stringContaining('SchemaDriftDetected'),
+      driftDiagnostic: expect.stringContaining('applik8s-model-migration-drift-detected'),
       failureDiagnostic: expect.stringContaining('applik8s-model-migration-failed'),
     });
+    expect(diagnosticsConfigMap?.data?.driftDiagnostic).toContain('SchemaDriftDetected');
     expect(diagnosticsConfigMap?.data?.failureModes).toContain('badSql');
-    expect(diagnosticsConfigMap?.data?.failureModes).toContain('incompatibleTableOrIndex');
+    expect(diagnosticsConfigMap?.data?.failureModes).toContain('providerReadiness');
+    expect(diagnosticsConfigMap?.data?.failureModes).toContain('lockBehavior');
+    expect(diagnosticsConfigMap?.data?.failureModes).toContain('missingHistoryTable');
+    expect(diagnosticsConfigMap?.data?.failureModes).toContain('incompatibleColumn');
+    expect(diagnosticsConfigMap?.data?.failureModes).toContain('incompatibleIndex');
+    expect(diagnosticsConfigMap?.data?.failureModes).toContain('unknownExistingObject');
     expect(diagnosticsConfigMap?.data?.failureModes).toContain('destructiveChange');
     expect(diagnosticsConfigMap?.data?.migrationPlan).toContain('destructive-change');
     expect(diagnosticsConfigMap?.data?.migrationPlan).toContain('schema-drift');
+    expect(diagnosticsConfigMap?.data?.migrationPreflightSql).toContain('pg_advisory_xact_lock');
     expect(migrationSql).not.toContain('DROP TABLE');
     expect(migrationSql).not.toContain('DROP INDEX');
   });
 
-  it.fails('executes generated model CRUD and query methods through ModelStore runtime clients', async () => {
+  it('fails closed for script-runtime model CRUD when no Postgres credentials are configured', async () => {
     const NoteEntity = entity('Note', {
       spec: type({ message: 'string' }),
       status: type({ phase: 'string?' }),
@@ -805,11 +852,27 @@ describe('integrated TypeKro package surface', () => {
       throw new Error('expected model binding');
     }
 
-    await expect(model.create({ spec: { message: 'hello' } })).resolves.toMatchObject({ id: expect.any(String), spec: { message: 'hello' } });
-    await expect(model.get({ id: 'note-1' })).resolves.toMatchObject({ id: 'note-1', spec: expect.any(Object) });
-    await expect(model.query({ where: { message: 'hello' }, limit: 10 })).resolves.toMatchObject({ items: expect.any(Array) });
-    await expect(model.patch({ id: 'note-1' }, { status: { phase: 'Accepted' } })).resolves.toMatchObject({ id: 'note-1', status: { phase: 'Accepted' } });
-    await expect(model.index('byMessage', { partitionBy: 'message' }).query('hello')).resolves.toMatchObject({ items: expect.any(Array) });
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    const previousModelUrl = process.env.APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    delete process.env.APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL;
+    try {
+      await expect(model.create({ spec: { message: 'hello' } })).rejects.toMatchObject({
+        message: expect.stringContaining('applik8s-modelstore-missing-credentials'),
+        diagnostic: expect.objectContaining({ event: 'applik8s-modelstore-missing-credentials', model: 'Note', env: 'APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL' }),
+      });
+    } finally {
+      if (previousDatabaseUrl === undefined) {
+        delete process.env.DATABASE_URL;
+      } else {
+        process.env.DATABASE_URL = previousDatabaseUrl;
+      }
+      if (previousModelUrl === undefined) {
+        delete process.env.APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL;
+      } else {
+        process.env.APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL = previousModelUrl;
+      }
+    }
   });
 
   it('emits migration jobs with durable phase status and observable diagnostics as concrete resources', () => {
@@ -840,7 +903,7 @@ describe('integrated TypeKro package surface', () => {
               containers: expect.arrayContaining([
                 expect.objectContaining({
                   image: 'postgres:16-alpine',
-                  command: expect.arrayContaining(['sh', '-c', expect.stringContaining('psql "$DATABASE_URL"')]),
+                  command: expect.arrayContaining(['sh', '-c', expect.stringContaining('/migrations/preflight.sql')]),
                   env: expect.arrayContaining([
                     expect.objectContaining({ name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: 'notes-db-app', key: 'uri' } } }),
                     expect.objectContaining({ name: 'APPLIK8S_MODEL_STORE_MODEL', value: 'Note' }),
@@ -853,7 +916,7 @@ describe('integrated TypeKro package surface', () => {
           }),
         }),
       }),
-      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-migration' }), data: expect.objectContaining({ 'migration.sql': expect.stringContaining('CREATE TABLE IF NOT EXISTS "applik8s_note"') }) }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-migration' }), data: expect.objectContaining({ 'preflight.sql': expect.stringContaining('applik8s-model-migration-preflight'), 'migration.sql': expect.stringContaining('CREATE TABLE IF NOT EXISTS "applik8s_note"') }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-diagnostics' }), data: expect.objectContaining({ phaseStatusContract: expect.stringContaining('status.applik8s.jobs.notes-model-migration'), terminalFailureStatus: expect.stringContaining('runMigrationJob') }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-status-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('patchApplicationStatus'), 'status-runtime.json': expect.stringContaining('notesmodelmigrationartifactsapps') }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-artifacts-app-status-reconciler-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('patchGeneratedStatusConfigMap'), 'status-runtime.json': expect.stringContaining('notes-model-migration') }) }),
@@ -867,8 +930,8 @@ describe('integrated TypeKro package surface', () => {
     ]));
     const migrationRuntimeConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'notes-model-migration-artifacts-app-status-reconciler-runtime');
     expect(() => transformSync(String(migrationRuntimeConfigMap?.data?.['runtime__job-runner.mjs'] ?? ''), { loader: 'js', format: 'esm' })).not.toThrow();
-    expect(JSON.stringify(composition.resources)).not.toContain('${APPLIK8S_MODEL_STORE_MODEL}');
-    expect(JSON.stringify(composition.resources)).not.toContain('${attempt}');
+    expect(JSON.stringify(composition.resources)).not.toContain('$' + '{APPLIK8S_MODEL_STORE_MODEL}');
+    expect(JSON.stringify(composition.resources)).not.toContain('$' + '{attempt}');
   });
 
   it('supports composition-scoped app authoring with explicit operator and server registration', () => {
@@ -994,6 +1057,64 @@ describe('integrated TypeKro package surface', () => {
     expect(kroYaml).toContain('phase: "${webDeployment.status.availableReplicas >= webDeployment.spec.replicas ?');
   });
 
+  it('lowers operator watch scopes into app graph contracts and fails closed for unsupported selectors', () => {
+    const Note = sdk.crd({
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'Note',
+      spec: type({ message: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+    const watchedOperator = Object.assign((_options: object) => ({}), {
+      definition: {
+        name: 'watched-notes-controller',
+        resources: { Note },
+        handlers: [
+          { id: 'Note.reconcile.exact', event: 'reconcile', resource: Note, watch: { namespace: 'notes', name: 'one' } },
+          { id: 'Note.reconcile.finite', event: 'reconcile', resource: Note, watch: { namespace: 'notes', names: ['one', 'two'] } },
+          { id: 'Note.reconcile.labels', event: 'reconcile', resource: Note, watch: { namespace: 'notes', labelSelector: { matchLabels: { app: 'notes' } } } },
+          { id: 'Note.reconcile.field', event: 'reconcile', resource: Note, watch: { namespace: 'notes', fieldSelector: 'metadata.name=one' } },
+          { id: 'Note.reconcile.unsupported', event: 'reconcile', resource: Note, watch: { namespace: 'notes', labelSelector: { matchExpressions: [{ key: 'app', operator: 'Exists' }] } } },
+        ],
+      },
+    });
+
+    const composition = sdk.kubernetesComposition({
+      name: 'watched-notes-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'WatchedNotesApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.operator(watchedOperator, { namespace: 'notes' });
+      return { ready: true };
+    });
+
+    const operatorNode = applicationGraphFor(composition)?.nodes.find((node) => node.kind === 'operator' && node.name === 'watched-notes-controller');
+    expect(operatorNode).toMatchObject({
+      watches: expect.arrayContaining([
+        { kind: 'exact', ref: { apiVersion: 'notes.applik8s.dev/v1alpha1', kind: 'Note', name: 'one', namespace: 'notes' } },
+        { kind: 'finite', refs: expect.arrayContaining([{ apiVersion: 'notes.applik8s.dev/v1alpha1', kind: 'Note', name: 'two', namespace: 'notes' }]) },
+        { kind: 'labelSelector', apiVersion: 'notes.applik8s.dev/v1alpha1', resourceKind: 'Note', namespace: 'notes', labels: { app: 'notes' } },
+        { kind: 'fieldSelector', apiVersion: 'notes.applik8s.dev/v1alpha1', resourceKind: 'Note', namespace: 'notes', fieldSelector: 'metadata.name=one' },
+        { kind: 'mixed', scopes: [] },
+      ]),
+      watchContracts: expect.arrayContaining([
+        expect.objectContaining({ lowering: 'exact', failurePolicy: 'failClosed', permissions: expect.arrayContaining([expect.objectContaining({ resources: ['notes'], verbs: ['get', 'list', 'watch'] })]) }),
+        expect.objectContaining({ lowering: 'labelSelector', runtime: { mode: 'sharedInformer', resyncPolicy: 'bounded', cancellation: 'onScopeRemoved' } }),
+        expect.objectContaining({ lowering: 'mixed', permissions: [], diagnostics: expect.arrayContaining([expect.objectContaining({ event: 'applik8s-watch-scope-unlowerable', reason: 'UnsupportedLabelSelectorExpression', retryable: false })]) }),
+      ]),
+    });
+    if (operatorNode?.kind !== 'operator') {
+      throw new Error('expected operator graph node');
+    }
+    const unsupportedContract = operatorNode.watchContracts?.find((contract) => contract.diagnostics.some((diagnostic) => diagnostic.reason === 'UnsupportedLabelSelectorExpression'));
+    expect(unsupportedContract).toMatchObject({ lowering: 'mixed', permissions: [], failurePolicy: 'failClosed' });
+    expect(unsupportedContract?.scope).toEqual({ kind: 'mixed', scopes: [] });
+    expect(operatorNode.watchContracts).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: expect.objectContaining({ kind: 'labelSelector', labels: {} }) }),
+    ]));
+  });
+
   it('attaches an inspectable application graph before TypeKro emits Kubernetes resources', () => {
     const Note = sdk.crd({
       apiVersion: 'notes.applik8s.dev/v1alpha1',
@@ -1079,6 +1200,9 @@ describe('integrated TypeKro package surface', () => {
       expect.objectContaining({ name: 'app.model', surface: 'stablePublicApi' }),
       expect.objectContaining({ name: 'provider.ModelStore', surface: 'stablePublicApi' }),
     ]));
+    const stableLabels = new Set(graph?.compatibility.labels.filter((label) => label.surface === 'stablePublicApi').map((label) => label.name));
+    expect(graph?.compatibility.stablePublicApis.every((api) => stableLabels.has(api))).toBe(true);
+    expect(graph?.compatibility.stablePublicApis).not.toEqual(expect.arrayContaining(['provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.CredentialStore']));
   });
 
   it('infers app.server resource CRUD RBAC from typed resource actions', () => {

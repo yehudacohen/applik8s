@@ -1,4 +1,4 @@
-import type { ApplicationDiagnosticContract, ApplicationGraphMetadataLink, ApplicationGraphNodeRef, ApplicationJobIdempotencyContract, ApplicationPhaseContract, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetryPolicy, GeneratedJobDurableStatusContract, GeneratedJobDurableStatusUpdaterContract, GeneratedJobPhaseStatusContract, GeneratedJobRuntimeContract } from '@applik8s/core';
+import type { ApplicationDiagnosticContract, ApplicationGraphMetadataLink, ApplicationGraphNodeRef, ApplicationJobIdempotencyContract, ApplicationJobStatusLifecycleContract, ApplicationPhaseContract, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetryPolicy, GeneratedJobDurableStatusContract, GeneratedJobDurableStatusUpdaterContract, GeneratedJobPhaseStatusContract, GeneratedJobRuntimeContract } from '@applik8s/core';
 
 export function applicationGeneratedJobPhase(): ApplicationPhaseContract {
   return { initialPhase: 'Pending', terminalPhases: ['Complete', 'Failed'], conditions: ['Blocked', 'Progressing', 'Ready', 'Finalized', 'Failed'] };
@@ -82,14 +82,38 @@ export function applicationGeneratedJobRuntime(options: {
   readonly environment?: ApplicationProviderRuntimeContract;
   readonly metadataLinks?: readonly ApplicationGraphMetadataLink[];
   readonly durableStatusUpdater?: GeneratedJobDurableStatusUpdaterContract;
+  readonly statusLifecycle?: ApplicationJobStatusLifecycleContract;
 }): GeneratedJobRuntimeContract {
   return {
     materialization: options.materialization,
     idempotency: applicationGeneratedJobIdempotency(),
     phaseStatus: { resource: options.statusResource, statusPath: options.statusPath },
+    ...(options.statusLifecycle ? { statusLifecycle: options.statusLifecycle } : {}),
     permissions: options.permissions,
     ...(options.environment ? { environment: options.environment } : {}),
     ...(options.metadataLinks ? { metadataLinks: options.metadataLinks } : {}),
     ...(options.durableStatusUpdater ? { durableStatusUpdater: options.durableStatusUpdater } : {}),
+  };
+}
+
+export function applicationGeneratedJobStatusLifecycle(options: {
+  readonly jobName: string;
+  readonly materialization: GeneratedJobRuntimeContract['materialization'];
+  readonly statusConfigMapName?: string;
+}): ApplicationJobStatusLifecycleContract {
+  return {
+    ownership: {
+      primary: 'applicationStatus',
+      fallback: 'generatedStatusConfigMap',
+      appStatusSchema: 'bestEffort',
+      ...(options.statusConfigMapName ? { durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: options.statusConfigMapName } } : {}),
+      conflictPolicy: 'mergePatch',
+      diagnostics: [{ event: 'applik8s-status-schema-pruned', severity: 'warning', subject: { nodeId: `job.${options.jobName}` }, reason: 'ApplicationStatusSchemaMayPruneCustomFields', message: 'Generated job status is patched to application status when possible and persisted in the generated status ConfigMap as the durable fallback.', retryable: false }],
+    },
+    conflictPolicy: 'mergePatch',
+    historyRetention: { maxEntries: 20, terminalRetention: 'retain' },
+    multiJob: 'appLevelReconciler',
+    cronJob: options.materialization === 'kubernetes-cronjob' ? 'latestRunAndHistory' : 'unsupported',
+    fallback: 'generatedStatusConfigMap',
   };
 }

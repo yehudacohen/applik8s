@@ -1,4 +1,4 @@
-import type { CapabilityDescriptor, GraphAdapter, JsonSchemaSource } from '@applik8s/core';
+import type { CapabilityDescriptor, GraphAdapter, JsonSchemaSource, OperationTarget } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { dispatchOperatorHandler, sdk } from '../src/index.js';
 
@@ -151,6 +151,64 @@ describe('generated handler dispatcher', () => {
     });
 
     expect(JSON.parse(output)).toEqual({ operations: [{ kind: 'status', status: { phase: 'Checked' } }] });
+  });
+
+  it('lowers operation-target apply through operationTargetArtifacts only', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const target = artifactOnlyOperationTarget();
+    const operator = sdk.operator({
+      name: 'artifact-target-apply-pipeline',
+      resources: { ImageJob },
+      handlers: [
+        ImageJob.on.context.reconcile(async (_job, ctx) => ctx.apply(target, { fieldManager: 'artifact-manager' })),
+      ],
+    });
+
+    const output = await dispatchOperatorHandler(operator.definition, JSON.stringify({
+      abiVersion: 'applik8s.handler/v1alpha1',
+      handlerId: 'ImageJob.reconcile.0',
+      event: 'reconcile',
+      object: { apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', metadata: { name: 'hero', namespace: 'media' }, spec: { sourceUrl: 's3://bucket/hero.png' } },
+    }));
+
+    expect(Object.hasOwn(target, '__applik8sApplyResources')).toBe(false);
+    expect(Object.hasOwn(target, '__applik8sDeleteRefs')).toBe(false);
+    expect(JSON.parse(output)).toEqual({
+      operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target', namespace: 'media' } }, fieldManager: 'artifact-manager' }],
+    });
+  });
+
+  it('lowers operation-target delete through operationTargetArtifacts only', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const target = artifactOnlyOperationTarget();
+    const operator = sdk.operator({
+      name: 'artifact-target-delete-pipeline',
+      resources: { ImageJob },
+      handlers: [
+        ImageJob.on.context.reconcile(async (_job, ctx) => ctx.delete(target, { propagationPolicy: 'Foreground' })),
+      ],
+    });
+
+    const output = await dispatchOperatorHandler(operator.definition, JSON.stringify({
+      abiVersion: 'applik8s.handler/v1alpha1',
+      handlerId: 'ImageJob.reconcile.0',
+      event: 'reconcile',
+      object: { apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', metadata: { name: 'hero', namespace: 'media' }, spec: { sourceUrl: 's3://bucket/hero.png' } },
+    }));
+
+    expect(JSON.parse(output)).toEqual({
+      operations: [{ kind: 'delete', ref: { apiVersion: 'v1', kind: 'ConfigMap', name: 'artifact-target', namespace: 'media' }, options: { propagationPolicy: 'Foreground' } }],
+    });
   });
 
   it('routes typed Kubernetes reads through a supplied host import', async () => {
@@ -543,6 +601,19 @@ describe('generated handler dispatcher', () => {
     }))).rejects.toThrow('graph render failed');
   });
 });
+
+function artifactOnlyOperationTarget(): OperationTarget<ImageStatus> {
+  return {
+    targetKind: 'operationTarget',
+    // typecast: dispatcher regression exercises precomputed operationTargetArtifacts and does not invoke adapter methods.
+    adapter: {} as OperationTarget<ImageStatus>['adapter'],
+    operationTargetArtifacts: {
+      applyPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target', namespace: 'media' } } }] },
+      deletePlan: { operations: [{ kind: 'delete', ref: { apiVersion: 'v1', kind: 'ConfigMap', name: 'artifact-target', namespace: 'media' } }] },
+      dryRunPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target', namespace: 'media' } } }] },
+    },
+  };
+}
 
 function retrySafeCapability(name: string): CapabilityDescriptor {
   return {

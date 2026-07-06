@@ -456,6 +456,50 @@ describe('compiler artifact vertical slice', () => {
     }
   });
 
+  it('emits enforceable watch scopes for exact, finite, label, and field routed handlers', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: imageSpecSchema,
+      status: imageStatusSchema,
+    });
+    const operator = sdk.operator({
+      name: 'scoped-watch-pipeline',
+      deployment: { namespace: 'media' },
+      resources: { ImageJob },
+      handlers: [],
+    });
+    const scopedDefinition = {
+      ...operator.definition,
+      handlers: [
+        { id: 'ImageJob.reconcile.exact', event: 'reconcile', resource: ImageJob, watch: { namespace: 'media', name: 'hero' } },
+        { id: 'ImageJob.reconcile.finite', event: 'reconcile', resource: ImageJob, watch: { namespace: 'media', names: ['hero', 'thumbnail'] } },
+        { id: 'ImageJob.reconcile.labels', event: 'reconcile', resource: ImageJob, watch: { namespace: 'media', labelSelector: { matchLabels: { app: 'image' } } } },
+        { id: 'ImageJob.reconcile.field', event: 'reconcile', resource: ImageJob, watch: { namespace: 'media', fieldSelector: 'metadata.name=hero' } },
+      ],
+    };
+
+    const manifest = buildOperatorManifest({
+      // typecast: this fixture injects handler registration summaries directly to prove manifest watch lowering independent of handler function bodies.
+      operator: scopedDefinition as never,
+      handlerArtifactPath: 'wasm/handler.wasm',
+      handlerArtifactDigest: `sha256:${'a'.repeat(64)}`,
+      runtimeContractPath: 'runtime-contract.json',
+      runtimeContractDigest: `sha256:${'b'.repeat(64)}`,
+    });
+
+    expect(manifest.ok).toBe(true);
+    if (manifest.ok) {
+      expect(manifest.value.spec.watches).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'hero', handlers: ['ImageJob.reconcile.exact'] }),
+        expect.objectContaining({ names: ['hero', 'thumbnail'], handlers: ['ImageJob.reconcile.finite'] }),
+        expect.objectContaining({ labelSelector: { matchLabels: { app: 'image' } }, handlers: ['ImageJob.reconcile.labels'] }),
+        expect.objectContaining({ fieldSelector: 'metadata.name=hero', handlers: ['ImageJob.reconcile.field'] }),
+      ]));
+      expect(manifest.value.spec.watches.every((watch) => watch.namespace === 'media')).toBe(true);
+    }
+  });
+
   it('synthesizes a standalone bundle into the default output directory when outDir is omitted', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-default-outdir-'));
     const previousCwd = process.cwd();
@@ -764,6 +808,9 @@ export const notesModelApp = sdk.kubernetesComposition({
       ]));
       expect(result.value.artifacts.applicationGraphJsonPath).toBe(join(dir, 'dist', 'typekro', 'application-graph.json'));
       const graph = JSON.parse(await readFile(result.value.artifacts.applicationGraphJsonPath ?? '', 'utf8'));
+      const serializedArtifacts = JSON.stringify({ graph, resources: result.value.artifacts.resources });
+      expect(serializedArtifacts).not.toContain('__applik8sApplyResources');
+      expect(serializedArtifacts).not.toContain('__applik8sDeleteRefs');
       const artifactResourceKeys = new Set(result.value.artifacts.resources.map((resource) => `${resource.apiVersion}:${resource.kind}:${resource.metadata?.namespace ?? ''}:${resource.metadata?.name ?? ''}`));
       type GraphGeneratedResource = { readonly resource?: { readonly apiVersion?: string; readonly kind?: string; readonly namespace?: string; readonly name?: string } };
       type GraphNodeWithGeneratedResources = { readonly generatedResources?: readonly GraphGeneratedResource[] };
@@ -1730,6 +1777,20 @@ export function handle(input: string): string {
           }],
         },
       });
+      const emptyLabelSelectorWatch = validateOperatorManifest({
+        ...manifest.value,
+        spec: {
+          ...manifest.value.spec,
+          watches: [{
+            apiVersion: ImageJob.apiVersion,
+            kind: ImageJob.kind,
+            scope: 'Namespaced',
+            labelSelector: { matchLabels: {} },
+            events: ['reconcile'],
+            handlers: [firstHandler.id],
+          }],
+        },
+      });
 
       expect(invalidExactAndSelectorWatch.ok).toBe(false);
       if (!invalidExactAndSelectorWatch.ok) {
@@ -1746,6 +1807,10 @@ export function handle(input: string): string {
       expect(invalidLabelSelectorWatch.ok).toBe(false);
       if (!invalidLabelSelectorWatch.ok) {
         expect(invalidLabelSelectorWatch.error.message).toContain('labelSelector Exists expressions must not declare values');
+      }
+      expect(emptyLabelSelectorWatch.ok).toBe(false);
+      if (!emptyLabelSelectorWatch.ok) {
+        expect(emptyLabelSelectorWatch.error.message).toContain('labelSelector must not be empty');
       }
 
       const duplicateHandlerManifest = buildOperatorManifest({

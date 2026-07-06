@@ -125,6 +125,11 @@ function validateLabelSelector(selector: LabelSelector, label: string, diagnosti
     diagnostics.push(error(`Watch for ${label} labelSelector must be an object.`));
     return;
   }
+  const matchLabelsCount = selector.matchLabels && typeof selector.matchLabels === 'object' && !Array.isArray(selector.matchLabels) ? Object.keys(selector.matchLabels).length : 0;
+  const matchExpressionsCount = Array.isArray(selector.matchExpressions) ? selector.matchExpressions.length : 0;
+  if (matchLabelsCount === 0 && matchExpressionsCount === 0) {
+    diagnostics.push(error(`Watch for ${label} labelSelector must not be empty.`));
+  }
   if (selector.matchLabels !== undefined) {
     if (!selector.matchLabels || typeof selector.matchLabels !== 'object' || Array.isArray(selector.matchLabels)) {
       diagnostics.push(error(`Watch for ${label} labelSelector.matchLabels must be an object.`));

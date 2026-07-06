@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { ResourceDefinition, ResourceObject } from '@applik8s/core';
+import type { OperationTarget, ResourceDefinition, ResourceObject } from '@applik8s/core';
 import { createHandlerProxyRecorder } from '../src/index.js';
 
 interface ImageJobSpec {
@@ -158,6 +158,29 @@ describe('applik8s handler proxy access semantics', () => {
     });
   });
 
+  it('records operation targets from operationTargetArtifacts without private lowering fields', () => {
+    const recorder = createHandlerProxyRecorder(imageJob);
+    const target = artifactOnlyOperationTarget();
+
+    recorder.scope.apply(target, { fieldManager: 'artifact-manager' });
+    recorder.scope.delete(target, { propagationPolicy: 'Foreground' });
+
+    expect(Object.hasOwn(target, '__applik8sApplyResources')).toBe(false);
+    expect(Object.hasOwn(target, '__applik8sDeleteRefs')).toBe(false);
+    expect(recorder.normalizedPlan().operations).toEqual([
+      {
+        kind: 'apply',
+        resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target', namespace: 'media' } },
+        fieldManager: 'artifact-manager',
+      },
+      {
+        kind: 'delete',
+        ref: { apiVersion: 'v1', kind: 'ConfigMap', name: 'artifact-target', namespace: 'media' },
+        options: { propagationPolicy: 'Foreground' },
+      },
+    ]);
+  });
+
   it('normalizes recorded operations in deterministic order', () => {
     const recorder = createHandlerProxyRecorder(imageJob);
 
@@ -302,3 +325,16 @@ describe('applik8s handler proxy access semantics', () => {
     ]);
   });
 });
+
+function artifactOnlyOperationTarget(): OperationTarget<ImageJobStatus> {
+  return {
+    targetKind: 'operationTarget',
+    // typecast: the proxy artifact-only regression does not call adapter methods because operationTargetArtifacts are authoritative.
+    adapter: {} as OperationTarget<ImageJobStatus>['adapter'],
+    operationTargetArtifacts: {
+      applyPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target', namespace: 'media' } } }] },
+      deletePlan: { operations: [{ kind: 'delete', ref: { apiVersion: 'v1', kind: 'ConfigMap', name: 'artifact-target', namespace: 'media' } }] },
+      dryRunPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target', namespace: 'media' } } }] },
+    },
+  };
+}
