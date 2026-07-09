@@ -181,6 +181,41 @@ describe('applik8s handler proxy access semantics', () => {
     ]);
   });
 
+  it('plans operation-target dry runs from operationTargetArtifacts without recording effects', () => {
+    const recorder = createHandlerProxyRecorder(imageJob);
+    const target = artifactOnlyOperationTarget();
+
+    const plan = recorder.scope.plan(target, { dryRun: true, fieldManager: 'dry-run-manager' });
+
+    expect(plan).toEqual({
+      ok: true,
+      value: {
+        operations: [{
+          kind: 'apply',
+          resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target-dry-run', namespace: 'media' } },
+          fieldManager: 'dry-run-manager',
+        }],
+      },
+    });
+    expect(recorder.normalizedPlan().operations).toEqual([]);
+  });
+
+  it('fails operation-target dry-run planning closed when the artifact is missing', () => {
+    const recorder = createHandlerProxyRecorder(imageJob);
+    const target = artifactOnlyOperationTarget({ dryRun: false });
+
+    const plan = recorder.scope.plan(target, { dryRun: true });
+
+    expect(plan).toMatchObject({
+      ok: false,
+      error: {
+        code: 'MANIFEST_INVALID',
+        message: 'Operation target dry-run artifact is missing; dry-run planning fails closed.',
+      },
+    });
+    expect(recorder.normalizedPlan().operations).toEqual([]);
+  });
+
   it('normalizes recorded operations in deterministic order', () => {
     const recorder = createHandlerProxyRecorder(imageJob);
 
@@ -326,7 +361,7 @@ describe('applik8s handler proxy access semantics', () => {
   });
 });
 
-function artifactOnlyOperationTarget(): OperationTarget<ImageJobStatus> {
+function artifactOnlyOperationTarget(options: { readonly dryRun?: boolean } = {}): OperationTarget<ImageJobStatus> {
   return {
     targetKind: 'operationTarget',
     // typecast: the proxy artifact-only regression does not call adapter methods because operationTargetArtifacts are authoritative.
@@ -334,7 +369,7 @@ function artifactOnlyOperationTarget(): OperationTarget<ImageJobStatus> {
     operationTargetArtifacts: {
       applyPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target', namespace: 'media' } } }] },
       deletePlan: { operations: [{ kind: 'delete', ref: { apiVersion: 'v1', kind: 'ConfigMap', name: 'artifact-target', namespace: 'media' } }] },
-      dryRunPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target', namespace: 'media' } } }] },
+      ...(options.dryRun === false ? {} : { dryRunPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target-dry-run', namespace: 'media' } } }] } }),
     },
   };
 }

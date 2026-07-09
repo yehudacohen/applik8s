@@ -1,6 +1,29 @@
 # Stabilization Boundary
 
-This document defines what v0.1 treats as public, experimental, or internal.
+This document records the compatibility boundaries for released framework generations. The v0.1 sections remain as historical context; v0.3 is the current release boundary.
+
+## Public v0.3 Surfaces
+
+- The `app(...)` golden path: schema-first resources, Postgres-backed models, HTTP servers, reconciliation, generated jobs/schedules, config, secrets, exposure, and TypeKro composition.
+- Provider contracts plus one bounded Kubernetes-native default for every provider family. Additional adapters do not change the default contract.
+- The Postgres/CNPG `ModelStore` slice, generated migration jobs, deterministic server/runtime-module bundles, generated-job status lifecycle, operation targets, and bounded watch scopes described in the API reference.
+- Application graph schema and validation contracts used by v0.3 generated artifacts and pressure tests.
+- Explicit generated/external Secret ownership and runtime-owned Secret data semantics.
+- applik8s-owned CRD status schemas and validated Rust-host status operations.
+
+## Reserved Or Bounded In v0.3
+
+- Additional cloud-scale Queue, ObjectStorage, EventSource, IndexStore, CounterStore, secret-manager, and HTTP exposure adapters are incremental. The bounded Kubernetes-native defaults are public v0.3 behavior.
+- Generated-job state is durably stored in a runtime-created ConfigMap and authoritatively projected onto the KRO-owned root application status by KRO itself.
+- Runtime signing, SBOM, provenance, and admission verification are metadata-only declarations.
+- Arbitrary Kubernetes discovery, arbitrary GVK access, owner-graph traversal, cross-cluster access, and general workflow/transformation engines are not applik8s v0.3 surfaces.
+
+## v0.3 Compatibility Rules
+
+- Public contracts may evolve before v1.0, but incompatible manifest, ABI, runtime requirement, provider support, schema, and host-import combinations fail closed.
+- Generated artifacts must remain inspectable and deterministic; generated workloads do not install packages at startup.
+- applik8s does not create or own an externally named Secret unless `ownership: 'generated'` is explicit.
+- A runtime may write only status fields admitted by an applik8s-owned CRD or by an explicit compatible projection contract.
 
 ## Public v0.1 Surfaces
 

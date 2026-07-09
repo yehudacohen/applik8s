@@ -4,7 +4,7 @@ import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProvide
 import { applicationModelStoreImplementation, applicationProviderImplementationName, applicationProviderInterface } from './application-providers.js';
 import type { ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderState } from './application-providers.js';
 import type { EntityDefinition } from './dsl.js';
-import { applicationGeneratedJobDurableStatus, applicationGeneratedJobPhase, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
+import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
 import { createPostgresModelClient } from './model-store-postgres-runtime.js';
 
 export interface ApplicationModelOptions<TSpec extends object = object, TStatus extends object = Record<string, never>> {
@@ -37,13 +37,23 @@ export interface ApplicationModelBinding<TSpec extends object, TStatus extends o
   readonly entity: EntityDefinition<TSpec, TStatus>;
   readonly runtime: ApplicationRuntimeModelContract;
   readonly backend: ApplicationModelBackendContract;
-  create(input: ApplicationModelCreateInput<TSpec>): Promise<ApplicationModelObject<TSpec, TStatus>>;
+  create(input: ApplicationModelCreateInput<TSpec> | TSpec): Promise<ApplicationModelObject<TSpec, TStatus>>;
   get(ref: ApplicationModelRef): Promise<ApplicationModelObject<TSpec, TStatus> | undefined>;
   query(options?: ApplicationModelQueryOptions<TSpec>): Promise<ApplicationModelQueryPage<TSpec, TStatus>>;
   patch(ref: ApplicationModelRef, patch: ApplicationModelPatch<TSpec, TStatus>): Promise<ApplicationModelObject<TSpec, TStatus>>;
   delete(ref: ApplicationModelRef): Promise<void>;
-  index(name: string, options: ApplicationModelIndexOptions<TSpec, TStatus>): ApplicationModelIndexBinding<TSpec, TStatus>;
+  index(name: string, options?: ApplicationModelIndexOptions<TSpec, TStatus>): ApplicationModelIndexBinding<TSpec, TStatus>;
+  transaction<TResult>(handler: (model: ApplicationModelTransactionClient<TSpec, TStatus>) => TResult | Promise<TResult>): Promise<TResult>;
   readonly on: ApplicationModelEventRegistrar<TSpec, TStatus>;
+}
+
+export interface ApplicationModelTransactionClient<TSpec extends object, TStatus extends object = Record<string, never>> {
+  create(input: ApplicationModelCreateInput<TSpec> | TSpec): Promise<ApplicationModelObject<TSpec, TStatus>>;
+  get(ref: ApplicationModelRef): Promise<ApplicationModelObject<TSpec, TStatus> | undefined>;
+  query(options?: ApplicationModelQueryOptions<TSpec>): Promise<ApplicationModelQueryPage<TSpec, TStatus>>;
+  patch(ref: ApplicationModelRef, patch: ApplicationModelPatch<TSpec, TStatus>): Promise<ApplicationModelObject<TSpec, TStatus>>;
+  delete(ref: ApplicationModelRef): Promise<void>;
+  index(name: string, options?: ApplicationModelIndexOptions<TSpec, TStatus>): ApplicationModelIndexBinding<TSpec, TStatus>;
 }
 
 export interface ApplicationRuntimeModelContract {
@@ -58,6 +68,7 @@ export interface ApplicationRuntimeModelContract {
   readonly connectionEnvName: string;
   readonly constraints: readonly ApplicationModelConstraint[];
   readonly indexes: readonly ApplicationModelIndex[];
+  readonly retention: ApplicationRetentionPolicy;
 }
 
 export interface ApplicationModelBackendContract {
@@ -131,12 +142,14 @@ export interface ApplicationModelEventBinding {
   readonly event: 'created' | 'updated' | 'deleted';
 }
 
-interface ApplicationModelGraphState extends ApplicationGraphState, ApplicationProviderState {}
+interface ApplicationModelGraphState extends ApplicationGraphState, ApplicationProviderState {
+  readonly appResource?: { readonly kind: string };
+}
 
 export function resolveApplicationModelStore(state: ApplicationModelGraphState, entityName: string, store: ApplicationModelOptions['store']): ApplicationModelStoreProvider {
   const implementation = applicationModelStoreImplementation(store) ?? applicationModelStoreImplementation(state.providers.models) ?? applicationModelStoreImplementation(state.defaults.models);
   if (!implementation) {
-    throw new Error(`app.model(${JSON.stringify(entityName)}) requires a typed ModelStore provider. Bind one with app.provide(ModelStore, { kind: "postgres", ... }), app.defaults({ models: provider }), or pass { store: provider } before enabling a model-backed entity.`);
+    throw new Error(`app.model(${JSON.stringify(entityName)}) requires a typed ModelStore provider. Bind the golden path with app.storage.postgres("name"), use app.provide(ModelStore, { kind: "postgres", ... }), app.defaults({ models: provider }), or pass { store: provider } before enabling a model-backed entity.`);
   }
   return implementation;
 }
@@ -153,7 +166,7 @@ export function recordApplicationModelGraph<TSpec extends object, TStatus extend
     id: nodeId,
     kind: 'model',
     name: modelName,
-    stability: 'experimental',
+    stability: 'stable',
     entity: { name: entity.name },
     store: { interface: 'ModelStore', nodeId: providerNodeId },
     schema: {
@@ -191,7 +204,7 @@ export function recordApplicationModelGraph<TSpec extends object, TStatus extend
     required: true,
     purpose: 'modelStore',
     diagnostics: {
-      missing: `Model ${modelName} requires a ModelStore provider. Bind one with app.provide(ModelStore, { kind: "postgres", ... }) or pass an explicit store.`,
+      missing: `Model ${modelName} requires a ModelStore provider. Bind the golden path with app.storage.postgres("name"), use app.provide(ModelStore, { kind: "postgres", ... }), or pass an explicit store.`,
       ambiguous: `Model ${modelName} has multiple ModelStore providers. Bind the model to one provider explicitly.`,
     },
   });
@@ -225,13 +238,15 @@ function applicationModelStoreSemantics<TSpec extends object, TStatus extends ob
     generatedRuntimeParity: 'required',
     scriptRuntimeParity: 'required',
     query: { defaultLimit: 50, maxLimit: 500, cursor: 'offset', unsupportedFilters: 'failClosed' },
-    indexes: { partitionRequired: true, uniqueEnforcedBy: 'databaseConstraint', unsupportedOrderBy: 'failClosed' },
+    indexes: { partitionRequired: true, uniqueEnforcedBy: 'databaseConstraint', orderBy: 'declaredIndexFieldsOnly', unsupportedOrderBy: 'failClosed' },
     constraints: { duplicateKeyDiagnostic: 'applik8s-model-duplicate-key', enforcement: 'databaseConstraint' },
     migrationHistory: { tableName: 'applik8s_model_migrations', revisionColumn: 'revision', appliedAtColumn: 'applied_at' },
+    transactions: { declaration: schema?.transactions ?? 'supported', singleOperationAtomicity: 'databaseStatement', multiOperationApi: 'implemented', multiOperationBehavior: schema?.transactions === 'unsupported' ? 'failClosed' : 'runtimeTransaction' },
     retention: {
       mode: retentionMode,
       ...(schema?.retention?.mode === 'ttl' ? { ttlSeconds: schema.retention.ttlSeconds } : {}),
       deletionPolicy: schema?.retention?.mode === 'deleteWithOwner' ? 'ownerDeletion' : 'explicitOnly',
+      enforcement: 'runtimeEnforced',
     },
   };
 }
@@ -244,6 +259,7 @@ export interface ApplicationModelRuntimeBinding {
 
 export function applicationModelBinding<TSpec extends object, TStatus extends object>(entity: EntityDefinition<TSpec, TStatus>, _provider: ApplicationModelStoreProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined, runtime: ApplicationRuntimeModelContract): ApplicationModelBinding<TSpec, TStatus> {
   const name = options?.name ?? entity.name;
+  const transactionSemantics = options?.schema?.transactions ?? 'supported';
   const scriptClient = () => createPostgresModelClient<TSpec, TStatus>(runtime);
   return {
     kind: 'applicationModel',
@@ -253,7 +269,7 @@ export function applicationModelBinding<TSpec extends object, TStatus extends ob
     backend: {
       interface: 'ModelStore',
       runtimeBoundary: applicationModelRuntimeBoundary(),
-      transactions: 'supported',
+      transactions: transactionSemantics,
       queryConsistency: 'providerDefined',
       eventSemantics: 'unsupported',
       limitations: ['model CRUD/query calls inside serialized generated callbacks lower to generated runtime clients; ordinary script execution uses the same Postgres ModelStore runtime and requires database credentials plus generated migrations'],
@@ -276,12 +292,22 @@ export function applicationModelBinding<TSpec extends object, TStatus extends ob
     index(indexName, indexOptions) {
       return scriptClient().index(indexName, indexOptions) satisfies ApplicationModelIndexBinding<TSpec, TStatus>;
     },
+    async transaction(handler) {
+      if (transactionSemantics === 'unsupported') {
+        throw new Error(`Model ${name}.transaction(...) is unsupported by this model schema and fails closed. Declare transactions as "supported" or "required" before relying on multi-operation atomicity.`);
+      }
+      return scriptClient().transaction(handler);
+    },
     on: {
-      created: () => applicationModelRuntimeEvent(name, 'created'),
-      updated: () => applicationModelRuntimeEvent(name, 'updated'),
-      deleted: () => applicationModelRuntimeEvent(name, 'deleted'),
+      created: () => applicationModelUnsupportedEvent(name, 'created'),
+      updated: () => applicationModelUnsupportedEvent(name, 'updated'),
+      deleted: () => applicationModelUnsupportedEvent(name, 'deleted'),
     },
   };
+}
+
+function applicationModelUnsupportedEvent(modelName: string, event: 'created' | 'updated' | 'deleted'): ApplicationModelEventBinding {
+  throw new Error(`Model ${modelName}.on.${event}(...) requires transactional model event delivery, which is not implemented for the Postgres ModelStore slice yet. Model event semantics fail closed until outbox/watch behavior is implemented.`);
 }
 
 export function applicationRuntimeModelContract<TSpec extends object, TStatus extends object>(entity: EntityDefinition<TSpec, TStatus>, provider: ApplicationModelStoreProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined): ApplicationRuntimeModelContract {
@@ -303,6 +329,7 @@ export function applicationRuntimeModelContract<TSpec extends object, TStatus ex
     connectionEnvName: `APPLIK8S_MODEL_STORE_${modelSegment.replace(/[^A-Z0-9_a-z]+/g, '_').toUpperCase()}_DATABASE_URL`,
     constraints: applicationModelStoreConstraints(options?.schema),
     indexes: applicationModelStoreIndexes(options?.schema),
+    retention: options?.schema?.retention ?? { mode: 'retain' },
   };
 }
 
@@ -328,12 +355,35 @@ export function applicationModelMigrationPreflightSql(model: ApplicationRuntimeM
     { name: 'created_at', type: 'timestamp with time zone' },
     { name: 'updated_at', type: 'timestamp with time zone' },
   ];
+  const expectedHistoryColumns = [
+    { name: 'id', type: 'text' },
+    { name: 'model', type: 'text' },
+    { name: 'revision', type: 'text' },
+    { name: 'plan', type: 'jsonb' },
+    { name: 'applied_at', type: 'timestamp with time zone' },
+  ];
   const indexChecks = [...model.constraints.filter((constraint) => constraint.kind === 'unique').map((constraint) => ({ name: constraint.name, fields: constraint.fields, unique: true })), ...model.indexes].map((index) => `
   IF EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = ${quoteSqlLiteral(index.name)} AND tablename <> ${quoteSqlLiteral(model.tableName)}) THEN
     RAISE EXCEPTION 'applik8s-model-migration-drift-detected: incompatibleIndex index % exists on a different table', ${quoteSqlLiteral(index.name)};
   END IF;
-  IF EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = ${quoteSqlLiteral(index.name)} AND tablename = ${quoteSqlLiteral(model.tableName)} AND indexdef NOT ILIKE ${quoteSqlLiteral(`%${index.fields[0] ?? index.name}%`)}) THEN
-    RAISE EXCEPTION 'applik8s-model-migration-drift-detected: incompatibleIndex index % does not match generated model schema', ${quoteSqlLiteral(index.name)};
+  IF EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = ${quoteSqlLiteral(index.name)} AND tablename = ${quoteSqlLiteral(model.tableName)}) THEN
+    SELECT pg_get_indexdef(pg_index.indexrelid), pg_index.indisunique
+    INTO actual_index_definition, actual_index_unique
+    FROM pg_index
+    JOIN pg_class index_class ON index_class.oid = pg_index.indexrelid
+    JOIN pg_class table_class ON table_class.oid = pg_index.indrelid
+    JOIN pg_namespace table_namespace ON table_namespace.oid = table_class.relnamespace
+    WHERE table_namespace.nspname = 'public'
+      AND table_class.relname = ${quoteSqlLiteral(model.tableName)}
+      AND index_class.relname = ${quoteSqlLiteral(index.name)}
+    LIMIT 1;
+    normalized_index_definition := replace(replace(regexp_replace(lower(coalesce(actual_index_definition, '')), '\\s+', '', 'g'), '"', ''), '::text', '');
+    IF actual_index_unique IS DISTINCT FROM ${index.unique ? 'true' : 'false'} THEN
+      RAISE EXCEPTION 'applik8s-model-migration-drift-detected: incompatibleIndex index % has incompatible uniqueness', ${quoteSqlLiteral(index.name)};
+    END IF;
+${index.fields.map((field) => `    IF position(${quoteSqlLiteral(normalizedSqlIndexExpression(field))} in normalized_index_definition) = 0 THEN
+      RAISE EXCEPTION 'applik8s-model-migration-drift-detected: incompatibleIndex index % does not match generated model schema', ${quoteSqlLiteral(index.name)};
+    END IF;`).join('\n')}
   END IF;`).join('\n');
 
   return `-- applik8s-model-migration-preflight
@@ -350,7 +400,12 @@ DECLARE
   latest_revision text;
   missing_column text;
   incompatible_column text;
+  missing_history_column text;
+  incompatible_history_column text;
   unknown_column text;
+  actual_index_definition text;
+  actual_index_unique boolean;
+  normalized_index_definition text;
 BEGIN
   SELECT to_regclass(${quoteSqlLiteral(`public.${model.tableName}`)}) IS NOT NULL INTO model_table_exists;
   SELECT to_regclass(${quoteSqlLiteral('public.applik8s_model_migrations')}) IS NOT NULL INTO history_table_exists;
@@ -360,6 +415,30 @@ BEGIN
   END IF;
 
   IF history_table_exists THEN
+    SELECT expected.column_name INTO missing_history_column
+    FROM (VALUES ${expectedHistoryColumns.map((column) => `(${quoteSqlLiteral(column.name)}, ${quoteSqlLiteral(column.type)})`).join(', ')}) AS expected(column_name, data_type)
+    LEFT JOIN information_schema.columns actual_history
+      ON actual_history.table_schema = 'public'
+      AND actual_history.table_name = 'applik8s_model_migrations'
+      AND actual_history.column_name = expected.column_name
+    WHERE actual_history.column_name IS NULL
+    LIMIT 1;
+    IF missing_history_column IS NOT NULL THEN
+      RAISE EXCEPTION 'applik8s-model-migration-drift-detected: missingHistoryColumn migration history table is missing required column %', missing_history_column;
+    END IF;
+
+    SELECT expected.column_name INTO incompatible_history_column
+    FROM (VALUES ${expectedHistoryColumns.map((column) => `(${quoteSqlLiteral(column.name)}, ${quoteSqlLiteral(column.type)})`).join(', ')}) AS expected(column_name, data_type)
+    JOIN information_schema.columns actual_history
+      ON actual_history.table_schema = 'public'
+      AND actual_history.table_name = 'applik8s_model_migrations'
+      AND actual_history.column_name = expected.column_name
+    WHERE actual_history.data_type <> expected.data_type
+    LIMIT 1;
+    IF incompatible_history_column IS NOT NULL THEN
+      RAISE EXCEPTION 'applik8s-model-migration-drift-detected: incompatibleHistoryColumn migration history table has incompatible column %', incompatible_history_column;
+    END IF;
+
     SELECT revision INTO latest_revision
     FROM applik8s_model_migrations
     WHERE model = ${quoteSqlLiteral(model.name)}
@@ -463,6 +542,10 @@ function modelSqlIndexExpression(field: string): string {
   return `(${modelJsonFieldExpression(field)})`;
 }
 
+function normalizedSqlIndexExpression(field: string): string {
+  return modelJsonFieldExpression(field).replaceAll('"', '').replaceAll(' ', '').toLowerCase();
+}
+
 function quoteSqlIdentifier(value: string): string {
   return `"${String(value).replaceAll('"', '""')}"`;
 }
@@ -525,27 +608,31 @@ function applicationModelIndexFields<TSpec extends object, TStatus extends objec
   ];
 }
 
-function recordApplicationModelMigrationJobGraph(state: ApplicationGraphState, modelName: string, modelNodeId: string, provider: ApplicationModelStoreProvider, resources: readonly ApplicationResourceRef[]): void {
+function recordApplicationModelMigrationJobGraph(state: ApplicationModelGraphState, modelName: string, modelNodeId: string, provider: ApplicationModelStoreProvider, resources: readonly ApplicationResourceRef[]): void {
   const jobName = provider.migrations?.jobName ?? `${kubernetesNameSegment(modelName)}-migration`;
   const nodeId = applicationGraphNodeId('job', jobName);
   const jobResource = { apiVersion: 'batch/v1', kind: 'Job', name: jobName, ...(provider.namespace ? { namespace: provider.namespace } : {}) };
   const statusTarget = { resource: resources[0] ?? { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster' }, statusPath: `status.applik8s.jobs.${jobName}` };
+  const statusConfigMapName = state.appResource ? `${kubernetesNameSegment(state.appResource.kind)}-status-reconciler-status` : undefined;
   const statusShape = applicationGeneratedJobDurableStatus({ jobName, idempotencyKey: 'metadata.generation', currentStep: 'provider-readiness' });
   const durableStatusUpdater = applicationGeneratedJobStatusUpdater({
     jobName,
     observes: [jobResource],
     writes: statusTarget,
     statusShape,
+    ...(statusConfigMapName ? { statusConfigMapName } : {}),
+    ...(provider.namespace ? { statusConfigMapNamespace: provider.namespace } : {}),
   });
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'job',
     name: jobName,
-    stability: 'experimental',
+    stability: 'stable',
     task: { taskKind: 'migration' },
     phase: applicationGeneratedJobPhase(),
     resources,
     retry: applicationGeneratedJobRetry(),
+    observability: applicationGeneratedJobObservability(`${jobName}-diagnostics`),
     runtime: applicationGeneratedJobRuntime({
       materialization: 'kubernetes-job',
       statusResource: statusTarget.resource,
@@ -553,7 +640,7 @@ function recordApplicationModelMigrationJobGraph(state: ApplicationGraphState, m
       permissions: [{ apiGroups: ['batch'], resources: ['jobs'], verbs: ['create', 'get', 'list', 'watch'] }],
       environment: applicationModelStoreRuntime(provider, modelName, resources),
       durableStatusUpdater,
-      statusLifecycle: applicationGeneratedJobStatusLifecycle({ jobName, materialization: 'kubernetes-job' }),
+      statusLifecycle: applicationGeneratedJobStatusLifecycle({ jobName, materialization: 'kubernetes-job', ...(statusConfigMapName ? { statusConfigMapName } : {}), ...(provider.namespace ? { statusConfigMapNamespace: provider.namespace } : {}) }),
       metadataLinks: [{ graphNode: { nodeId }, artifact: { kind: 'jobDiagnostics', name: `${jobName}-diagnostics` }, purpose: 'jobDiagnostics' }],
     }),
     generatedResources: [
@@ -575,7 +662,7 @@ function recordApplicationProviderGraph(state: ApplicationGraphState, tokenName:
     id: nodeId,
     kind: 'provider',
     name: providerInterface,
-    stability: 'experimental',
+    stability: 'stable',
     interface: providerInterface,
     implementation: applicationProviderImplementationName(implementation),
     contract: applicationProviderInterfaceContract(providerInterface, implementation),
@@ -618,8 +705,4 @@ function applicationModelRuntimeBoundary(): ApplicationModelBackendContract['run
     serializedCallbacks: 'generatedRuntimeClient',
     scriptExecution: 'scriptRuntimeClient',
   };
-}
-
-function applicationModelRuntimeEvent(modelName: string, event: 'created' | 'updated' | 'deleted'): ApplicationModelEventBinding {
-  throw new Error(`app.model(${JSON.stringify(modelName)}).on.${event}(...) requires generated ModelStore event semantics, which are not enabled in this v0.3 graph-authoring slice.`);
 }

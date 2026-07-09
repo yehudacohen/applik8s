@@ -1,40 +1,54 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { applicationGraphMetadataProperty } from '@applik8s/core';
-import type { AnyResourceDefinition, ApplicationDiagnosticContract, ApplicationGraph, ApplicationProviderInterfaceKind, ApplicationWatchScope, ApplicationWatchScopeLoweringContract, HandlerRegistration, JsonValue, OperatorDeploymentOptions, PermissionRule, ResourceDefinition, ResourceIndex, ResourceWatchAddress } from '@applik8s/core';
-import type { CrdOptions } from '@applik8s/sdk';
+import type { AnyResourceDefinition, ApplicationDiagnosticContract, ApplicationGeneratedResourceContract, ApplicationGraph, ApplicationObservabilityContract, ApplicationProviderInterfaceKind, ApplicationWatchScope, ApplicationWatchScopeLoweringContract, NormalizedOperationPlan, OperationTarget, PlanTargetOptions, Result, HandlerRegistration, JsonValue, OperatorDeploymentOptions, PermissionRule, ResourceDefinition, ResourceIndex, ResourceWatchAddress } from '@applik8s/core';
+import type { CrdOptions, SchemaInput } from '@applik8s/sdk';
 import { sdk as baseSdk, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
 import type { TypeKroListenerComposition, TypeKroListenerCompositionDefinition } from '@applik8s/typekro-adapter';
 import { typeKro } from '@applik8s/typekro-adapter';
 import { buildSync, transformSync } from 'esbuild';
+import { type as arkType } from 'arktype';
+import { Cel } from 'typekro';
 import type { Enhanced, KroCompatibleType, MagicAssignableShape, SerializationOptions } from 'typekro';
 import { cluster as typeKroCnpgCluster } from 'typekro/cnpg';
-import { configMap as typeKroConfigMap, cronJob as typeKroCronJob, deployment as typeKroDeployment, job as typeKroJob, role as typeKroRole, roleBinding as typeKroRoleBinding, service as typeKroService, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
+import { configMap as typeKroConfigMap, cronJob as typeKroCronJob, deployment as typeKroDeployment, ingress as typeKroIngress, job as typeKroJob, role as typeKroRole, roleBinding as typeKroRoleBinding, secret as typeKroSecret, service as typeKroService, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import { valkey as typeKroValkey } from 'typekro/valkey';
 import { addApplicationGraphEdge, addApplicationGraphNode, applicationGraphFromState, isApplicationGraph, type ApplicationGraphState } from './application-graph-state.js';
 import { applicationModelBinding, applicationModelMigrationPlan, applicationModelMigrationPreflightSql, applicationModelMigrationSql, applicationRuntimeModelContract, recordApplicationModelGraph, resolveApplicationModelStore } from './application-models.js';
-import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationRuntimeModelContract } from './application-models.js';
-import { applicationGeneratedJobDurableStatus, applicationGeneratedJobPhase, applicationGeneratedJobPhaseStatusContract, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
-import { applicationModelStoreImplementation, applyApplicationProvider, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, defaultApplicationIndexBackend, defaultApplicationIndexProvider, isValkeyIndexDefault } from './application-providers.js';
-import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
+import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationRuntimeModelContract } from './application-models.js';
+import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobPhaseStatusContract, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
+import { applicationHttpExposureImplementation, applicationModelStoreImplementation, applyApplicationProvider, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, isIngressHttpExposureProvider, isValkeyIndexDefault, ModelStore } from './application-providers.js';
+import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationPostgresModelStoreOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
 import { generatedApplicationServerRuntimeSource, runtimeIndexTable } from './application-server-runtime.js';
+import { generatedServerRuntimeBundleContract } from './application-server-runtime-bundle.js';
 import type { EntityDefinition } from './dsl.js';
 import { generatedApplicationRuntimeModuleBundle, generatedJobStatusRuntimeBundle } from './application-runtime-modules.js';
 import { applicationStatusReconcilerName, emitApplicationGeneratedJobStatusReconcilers } from './application-status-reconciler.js';
-import type { ApplicationGeneratedJobStatusTarget, ApplicationStatusReconcilerAppResourceTarget } from './application-status-reconciler.js';
+import type { ApplicationGeneratedJobStatusProjectionStore, ApplicationGeneratedJobStatusTarget, ApplicationStatusReconcilerAppResourceTarget } from './application-status-reconciler.js';
+import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationRouteHandlerSource, normalizeSerializableFunctionSource, routeAnalysisCallsMethod, routeDynamicBindingAccesses, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
+import type { ApplicationRouteSourceLocation, ApplicationServerRouteSourceAnalysis, SerializedApplicationServerRouteWithDependencies } from './application-route-source.js';
 
-export { CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, providers, Queue, Secret } from './application-providers.js';
+export { CounterStore, CredentialStore, defaultApplicationProviders, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, providers, Queue, Secret } from './application-providers.js';
 export type { ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
-export type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationIndexBackend, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
+export type { ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationEventSourceProvider, ApplicationGeneratedModelStoreMigrationJobOptions, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationModelStoreProviderToken, ApplicationObjectStorageProvider, ApplicationPostgresModelStoreOptions, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationQueueProvider, ApplicationSecretProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
 
 export interface KubernetesApplicationScope {
   readonly api: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
+  readonly http: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
   readonly server: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
+  readonly storage: ApplicationStorageRegistrar;
   operator<TBinding>(operator: (options: OperatorDeploymentOptions) => TBinding, options: OperatorDeploymentOptions): TBinding;
+  resource<TSpec extends object, TStatus extends object = Record<string, never>>(name: string, options: ApplicationResourceOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus>;
   crd<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options: ApplicationCrdOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus>;
+  model<TSpec extends object, TStatus extends object = Record<string, never>>(name: string, options: ApplicationNamedModelOptions<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus>;
   model<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options?: ApplicationModelOptions<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus>;
+  reconcile<TSpec extends object, TStatus extends object = Record<string, never>>(resource: ResourceDefinition<TSpec, TStatus>, handler: ApplicationReconcileHandler<TSpec, TStatus>, options?: ApplicationReconcileOptions): unknown;
   infra<TResource extends object>(resource: TResource): TResource;
+  config(name: string, options: ApplicationConfigOptions): ApplicationConfigBinding;
+  secret(name: string, options: ApplicationSecretOptions): ApplicationSecretBinding;
+  expose(name: string, options: ApplicationExposureOptions): ApplicationExposureBinding;
   job(name: string, options?: ApplicationJobOptions): ApplicationJobBinding;
   schedule(name: string, options?: ApplicationScheduleOptions): ApplicationJobBinding;
   defaults(defaults: ApplicationDefaults): ApplicationDefaultsBinding;
@@ -42,7 +56,43 @@ export interface KubernetesApplicationScope {
   aggregate<TStats extends object, TEvent extends object>(name: string, options: ApplicationAggregateOptions<TStats, TEvent>): ApplicationAggregateBinding<TStats, TEvent>;
 }
 
-export type ApplicationServerRegistrar = (name: string, options: ApplicationServerOptions, configure: (server: ApplicationServer) => void) => ApplicationServerBinding;
+export interface ApplicationServerRegistrar {
+  (name: string, configure: (server: ApplicationServer) => void): ApplicationServerBinding;
+  (name: string, options: ApplicationServerOptions, configure: (server: ApplicationServer) => void): ApplicationServerBinding;
+}
+
+export interface ApplicationStorageRegistrar {
+  postgres(name: string, options?: ApplicationStoragePostgresOptions): ApplicationDefaultsBinding;
+}
+
+export type ApplicationStoragePostgresOptions = Omit<ApplicationPostgresModelStoreOptions, 'name' | 'migrations'> & {
+  readonly migrations?: ApplicationPostgresModelStoreOptions['migrations'] | 'generated-job' | 'generatedJob';
+};
+
+export type ApplicationResourceOptions<TSpec extends object, TStatus extends object> = Omit<CrdOptions<TSpec, TStatus>, 'apiVersion' | 'kind'> & {
+  readonly apiVersion?: string;
+  readonly kind?: string;
+};
+
+export interface ApplicationNamedModelOptions<TSpec extends object = object, TStatus extends object = Record<string, never>> extends ApplicationModelOptions<TSpec, TStatus> {
+  readonly spec: SchemaInput<TSpec>;
+  readonly status?: SchemaInput<TStatus>;
+  readonly indexes?: Readonly<Record<string, readonly string[] | ApplicationNamedModelIndexOptions<TSpec, TStatus>>>;
+}
+
+export interface ApplicationNamedModelIndexOptions<TSpec extends object = object, TStatus extends object = Record<string, never>> {
+  readonly fields?: readonly string[];
+  readonly partitionBy?: string;
+  readonly filter?: Partial<TSpec> | Partial<TStatus>;
+  readonly orderBy?: readonly string[];
+  readonly unique?: boolean;
+}
+
+export type ApplicationReconcileHandler<TSpec extends object, TStatus extends object> = Parameters<ResourceDefinition<TSpec, TStatus>['on']['reconcile']>[0];
+
+export interface ApplicationReconcileOptions extends OperatorDeploymentOptions {
+  readonly name?: string;
+}
 
 export type ApplicationCrdOptions<TSpec extends object, TStatus extends object> = Omit<CrdOptions<TSpec, TStatus>, 'kind' | 'spec' | 'status'> & {
   readonly kind?: string;
@@ -55,6 +105,79 @@ export interface ApplicationJobOptions {
   readonly command?: readonly string[];
   readonly args?: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+}
+
+export interface ApplicationConfigOptions {
+  readonly namespace?: string;
+  readonly env?: string;
+  readonly configMapName?: string;
+  readonly key?: string;
+  readonly mountPath?: string;
+  readonly value?: string;
+}
+
+export interface ApplicationConfigBinding {
+  readonly kind: 'applicationConfig';
+  readonly name: string;
+  readonly provider: 'ConfigMap';
+  readonly resourceName: string;
+  readonly namespace?: string;
+  readonly key: string;
+  readonly env?: string;
+  readonly mountPath?: string;
+  readonly diagnosticsPath: string;
+}
+
+export interface ApplicationSecretOptions {
+  readonly namespace?: string;
+  readonly env?: string;
+  readonly secretName?: string;
+  readonly key?: string;
+  readonly mountPath?: string;
+  readonly redaction?: 'required' | 'none';
+  /**
+   * Controls whether applik8s emits the Secret object or only references an
+   * externally managed Secret. When omitted, an explicit secretName is treated
+   * as external and an implicit generated name is treated as generated.
+   */
+  readonly ownership?: 'generated' | 'external';
+}
+
+export interface ApplicationSecretBinding {
+  readonly kind: 'applicationSecret';
+  readonly name: string;
+  readonly provider: 'Secret';
+  readonly resourceName: string;
+  readonly namespace?: string;
+  readonly key: string;
+  readonly ownership: 'generated' | 'external';
+  readonly env?: string;
+  readonly mountPath?: string;
+  readonly redaction: 'required' | 'none';
+  readonly diagnosticsPath: string;
+}
+
+export interface ApplicationExposureOptions {
+  readonly namespace?: string;
+  readonly service?: string | ApplicationServerBinding;
+  readonly servicePort?: number;
+  readonly hostnames?: readonly string[];
+  readonly tls?: 'required' | 'optional' | 'disabled';
+  readonly tlsSecretName?: string;
+  readonly gateway?: string;
+  readonly ingressClassName?: string;
+  readonly path?: string;
+}
+
+export interface ApplicationExposureBinding {
+  readonly kind: 'applicationExposure';
+  readonly name: string;
+  readonly provider: 'HttpExposure';
+  readonly resourceName: string;
+  readonly namespace?: string;
+  readonly hostnames: readonly string[];
+  readonly tls: 'required' | 'optional' | 'disabled';
+  readonly statusPath: string;
 }
 
 export interface ApplicationScheduleOptions extends ApplicationJobOptions {
@@ -71,6 +194,7 @@ export interface ApplicationJobBinding {
   readonly resourceName: string;
   readonly diagnosticsConfigMapName: string;
   readonly statusPath: string;
+  plan<TStatus extends object>(target: OperationTarget<TStatus>, options?: PlanTargetOptions): Result<NormalizedOperationPlan<TStatus>>;
 }
 
 export interface ApplicationServerOptions {
@@ -85,6 +209,8 @@ export interface ApplicationServerOptions {
   readonly command?: readonly string[];
   readonly args?: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+  readonly config?: readonly ApplicationConfigBinding[] | Readonly<Record<string, ApplicationConfigBinding>>;
+  readonly secrets?: readonly ApplicationSecretBinding[] | Readonly<Record<string, ApplicationSecretBinding>>;
   readonly labels?: Readonly<Record<string, string>>;
   readonly permissions?: readonly ApplicationPermissionRule[];
   readonly volumes?: readonly ApplicationServerVolume[];
@@ -123,9 +249,13 @@ export interface ApplicationServerVolumeMount {
 
 export interface ApplicationServerBinding {
   readonly name: string;
+  readonly resourceName: string;
+  readonly serviceName: string;
+  readonly namespace?: string;
   readonly url: string;
   readonly routes: readonly ApplicationServerRoute[];
   readonly deployment: Enhanced<ApplicationDeploymentSpecProjection, ApplicationDeploymentStatusProjection>;
+  plan<TStatus extends object>(target: OperationTarget<TStatus>, options?: PlanTargetOptions): Result<NormalizedOperationPlan<TStatus>>;
 }
 
 export interface ApplicationServerRoute {
@@ -135,19 +265,6 @@ export interface ApplicationServerRoute {
   readonly handlerSource: string;
   readonly handlerSourceKind?: 'source' | 'functionToString';
   readonly handlerSourceLocation?: ApplicationRouteSourceLocation;
-}
-
-interface ApplicationRouteSourceLocation {
-  readonly file: string;
-  readonly line: number;
-  readonly column: number;
-}
-
-interface SerializedApplicationServerRoute extends ApplicationServerRoute {}
-
-interface SerializedApplicationServerRouteWithDependencies extends SerializedApplicationServerRoute {
-  readonly handlerDependencySource?: string;
-  readonly handlerDependencyResolveDir?: string;
 }
 
 interface GeneratedApplicationServerRouteModule {
@@ -238,38 +355,6 @@ interface ApplicationDeploymentStatusProjection {
 }
 
 
-interface ApplicationServerRouteSourceAnalysis {
-  readonly strippedSource: string;
-  readonly declaredIdentifiers: ReadonlySet<string>;
-  readonly memberCalls: readonly ApplicationServerMemberCall[];
-  readonly methodAliases: readonly ApplicationServerMethodAlias[];
-  readonly functionCalls: ReadonlySet<string>;
-  readonly freeIdentifiers: readonly string[];
-}
-
-interface ApplicationServerMemberCall {
-  readonly objectName: string;
-  readonly methodName: string;
-}
-
-interface ApplicationServerMethodAlias {
-  readonly aliasName: string;
-  readonly objectName: string;
-  readonly methodName: string;
-}
-
-interface ApplicationRouteSourceDependencies {
-  readonly source: string;
-  readonly resolveDir: string;
-}
-
-interface ApplicationRouteTopLevelBinding {
-  readonly name: string;
-  readonly source: string;
-  readonly analysisSource: string;
-  readonly kind: 'declaration' | 'import';
-}
-
 interface ApplicationRouteModuleBundle {
   readonly source: string;
   readonly inputs: readonly string[];
@@ -283,12 +368,15 @@ export interface ApplicationServer {
 export type ApplicationRouteHandler = (request: ApplicationRequest) => unknown | Promise<unknown>;
 
 export interface ApplicationRequest {
+  readonly params: Readonly<Record<string, string | undefined>>;
   readonly query: Readonly<Record<string, string | undefined>>;
+  readonly form: ApplicationFormData;
   formData(): Promise<ApplicationFormData>;
 }
 
 export interface ApplicationFormData {
   string(name: string): string;
+  enum<TValue extends string>(name: string, values: readonly TValue[]): TValue;
 }
 
 export interface ApplicationAggregateOptions<TStats extends object, TEvent extends object> {
@@ -318,6 +406,27 @@ export type KubernetesApplicationCompositionFunction = <TSpec extends KroCompati
   options?: SerializationOptions
 ) => TypeKroListenerComposition<TSpec, TStatus>;
 
+export interface KubernetesApplicationBuilderOptions {
+  readonly namespace?: string;
+  readonly apiVersion?: string;
+  readonly kind?: string;
+  readonly spec?: KroCompatibleType;
+  readonly status?: KroCompatibleType;
+}
+
+export interface KubernetesApplicationBuilder extends KubernetesApplicationScope {
+  readonly name: string;
+  readonly composition: TypeKroListenerComposition<KroCompatibleType, KroCompatibleType>;
+  readonly operatorInstalls: readonly unknown[];
+  readonly resources: readonly unknown[];
+  resolveOperatorInstalls(options: { readonly manifests: readonly unknown[] }): Result<unknown>;
+  factory(name: string): unknown;
+}
+
+export interface KubernetesApplicationFunction extends KubernetesApplicationCompositionFunction {
+  (name: string, options?: KubernetesApplicationBuilderOptions): KubernetesApplicationBuilder;
+}
+
 const applicationGraphByComposition = new WeakMap<object, ApplicationGraph>();
 let lastApplicationGraph: ApplicationGraph | undefined;
 
@@ -334,12 +443,52 @@ function applicationCompositionWrapper<TSpec extends KroCompatibleType, TStatus 
   const wrapped = (spec: TSpec) => {
     const context = createApplicationContext(definition);
     const result = withApplicationOperatorResourceCollection(context.state, () => compositionFn(spec, context.scope));
-    emitApplicationGeneratedJobStatusReconcilers(context.state, { graphResourceId, kubernetesNameSegment, apiGroupForApiVersion });
+    const generatedJobStatusStores = emitApplicationGeneratedJobStatusReconcilers(context.state, { graphResourceId, kubernetesNameSegment, apiGroupForApiVersion });
     lastApplicationGraph = applicationGraphFromState(kubernetesNameSegment(graphName), context.state);
-    return result;
+    return applicationStatusWithGeneratedJobProjection(result, generatedJobStatusStores);
   };
   Object.defineProperty(wrapped, 'toString', { value: () => compositionFn.toString() });
   return wrapped;
+}
+
+function applicationStatusWithGeneratedJobProjection<TStatus extends KroCompatibleType>(
+  status: MagicAssignableShape<TStatus>,
+  stores: readonly ApplicationGeneratedJobStatusProjectionStore[]
+): MagicAssignableShape<TStatus> {
+  if (stores.length === 0) {
+    return status;
+  }
+  const jobs = stores.map(applicationGeneratedJobStatusCel);
+  const mergedJobs = jobs.slice(1).reduce(
+    (merged, next) => Cel.expr<Readonly<Record<string, unknown>>>('map.merge(', merged, ', ', next, ')'),
+    jobs[0]
+  );
+  // TypeKro derives the nested status schema from this KRO-owned CEL projection.
+  // The public TStatus may omit the reserved applik8s namespace, so the
+  // framework augments it at the serialization boundary.
+  // typecast: add the reserved framework status namespace at the TypeKro serialization boundary.
+  return {
+    ...status,
+    applik8s: { jobs: mergedJobs },
+  } as MagicAssignableShape<TStatus>;
+}
+
+function applicationGeneratedJobStatusCel(store: ApplicationGeneratedJobStatusProjectionStore): Readonly<Record<string, unknown>> {
+  // TypeKro's `$` access forces a CEL reference for the shape-agnostic
+  // ConfigMap externalRef instead of reading a local placeholder value.
+  const data = Reflect.get(store, '$data');
+  const metadata = Reflect.get(store, 'metadata');
+  const resourceVersion = Reflect.get(metadata, 'resourceVersion');
+  return Cel.expr<Readonly<Record<string, unknown>>>(
+    resourceVersion,
+    ' != "" && has(',
+    data,
+    ') && "applik8s-jobs.json" in ',
+    data,
+    ' ? json.unmarshal(',
+    data,
+    '["applik8s-jobs.json"]) : {}'
+  );
 }
 
 export const kubernetesComposition: KubernetesApplicationCompositionFunction = (definition, compositionFn, options) => {
@@ -356,14 +505,287 @@ export const kubernetesComposition: KubernetesApplicationCompositionFunction = (
   return composition;
 };
 
-export const app: KubernetesApplicationCompositionFunction = kubernetesComposition;
+// typecast: this implementation intentionally presents the overloaded app(name, options) and app(definition, callback, options) public surface.
+export const app = ((definitionOrName: TypeKroListenerCompositionDefinition<KroCompatibleType, KroCompatibleType> | string, compositionOrOptions?: ((spec: KroCompatibleType, app: KubernetesApplicationScope) => MagicAssignableShape<KroCompatibleType>) | KubernetesApplicationBuilderOptions, options?: SerializationOptions) => {
+  if (typeof definitionOrName === 'string') {
+    // typecast: the public app overload selects builder options when the first argument is the app name.
+    return createKubernetesApplicationBuilder(definitionOrName, compositionOrOptions as KubernetesApplicationBuilderOptions | undefined);
+  }
+  // typecast: the public app overload selects the composition callback when the first argument is a TypeKro definition.
+  return kubernetesComposition(definitionOrName, compositionOrOptions as (spec: KroCompatibleType, app: KubernetesApplicationScope) => MagicAssignableShape<KroCompatibleType>, options);
+}) as KubernetesApplicationFunction;
 
 export const sdk = Object.assign({}, baseSdk, { app, kubernetesComposition });
 
+type ApplicationBuilderReplay = (scope: KubernetesApplicationScope) => void;
+
+function createKubernetesApplicationBuilder(name: string, options: KubernetesApplicationBuilderOptions = {}): KubernetesApplicationBuilder {
+  const definition = applicationBuilderDefinition(name, options);
+  const preview = createApplicationContext(definition).scope;
+  const replays: ApplicationBuilderReplay[] = [];
+  const declaredResources: Record<string, AnyResourceDefinition> = {};
+  const declaredModels: Record<string, ApplicationModelBinding<object, object>> = {};
+  let materialized: TypeKroListenerComposition<KroCompatibleType, KroCompatibleType> | undefined;
+
+  const invalidate = () => {
+    materialized = undefined;
+  };
+  const materialize = () => {
+    if (!materialized) {
+      materialized = kubernetesComposition(definition, (_spec, scope) => {
+        for (const replay of replays) {
+          replay(scope);
+        }
+        // typecast: builder-style apps synthesize the minimal TypeKro status object required by the generated composition definition.
+        return { ready: true } as MagicAssignableShape<KroCompatibleType>;
+      });
+    }
+    return materialized;
+  };
+  const withDefaultNamespace = <TOptions extends { readonly namespace?: string }>(value: TOptions | undefined): TOptions => {
+    if (!options.namespace || value?.namespace) {
+      // typecast: empty option objects are valid for every namespace-bearing app option shape used by this helper.
+      return (value ?? {}) as TOptions;
+    }
+    // typecast: TOptions is constrained to optional namespace and is preserved while filling the builder default namespace.
+    return { ...(value ?? {}), namespace: options.namespace } as TOptions;
+  };
+  const storage: ApplicationStorageRegistrar = {
+    postgres(storeName, storeOptions = {}) {
+      const normalizedOptions = withDefaultNamespace(storeOptions);
+      const binding = preview.storage.postgres(storeName, normalizedOptions);
+      replays.push((scope) => {
+        scope.storage.postgres(storeName, normalizedOptions);
+      });
+      invalidate();
+      return binding;
+    },
+  };
+  // typecast: the implementation records one runtime branch for both app.http(name, configure) and app.http(name, options, configure) overloads.
+  const http = ((serverName: string, optionsOrConfigure: ApplicationServerOptions | ((server: ApplicationServer) => void), maybeConfigure?: (server: ApplicationServer) => void) => {
+    const explicitOptions = typeof optionsOrConfigure === 'function' ? {} : optionsOrConfigure;
+    const serverOptions = applicationBuilderServerOptions(withDefaultNamespace<ApplicationServerOptions>(explicitOptions), declaredResources, declaredModels);
+    const configure = typeof optionsOrConfigure === 'function' ? optionsOrConfigure : maybeConfigure;
+    if (!configure) {
+      throw new Error(`app.http(${JSON.stringify(serverName)}, ...) requires a route configuration callback.`);
+    }
+    const binding = preview.http(serverName, serverOptions, configure);
+    replays.push((scope) => {
+      scope.http(serverName, serverOptions, configure);
+    });
+    invalidate();
+    return binding;
+  }) as ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
+  const builder = {
+    name,
+    get composition() {
+      return materialize();
+    },
+    get operatorInstalls() {
+      // typecast: TypeKro listener compositions expose richer install records; the builder public surface intentionally projects operatorName only.
+      return materialize().operatorInstalls as readonly { readonly operatorName: string }[];
+    },
+    get resources() {
+      // typecast: builder.resources is an inspection surface over generated Kubernetes/TypeKro resource objects with heterogeneous shapes.
+      return materialize().resources as readonly unknown[];
+    },
+    resolveOperatorInstalls(resolveOptions: { readonly manifests: readonly unknown[] }) {
+      // typecast: builder forwards opaque manifest input to the underlying TypeKro composition resolver while preserving the public Result shape.
+      return materialize().resolveOperatorInstalls(resolveOptions as never) as Result<unknown>;
+    },
+    factory(factoryName: string) {
+      // typecast: builder.factory forwards dynamic factory names to TypeKro and returns an intentionally opaque inspection/deployment factory.
+      return materialize().factory(factoryName as never) as unknown;
+    },
+    api: http,
+    http,
+    server: http,
+    storage,
+    operator<TBinding>(operator: (operatorOptions: OperatorDeploymentOptions) => TBinding, operatorOptions: OperatorDeploymentOptions): TBinding {
+      const normalizedOptions = withDefaultNamespace(operatorOptions);
+      const binding = preview.operator(operator, normalizedOptions);
+      replays.push((scope) => {
+        scope.operator(operator, normalizedOptions);
+      });
+      invalidate();
+      return binding;
+    },
+    resource<TSpec extends object, TStatus extends object = Record<string, never>>(resourceName: string, resourceOptions: ApplicationResourceOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus> {
+      const resource = preview.resource(resourceName, resourceOptions);
+      // typecast: declaredResources stores heterogeneous CRD definitions for later inferred app.http bindings.
+      declaredResources[resourceName] = resource as unknown as AnyResourceDefinition;
+      replays.push((scope) => {
+        scope.resource(resourceName, resourceOptions);
+      });
+      invalidate();
+      return resource;
+    },
+    crd<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, crdOptions: ApplicationCrdOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus> {
+      const resource = preview.crd(entity, crdOptions);
+      // typecast: declaredResources stores heterogeneous entity-backed CRD definitions for later inferred app.http bindings.
+      declaredResources[entity.name] = resource as unknown as AnyResourceDefinition;
+      replays.push((scope) => {
+        scope.crd(entity, crdOptions);
+      });
+      invalidate();
+      return resource;
+    },
+    model<TSpec extends object, TStatus extends object = Record<string, never>>(entityOrName: EntityDefinition<TSpec, TStatus> | string, modelOptions?: ApplicationModelOptions<TSpec, TStatus> | ApplicationNamedModelOptions<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus> {
+      const model = typeof entityOrName === 'string'
+        // typecast: named golden-path models require ApplicationNamedModelOptions and are guarded by the string branch.
+        ? preview.model(entityOrName, modelOptions as ApplicationNamedModelOptions<TSpec, TStatus>)
+        // typecast: entity-backed models accept ApplicationModelOptions and are guarded by the non-string branch.
+        : preview.model(entityOrName, modelOptions as ApplicationModelOptions<TSpec, TStatus> | undefined);
+      // typecast: declaredModels stores heterogeneous model bindings for later inferred app.http bindings.
+      declaredModels[model.name] = model as unknown as ApplicationModelBinding<object, object>;
+      replays.push((scope) => {
+        if (typeof entityOrName === 'string') {
+          // typecast: replay preserves the named-model overload chosen above.
+          scope.model(entityOrName, modelOptions as ApplicationNamedModelOptions<TSpec, TStatus>);
+        } else {
+          // typecast: replay preserves the entity-model overload chosen above.
+          scope.model(entityOrName, modelOptions as ApplicationModelOptions<TSpec, TStatus> | undefined);
+        }
+      });
+      invalidate();
+      return model;
+    },
+    reconcile<TSpec extends object, TStatus extends object = Record<string, never>>(resource: ResourceDefinition<TSpec, TStatus>, handler: ApplicationReconcileHandler<TSpec, TStatus>, reconcileOptions: ApplicationReconcileOptions = {}): unknown {
+      const normalizedOptions = withDefaultNamespace(reconcileOptions);
+      const binding = preview.reconcile(resource, handler, normalizedOptions);
+      replays.push((scope) => {
+        scope.reconcile(resource, handler, normalizedOptions);
+      });
+      invalidate();
+      return binding;
+    },
+    infra<TResource extends object>(resource: TResource): TResource {
+      const binding = preview.infra(resource);
+      replays.push((scope) => {
+        scope.infra(resource);
+      });
+      invalidate();
+      return binding;
+    },
+    config(configName: string, configOptions: ApplicationConfigOptions): ApplicationConfigBinding {
+      const normalizedOptions = withDefaultNamespace(configOptions);
+      const binding = preview.config(configName, normalizedOptions);
+      replays.push((scope) => {
+        scope.config(configName, normalizedOptions);
+      });
+      invalidate();
+      return binding;
+    },
+    secret(secretName: string, secretOptions: ApplicationSecretOptions): ApplicationSecretBinding {
+      const normalizedOptions = withDefaultNamespace(secretOptions);
+      const binding = preview.secret(secretName, normalizedOptions);
+      replays.push((scope) => {
+        scope.secret(secretName, normalizedOptions);
+      });
+      invalidate();
+      return binding;
+    },
+    expose(exposureName: string, exposureOptions: ApplicationExposureOptions): ApplicationExposureBinding {
+      const normalizedOptions = withDefaultNamespace(exposureOptions);
+      const binding = preview.expose(exposureName, normalizedOptions);
+      replays.push((scope) => {
+        scope.expose(exposureName, normalizedOptions);
+      });
+      invalidate();
+      return binding;
+    },
+    job(jobName: string, jobOptions?: ApplicationJobOptions): ApplicationJobBinding {
+      const normalizedOptions = withDefaultNamespace(jobOptions);
+      const binding = preview.job(jobName, normalizedOptions);
+      replays.push((scope) => {
+        scope.job(jobName, normalizedOptions);
+      });
+      invalidate();
+      return binding;
+    },
+    schedule(scheduleName: string, scheduleOptions?: ApplicationScheduleOptions): ApplicationJobBinding {
+      const normalizedOptions = withDefaultNamespace(scheduleOptions);
+      const binding = preview.schedule(scheduleName, normalizedOptions);
+      replays.push((scope) => {
+        scope.schedule(scheduleName, normalizedOptions);
+      });
+      invalidate();
+      return binding;
+    },
+    defaults(defaults: ApplicationDefaults): ApplicationDefaultsBinding {
+      const binding = preview.defaults(defaults);
+      replays.push((scope) => {
+        scope.defaults(defaults);
+      });
+      invalidate();
+      return binding;
+    },
+    provide<TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): ApplicationProviderBinding<TImplementation> {
+      const binding = preview.provide(token, implementation);
+      replays.push((scope) => {
+        scope.provide(token, implementation);
+      });
+      invalidate();
+      return binding;
+    },
+    aggregate<TStats extends object, TEvent extends object>(aggregateName: string, aggregateOptions: ApplicationAggregateOptions<TStats, TEvent>): ApplicationAggregateBinding<TStats, TEvent> {
+      const binding = preview.aggregate(aggregateName, aggregateOptions);
+      replays.push((scope) => {
+        scope.aggregate(aggregateName, aggregateOptions);
+      });
+      invalidate();
+      return binding;
+    },
+  } satisfies KubernetesApplicationBuilder;
+  Object.defineProperty(builder, applicationGraphMetadataProperty, { get: () => applicationGraphFor(materialize()), enumerable: false, configurable: false });
+  return builder;
+}
+
+function applicationBuilderDefinition(name: string, options: KubernetesApplicationBuilderOptions): TypeKroListenerCompositionDefinition<KroCompatibleType, KroCompatibleType> {
+  // typecast: TypeKro's generic definition type is broader than the app builder's schema defaults, but the emitted shape satisfies the runtime contract.
+  return {
+    name,
+    apiVersion: options.apiVersion ?? `${kubernetesNameSegment(name)}.applik8s.dev/v1alpha1`,
+    kind: options.kind ?? pascalCase(name),
+    spec: options.spec ?? arkType({}),
+    status: options.status ?? arkType({ ready: 'boolean' }),
+  } as unknown as TypeKroListenerCompositionDefinition<KroCompatibleType, KroCompatibleType>;
+}
+
+function applicationBuilderServerOptions(options: ApplicationServerOptions, resources: Readonly<Record<string, AnyResourceDefinition>>, models: Readonly<Record<string, ApplicationModelBinding<object, object>>>): ApplicationServerOptions {
+  return {
+    ...options,
+    ...(options.resources ? {} : { resources }),
+    ...(options.models ? {} : { models }),
+  };
+}
+
 function createApplicationContext<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(definition: TypeKroListenerCompositionDefinition<TSpec, TStatus>): ApplicationContext {
   const servers: Record<string, ApplicationServerBinding> = {};
-  const state: ApplicationScopeState = { resources: {}, indexes: {}, models: {}, emittedModelStores: new Set(), appResource: applicationCompositionResourceTarget(definition), generatedJobStatusTargets: [], defaults: {}, providers: {}, graphNodes: [], graphEdges: [], providerRequirements: [], providerBindings: [] };
-  const server = (name: string, options: ApplicationServerOptions, configure: (server: ApplicationServer) => void) => {
+  const state: ApplicationScopeState = {
+    resources: {}, indexes: {}, models: {}, emittedModelStores: new Set(), appResource: applicationCompositionResourceTarget(definition), generatedJobStatusTargets: [],
+    defaults: {
+      indexes: defaultApplicationProviders.IndexStore,
+      models: defaultApplicationProviders.ModelStore,
+      counters: defaultApplicationProviders.CounterStore,
+      events: defaultApplicationProviders.EventSource,
+      secrets: defaultApplicationProviders.Secret,
+      queues: defaultApplicationProviders.Queue,
+      objects: defaultApplicationProviders.ObjectStorage,
+      expose: defaultApplicationProviders.HttpExposure,
+      credentials: defaultApplicationProviders.CredentialStore,
+    },
+    providers: {}, graphNodes: [], graphEdges: [], providerRequirements: [], providerBindings: [],
+  };
+  for (const [providerInterface, implementation] of Object.entries(defaultApplicationProviders)) {
+    recordApplicationProviderGraph(state, providerInterface, 'frameworkDefault', implementation);
+  }
+  const server = (name: string, optionsOrConfigure: ApplicationServerOptions | ((server: ApplicationServer) => void), maybeConfigure?: (server: ApplicationServer) => void) => {
+    const options = typeof optionsOrConfigure === 'function' ? {} : optionsOrConfigure;
+    const configure = typeof optionsOrConfigure === 'function' ? optionsOrConfigure : maybeConfigure;
+    if (!configure) {
+      throw new Error(`app.http(${JSON.stringify(name)}, ...) requires a route configuration callback.`);
+    }
     const routes: ApplicationServerRoute[] = [];
     configure(createRouteRecorder(routes));
     const resolvedOptions = applicationServerOptionsWithScope(state, options, routes);
@@ -375,38 +797,134 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     collectApplicationIndexes(state, resolvedOptions.indexes ?? {});
     return binding;
   };
+  const defaults = (defaults: ApplicationDefaults): ApplicationDefaultsBinding => {
+    if ('models' in defaults) {
+      const modelStore = applicationModelStoreImplementation(defaults.models);
+      if (!modelStore) {
+        throw new Error('app.defaults({ models: ... }) currently supports only the typed Postgres ModelStore provider declaration. Use app.storage.postgres("name"), { kind: "postgres", ... }, or app.provide(ModelStore, { kind: "postgres", ... }) until additional ModelStore providers are implemented.');
+      }
+      state.defaults.models = defaults.models;
+      recordApplicationProviderGraph(state, 'ModelStore', 'default', modelStore);
+    }
+    if ('counters' in defaults) {
+      state.defaults.counters = defaults.counters;
+      recordApplicationProviderGraph(state, 'CounterStore', 'default', defaults.counters);
+    }
+    if ('events' in defaults) {
+      state.defaults.events = defaults.events;
+      recordApplicationProviderGraph(state, 'EventSource', 'default', defaults.events);
+    }
+    if ('secrets' in defaults) {
+      state.defaults.secrets = defaults.secrets;
+      recordApplicationProviderGraph(state, 'Secret', 'default', defaults.secrets);
+    }
+    if ('queues' in defaults) {
+      state.defaults.queues = defaults.queues;
+      recordApplicationProviderGraph(state, 'Queue', 'default', defaults.queues);
+    }
+    if ('objects' in defaults) {
+      state.defaults.objects = defaults.objects;
+      recordApplicationProviderGraph(state, 'ObjectStorage', 'default', defaults.objects);
+    }
+    if ('credentials' in defaults) {
+      state.defaults.credentials = defaults.credentials;
+      recordApplicationProviderGraph(state, 'CredentialStore', 'default', defaults.credentials);
+    }
+    if ('expose' in defaults) {
+      const exposureProvider = applicationHttpExposureImplementation(defaults.expose);
+      if (!exposureProvider) {
+        throw new Error('app.defaults({ expose: ... }) currently supports only the Ingress HttpExposure provider slice. Use "ingress" or { kind: "ingress", ... } until Gateway/provider-specific exposure adapters are implemented.');
+      }
+      state.defaults.expose = defaults.expose;
+      recordApplicationProviderGraph(state, 'HttpExposure', 'default', exposureProvider);
+    }
+    if ('indexes' in defaults) {
+      state.defaults.indexes = defaults.indexes;
+      recordApplicationProviderGraph(state, 'IndexStore', 'default', defaults.indexes);
+    }
+    return { kind: 'applicationDefaults', defaults };
+  };
+  const provide = <TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): ApplicationProviderBinding<TImplementation> => {
+    applyApplicationProvider(state, token, implementation);
+    recordApplicationProviderGraph(state, applicationProviderTokenName(token), 'provided', implementation);
+    return { kind: 'applicationProvider', token, implementation };
+  };
+  const storage: ApplicationStorageRegistrar = {
+    postgres(name, options = {}) {
+      const provider = ModelStore.postgres(applicationStoragePostgresOptions(name, options));
+      return defaults({ models: provider });
+    },
+  };
+  const resource = <TSpec extends object, TStatus extends object = Record<string, never>>(name: string, options: ApplicationResourceOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus> => {
+    const definitionResource = baseSdk.crd({
+      ...options,
+      apiVersion: options.apiVersion ?? applicationDefinitionApiVersion(definition),
+      kind: options.kind ?? name,
+    });
+    collectApplicationResources(state, { [name]: definitionResource });
+    recordApplicationCrdGraph(state, name, definitionResource);
+    return definitionResource;
+  };
+  const crd = <TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options: ApplicationCrdOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus> => {
+    const definitionResource = baseSdk.crd({
+      ...options,
+      kind: options.kind ?? entity.name,
+      spec: entity.spec,
+      ...(entity.status ? { status: entity.status } : {}),
+    });
+    collectApplicationResources(state, { [entity.name]: definitionResource });
+    recordApplicationCrdGraph(state, entity.name, definitionResource);
+    return definitionResource;
+  };
+  const reconcile = <TSpec extends object, TStatus extends object = Record<string, never>>(resource: ResourceDefinition<TSpec, TStatus>, handler: ApplicationReconcileHandler<TSpec, TStatus>, options: ApplicationReconcileOptions = {}): unknown => {
+    const { name, ...deploymentOptions } = options;
+    const registration = resource.on.reconcile(handler);
+    const operator = baseSdk.operator({
+      name: name ?? `${kubernetesNameSegment(resource.kind)}-controller`,
+      resources: { [resource.kind]: resource },
+      handlers: [registration],
+    });
+    collectApplicationResources(state, applicationOperatorResources(operator));
+    recordApplicationOperatorGraph(state, operator);
+    return operator(deploymentOptions);
+  };
   const scope: KubernetesApplicationScope = {
     // typecast: app.api is the application-context name for the same generated HTTP workload registrar as app.server.
     api: server as ApplicationServerRegistrar & Record<string, ApplicationServerBinding>,
+    // typecast: app.http is the v0.3 golden-path name for the same generated HTTP workload registrar as app.server.
+    http: server as ApplicationServerRegistrar & Record<string, ApplicationServerBinding>,
     // typecast: the callable server registrar also exposes named server bindings such as app.server.web after registration.
     server: server as ApplicationServerRegistrar & Record<string, ApplicationServerBinding>,
+    storage,
     operator(operator, options) {
       collectApplicationResources(state, applicationOperatorResources(operator));
       recordApplicationOperatorGraph(state, operator);
       return operator(options);
     },
-    crd(entity, options) {
-      const resource = baseSdk.crd({
-        ...options,
-        kind: options.kind ?? entity.name,
-        spec: entity.spec,
-        ...(entity.status ? { status: entity.status } : {}),
-      });
-      collectApplicationResources(state, { [entity.name]: resource });
-      recordApplicationCrdGraph(state, entity.name, resource);
-      return resource;
-    },
-    model(entity, options) {
-      const modelStore = resolveApplicationModelStore(state, entity.name, options?.store);
-      const runtimeModel = applicationRuntimeModelContract(entity, modelStore, options);
+    resource,
+    crd,
+    model(entityOrName, options) {
+      const { entity, modelOptions } = applicationModelInput(entityOrName, options);
+      const modelStore = resolveApplicationModelStore(state, entity.name, modelOptions?.store);
+      const runtimeModel = applicationRuntimeModelContract(entity, modelStore, modelOptions);
       emitApplicationModelStoreResources(state, runtimeModel, modelStore);
-      recordApplicationModelGraph(state, entity, modelStore, options);
+      recordApplicationModelGraph(state, entity, modelStore, modelOptions);
       state.models[runtimeModel.name] = runtimeModel;
-      return applicationModelBinding(entity, modelStore, options, runtimeModel);
+      return applicationModelBinding(entity, modelStore, modelOptions, runtimeModel);
     },
+    reconcile,
     infra(resource) {
       recordApplicationTypeKroResourceGraph(state, resource);
       return resource;
+    },
+    config(name, options) {
+      return emitApplicationConfig(state, name, options);
+    },
+    secret(name, options) {
+      return emitApplicationSecret(state, name, options);
+    },
+    expose(name, options) {
+      return emitApplicationExposure(state, name, options);
     },
     job(name, options) {
       return emitApplicationGeneratedJob(state, name, options ?? {}, undefined);
@@ -414,35 +932,8 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     schedule(name, options) {
       return emitApplicationGeneratedJob(state, name, options ?? {}, options?.cron ?? '* * * * *');
     },
-    defaults(defaults) {
-      if ('models' in defaults) {
-        const modelStore = applicationModelStoreImplementation(defaults.models);
-        if (!modelStore) {
-          throw new Error('app.defaults({ models: ... }) currently supports only the typed Postgres ModelStore provider declaration. Use { kind: "postgres", ... } or app.provide(ModelStore, { kind: "postgres", ... }) until additional ModelStore providers are implemented.');
-        }
-        state.defaults.models = defaults.models;
-        recordApplicationProviderGraph(state, 'ModelStore', 'default', modelStore);
-      }
-      if ('counters' in defaults) {
-        throw new Error('app.defaults({ counters: ... }) requires a storage-backed CounterStore implementation, which is not enabled yet. This fails closed so counter durability semantics stay explicit.');
-      }
-      if ('events' in defaults) {
-        throw new Error('app.defaults({ events: ... }) requires an EventSource implementation, which is not enabled yet. This fails closed so event delivery semantics stay explicit.');
-      }
-      if ('expose' in defaults) {
-        throw new Error('app.defaults({ expose: ... }) requires an HttpExposure implementation, which is not enabled yet. This fails closed so exposure, TLS, and hostname semantics stay explicit.');
-      }
-      if ('indexes' in defaults) {
-        state.defaults.indexes = defaults.indexes;
-        recordApplicationProviderGraph(state, 'IndexStore', 'default', defaults.indexes);
-      }
-      return { kind: 'applicationDefaults', defaults };
-    },
-    provide(token, implementation) {
-      applyApplicationProvider(state, token, implementation);
-      recordApplicationProviderGraph(state, applicationProviderTokenName(token), 'provided', implementation);
-      return { kind: 'applicationProvider', token, implementation };
-    },
+    defaults,
+    provide,
     aggregate(name, options) {
       collectApplicationIndexes(state, { [options.source.name]: options.source });
       recordApplicationAggregateGraph(state, name, options);
@@ -451,6 +942,102 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     },
   };
   return { scope, state };
+}
+
+function applicationStoragePostgresOptions(name: string, options: ApplicationStoragePostgresOptions): ApplicationPostgresModelStoreOptions {
+  const { migrations, ...rest } = options;
+  const normalizedMigrations = applicationStoragePostgresMigrations(migrations);
+  return {
+    ...rest,
+    name,
+    ...(normalizedMigrations ? { migrations: normalizedMigrations } : {}),
+  };
+}
+
+function applicationDefinitionApiVersion(definition: { readonly apiVersion?: string }): string {
+  if (!definition.apiVersion) {
+    throw new Error('app.resource(...) requires apiVersion when the enclosing app definition does not declare one.');
+  }
+  return definition.apiVersion;
+}
+
+function applicationStoragePostgresMigrations(migrations: ApplicationStoragePostgresOptions['migrations']): ApplicationPostgresModelStoreOptions['migrations'] | undefined {
+  if (migrations === undefined) {
+    return undefined;
+  }
+  if (migrations === 'generated-job' || migrations === 'generatedJob') {
+    return ModelStore.migrations.generatedJob();
+  }
+  if (typeof migrations === 'string') {
+    throw new Error(`app.storage.postgres(..., { migrations: ${JSON.stringify(migrations)} }) is not supported. Use "generated-job" or ModelStore.migrations.generatedJob(...) for the v0.3 generated migration job path.`);
+  }
+  return migrations;
+}
+
+function applicationModelInput<TSpec extends object, TStatus extends object>(entityOrName: EntityDefinition<TSpec, TStatus> | string, options: ApplicationModelOptions<TSpec, TStatus> | ApplicationNamedModelOptions<TSpec, TStatus> | undefined): { readonly entity: EntityDefinition<TSpec, TStatus>; readonly modelOptions: ApplicationModelOptions<TSpec, TStatus> | undefined } {
+  if (typeof entityOrName !== 'string') {
+    // typecast: non-string app.model input is the entity overload, so options are plain model options.
+    return { entity: entityOrName, modelOptions: options as ApplicationModelOptions<TSpec, TStatus> | undefined };
+  }
+  if (!options || !('spec' in options)) {
+    throw new Error(`app.model(${JSON.stringify(entityOrName)}, ...) requires a spec schema when using the golden-path named model form.`);
+  }
+  // typecast: string app.model input is validated above to include the named-model spec schema.
+  const namedOptions = options as ApplicationNamedModelOptions<TSpec, TStatus>;
+  const entity: EntityDefinition<TSpec, TStatus> = {
+    kind: 'applik8sEntity',
+    name: entityOrName,
+    spec: namedOptions.spec,
+    ...(namedOptions.status ? { status: namedOptions.status } : {}),
+  };
+  return { entity, modelOptions: applicationNamedModelOptions(namedOptions) };
+}
+
+function applicationNamedModelOptions<TSpec extends object, TStatus extends object>(options: ApplicationNamedModelOptions<TSpec, TStatus>): ApplicationModelOptions<TSpec, TStatus> {
+  const { spec: _spec, status: _status, indexes, schema, ...rest } = options;
+  const schemaIndexes = applicationNamedModelSchemaIndexes(indexes);
+  if (schemaIndexes.length === 0) {
+    return { ...rest, ...(schema ? { schema } : {}) };
+  }
+  return {
+    ...rest,
+    schema: {
+      ...schema,
+      indexes: [...(schema?.indexes ?? []), ...schemaIndexes],
+    },
+  };
+}
+
+function applicationNamedModelSchemaIndexes<TSpec extends object, TStatus extends object>(indexes: ApplicationNamedModelOptions<TSpec, TStatus>['indexes']): ApplicationModelSchemaIndexOptions<TSpec, TStatus>[] {
+  if (!indexes) {
+    return [];
+  }
+  return Object.entries(indexes).map(([name, declaration]) => {
+    if (isNamedModelIndexFieldList<TSpec, TStatus>(declaration)) {
+      const [partitionBy, ...orderBy] = declaration;
+      if (!partitionBy) {
+        throw new Error(`app.model(..., { indexes: { ${name}: [...] } }) requires at least one field.`);
+      }
+      return { name, partitionBy, ...(orderBy.length > 0 ? { orderBy } : {}) };
+    }
+    const fields = declaration.fields ?? [];
+    const partitionBy = declaration.partitionBy ?? fields[0];
+    if (!partitionBy) {
+      throw new Error(`app.model(..., { indexes: { ${name}: ... } }) requires partitionBy or at least one field.`);
+    }
+    const orderBy = declaration.orderBy ?? fields.slice(1);
+    return {
+      name,
+      partitionBy,
+      ...(declaration.filter ? { filter: declaration.filter } : {}),
+      ...(orderBy.length > 0 ? { orderBy } : {}),
+      ...(declaration.unique !== undefined ? { unique: declaration.unique } : {}),
+    };
+  });
+}
+
+function isNamedModelIndexFieldList<TSpec extends object, TStatus extends object>(declaration: NonNullable<ApplicationNamedModelOptions<TSpec, TStatus>['indexes']>[string]): declaration is readonly string[] {
+  return Array.isArray(declaration);
 }
 
 function withApplicationOperatorResourceCollection<T>(state: ApplicationScopeState, fn: () => T): T {
@@ -555,10 +1142,145 @@ function recordApplicationCrdGraph(state: ApplicationScopeState, name: string, r
     id: applicationGraphNodeId('crd', name),
     kind: 'crd',
     name,
-    stability: 'experimental',
+    stability: 'stable',
     materialization: 'kubernetes-crd',
     resource: applicationResourceContract(resource),
   });
+}
+
+function emitApplicationConfig(state: ApplicationScopeState, name: string, options: ApplicationConfigOptions): ApplicationConfigBinding {
+  const resourceName = options.configMapName ?? `${kubernetesNameSegment(name)}-config`;
+  const key = options.key ?? kubernetesNameSegment(name);
+  const namespace = options.namespace;
+  const nodeId = applicationGraphNodeId('config', name);
+  const resource = { apiVersion: 'v1', kind: 'ConfigMap', name: resourceName, ...(namespace ? { namespace } : {}) };
+  typeKroConfigMap({
+    id: graphResourceId(resourceName, 'applicationConfig'),
+    apiVersion: 'v1',
+    kind: 'ConfigMap',
+    metadata: { name: resourceName, ...(namespace ? { namespace } : {}), labels: applicationConfigLabels(name, 'config') },
+    data: { [key]: options.value ?? '' },
+  });
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'config',
+    name,
+    stability: 'stable',
+    provider: 'ConfigMap',
+    key,
+    ...(options.env ? { env: options.env } : {}),
+    ...(options.mountPath ? { mountPath: options.mountPath } : {}),
+    generatedResources: [{ role: 'config', graphNode: { nodeId }, resource, artifact: { kind: 'kubernetesManifest', name: resourceName } }],
+  });
+  return { kind: 'applicationConfig', name, provider: 'ConfigMap', resourceName, ...(namespace ? { namespace } : {}), key, ...(options.env ? { env: options.env } : {}), ...(options.mountPath ? { mountPath: options.mountPath } : {}), diagnosticsPath: `config/${name}` };
+}
+
+function emitApplicationSecret(state: ApplicationScopeState, name: string, options: ApplicationSecretOptions): ApplicationSecretBinding {
+  const resourceName = options.secretName ?? `${kubernetesNameSegment(name)}-secret`;
+  const key = options.key ?? kubernetesNameSegment(name);
+  const namespace = options.namespace;
+  const redaction = options.redaction ?? 'required';
+  const ownership = options.ownership ?? (options.secretName ? 'external' : 'generated');
+  const nodeId = applicationGraphNodeId('secret', name);
+  const resource = { apiVersion: 'v1', kind: 'Secret', name: resourceName, ...(namespace ? { namespace } : {}) };
+  if (ownership === 'generated') {
+    typeKroSecret({
+      id: graphResourceId(resourceName, 'applicationSecret'),
+      apiVersion: 'v1',
+      kind: 'Secret',
+      metadata: { name: resourceName, ...(namespace ? { namespace } : {}), labels: applicationConfigLabels(name, 'secret') },
+      type: 'Opaque',
+    });
+  }
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'secret',
+    name,
+    stability: 'stable',
+    provider: 'Secret',
+    ownership,
+    key,
+    redaction,
+    ...(options.env ? { env: options.env } : {}),
+    ...(options.mountPath ? { mountPath: options.mountPath } : {}),
+    generatedResources: ownership === 'generated'
+      ? [{ role: 'secret', graphNode: { nodeId }, resource, artifact: { kind: 'kubernetesManifest', name: resourceName } }]
+      : [],
+  });
+  return { kind: 'applicationSecret', name, provider: 'Secret', resourceName, ...(namespace ? { namespace } : {}), key, ownership, redaction, ...(options.env ? { env: options.env } : {}), ...(options.mountPath ? { mountPath: options.mountPath } : {}), diagnosticsPath: `secret/${name}` };
+}
+
+function emitApplicationExposure(state: ApplicationScopeState, name: string, options: ApplicationExposureOptions): ApplicationExposureBinding {
+  const provider = applicationHttpExposureImplementation(state.providers.expose) ?? applicationHttpExposureImplementation(state.defaults.expose) ?? { kind: 'ingress' } satisfies ApplicationHttpExposureProvider;
+  if (options.gateway) {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) Gateway API exposure is not enabled yet. Use Ingress-backed exposure with service and hostnames, or keep Gateway semantics explicit until v0.3 Gateway contracts are implemented.`);
+  }
+  if (!isIngressHttpExposureProvider(provider)) {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) requires the Ingress HttpExposure provider slice. Unsupported exposure providers fail closed until their generated adapters are implemented.`);
+  }
+  const exposedService = applicationExposureServiceName(options.service);
+  const exposedNamespace = applicationExposureServiceNamespace(options.service) ?? options.namespace;
+  if (!exposedService) {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) requires an explicit service name for the v0.3 Ingress exposure slice.`);
+  }
+  if (!options.hostnames || options.hostnames.length === 0) {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) requires at least one hostname so generated Ingress exposure does not broaden traffic accidentally.`);
+  }
+  if (options.tls === 'required' && !options.tlsSecretName) {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with tls: "required" requires tlsSecretName so generated Ingress TLS Secret ownership stays explicit.`);
+  }
+  const resourceName = `${kubernetesNameSegment(name)}-ingress`;
+  const namespace = exposedNamespace;
+  const hostnames = [...options.hostnames];
+  const nodeId = applicationGraphNodeId('exposure', name);
+  const resource = { apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', name: resourceName, ...(namespace ? { namespace } : {}) };
+  if (!state.graphNodes.some((node) => node.id === applicationProviderNodeId('HttpExposure'))) {
+    recordApplicationProviderGraph(state, 'HttpExposure', 'generated', provider);
+  }
+  const providerIngressClassName = typeof provider === 'object' ? provider.ingressClassName : undefined;
+  const ingressClassName = options.ingressClassName ?? providerIngressClassName;
+  typeKroIngress({
+    id: graphResourceId(resourceName, 'applicationExposure'),
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'Ingress',
+    metadata: { name: resourceName, ...(namespace ? { namespace } : {}), labels: applicationConfigLabels(name, 'exposure'), ...(ingressClassName ? { annotations: { 'kubernetes.io/ingress.class': ingressClassName } } : {}) },
+    spec: {
+      ...(ingressClassName ? { ingressClassName } : {}),
+      rules: hostnames.map((host) => ({
+        host,
+        http: { paths: [{ path: options.path ?? '/', pathType: 'Prefix', backend: { service: { name: exposedService, port: { number: options.servicePort ?? 80 } } } }] },
+      })),
+      ...(options.tlsSecretName ? { tls: [{ hosts: hostnames, secretName: options.tlsSecretName }] } : {}),
+    },
+  });
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'exposure',
+    name,
+    stability: 'stable',
+    provider: { interface: 'HttpExposure', nodeId: applicationGraphNodeId('provider', 'HttpExposure') },
+    service: exposedService,
+    hostnames,
+    tls: options.tls ?? 'disabled',
+    generatedResources: [{ role: 'exposure', graphNode: { nodeId }, resource, artifact: { kind: 'kubernetesManifest', name: resourceName } }],
+  });
+  return { kind: 'applicationExposure', name, provider: 'HttpExposure', resourceName, ...(namespace ? { namespace } : {}), hostnames, tls: options.tls ?? 'disabled', statusPath: `exposure/${name}` };
+}
+
+function applicationExposureServiceName(service: string | ApplicationServerBinding | undefined): string | undefined {
+  return typeof service === 'string' ? service : service?.serviceName;
+}
+
+function applicationExposureServiceNamespace(service: string | ApplicationServerBinding | undefined): string | undefined {
+  return typeof service === 'string' ? undefined : service?.namespace;
+}
+
+function applicationConfigLabels(name: string, component: 'config' | 'secret' | 'exposure'): Readonly<Record<string, string>> {
+  return {
+    'app.kubernetes.io/name': kubernetesNameSegment(name),
+    'app.kubernetes.io/component': component,
+    'app.kubernetes.io/managed-by': 'applik8s',
+  };
 }
 
 function recordApplicationOperatorGraph(state: ApplicationScopeState, operator: unknown): void {
@@ -672,7 +1394,7 @@ function recordApplicationProviderGraph(state: ApplicationScopeState, tokenName:
     id: nodeId,
     kind: 'provider',
     name: providerInterface,
-    stability: 'experimental',
+    stability: 'stable',
     interface: providerInterface,
     implementation: applicationProviderImplementationName(implementation),
     config: { bindingKind, provider: applicationProviderImplementationName(implementation) },
@@ -710,18 +1432,35 @@ function applicationTypeKroResourceRef(resource: unknown): { readonly apiVersion
 
 function recordApplicationServerGraph(state: ApplicationScopeState, name: string, options: ApplicationServerOptions, routes: readonly ApplicationServerRoute[]): void {
   const nodeId = applicationGraphNodeId('server', name);
+  const resourceName = options.resourceName ?? name;
+  const serviceName = options.serviceName ?? resourceName;
+  const serviceAccountName = options.serviceAccountName ?? resourceName;
+  const sourceConfigMapName = options.sourceConfigMapName ?? `${resourceName}-source`;
   const indexRefs = Object.keys(options.indexes ?? {}).map((indexName) => ({ nodeId: applicationGraphNodeId('index', indexName) }));
+  const configRefs = applicationConfigBindings(options.config).map((binding) => ({ nodeId: applicationGraphNodeId('config', binding.name) }));
+  const secretRefs = applicationSecretBindings(options.secrets).map((binding) => ({ nodeId: applicationGraphNodeId('secret', binding.name) }));
   for (const [resourceName, resource] of Object.entries(options.resources ?? {})) {
     recordApplicationCrdGraph(state, resourceName, resource);
   }
+  const generatedResources: ApplicationGeneratedResourceContract[] = [
+    { role: 'workload', graphNode: { nodeId }, resource: { apiVersion: 'apps/v1', kind: 'Deployment', name: resourceName, ...(options.namespace ? { namespace: options.namespace } : {}) }, artifact: { kind: 'kubernetesManifest', name: `${resourceName}.yaml` } },
+    { role: 'service', graphNode: { nodeId }, resource: { apiVersion: 'v1', kind: 'Service', name: serviceName, ...(options.namespace ? { namespace: options.namespace } : {}) }, artifact: { kind: 'kubernetesManifest', name: `${serviceName}.yaml` } },
+    { role: 'rbac', graphNode: { nodeId }, resource: { apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', name: serviceAccountName, ...(options.namespace ? { namespace: options.namespace } : {}) }, artifact: { kind: 'rbacManifest', name: `${serviceAccountName}.yaml` } },
+    { role: 'runtimeBundle', graphNode: { nodeId }, resource: { apiVersion: 'v1', kind: 'ConfigMap', name: sourceConfigMapName, ...(options.namespace ? { namespace: options.namespace } : {}) }, artifact: { kind: 'runtimeBundle', name: sourceConfigMapName } },
+    { role: 'routeDiagnostics', graphNode: { nodeId }, resource: { apiVersion: 'v1', kind: 'ConfigMap', name: sourceConfigMapName, ...(options.namespace ? { namespace: options.namespace } : {}) }, artifact: { kind: 'routeDiagnostics', name: sourceConfigMapName } },
+    ...applicationConfigBindings(options.config).map<ApplicationGeneratedResourceContract>((binding) => ({ role: 'config', graphNode: { nodeId }, resource: { apiVersion: 'v1', kind: 'ConfigMap', name: binding.resourceName, ...(binding.namespace ? { namespace: binding.namespace } : {}) }, dependsOn: [{ nodeId: applicationGraphNodeId('config', binding.name) }] })),
+    ...applicationSecretBindings(options.secrets).map<ApplicationGeneratedResourceContract>((binding) => ({ role: 'secret', graphNode: { nodeId }, resource: { apiVersion: 'v1', kind: 'Secret', name: binding.resourceName, ...(binding.namespace ? { namespace: binding.namespace } : {}) }, dependsOn: [{ nodeId: applicationGraphNodeId('secret', binding.name) }] })),
+  ];
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'server',
     name,
-    stability: 'experimental',
-    routes: routes.map((route) => ({ id: route.id, method: route.method, path: route.path, ...(route.handlerSourceLocation ? { sourceLocation: route.handlerSourceLocation } : {}) })),
+    stability: 'stable',
+    routes: routes.map((route) => ({ id: route.id, method: route.method, path: route.path, diagnostics: routeDiagnosticsContract(), ...(route.handlerSourceLocation ? { sourceLocation: route.handlerSourceLocation } : {}) })),
     resources: Object.values(options.resources ?? {}).map((resource) => applicationResourceRef(resource)),
     indexes: indexRefs,
+    observability: applicationServerObservability(sourceConfigMapName),
+    ...(generatedResources.length > 0 ? { generatedResources } : {}),
   });
   for (const resourceName of Object.keys(options.resources ?? {})) {
     addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: applicationGraphNodeId('crd', resourceName) }, relationship: 'dependsOn' });
@@ -730,6 +1469,12 @@ function recordApplicationServerGraph(state: ApplicationScopeState, name: string
     recordApplicationIndexGraph(state, indexName, index);
     addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: applicationGraphNodeId('index', indexName) }, relationship: 'reads' });
   }
+  for (const ref of configRefs) {
+    addApplicationGraphEdge(state, { from: { nodeId }, to: ref, relationship: 'reads' });
+  }
+  for (const ref of secretRefs) {
+    addApplicationGraphEdge(state, { from: { nodeId }, to: ref, relationship: 'reads' });
+  }
   recordApplicationCounterGraphs(state, name, options.resources ?? {}, routes);
   const permissions = inferApplicationServerPermissions({ routes, resources: options.resources ?? {}, indexes: options.indexes ?? {}, indexBackend: runtimeIndexBackendConfig(options.indexBackend, options.namespace, options.resourceName ?? name), cache: options.cache ?? [], explicit: options.permissions ?? [] });
   if (permissions.length > 0) {
@@ -737,6 +1482,30 @@ function recordApplicationServerGraph(state: ApplicationScopeState, name: string
     addApplicationGraphNode(state, { id: permissionNodeId, kind: 'permission', name: `${name}-permissions`, stability: 'experimental', owner: { nodeId }, mode: options.permissions && options.permissions.length > 0 ? 'explicitAndInferred' : 'inferred', rules: permissions });
     addApplicationGraphEdge(state, { from: { nodeId: permissionNodeId }, to: { nodeId }, relationship: 'writes' });
   }
+}
+
+function applicationServerObservability(diagnosticsArtifactName: string): ApplicationObservabilityContract {
+  return {
+    health: { mode: 'http', readinessPath: '/-/healthz', livenessPath: '/-/healthz' },
+    logs: { format: 'json', component: 'applik8s-server', failureEvents: ['applik8s-server-route-failure', 'applik8s-server-request-failure'] },
+    metrics: { mode: 'declaredHooks', names: ['applik8s_server_requests_total', 'applik8s_server_route_failures_total'] },
+    events: ['applik8s-server-route-failure', 'applik8s-server-request-failure'],
+    sourceMaps: 'required',
+    replayArtifacts: [{ kind: 'routeDiagnostics', name: diagnosticsArtifactName }],
+    diagnosticsArtifact: { kind: 'routeDiagnostics', name: diagnosticsArtifactName },
+  };
+}
+
+function routeDiagnosticsContract() {
+  // typecast: preserve literal diagnostic field names for graph contract emission.
+  return {
+    routeFailureEvent: 'applik8s-server-route-failure',
+    actionFailureEvent: 'applik8s-route-action-failure',
+    failurePolicy: 'failClosed',
+    partialEffects: 'unknownAfterActionStarted',
+    sourceMaps: 'required',
+    includes: ['routeId', 'method', 'path', 'module', 'sourceLocation', 'bundleInputs', 'action', 'diagnostic', 'stack'],
+  } as const;
 }
 
 function recordApplicationCounterGraphs(state: ApplicationScopeState, serverName: string, resources: Readonly<Record<string, AnyResourceDefinition>>, routes: readonly ApplicationServerRoute[]): void {
@@ -751,7 +1520,7 @@ function recordApplicationCounterGraphs(state: ApplicationScopeState, serverName
       id: nodeId,
       kind: 'counter',
       name: `${serverName}.${resourceName}`,
-      stability: 'experimental',
+      stability: 'stable',
       target: applicationResourceRef(resource),
       flush: { everyMs: 1000 },
     });
@@ -768,7 +1537,7 @@ function recordApplicationIndexGraph(state: ApplicationScopeState, name: string,
     id: nodeId,
     kind: 'index',
     name,
-    stability: 'experimental',
+    stability: 'stable',
     source: applicationResourceRef(index.resource),
     provider: { interface: 'IndexStore', nodeId: providerNodeId },
     ...(index.options.partitionBy ? { partitionBy: applicationExpressionContract(index.options.partitionBy) } : {}),
@@ -786,7 +1555,7 @@ function recordApplicationAggregateGraph<TStats extends object, TEvent extends o
     id: nodeId,
     kind: 'aggregate',
     name,
-    stability: 'experimental',
+    stability: 'stable',
     source: { nodeId: sourceNodeId },
     target: { resource: applicationResourceRef(options.target.resource), statusPath: 'status' },
     flush: { everyMs: parseDurationMs(options.flush?.every ?? '2s'), ...(options.flush?.maxEvents ? { maxEvents: options.flush.maxEvents } : {}) },
@@ -854,13 +1623,47 @@ function applicationOperatorHandlers(operator: unknown): readonly HandlerRegistr
 }
 
 function applicationServerBinding(name: string, options: ApplicationServerOptions, routes: readonly ApplicationServerRoute[], workload: ApplicationGeneratedWorkloadBinding): ApplicationServerBinding {
-  const serviceName = options.serviceName ?? options.resourceName ?? name;
-  const namespace = options.namespace ?? 'default';
+  const resourceName = options.resourceName ?? name;
+  const serviceName = options.serviceName ?? resourceName;
+  const namespace = options.namespace;
   return {
     name,
-    url: `http://${serviceName}.${namespace}.svc.cluster.local/`,
+    resourceName,
+    serviceName,
+    ...(namespace ? { namespace } : {}),
+    url: `http://${serviceName}.${namespace ?? 'default'}.svc.cluster.local/`,
     routes,
     deployment: workload.deployment,
+    plan: applicationBindingPlan,
+  };
+}
+
+function applicationBindingPlan<TStatus extends object>(target: OperationTarget<TStatus>, options?: PlanTargetOptions): Result<NormalizedOperationPlan<TStatus>> {
+  const plan = options?.dryRun ? target.operationTargetArtifacts?.dryRunPlan : target.operationTargetArtifacts?.applyPlan;
+  if (!plan) {
+    return {
+      ok: false,
+      error: {
+        code: 'LIFECYCLE_UNSAFE',
+        message: options?.dryRun
+          ? 'Generated application binding cannot plan operation target dry-run because no dryRunPlan artifact was emitted.'
+          : 'Generated application binding cannot plan operation target apply because no applyPlan artifact was emitted.',
+        severity: 'error',
+        context: { operationKind: options?.dryRun ? 'apply' : 'apply' },
+        recovery: { summary: options?.dryRun ? 'Regenerate the operation target with a dry-run artifact before calling plan(target, { dryRun: true }).' : 'Regenerate the operation target with an apply artifact before calling plan(target).' },
+      },
+    };
+  }
+  return { ok: true, value: { operations: plan.operations.map((operation) => applicationPlannedOperation(operation, options)) } };
+}
+
+function applicationPlannedOperation<TStatus extends object>(operation: NormalizedOperationPlan<TStatus>['operations'][number], options: PlanTargetOptions | undefined): NormalizedOperationPlan<TStatus>['operations'][number] {
+  if (operation.kind !== 'apply') {
+    return operation;
+  }
+  return {
+    ...operation,
+    ...(options?.fieldManager ? { fieldManager: options.fieldManager } : {}),
   };
 }
 
@@ -883,6 +1686,7 @@ function emitApplicationGeneratedJob(state: ApplicationScopeState, name: string,
   const statusPath = `status.applik8s.jobs.${resourceName}`;
   const diagnosticsConfigMapName = `${resourceName}-diagnostics`;
   const statusRuntimeConfigMapName = `${resourceName}-status-runtime`;
+  const observability = applicationGeneratedJobObservability(diagnosticsConfigMapName);
   const labels = {
     'app.kubernetes.io/name': resourceName,
     'app.kubernetes.io/component': cron ? 'generated-scheduled-job' : 'generated-job',
@@ -901,6 +1705,8 @@ function emitApplicationGeneratedJob(state: ApplicationScopeState, name: string,
     statusPath,
     statusShape: applicationGeneratedJobDurableStatus({ jobName: resourceName, idempotencyKey: 'metadata.generation' }),
   });
+  const statusReconcilerName = applicationStatusReconcilerName(state.appResource, kubernetesNameSegment);
+  const statusStoreConfigMapName = `${statusReconcilerName}-status`;
   const terminalFailureStatus = applicationGeneratedJobDurableStatus({
     jobName: resourceName,
     phase: 'Failed',
@@ -919,9 +1725,9 @@ function emitApplicationGeneratedJob(state: ApplicationScopeState, name: string,
     observes: [resourceRef],
     writes: phaseStatusTarget,
     statusShape: phaseStatusContract.statusShape,
+    statusConfigMapName: statusStoreConfigMapName,
+    ...(namespace ? { statusConfigMapNamespace: namespace } : {}),
   });
-  const statusReconcilerName = applicationStatusReconcilerName(state.appResource, kubernetesNameSegment);
-  const statusStoreConfigMapName = `${statusReconcilerName}-status`;
   const schedule = cron ? {
     cron,
     ...(isApplicationScheduleOptions(options) && options.timezone ? { timezone: options.timezone } : {}),
@@ -964,9 +1770,11 @@ function emitApplicationGeneratedJob(state: ApplicationScopeState, name: string,
       materialization,
       phaseStatusPath: statusPath,
       phaseStatusContract: JSON.stringify(phaseStatusContract, null, 2),
+      statusOwnershipContract: JSON.stringify(durableStatusUpdater.statusOwnership, null, 2),
       durableStatusTemplate: JSON.stringify(phaseStatusContract.statusShape, null, 2),
       terminalFailureStatus: JSON.stringify(terminalFailureStatus, null, 2),
       retryPolicy: JSON.stringify(applicationGeneratedJobRetry(), null, 2),
+      observabilityContract: JSON.stringify(observability, null, 2),
       failureDiagnostic: JSON.stringify({ event: 'applik8s-job-terminal-failure', severity: 'error', reason: 'GeneratedJobFailed', message: `Generated job ${resourceName} failed. Inspect ${cron ? 'cronjob' : 'job'}/${resourceName} and its pod logs.`, retryable: true }, null, 2),
     },
   });
@@ -1002,13 +1810,14 @@ function emitApplicationGeneratedJob(state: ApplicationScopeState, name: string,
     phase: applicationGeneratedJobPhase(),
     resources: [resourceRef],
     retry: applicationGeneratedJobRetry(),
+    observability,
     runtime: applicationGeneratedJobRuntime({
       materialization,
       statusResource: { nodeId },
       statusPath,
       permissions,
       durableStatusUpdater,
-      statusLifecycle: applicationGeneratedJobStatusLifecycle({ jobName: resourceName, materialization, statusConfigMapName: statusStoreConfigMapName }),
+      statusLifecycle: applicationGeneratedJobStatusLifecycle({ jobName: resourceName, materialization, statusConfigMapName: statusStoreConfigMapName, ...(namespace ? { statusConfigMapNamespace: namespace } : {}) }),
       metadataLinks: [{ graphNode: { nodeId }, artifact: { kind: 'jobDiagnostics', name: diagnosticsConfigMapName }, purpose: 'jobDiagnostics' }],
     }),
     generatedResources: [
@@ -1019,7 +1828,7 @@ function emitApplicationGeneratedJob(state: ApplicationScopeState, name: string,
     ],
   });
 
-  return { kind: 'applicationJob', name, resourceName, diagnosticsConfigMapName, statusPath };
+  return { kind: 'applicationJob', name, resourceName, diagnosticsConfigMapName, statusPath, plan: applicationBindingPlan };
 }
 
 function registerApplicationGeneratedJobStatusTarget(state: ApplicationScopeState, target: ApplicationGeneratedJobStatusTarget): void {
@@ -1131,6 +1940,7 @@ function emitApplicationModelMigrationResources(state: ApplicationScopeState, mo
   const statusPath = `status.applik8s.jobs.${jobName}`;
   const migrationConfigMapName = `${jobName}-migration`;
   const statusRuntimeConfigMapName = `${jobName}-status-runtime`;
+  const observability = applicationGeneratedJobObservability(`${jobName}-diagnostics`);
   const migrationPlan = applicationModelMigrationPlan(model);
   const migrationPreflightSql = applicationModelMigrationPreflightSql(model);
   const migrationSql = applicationModelMigrationSql(model);
@@ -1140,6 +1950,14 @@ function emitApplicationModelMigrationResources(state: ApplicationScopeState, mo
     statusResource: clusterRef,
     statusPath,
     statusShape: applicationGeneratedJobDurableStatus({ jobName, idempotencyKey: 'metadata.generation', currentStep: 'provider-readiness' }),
+  });
+  const migrationStatusUpdater = applicationGeneratedJobStatusUpdater({
+    jobName,
+    observes: [migrationJobRef],
+    writes: { resource: clusterRef, statusPath },
+    statusShape: phaseStatusContract.statusShape,
+    statusConfigMapName: `${kubernetesNameSegment(state.appResource.kind)}-status-reconciler-status`,
+    ...(namespace ? { statusConfigMapNamespace: namespace } : {}),
   });
   const terminalFailureStatus = applicationGeneratedJobDurableStatus({
     jobName,
@@ -1180,7 +1998,7 @@ function emitApplicationModelMigrationResources(state: ApplicationScopeState, mo
           containers: [{
             name: 'migration',
             image: 'postgres:16-alpine',
-            command: ['sh', '-c', 'echo "applik8s-model-migration preflight $APPLIK8S_MODEL_STORE_MODEL"; psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/preflight.sql || exit 1; echo "applik8s-model-migration applying $APPLIK8S_MODEL_STORE_MODEL"; for attempt in $(seq 1 60); do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/migration.sql && exit 0; echo "applik8s-model-migration retry $attempt"; sleep 5; done; exit 1'],
+            command: ['sh', '-c', 'echo "applik8s-model-migration preflight $APPLIK8S_MODEL_STORE_MODEL"; for attempt in $(seq 1 60); do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/preflight.sql && break; echo "applik8s-model-migration preflight retry $attempt"; sleep 5; if [ "$attempt" = "60" ]; then exit 1; fi; done; echo "applik8s-model-migration applying $APPLIK8S_MODEL_STORE_MODEL"; for attempt in $(seq 1 60); do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/migration.sql && exit 0; echo "applik8s-model-migration retry $attempt"; sleep 5; done; exit 1'],
             env: [
               { name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: secretName, key: secretKey } } },
               { name: 'DATABASE_URL_SECRET_KEY', value: secretKey },
@@ -1211,8 +2029,10 @@ function emitApplicationModelMigrationResources(state: ApplicationScopeState, mo
       phaseStatusResource: `postgresql.cnpg.io/v1/Cluster/${namespace ? `${namespace}/` : ''}${clusterName}`,
       phaseStatusPath: statusPath,
       phaseStatusContract: JSON.stringify(phaseStatusContract, null, 2),
+      statusOwnershipContract: JSON.stringify(migrationStatusUpdater.statusOwnership, null, 2),
       durableStatusTemplate: JSON.stringify(phaseStatusContract.statusShape, null, 2),
       terminalFailureStatus: JSON.stringify(terminalFailureStatus, null, 2),
+      observabilityContract: JSON.stringify(observability, null, 2),
       semantics: 'generatedIdempotentPostgresMigration',
       migrationConfigMap: migrationConfigMapName,
       migrationPreflightSql,
@@ -1220,7 +2040,7 @@ function emitApplicationModelMigrationResources(state: ApplicationScopeState, mo
       compatibilityPolicy: JSON.stringify({ mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob', enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' } }),
       driftPolicy: 'failClosed',
       migrationPlan: JSON.stringify(migrationPlan, null, 2),
-      failureModes: JSON.stringify({ missingCredentials: 'blockBeforeSql', providerReadiness: 'preflightSelectOne', lockBehavior: 'providerNativeAdvisoryLock', missingHistoryTable: 'schemaDriftFailClosed', badSql: 'terminalFailureWithJobLogs', incompatibleColumn: 'schemaDriftFailClosed', incompatibleIndex: 'schemaDriftFailClosed', unknownExistingObject: 'schemaDriftFailClosed', destructiveChange: 'rejectWithoutExplicitPlan' }, null, 2),
+      failureModes: JSON.stringify({ missingCredentials: 'blockBeforeSql', providerReadiness: 'preflightSelectOne', lockBehavior: 'providerNativeAdvisoryLock', missingHistoryTable: 'schemaDriftFailClosed', missingHistoryColumn: 'schemaDriftFailClosed', incompatibleHistoryColumn: 'schemaDriftFailClosed', badSql: 'terminalFailureWithJobLogs', incompatibleColumn: 'schemaDriftFailClosed', incompatibleIndex: 'schemaDriftFailClosed', unknownExistingObject: 'schemaDriftFailClosed', destructiveChange: 'rejectWithoutExplicitPlan' }, null, 2),
       driftDiagnostic: JSON.stringify({ event: 'applik8s-model-migration-drift-detected', severity: 'error', reason: 'SchemaDriftDetected', message: `Generated migration for model ${model.name} detected existing database schema drift or incompatible table/index shape. Provide an explicit migration plan or repair the database before retrying.`, retryable: false }, null, 2),
       failureDiagnostic: JSON.stringify({ event: 'applik8s-model-migration-failed', severity: 'error', reason: 'GeneratedMigrationFailed', message: `Generated migration for model ${model.name} failed. Inspect job/${jobName} logs and the migration SQL ConfigMap.`, retryable: true }, null, 2),
     },
@@ -1286,6 +2106,8 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
     } : {}),
     ...(options.env ?? {}),
   };
+  const configBindings = applicationConfigBindings(options.config);
+  const secretBindings = applicationSecretBindings(options.secrets);
   const labels = {
     'app.kubernetes.io/name': resourceName,
     'app.kubernetes.io/component': 'server',
@@ -1295,10 +2117,14 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
   const id = (suffix: string) => graphResourceId(resourceName, suffix);
   const appVolumeMounts = [
     ...(sourceBundle ? [{ name: 'applik8s-server-source', mountPath: '/app', readOnly: true }] : []),
+    ...applicationConfigVolumeMounts(configBindings),
+    ...applicationSecretVolumeMounts(secretBindings),
     ...(options.volumeMounts ?? []),
   ];
   const appVolumes = [
     ...(mountedSourceBundle ? [{ name: 'applik8s-server-source', configMap: { name: sourceConfigMapName, items: mountedSourceBundle.items } }] : []),
+    ...applicationConfigVolumes(configBindings),
+    ...applicationSecretVolumes(secretBindings),
     ...(options.volumes ?? []),
   ];
 
@@ -1364,9 +2190,13 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
             ...(options.args ? { args: [...options.args] } : {}),
             env: [
               ...Object.entries(env).map(([envName, value]) => ({ name: envName, value })),
+              ...applicationConfigEnvironmentVariables(configBindings),
+              ...applicationSecretEnvironmentVariables(secretBindings),
               ...modelStoreEnvironmentVariables(runtimeModels, namespace),
             ],
             ports: [{ name: 'http', containerPort: 8080 }],
+            readinessProbe: { httpGet: { path: '/-/healthz', port: 'http' }, initialDelaySeconds: 2, periodSeconds: 10 },
+            livenessProbe: { httpGet: { path: '/-/healthz', port: 'http' }, initialDelaySeconds: 10, periodSeconds: 20 },
             ...(appVolumeMounts.length > 0 ? { volumeMounts: appVolumeMounts } : {}),
           }],
           ...(appVolumes.length > 0 ? { volumes: appVolumes } : {}),
@@ -1387,6 +2217,54 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
   });
   // typecast: TypeKro's Kubernetes deployment factory exposes the full Kubernetes Deployment shape; app.server only relies on this narrower readiness projection.
   return { deployment: deployment as unknown as Enhanced<ApplicationDeploymentSpecProjection, ApplicationDeploymentStatusProjection> };
+}
+
+function applicationConfigBindings(config: ApplicationServerOptions['config']): readonly ApplicationConfigBinding[] {
+  if (!config) {
+    return [];
+  }
+  return Array.isArray(config) ? config : Object.values(config);
+}
+
+function applicationSecretBindings(secrets: ApplicationServerOptions['secrets']): readonly ApplicationSecretBinding[] {
+  if (!secrets) {
+    return [];
+  }
+  return Array.isArray(secrets) ? secrets : Object.values(secrets);
+}
+
+function applicationConfigEnvironmentVariables(bindings: readonly ApplicationConfigBinding[]): readonly { readonly name: string; readonly valueFrom: { readonly configMapKeyRef: { readonly name: string; readonly key: string } } }[] {
+  return bindings.filter((binding) => binding.env).map((binding) => ({
+    name: binding.env ?? binding.name,
+    valueFrom: { configMapKeyRef: { name: binding.resourceName, key: binding.key } },
+  }));
+}
+
+function applicationSecretEnvironmentVariables(bindings: readonly ApplicationSecretBinding[]): readonly { readonly name: string; readonly valueFrom: { readonly secretKeyRef: { readonly name: string; readonly key: string } } }[] {
+  return bindings.filter((binding) => binding.env).map((binding) => ({
+    name: binding.env ?? binding.name,
+    valueFrom: { secretKeyRef: { name: binding.resourceName, key: binding.key } },
+  }));
+}
+
+function applicationConfigVolumeMounts(bindings: readonly ApplicationConfigBinding[]): readonly ApplicationServerVolumeMount[] {
+  return bindings.filter((binding) => binding.mountPath).map((binding) => ({ name: applicationBindingVolumeName('config', binding.name), mountPath: binding.mountPath ?? `/var/run/applik8s/config/${kubernetesNameSegment(binding.name)}`, readOnly: true }));
+}
+
+function applicationSecretVolumeMounts(bindings: readonly ApplicationSecretBinding[]): readonly ApplicationServerVolumeMount[] {
+  return bindings.filter((binding) => binding.mountPath).map((binding) => ({ name: applicationBindingVolumeName('secret', binding.name), mountPath: binding.mountPath ?? `/var/run/applik8s/secrets/${kubernetesNameSegment(binding.name)}`, readOnly: true }));
+}
+
+function applicationConfigVolumes(bindings: readonly ApplicationConfigBinding[]): readonly ApplicationServerVolume[] {
+  return bindings.filter((binding) => binding.mountPath).map((binding) => ({ name: applicationBindingVolumeName('config', binding.name), configMap: { name: binding.resourceName } }));
+}
+
+function applicationSecretVolumes(bindings: readonly ApplicationSecretBinding[]): readonly ApplicationServerVolume[] {
+  return bindings.filter((binding) => binding.mountPath).map((binding) => ({ name: applicationBindingVolumeName('secret', binding.name), secret: { secretName: binding.resourceName } }));
+}
+
+function applicationBindingVolumeName(kind: 'config' | 'secret', name: string): string {
+  return `applik8s-${kind}-${kubernetesNameSegment(name)}`.slice(0, 63);
 }
 
 function emitApplicationAggregateResources<TStats extends object, TEvent extends object>(name: string, options: ApplicationAggregateOptions<TStats, TEvent>): ApplicationGeneratedWorkloadBinding {
@@ -1502,6 +2380,12 @@ function kubernetesNameSegment(value: string): string {
   return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '') || 'app';
 }
 
+function pascalCase(value: string): string {
+  const parts = kubernetesNameSegment(value).split(/[-.]+/).filter(Boolean);
+  const result = parts.map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`).join('');
+  return result || 'App';
+}
+
 function serializeApplicationAggregateFunction(label: string, value: (...args: never[]) => unknown, allowedIdentifiers: ReadonlySet<string>): string {
   const source = normalizeSerializableFunctionSource(value.toString().trim());
   if (!source || source.includes('[native code]')) {
@@ -1514,16 +2398,13 @@ function serializeApplicationAggregateFunction(label: string, value: (...args: n
   }
   const unsupported = unsupportedRouteFreeIdentifiers(analyzeApplicationServerRouteSource(source), allowedIdentifiers);
   if (unsupported.length > 0) {
-    throw new Error(`${label} cannot serialize closure identifier(s): ${unsupported.join(', ')}. Inline constants inside the function or pass values through resource state.`);
+    throw new Error(serializedCallbackClosureMessage({
+      label,
+      identifiers: unsupported,
+      guidance: 'Keep plain constants inside the callback, or pass values through the source event, aggregate stats, or target resource state so the generated aggregate is self-contained.',
+    }));
   }
   return source;
-}
-
-function normalizeSerializableFunctionSource(source: string): string {
-  if (/^async\(/.test(source)) {
-    return source.replace(/^async\(/, 'async (');
-  }
-  return /^[$A-Z_a-z][$\w]*\s*\(/.test(source) ? `function ${source}` : source;
 }
 
 function parseDurationMs(duration: string): number {
@@ -1621,7 +2502,11 @@ function serializeApplicationServerFunctionCapture(name: string, value: Applicat
   }
   const unsupported = unsupportedRouteFreeIdentifiers(analyzeApplicationServerRouteSource(source), captureNames);
   if (unsupported.length > 0) {
-    throw new Error(`app.server capture ${JSON.stringify(name)} cannot serialize closure identifier(s): ${unsupported.join(', ')}. Pass every referenced value through app.server captures or inline constants inside the capture function.`);
+    throw new Error(serializedCallbackClosureMessage({
+      label: `app.server capture ${JSON.stringify(name)}`,
+      identifiers: unsupported,
+      guidance: 'Pass every referenced value through app.server captures or keep plain constants inside the capture function so the generated server binding is self-contained.',
+    }));
   }
   const aliasName = applicationServerFunctionCaptureAliasName(name, value.name);
   return { kind: 'function', source, ...(aliasName ? { aliasName } : {}) };
@@ -1732,20 +2617,6 @@ function resourceOperationsInSource(analysis: ApplicationServerRouteSourceAnalys
   return (Object.keys(resourceOperationVerbs) as ApplicationServerResourceOperation[]).filter((operation) => routeAnalysisCallsMethod(analysis, bindingName, operation));
 }
 
-function routeAnalysisCallsMethod(analysis: ApplicationServerRouteSourceAnalysis, bindingName: string, methodName: string): boolean {
-  return analysis.memberCalls.some((call) => call.objectName === bindingName && call.methodName === methodName) || analysis.methodAliases.some((alias) => alias.objectName === bindingName && alias.methodName === methodName && analysis.functionCalls.has(alias.aliasName));
-}
-
-function routeDynamicBindingAccesses(analysis: ApplicationServerRouteSourceAnalysis, bindingNames: ReadonlySet<string>): readonly string[] {
-  const dynamicAccesses = new Set<string>();
-  for (const bindingName of bindingNames) {
-    if (new RegExp(`\\b${escapeRegExp(bindingName)}\\s*\\[`).test(analysis.strippedSource)) {
-      dynamicAccesses.add(bindingName);
-    }
-  }
-  return [...dynamicAccesses].sort();
-}
-
 function resourceOperationPermission(resource: Pick<AnyResourceDefinition, 'apiVersion' | 'plural'>, operation: ApplicationServerResourceOperation): ApplicationPermissionRule {
   return {
     apiGroups: [apiGroupForApiVersion(resource.apiVersion)],
@@ -1780,579 +2651,8 @@ function apiGroupForApiVersion(apiVersion: string): string {
   return apiVersion.includes('/') ? apiVersion.split('/')[0] ?? '' : '';
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function unique<T>(values: readonly T[]): T[] {
   return [...new Set(values)];
-}
-
-function analyzeApplicationServerRouteSource(source: string): ApplicationServerRouteSourceAnalysis {
-  const strippedSource = stripCommentsAndStrings(source);
-  const declaredIdentifiers = declaredRouteIdentifiers(strippedSource);
-  const functionCalls = routeFunctionCalls(strippedSource);
-  const memberCalls = routeMemberCalls(strippedSource);
-  const methodAliases = routeMethodAliases(strippedSource);
-  const freeIdentifiers = routeFreeIdentifiers(strippedSource, declaredIdentifiers);
-  return { strippedSource, declaredIdentifiers, memberCalls, methodAliases, functionCalls, freeIdentifiers };
-}
-
-function routeMemberCalls(source: string): readonly ApplicationServerMemberCall[] {
-  const calls: ApplicationServerMemberCall[] = [];
-  for (const match of source.matchAll(/\b([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/g)) {
-    calls.push({ objectName: match[1] ?? '', methodName: match[2] ?? '' });
-  }
-  return calls.filter((call) => call.objectName.length > 0 && call.methodName.length > 0);
-}
-
-function routeMethodAliases(source: string): readonly ApplicationServerMethodAlias[] {
-  const aliases: ApplicationServerMethodAlias[] = [];
-  for (const match of source.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\b/g)) {
-    aliases.push({ aliasName: match[1] ?? '', objectName: match[2] ?? '', methodName: match[3] ?? '' });
-  }
-  return aliases.filter((alias) => alias.aliasName.length > 0 && alias.objectName.length > 0 && alias.methodName.length > 0);
-}
-
-function routeFunctionCalls(source: string): ReadonlySet<string> {
-  const calls = new Set<string>();
-  for (const match of source.matchAll(/\b([A-Za-z_$][\w$]*)\s*\(/g)) {
-    const name = match[1] ?? '';
-    const index = match.index ?? 0;
-    if (!name || previousNonWhitespace(source, index) === '.') {
-      continue;
-    }
-    calls.add(name);
-  }
-  return calls;
-}
-
-function routeFreeIdentifiers(source: string, declared: ReadonlySet<string>): readonly string[] {
-  const unsupported = new Set<string>();
-  const identifiers = source.matchAll(/\b[A-Za-z_$][\w$]*\b/g);
-  for (const match of identifiers) {
-    const name = match[0];
-    const index = match.index ?? 0;
-    if (declared.has(name) || routeKeywords.has(name)) {
-      continue;
-    }
-    const previous = previousNonWhitespace(source, index);
-    const next = nextNonWhitespace(source, index + name.length);
-    if (previous === '.' || next === ':' || isDeclarationIdentifier(source, index, name)) {
-      continue;
-    }
-    unsupported.add(name);
-  }
-  return [...unsupported].sort();
-}
-
-function unsupportedRouteFreeIdentifiers(analysis: ApplicationServerRouteSourceAnalysis, bindingNames: ReadonlySet<string>): readonly string[] {
-  const allowed = new Set([
-    ...bindingNames,
-    ...analysis.declaredIdentifiers,
-    'Array',
-    'Boolean',
-    'Date',
-    'Error',
-    'JSON',
-    'Math',
-    'Number',
-    'Object',
-    'Promise',
-    'RegExp',
-    'Response',
-    'String',
-    'any',
-    'boolean',
-    'URL',
-    'URLSearchParams',
-    'clearTimeout',
-    'console',
-    'decodeURIComponent',
-    'encodeURIComponent',
-    'globalThis',
-    'parseFloat',
-    'parseInt',
-    'process',
-    'setTimeout',
-    'string',
-    'undefined',
-    'unknown',
-    'void',
-  ]);
-  return analysis.freeIdentifiers.filter((name) => !allowed.has(name) && !routeKeywords.has(name));
-}
-
-function applicationRouteSourceDependencies(route: ApplicationServerRoute, unsupported: readonly string[], bindingNames: ReadonlySet<string>): ApplicationRouteSourceDependencies | undefined {
-  if (unsupported.length === 0) {
-    return undefined;
-  }
-  if (!route.handlerSourceLocation || route.handlerSourceKind !== 'source') {
-    return undefined;
-  }
-  const fileSource = readFileSync(route.handlerSourceLocation.file, 'utf8');
-  const topLevelBindings = applicationRouteTopLevelBindings(fileSource, bindingNames);
-  const included = new Map<string, ApplicationRouteTopLevelBinding>();
-  const unresolved = new Set<string>();
-  const queue = [...unsupported];
-  for (let index = 0; index < queue.length; index += 1) {
-    const name = queue[index] ?? '';
-    if (!name || bindingNames.has(name) || included.has(name) || routeKeywords.has(name) || unresolved.has(name)) {
-      continue;
-    }
-    const binding = topLevelBindings.get(name);
-    if (!binding) {
-      unresolved.add(name);
-      continue;
-    }
-    included.set(name, binding);
-    if (binding.kind === 'declaration') {
-      const nested = unsupportedRouteFreeIdentifiers(analyzeApplicationServerRouteSource(binding.analysisSource), new Set([...bindingNames, ...included.keys()]));
-      for (const nestedName of nested) {
-        if (!included.has(nestedName) && !unresolved.has(nestedName)) {
-          queue.push(nestedName);
-        }
-      }
-    }
-  }
-  if (unresolved.size > 0) {
-    throw new Error(`app.server route ${route.method} ${route.path} cannot serialize closure identifier(s): ${[...unresolved].sort().join(', ')}. Pass serializable values through app.server captures, pass resources/indexes through app.server bindings, or move helper code to module scope/imports.`);
-  }
-  const imports = unique([...included.values()].filter((binding) => binding.kind === 'import').map((binding) => binding.source));
-  const declarations = unique([...included.values()].filter((binding) => binding.kind === 'declaration').map((binding) => binding.source));
-  return { source: [...imports, ...declarations].join('\n\n'), resolveDir: dirname(route.handlerSourceLocation.file) };
-}
-
-function applicationRouteTopLevelBindings(source: string, bindingNames: ReadonlySet<string>): ReadonlyMap<string, ApplicationRouteTopLevelBinding> {
-  const bindings = new Map<string, ApplicationRouteTopLevelBinding>();
-  let index = 0;
-  let depth = 0;
-  while (index < source.length) {
-    const character = source[index] ?? '';
-    if (character === '\'' || character === '"') {
-      index = quotedSourceEnd(source, index, character);
-      continue;
-    }
-    if (character === '`') {
-      index = templateSourceEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '/') {
-      index = lineCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '*') {
-      index = blockCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && isRegexLiteralStart(source, index)) {
-      index = regexLiteralEnd(source, index);
-      continue;
-    }
-    if (character === '{') {
-      depth += 1;
-      index += 1;
-      continue;
-    }
-    if (character === '}') {
-      depth = Math.max(0, depth - 1);
-      index += 1;
-      continue;
-    }
-    if (depth === 0) {
-      const importBinding = topLevelImportBindingAt(source, index);
-      if (importBinding) {
-        for (const name of importBinding.names) {
-          bindings.set(name, { name, source: importBinding.source, analysisSource: importBinding.source, kind: 'import' });
-        }
-        index = importBinding.end;
-        continue;
-      }
-      const declaration = topLevelDeclarationBindingAt(source, index, bindingNames);
-      if (declaration) {
-        for (const name of declaration.names) {
-          bindings.set(name, { name, source: declaration.source, analysisSource: transpileRouteDependencySourceForAnalysis(declaration.source), kind: 'declaration' });
-        }
-        index = declaration.end;
-        continue;
-      }
-    }
-    index += 1;
-  }
-  return bindings;
-}
-
-function transpileRouteDependencySourceForAnalysis(source: string): string {
-  try {
-    return transformSync(source, { loader: 'ts', format: 'esm', target: 'node22' }).code;
-  } catch (_error) {
-    return source;
-  }
-}
-
-function topLevelImportBindingAt(source: string, index: number): { readonly names: readonly string[]; readonly source: string; readonly end: number } | undefined {
-  if (!keywordAt(source, index, 'import') || source.slice(index).match(/^import\s*\(/)) {
-    return undefined;
-  }
-  const end = statementSourceEnd(source, index);
-  const importSource = source.slice(index, end).trim();
-  if (/^import\s+type\b/.test(importSource)) {
-    return { names: [], source: importSource, end };
-  }
-  return { names: importedLocalNames(importSource), source: importSource, end };
-}
-
-function topLevelDeclarationBindingAt(source: string, index: number, bindingNames: ReadonlySet<string>): { readonly names: readonly string[]; readonly source: string; readonly end: number } | undefined {
-  const snippet = source.slice(index);
-  const functionMatch = snippet.match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b/);
-  if (functionMatch) {
-    const open = source.indexOf('{', index + functionMatch[0].length);
-    const close = open >= 0 ? matchingDelimiter(source, open, '{', '}') : undefined;
-    const end = close === undefined ? statementSourceEnd(source, index) : close + 1;
-    const names = [functionMatch[1] ?? ''].filter((name) => name && !bindingNames.has(name));
-    return { names, source: stripTopLevelExport(source.slice(index, end).trim()), end };
-  }
-  const classMatch = snippet.match(/^(?:export\s+)?class\s+([A-Za-z_$][\w$]*)\b/);
-  if (classMatch) {
-    const open = source.indexOf('{', index + classMatch[0].length);
-    const close = open >= 0 ? matchingDelimiter(source, open, '{', '}') : undefined;
-    const end = close === undefined ? statementSourceEnd(source, index) : close + 1;
-    const names = [classMatch[1] ?? ''].filter((name) => name && !bindingNames.has(name));
-    return { names, source: stripTopLevelExport(source.slice(index, end).trim()), end };
-  }
-  const variableMatch = snippet.match(/^(?:export\s+)?(?:const|let|var)\s+/);
-  if (variableMatch) {
-    const end = statementSourceEnd(source, index);
-    const declarationSource = stripTopLevelExport(source.slice(index, end).trim());
-    const names = variableDeclarationNames(declarationSource).filter((name) => !bindingNames.has(name));
-    return { names, source: declarationSource, end };
-  }
-  return undefined;
-}
-
-function importedLocalNames(source: string): readonly string[] {
-  const names: string[] = [];
-  const defaultMatch = source.match(/^import\s+([A-Za-z_$][\w$]*)\s*(?:,|from\b)/);
-  if (defaultMatch?.[1]) {
-    names.push(defaultMatch[1]);
-  }
-  const namespaceMatch = source.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/);
-  if (namespaceMatch?.[1]) {
-    names.push(namespaceMatch[1]);
-  }
-  const named = source.match(/\{([^}]*)\}/)?.[1];
-  if (named) {
-    for (const part of named.split(',')) {
-      const match = part.trim().match(/^(?:type\s+)?[A-Za-z_$][\w$]*(?:\s+as\s+([A-Za-z_$][\w$]*))?$/);
-      const local = match?.[1] ?? part.trim().replace(/^type\s+/, '').split(/\s+/)[0];
-      if (local && /^[A-Za-z_$][\w$]*$/.test(local)) {
-        names.push(local);
-      }
-    }
-  }
-  return unique(names);
-}
-
-function variableDeclarationNames(source: string): readonly string[] {
-  const names: string[] = [];
-  const body = source.replace(/^(?:const|let|var)\s+/, '').replace(/;\s*$/, '');
-  for (const part of splitTopLevelArguments(body)) {
-    const name = part.trim().match(/^([A-Za-z_$][\w$]*)\b/)?.[1];
-    if (name) {
-      names.push(name);
-    }
-  }
-  return names;
-}
-
-function statementSourceEnd(source: string, start: number): number {
-  let index = start;
-  let parens = 0;
-  let braces = 0;
-  let brackets = 0;
-  while (index < source.length) {
-    const character = source[index] ?? '';
-    if (character === '\'' || character === '"') {
-      index = quotedSourceEnd(source, index, character);
-      continue;
-    }
-    if (character === '`') {
-      index = templateSourceEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '/') {
-      index = lineCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '*') {
-      index = blockCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && isRegexLiteralStart(source, index)) {
-      index = regexLiteralEnd(source, index);
-      continue;
-    }
-    if (character === '(') {
-      parens += 1;
-    } else if (character === ')') {
-      parens -= 1;
-    } else if (character === '{') {
-      braces += 1;
-    } else if (character === '}') {
-      braces -= 1;
-    } else if (character === '[') {
-      brackets += 1;
-    } else if (character === ']') {
-      brackets -= 1;
-    } else if (character === ';' && parens === 0 && braces === 0 && brackets === 0) {
-      return index + 1;
-    }
-    index += 1;
-  }
-  return source.length;
-}
-
-function stripTopLevelExport(source: string): string {
-  return source.replace(/^export\s+/, '');
-}
-
-function keywordAt(source: string, index: number, keyword: string): boolean {
-  return source.startsWith(keyword, index) && !/[A-Za-z0-9_$]/.test(source[index - 1] ?? '') && !/[A-Za-z0-9_$]/.test(source[index + keyword.length] ?? '');
-}
-
-const routeKeywords = new Set([
-  'async',
-  'await',
-  'break',
-  'case',
-  'catch',
-  'class',
-  'const',
-  'continue',
-  'default',
-  'delete',
-  'do',
-  'else',
-  'false',
-  'finally',
-  'for',
-  'function',
-  'if',
-  'in',
-  'instanceof',
-  'let',
-  'new',
-  'null',
-  'of',
-  'return',
-  'switch',
-  'throw',
-  'true',
-  'try',
-  'typeof',
-  'var',
-  'void',
-  'while',
-]);
-
-function stripCommentsAndStrings(source: string): string {
-  const output = [...source];
-
-  const blank = (start: number, end: number): void => {
-    for (let position = start; position < end; position += 1) {
-      if (output[position] !== '\n' && output[position] !== '\r') {
-        output[position] = ' ';
-      }
-    }
-  };
-
-  const scanQuotedString = (start: number, quote: string): number => {
-    let position = start + 1;
-    while (position < source.length) {
-      if (source[position] === '\\') {
-        position += 2;
-        continue;
-      }
-      if (source[position] === quote) {
-        position += 1;
-        break;
-      }
-      position += 1;
-    }
-    blank(start, position);
-    return position;
-  };
-
-  const scanRegexLiteral = (start: number): number => {
-    let position = start + 1;
-    let inCharacterClass = false;
-    while (position < source.length) {
-      const character = source[position];
-      if (character === '\\') {
-        position += 2;
-        continue;
-      }
-      if (character === '[') {
-        inCharacterClass = true;
-      } else if (character === ']') {
-        inCharacterClass = false;
-      } else if (character === '/' && !inCharacterClass) {
-        position += 1;
-        while (/[A-Za-z]/.test(source[position] ?? '')) {
-          position += 1;
-        }
-        break;
-      }
-      position += 1;
-    }
-    blank(start, position);
-    return position;
-  };
-
-  const scanTemplate = (start: number): number => {
-    output[start] = ' ';
-    let position = start + 1;
-    while (position < source.length) {
-      const character = source[position];
-      if (character === '\\') {
-        blank(position, Math.min(position + 2, source.length));
-        position += 2;
-        continue;
-      }
-      if (character === '`') {
-        output[position] = ' ';
-        return position + 1;
-      }
-      if (character === '$' && source[position + 1] === '{') {
-        blank(position, position + 2);
-        const close = scanRange(position + 2, true);
-        if (close < source.length) {
-          output[close] = ' ';
-          position = close + 1;
-          continue;
-        }
-        return close;
-      }
-      output[position] = character === '\n' || character === '\r' ? character : ' ';
-      position += 1;
-    }
-    return position;
-  };
-
-  const scanRange = (start: number, stopOnBrace: boolean): number => {
-    let position = start;
-    while (position < source.length) {
-      const character = source[position];
-      const next = source[position + 1];
-      if (stopOnBrace && character === '}') {
-        return position;
-      }
-      if (character === '/' && next === '/') {
-        let end = position + 2;
-        while (end < source.length && source[end] !== '\n' && source[end] !== '\r') {
-          end += 1;
-        }
-        blank(position, end);
-        position = end;
-        continue;
-      }
-      if (character === '/' && next === '*') {
-        const end = source.indexOf('*/', position + 2);
-        const commentEnd = end === -1 ? source.length : end + 2;
-        blank(position, commentEnd);
-        position = commentEnd;
-        continue;
-      }
-      if (character === '/' && isRegexLiteralStart(source, position)) {
-        position = scanRegexLiteral(position);
-        continue;
-      }
-      if (character === '\'' || character === '"') {
-        position = scanQuotedString(position, character);
-        continue;
-      }
-      if (character === '`') {
-        position = scanTemplate(position);
-        continue;
-      }
-      if (stopOnBrace && character === '{') {
-        const close = scanRange(position + 1, true);
-        position = close < source.length ? close + 1 : close;
-        continue;
-      }
-      position += 1;
-    }
-    return position;
-  };
-
-  scanRange(0, false);
-  return output.join('');
-}
-
-function isRegexLiteralStart(source: string, index: number): boolean {
-  const previous = previousNonWhitespace(source, index);
-  return previous === undefined || ['(', ',', '=', ':', '[', '{', '!', '?', ';'].includes(previous);
-}
-
-function declaredRouteIdentifiers(source: string): ReadonlySet<string> {
-  const declared = new Set<string>();
-  const parameterList = source.match(/^(?:async\s*)?(?:function\s*)?\(?\s*([^)=]*)\s*\)?\s*=>|^async\s+function\s*[^()]*\(([^)]*)\)|^function\s*[^()]*\(([^)]*)\)/);
-  addParameterIdentifiers(declared, parameterList?.[1] ?? parameterList?.[2] ?? parameterList?.[3] ?? '');
-  for (const match of source.matchAll(/\(([^)]*)\)\s*=>/g)) {
-    addParameterIdentifiers(declared, match[1] ?? '');
-  }
-  for (const match of source.matchAll(/\(\s*([A-Za-z_$][\w$]*)\s*\)\s*=>/g)) {
-    declared.add(match[1] ?? '');
-  }
-  for (const match of source.matchAll(/\b([A-Za-z_$][\w$]*)\s*=>/g)) {
-    declared.add(match[1] ?? '');
-  }
-  for (const match of source.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) {
-    declared.add(match[1] ?? '');
-  }
-  for (const match of source.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g)) {
-    declared.add(match[1] ?? '');
-  }
-  for (const match of source.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g)) {
-    declared.add(match[1] ?? '');
-  }
-  for (const match of source.matchAll(/\bfor\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) {
-    declared.add(match[1] ?? '');
-  }
-  declared.delete('');
-  return declared;
-}
-
-function addParameterIdentifiers(declared: Set<string>, parameters: string): void {
-  for (const part of parameters.split(',')) {
-    const name = part.trim().match(/^([A-Za-z_$][\w$]*)/)?.[1];
-    if (name) {
-      declared.add(name);
-    }
-  }
-}
-
-function previousNonWhitespace(source: string, index: number): string | undefined {
-  for (let position = index - 1; position >= 0; position -= 1) {
-    if (!/\s/.test(source[position] ?? '')) {
-      return source[position];
-    }
-  }
-  return undefined;
-}
-
-function nextNonWhitespace(source: string, index: number): string | undefined {
-  for (let position = index; position < source.length; position += 1) {
-    if (!/\s/.test(source[position] ?? '')) {
-      return source[position];
-    }
-  }
-  return undefined;
-}
-
-function isDeclarationIdentifier(source: string, index: number, name: string): boolean {
-  const prefix = source.slice(Math.max(0, index - 32), index);
-  return /(?:const|let|var|function)\s+$/.test(prefix) || /catch\s*\(\s*$/.test(prefix) || /for\s*\(\s*(?:const|let|var)\s+$/.test(prefix) || prefix.endsWith(`${name}.`);
 }
 
 function graphResourceId(name: string, suffix: string): string {
@@ -2591,312 +2891,6 @@ function routeId(method: ApplicationServerRoute['method'], path: string, index: 
 }
 
 const applicationModulePath = fileURLToPath(import.meta.url);
-
-function extractApplicationRouteHandlerSource(method: ApplicationServerRoute['method']): { readonly source: string; readonly location: ApplicationRouteSourceLocation } | undefined {
-  const previousStackTraceLimit = Error.stackTraceLimit;
-  Error.stackTraceLimit = Math.max(previousStackTraceLimit, 50);
-  const stack = new Error().stack;
-  Error.stackTraceLimit = previousStackTraceLimit;
-  const location = applicationRouteCallsiteLocation(stack);
-  if (!location) {
-    debugRouteSourceExtraction('no callsite location');
-    return undefined;
-  }
-  try {
-    const fileSource = readFileSync(location.file, 'utf8');
-    const expression = routeHandlerExpressionAtLocation(fileSource, location, method);
-    if (!expression) {
-      debugRouteSourceExtraction(`no route expression at ${location.file}:${location.line}:${location.column}`);
-      return undefined;
-    }
-    return { source: transpileRouteHandlerExpression(expression), location };
-  } catch (error) {
-    debugRouteSourceExtraction(error instanceof Error ? error.message : String(error));
-    return undefined;
-  }
-}
-
-function debugRouteSourceExtraction(message: string): void {
-  if (process.env.APPLIK8S_DEBUG_ROUTE_SOURCE === '1') {
-    console.error(`[applik8s] route source extraction fallback: ${message}`);
-  }
-}
-
-function applicationRouteCallsiteLocation(stack: string | undefined): ApplicationRouteSourceLocation | undefined {
-  if (!stack) {
-    return undefined;
-  }
-  for (const line of stack.split('\n')) {
-    const match = line.match(/\(?((?:file:\/\/)?\/[^():]+):(\d+):(\d+)\)?$/);
-    if (!match) {
-      continue;
-    }
-    const rawFile = match[1] ?? '';
-    const file = rawFile.startsWith('file://') ? fileURLToPath(rawFile) : rawFile;
-    if (!file || isApplicationRouteInternalStackFrame(line, file) || file.includes('/node_modules/') || !existsSync(file) || !/\.[cm]?[jt]sx?$/.test(file)) {
-      continue;
-    }
-    return { file, line: Number(match[2]), column: Number(match[3]) };
-  }
-  return undefined;
-}
-
-function isApplicationRouteInternalStackFrame(line: string, file: string): boolean {
-  if (file === applicationModulePath && !isGeneratedDiscoveryEntrypoint(file)) {
-    return true;
-  }
-  return /\bat (?:extractApplicationRouteHandlerSource|applicationRouteCallsiteLocation|record|Object\.(?:get|post))\b/.test(line);
-}
-
-function isGeneratedDiscoveryEntrypoint(file: string): boolean {
-  return file.includes('/.applik8s-tmp/discovery-') && file.endsWith('/entrypoint.mjs');
-}
-
-function routeHandlerExpressionAtLocation(source: string, location: ApplicationRouteSourceLocation, method: ApplicationServerRoute['method']): string | undefined {
-  const position = sourceOffsetForLineColumn(source, location.line, location.column);
-  const methodName = method.toLowerCase();
-  const searchStart = Math.max(0, position - 4000);
-  const searchEnd = Math.min(source.length, position + 8000);
-  const windowSource = source.slice(searchStart, searchEnd);
-  const calls: { readonly openParen: number; readonly closeParen: number; readonly distance: number }[] = [];
-  const callPattern = new RegExp(`\\.\\s*${methodName}\\s*\\(`, 'g');
-  for (const match of windowSource.matchAll(callPattern)) {
-    const openParen = searchStart + (match.index ?? 0) + match[0].lastIndexOf('(');
-    const closeParen = matchingDelimiter(source, openParen, '(', ')');
-    if (closeParen === undefined) {
-      continue;
-    }
-    calls.push({ openParen, closeParen, distance: position >= openParen && position <= closeParen ? 0 : Math.abs(openParen - position) });
-  }
-  const call = calls.sort((left, right) => left.distance - right.distance)[0];
-  if (!call) {
-    return undefined;
-  }
-  const args = splitTopLevelArguments(source.slice(call.openParen + 1, call.closeParen));
-  return args[1]?.trim();
-}
-
-function sourceOffsetForLineColumn(source: string, line: number, column: number): number {
-  let currentLine = 1;
-  let offset = 0;
-  while (currentLine < line && offset < source.length) {
-    if (source[offset] === '\n') {
-      currentLine += 1;
-    }
-    offset += 1;
-  }
-  return Math.min(source.length, offset + Math.max(0, column - 1));
-}
-
-function transpileRouteHandlerExpression(source: string): string {
-  const wrapped = `const __applik8sRouteHandler = (${source});\nexport { __applik8sRouteHandler };\n`;
-  const output = transformSync(wrapped, { loader: 'ts', format: 'esm', target: 'node22' }).code.trim();
-  const prefix = 'const __applik8sRouteHandler = ';
-  const start = output.indexOf(prefix);
-  const end = output.lastIndexOf(';\nexport');
-  if (start < 0 || end < 0 || end <= start + prefix.length) {
-    throw new Error('Generated server route source transform did not produce the expected wrapper.');
-  }
-  return output.slice(start + prefix.length, end).trim();
-}
-
-function splitTopLevelArguments(source: string): readonly string[] {
-  const args: string[] = [];
-  let start = 0;
-  let index = 0;
-  let parens = 0;
-  let braces = 0;
-  let brackets = 0;
-  while (index < source.length) {
-    const character = source[index];
-    if (character === '\'' || character === '"') {
-      index = quotedSourceEnd(source, index, character);
-      continue;
-    }
-    if (character === '`') {
-      index = templateSourceEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '/') {
-      index = lineCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '*') {
-      index = blockCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && isRegexLiteralStart(source, index)) {
-      index = regexLiteralEnd(source, index);
-      continue;
-    }
-    if (character === '(') {
-      parens += 1;
-    } else if (character === ')') {
-      parens -= 1;
-    } else if (character === '{') {
-      braces += 1;
-    } else if (character === '}') {
-      braces -= 1;
-    } else if (character === '[') {
-      brackets += 1;
-    } else if (character === ']') {
-      brackets -= 1;
-    } else if (character === ',' && parens === 0 && braces === 0 && brackets === 0) {
-      args.push(source.slice(start, index));
-      start = index + 1;
-    }
-    index += 1;
-  }
-  args.push(source.slice(start));
-  return args;
-}
-
-function matchingDelimiter(source: string, openIndex: number, open: string, close: string): number | undefined {
-  let depth = 0;
-  let index = openIndex;
-  while (index < source.length) {
-    const character = source[index];
-    if (character === '\'' || character === '"') {
-      index = quotedSourceEnd(source, index, character);
-      continue;
-    }
-    if (character === '`') {
-      index = templateSourceEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '/') {
-      index = lineCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '*') {
-      index = blockCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && isRegexLiteralStart(source, index)) {
-      index = regexLiteralEnd(source, index);
-      continue;
-    }
-    if (character === open) {
-      depth += 1;
-    } else if (character === close) {
-      depth -= 1;
-      if (depth === 0) {
-        return index;
-      }
-    }
-    index += 1;
-  }
-  return undefined;
-}
-
-function quotedSourceEnd(source: string, start: number, quote: string): number {
-  let index = start + 1;
-  while (index < source.length) {
-    if (source[index] === '\\') {
-      index += 2;
-      continue;
-    }
-    if (source[index] === quote) {
-      return index + 1;
-    }
-    index += 1;
-  }
-  return source.length;
-}
-
-function templateSourceEnd(source: string, start: number): number {
-  let index = start + 1;
-  while (index < source.length) {
-    if (source[index] === '\\') {
-      index += 2;
-      continue;
-    }
-    if (source[index] === '$' && source[index + 1] === '{') {
-      index = templateExpressionSourceEnd(source, index + 2);
-      continue;
-    }
-    if (source[index] === '`') {
-      return index + 1;
-    }
-    index += 1;
-  }
-  return source.length;
-}
-
-function templateExpressionSourceEnd(source: string, start: number): number {
-  let depth = 1;
-  let index = start;
-  while (index < source.length) {
-    const character = source[index];
-    if (character === '\'' || character === '"') {
-      index = quotedSourceEnd(source, index, character);
-      continue;
-    }
-    if (character === '`') {
-      index = templateSourceEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '/') {
-      index = lineCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '*') {
-      index = blockCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && isRegexLiteralStart(source, index)) {
-      index = regexLiteralEnd(source, index);
-      continue;
-    }
-    if (character === '{') {
-      depth += 1;
-    } else if (character === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return index + 1;
-      }
-    }
-    index += 1;
-  }
-  return source.length;
-}
-
-function lineCommentEnd(source: string, start: number): number {
-  const end = source.indexOf('\n', start + 2);
-  return end < 0 ? source.length : end + 1;
-}
-
-function blockCommentEnd(source: string, start: number): number {
-  const end = source.indexOf('*/', start + 2);
-  return end < 0 ? source.length : end + 2;
-}
-
-function regexLiteralEnd(source: string, start: number): number {
-  let index = start + 1;
-  let inCharacterClass = false;
-  while (index < source.length) {
-    const character = source[index];
-    if (character === '\\') {
-      index += 2;
-      continue;
-    }
-    if (character === '[') {
-      inCharacterClass = true;
-    } else if (character === ']') {
-      inCharacterClass = false;
-    } else if (character === '/' && !inCharacterClass) {
-      index += 1;
-      while (index < source.length && /[a-z]/i.test(source[index] ?? '')) {
-        index += 1;
-      }
-      return index;
-    } else if (character === '\n' || character === '\r') {
-      return start + 1;
-    }
-    index += 1;
-  }
-  return source.length;
-}
 
 function generatedApplicationAggregateSource(request: {
   readonly name: string;
@@ -3601,19 +3595,15 @@ function generatedApplicationServerBundle(
   cache: readonly ResourceIndex<object, object>[]
 ): Readonly<Record<string, string>> {
   const routeModules = generatedApplicationServerRouteModules(routes);
-  const bundledEntrypoint = bundleApplicationServerEntrypoint(
-    sourceFileName,
-    generatedApplicationServerHonoEntrypointSource()
-  );
-  return {
-    ...bundledEntrypoint,
+  return bundleGeneratedApplicationServerSourceBundle(sourceFileName, {
+    [sourceFileName]: generatedApplicationServerHonoEntrypointSource(),
     'runtime.mjs': generatedApplicationServerRuntimeSource(resources, indexes, models, indexBackend, cache),
     ...generatedApplicationRuntimeModuleBundle(),
     'bindings.mjs': generatedApplicationServerBindingsSource(resources, indexes, models, captures),
     'routes.mjs': generatedApplicationServerRoutesSource(routeModules),
     'routes.manifest.json': `${JSON.stringify(routeModules.map(routeManifestEntry), null, 2)}\n`,
     ...Object.fromEntries(routeModules.map((module) => [module.fileName, generatedApplicationServerRouteModuleSource(module, resources, indexes, models, captures)])),
-  };
+  });
 }
 
 function kroSafeJavaScriptSourceBundle(bundle: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
@@ -3797,20 +3787,44 @@ function generatedApplicationServerRouteModules(routes: readonly SerializedAppli
   }));
 }
 
-function bundleApplicationServerEntrypoint(sourceFileName: string, source: string): Readonly<Record<string, string>> {
+function bundleGeneratedApplicationServerSourceBundle(sourceFileName: string, bundle: Readonly<Record<string, string>>): Readonly<Record<string, string>> {
+  const tempDir = mkdtempSync(join(tmpdir(), 'applik8s-generated-server-'));
+  try {
+    for (const [fileName, source] of Object.entries(bundle)) {
+      assertSafeConfigMapVolumePath(fileName);
+      const target = join(tempDir, fileName);
+      const targetDir = dirname(target);
+      if (!existsSync(targetDir)) {
+        mkdirpSync(targetDir);
+      }
+      writeFileSync(target, source, 'utf8');
+    }
+    return {
+      ...Object.fromEntries(Object.entries(bundle).filter(([fileName]) => fileName !== sourceFileName)),
+      ...bundleApplicationServerEntrypoint(sourceFileName, tempDir, bundle['routes.manifest.json']),
+    };
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
+function mkdirpSync(path: string): void {
+  if (existsSync(path)) {
+    return;
+  }
+  mkdirpSync(dirname(path));
+  mkdirSync(path);
+}
+
+function bundleApplicationServerEntrypoint(sourceFileName: string, sourceDir: string, routesManifest: string | undefined): Readonly<Record<string, string>> {
   const result = buildSync({
-    stdin: {
-      contents: source,
-      resolveDir: process.cwd(),
-      sourcefile: 'applik8s-generated-server.entry.mjs',
-      loader: 'js',
-    },
-    outfile: sourceFileName,
+    entryPoints: [join(sourceDir, sourceFileName)],
+    outfile: join(sourceDir, 'dist', sourceFileName),
     bundle: true,
     format: 'esm',
     platform: 'node',
     target: 'node22',
-    external: ['./routes.mjs', './runtime.mjs', './bindings.mjs', './route-*.mjs', './runtime/*'],
+    nodePaths: generatedServerBundleNodePaths(),
     legalComments: 'none',
     minifySyntax: true,
     supported: { 'template-literal': false },
@@ -3824,7 +3838,43 @@ function bundleApplicationServerEntrypoint(sourceFileName: string, source: strin
   if (!bundledSource || !sourceMap) {
     throw new Error(`Generated server bundling did not produce ${sourceFileName} and ${sourceFileName}.map.`);
   }
-  return { [sourceFileName]: bundledSource, [`${sourceFileName}.map`]: sourceMap };
+  return {
+    [sourceFileName]: bundledSource,
+    [`${sourceFileName}.map`]: normalizeGeneratedServerSourceMap(sourceMap, sourceDir),
+    'routes.manifest.json': routesManifest ?? '[]\n',
+    'runtime.bundle.json': `${JSON.stringify(generatedServerRuntimeBundleContract(sourceFileName), null, 2)}\n`,
+  };
+}
+
+function generatedServerBundleNodePaths(): string[] {
+  return [
+    join(process.cwd(), 'node_modules'),
+    join(dirname(applicationModulePath), '..', 'node_modules'),
+    join(dirname(applicationModulePath), '..', '..', '..', 'node_modules'),
+  ];
+}
+
+function normalizeGeneratedServerSourceMap(sourceMap: string, sourceDir: string): string {
+  const parsed: { sources?: unknown } = JSON.parse(sourceMap);
+  if (Array.isArray(parsed.sources)) {
+    parsed.sources = parsed.sources.map((source) => normalizeGeneratedServerSourcePath(source, sourceDir));
+  }
+  return `${JSON.stringify(parsed)}\n`;
+}
+
+function normalizeGeneratedServerSourcePath(source: string, sourceDir: string): string {
+  if (source.startsWith(sourceDir)) {
+    return relative(sourceDir, source).replaceAll('\\', '/');
+  }
+  const marker = 'applik8s-generated-server-';
+  const markerIndex = source.indexOf(marker);
+  if (markerIndex !== -1) {
+    const slashIndex = source.indexOf('/', markerIndex);
+    if (slashIndex !== -1) {
+      return source.slice(slashIndex + 1);
+    }
+  }
+  return source.replaceAll('\\', '/');
 }
 
 function generatedApplicationServerHonoEntrypointSource(): string {
@@ -3841,20 +3891,28 @@ for (const route of routes) {
   app.on(route.method, route.path, async (context) => {
     try {
       const url = new URL(context.req.url);
+      const params = context.req.param();
+      const form = await honoFormData(context.req);
       const result = await route.handler({
-        query: Object.fromEntries(url.searchParams.entries()),
-        formData: async () => honoFormData(context.req),
+        params,
+        query: { ...Object.fromEntries(url.searchParams.entries()), ...params },
+        form,
+        formData: async () => form,
       });
       return honoResponse(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const statusCode = error && typeof error === 'object' && 'statusCode' in error && typeof error.statusCode === 'number' ? error.statusCode : 500;
       const stack = error instanceof Error && error.stack ? error.stack.split('\\n').slice(0, 12) : undefined;
-      console.error(JSON.stringify({ level: 'error', component: 'applik8s-server', event: 'applik8s-server-route-failure', runtime: applik8sServerRuntime, route: routeDiagnostics(route), message, statusCode, diagnostic: error && typeof error === 'object' && 'diagnostic' in error ? error.diagnostic : undefined, ...(stack ? { stack } : {}) }));
+      const diagnostic = error && typeof error === 'object' && 'diagnostic' in error ? error.diagnostic : undefined;
+      console.error(JSON.stringify({ level: 'error', component: 'applik8s-server', event: 'applik8s-server-route-failure', runtime: applik8sServerRuntime, route: routeDiagnostics(route), message, statusCode, diagnostic, ...(stack ? { stack } : {}) }));
+      console.error(JSON.stringify({ level: 'error', component: 'applik8s-server', event: route.observability.actions.failureEvent, runtime: applik8sServerRuntime, routeId: route.id, method: route.method, path: route.path, module: route.module, sourceLocation: route.sourceLocation, bundleInputs: route.bundleInputs, action: route.export, diagnostic, partialEffects: route.observability.actions.partialEffects, failurePolicy: route.observability.actions.failurePolicy, message, statusCode, ...(stack ? { stack } : {}) }));
       return context.text('Route ' + route.id + ' (' + route.method + ' ' + route.path + ') failed: ' + message, statusCode);
     }
   });
 }
+
+app.get('/-/healthz', (context) => context.json({ ok: true, component: 'applik8s-server' }));
 
 app.notFound((context) => {
   const url = new URL(context.req.url);
@@ -3910,11 +3968,25 @@ async function writeFetchResponse(outgoing, response) {
 }
 
 async function honoFormData(request) {
-  const data = await request.raw.formData();
-  return { string: (name) => {
-    const value = data.get(name);
-    return typeof value === 'string' ? value : '';
-  } };
+  let data;
+  try {
+    data = await request.raw.formData();
+  } catch (_error) {
+    data = new FormData();
+  }
+  return {
+    string: (name) => {
+      const value = data.get(name);
+      return typeof value === 'string' ? value : '';
+    },
+    enum(name, values) {
+      const value = data.get(name);
+      if (typeof value !== 'string' || !values.includes(value)) {
+        throw new Error('Invalid form field ' + name + ': expected one of ' + values.join(', '));
+      }
+      return value;
+    },
+  };
 }
 
 function honoResponse(result) {
@@ -3939,6 +4011,7 @@ function routeDiagnostics(route) {
     sourceKind: route.sourceKind,
     sourceLocation: route.sourceLocation,
     bundleInputs: route.bundleInputs,
+    diagnostics: route.diagnostics,
   };
 }
 `.trimStart();
@@ -3966,6 +4039,8 @@ function routeManifestEntry(module: GeneratedApplicationServerRouteModule): obje
     sourceKind: module.route.handlerSourceKind ?? 'functionToString',
     sourceLocation: module.route.handlerSourceLocation ?? null,
     bundleInputs: routeBundleInputs(module),
+    diagnostics: routeDiagnosticsContract(),
+    observability: routeObservabilityEntry(),
   };
 }
 
@@ -3975,10 +4050,22 @@ function routeRuntimeMetadataProperties(module: GeneratedApplicationServerRouteM
     `method: ${JSON.stringify(module.route.method)}`,
     `path: ${JSON.stringify(module.route.path)}`,
     `module: ${JSON.stringify(module.fileName)}`,
+    `export: ${JSON.stringify(module.exportName)}`,
     `sourceKind: ${JSON.stringify(module.route.handlerSourceKind ?? 'functionToString')}`,
     `sourceLocation: ${JSON.stringify(module.route.handlerSourceLocation ?? null)}`,
     `bundleInputs: ${JSON.stringify(routeBundleInputs(module))}`,
+    `diagnostics: ${JSON.stringify(routeDiagnosticsContract())}`,
+    `observability: ${JSON.stringify(routeObservabilityEntry())}`,
   ].join(', ');
+}
+
+function routeObservabilityEntry(): object {
+  return {
+    logs: { format: 'json', component: 'applik8s-server', failureEvent: 'applik8s-server-route-failure' },
+    actions: { failureEvent: 'applik8s-route-action-failure', partialEffects: 'unknownAfterActionStarted', failurePolicy: 'failClosed' },
+    metrics: { hooks: ['applik8s_server_requests_total', 'applik8s_server_route_failures_total'] },
+    sourceMaps: 'required',
+  };
 }
 
 function routeBundleInputs(module: GeneratedApplicationServerRouteModule): readonly string[] {

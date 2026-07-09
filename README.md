@@ -6,6 +6,70 @@ You write typed Kubernetes APIs and event listeners. `applik8s` compiles them in
 
 The result is not a sidecar script or a long-running Node process. Your TypeScript becomes reconciler logic evaluated by Kubernetes events through a WASM component loaded by a Rust operator.
 
+## v0.3 Flagship: Tenant Platform App
+
+v0.3 is the developer-experience and substrate-freeze release. `examples/tenant-platform.ts` is the flagship proof: one TypeScript app declares resources, storage-backed models, HTTP routes, reconciliation, repair/cleanup jobs, and generated Kubernetes artifacts without starting from provider wiring or graph terminology.
+
+The golden path is intentionally app-shaped:
+
+```ts
+import { app } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+
+const tenantPlatform = app('tenant-platform', {
+  namespace: 'platform',
+  apiVersion: 'platform.applik8s.dev/v1alpha1',
+  kind: 'TenantPlatform',
+});
+
+const Tenant = tenantPlatform.resource('Tenant', {
+  spec: type({ plan: "'free' | 'team' | 'enterprise'", ownerEmail: 'string' }),
+  status: type({ phase: "('Pending' | 'Ready' | 'Failed')?", url: 'string?' }),
+});
+
+tenantPlatform.storage.postgres('tenant-platform-db', {
+  database: 'tenant_platform',
+  migrations: 'generated-job',
+});
+
+const Account = tenantPlatform.model('Account', {
+  spec: type({ tenant: 'string', email: 'string', role: "'owner' | 'admin' | 'viewer'" }),
+  indexes: { byTenant: ['tenant', 'email'] },
+});
+
+tenantPlatform.http('tenant-admin', (http) => {
+  http.post('/tenants/:tenant/accounts', async ({ params, form }) => Account.create({
+    tenant: params.tenant ?? 'default',
+    email: form.string('email'),
+    role: form.enum('role', ['owner', 'admin', 'viewer']),
+  }));
+});
+
+tenantPlatform.reconcile(Tenant, async (tenant) => {
+  tenant.status.phase = 'Ready';
+});
+
+export const tenantPlatformComposition = tenantPlatform.composition;
+```
+
+Behind that app-shaped surface, applik8s still emits a real TypeKro-backed control plane: CRDs, Postgres/CNPG resources, migration/repair/cleanup Jobs, durable generated-job status, generated server runtime modules, provider compatibility contracts, operation-target dry-run planning, scoped watch contracts, RBAC, and inspectable application graph metadata.
+
+Build the v0.3 flagship artifacts:
+
+```sh
+bun run applik8s build examples/tenant-platform.ts --typekro --composition-name tenantPlatform --out-dir dist/examples/tenant-platform
+```
+
+For a guided first pass through those artifacts, see [`docs/v0.3-first-run.md`](docs/v0.3-first-run.md).
+
+Run the full v0.3 prerelease gate against an explicit local Kubernetes context:
+
+```sh
+bun run check:v03:prerelease:orbstack
+```
+
+The important v0.3 boundary is honesty: the app-level path is stable, generated artifacts remain inspectable, and every native provider interface has a bounded Kubernetes-native default. Additional cloud-scale adapters remain optional. Generated-job state is durably stored in the runtime-created status ConfigMap and authoritatively projected by KRO into the root app's `status.applik8s.jobs`; KRO is the sole app-status writer. Supply-chain verification remains metadata-only until signed/SBOM/provenance artifacts are real.
+
 ## v0.2 Flagship: TypeKro-Native GuestBook
 
 v0.2 adds the integrated application-composition path. `examples/guestbook.ts` is the flagship proof: one TypeScript program defines CRDs, installs an operator through a wrapped TypeKro composition, generates an HTTP server, serves cached indexed CRD data, buffers page-view counters, aggregates status, emits inspectable YAML/RBAC, and passes live local-cluster validation.
@@ -22,7 +86,7 @@ Run the live GuestBook proof against an explicit local Kubernetes context:
 APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/typekro-guestbook.e2e.test.ts
 ```
 
-The important v0.2 boundary is honesty: GuestBook is Kubernetes-native application state, not a claim that CRDs are a general-purpose database. High-volume product data and storage-backed `app.model(...)` semantics are v0.3 work; v0.2 keeps those APIs fail-closed rather than pretending.
+The important v0.2 boundary is honesty: GuestBook is Kubernetes-native application state, not a claim that CRDs are a general-purpose database. High-volume product data belongs in explicit storage-backed models such as the v0.3 Postgres `ModelStore` slice.
 
 ## A Kubernetes App In TypeScript
 
@@ -255,10 +319,10 @@ APPLIK8S_E2E=1 APPLIK8S_E2E_CONTEXT=orbstack bun run test:e2e
 
 For the README live test, Ministack is installed from Docker Hub inside the test namespace and exposed at `http://ministack.media.svc.cluster.local:4566`.
 
-For a release-candidate pass, run the full v0.2 prerelease gate with live E2E enabled:
+For a release-candidate pass, run the full v0.3 prerelease gate with live E2E enabled:
 
 ```sh
-APPLIK8S_RELEASE_LIVE_E2E=1 APPLIK8S_E2E_CONTEXT=orbstack bun run check:prerelease
+bun run check:v03:prerelease:orbstack
 ```
 
 ## Documentation
@@ -267,6 +331,7 @@ APPLIK8S_RELEASE_LIVE_E2E=1 APPLIK8S_E2E_CONTEXT=orbstack bun run check:prerelea
 - `docs/first-run.md`
 - `docs/typekro-golden-path.md`
 - `docs/generated-artifacts.md`
+- `docs/release-evidence-v0.3.md`
 - `docs/release-evidence-v0.2.md`
 - `docs/runtime-diagnostics.md`
 - `docs/api-reference.md`

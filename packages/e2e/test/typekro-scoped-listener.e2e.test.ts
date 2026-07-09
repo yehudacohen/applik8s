@@ -145,6 +145,38 @@ describeLive('live TypeKro scoped external listeners', () => {
 
     await expectMissingConfigMap(`mixed-${mixedUnwatchedServiceName}`);
   }, 300_000);
+
+  it('rejects unsupported TypeKro watch predicates before emitting a broad live watch', async () => {
+    const unsupportedTempDir = await mkdtemp(join(tmpdir(), 'applik8s-typekro-unsupported-listener-'));
+    try {
+      const entrypoint = join(unsupportedTempDir, 'unsupported-listener.ts');
+      await writeFile(entrypoint, unsupportedScopedListenerSource(namespace));
+      const compiled = await createCompilerPipeline().run({
+        entrypoint,
+        operatorName: 'unsupported-scoped-listener',
+        outDir: join(unsupportedTempDir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        dispatcherMode: 'staticSerializable',
+        portability: {
+          deterministicBuild: true,
+          allowEnvironmentAccess: false,
+          allowFilesystemAccess: false,
+          allowNetworkAccess: false,
+          allowedHostImports: [],
+          sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false },
+        },
+      });
+
+      expect(compiled.ok).toBe(false);
+      if (!compiled.ok) {
+        expect(compiled.error.message).toContain('labelSelector.matchExpressions');
+      }
+    } finally {
+      await rm(unsupportedTempDir, { recursive: true, force: true });
+    }
+  }, 300_000);
 });
 
 async function rolloutStatusWithDiagnostics(): Promise<void> {
@@ -389,6 +421,47 @@ export const scopedDeploymentListener = composition.listenerOperator({
   name: ${JSON.stringify(operatorName)},
   deployment: { namespace: ${JSON.stringify(targetNamespace)}, replicas: 1 },
   permissions: [{ apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'create', 'update', 'patch'] }],
+});
+`;
+}
+
+function unsupportedScopedListenerSource(targetNamespace: string): string {
+  return `import { type } from 'arktype';
+import { typeKro } from ${JSON.stringify(join(process.cwd(), 'packages/applik8s/src/typekro.ts'))};
+
+const objectSchema = {
+  kind: 'jsonSchema' as const,
+  ref: { kind: 'jsonSchema' as const, exportName: 'KubernetesObjectShape' },
+  schema: { type: 'object', additionalProperties: true },
+};
+
+const Deployment = typeKro.resource((input: { name: string; namespace: string }) => ({
+  apiVersion: 'apps/v1',
+  kind: 'Deployment',
+  metadata: { name: input.name, namespace: input.namespace },
+  spec: {},
+}), {
+  apiVersion: 'apps/v1',
+  kind: 'Deployment',
+  plural: 'deployments',
+  spec: objectSchema,
+  status: objectSchema,
+});
+
+const composition = typeKro.kubernetesComposition({
+  name: 'unsupported-scoped-listener-stack',
+  apiVersion: 'platform.applik8s.dev/v1alpha1',
+  kind: 'UnsupportedScopedListenerStack',
+  spec: type({}),
+  status: type({ ready: 'boolean' }),
+}, () => {
+  Deployment.where({ namespace: ${JSON.stringify(targetNamespace)}, labelSelector: { matchExpressions: [{ key: 'app', operator: 'Exists' }] } }).on.updated(() => undefined);
+  return { ready: true };
+});
+
+export const unsupportedScopedDeploymentListener = composition.listenerOperator({
+  name: 'unsupported-scoped-listener',
+  deployment: { namespace: ${JSON.stringify(targetNamespace)}, replicas: 1 },
 });
 `;
 }

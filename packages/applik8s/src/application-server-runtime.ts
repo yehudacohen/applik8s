@@ -52,7 +52,16 @@ export function createRuntimeBindings() {
 export async function formData(request) {
   const body = await readBody(request);
   const params = new URLSearchParams(body);
-  return { string: (name) => params.get(name) ?? '' };
+  return {
+    string: (name) => params.get(name) ?? '',
+    enum(name, values) {
+      const value = params.get(name) ?? '';
+      if (!values.includes(value)) {
+        throw new Error('Invalid form field ' + name + ': expected one of ' + values.join(', '));
+      }
+      return value;
+    },
+  };
 }
 
 async function readBody(request) {

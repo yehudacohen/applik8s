@@ -163,8 +163,13 @@ function canonicalHostImports(): readonly string[] {
     'kubernetes-read',
     'log',
     'cancel',
+    'wasi:cli',
+    'wasi:clocks',
+    'wasi:filesystem',
     'wasi:io',
+    'wasi:random',
     'wasi:http',
+    'wasi:sockets',
   ];
 }
 
@@ -785,7 +790,7 @@ function watchRegistrations(resources: readonly AnyResourceDefinition[], handler
   return resources.flatMap((resource) => {
     const resourceHandlers = handlers.filter((handler) => 'resource' in handler && handler.resource.apiVersion === resource.apiVersion && handler.resource.kind === resource.kind);
     if (resourceHandlers.length === 0) {
-      return [{ apiVersion: resource.apiVersion, kind: resource.kind, plural: resource.plural, scope: resource.scope, events: ['reconcile'], handlers: [] }];
+      return [];
     }
     return unique(resourceHandlers.map(watchAddressKey)).map((key) => {
       const watchHandlers = resourceHandlers.filter((handler) => watchAddressKey(handler) === key);

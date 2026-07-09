@@ -7,8 +7,12 @@ import type {
   GeneratedJobDurableStatusUpdaterContract,
   GeneratedJobPhaseStatusContract,
   ApplicationMigrationDriftCheckContract,
+  ApplicationDiagnosticContract,
+  ApplicationDurableStatusOwnershipContract,
+  ApplicationModelStoreSemanticsContract,
   ApplicationOperationTargetContract,
   ApplicationRuntimeModuleContract,
+  ApplicationRuntimeModuleInterfaceContract,
   ApplicationV03PressureTestContract,
   ApplicationWatchScopeLoweringContract,
   OperationTarget,
@@ -25,7 +29,7 @@ import type {
 import type { Applik8sTestingApi } from '@applik8s/testing';
 import type { Applik8sTypeKroAdapterApi, TypeKroGraph } from '@applik8s/typekro-adapter';
 import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
-import { CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, Queue, Secret, sdk as appSdk, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationModelStoreProvider } from '@applik8s/applik8s';
+import { CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, Queue, Secret, sdk as appSdk, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationModelStoreProvider, type ApplicationSecretBinding } from '@applik8s/applik8s';
 import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import { operationTarget as handlerOperationTargetFactory, targetFactory as handlerTargetFactory } from '@applik8s/typekro-adapter/targets';
 
@@ -104,13 +108,14 @@ const AccountEntity = appEntity('Account', {
   status: appSchemaType({ phase: 'string?' }),
 });
 
-const accountModelStore = {
-  kind: 'postgres',
+const accountModelStore = ModelStore.postgres({
   name: 'accounts-db',
   namespace: 'accounts',
   database: 'accounts',
-  migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob', jobName: 'accounts-model-migration' },
-} satisfies ApplicationModelStoreProvider;
+  migrations: ModelStore.migrations.generatedJob({ jobName: 'accounts-model-migration' }),
+});
+
+const accountModelStoreProvider: ApplicationModelStoreProvider = accountModelStore;
 
 const modelStoreGuarantees = {
   identity: 'stableId',
@@ -130,6 +135,15 @@ const generatedJobContract = {
   phase: { initialPhase: 'Pending', terminalPhases: ['Complete', 'Failed'], conditions: ['Progressing', 'Ready', 'Failed'] },
   resources: [],
   retry: { mode: 'boundedExponentialBackoff', maxAttempts: 3, initialDelayMs: 1000, maxDelayMs: 30000 },
+  observability: {
+    health: { mode: 'kubernetesJobStatus' },
+    logs: { format: 'json', component: 'applik8s-job-runner', failureEvents: ['applik8s-job-terminal-failure'] },
+    metrics: { mode: 'declaredHooks', names: ['applik8s_generated_job_observations_total'] },
+    events: ['applik8s-job-terminal-failure'],
+    sourceMaps: 'notApplicable',
+    replayArtifacts: [{ kind: 'jobDiagnostics', path: 'jobs/accounts-model-migration/diagnostics.json' }],
+    diagnosticsArtifact: { kind: 'jobDiagnostics', path: 'jobs/accounts-model-migration/diagnostics.json' },
+  },
   runtime: {
     materialization: 'kubernetes-job',
     idempotency: { keySource: 'metadata.generation', conflictPolicy: 'skipCompleted' },
@@ -175,6 +189,7 @@ const operationTargetContract = {
   id: 'operation-target.accounts-stack',
   target: { nodeId: 'typeKroResource.accounts-stack' },
   operations: ['apply', 'delete'],
+  execution: { contexts: ['handler', 'generatedServer', 'generatedJob', 'typeKro'], ordering: 'dependencyAware', runtimeValidation: 'beforeEffects', failurePolicy: 'failClosed' },
   dryRun: { supported: true, artifact: { kind: 'typeKroResource', path: 'plans/accounts-stack.json' }, failurePolicy: 'failClosed' },
   ownership: { ownerReferences: 'required', orphanPolicy: 'retain' },
   finalizers: { required: true, finalizer: 'platform.applik8s.dev/accounts-stack', cleanupOperation: 'deleteTarget' },
@@ -192,6 +207,14 @@ const watchScopeLoweringContract = {
   diagnostics: [],
 } satisfies ApplicationWatchScopeLoweringContract;
 
+const unlowerableWatchScopeContract = {
+  scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', namespace: 'accounts', labels: {} },
+  lowering: 'labelSelector',
+  permissions: [],
+  failurePolicy: 'failClosed',
+  diagnostics: [{ event: 'applik8s-watch-scope-unlowerable', severity: 'error', subject: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'accounts' }, reason: 'UnsupportedLabelSelectorExpression', message: 'Unsupported watch predicate fails closed instead of broadening runtime watches.', retryable: false }],
+} satisfies ApplicationWatchScopeLoweringContract;
+
 const migrationDriftCheckContract = {
   model: { nodeId: 'model.account' },
   provider: { interface: 'ModelStore', nodeId: 'provider.model-store' },
@@ -202,6 +225,107 @@ const migrationDriftCheckContract = {
   diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Schema drift detected.', retryable: false }],
 } satisfies ApplicationMigrationDriftCheckContract;
 
+const modelStoreSemanticsContract = {
+  generatedRuntimeParity: 'required',
+  scriptRuntimeParity: 'required',
+  query: { defaultLimit: 50, maxLimit: 500, cursor: 'offset', unsupportedFilters: 'failClosed' },
+  indexes: { partitionRequired: true, uniqueEnforcedBy: 'databaseConstraint', orderBy: 'declaredIndexFieldsOnly', unsupportedOrderBy: 'failClosed' },
+  constraints: { duplicateKeyDiagnostic: 'applik8s-model-duplicate-key', enforcement: 'databaseConstraint' },
+  migrationHistory: { tableName: 'applik8s_model_migrations', revisionColumn: 'revision', appliedAtColumn: 'applied_at' },
+  transactions: { declaration: 'supported', singleOperationAtomicity: 'databaseStatement', multiOperationApi: 'implemented', multiOperationBehavior: 'runtimeTransaction' },
+  retention: { mode: 'retain', deletionPolicy: 'explicitOnly', enforcement: 'runtimeEnforced' },
+} satisfies ApplicationModelStoreSemanticsContract;
+
+const runtimeModuleInterfaceContract = {
+  apiVersion: 'applik8s.runtime/v1alpha1',
+  imports: [{ kind: 'modelRuntime', name: 'postgres-models' }, { kind: 'diagnostics', name: 'diagnostics' }],
+  exports: [{ name: 'createServerRuntime', kind: 'function', stability: 'stable' }],
+  diagnostics: 'structured',
+  sourceMaps: 'required',
+  failurePolicy: 'failClosed',
+} satisfies ApplicationRuntimeModuleInterfaceContract;
+
+const durableStatusOwnershipContract = {
+  primary: 'applicationStatus',
+  durableAuthority: 'generatedStatusConfigMap',
+  releasePolicy: 'kroStatusProjectionRequired',
+  applicationStatusProjection: 'requiredAuthoritative',
+  appStatusSchema: 'required',
+  appStatusSchemaContract: { statusRoot: 'status.applik8s', jobsPath: 'status.applik8s.jobs', schema: 'generatedJobStatusMap', ownership: 'kroStatusProjection', pruningBehavior: 'failClosed' },
+  durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'accounts-platform-status-reconciler-status', namespace: 'accounts' },
+  fallbackStore: { objectOwnership: 'runtimeCreatedResource', dataOwnership: 'runtime', dataKeys: ['status.json', 'applik8s-jobs.json', 'history.json', 'conflicts.json', 'updatedAt'], updateStrategy: 'resourceVersionMergePatch', history: { key: 'history.json', maxEntries: 20, terminalRetention: 'retain' }, conflicts: { key: 'conflicts.json', maxEntries: 20 } },
+  concurrency: { updateStrategy: 'resourceVersionRetry', maxAttempts: 5, retryDiagnostic: 'applik8s-job-status-reconciler-status-store-conflict-retry', retryExhaustedDiagnostic: 'applik8s-job-status-reconciler-status-store-conflict-exhausted', failurePolicy: 'failClosed' },
+  observability: { mergeEvent: 'applik8s-job-status-reconciler-status-store-merged', conflictRetryEvent: 'applik8s-job-status-reconciler-status-store-conflict-retry', metrics: ['acceptedUpdates', 'rejectedUpdates', 'conflictUpdates', 'observedJobs', 'retainedJobs'] },
+  conflictPolicy: 'mergePatch',
+  diagnostics: [{ event: 'applik8s-status-projection-unavailable', severity: 'error', subject: { nodeId: 'job.accounts-model-migration' }, reason: 'KroStatusProjectionRequired', message: 'KRO-owned status.applik8s.jobs hydration is required.', retryable: false }],
+} satisfies ApplicationDurableStatusOwnershipContract;
+
+const v03ProviderInterfaces = [
+  { interface: 'ModelStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'IndexStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'CounterStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'EventSource', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'Secret', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'Queue', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'ObjectStorage', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'HttpExposure', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+] satisfies ApplicationV03PressureTestContract['requiredProviderInterfaces'];
+
+const v03ProviderCompatibility = {
+  apiVersion: 'applik8s.providerCompatibility/v1alpha1',
+  providers: v03ProviderInterfaces,
+  requiredForV03: ['ModelStore', 'IndexStore', 'CounterStore', 'EventSource', 'Secret', 'Queue', 'ObjectStorage', 'HttpExposure', 'CredentialStore'],
+} satisfies ApplicationV03PressureTestContract['providerCompatibility'];
+
+const v03StatusEvidence = {
+  authoritativeStore: 'applicationStatus',
+  appStatusProjection: 'requiredAuthoritative',
+  history: 'boundedRetained',
+  conflictBehavior: 'resourceVersionRetryAndExhaustionDiagnostics',
+  restartSafety: 'required',
+  multiJobCronJobCoverage: 'required',
+  metrics: ['acceptedUpdates', 'rejectedUpdates', 'conflictUpdates', 'observedJobs', 'retainedJobs'],
+  liveGate: 'requiredBeforeAnnouncement',
+  failurePolicy: 'failClosed',
+} satisfies ApplicationV03PressureTestContract['requiredStatusEvidence'];
+
+const v03ModelStoreEvidence = {
+  generatedRuntimeParity: 'localGeneratedArtifactGate',
+  scriptRuntimeParity: 'localAndOptInLiveGate',
+  liveGate: 'requiredBeforeAnnouncement',
+  queryIndexConstraintCoverage: 'required',
+  transactionCoverage: 'required',
+  migrationDriftCoverage: 'required',
+  unsupportedSemantics: 'failClosed',
+} satisfies ApplicationV03PressureTestContract['requiredModelStoreEvidence'];
+
+const v03OperationTargetEvidence = {
+  contexts: ['handler', 'generatedServer', 'generatedJob', 'typeKro'],
+  dryRunPlans: 'artifactBackedRequired',
+  generatedServerJobExecution: 'required',
+  typeKroExecution: 'required',
+  rbacAndFinalizerCoverage: 'required',
+  failurePolicy: 'failClosed',
+} satisfies ApplicationV03PressureTestContract['requiredOperationTargetEvidence'];
+
+const v03WatchScopeEvidence = {
+  lowerings: ['exact', 'finite', 'labelSelector', 'fieldSelector', 'mixed'],
+  unsupportedPredicateDiagnostics: 'generatedArtifactAndLiveGateRequired',
+  runtimeRouting: 'required',
+  broadWatchFallback: 'forbidden',
+  failurePolicy: 'failClosed',
+} satisfies ApplicationV03PressureTestContract['requiredWatchScopeEvidence'];
+
+const v03RuntimeReleasePolicy = {
+  startupPackageManager: false,
+  dependencyInstallation: 'buildTimeOnly',
+  runtimeImage: 'explicitImageOrGeneratedRecipe',
+  supplyChain: 'metadataOnlyUntilSignedArtifacts',
+  signedArtifacts: 'postV03',
+  failurePolicy: 'failClosed',
+} satisfies ApplicationV03PressureTestContract['runtimeReleasePolicy'];
+
 const v03PressureTestContract = {
   name: 'accounts-platform-pressure-test',
   graph: { apiVersion: 'applik8s.appGraph/v1alpha1', path: 'application-graph.json', digest: 'sha256:accounts' },
@@ -209,12 +333,34 @@ const v03PressureTestContract = {
   requiredProviders: ['ModelStore', 'IndexStore', 'Secret', 'HttpExposure', 'CredentialStore'],
   requiredRuntimeModules: ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'],
   requiredOperationTargets: [operationTargetContract],
-  requiredWatchScopes: [watchScopeLoweringContract],
+  requiredWatchScopes: [watchScopeLoweringContract, unlowerableWatchScopeContract],
   requiredMigrationDriftChecks: [migrationDriftCheckContract],
-  liveValidation: { contextEnv: 'APPLIK8S_E2E_CONTEXT', requiredResources: [{ apiVersion: 'batch/v1', kind: 'Job', name: 'accounts-model-migration' }], requiredAssertions: ['server becomes ready', 'job status is patched'] },
+  requiredModelStoreSemantics: [modelStoreSemanticsContract],
+  requiredRuntimeModuleInterfaces: [runtimeModuleInterfaceContract],
+  requiredProviderInterfaces: v03ProviderInterfaces,
+  providerCompatibility: v03ProviderCompatibility,
+  requiredStatusOwnership: [durableStatusOwnershipContract],
+  requiredStatusEvidence: v03StatusEvidence,
+  requiredModelStoreEvidence: v03ModelStoreEvidence,
+  requiredOperationTargetEvidence: v03OperationTargetEvidence,
+  requiredWatchScopeEvidence: v03WatchScopeEvidence,
+  runtimeReleasePolicy: v03RuntimeReleasePolicy,
+  liveValidation: { contextEnv: 'APPLIK8S_E2E_CONTEXT', requiredResources: [{ apiVersion: 'batch/v1', kind: 'Job', name: 'accounts-model-migration', namespace: 'accounts' }, { apiVersion: 'apps/v1', kind: 'Deployment', name: 'accounts-web', namespace: 'accounts' }, { apiVersion: 'v1', kind: 'ConfigMap', name: 'accounts-platform-status-reconciler-status', namespace: 'accounts' }], requiredAssertions: ['migration job completes', 'server becomes ready', 'model create/query works', 'duplicate key returns 409', 'durable job status is persisted', 'migration drift fails closed', 'operation-target dry-run is artifact-backed', 'scoped listener routes watched objects', 'unsupported watch predicates fail closed'] },
 } satisfies ApplicationV03PressureTestContract;
 
-expectTypeUsage(modelStoreGuarantees, generatedJobContract, generatedJobPhaseStatusContract, generatedJobStatusUpdaterContract, generatedRuntimeModuleContract, operationTargetContract, operationTargetLoweringArtifacts, watchScopeLoweringContract, migrationDriftCheckContract, v03PressureTestContract);
+// @ts-expect-error v0.3 pressure-test contracts must include release evidence fields, not only graph shape.
+const _invalidPartialV03PressureTestContract: ApplicationV03PressureTestContract = {
+  name: 'partial-accounts-platform-pressure-test',
+  graph: { apiVersion: 'applik8s.appGraph/v1alpha1', path: 'application-graph.json', digest: 'sha256:accounts' },
+  requiredNodes: ['model', 'server', 'job', 'provider'],
+  requiredProviders: ['ModelStore', 'CredentialStore', 'HttpExposure'],
+  requiredRuntimeModules: ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'],
+  requiredOperationTargets: [operationTargetContract],
+  requiredWatchScopes: [watchScopeLoweringContract, unlowerableWatchScopeContract],
+  requiredMigrationDriftChecks: [migrationDriftCheckContract],
+};
+
+expectTypeUsage(accountModelStoreProvider, modelStoreGuarantees, generatedJobContract, generatedJobPhaseStatusContract, generatedJobStatusUpdaterContract, generatedRuntimeModuleContract, operationTargetContract, operationTargetLoweringArtifacts, watchScopeLoweringContract, unlowerableWatchScopeContract, migrationDriftCheckContract, v03PressureTestContract);
 
 // @ts-expect-error ModelStore providers must use the typed provider object, not a string alias.
 const _invalidStringModelStoreProvider: ApplicationModelStoreProvider = 'postgres';
@@ -238,6 +384,10 @@ appSdk.kubernetesComposition({
   const modelDefaults = app.defaults({ models: accountModelStore });
   const maintenanceJob: ApplicationJobBinding = app.job('compact-accounts', { taskKind: 'maintenance', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo compact'] });
   const maintenanceSchedule: ApplicationJobBinding = app.schedule('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+  const maintenanceJobStatusPath: string = maintenanceJob.statusPath;
+  const maintenanceScheduleDiagnostics: string = maintenanceSchedule.diagnosticsConfigMapName;
+  const maintenanceJobDryRun = maintenanceJob.plan(handlerOperationTarget, { dryRun: true });
+  const maintenanceSchedulePlan = maintenanceSchedule.plan(handlerOperationTarget);
   const Account = app.model(AccountEntity, {
     store,
     schema: {
@@ -250,7 +400,7 @@ appSdk.kubernetesComposition({
   });
   const accountModelBinding: ApplicationModelBinding<AccountSpec, AccountStatus> = Account;
   accountModelForScriptExecution = accountModelBinding;
-  expectTypeUsage(modelDefaults, maintenanceJob, maintenanceSchedule);
+  expectTypeUsage(modelDefaults, maintenanceJob, maintenanceSchedule, maintenanceJobStatusPath, maintenanceScheduleDiagnostics, maintenanceJobDryRun, maintenanceSchedulePlan);
 
   app.server('accounts-web', { namespace: spec.namespace }, (server) => {
     server.post('/accounts', async () => {
@@ -267,6 +417,12 @@ appSdk.kubernetesComposition({
       return page;
     });
   });
+  const web = app.server('accounts-admin', { namespace: spec.namespace, models: { Account } }, (server) => {
+    server.get('/accounts/:id', async (request) => Account.get({ id: request.query.id ?? '' }));
+  });
+  const webUrl: string = web.url;
+  const webDryRun = web.plan(handlerOperationTarget, { dryRun: true });
+  expectTypeUsage(webUrl, webDryRun);
 
   return { ready: true };
 });
@@ -300,21 +456,20 @@ appSdk.kubernetesComposition({
   spec: appSchemaType({}),
   status: appSchemaType({ ready: 'boolean' }),
 }, (_spec, app) => {
-  const counterProvider = app.provide(CounterStore, { kind: 'counter-store-placeholder' });
-  const secretProvider = app.provide(Secret, { kind: 'secret-store-placeholder' });
-  const eventProvider = app.provide(EventSource, { kind: 'event-source-placeholder' });
-  const queueProvider = app.provide(Queue, { kind: 'queue-placeholder' });
-  const objectStorageProvider = app.provide(ObjectStorage, { kind: 'object-storage-placeholder' });
-  const httpExposureProvider = app.provide(HttpExposure, { kind: 'http-exposure-placeholder' });
-  const credentialProvider = app.provide(CredentialStore, { kind: 'credential-store-placeholder' });
+  const counterProvider = app.provide(CounterStore, { kind: 'kubernetes-resource-counter' });
+  const secretProvider = app.provide(Secret, { kind: 'kubernetes-secret' });
+  const eventProvider = app.provide(EventSource, { kind: 'kubernetes-watch' });
+  const queueProvider = app.provide(Queue, { kind: 'kubernetes-configmap-queue' });
+  const objectStorageProvider = app.provide(ObjectStorage, { kind: 'kubernetes-configmap-objects' });
+  const httpExposureProvider = app.provide(HttpExposure, { kind: 'ingress' });
+  const credentialProvider = app.provide(CredentialStore, { kind: 'kubernetes-secret-credentials' });
   expectTypeUsage(counterProvider, secretProvider, eventProvider, queueProvider, objectStorageProvider, httpExposureProvider, credentialProvider);
 
-  // @ts-expect-error config(...) is not a stable v0.3 app primitive until the public contract is implemented.
-  app.config('database-url', { env: 'DATABASE_URL' });
-  // @ts-expect-error secret(...) is not a stable v0.3 app primitive until the public contract is implemented.
-  app.secret('database-url', { secretName: 'db-app', key: 'uri' });
-  // @ts-expect-error expose(...) is not a stable v0.3 app primitive until the public contract is implemented.
-  app.expose('web', { hostnames: ['app.example.test'] });
+  const databaseConfig: ApplicationConfigBinding = app.config('database-url', { env: 'DATABASE_URL' });
+  const databaseSecret: ApplicationSecretBinding = app.secret('database-url', { secretName: 'db-app', key: 'uri', redaction: 'required' });
+  const generatedSecret: ApplicationSecretBinding = app.secret('session-key', { ownership: 'generated' });
+  const webExposure: ApplicationExposureBinding = app.expose('web', { service: 'accounts-web', hostnames: ['app.example.test'], tls: 'required' });
+  expectTypeUsage(databaseConfig, databaseSecret, generatedSecret, webExposure);
 
   return { ready: true };
 });
@@ -327,6 +482,15 @@ async function useAccountModelDuringScriptExecution(model: ApplicationModelBindi
   await model.delete({ id: created.id });
   const phase: string | undefined = patched.status?.phase;
   expectTypeUsage(found, page, phase);
+
+  const transactionResult: string = await model.transaction(async (tx) => {
+    const inTransaction = await tx.create({ spec: { email: 'transaction@example.com', displayName: 'Transaction' } });
+    await tx.patch({ id: inTransaction.id }, { status: { phase: 'Active' } });
+    return inTransaction.id;
+  });
+  expectTypeUsage(transactionResult);
+  // @ts-expect-error retention cleanup is generated/provider-owned, not a direct model method in the v0.3 public API.
+  await model.expire({ id: created.id });
 }
 
 if (accountModelForScriptExecution) {
@@ -629,12 +793,15 @@ expectTypeUsage(composableSpec, composableTargetSpec);
 imageHandlerContext.apply(stack);
 imageHandlerContext.delete(stack);
 imageHandlerContext.plan(stack);
+imageHandlerContext.plan(stack, { dryRun: true, fieldManager: 'tenant-platform' });
 imageHandlerContext.apply(ergonomicStack);
 imageHandlerContext.delete(ergonomicStack);
 imageHandlerContext.plan(ergonomicStack);
+imageHandlerContext.plan(ergonomicStack, { dryRun: true });
 imageHandlerContext.apply(lightweightStack);
 imageHandlerContext.delete(lightweightStack);
 imageHandlerContext.plan(lightweightStack);
+imageHandlerContext.plan(lightweightStack, { dryRun: true });
 imageHandlerContext.apply([stack, composableStack], {
   status: { phase: 'Processing', outputUrls: [] },
   events: [

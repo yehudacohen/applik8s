@@ -2,7 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import postgres from 'postgres';
-import type { ApplicationModelCreateInput, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationRuntimeModelContract } from './application-models.js';
+import type { ApplicationModelCreateInput, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelTransactionClient, ApplicationRuntimeModelContract } from './application-models.js';
 
 interface ModelStoreConnection {
   readonly client: postgres.Sql;
@@ -22,6 +22,10 @@ interface ModelStoreDiagnosticError extends Error {
   cause?: unknown;
 }
 
+type PostgresModelClient<TSpec extends object, TStatus extends object> = ApplicationModelTransactionClient<TSpec, TStatus> & {
+  transaction<TResult>(handler: (model: ApplicationModelTransactionClient<TSpec, TStatus>) => TResult | Promise<TResult>): Promise<TResult>;
+};
+
 const modelStoreConnections = new Map<string, ModelStoreConnection>();
 const modelStoreTables = new Map<string, ReturnType<typeof modelTable>>();
 
@@ -32,13 +36,13 @@ export async function closePostgresModelClients(): Promise<void> {
   await Promise.all(connections.map((connection) => connection.client.end({ timeout: 1 })));
 }
 
-export function createPostgresModelClient<TSpec extends object, TStatus extends object = Record<string, never>>(model: ApplicationRuntimeModelContract) {
-  return {
-    async create(input: ApplicationModelCreateInput<TSpec>): Promise<ApplicationModelObject<TSpec, TStatus>> {
+export function createPostgresModelClient<TSpec extends object, TStatus extends object = Record<string, never>>(model: ApplicationRuntimeModelContract, databaseOverride?: ReturnType<typeof drizzle>): PostgresModelClient<TSpec, TStatus> {
+  const client: PostgresModelClient<TSpec, TStatus> = {
+    async create(input: ApplicationModelCreateInput<TSpec> | TSpec): Promise<ApplicationModelObject<TSpec, TStatus>> {
       const table = modelTableFor(model);
       const object = modelObjectFromInput<TSpec, TStatus>(input);
       try {
-        await modelDatabase(model).insert(table).values(modelRowFromObject(object));
+        await modelDatabaseForClient(model, databaseOverride).insert(table).values(modelRowFromObject(object));
       } catch (error) {
         throw modelStoreError(model, error);
       }
@@ -47,30 +51,18 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
     async get(ref: ApplicationModelRef): Promise<ApplicationModelObject<TSpec, TStatus> | undefined> {
       const table = modelTableFor(model);
       try {
-        const rows = await modelDatabase(model).select().from(table).where(eq(table.id, ref.id)).limit(1);
+        const clauses = [eq(table.id, ref.id), ...modelRetentionClauses(model)];
+        const rows = await modelDatabaseForClient(model, databaseOverride).select().from(table).where(and(...clauses)).limit(1);
         return rows[0] ? modelObjectFromRow<TSpec, TStatus>(rows[0]) : undefined;
       } catch (error) {
         throw modelStoreError(model, error);
       }
     },
     async query(query: ApplicationModelQueryOptions<TSpec> = {}): Promise<ApplicationModelQueryPage<TSpec, TStatus>> {
-      const table = modelTableFor(model);
-      const clauses = modelWhereClauses(table, query.where ?? {});
-      const offset = query.cursor ? Number(query.cursor) : 0;
-      const normalizedOffset = Number.isFinite(offset) && offset > 0 ? offset : 0;
-      const limit = Math.max(1, Math.min(Number(query.limit ?? 50), 500));
-      const builder = modelDatabase(model).select().from(table);
-      try {
-        const rows = await (clauses.length > 0 ? builder.where(and(...clauses)) : builder).limit(limit).offset(normalizedOffset);
-        const items = rows.map((row) => modelObjectFromRow<TSpec, TStatus>(row));
-        const nextCursor = items.length === limit ? String(normalizedOffset + items.length) : undefined;
-        return { items, ...(nextCursor ? { nextCursor } : {}) };
-      } catch (error) {
-        throw modelStoreError(model, error);
-      }
+      return queryPostgresModel<TSpec, TStatus>(model, query, {}, databaseOverride);
     },
     async patch(ref: ApplicationModelRef, patch: ApplicationModelPatch<TSpec, TStatus>): Promise<ApplicationModelObject<TSpec, TStatus>> {
-      const existing = await this.get(ref);
+      const existing = await client.get(ref);
       if (!existing) {
         throw new Error(`Model ${model.name} object ${ref.id} was not found.`);
       }
@@ -82,7 +74,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
       };
       const table = modelTableFor(model);
       try {
-        await modelDatabase(model).update(table).set({ spec: next.spec, status: next.status ?? null, revision: next.revision ?? nextModelRevision(), updatedAt: new Date() }).where(eq(table.id, ref.id));
+        await modelDatabaseForClient(model, databaseOverride).update(table).set({ spec: next.spec, status: next.status ?? null, revision: next.revision ?? nextModelRevision(), updatedAt: new Date() }).where(eq(table.id, ref.id));
       } catch (error) {
         throw modelStoreError(model, error);
       }
@@ -91,7 +83,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
     async delete(ref: ApplicationModelRef): Promise<void> {
       const table = modelTableFor(model);
       try {
-        await modelDatabase(model).delete(table).where(eq(table.id, ref.id));
+        await modelDatabaseForClient(model, databaseOverride).delete(table).where(eq(table.id, ref.id));
       } catch (error) {
         throw modelStoreError(model, error);
       }
@@ -105,13 +97,60 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
           if (!partitionBy) {
             throw new Error(`Model index ${model.name}.${indexName} requires partitionBy before it can be queried.`);
           }
+          if (hasUnsupportedIndexFilter(indexOptions.filter) || hasUnsupportedIndexFilter(Reflect.get(query, 'where'))) {
+            throw new Error(`Model index ${model.name}.${indexName} filter is not supported by the Postgres ModelStore runtime yet; unsupported index filters fail closed until filtered index semantics are implemented.`);
+          }
+          const declaredOrderBy = indexOptions.orderBy ?? declared?.fields.slice(1) ?? [];
           // typecast: partitionBy is provided by typed index options or generated model index metadata for this model spec.
           const where = { [partitionBy]: partition } as Partial<TSpec>;
-          return createPostgresModelClient<TSpec, TStatus>(model).query({ ...query, where });
+          return queryPostgresModel<TSpec, TStatus>(model, { ...query, where }, { allowedOrderBy: declaredOrderBy, defaultOrderBy: declaredOrderBy }, databaseOverride);
         },
       };
     },
+    async transaction<TResult>(handler: (model: ApplicationModelTransactionClient<TSpec, TStatus>) => TResult | Promise<TResult>): Promise<TResult> {
+      return modelDatabase(model).transaction(async (transaction) => {
+        // typecast: Drizzle transaction clients expose the same query-builder surface used by the generated ModelStore client.
+        const transactionalClient = createPostgresModelClient<TSpec, TStatus>(model, transaction as unknown as ReturnType<typeof drizzle>);
+        return handler(transactionalClient);
+      });
+    },
   };
+  return client;
+}
+
+function queryPostgresModel<TSpec extends object, TStatus extends object>(model: ApplicationRuntimeModelContract, query: ApplicationModelQueryOptions<TSpec> = {}, options: { readonly allowedOrderBy?: readonly string[]; readonly defaultOrderBy?: readonly string[] } = {}, databaseOverride?: ReturnType<typeof drizzle>): Promise<ApplicationModelQueryPage<TSpec, TStatus>> {
+  const requestedOrderBy = query.orderBy ?? options.defaultOrderBy ?? [];
+  if ((query.orderBy?.length ?? 0) > 0 && !options.allowedOrderBy) {
+    throw new Error(`Model ${model.name} query orderBy is not supported by the Postgres ModelStore runtime yet; unsupported ordering fails closed until index/order semantics are implemented.`);
+  }
+  validateModelOrderBy(model, requestedOrderBy, options.allowedOrderBy ?? []);
+  validateModelWhere(model, query.where ?? {});
+  const table = modelTableFor(model);
+  const clauses = [...modelWhereClauses(table, query.where ?? {}), ...modelRetentionClauses(model)];
+  const orderClauses = modelOrderClauses(model, requestedOrderBy);
+  const offset = query.cursor ? Number(query.cursor) : 0;
+  const normalizedOffset = Number.isFinite(offset) && offset > 0 ? offset : 0;
+  const limit = Math.max(1, Math.min(Number(query.limit ?? 50), 500));
+  let builder = modelDatabaseForClient(model, databaseOverride).select().from(table).$dynamic();
+  if (clauses.length > 0) {
+    builder = builder.where(and(...clauses));
+  }
+  if (orderClauses.length > 0) {
+    builder = builder.orderBy(...orderClauses);
+  }
+  return builder.limit(limit).offset(normalizedOffset)
+    .then((rows) => {
+      const items = rows.map((row) => modelObjectFromRow<TSpec, TStatus>(row));
+      const nextCursor = items.length === limit ? String(normalizedOffset + items.length) : undefined;
+      return { items, ...(nextCursor ? { nextCursor } : {}) };
+    })
+    .catch((error: unknown) => {
+      throw modelStoreError(model, error);
+    });
+}
+
+function modelDatabaseForClient(model: ApplicationRuntimeModelContract, databaseOverride: ReturnType<typeof drizzle> | undefined): ReturnType<typeof drizzle> {
+  return databaseOverride ?? modelDatabase(model);
 }
 
 function modelDatabase(model: ApplicationRuntimeModelContract): ReturnType<typeof drizzle> {
@@ -158,6 +197,48 @@ function modelTable(tableName: string) {
 
 function modelWhereClauses(_table: ReturnType<typeof modelTable>, where: object) {
   return Object.entries(where).map(([field, value]) => sql.raw(`(${quoteIdentifier('spec')}->>${quoteLiteral(field)}) = ${quoteLiteral(String(value))}`));
+}
+
+function modelRetentionClauses(model: ApplicationRuntimeModelContract) {
+  if (model.retention.mode !== 'ttl') {
+    return [];
+  }
+  const ttlSeconds = Math.max(1, Number(model.retention.ttlSeconds ?? 1));
+  return [sql.raw(`${quoteIdentifier('created_at')} >= now() - (${ttlSeconds} * interval '1 second')`)];
+}
+
+function validateModelWhere(model: ApplicationRuntimeModelContract, where: object): void {
+  for (const [field, value] of Object.entries(where)) {
+    if (!/^[A-Za-z0-9_]+$/.test(field) || value === null || typeof value === 'object') {
+      throw new Error(`Model ${model.name} query filter ${field} is not supported by the Postgres ModelStore runtime yet; unsupported filters fail closed until query semantics are implemented.`);
+    }
+  }
+}
+
+function hasUnsupportedIndexFilter(filter: unknown): boolean {
+  return !!filter && typeof filter === 'object' && Object.keys(filter).length > 0;
+}
+
+function validateModelOrderBy(model: ApplicationRuntimeModelContract, orderBy: readonly string[], allowedOrderBy: readonly string[]): void {
+  for (const field of orderBy) {
+    if (!/^[A-Za-z0-9_]+$/.test(field) || !allowedOrderBy.includes(field)) {
+      throw new Error(`Model ${model.name} index query orderBy ${field} is not part of the declared index orderBy fields; unsupported ordering fails closed.`);
+    }
+  }
+}
+
+function modelOrderClauses(_model: ApplicationRuntimeModelContract, orderBy: readonly string[]) {
+  return orderBy.map((field) => sql.raw(`${modelOrderFieldSql(field)} ASC`));
+}
+
+function modelOrderFieldSql(field: string): string {
+  if (field === 'createdAt') {
+    return quoteIdentifier('created_at');
+  }
+  if (field === 'updatedAt') {
+    return quoteIdentifier('updated_at');
+  }
+  return `(${quoteIdentifier('spec')}->>${quoteLiteral(field)})`;
 }
 
 function modelStoreError(model: ApplicationRuntimeModelContract, error: unknown): unknown {
@@ -224,8 +305,15 @@ function modelStoreDiagnosticError(options: { readonly message: string; readonly
   return error;
 }
 
-function modelObjectFromInput<TSpec extends object, TStatus extends object>(input: ApplicationModelCreateInput<TSpec>): ApplicationModelObject<TSpec, TStatus> {
-  return { id: input.id || nextModelId(), spec: input.spec, revision: nextModelRevision() };
+function modelObjectFromInput<TSpec extends object, TStatus extends object>(input: ApplicationModelCreateInput<TSpec> | TSpec): ApplicationModelObject<TSpec, TStatus> {
+  if (isExplicitModelCreateInput<TSpec>(input)) {
+    return { id: input.id || nextModelId(), spec: input.spec, revision: nextModelRevision() };
+  }
+  return { id: nextModelId(), spec: input, revision: nextModelRevision() };
+}
+
+function isExplicitModelCreateInput<TSpec extends object>(input: ApplicationModelCreateInput<TSpec> | TSpec): input is ApplicationModelCreateInput<TSpec> {
+  return Boolean(input && typeof input === 'object' && 'spec' in input);
 }
 
 function modelRowFromObject<TSpec extends object, TStatus extends object>(object: ApplicationModelObject<TSpec, TStatus>) {

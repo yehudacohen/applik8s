@@ -620,14 +620,15 @@ export const imagePipeline = sdk.operator({
       expect(source).toContain('applik8s-server-counter-flush-failure');
       expect(source).toContain('routes.manifest.json');
       expect(source).toContain('route-get-root-0.mjs');
-      expect(source).toContain('route-post-entries-1.mjs');
+      expect(source).toContain('route-get-entries-older-1.mjs');
+      expect(source).toContain('route-post-entries-2.mjs');
       expect(source).toContain('applik8s-server-route-failure');
       expect(source).toContain('sourceLocation');
       expect(source).toContain('bundleInputs');
       expect(source).toContain('sourceKind');
-      expect(source).toContain('applik8s-route-source-kind: source');
-      expect(source).toContain('publishedGuestBookEntries.query');
-      expect(source).toContain('main-server-index.guestbook.svc.cluster.local');
+      expect(source).toContain('applik8s-route-source-kind:');
+      expect(source).toContain('GuestBook.get');
+      expect(source).toContain('renderedHtml');
       expect(source).not.toContain('GuestBookPageViewBucket.get');
       expect(source).not.toContain('GuestBookPageViewBucket.create');
       expect(source).not.toContain('GuestBookPageViewBucket.patch');
@@ -641,8 +642,11 @@ export const imagePipeline = sdk.operator({
         expect.objectContaining({ kind: 'provider', interface: 'IndexStore' }),
       ]));
       expect(graph.edges).toEqual(expect.arrayContaining([
-        expect.objectContaining({ relationship: 'provides' }),
-        expect.objectContaining({ relationship: 'emits' }),
+        expect.objectContaining({ from: { nodeId: 'server.web' }, relationship: 'dependsOn', to: { nodeId: 'crd.guest-book' } }),
+        expect.objectContaining({ from: { nodeId: 'server.web' }, relationship: 'dependsOn', to: { nodeId: 'crd.guest-book-entry' } }),
+        expect.objectContaining({ from: { nodeId: 'server.web' }, relationship: 'dependsOn', to: { nodeId: 'crd.guest-book-page-view-bucket' } }),
+        expect.objectContaining({ from: { nodeId: 'server.web' }, relationship: 'emits', to: { nodeId: 'counter.web-guest-book-page-view-bucket' } }),
+        expect.objectContaining({ from: { nodeId: 'counter.web-guest-book-page-view-bucket' }, relationship: 'writes', to: { nodeId: 'crd.guest-book-page-view-bucket' } }),
       ]));
       expect(graph.nodes.map((node: { readonly id: string }) => node.id)).toEqual([...graph.nodes.map((node: { readonly id: string }) => node.id)].sort());
       expect(graph.edges.map((edge: { readonly from: { readonly nodeId: string }; readonly relationship: string; readonly to: { readonly nodeId: string } }) => `${edge.from.nodeId}:${edge.relationship}:${edge.to.nodeId}`)).toEqual([...graph.edges.map((edge: { readonly from: { readonly nodeId: string }; readonly relationship: string; readonly to: { readonly nodeId: string } }) => `${edge.from.nodeId}:${edge.relationship}:${edge.to.nodeId}`)].sort());
@@ -650,7 +654,7 @@ export const imagePipeline = sdk.operator({
       expect(graph.providerBindings).toEqual([]);
       expect(graph.compatibility).toMatchObject({
         documentedInternalContracts: expect.arrayContaining(['ApplicationGraph']),
-        stablePublicApis: expect.arrayContaining(['Resource.increment', 'app.aggregate', 'app.crd', 'app.defaults', 'app.job', 'app.model', 'app.provide', 'app.schedule', 'app.server', 'provider.ModelStore', 'sdk.kubernetesComposition']),
+        stablePublicApis: expect.arrayContaining(['Resource.increment', 'app.aggregate', 'app.crd', 'app.defaults', 'app.http', 'app.job', 'app.model', 'app.provide', 'app.reconcile', 'app.resource', 'app.schedule', 'app.server', 'app.storage.postgres', 'provider.ModelStore', 'sdk.kubernetesComposition']),
         experimentalSurfaces: expect.arrayContaining(['app.graph']),
         postV3Surfaces: expect.arrayContaining(['workload-movement-operator']),
         labels: expect.arrayContaining([
@@ -751,8 +755,8 @@ export const badProviderGraph = composition;
     try {
       const entrypoint = join(dir, 'entrypoint.ts');
       await writeFile(entrypoint, `
-import { ModelStore, sdk } from ${JSON.stringify(join(process.cwd(), 'packages/applik8s/src/index.ts'))};
-import { entity, type } from ${JSON.stringify(join(process.cwd(), 'packages/applik8s/src/dsl.ts'))};
+import { ModelStore, sdk } from '@applik8s/applik8s';
+import { entity, type } from '@applik8s/applik8s/dsl';
 
 const Note = entity('Note', {
   spec: type({ message: 'string' }),
@@ -1172,7 +1176,7 @@ export const imagePipeline = sdk.operator({
         'applik8s.dev/rbac-mode': result.value.manifest.spec.security.rbac.mode,
         'applik8s.dev/rbac-least-privilege-reviewed': String(result.value.manifest.spec.security.rbac.leastPrivilegeReviewed),
         'applik8s.dev/rbac-rule-count': String(result.value.manifest.spec.security.rbac.rules.length),
-        'applik8s.dev/host-imports': 'capability-request,kubernetes-read,log,cancel,wasi:io,wasi:http',
+        'applik8s.dev/host-imports': 'capability-request,kubernetes-read,log,cancel,wasi:cli,wasi:clocks,wasi:filesystem,wasi:io,wasi:random,wasi:http,wasi:sockets',
         'applik8s.dev/ambient-environment': 'denied',
         'applik8s.dev/ambient-filesystem': 'denied',
         'applik8s.dev/ambient-network': 'denied',
@@ -1196,8 +1200,16 @@ export const imagePipeline = sdk.operator({
         name: 'OTEL_RESOURCE_ATTRIBUTES',
         value: `service.namespace=applik8s,applik8s.operator=image-pipeline,applik8s.bundle_digest=${result.value.manifest.spec.bundle.digest}`,
       });
+      expect(container.startupProbe).toMatchObject({
+        httpGet: { path: '/healthz', port: 'health' },
+        failureThreshold: 36,
+        periodSeconds: 5,
+        timeoutSeconds: 5,
+      });
       expect(container.livenessProbe.httpGet).toEqual({ path: '/healthz', port: 'health' });
+      expect(container.livenessProbe).toMatchObject({ initialDelaySeconds: 60, failureThreshold: 12, periodSeconds: 10, timeoutSeconds: 5 });
       expect(container.readinessProbe.httpGet).toEqual({ path: '/readyz', port: 'health' });
+      expect(container.readinessProbe).toMatchObject({ initialDelaySeconds: 1, failureThreshold: 12, periodSeconds: 5, timeoutSeconds: 5 });
       expect(result.value.manifest.spec.bundle.artifacts).toContainEqual(expect.objectContaining({ kind: 'javascript-source-map', path: result.value.artifacts.sourceMapPath }));
       expect(result.value.manifest.spec.bundle.artifacts).toContainEqual(expect.objectContaining({ kind: 'esbuild-metafile' }));
       const dockerfile = await readFile(result.value.artifacts.generatedImageDockerfilePath ?? '', 'utf8');
@@ -1628,7 +1640,7 @@ export function handle(input: string): string {
       }
 
       expect(manifest.value.spec.adapterRequirements?.kind).toBe('wasmComponent');
-      expect(manifest.value.spec.adapterRequirements?.hostImports).toEqual(['capability-request', 'kubernetes-read', 'log', 'cancel', 'wasi:io', 'wasi:http']);
+      expect(manifest.value.spec.adapterRequirements?.hostImports).toEqual(['capability-request', 'kubernetes-read', 'log', 'cancel', 'wasi:cli', 'wasi:clocks', 'wasi:filesystem', 'wasi:io', 'wasi:random', 'wasi:http', 'wasi:sockets']);
       expect(manifest.value.spec.handlerArtifact.digest).toBe(wasm.value.digest);
       expect(manifest.value.spec.bundle.sourceDigest).toBe(runtimeContract.value.digest);
       expect(manifest.value.spec.bundle.artifacts).toEqual([

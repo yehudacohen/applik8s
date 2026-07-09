@@ -1,6 +1,10 @@
-import type { ApplicationRuntimeModuleExportContract, ApplicationRuntimeModuleInterfaceContract, ApplicationRuntimeModuleKind, ApplicationRuntimeModuleRef } from '@applik8s/core';
+import type { ApplicationDurableStatusOwnershipContract, ApplicationRuntimeModuleKind } from '@applik8s/core';
 
-export const generatedRuntimeModuleApiVersion = 'applik8s.runtime/v1alpha1';
+import { applicationGeneratedJobAppStatusSchemaContract, applicationGeneratedStatusConcurrencyContract, applicationGeneratedStatusConfigMapContract, applicationGeneratedStatusObservabilityContract } from './application-jobs.js';
+export { mergeGeneratedJobStatusConfigMapData, summarizeGeneratedJobStatusConfigMapMerge, type GeneratedJobStatusConfigMapDataMergeInput, type GeneratedJobStatusConfigMapDataMergeSummary } from './application-generated-job-status.js';
+import { generatedRuntimeModuleBundle } from './application-runtime-module-bundle.js';
+import { generatedRuntimeModuleApiVersion } from './application-runtime-module-manifest.js';
+import { generatedRuntimeModuleSource, generatedRuntimeModuleSourcePreamble } from './application-runtime-module-sources.js';
 
 export interface GeneratedApplicationStatusRuntimeTarget {
   readonly apiVersion: string;
@@ -16,14 +20,7 @@ export interface GeneratedJobStatusRuntimeJobTarget {
 }
 
 export function generatedApplicationRuntimeModuleBundle(): Readonly<Record<string, string>> {
-  return {
-    'runtime/server.mjs': generatedApplicationRuntimeModuleSource('serverRuntime'),
-    'runtime/model-store-postgres.mjs': generatedApplicationRuntimeModuleSource('modelRuntime'),
-    'runtime/job-runner.mjs': generatedApplicationRuntimeModuleSource('jobRunnerRuntime'),
-    'runtime/kubernetes-client.mjs': generatedApplicationRuntimeModuleSource('kubernetesClient'),
-    'runtime/diagnostics.mjs': generatedApplicationRuntimeModuleSource('diagnostics'),
-    'runtime/providers/postgres.mjs': generatedApplicationRuntimeModuleSource('providerAdapter'),
-  };
+  return generatedRuntimeModuleBundle(generatedApplicationRuntimeModuleSource);
 }
 
 export function generatedJobStatusRuntimeBundle(targets: readonly GeneratedJobStatusRuntimeJobTarget[], appTarget?: GeneratedApplicationStatusRuntimeTarget, statusConfigMapName?: string): Readonly<Record<string, string>> {
@@ -38,20 +35,34 @@ export function generatedJobStatusRuntimeBundle(targets: readonly GeneratedJobSt
       targets,
       ...(appTarget ? { target: appTarget } : {}),
       ...(statusConfigMapName ? { statusConfigMapName } : {}),
+      ...(statusConfigMapName ? { statusProjection: 'kro' } : {}),
+      statusOwnership: generatedJobRuntimeStatusOwnership(statusConfigMapName),
     }, null, 2)}\n`,
   };
 }
 
+function generatedJobRuntimeStatusOwnership(statusConfigMapName: string | undefined): ApplicationDurableStatusOwnershipContract {
+  return {
+    primary: 'applicationStatus',
+    durableAuthority: 'generatedStatusConfigMap',
+    releasePolicy: 'kroStatusProjectionRequired',
+    applicationStatusProjection: 'requiredAuthoritative',
+    appStatusSchema: 'required',
+    appStatusSchemaContract: applicationGeneratedJobAppStatusSchemaContract(),
+    ...(statusConfigMapName ? { durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: statusConfigMapName } } : {}),
+    fallbackStore: applicationGeneratedStatusConfigMapContract(),
+    concurrency: applicationGeneratedStatusConcurrencyContract(),
+    observability: applicationGeneratedStatusObservabilityContract(),
+    conflictPolicy: 'mergePatch',
+    diagnostics: [{ event: 'applik8s-status-projection-unavailable', severity: 'error', subject: { nodeId: 'job.generated-status-runtime' }, reason: 'KroStatusProjectionRequired', message: 'Generated job status requires KRO-owned status.applik8s.jobs hydration from the runtime-created status ConfigMap.', retryable: false }],
+  };
+}
+
 export function generatedApplicationRuntimeModuleSource(kind: ApplicationRuntimeModuleKind): string {
-  if (kind === 'jobRunnerRuntime') {
-    return generatedJobRunnerRuntimeModuleSource();
-  }
-  if (kind === 'modelRuntime') {
-    return generatedPostgresModelRuntimeModuleSource();
-  }
-  const entrypoint = runtimeModuleEntrypoint(kind);
-  const moduleExports = [{ name: entrypoint, kind: 'function', stability: 'stable' }] satisfies readonly ApplicationRuntimeModuleExportContract[];
-  return `export const runtimeModule = ${JSON.stringify({ apiVersion: generatedRuntimeModuleApiVersion, kind, entrypoint, exports: [entrypoint], interface: runtimeModuleInterface([], moduleExports, kind === 'diagnostics' ? 'notApplicable' : 'required') })};\nexport function ${entrypoint}(options = {}) {\n  return { runtimeModule, options };\n}\n`;
+  return generatedRuntimeModuleSource(kind, {
+    modelRuntime: generatedPostgresModelRuntimeModuleSource,
+    jobRunnerRuntime: generatedJobRunnerRuntimeModuleSource,
+  });
 }
 
 function generatedPostgresModelRuntimeModuleSource(): string {
@@ -60,7 +71,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
 import postgres from 'postgres';
 
-export const runtimeModule = ${JSON.stringify({ apiVersion: generatedRuntimeModuleApiVersion, kind: 'modelRuntime', entrypoint: 'createModelRuntime', exports: ['createModelRuntime', 'createPostgresModelClient'], interface: runtimeModuleInterface([{ kind: 'providerAdapter', name: 'postgres' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createModelRuntime', kind: 'function', stability: 'stable' }, { name: 'createPostgresModelClient', kind: 'function', stability: 'stable' }], 'required') })};
+${generatedRuntimeModuleSourcePreamble('modelRuntime')}
 
 export function createModelRuntime(options = {}) {
   return { runtimeModule, options, createPostgresModelClient };
@@ -69,13 +80,13 @@ export function createModelRuntime(options = {}) {
 const modelStoreConnections = new Map();
 const modelStoreTables = new Map();
 
-export function createPostgresModelClient(model) {
-  return {
+export function createPostgresModelClient(model, databaseOverride) {
+  const client = {
     async create(input) {
       const table = modelTableFor(model);
       const object = modelObjectFromInput(input);
       try {
-        await modelDatabase(model).insert(table).values(modelRowFromObject(object));
+        await modelDatabaseForClient(model, databaseOverride).insert(table).values(modelRowFromObject(object));
       } catch (error) {
         throw modelStoreError(model, error);
       }
@@ -85,42 +96,29 @@ export function createPostgresModelClient(model) {
       const table = modelTableFor(model);
       let rows;
       try {
-        rows = await modelDatabase(model).select().from(table).where(eq(table.id, ref.id)).limit(1);
+        rows = await modelDatabaseForClient(model, databaseOverride).select().from(table).where(and(eq(table.id, ref.id), ...modelRetentionClauses(model))).limit(1);
       } catch (error) {
         throw modelStoreError(model, error);
       }
       return rows[0] ? modelObjectFromRow(rows[0]) : undefined;
     },
     async query(query = {}) {
-      const table = modelTableFor(model);
-      const clauses = modelWhereClauses(table, query.where || {});
-      const offset = query.cursor ? Number(query.cursor) : 0;
-      const limit = Math.max(1, Math.min(Number(query.limit ?? 50), 500));
-      const builder = modelDatabase(model).select().from(table);
-      let rows;
-      try {
-        rows = await (clauses.length > 0 ? builder.where(and(...clauses)) : builder).limit(limit).offset(Number.isFinite(offset) && offset > 0 ? offset : 0);
-      } catch (error) {
-        throw modelStoreError(model, error);
-      }
-      const items = rows.map(modelObjectFromRow);
-      const nextCursor = items.length === limit ? String((Number.isFinite(offset) && offset > 0 ? offset : 0) + items.length) : undefined;
-      return { items, ...(nextCursor ? { nextCursor } : {}) };
+      return queryPostgresModel(model, query, {}, databaseOverride);
     },
     async patch(ref, patch) {
-      const existing = await this.get(ref);
+      const existing = await client.get(ref);
       if (!existing) {
         throw new Error('Model ' + model.name + ' object ' + ref.id + ' was not found.');
       }
       const next = {
         id: existing.id,
         spec: { ...existing.spec, ...(patch.spec || {}) },
-        ...(existing.status || patch.status ? { status: { ...(existing.status || {}), ...(patch.status || {}) } } : {}),
+        ...modelStatusPatch(existing.status, patch.status),
         revision: nextModelRevision(),
       };
       const table = modelTableFor(model);
       try {
-        await modelDatabase(model).update(table).set({ spec: next.spec, status: next.status || null, revision: next.revision, updatedAt: new Date() }).where(eq(table.id, ref.id));
+        await modelDatabaseForClient(model, databaseOverride).update(table).set({ spec: next.spec, status: next.status ?? null, revision: next.revision ?? nextModelRevision(), updatedAt: new Date() }).where(eq(table.id, ref.id));
       } catch (error) {
         throw modelStoreError(model, error);
       }
@@ -129,7 +127,7 @@ export function createPostgresModelClient(model) {
     async delete(ref) {
       const table = modelTableFor(model);
       try {
-        await modelDatabase(model).delete(table).where(eq(table.id, ref.id));
+        await modelDatabaseForClient(model, databaseOverride).delete(table).where(eq(table.id, ref.id));
       } catch (error) {
         throw modelStoreError(model, error);
       }
@@ -143,11 +141,54 @@ export function createPostgresModelClient(model) {
           if (!partitionBy) {
             throw new Error('Model index ' + model.name + '.' + indexName + ' requires partitionBy before it can be queried.');
           }
-          return createPostgresModelClient(model).query({ ...query, where: { ...(query.where || {}), [partitionBy]: partition } });
+          if (hasUnsupportedIndexFilter(indexOptions.filter) || hasUnsupportedIndexFilter(query.where)) {
+            throw new Error('Model index ' + model.name + '.' + indexName + ' filter is not supported by the Postgres ModelStore runtime yet; unsupported index filters fail closed until filtered index semantics are implemented.');
+          }
+          const declaredOrderBy = indexOptions.orderBy || declared?.fields?.slice(1) || [];
+          return queryPostgresModel(model, { ...query, where: { ...(query.where || {}), [partitionBy]: partition } }, { allowedOrderBy: declaredOrderBy, defaultOrderBy: declaredOrderBy }, databaseOverride);
         },
       };
     },
+    async transaction(handler) {
+      return modelDatabase(model).transaction(async (transaction) => handler(createPostgresModelClient(model, transaction)));
+    },
   };
+  return client;
+}
+
+function queryPostgresModel(model, query = {}, options = {}, databaseOverride) {
+  const requestedOrderBy = query.orderBy || options.defaultOrderBy || [];
+  if ((query.orderBy?.length ?? 0) > 0 && !options.allowedOrderBy) {
+    throw new Error('Model ' + model.name + ' query orderBy is not supported by the Postgres ModelStore runtime yet; unsupported ordering fails closed until index/order semantics are implemented.');
+  }
+  validateModelOrderBy(model, requestedOrderBy, options.allowedOrderBy || []);
+  validateModelWhere(model, query.where || {});
+  const table = modelTableFor(model);
+  const clauses = [...modelWhereClauses(table, query.where || {}), ...modelRetentionClauses(model)];
+  const orderClauses = modelOrderClauses(model, requestedOrderBy);
+  const offset = query.cursor ? Number(query.cursor) : 0;
+  const normalizedOffset = Number.isFinite(offset) && offset > 0 ? offset : 0;
+  const limit = Math.max(1, Math.min(Number(query.limit ?? 50), 500));
+  let builder = modelDatabaseForClient(model, databaseOverride).select().from(table).$dynamic();
+  if (clauses.length > 0) {
+    builder = builder.where(and(...clauses));
+  }
+  if (orderClauses.length > 0) {
+    builder = builder.orderBy(...orderClauses);
+  }
+  return builder.limit(limit).offset(normalizedOffset)
+    .then((rows) => {
+      const items = rows.map(modelObjectFromRow);
+      const nextCursor = items.length === limit ? String(normalizedOffset + items.length) : undefined;
+      return { items, ...(nextCursor ? { nextCursor } : {}) };
+    })
+    .catch((error) => {
+      throw modelStoreError(model, error);
+    });
+}
+
+function modelDatabaseForClient(model, databaseOverride) {
+  return databaseOverride || modelDatabase(model);
 }
 
 function modelDatabase(model) {
@@ -171,7 +212,8 @@ function modelDatabase(model) {
 }
 
 function modelTableFor(model) {
-  const existing = modelStoreTables.get(model.name);
+  const key = model.connectionEnvName + ':' + model.tableName;
+  const existing = modelStoreTables.get(key);
   if (existing) {
     return existing;
   }
@@ -183,12 +225,54 @@ function modelTableFor(model) {
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   });
-  modelStoreTables.set(model.name, table);
+  modelStoreTables.set(key, table);
   return table;
 }
 
 function modelWhereClauses(_table, where) {
   return Object.entries(where).map(([field, value]) => sql.raw('(' + quoteIdentifier('spec') + '->>' + quoteLiteral(field) + ') = ' + quoteLiteral(String(value))));
+}
+
+function modelRetentionClauses(model) {
+  if (model.retention?.mode !== 'ttl') {
+    return [];
+  }
+  const ttlSeconds = Math.max(1, Number(model.retention.ttlSeconds || 1));
+  return [sql.raw(quoteIdentifier('created_at') + ' >= now() - (' + ttlSeconds + " * interval '1 second')")];
+}
+
+function validateModelWhere(model, where) {
+  for (const [field, value] of Object.entries(where || {})) {
+    if (!/^[A-Za-z0-9_]+$/.test(field) || value === null || typeof value === 'object') {
+      throw new Error('Model ' + model.name + ' query filter ' + field + ' is not supported by the Postgres ModelStore runtime yet; unsupported filters fail closed until query semantics are implemented.');
+    }
+  }
+}
+
+function hasUnsupportedIndexFilter(filter) {
+  return !!filter && typeof filter === 'object' && Object.keys(filter).length > 0;
+}
+
+function validateModelOrderBy(model, orderBy, allowedOrderBy) {
+  for (const field of orderBy || []) {
+    if (!/^[A-Za-z0-9_]+$/.test(field) || !allowedOrderBy.includes(field)) {
+      throw new Error('Model ' + model.name + ' index query orderBy ' + field + ' is not part of the declared index orderBy fields; unsupported ordering fails closed.');
+    }
+  }
+}
+
+function modelOrderClauses(_model, orderBy) {
+  return (orderBy || []).map((field) => sql.raw(modelOrderFieldSql(field) + ' ASC'));
+}
+
+function modelOrderFieldSql(field) {
+  if (field === 'createdAt') {
+    return quoteIdentifier('created_at');
+  }
+  if (field === 'updatedAt') {
+    return quoteIdentifier('updated_at');
+  }
+  return '(' + quoteIdentifier('spec') + '->>' + quoteLiteral(field) + ')';
 }
 
 function modelStoreError(model, error) {
@@ -258,7 +342,10 @@ function modelStoreDiagnosticError(options) {
 }
 
 function modelObjectFromInput(input) {
-  return { id: input.id || nextModelId(), spec: input.spec || {}, revision: nextModelRevision() };
+  if (input && typeof input === 'object' && 'spec' in input) {
+    return { id: input.id || nextModelId(), spec: input.spec || {}, revision: nextModelRevision() };
+  }
+  return { id: nextModelId(), spec: input || {}, revision: nextModelRevision() };
 }
 
 function modelRowFromObject(object) {
@@ -267,6 +354,13 @@ function modelRowFromObject(object) {
 
 function modelObjectFromRow(row) {
   return { id: row.id, spec: row.spec || {}, ...(row.status ? { status: row.status } : {}), revision: row.revision };
+}
+
+function modelStatusPatch(existingStatus, patchStatus) {
+  if (existingStatus === undefined && patchStatus === undefined) {
+    return {};
+  }
+  return { status: { ...(existingStatus || {}), ...(patchStatus || {}) } };
 }
 
 function nextModelId() {
@@ -291,7 +385,8 @@ function generatedJobRunnerRuntimeModuleSource(): string {
   return `import { readFileSync } from 'node:fs';
 import { request } from 'node:https';
 
-export const runtimeModule = ${JSON.stringify({ apiVersion: generatedRuntimeModuleApiVersion, kind: 'jobRunnerRuntime', entrypoint: 'runGeneratedJobStatusReconciler', exports: ['createJobStatusUpdater', 'generatedJobStatusFromResource', 'runGeneratedJobStatusReconciler'], interface: runtimeModuleInterface([{ kind: 'kubernetesClient', name: 'kubernetes' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createJobStatusUpdater', kind: 'function', stability: 'stable' }, { name: 'generatedJobStatusFromResource', kind: 'function', stability: 'stable' }, { name: 'runGeneratedJobStatusReconciler', kind: 'function', stability: 'stable' }], 'required') })};
+${generatedRuntimeModuleSourcePreamble('jobRunnerRuntime')}
+const statusStoreConcurrency = ${JSON.stringify(applicationGeneratedStatusConcurrencyContract())};
 
 export function createJobStatusUpdater(options = {}) {
   const statusPath = options.statusPath || 'status.applik8s.jobs.unknown';
@@ -350,7 +445,7 @@ export async function runGeneratedJobStatusReconciler(options = process.env) {
   process.once('SIGTERM', () => { running = false; });
   process.once('SIGINT', () => { running = false; });
   while (running) {
-    await reconcileGeneratedJobStatuses({ workloadNamespace, appNamespace, appTarget, appName, statusConfigMapName, targets });
+    await reconcileGeneratedJobStatuses({ workloadNamespace, appNamespace, appTarget, appName, statusConfigMapName, statusProjection: runtimeConfig.statusProjection, targets });
     if (running) {
       await sleep(intervalMs);
     }
@@ -373,6 +468,9 @@ async function reconcileGeneratedJobStatuses(options) {
   if (Object.keys(statusPatch).length > 0) {
     if (options.statusConfigMapName) {
       await patchGeneratedStatusConfigMap(options.workloadNamespace, options.statusConfigMapName, statusPatch);
+    }
+    if (options.statusProjection === 'kro') {
+      return;
     }
     let appName = options.appName;
     let appNamespace = options.appNamespace;
@@ -436,14 +534,198 @@ async function patchApplicationStatus(namespace, target, name, statusPatch) {
 }
 
 async function patchGeneratedStatusConfigMap(namespace, name, statusPatch) {
-  const jobs = statusPatch?.applik8s?.jobs || {};
-  await kubeRequest('PATCH', '/api/v1/namespaces/' + encodeURIComponent(namespace) + '/configmaps/' + encodeURIComponent(name), {
-    data: {
-      'status.json': JSON.stringify(statusPatch, null, 2),
-      'applik8s-jobs.json': JSON.stringify(jobs, null, 2),
-      updatedAt: new Date().toISOString(),
-    },
-  }, { 'content-type': 'application/merge-patch+json' });
+  const currentJobs = statusPatch?.applik8s?.jobs || {};
+  for (let attempt = 1; attempt <= statusStoreConcurrency.maxAttempts; attempt += 1) {
+    const existing = await readGeneratedStatusConfigMap(namespace, name);
+    const observedAt = new Date().toISOString();
+    const existingData = existing.data || {};
+    const merged = mergeGeneratedJobStatusEntries(parseGeneratedStatusJobs(existingData), currentJobs, parseJsonObject(existingData['conflicts.json']), observedAt);
+    const history = appendGeneratedJobHistory(parseJsonObject(existingData['history.json']), merged.acceptedJobs, observedAt);
+    const mergeMetrics = generatedJobStatusMergeMetrics(merged, currentJobs, observedAt);
+    try {
+      const body = {
+        ...(existing.resourceVersion ? { metadata: { resourceVersion: existing.resourceVersion } } : {}),
+        data: {
+          'status.json': JSON.stringify(statusPatchWithMergedGeneratedJobs(statusPatch, merged.jobs), null, 2),
+          'applik8s-jobs.json': JSON.stringify(merged.jobs, null, 2),
+          'history.json': JSON.stringify(history, null, 2),
+          'conflicts.json': JSON.stringify(merged.conflicts, null, 2),
+          updatedAt: observedAt,
+        },
+      };
+      if (existing.missing) {
+        await kubeRequest('POST', '/api/v1/namespaces/' + encodeURIComponent(namespace) + '/configmaps', {
+          apiVersion: 'v1',
+          kind: 'ConfigMap',
+          metadata: { name, namespace, labels: { 'app.kubernetes.io/managed-by': 'applik8s', 'app.kubernetes.io/component': 'generated-job-status' } },
+          ...body,
+        });
+      } else {
+        await kubeRequest('PATCH', '/api/v1/namespaces/' + encodeURIComponent(namespace) + '/configmaps/' + encodeURIComponent(name), body, { 'content-type': 'application/merge-patch+json' });
+      }
+      console.error(JSON.stringify({ event: 'applik8s-job-status-reconciler-status-store-merged', severity: 'info', configMap: name, ...mergeMetrics }));
+      return;
+    } catch (error) {
+      if (isKubernetesConflict(error) && attempt === statusStoreConcurrency.maxAttempts) {
+        console.error(JSON.stringify({ event: statusStoreConcurrency.retryExhaustedDiagnostic, severity: 'error', configMap: name, attempt, maxAttempts: statusStoreConcurrency.maxAttempts, message: error instanceof Error ? error.message : String(error) }));
+      }
+      if (!isKubernetesConflict(error) || attempt === statusStoreConcurrency.maxAttempts) {
+        throw error;
+      }
+      console.error(JSON.stringify({ event: statusStoreConcurrency.retryDiagnostic, severity: 'warn', configMap: name, attempt, message: error instanceof Error ? error.message : String(error) }));
+    }
+  }
+}
+
+function statusPatchWithMergedGeneratedJobs(statusPatch, jobs) {
+  const applik8s = statusPatch?.applik8s && typeof statusPatch.applik8s === 'object' && !Array.isArray(statusPatch.applik8s) ? statusPatch.applik8s : {};
+  return { ...statusPatch, applik8s: { ...applik8s, jobs } };
+}
+
+async function readGeneratedStatusConfigMap(namespace, name) {
+  try {
+    const configMap = await kubeRequest('GET', '/api/v1/namespaces/' + encodeURIComponent(namespace) + '/configmaps/' + encodeURIComponent(name));
+    return {
+      data: configMap && configMap.data && typeof configMap.data === 'object' ? configMap.data : {},
+      resourceVersion: configMap?.metadata?.resourceVersion,
+    };
+  } catch (error) {
+    const missing = error instanceof Error && error.message.includes('HTTP 404');
+    console.error(JSON.stringify({ event: 'applik8s-job-status-reconciler-status-store-read-error', severity: missing ? 'info' : 'warn', configMap: name, missing, message: error instanceof Error ? error.message : String(error) }));
+    return { data: {}, resourceVersion: undefined, missing };
+  }
+}
+
+function isKubernetesConflict(error) {
+  return error instanceof Error && error.message.includes('HTTP 409');
+}
+
+function appendGeneratedJobHistory(existingHistory, currentJobs, observedAt = new Date().toISOString()) {
+  const nextHistory = { ...existingHistory };
+  for (const [jobName, status] of Object.entries(currentJobs)) {
+    const entries = Array.isArray(nextHistory[jobName]) ? nextHistory[jobName] : [];
+    const entry = generatedJobHistoryEntry(status, observedAt);
+    const previous = entries[entries.length - 1];
+    nextHistory[jobName] = shouldAppendGeneratedJobHistoryEntry(previous, entry)
+      ? [...entries, entry].slice(-20)
+      : [...entries.slice(0, -1), { ...entry, observedAt }].slice(-20);
+  }
+  return nextHistory;
+}
+
+function generatedJobHistoryEntry(status, observedAt) {
+  return {
+    observedAt,
+    phase: status?.phase || 'Unknown',
+    observedGeneration: Number(status?.observedGeneration || 0),
+    idempotencyKey: String(status?.idempotencyKey || 'unknown'),
+    retryCount: Number(status?.retryCount || 0),
+  };
+}
+
+function shouldAppendGeneratedJobHistoryEntry(previous, entry) {
+  return !previous || previous.phase !== entry.phase || previous.observedGeneration !== entry.observedGeneration || previous.idempotencyKey !== entry.idempotencyKey || previous.retryCount !== entry.retryCount;
+}
+
+function mergeGeneratedJobStatusEntries(existingJobs, currentJobs, existingConflicts, observedAt) {
+  const jobs = { ...existingJobs };
+  const acceptedJobs = {};
+  const conflicts = { ...existingConflicts };
+  for (const [jobName, status] of Object.entries(currentJobs)) {
+    const existing = jobs[jobName];
+    if (shouldRetainCompletedGeneratedJobStatus(existing, status)) {
+      conflicts[jobName] = [...generatedJobConflictEntries(conflicts[jobName]), { observedAt, existing: generatedJobHistoryEntry(existing, observedAt), rejected: generatedJobHistoryEntry(status, observedAt), reason: 'CompletedIdempotencyKeyRetained' }].slice(-20);
+      continue;
+    }
+    if (isStaleGeneratedJobStatus(existing, status)) {
+      conflicts[jobName] = [...generatedJobConflictEntries(conflicts[jobName]), { observedAt, existing: generatedJobHistoryEntry(existing, observedAt), rejected: generatedJobHistoryEntry(status, observedAt), reason: 'StaleObservedGeneration' }].slice(-20);
+      continue;
+    }
+    if (isConcurrentGeneratedJobObservation(existing, status)) {
+      conflicts[jobName] = [...generatedJobConflictEntries(conflicts[jobName]), { observedAt, existing: generatedJobHistoryEntry(existing, observedAt), accepted: generatedJobHistoryEntry(status, observedAt), reason: 'ConcurrentObservationAccepted' }].slice(-20);
+    }
+    jobs[jobName] = status;
+    acceptedJobs[jobName] = status;
+  }
+  return { jobs, acceptedJobs, conflicts };
+}
+
+function generatedJobStatusMergeMetrics(merged, currentJobs, observedAt) {
+  let rejectedUpdates = 0;
+  let conflictUpdates = 0;
+  for (const entries of Object.values(merged.conflicts || {})) {
+    for (const entry of generatedJobConflictEntries(entries)) {
+      if (entry?.observedAt !== observedAt) {
+        continue;
+      }
+      if (entry.rejected) {
+        rejectedUpdates += 1;
+      }
+      if (entry.accepted) {
+        conflictUpdates += 1;
+      }
+    }
+  }
+  return {
+    observedJobs: Object.keys(currentJobs || {}).length,
+    retainedJobs: Object.keys(merged.jobs || {}).length,
+    acceptedUpdates: Object.keys(merged.acceptedJobs || {}).length,
+    rejectedUpdates,
+    conflictUpdates,
+  };
+}
+
+function isStaleGeneratedJobStatus(existing, incoming) {
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing) || !incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+    return false;
+  }
+  const existingGeneration = Number(existing.observedGeneration || 0);
+  const incomingGeneration = Number(incoming.observedGeneration || 0);
+  return incomingGeneration > 0 && existingGeneration > incomingGeneration;
+}
+
+function shouldRetainCompletedGeneratedJobStatus(existing, incoming) {
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing) || !incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+    return false;
+  }
+  return existing.phase === 'Complete' && incoming.phase !== 'Complete' && String(existing.idempotencyKey || '') === String(incoming.idempotencyKey || '');
+}
+
+function isConcurrentGeneratedJobObservation(existing, incoming) {
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing) || !incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+    return false;
+  }
+  const existingGeneration = Number(existing.observedGeneration || 0);
+  const incomingGeneration = Number(incoming.observedGeneration || 0);
+  const existingIdempotency = String(existing.idempotencyKey || '');
+  const incomingIdempotency = String(incoming.idempotencyKey || '');
+  return existingGeneration > 0 && existingGeneration === incomingGeneration && existingIdempotency !== '' && incomingIdempotency !== '' && existingIdempotency !== incomingIdempotency;
+}
+
+function generatedJobConflictEntries(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function parseGeneratedStatusJobs(existingData) {
+  const jobs = parseJsonObject(existingData['applik8s-jobs.json']);
+  if (Object.keys(jobs).length > 0) {
+    return jobs;
+  }
+  const status = parseJsonObject(existingData['status.json']);
+  const statusJobs = status?.applik8s?.jobs;
+  return statusJobs && typeof statusJobs === 'object' && !Array.isArray(statusJobs) ? { ...statusJobs } : {};
+}
+
+function parseJsonObject(value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
 }
 
 async function discoverApplicationResourceIdentity(namespace, target) {
@@ -661,43 +943,4 @@ if (process.argv[1] && (process.argv[1].endsWith('runtime__job-runner.mjs') || p
   });
 }
 `;
-}
-
-function runtimeModuleEntrypoint(kind: ApplicationRuntimeModuleKind): string {
-  if (kind === 'serverRuntime') {
-    return 'createServerRuntime';
-  }
-  if (kind === 'modelRuntime') {
-    return 'createModelRuntime';
-  }
-  if (kind === 'diagnostics') {
-    return 'createDiagnosticsRuntime';
-  }
-  if (kind === 'providerAdapter') {
-    return 'createProviderAdapter';
-  }
-  if (kind === 'kubernetesClient') {
-    return 'createKubernetesClient';
-  }
-  if (kind === 'indexerRuntime') {
-    return 'createIndexerRuntime';
-  }
-  if (kind === 'aggregateWorkerRuntime') {
-    return 'createAggregateWorkerRuntime';
-  }
-  if (kind === 'counterFlusherRuntime') {
-    return 'createCounterFlusherRuntime';
-  }
-  return 'createRuntimeModule';
-}
-
-function runtimeModuleInterface(imports: readonly ApplicationRuntimeModuleRef[], exports: readonly ApplicationRuntimeModuleExportContract[], sourceMaps: ApplicationRuntimeModuleInterfaceContract['sourceMaps']): ApplicationRuntimeModuleInterfaceContract {
-  return {
-    apiVersion: generatedRuntimeModuleApiVersion,
-    imports,
-    exports,
-    diagnostics: 'structured',
-    sourceMaps,
-    failurePolicy: 'failClosed',
-  };
 }

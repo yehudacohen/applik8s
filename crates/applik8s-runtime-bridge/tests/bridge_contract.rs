@@ -269,8 +269,6 @@ world handler {
         .arg(&wit_path)
         .arg("--world-name")
         .arg("handler")
-        .arg("--disable")
-        .args(["stdio", "random", "clocks", "http", "fetch-event"])
         .arg("--out")
         .arg(&wasm_path)
         .current_dir(workspace_root)
@@ -320,7 +318,7 @@ world handler {
 }
 
 #[test]
-fn bridge_invokes_componentize_js_handler_with_direct_fetch() {
+fn bridge_invokes_componentize_js_handler_with_imported_async_proxy_and_direct_fetch() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("test server binds");
     let addr = listener
         .local_addr()
@@ -333,7 +331,7 @@ fn bridge_invokes_componentize_js_handler_with_direct_fetch() {
             .expect("test server reads request");
         stream
             .write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 14\r\nconnection: close\r\n\r\n{\"ready\":true}",
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 14\r\nconnection: close\r\n\r\n{\"replicas\":3}",
             )
             .expect("test server writes response");
     });
@@ -341,23 +339,65 @@ fn bridge_invokes_componentize_js_handler_with_direct_fetch() {
     let workspace_root = workspace_root();
     let temp_dir = test_temp_dir("componentize-js-fetch-handler");
     fs::create_dir_all(&temp_dir).expect("test temp directory creates");
+    let entry_path = temp_dir.join("entry.js");
+    let helper_path = temp_dir.join("transformation.js");
     let js_path = temp_dir.join("handler.js");
     let wit_path = temp_dir.join("applik8s-handler.wit");
     let wasm_path = temp_dir.join("handler.wasm");
 
     fs::write(
-        &js_path,
+        &helper_path,
+        r#"
+function draftProxy(value, writes, path = []) {
+  return new Proxy(value, {
+    get(target, property) {
+      const result = Reflect.get(target, property);
+      return result && typeof result === 'object'
+        ? draftProxy(result, writes, [...path, String(property)])
+        : result;
+    },
+    set(target, property, nextValue) {
+      writes.push({ path: [...path, String(property)].join('.'), value: nextValue });
+      return Reflect.set(target, property, nextValue);
+    },
+  });
+}
+
+export async function transformFromEndpoint(url) {
+  const response = await fetch(url);
+  const payload = await response.json();
+  const writes = [];
+  const draft = draftProxy({ spec: { replicas: 0 } }, writes);
+  draft.spec.replicas = payload.replicas;
+  if (draft.spec.replicas !== payload.replicas) {
+    throw new Error('proxy reads after writes did not observe the destination draft value');
+  }
+  if (writes.length !== 1 || writes[0].path !== 'spec.replicas') {
+    throw new Error('proxy mutation was not recorded deterministically');
+  }
+  return { replicas: draft.spec.replicas, writes };
+}
+
+export async function unreachableNodeOnlyBranch() {
+  return import('node:fs');
+}
+"#,
+    )
+    .expect("transformation helper writes");
+    fs::write(
+        &entry_path,
         format!(
             r#"
+import {{ transformFromEndpoint }} from './transformation.js';
+
 export async function handle(_inputJson) {{
-  const response = await fetch('http://{addr}/healthz');
-  const payload = await response.json();
-  return JSON.stringify({{ operations: [{{ kind: 'status', status: {{ phase: payload.ready ? 'Ready' : 'NotReady' }} }}] }});
+  const result = await transformFromEndpoint('http://{addr}/desired');
+  return JSON.stringify({{ operations: [{{ kind: 'status', status: {{ phase: result.replicas === 3 ? 'Ready' : 'NotReady', writes: result.writes }} }}] }});
 }}
 "#
         ),
     )
-    .expect("handler source writes");
+    .expect("handler entry source writes");
     fs::write(
         &wit_path,
         r#"package applik8s:handler;
@@ -369,6 +409,30 @@ world handler {
     )
     .expect("handler WIT writes");
 
+    let bundle_output = Command::new("bunx")
+        .arg("esbuild")
+        .arg(&entry_path)
+        .arg("--bundle")
+        .arg("--format=esm")
+        .arg("--platform=browser")
+        .arg("--target=es2022")
+        .arg("--external:node:fs")
+        .arg(format!("--outfile={}", js_path.display()))
+        .current_dir(workspace_root.clone())
+        .output()
+        .expect("esbuild command starts");
+    assert!(
+        bundle_output.status.success(),
+        "esbuild failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&bundle_output.stdout),
+        String::from_utf8_lossy(&bundle_output.stderr)
+    );
+    let bundled_source = fs::read_to_string(&js_path).expect("bundled handler reads");
+    assert!(
+        !bundled_source.contains("node:fs"),
+        "unreachable Node-only dependency branch must be tree-shaken"
+    );
+
     let output = Command::new("bunx")
         .arg("componentize-js")
         .arg(&js_path)
@@ -376,8 +440,6 @@ world handler {
         .arg(&wit_path)
         .arg("--world-name")
         .arg("handler")
-        .arg("--disable")
-        .args(["stdio", "random", "clocks"])
         .arg("--out")
         .arg(&wasm_path)
         .current_dir(workspace_root)

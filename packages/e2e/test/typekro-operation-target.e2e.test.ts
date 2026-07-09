@@ -81,7 +81,9 @@ describeLive('live TypeKro operation target reconciliation', () => {
     await waitForTenantPhase('tenant-a', 'Provisioning');
     expect((await kubectl(['get', 'configmap/tenant-a-config', '--namespace', namespace, '--output=jsonpath={.data.plan}'])).stdout.trim()).toBe('pro');
     expect((await kubectl(['get', 'configmap/tenant-a-app', '--namespace', namespace, '--output=jsonpath={.data.tenant}'])).stdout.trim()).toBe('tenant-a');
+    expect((await kubectl(['get', 'configmap/tenant-a-app', '--namespace', namespace, '--output=jsonpath={.metadata.ownerReferences[0].apiVersion}/{.metadata.ownerReferences[0].kind}/{.metadata.ownerReferences[0].name}'])).stdout.trim()).toBe(`${group}/v1alpha1/Tenant/tenant-a`);
     expect((await kubectl(['get', `tenants.${group}/tenant-a`, '--namespace', namespace, '--output=jsonpath={.metadata.finalizers[0]}'])).stdout.trim()).toBe('platform.applik8s.dev/tenant');
+    await waitForEventMessage('tenant-a', 'TenantStackDryRunPlanned', 'tenant-a-config,tenant-a-app');
 
     await kubectl(['delete', `tenants.${group}/tenant-a`, '--namespace', namespace, '--wait=false']);
     await waitForTenantDeletion('tenant-a');
@@ -188,6 +190,25 @@ async function waitForReadyCondition(name: string, status: 'True' | 'False' | 'U
   throw new Error(`Expected ${name} Ready=${status} reason ${reason}, got ${lastCondition}.\n${diagnostics.map(formatSettledOutput).join('\n')}`);
 }
 
+async function waitForEventMessage(name: string, reason: string, message: string): Promise<void> {
+  const started = Date.now();
+  let lastMessages = '';
+  while (Date.now() - started < 120_000) {
+    lastMessages = (await kubectl(['get', 'events', '--namespace', namespace, '--field-selector', `involvedObject.name=${name},reason=${reason}`, '--output=jsonpath={.items[*].message}'])).stdout.trim();
+    if (lastMessages.includes(message)) {
+      return;
+    }
+    await sleep(2_000);
+  }
+  const diagnostics = await Promise.allSettled([
+    kubectl(['get', `tenants.${group}/${name}`, '--namespace', namespace, '--output=yaml']),
+    kubectl(['get', 'events', '--namespace', namespace, '--sort-by=.lastTimestamp']),
+    kubectl(['logs', '--namespace', namespace, '--selector', 'app.kubernetes.io/name=tenant-operator', '--all-containers=true', '--tail=900']),
+  ]);
+  throw new Error(`Expected ${reason} event for ${name} to include ${message}, got ${lastMessages}.
+${diagnostics.map(formatSettledOutput).join('\n')}`);
+}
+
 function tenantYaml(name: string): string {
   return `apiVersion: ${group}/v1alpha1
 kind: Tenant
@@ -236,6 +257,11 @@ export const tenantOperator = sdk.operator({
   resources: { Tenant },
   handlers: [Tenant.on.created((tenant) => {
     const stack = tenantStack(tenant.metadata.name, tenant.metadata.namespace ?? 'default', tenant.spec.plan, tenant.metadata.name === 'denied-tenant');
+    const dryRun = tenant.plan(stack, { dryRun: true, fieldManager: 'tenant-stack' });
+    if (!dryRun.ok) {
+      throw new Error(dryRun.error.message);
+    }
+    tenant.events.normal('TenantStackDryRunPlanned', dryRun.value.operations.flatMap((operation) => operation.kind === 'apply' ? [operation.resource.metadata.name] : []).join(','));
     tenant.finalizers.add('platform.applik8s.dev/tenant');
     tenant.apply(stack, { fieldManager: 'tenant-stack' });
     tenant.status.phase = 'Provisioning';

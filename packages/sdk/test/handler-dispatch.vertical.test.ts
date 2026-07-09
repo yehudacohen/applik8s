@@ -211,6 +211,74 @@ describe('generated handler dispatcher', () => {
     });
   });
 
+  it('lowers operation-target dry-run plans through operationTargetArtifacts only', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const target = artifactOnlyOperationTarget();
+    const operator = sdk.operator({
+      name: 'artifact-target-dry-run-pipeline',
+      resources: { ImageJob },
+      handlers: [
+        ImageJob.on.context.reconcile(async (_job, ctx) => {
+          const plan = ctx.plan(target, { dryRun: true, fieldManager: 'dry-run-manager' });
+          if (!plan.ok) {
+            return plan;
+          }
+          const operation = plan.value.operations[0];
+          if (operation?.kind !== 'apply') {
+            throw new Error('Expected dry-run plan to contain one apply operation.');
+          }
+          return { ok: true, value: { events: [{ kind: 'event', type: 'Normal', reason: 'DryRunPlanned', message: operation.resource.metadata.name }] } };
+        }),
+      ],
+    });
+
+    const output = await dispatchOperatorHandler(operator.definition, JSON.stringify({
+      abiVersion: 'applik8s.handler/v1alpha1',
+      handlerId: 'ImageJob.reconcile.0',
+      event: 'reconcile',
+      object: { apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', metadata: { name: 'hero', namespace: 'media' }, spec: { sourceUrl: 's3://bucket/hero.png' } },
+    }));
+
+    expect(JSON.parse(output)).toEqual({
+      operations: [{ kind: 'event', type: 'Normal', reason: 'DryRunPlanned', message: 'artifact-target-dry-run' }],
+    });
+  });
+
+  it('fails operation-target dry-run planning closed when the artifact is missing', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const target = artifactOnlyOperationTarget({ dryRun: false });
+    const operator = sdk.operator({
+      name: 'artifact-target-missing-dry-run-pipeline',
+      resources: { ImageJob },
+      handlers: [
+        ImageJob.on.context.reconcile(async (_job, ctx) => {
+          const plan = ctx.plan(target, { dryRun: true });
+          if (!plan.ok) {
+            return { ok: false, error: plan.error };
+          }
+          return { ok: true, value: {} };
+        }),
+      ],
+    });
+
+    await expect(dispatchOperatorHandler(operator.definition, JSON.stringify({
+      abiVersion: 'applik8s.handler/v1alpha1',
+      handlerId: 'ImageJob.reconcile.0',
+      event: 'reconcile',
+      object: { apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', metadata: { name: 'hero', namespace: 'media' }, spec: { sourceUrl: 's3://bucket/hero.png' } },
+    }))).rejects.toThrow('Operation target dry-run artifact is missing; dry-run planning fails closed.');
+  });
+
   it('routes typed Kubernetes reads through a supplied host import', async () => {
     interface GuestBookSpec { readonly title: string }
     interface GuestBookStatus { readonly entryCount?: number }
@@ -602,7 +670,7 @@ describe('generated handler dispatcher', () => {
   });
 });
 
-function artifactOnlyOperationTarget(): OperationTarget<ImageStatus> {
+function artifactOnlyOperationTarget(options: { readonly dryRun?: boolean } = {}): OperationTarget<ImageStatus> {
   return {
     targetKind: 'operationTarget',
     // typecast: dispatcher regression exercises precomputed operationTargetArtifacts and does not invoke adapter methods.
@@ -610,7 +678,7 @@ function artifactOnlyOperationTarget(): OperationTarget<ImageStatus> {
     operationTargetArtifacts: {
       applyPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target', namespace: 'media' } } }] },
       deletePlan: { operations: [{ kind: 'delete', ref: { apiVersion: 'v1', kind: 'ConfigMap', name: 'artifact-target', namespace: 'media' } }] },
-      dryRunPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target', namespace: 'media' } } }] },
+      ...(options.dryRun === false ? {} : { dryRunPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-target-dry-run', namespace: 'media' } } }] } }),
     },
   };
 }

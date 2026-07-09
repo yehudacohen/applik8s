@@ -1,5 +1,5 @@
 import { normalizeApplicationGraph } from '@applik8s/core';
-import type { ApplicationGraph, ApplicationGraphEdge, ApplicationGraphNode, ApplicationProviderBindingContract, ApplicationProviderRequirement } from '@applik8s/core';
+import type { ApplicationCompatibilityLabel, ApplicationDiagnosticContract, ApplicationGraph, ApplicationGraphEdge, ApplicationGraphNode, ApplicationProviderBindingContract, ApplicationProviderInterfaceKind, ApplicationProviderRequirement } from '@applik8s/core';
 
 export interface ApplicationGraphState {
   readonly graphNodes: ApplicationGraphNode[];
@@ -18,28 +18,73 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
     providerRequirements: dedupeApplicationProviderRequirements(state.providerRequirements),
     providerBindings: dedupeApplicationProviderBindings(state.providerBindings),
     compatibility: {
-      stablePublicApis: ['sdk.kubernetesComposition', 'app.server', 'app.crd', 'app.model', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'app.aggregate', 'Resource.index', 'Resource.increment', 'provider.ModelStore'],
+      stablePublicApis: ['sdk.kubernetesComposition', 'app.server', 'app.http', 'app.crd', 'app.resource', 'app.model', 'app.reconcile', 'app.storage.postgres', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'app.aggregate', 'app.config', 'app.secret', 'app.expose', 'Resource.index', 'Resource.increment', 'provider.ModelStore', 'provider.IndexStore', 'provider.CounterStore', 'provider.EventSource', 'provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.CredentialStore'],
       documentedInternalContracts: ['ApplicationGraph'],
       experimentalSurfaces: ['app.graph'],
-      postV3Surfaces: ['workload-movement-operator', 'generic-workflow-orchestration', 'broad-provider-ecosystem'],
+      postV3Surfaces: ['workload-movement-operator', 'generic-workflow-orchestration', 'additional-provider-adapters'],
       labels: [
-        { name: 'sdk.kubernetesComposition', surface: 'stablePublicApi', since: 'v0.2', rationale: 'Canonical TypeKro-backed app composition entrypoint.' },
-        { name: 'app.server', surface: 'stablePublicApi', since: 'v0.2', rationale: 'Generated app-server workload entrypoint with inferred resources and RBAC.' },
-        { name: 'app.crd', surface: 'stablePublicApi', since: 'v0.2', rationale: 'Schema-first Kubernetes CRD materialization entrypoint.' },
-        { name: 'ApplicationGraph', surface: 'documentedInternalContract', since: 'v0.3', rationale: 'Substrate-freeze app IR before lowering.' },
-        { name: 'app.model', surface: 'stablePublicApi', since: 'v0.3', rationale: 'Schema-first storage-backed model materialization entrypoint.' },
-        { name: 'app.job', surface: 'stablePublicApi', since: 'v0.3', rationale: 'Durable generated Kubernetes Job task entrypoint with diagnostics and status metadata.' },
-        { name: 'app.schedule', surface: 'stablePublicApi', since: 'v0.3', rationale: 'Durable generated Kubernetes CronJob task entrypoint with diagnostics and status metadata.' },
-        { name: 'app.defaults', surface: 'stablePublicApi', since: 'v0.3', rationale: 'App-scoped provider default binding boundary.' },
-        { name: 'app.provide', surface: 'stablePublicApi', since: 'v0.3', rationale: 'Typed app-scoped provider binding boundary.' },
-        { name: 'app.aggregate', surface: 'stablePublicApi', since: 'v0.2', rationale: 'Generated aggregate worker entrypoint for resource event streams.' },
-        { name: 'Resource.index', surface: 'stablePublicApi', since: 'v0.2', rationale: 'Cache-backed resource read-model declaration.' },
-        { name: 'Resource.increment', surface: 'stablePublicApi', since: 'v0.2', rationale: 'Buffered counter operation for generated server/runtime scopes.' },
-        { name: 'provider.ModelStore', surface: 'stablePublicApi', since: 'v0.3', rationale: 'Typed model storage capability contract.' },
-        { name: 'workload-movement-operator', surface: 'postV3Surface', rationale: 'Pressure-test application after v0.3 substrate freeze.' },
+        stableApiLabel('sdk.kubernetesComposition', 'v0.2', 'Canonical TypeKro-backed app composition entrypoint.'),
+        stableApiLabel('app.server', 'v0.2', 'Generated app-server workload entrypoint with inferred resources and RBAC.'),
+        stableApiLabel('app.http', 'v0.3', 'Golden-path generated HTTP workload entrypoint; aliases app.server while preserving generated artifacts and RBAC.'),
+        stableApiLabel('app.crd', 'v0.2', 'Schema-first Kubernetes CRD materialization entrypoint.'),
+        stableApiLabel('app.resource', 'v0.3', 'Golden-path Kubernetes control-plane resource declaration that materializes as an app-owned CRD.'),
+        { name: 'ApplicationGraph', surface: 'documentedInternalContract', since: 'v0.3', rationale: 'Substrate-freeze app IR before lowering.', implementation: 'implemented' },
+        stableApiLabel('app.model', 'v0.3', 'Schema-first storage-backed model materialization entrypoint.'),
+        stableApiLabel('app.reconcile', 'v0.3', 'Golden-path app-scoped reconcile handler entrypoint backed by a generated operator install.'),
+        stableApiLabel('app.storage.postgres', 'v0.3', 'Golden-path default ModelStore binding for the concrete Postgres provider and generated migration job path.'),
+        stableApiLabel('app.job', 'v0.3', 'Durable generated Kubernetes Job task entrypoint with diagnostics and status metadata.'),
+        stableApiLabel('app.schedule', 'v0.3', 'Durable generated Kubernetes CronJob task entrypoint with diagnostics and status metadata.'),
+        stableApiLabel('app.defaults', 'v0.3', 'App-scoped provider default binding boundary.'),
+        stableApiLabel('app.provide', 'v0.3', 'Typed app-scoped provider binding boundary.'),
+        stableApiLabel('app.aggregate', 'v0.2', 'Generated aggregate worker entrypoint for resource event streams.'),
+        stableApiLabel('app.config', 'v0.3', 'App-scoped ConfigMap-backed configuration binding API with explicit env/file metadata.'),
+        stableApiLabel('app.secret', 'v0.3', 'App-scoped Secret-backed binding API with explicit redaction metadata.'),
+        stableApiLabel('app.expose', 'v0.3', 'App-scoped HTTP exposure API for the concrete Ingress-backed v0.3 slice; unsupported TLS/Gateway semantics fail closed.'),
+        stableApiLabel('Resource.index', 'v0.2', 'Cache-backed resource read-model declaration.'),
+        stableApiLabel('Resource.increment', 'v0.2', 'Buffered counter operation for generated server/runtime scopes.'),
+        stableApiLabel('provider.ModelStore', 'v0.3', 'Typed model storage capability contract backed by the Postgres provider slice.'),
+        stableApiLabel('provider.IndexStore', 'v0.3', 'Typed index storage capability contract backed by the Valkey provider slice.'),
+        stableApiLabel('provider.CounterStore', 'v0.3', 'Defaults to bounded Kubernetes-resource counters with buffered writes.'),
+        stableApiLabel('provider.EventSource', 'v0.3', 'Defaults to bounded Kubernetes watch streams.'),
+        stableApiLabel('provider.Secret', 'v0.3', 'Defaults to Kubernetes Secret references with explicit object ownership.'),
+        stableApiLabel('provider.Queue', 'v0.3', 'Defaults to a bounded resourceVersion-safe ConfigMap queue contract.'),
+        stableApiLabel('provider.ObjectStorage', 'v0.3', 'Defaults to bounded ConfigMap-backed objects with an explicit 512 KiB object ceiling.'),
+        stableApiLabel('provider.HttpExposure', 'v0.3', 'Typed HTTP exposure capability contract backed by the Ingress app.expose slice; unsupported provider adapters fail closed.'),
+        stableApiLabel('provider.CredentialStore', 'v0.3', 'Defaults to Kubernetes SecretRef credentials with external object ownership.'),
+        { name: 'app.graph', surface: 'experimentalSurface', since: 'v0.3', rationale: 'Direct graph introspection remains experimental while the serialized ApplicationGraph artifact is the documented contract.', implementation: 'failClosedReserved' },
+        { name: 'workload-movement-operator', surface: 'postV3Surface', rationale: 'Pressure-test application after v0.3 substrate freeze.', implementation: 'postV3' },
+        { name: 'generic-workflow-orchestration', surface: 'postV3Surface', rationale: 'Generic workflow orchestration is intentionally deferred beyond Kubernetes-native generated jobs.', implementation: 'postV3' },
+        { name: 'additional-provider-adapters', surface: 'postV3Surface', rationale: 'v0.3 ships bounded Kubernetes-native defaults; additional cloud and hosted-service adapters remain incremental.', implementation: 'postV3' },
       ],
     },
   });
+}
+
+function stableApiLabel(name: string, since: string, rationale: string): ApplicationCompatibilityLabel {
+  return { name, surface: 'stablePublicApi', since, rationale, implementation: 'implemented' };
+}
+
+function reservedProviderApiLabel(providerInterface: ApplicationProviderInterfaceKind): ApplicationCompatibilityLabel {
+  return {
+    name: `provider.${providerInterface}`,
+    surface: 'stablePublicApi',
+    since: 'v0.3',
+    rationale: `${providerInterface} is a stable v0.3 provider interface reserved for app-scoped dependency injection; generated adapters fail closed until a concrete provider is implemented.`,
+    implementation: 'failClosedReserved',
+    diagnostics: [reservedProviderDiagnostic(providerInterface)],
+  };
+}
+
+function reservedProviderDiagnostic(providerInterface: ApplicationProviderInterfaceKind): ApplicationDiagnosticContract {
+  return {
+    event: 'applik8s-provider-requirement-missing',
+    severity: 'error',
+    subject: { nodeId: `provider.${providerInterface}` },
+    reason: 'ProviderInterfaceReserved',
+    message: `${providerInterface} is a stable v0.3 provider interface, but this release has no generated adapter for it.`,
+    likelyFix: `Bind a supported concrete provider, or keep ${providerInterface} usage behind a fail-closed feature boundary until an adapter exists.`,
+    retryable: false,
+  };
 }
 
 export function isApplicationGraph(value: unknown): value is ApplicationGraph {

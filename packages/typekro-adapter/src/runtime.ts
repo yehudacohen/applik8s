@@ -1,5 +1,5 @@
 import { toKubernetesStructuralOpenApiSchema, validateStructuralOpenApiSchema } from '@applik8s/compiler/kubernetes-schema';
-import type { AnyResourceDefinition, AnyResourceVersionDefinition, CapabilityClientSet, ConcurrencyConfig, DeleteTargetOptions, FinalizeHandlerOptions, Handler, HandlerEventType, HandlerRegistration, JsonObject, NormalizedOperationPlan, ObjectRef, OperatorDefinition, OperatorDeploymentOptions, OperatorManifest, PartialStatus, PermissionRule, ProxyHandler, ResourceDefinition, ResourceEventSources, ResourceWatchAddress, Result } from '@applik8s/core';
+import type { AnyResourceDefinition, AnyResourceVersionDefinition, CapabilityClientSet, ConcurrencyConfig, DeleteTargetOptions, FinalizeHandlerOptions, Handler, HandlerEventType, HandlerRegistration, JsonObject, NormalizedOperationPlan, ObjectRef, OperatorDefinition, OperatorDeploymentOptions, OperatorManifest, PartialStatus, PermissionRule, ProxyHandler, ResourceDefinition, ResourceEventSources, ResourceWatchAddress, Result, StatusConvention } from '@applik8s/core';
 import type { CallableOperator } from '@applik8s/sdk';
 import { sdk, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
 import { imageRefString } from '@applik8s/typetainer';
@@ -493,6 +493,9 @@ function resourceWatchForSelector(selector: TypeKroListenerSelector): ResourceWa
   }
   if (selector.labels && selector.labelSelector) {
     throw new Error('TypeKro listener selector scope requires either labels or labelSelector, not both.');
+  }
+  if (selector.labelSelector?.matchExpressions && selector.labelSelector.matchExpressions.length > 0) {
+    throw new Error('TypeKro listener selector scope does not support labelSelector.matchExpressions in v0.3. Use labels/matchLabels, exact instances, finite instance sets, or fieldSelector.');
   }
   return {
     ...(selector.namespace ? { namespace: selector.namespace } : {}),
@@ -1296,7 +1299,7 @@ function isOwnedResource(resource: AnyResourceDefinition): boolean {
 function crdVersionDocument(resource: AnyResourceDefinition, version: AnyResourceVersionDefinition): JsonObject {
   const specSchema = emitStructuralOpenApiSchema(version.spec, `${resource.kind}.${version.name}.spec`);
   const statusSchema = version.status
-    ? emitStructuralOpenApiSchema(version.status, `${resource.kind}.${version.name}.status`)
+    ? statusSchemaWithConvention(emitStructuralOpenApiSchema(version.status, `${resource.kind}.${version.name}.status`), resource.statusConvention, `${resource.kind}.${version.name}.status`)
     : undefined;
   return compactObject({
     name: version.name,
@@ -1315,6 +1318,43 @@ function crdVersionDocument(resource: AnyResourceDefinition, version: AnyResourc
     subresources: resource.statusSubresource ? { status: {} } : undefined,
     additionalPrinterColumns: resource.additionalPrinterColumns ? [...resource.additionalPrinterColumns] : undefined,
   });
+}
+
+function statusSchemaWithConvention(schema: JsonObject, convention: StatusConvention | undefined, path: string): JsonObject {
+  if (!convention) {
+    return schema;
+  }
+  if (schema.type !== 'object') {
+    throw new Error(`CRD schema ${path} uses statusConvention but status schema is not an object.`);
+  }
+  const properties = isJsonObject(schema.properties) ? { ...schema.properties } : {};
+  if (!isJsonObject(properties[convention.observedGenerationField])) {
+    properties[convention.observedGenerationField] = { type: 'integer', format: 'int64' };
+  }
+  if (!isJsonObject(properties[convention.conditionsField])) {
+    properties[convention.conditionsField] = conditionArraySchema();
+  }
+  return { ...schema, properties };
+}
+
+function conditionArraySchema(): JsonObject {
+  return {
+    type: 'array',
+    'x-kubernetes-list-type': 'map',
+    'x-kubernetes-list-map-keys': ['type'],
+    items: {
+      type: 'object',
+      required: ['type', 'status', 'reason', 'message', 'lastTransitionTime'],
+      properties: {
+        type: { type: 'string' },
+        status: { type: 'string', enum: ['True', 'False', 'Unknown'] },
+        reason: { type: 'string' },
+        message: { type: 'string' },
+        observedGeneration: { type: 'integer', format: 'int64' },
+        lastTransitionTime: { type: 'string', format: 'date-time' },
+      },
+    },
+  };
 }
 
 function serviceAccountDocument(name: string, namespace: string, manifest: OperatorManifest): KubernetesManifestResource {
@@ -1380,15 +1420,25 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
               imagePullPolicy: 'IfNotPresent',
               ports: [{ name: 'health', containerPort: 8080 }],
               env: operatorHostEnv(manifest),
+              startupProbe: {
+                httpGet: { path: '/healthz', port: 'health' },
+                failureThreshold: 36,
+                periodSeconds: 5,
+                timeoutSeconds: 5,
+              },
               livenessProbe: {
                 httpGet: { path: '/healthz', port: 'health' },
-                initialDelaySeconds: 5,
+                initialDelaySeconds: 60,
+                failureThreshold: 12,
                 periodSeconds: 10,
+                timeoutSeconds: 5,
               },
               readinessProbe: {
                 httpGet: { path: '/readyz', port: 'health' },
                 initialDelaySeconds: 1,
+                failureThreshold: 12,
                 periodSeconds: 5,
+                timeoutSeconds: 5,
               },
             },
           ],

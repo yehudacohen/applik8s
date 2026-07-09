@@ -129,6 +129,7 @@ describeLive('live TypeKro Postgres ModelStore migration drift preflight', () =>
 
   it('fails closed before schema effects for existing schema drift in real Postgres', async () => {
     const preflightSql = await generatedPreflightSql(requiredDriftOutDir(driftOutDir));
+    const migrationSql = await generatedMigrationSql(requiredDriftOutDir(driftOutDir));
 
     const cases: readonly MigrationDriftCase[] = [
       {
@@ -199,6 +200,45 @@ INSERT INTO "applik8s_model_migrations" (id, model, revision, plan) VALUES ('dri
       expect(logs).toContain('applik8s-model-migration-drift-detected');
       expect(logs).toContain(testCase.expectedReason);
     }
+
+    await runSqlJob({
+      namespace: driftNamespace,
+      databaseName: driftDatabaseName,
+      name: 'seed-preflight-before-migration-effects',
+      sql: `
+DROP TABLE IF EXISTS "applik8s_model_migrations" CASCADE;
+DROP TABLE IF EXISTS "${accountModelTableName}" CASCADE;
+CREATE TABLE "${accountModelTableName}" (
+  id text PRIMARY KEY,
+  spec jsonb NOT NULL,
+  status jsonb,
+  revision text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+`,
+      expectFailure: false,
+    });
+    const combinedLogs = await runSqlJob({ namespace: driftNamespace, databaseName: driftDatabaseName, name: 'preflight-before-migration-effects', sql: `${preflightSql}\n${migrationSql}`, expectFailure: true });
+    expect(combinedLogs).toContain('applik8s-model-migration-drift-detected');
+    expect(combinedLogs).toContain('missingHistoryTable');
+    const effectLogs = await runSqlJob({ namespace: driftNamespace, databaseName: driftDatabaseName, name: 'assert-no-migration-effects', sql: `SELECT CASE WHEN to_regclass('public.applik8s_model_migrations') IS NULL AND to_regclass('public."accounts-by-email"') IS NULL AND to_regclass('public."account-email-unique"') IS NULL THEN 'migration-effects-absent' ELSE 'migration-effects-present' END AS migration_effects;`, expectFailure: false });
+    expect(effectLogs).toContain('migration-effects-absent');
+
+    await runSqlJob({
+      namespace: driftNamespace,
+      databaseName: driftDatabaseName,
+      name: 'seed-destructive-before-migration-effects',
+      sql: `${resetDriftSchemaSql()}
+INSERT INTO "applik8s_model_migrations" (id, model, revision, plan) VALUES ('drift', 'Account', 'sha256:previous', '{}'::jsonb);
+`,
+      expectFailure: false,
+    });
+    const destructiveLogs = await runSqlJob({ namespace: driftNamespace, databaseName: driftDatabaseName, name: 'destructive-before-migration-effects', sql: `${preflightSql}\n${migrationSql}`, expectFailure: true });
+    expect(destructiveLogs).toContain('applik8s-model-migration-drift-detected');
+    expect(destructiveLogs).toContain('destructiveChange');
+    const destructiveEffectLogs = await runSqlJob({ namespace: driftNamespace, databaseName: driftDatabaseName, name: 'assert-destructive-migration-effects', sql: `SELECT CASE WHEN count(*) = 1 AND max(revision) = 'sha256:previous' AND to_regclass('public."accounts-by-email"') IS NULL AND to_regclass('public."account-email-unique"') IS NULL THEN 'destructive-migration-effects-absent' ELSE 'destructive-migration-effects-present' END AS migration_effects FROM "applik8s_model_migrations";`, expectFailure: false });
+    expect(destructiveEffectLogs).toContain('destructive-migration-effects-absent');
   }, 420_000);
 });
 
@@ -303,6 +343,14 @@ spec:
 }
 
 async function generatedPreflightSql(targetOutDir: string): Promise<string> {
+  return generatedMigrationConfigMapData(targetOutDir, 'preflight.sql');
+}
+
+async function generatedMigrationSql(targetOutDir: string): Promise<string> {
+  return generatedMigrationConfigMapData(targetOutDir, 'migration.sql');
+}
+
+async function generatedMigrationConfigMapData(targetOutDir: string, key: 'preflight.sql' | 'migration.sql'): Promise<string> {
   const resourcesPath = join(targetOutDir, 'typekro', 'resources.json');
   const parsed: unknown = JSON.parse(await readFile(resourcesPath, 'utf8'));
   if (!Array.isArray(parsed)) {
@@ -312,11 +360,11 @@ async function generatedPreflightSql(targetOutDir: string): Promise<string> {
     const object = objectRecord(resource);
     const metadata = objectRecord(object?.metadata);
     const data = objectRecord(object?.data);
-    if (object?.kind === 'ConfigMap' && metadata?.name === `${driftMigrationJobName}-migration` && typeof data?.['preflight.sql'] === 'string') {
-      return data['preflight.sql'];
+    if (object?.kind === 'ConfigMap' && metadata?.name === `${driftMigrationJobName}-migration` && typeof data?.[key] === 'string') {
+      return data[key];
     }
   }
-  throw new Error(`Generated migration ConfigMap ${driftMigrationJobName}-migration with preflight.sql was not found in ${resourcesPath}.`);
+  throw new Error(`Generated migration ConfigMap ${driftMigrationJobName}-migration with ${key} was not found in ${resourcesPath}.`);
 }
 
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
@@ -382,7 +430,7 @@ spec:
           command:
             - sh
             - -c
-            - 'psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /sql/script.sql'
+            - 'for attempt in $(seq 1 60); do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select 1" >/dev/null 2>&1 && exec psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /sql/script.sql; sleep 2; done; psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "select 1" >/dev/null && exec psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /sql/script.sql'
           env:
             - name: DATABASE_URL
               valueFrom:
@@ -795,8 +843,8 @@ function liveEntrypointSource(options: EntrypointSourceOptions = { namespace, st
   const generatedServerName = options.serverName ?? serverName;
   const generatedServiceName = options.serviceName ?? serviceName;
   return `
-import { ModelStore, sdk } from ${JSON.stringify(join(process.cwd(), 'packages/applik8s/src/index.ts'))};
-import { entity, type } from ${JSON.stringify(join(process.cwd(), 'packages/applik8s/src/dsl.ts'))};
+import { ModelStore, sdk } from '@applik8s/applik8s';
+import { entity, type } from '@applik8s/applik8s/dsl';
 
 const AccountEntity = entity('Account', {
   spec: type({ email: 'string', displayName: 'string' }),

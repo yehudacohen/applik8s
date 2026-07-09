@@ -1,4 +1,4 @@
-import type { ApplicationDiagnosticContract, ApplicationGraphMetadataLink, ApplicationGraphNodeRef, ApplicationJobIdempotencyContract, ApplicationJobStatusLifecycleContract, ApplicationPhaseContract, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetryPolicy, GeneratedJobDurableStatusContract, GeneratedJobDurableStatusUpdaterContract, GeneratedJobPhaseStatusContract, GeneratedJobRuntimeContract } from '@applik8s/core';
+import type { ApplicationAppStatusSchemaContract, ApplicationDiagnosticContract, ApplicationDurableStatusConcurrencyContract, ApplicationDurableStatusObservabilityContract, ApplicationGeneratedStatusConfigMapContract, ApplicationGraphMetadataLink, ApplicationGraphNodeRef, ApplicationJobIdempotencyContract, ApplicationJobStatusLifecycleContract, ApplicationObservabilityContract, ApplicationPhaseContract, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetryPolicy, GeneratedJobDurableStatusContract, GeneratedJobDurableStatusUpdaterContract, GeneratedJobPhaseStatusContract, GeneratedJobRuntimeContract } from '@applik8s/core';
 
 export function applicationGeneratedJobPhase(): ApplicationPhaseContract {
   return { initialPhase: 'Pending', terminalPhases: ['Complete', 'Failed'], conditions: ['Blocked', 'Progressing', 'Ready', 'Finalized', 'Failed'] };
@@ -8,8 +8,59 @@ export function applicationGeneratedJobRetry(): ApplicationRetryPolicy {
   return { mode: 'boundedExponentialBackoff', maxAttempts: 3, initialDelayMs: 1000, maxDelayMs: 30000 };
 }
 
+export function applicationGeneratedJobObservability(diagnosticsArtifactName: string): ApplicationObservabilityContract {
+  return {
+    health: { mode: 'kubernetesJobStatus' },
+    logs: { format: 'json', component: 'applik8s-job-runner', failureEvents: ['applik8s-job-terminal-failure'] },
+    metrics: { mode: 'declaredHooks', names: ['applik8s_generated_job_observations_total', 'applik8s_generated_job_failures_total'] },
+    events: ['applik8s-job-terminal-failure'],
+    sourceMaps: 'notApplicable',
+    replayArtifacts: [{ kind: 'jobDiagnostics', name: diagnosticsArtifactName }],
+    diagnosticsArtifact: { kind: 'jobDiagnostics', name: diagnosticsArtifactName },
+  };
+}
+
 export function applicationGeneratedJobIdempotency(): ApplicationJobIdempotencyContract {
   return { keySource: 'metadata.generation', conflictPolicy: 'skipCompleted' };
+}
+
+export function applicationGeneratedJobAppStatusSchemaContract(): ApplicationAppStatusSchemaContract {
+  return {
+    statusRoot: 'status.applik8s',
+    jobsPath: 'status.applik8s.jobs',
+    schema: 'generatedJobStatusMap',
+    ownership: 'kroStatusProjection',
+    pruningBehavior: 'failClosed',
+  };
+}
+
+export function applicationGeneratedStatusConfigMapContract(): ApplicationGeneratedStatusConfigMapContract {
+  return {
+    objectOwnership: 'runtimeCreatedResource',
+    dataOwnership: 'runtime',
+    dataKeys: ['status.json', 'applik8s-jobs.json', 'history.json', 'conflicts.json', 'updatedAt'],
+    updateStrategy: 'resourceVersionMergePatch',
+    history: { key: 'history.json', maxEntries: 20, terminalRetention: 'retain' },
+    conflicts: { key: 'conflicts.json', maxEntries: 20 },
+  };
+}
+
+export function applicationGeneratedStatusConcurrencyContract(): ApplicationDurableStatusConcurrencyContract {
+  return {
+    updateStrategy: 'resourceVersionRetry',
+    maxAttempts: 5,
+    retryDiagnostic: 'applik8s-job-status-reconciler-status-store-conflict-retry',
+    retryExhaustedDiagnostic: 'applik8s-job-status-reconciler-status-store-conflict-exhausted',
+    failurePolicy: 'failClosed',
+  };
+}
+
+export function applicationGeneratedStatusObservabilityContract(): ApplicationDurableStatusObservabilityContract {
+  return {
+    mergeEvent: 'applik8s-job-status-reconciler-status-store-merged',
+    conflictRetryEvent: 'applik8s-job-status-reconciler-status-store-conflict-retry',
+    metrics: ['acceptedUpdates', 'rejectedUpdates', 'conflictUpdates', 'observedJobs', 'retainedJobs'],
+  };
 }
 
 export function applicationGeneratedJobDurableStatus(options: {
@@ -54,6 +105,8 @@ export function applicationGeneratedJobStatusUpdater(options: {
   readonly observes: readonly ApplicationResourceRef[];
   readonly writes: GeneratedJobRuntimeContract['phaseStatus'];
   readonly statusShape: GeneratedJobDurableStatusContract;
+  readonly statusConfigMapName?: string;
+  readonly statusConfigMapNamespace?: string;
   readonly diagnostics?: readonly ApplicationDiagnosticContract[];
 }): GeneratedJobDurableStatusUpdaterContract {
   return {
@@ -62,10 +115,17 @@ export function applicationGeneratedJobStatusUpdater(options: {
     writes: options.writes,
     statusOwnership: {
       primary: 'applicationStatus',
-      fallback: 'generatedStatusConfigMap',
-      appStatusSchema: 'bestEffort',
+      durableAuthority: 'generatedStatusConfigMap',
+      releasePolicy: 'kroStatusProjectionRequired',
+      applicationStatusProjection: 'requiredAuthoritative',
+      appStatusSchema: 'required',
+      appStatusSchemaContract: applicationGeneratedJobAppStatusSchemaContract(),
+      ...(options.statusConfigMapName ? { durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: options.statusConfigMapName, ...(options.statusConfigMapNamespace ? { namespace: options.statusConfigMapNamespace } : {}) } } : {}),
+      fallbackStore: applicationGeneratedStatusConfigMapContract(),
+      concurrency: applicationGeneratedStatusConcurrencyContract(),
+      observability: applicationGeneratedStatusObservabilityContract(),
       conflictPolicy: 'mergePatch',
-      diagnostics: [{ event: 'applik8s-status-schema-pruned', severity: 'warning', subject: { nodeId: `job.${options.jobName}` }, reason: 'ApplicationStatusSchemaMayPruneCustomFields', message: 'Generated job status is patched to application status when the CRD schema allows it and persisted in the generated status ConfigMap as the durable fallback.', retryable: false }],
+      diagnostics: [{ event: 'applik8s-status-projection-unavailable', severity: 'error', subject: { nodeId: `job.${options.jobName}` }, reason: 'KroStatusProjectionRequired', message: 'Generated job status requires KRO-owned status.applik8s.jobs hydration from the runtime-created status ConfigMap.', retryable: false }],
     },
     statusShape: options.statusShape,
     failurePolicy: 'failClosed',
@@ -100,18 +160,27 @@ export function applicationGeneratedJobStatusLifecycle(options: {
   readonly jobName: string;
   readonly materialization: GeneratedJobRuntimeContract['materialization'];
   readonly statusConfigMapName?: string;
+  readonly statusConfigMapNamespace?: string;
 }): ApplicationJobStatusLifecycleContract {
   return {
     ownership: {
       primary: 'applicationStatus',
-      fallback: 'generatedStatusConfigMap',
-      appStatusSchema: 'bestEffort',
-      ...(options.statusConfigMapName ? { durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: options.statusConfigMapName } } : {}),
+      durableAuthority: 'generatedStatusConfigMap',
+      releasePolicy: 'kroStatusProjectionRequired',
+      applicationStatusProjection: 'requiredAuthoritative',
+      appStatusSchema: 'required',
+      appStatusSchemaContract: applicationGeneratedJobAppStatusSchemaContract(),
+      ...(options.statusConfigMapName ? { durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: options.statusConfigMapName, ...(options.statusConfigMapNamespace ? { namespace: options.statusConfigMapNamespace } : {}) } } : {}),
+      fallbackStore: applicationGeneratedStatusConfigMapContract(),
+      concurrency: applicationGeneratedStatusConcurrencyContract(),
+      observability: applicationGeneratedStatusObservabilityContract(),
       conflictPolicy: 'mergePatch',
-      diagnostics: [{ event: 'applik8s-status-schema-pruned', severity: 'warning', subject: { nodeId: `job.${options.jobName}` }, reason: 'ApplicationStatusSchemaMayPruneCustomFields', message: 'Generated job status is patched to application status when possible and persisted in the generated status ConfigMap as the durable fallback.', retryable: false }],
+      diagnostics: [{ event: 'applik8s-status-projection-unavailable', severity: 'error', subject: { nodeId: `job.${options.jobName}` }, reason: 'KroStatusProjectionRequired', message: 'Generated job status requires KRO-owned status.applik8s.jobs hydration from the runtime-created status ConfigMap.', retryable: false }],
     },
     conflictPolicy: 'mergePatch',
+    conflictResolution: { staleObservedGeneration: 'reject', completedIdempotencyKey: 'retainCompleted', diagnosticsStore: 'conflicts.json' },
     historyRetention: { maxEntries: 20, terminalRetention: 'retain' },
+    terminalFailure: { condition: 'Failed', partialEffects: 'required', diagnostics: 'required', history: 'retain' },
     multiJob: 'appLevelReconciler',
     cronJob: options.materialization === 'kubernetes-cronjob' ? 'latestRunAndHistory' : 'unsupported',
     fallback: 'generatedStatusConfigMap',

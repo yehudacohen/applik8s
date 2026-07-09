@@ -30,6 +30,7 @@ import type {
   Operation,
   OperationPlanInput,
   OperationTarget,
+  PlanTargetOptions,
   OperatorDefinition,
   RequeuePolicy,
   ResourceDefinition,
@@ -485,7 +486,18 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
     requeue(policy: RequeuePolicy) {
       requeue = policy;
     },
-    plan(target: OperationTarget<TStatus>, targetOptions?: ApplyTargetOptions) {
+    plan(target: OperationTarget<TStatus>, targetOptions?: PlanTargetOptions) {
+      if (targetOptions?.dryRun) {
+        const fastPath = precomputedDryRunOperations(target, targetOptions);
+        if (fastPath) {
+          return ok({ operations: fastPath });
+        }
+        return missingDryRunPlan<TStatus>();
+      }
+      const fastPath = precomputedApplyOperations(target, targetOptions);
+      if (fastPath) {
+        return ok({ operations: fastPath });
+      }
       return target.adapter.renderApply(target, targetOptions);
     },
   } as unknown as HandlerProxyScope<TSpec, TStatus>;
@@ -637,7 +649,14 @@ function createContext(recorder: Recorder, object: AnyKubernetesObject): Handler
       applyGraph(application);
       return ok(recorder.result());
     },
-    plan(target: OperationTarget<object>, options?: ApplyTargetOptions) {
+    plan(target: OperationTarget<object>, options?: PlanTargetOptions) {
+      if (options?.dryRun) {
+        const fastPath = precomputedDryRunOperations(target, options);
+        if (fastPath) {
+          return ok({ operations: fastPath });
+        }
+        return missingDryRunPlan<object>();
+      }
       const fastPath = precomputedApplyOperations(target, options);
       if (fastPath) {
         return ok({ operations: fastPath });
@@ -888,6 +907,21 @@ function precomputedDeleteOperations<TStatus extends object>(target: OperationTa
     // typecast: artifact delete operations are valid normalized operations for any handler status type.
     return next as Operation<TStatus>;
   });
+}
+
+function precomputedDryRunOperations<TStatus extends object>(target: OperationTarget<TStatus>, options?: PlanTargetOptions): Operation<TStatus>[] | undefined {
+  const operations = target.operationTargetArtifacts?.dryRunPlan?.operations;
+  if (!operations) {
+    return undefined;
+  }
+  return operations.map((operation) => operation.kind === 'apply'
+    // typecast: artifact dry-run apply operations are valid normalized operations for any handler status type.
+    ? applyInput(operation.resource, options) as Operation<TStatus>
+    : operation);
+}
+
+function missingDryRunPlan<TStatus extends object>(): Result<NormalizedOperationPlan<TStatus>> {
+  return err('MANIFEST_INVALID', 'Operation target dry-run artifact is missing; dry-run planning fails closed.');
 }
 
 function isReadonlyArray<T>(value: T | readonly T[]): value is readonly T[] {

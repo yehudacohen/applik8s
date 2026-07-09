@@ -16,6 +16,7 @@ export default defineConfig({
 
 function workspaceAliases(): Record<string, string> {
   return {
+    '@applik8s/applik8s/dsl': fileURLToPath(new URL('./packages/applik8s/src/dsl.ts', import.meta.url)),
     '@applik8s/applik8s': fileURLToPath(new URL('./packages/applik8s/src/index.ts', import.meta.url)),
     '@applik8s/core': fileURLToPath(new URL('./packages/core/src/index.ts', import.meta.url)),
     '@applik8s/sdk': fileURLToPath(new URL('./packages/sdk/src/index.ts', import.meta.url)),

@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/testing",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local testing harness for applik8s operators.",
   "license": "Apache-2.0",
   "type": "module",
@@ -19,7 +19,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@applik8s/core": "0.2.0",
-    "@applik8s/sdk": "0.2.0"
+    "@applik8s/core": "0.3.0",
+    "@applik8s/sdk": "0.3.0"
   }
 }

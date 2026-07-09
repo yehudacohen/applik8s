@@ -1,6 +1,6 @@
 # API Reference
 
-This is the supported public surface for `applik8s` v0.2.
+This is the supported public surface for `applik8s` v0.3.
 
 ## Packages
 
@@ -37,6 +37,26 @@ Use `sdk.operator()` to define:
 Handlers may use proxy-first mutation syntax. The SDK records mutations as operation plans; handlers do not receive an ambient Kubernetes client.
 
 Proxy handlers include small Kubernetes object factories for common built-ins used in examples. For example, `job.k8s.ConfigMap({ name, namespace, data })` returns a real ConfigMap object with top-level `data`, `job.apply(object)` records a server-side apply operation for it, and `job.delete(object)` records a delete by object reference. The older `job.batch.*` alias remains available for existing examples, but `job.k8s.*` is the golden-path spelling.
+
+## v0.3 App Golden Path
+
+Use the top-level `app(name, options)` builder for first-contact application authoring. It is the stable v0.3 inference boundary for resources, models, routes, reconciliation, jobs, default namespace, generated artifacts, and app graph metadata.
+
+The primary authoring sequence is:
+
+- `const myApp = app('name', { namespace, apiVersion, kind })`
+- `myApp.resource('Kind', { spec, status })` for schema-first CRDs
+- `myApp.storage.postgres('db', { database, migrations: 'generated-job' })` for the concrete Postgres `ModelStore` slice
+- `myApp.model('Name', { spec, indexes })` for storage-backed app data
+- `myApp.http('server', (http) => { ... })` for generated HTTP workloads with inferred resources/models
+- `myApp.reconcile(Resource, handler)` for generated operators
+- `myApp.composition` when a TypeKro composition is needed
+
+Provider APIs such as `app.provide(ModelStore, ...)`, `app.defaults(...)`, and explicit `app.server(...)` options remain supported for advanced composition. They should be treated as progressive disclosure: use them when you need a non-default binding, explicit provider ownership, or lower-level compatibility inspection.
+
+`app.secret(name, options)` makes Secret ownership explicit. An explicit `secretName` defaults to `ownership: 'external'`: applik8s emits references and workload wiring, but does not emit or own the Secret object. A generated name defaults to `ownership: 'generated'`; applik8s emits the empty Secret shell while leaving Secret data runtime/user-owned. Set `ownership` explicitly when the default is not the intended lifecycle. applik8s never emits an empty `data` map for an externally populated key, because doing so would claim and potentially erase that key under server-side apply.
+
+Generated route handlers receive `{ params, query, form, formData }`. Prefer `params` for route variables and `form.string(...)` / `form.enum(...)` for HTML form inputs. Model `create(...)` accepts flat spec input in the generated path, so `Account.create({ tenant, email })` is the preferred spelling for app routes.
 
 ## Operation Plans
 
@@ -98,9 +118,11 @@ The `applik8s` CLI is intentionally thin:
 - `applik8s replay inspect <artifact>` inspects or executes replay artifacts.
 - `applik8s test [...args]` forwards to Vitest.
 
-The workspace also exposes the flagship TypeKro example through `examples/guestbook.ts`. It is a pure applik8s/TypeKro composition: `GuestBook` reconciles a rendered website from typed live `GuestBookEntry` reads, serves cached entries through an `app.server(...)`, buffers page-view counters with `GuestBookPageViewBucket.increment(...)`, and projects entry/page-view aggregates into status. Build its artifacts with `bun run build:guestbook`.
+The workspace exposes the v0.3 flagship through `examples/tenant-platform.ts`. Build its artifacts with `bun run applik8s build examples/tenant-platform.ts --typekro --composition-name tenantPlatform --out-dir dist/examples/tenant-platform`.
 
-No `dev` or `package` command is promised in v0.2.
+The v0.2 flagship TypeKro example remains available through `examples/guestbook.ts`. It is a pure applik8s/TypeKro composition: `GuestBook` reconciles a rendered website from typed live `GuestBookEntry` reads, serves cached entries through an `app.server(...)`, buffers page-view counters with `GuestBookPageViewBucket.increment(...)`, and projects entry/page-view aggregates into status. Build its artifacts with `bun run build:guestbook`.
+
+No `dev` or `package` command is promised in v0.3.
 
 ## Resource Operations
 
@@ -110,9 +132,24 @@ Server RBAC is inferred from direct helper calls. `Resource.increment(...)` requ
 
 ## App-Scoped Entities
 
-`@applik8s/applik8s/dsl` exports `entity(name, { spec, status })` as the schema-first definition shape for the v0.3 framework direction. In v0.2, entities can be materialized honestly as Kubernetes control-plane resources with `app.crd(entity, { apiVersion, ... })`; the returned resource supports the same CRD actions, indexes, listeners, and permission inference as `sdk.crd(...)`.
+`@applik8s/applik8s/dsl` exports `entity(name, { spec, status })` as the schema-first definition shape for v0.3. Entities can be materialized honestly as Kubernetes control-plane resources with `app.crd(entity, { apiVersion, ... })`; the returned resource supports the same CRD actions, indexes, listeners, and permission inference as `sdk.crd(...)`.
 
-`app.model(entity)` and `app.provide(ModelStore, ...)` intentionally fail closed in v0.2. Storage-backed model semantics need explicit stores, migrations, constraints, and diagnostics; applik8s does not silently treat CRDs as a hidden database.
+`app.model(entity)` materializes application data through an explicit `ModelStore` provider. The v0.3 concrete storage-backed slice is Postgres/CNPG: generated artifacts include the database dependency, migration SQL, migration Job, generated runtime client, and diagnostics. Unsupported query/index/transaction/storage assumptions fail closed; applik8s does not silently treat CRDs as a hidden database.
+
+## v0.3 Provider Boundary
+
+`app.defaults(...)` and `app.provide(...)` bind capability interfaces such as `ModelStore`, `IndexStore`, `CounterStore`, `EventSource`, `Secret`, `Queue`, `ObjectStorage`, `HttpExposure`, and credential material. v0.3 supplies defaults for all of them, so native actors do not require custom provider wiring.
+
+The defaults are deliberately bounded: Postgres/CNPG for models; Valkey for indexes; declared Kubernetes resources for buffered counters; Kubernetes watches for events; Secrets for secret material and credentials; a resourceVersion-safe ConfigMap queue capped at 1,000 messages and 64 KiB per message; ConfigMap-backed objects capped at 512 KiB each; and Ingress for HTTP exposure.
+
+“Broad provider implementations” can also mean multiple production-scale adapters behind each contract—for example S3 and GCS, several hosted queues, multiple SQL databases, secret managers, and several gateway choices. v0.3 does not require that catalog: it requires one working zero-configuration default for every native interface. `defaultApplicationProviders` exposes those choices, while `app.defaults(...)` and `app.provide(...)` remain override points.
+
+There are two distinct status ownership cases:
+
+- CRDs declared by applik8s admit their status schema, and the Rust host is the authoritative status writer through validated `status` operations. This is the relevant substrate for downstream workload, replica, and failover APIs.
+- A TypeKro root application CR is owned and reconciled by KRO. KRO currently derives that CR's status schema and projections from its ResourceGraphDefinition. applik8s must not race KRO by claiming the same status fields from a separate controller.
+
+Generated jobs use a runtime-created ConfigMap as the durable concurrency and history store. The app ResourceGraphDefinition observes that ConfigMap through a KRO `externalRef`, decodes `applik8s-jobs.json` with CEL, and declares `status.applik8s.jobs` in the generated root schema. KRO is therefore the sole, authoritative root app-status writer; the generated reconciler does not request app-status RBAC or race KRO with patches.
 
 ## Permission Bundles
 
@@ -163,7 +200,7 @@ TypeKro integration is an optional package. Core SDK, compiler, manifest, and ru
 
 ## Capabilities
 
-v0.2 supports a narrow HTTP JSON capability protocol with explicit idempotency requirements and SecretRef bearer auth. Other capability kinds, protocols, and auth descriptors fail closed.
+v0.3 supports a narrow HTTP JSON capability protocol with explicit idempotency requirements and SecretRef bearer auth. Other capability kinds, protocols, and auth descriptors fail closed.
 
 ## Stability
 

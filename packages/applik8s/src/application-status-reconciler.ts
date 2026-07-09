@@ -1,3 +1,4 @@
+import { externalRef } from 'typekro';
 import { clusterRole as typeKroClusterRole, clusterRoleBinding as typeKroClusterRoleBinding, configMap as typeKroConfigMap, deployment as typeKroDeployment, role as typeKroRole, roleBinding as typeKroRoleBinding, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import { generatedJobStatusRuntimeBundle } from './application-runtime-modules.js';
 
@@ -26,25 +27,28 @@ export interface ApplicationStatusReconcilerEmitUtilities {
   readonly apiGroupForApiVersion: (apiVersion: string) => string;
 }
 
+export interface ApplicationGeneratedJobStatusProjectionStore {
+  readonly namespace?: string;
+  readonly data?: Readonly<Record<string, string>>;
+}
+
 export function applicationStatusReconcilerName(appResource: ApplicationStatusReconcilerAppResourceTarget, kubernetesNameSegment: (value: string) => string): string {
   return `${kubernetesNameSegment(appResource.kind)}-status-reconciler`;
 }
 
-export function emitApplicationGeneratedJobStatusReconcilers(state: ApplicationGeneratedJobStatusReconcilerState, utilities: ApplicationStatusReconcilerEmitUtilities): void {
+export function emitApplicationGeneratedJobStatusReconcilers(state: ApplicationGeneratedJobStatusReconcilerState, utilities: ApplicationStatusReconcilerEmitUtilities): readonly ApplicationGeneratedJobStatusProjectionStore[] {
   const groups = new Map<string, ApplicationGeneratedJobStatusTarget[]>();
   for (const target of state.generatedJobStatusTargets) {
     const key = target.namespace ?? '';
     groups.set(key, [...(groups.get(key) ?? []), target]);
   }
-  for (const [namespaceKey, targets] of groups) {
-    emitGeneratedJobStatusReconcilerResources(state, utilities, namespaceKey || undefined, targets);
-  }
+  return [...groups].map(([namespaceKey, targets]) => emitGeneratedJobStatusReconcilerResources(state, utilities, namespaceKey || undefined, targets));
 }
 
-function emitGeneratedJobStatusReconcilerResources(state: ApplicationGeneratedJobStatusReconcilerState, utilities: ApplicationStatusReconcilerEmitUtilities, namespace: string | undefined, targets: readonly ApplicationGeneratedJobStatusTarget[]): string {
+function emitGeneratedJobStatusReconcilerResources(state: ApplicationGeneratedJobStatusReconcilerState, utilities: ApplicationStatusReconcilerEmitUtilities, namespace: string | undefined, targets: readonly ApplicationGeneratedJobStatusTarget[]): ApplicationGeneratedJobStatusProjectionStore {
   const reconcilerName = applicationStatusReconcilerName(state.appResource, utilities.kubernetesNameSegment);
   if (targets.length === 0) {
-    return reconcilerName;
+    return { ...(namespace ? { namespace } : {}) };
   }
   const statusRuntimeConfigMapName = `${reconcilerName}-runtime`;
   const statusConfigMapName = `${reconcilerName}-status`;
@@ -54,15 +58,12 @@ function emitGeneratedJobStatusReconcilerResources(state: ApplicationGeneratedJo
     'app.kubernetes.io/managed-by': 'applik8s',
     'applik8s.dev/app-kind': utilities.kubernetesNameSegment(state.appResource.kind),
   };
-  const appApiGroup = utilities.apiGroupForApiVersion(state.appResource.apiVersion);
   const batchResources = unique(targets.map((target) => target.jobKind === 'CronJob' ? 'cronjobs' : 'jobs'));
   const rules = [
     { apiGroups: [''], resources: ['pods'], verbs: ['get'] },
-    { apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'patch', 'update'] },
+    { apiGroups: [''], resources: ['configmaps'], verbs: ['create', 'get', 'patch', 'update'] },
     { apiGroups: ['apps'], resources: ['replicasets', 'deployments'], verbs: ['get'] },
     { apiGroups: ['batch'], resources: batchResources, verbs: ['get', 'list', 'watch'] },
-    { apiGroups: [appApiGroup], resources: [state.appResource.plural], verbs: ['get', 'list'] },
-    { apiGroups: [appApiGroup], resources: [`${state.appResource.plural}/status`], verbs: ['get', 'patch', 'update'] },
   ];
 
   typeKroConfigMap({
@@ -72,16 +73,11 @@ function emitGeneratedJobStatusReconcilerResources(state: ApplicationGeneratedJo
     metadata: { name: statusRuntimeConfigMapName, ...(namespace ? { namespace } : {}), labels },
     data: generatedJobStatusRuntimeBundle(targets.map((target) => ({ jobName: target.resourceName, jobKind: target.jobKind, statusPath: target.statusPath, materialization: target.materialization })), state.appResource, statusConfigMapName),
   });
-  typeKroConfigMap({
+  const durableStatus = externalRef({
     id: utilities.graphResourceId(reconcilerName, 'durableStatus'),
     apiVersion: 'v1',
     kind: 'ConfigMap',
-    metadata: { name: statusConfigMapName, ...(namespace ? { namespace } : {}), labels },
-    data: {
-      'status.json': '{}',
-      'applik8s-jobs.json': '{}',
-      updatedAt: '',
-    },
+    metadata: { name: statusConfigMapName, ...(namespace ? { namespace } : {}) },
   });
 
   typeKroServiceAccount({
@@ -148,7 +144,7 @@ function emitGeneratedJobStatusReconcilerResources(state: ApplicationGeneratedJo
               { name: 'APPLIK8S_APP_API_VERSION', value: state.appResource.apiVersion },
               { name: 'APPLIK8S_APP_KIND', value: state.appResource.kind },
               { name: 'APPLIK8S_APP_PLURAL', value: state.appResource.plural },
-              { name: 'APPLIK8S_NAMESPACE', valueFrom: { fieldRef: { fieldPath: 'metadata.namespace' } } },
+              namespace ? { name: 'APPLIK8S_NAMESPACE', value: namespace } : { name: 'APPLIK8S_NAMESPACE', valueFrom: { fieldRef: { fieldPath: 'metadata.namespace' } } },
             ],
             volumeMounts: [{ name: 'applik8s-status-runtime', mountPath: '/app', readOnly: true }],
           }],
@@ -157,7 +153,11 @@ function emitGeneratedJobStatusReconcilerResources(state: ApplicationGeneratedJo
       },
     },
   });
-  return reconcilerName;
+  // TypeKro's enhanced ConfigMap exposes data as status-builder references;
+  // this projection intentionally narrows it to the map surface needed by the
+  // application status CEL expression.
+  // typecast: bridge TypeKro's enhanced ConfigMap to the internal projection-only view.
+  return durableStatus as unknown as ApplicationGeneratedJobStatusProjectionStore;
 }
 
 function unique<T>(values: readonly T[]): T[] {

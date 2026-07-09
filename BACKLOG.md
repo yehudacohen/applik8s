@@ -1,6 +1,6 @@
 # applik8s Backlog
 
-Last updated: 2026-07-03
+Last updated: 2026-07-06
 
 This backlog prioritizes correctness, excellence, and the public developer experience over feature completeness.
 
@@ -159,15 +159,28 @@ Current prep status:
 - Done: enable the first public `app.job(...)` and `app.schedule(...)` slice as generated Kubernetes Job/CronJob resources with graph nodes, diagnostics ConfigMaps, durable status metadata, terminal-failure diagnostic templates, and public binding types.
 - Done: route generated job and model-migration diagnostics through shared generated-job status/idempotency helpers so diagnostics encode phase, observed generation, retry count, status target, idempotency key, and partial effects.
 - Done: add v0.3 runtime module ABI metadata and generated durable status-updater interfaces, plus emitted status-runtime ConfigMaps for public jobs and model migration jobs.
-- Done: add the first executing generated-job status reconciler slice: consolidated app-level status-runtime Deployments, ServiceAccounts, RBAC, Kubernetes Job/CronJob observation, durable status calculation, KRO instance discovery, application status patch attempts, and durable generated status ConfigMap fallback.
+- Done: add the executing generated-job status reconciler slice: consolidated app-level status-runtime Deployments, ServiceAccounts, RBAC, Kubernetes Job/CronJob observation, durable status calculation/history, and a runtime-owned status ConfigMap observed by KRO for authoritative application-status projection.
 - Done: prepare v0.3 freeze-interface tests for operation-target lowering, watch-scope lowering, migration drift checks, and the integrated pressure-test gate before broad implementation continues.
 - Done: add v0.3 cleanup contract tests for concrete pressure-test graph/artifact anchoring, operation-target artifact-only lowering, compatibility-policy labels, CRD schema compatibility fixtures, Kubernetes-client runtime module separation, and fail-closed broad-watch rejection.
 - Done: add `test:modelstore:script-runtime:live` as the opt-in live Postgres script-runtime ModelStore validation command. Set `APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL` to run the live CRUD/diagnostic assertions.
-- Done: live TypeKro/CNPG/Postgres ModelStore E2E now validates the consolidated status reconciler through the generated durable status ConfigMap. Current KRO-generated app CRDs prune custom `status.applik8s` fields, so the reconciler keeps app `/status` patching best-effort and persists durable job status in the generated ConfigMap until the app CRD status schema path is solved upstream or in compiler lowering.
-- Remaining: durable generated job status is live-confirmed for the Postgres migration path, but still needs production hardening around status schema ownership, conflict behavior, history retention, metrics/logging, and broader multi-job/cronjob scenarios before it is generalized.
-- Remaining: operation-target, watch-scope, migration-drift, and pressure-test contracts are now shaped and tested, but their runtime/compiler implementations still need broader end-to-end closure.
-- Remaining: script-execution `ModelStore` runtime now has a real Postgres client path and fail-closed credential diagnostics, but it still needs full live validation, parity checks against generated runtime clients, transaction/query/index hardening, and release-policy documentation before v0.3.
-- Remaining: generated runtime implementation still needs deeper modularization beyond the first runtime-module source extraction before the v0.3 excellence bar is met.
+- Done: live TypeKro/CNPG/Postgres ModelStore E2E validates the consolidated status reconciler's durable ConfigMap and KRO-owned hydration of the structural `status.applik8s.jobs` application status path.
+- Done: add and live-confirm the Tenant Platform control-plane pressure test through TypeKro apply, CNPG provisioning, generated migration preflight/retry, authoritative generated-job app status, generated admin server, and Postgres-backed `ModelStore` Account create/query behavior in the pinned `orbstack` context.
+- Done: close the generated status reconciler namespace bug exposed by the live Tenant Platform gate by emitting a concrete `APPLIK8S_NAMESPACE` for namespaced status reconcilers and adding generated-artifact coverage for that environment contract.
+- Done: remove the Tenant Platform live-test query-string workaround by lowering Hono path parameters into generated route `request.query` alongside URL search params.
+- Done: strengthen generated/script Postgres `ModelStore` parity guards and align generated runtime table-cache/status-patch behavior with the script-execution runtime.
+- Done: implement public operation-target dry-run planning through `plan(target, { dryRun: true })`, backed by `operationTargetArtifacts.dryRunPlan`, fail-closed missing-artifact diagnostics, public type coverage, dispatcher/proxy tests, and live TypeKro operation-target E2E coverage.
+- Done: harden durable generated-job status ConfigMap ownership by making it runtime-created and runtime-owned, leaving `status.json`, `applik8s-jobs.json`, and `updatedAt` outside KRO desired-state reconciliation while KRO observes it through `externalRef`; Tenant Platform live gate passes with the application CR as the authoritative read surface.
+- Done: add generated-artifact coverage for unsupported watch predicates so unlowerable label selector expressions emit fail-closed app graph diagnostics instead of silently broadening runtime watches.
+- Done: replace generated server startup-time dependency installation with a deterministic esbuild-produced server bundle, source map, route manifest, and runtime bundle manifest; generated artifact coverage asserts no `package.json`, no startup `npm install`, and Kubernetes ConfigMap size safety.
+- Done: add generated-job status history retention in the runtime-owned status ConfigMap via `history.json`, preserving the latest job map and compact per-job history with a 20-entry cap; Tenant Platform live coverage checks a retained migration completion entry.
+- Superseded: the earlier non-authoritative app-status fallback was replaced by a KRO-owned `externalRef`/CEL projection. The runtime-created ConfigMap remains the durable store, while KRO authoritatively owns `status.applik8s.jobs`.
+- Done: add one bounded Kubernetes-native default for every v0.3 provider interface; additional cloud-scale adapters remain optional overrides.
+- Done: strengthen generated-server route/action diagnostics so route action failures emit the declared `applik8s-route-action-failure` event with route metadata, failure policy, partial-effects marker, diagnostic payload, and stack fields.
+- Done: durable generated-job status is locally covered for multi-job, CronJob, restart recovery, bounded history, idempotency, and conflict diagnostics. The current candidate adds authoritative KRO-owned root status hydration; live confirmation is required before release.
+- Done: operation-target, watch-scope, migration-drift, and pressure-test contracts are shaped, tested, and covered by the v0.3 local/generated/live prerelease gates, including artifact-backed dry-run planning and fail-closed unsupported watch-predicate diagnostics.
+- Done: generated server packaging no longer installs dependencies at pod startup for generated-source servers; deterministic bundles, source maps, route manifests, runtime bundle manifests, health checks, route/action diagnostics, and metadata-only supply-chain posture are part of the v0.3 release evidence.
+- Remaining: script-execution `ModelStore` runtime live parity should be captured when the release context provides `APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL`; absent that URL, generated-runtime live Postgres evidence and script-runtime local/contract parity remain the v0.3 gate.
+- Remaining: generated runtime implementation should continue deeper modularization after v0.3, especially around provider adapters and future indexer/aggregate/counter runtime split-out, but current runtime module boundaries are covered by v0.3 contracts.
 
 v0.3 should not require:
 

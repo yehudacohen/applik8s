@@ -41,14 +41,20 @@ jobs:
       - name: Run local gates
         run: bun run check:local
 
-      - name: Run package publish dry-run
-        run: bun run check:publish-dry-run
+      - name: Run v0.3 substrate gates
+        run: bun run test:v03:local
+
+      - name: Run package release checks
+        run: bun run check:packages
 
       - name: Build ImageJob artifacts
         run: bun run build:imagejob
 
+      - name: Build Tenant Platform artifacts
+        run: bun run applik8s build examples/tenant-platform.ts --typekro --composition-name tenantPlatform --out-dir dist/examples/tenant-platform
+
       - name: Capture artifact listing
-        run: find dist/applik8s -maxdepth 3 -type f | sort > dist/applik8s-artifact-list.txt
+        run: find dist/applik8s dist/examples/tenant-platform -maxdepth 4 -type f | sort > dist/applik8s-artifact-list.txt
 
       - name: Upload release evidence
         uses: actions/upload-artifact@v4
@@ -56,6 +62,7 @@ jobs:
           name: applik8s-release-evidence
           path: |
             dist/applik8s
+            dist/examples/tenant-platform
             dist/applik8s-artifact-list.txt
 
   publish-npm:

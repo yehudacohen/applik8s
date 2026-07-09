@@ -1,5 +1,50 @@
 # Release Notes
 
+## v0.3.0
+
+v0.3.0 is the infrastructure-from-code substrate-freeze release. It turns the v0.2 TypeKro application proof into stable framework contracts for schema-first entities, storage-backed models, generated jobs, provider boundaries, durable status, operation targets, watch scopes, and generated runtime bundles.
+
+### Supported Path
+
+- Define reusable schema-first entities and materialize them inside `app(...)` as CRDs or Postgres-backed models with explicit backend semantics.
+- Use bounded Kubernetes-native defaults for every app-scoped provider interface, with `app.defaults(...)` and `app.provide(...)` available for overrides.
+- Use the Postgres `ModelStore` slice with CNPG-generated infrastructure, migration Jobs, generated runtime clients, duplicate-key behavior, and migration drift preflight diagnostics.
+- Define generated `app.job(...)` and `app.schedule(...)` tasks with a durable runtime-created status ConfigMap, bounded history, conflict diagnostics, and authoritative KRO-owned app-status projection.
+- Use stable operation-target contracts for TypeKro apply/delete and artifact-backed dry-run planning.
+- Use stable TypeKro watch-scope contracts for exact objects, finite sets, label selectors, field selectors, and mixed resource groups; unsupported predicates fail closed.
+- Generate deterministic server bundles with source maps, route manifests, runtime bundle manifests, health checks, route/action diagnostics, and no startup package installation.
+- Declare generated versus external Secret object ownership without claiming externally populated Secret data.
+- Validate packed packages through a clean consumer import smoke test, and exercise imported async `Proxy` plus `fetch` closure bundling through the Rust runtime bridge.
+
+### Flagship Proof
+
+`examples/tenant-platform.ts` is the v0.3 pressure test. It proves:
+
+- TypeKro/CNPG/Postgres infrastructure for a Tenant Platform control plane.
+- Postgres-backed `Account` model create/query behavior through the generated admin API.
+- generated migration preflight/retry behavior and drift fail-closed diagnostics.
+- authoritative KRO-projected generated-job application status and retained migration completion history in the durable runtime store.
+- generated repair Job, cleanup CronJob, admin server, status reconciler, RBAC, runtime modules, and diagnostics as inspectable TypeKro/Kubernetes artifacts.
+
+### Maturity Boundary
+
+v0.3 ships one bounded Kubernetes-native default for every native provider interface: Postgres/CNPG models, Valkey indexes, Kubernetes-resource counters and watches, Kubernetes Secret material and credentials, bounded ConfigMap queue/object storage, and Ingress exposure. Users do not need `app.provide(...)` for the golden path; additional cloud and hosted-service adapters remain incremental. KRO owns the root application status projection, while the runtime-created status ConfigMap remains the durable concurrency/history store. Runtime supply-chain posture is metadata-only: generated artifacts declare unsigned/no-SBOM/no-provenance status rather than claiming verification.
+
+Not included:
+
+- broad external provider implementations beyond the concrete slices needed to prove stable seams
+- generic workflow orchestration beyond Kubernetes-native generated jobs and durable phase/status primitives
+- full Helm, Kustomize, OLM, OCI, SLSA, SBOM, or admission-policy enforcement
+- workload-movement or disaster-recovery product guarantees
+
+### Evidence
+
+The release evidence is tracked in `docs/release-evidence-v0.3.md`. The required gate for the current release candidate is:
+
+```sh
+bun run check:v03:prerelease:orbstack
+```
+
 ## v0.2.0
 
 v0.2.0 is the TypeKro-native Kubernetes application release. It keeps the v0.1 operator/runtime contract and adds the integrated app-composition proof centered on `examples/guestbook.ts`.

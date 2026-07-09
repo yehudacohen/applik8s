@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/applik8s",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript framework for programming Kubernetes-native applications and operators.",
   "license": "Apache-2.0",
   "type": "module",
@@ -27,11 +27,11 @@
     "./cli": "./src/cli.ts"
   },
   "dependencies": {
-    "@applik8s/compiler": "0.2.0",
-    "@applik8s/core": "0.2.0",
-    "@applik8s/sdk": "0.2.0",
-    "@applik8s/typekro-adapter": "0.2.0",
-    "@applik8s/typetainer": "0.2.0",
+    "@applik8s/compiler": "0.3.0",
+    "@applik8s/core": "0.3.0",
+    "@applik8s/sdk": "0.3.0",
+    "@applik8s/typekro-adapter": "0.3.0",
+    "@applik8s/typetainer": "0.3.0",
     "commander": "^15.0.0",
     "drizzle-orm": "^0.45.1",
     "esbuild": "^0.28.1",

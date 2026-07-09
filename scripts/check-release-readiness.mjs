@@ -12,6 +12,10 @@ const publishablePackages = [
   'packages/typetainer/package.json',
 ];
 
+const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.3.0';
+const releaseLabel = `v${expectedVersion}`;
+const publishablePackageNames = new Set();
+
 const requiredDocs = [
   'README.md',
   'LICENSE',
@@ -29,6 +33,7 @@ const requiredDocs = [
   'docs/typekro-golden-path.md',
   'docs/api-reference.md',
   'docs/first-run.md',
+  'docs/v0.3-first-run.md',
   'docs/troubleshooting.md',
   'docs/release-gates.md',
   'docs/runtime-image.md',
@@ -38,6 +43,7 @@ const requiredDocs = [
   'docs/decisions.md',
   'docs/maintainer-policy.md',
   'docs/release-evidence-v0.2.md',
+  'docs/release-evidence-v0.3.md',
   'docs/kubernetes-compatibility.md',
 ];
 
@@ -52,6 +58,7 @@ const publicReleaseFiles = [
   'scripts/check-prerelease-gates.mjs',
   'scripts/check-docs-consistency.mjs',
   'scripts/package-publish-dry-run.mjs',
+  'scripts/package-consumer-smoke.mjs',
   'scripts/publish-packages.mjs',
   '.github/workflows/ci.yml',
   '.github/workflows/deploy.yml',
@@ -98,6 +105,22 @@ const failures = [];
 
 for (const path of publishablePackages) {
   const manifest = JSON.parse(await readFile(path, 'utf8'));
+  if (typeof manifest.name === 'string') {
+    publishablePackageNames.add(manifest.name);
+  }
+}
+
+for (const path of ['package.json', ...publishablePackages]) {
+  const manifest = JSON.parse(await readFile(path, 'utf8'));
+  for (const [name, range] of Object.entries(manifest.dependencies ?? {})) {
+    if (publishablePackageNames.has(name) && range !== expectedVersion) {
+      failures.push(`${path}: dependency ${name} must use ${expectedVersion}, got ${range}.`);
+    }
+  }
+}
+
+for (const path of publishablePackages) {
+  const manifest = JSON.parse(await readFile(path, 'utf8'));
   requireField(path, manifest, 'name');
   requireField(path, manifest, 'version');
   requireField(path, manifest, 'description');
@@ -111,8 +134,8 @@ for (const path of publishablePackages) {
   if (manifest.private === true) {
     failures.push(`${path}: publishable package must not set private: true.`);
   }
-  if (manifest.version !== '0.2.0') {
-    failures.push(`${path}: expected version 0.2.0, got ${manifest.version}.`);
+  if (manifest.version !== expectedVersion) {
+    failures.push(`${path}: expected version ${expectedVersion}, got ${manifest.version}.`);
   }
   if (manifest.license !== 'Apache-2.0') {
     failures.push(`${path}: expected Apache-2.0 license, got ${manifest.license}.`);
@@ -134,14 +157,14 @@ for (const path of requiredDocs) {
   try {
     await readFile(path, 'utf8');
   } catch {
-    failures.push(`${path}: required v0.2 release document is missing.`);
+    failures.push(`${path}: required ${releaseLabel} release document is missing.`);
   }
 }
 
 for (const path of disallowedPublicPaths) {
   try {
     await access(path);
-    failures.push(`${path}: internal-only package path must not be present in the public v0.2 tree.`);
+      failures.push(`${path}: internal-only package path must not be present in the public ${releaseLabel} tree.`);
   } catch {
     // Missing is expected.
   }

@@ -35,6 +35,7 @@ interface ArkConfigSpec {
 interface OperatorContainerProjection {
   readonly ports?: readonly JsonObject[];
   readonly env?: readonly JsonObject[];
+  readonly startupProbe?: { readonly httpGet?: JsonObject };
   readonly livenessProbe?: { readonly httpGet?: JsonObject };
   readonly readinessProbe?: { readonly httpGet?: JsonObject };
 }
@@ -224,7 +225,7 @@ describe('TypeKro adapter operation targets', () => {
         'applik8s.dev/rbac-mode': manifest.spec.security.rbac.mode,
         'applik8s.dev/rbac-least-privilege-reviewed': String(manifest.spec.security.rbac.leastPrivilegeReviewed),
         'applik8s.dev/rbac-rule-count': String(manifest.spec.security.rbac.rules.length),
-        'applik8s.dev/host-imports': 'capability-request,kubernetes-read,log,cancel,wasi:io,wasi:http',
+        'applik8s.dev/host-imports': 'capability-request,kubernetes-read,log,cancel,wasi:cli,wasi:clocks,wasi:filesystem,wasi:io,wasi:random,wasi:http,wasi:sockets',
         'applik8s.dev/capabilities': '',
         'applik8s.dev/capability-kinds': '',
         'applik8s.dev/capability-protocols': '',
@@ -268,8 +269,16 @@ describe('TypeKro adapter operation targets', () => {
       expect(container?.env).toContainEqual({ name: 'APPLIK8S_HANDLER_TIMEOUT_SECONDS', value: '30' });
       expect(container?.env).toContainEqual({ name: 'APPLIK8S_REPLAY_ARTIFACT_DIR', value: '/tmp/applik8s-replay' });
       expect(container?.env).not.toContainEqual({ name: 'APPLIK8S_REPLAY_INCLUDE_PAYLOADS', value: '1' });
+      expect(container?.startupProbe).toMatchObject({
+        httpGet: { path: '/healthz', port: 'health' },
+        failureThreshold: 36,
+        periodSeconds: 5,
+        timeoutSeconds: 5,
+      });
       expect(container?.livenessProbe?.httpGet).toEqual({ path: '/healthz', port: 'health' });
+      expect(container?.livenessProbe).toMatchObject({ initialDelaySeconds: 60, failureThreshold: 12, periodSeconds: 10, timeoutSeconds: 5 });
       expect(container?.readinessProbe?.httpGet).toEqual({ path: '/readyz', port: 'health' });
+      expect(container?.readinessProbe).toMatchObject({ initialDelaySeconds: 1, failureThreshold: 12, periodSeconds: 5, timeoutSeconds: 5 });
     }
   });
 
@@ -420,6 +429,7 @@ describe('TypeKro adapter operation targets', () => {
         nested: { ready: 'boolean' },
       }),
       status: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: 'ImageStatus' }, schema: imageStatusSchema },
+      statusConvention: { observedGenerationField: 'observedGeneration', conditionsField: 'conditions' },
     });
     const operator = sdk.operator({ name: 'arktype-typekro-pipeline', deployment: { namespace: 'media-system' }, resources: { ArkConfig }, handlers: [] });
     const manifest = buildOperatorManifest({
@@ -441,6 +451,8 @@ describe('TypeKro adapter operation targets', () => {
       const crd = result.value.resources.find((resource) => resource.kind === 'CustomResourceDefinition');
       // typecast: TypeKro composition resources are JSON-erased; this test asserts the generated CRD schema projection.
       const specSchema = (crd?.spec as { readonly versions?: readonly { readonly schema?: { readonly openAPIV3Schema?: { readonly properties?: { readonly spec?: JsonObject } } } }[] } | undefined)?.versions?.[0]?.schema?.openAPIV3Schema?.properties?.spec;
+      // typecast: TypeKro composition resources are JSON-erased; this test asserts the generated CRD status schema projection.
+      const statusSchema = (crd?.spec as { readonly versions?: readonly { readonly schema?: { readonly openAPIV3Schema?: { readonly properties?: { readonly status?: JsonObject } } } }[] } | undefined)?.versions?.[0]?.schema?.openAPIV3Schema?.properties?.status;
       expect(specSchema?.properties).toMatchObject({
         mode: { enum: ['fast', 'safe'], type: 'string' },
         enabled: { enum: [true], type: 'boolean' },
@@ -449,6 +461,13 @@ describe('TypeKro adapter operation targets', () => {
         targets: { type: 'array', items: { type: 'string' } },
         nested: { type: 'object', required: ['ready'], properties: { ready: { type: 'boolean' } } },
       });
+      expect(statusSchema?.properties).toMatchObject({
+        observedGeneration: { type: 'integer', format: 'int64' },
+        conditions: expect.objectContaining({ type: 'array', 'x-kubernetes-list-type': 'map', 'x-kubernetes-list-map-keys': ['type'] }),
+      });
+      expect(JSON.stringify(statusSchema)).toContain('"True"');
+      expect(JSON.stringify(statusSchema)).toContain('"False"');
+      expect(JSON.stringify(statusSchema)).toContain('"Unknown"');
     }
   });
 
@@ -1529,7 +1548,8 @@ describe('TypeKro adapter operation targets', () => {
       if (!compiled.ok) {
         expect(compiled.error.message).toContain('cannot be statically bundled');
         expect(compiled.error.message).toContain('phaseFromModuleScope');
-        expect(compiled.error.message).toContain('Move helper functions/constants inside the handler body');
+        expect(compiled.error.message).toContain('app-level reconcile callback references module-scope identifier(s)');
+        expect(compiled.error.message).toContain('Keep plain constants and helper functions inside the reconcile handler');
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -1673,6 +1693,21 @@ describe('TypeKro adapter operation targets', () => {
       labels: { app: 'api' },
       labelSelector: { matchLabels: { tier: 'backend' } },
     })).toThrow('either labels or labelSelector');
+  });
+
+  it('rejects unsupported TypeKro listener label selector expressions instead of emitting broad watches', () => {
+    const Deployment = typeKro.resource(typeKroDeploymentFactory, {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      plural: 'deployments',
+      spec: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: 'DeploymentSpec' }, schema: tenantSchema },
+      status: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: 'DeploymentStatus' }, schema: tenantSchema },
+    });
+
+    expect(() => Deployment.where({
+      namespace: 'apps',
+      labelSelector: { matchExpressions: [{ key: 'app', operator: 'Exists' }] },
+    }).on.updated(() => undefined)).toThrow('labelSelector.matchExpressions');
   });
 
   it('groups mixed TypeKro resource listeners through aggregate resource scopes', () => {

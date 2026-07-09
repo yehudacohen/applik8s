@@ -2735,9 +2735,9 @@ impl LoadedOperatorBundle {
     }
 
     pub fn runtime_resource_watches(&self) -> Result<Vec<OwnedResourceWatch>, OperatorHostError> {
-        let mut watches = self.owned_resource_watches()?;
-        watches.extend(self.manifest_resource_watches()?);
-        Ok(deduplicate_resource_watches(watches))
+        Ok(deduplicate_resource_watches(
+            self.manifest_resource_watches()?,
+        ))
     }
 
     pub fn object_matches_runtime_watch(
@@ -2746,15 +2746,11 @@ impl LoadedOperatorBundle {
         kind: &str,
         object: &Value,
     ) -> Result<bool, OperatorHostError> {
-        let mut watches = match self.owned_resource_watches() {
-            Ok(watches) => watches,
-            Err(OperatorHostError::MissingOwnedCrds) => Vec::new(),
-            Err(error) => return Err(error),
-        };
-        watches.extend(self.manifest_resource_watches()?);
-        Ok(deduplicate_resource_watches(watches)
-            .iter()
-            .any(|watch| runtime_watch_matches_object(watch, api_version, kind, object)))
+        Ok(
+            deduplicate_resource_watches(self.manifest_resource_watches()?)
+                .iter()
+                .any(|watch| runtime_watch_matches_object(watch, api_version, kind, object)),
+        )
     }
 
     pub fn object_is_outside_external_event_interest(

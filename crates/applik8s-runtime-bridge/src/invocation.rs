@@ -324,14 +324,34 @@ fn is_allowed_host_import(import: &str, allowed_host_imports: &[String]) -> bool
             && allowed_host_imports
                 .iter()
                 .any(|allowed| allowed == "kubernetes-read"))
+        || (import.starts_with("wasi:cli/")
+            && allowed_host_imports
+                .iter()
+                .any(|allowed| allowed == "wasi:cli"))
+        || (import.starts_with("wasi:clocks/")
+            && allowed_host_imports
+                .iter()
+                .any(|allowed| allowed == "wasi:clocks"))
+        || (import.starts_with("wasi:filesystem/")
+            && allowed_host_imports
+                .iter()
+                .any(|allowed| allowed == "wasi:filesystem"))
         || (import.starts_with("wasi:io/")
             && allowed_host_imports
                 .iter()
                 .any(|allowed| allowed == "wasi:io"))
+        || (import.starts_with("wasi:random/")
+            && allowed_host_imports
+                .iter()
+                .any(|allowed| allowed == "wasi:random"))
         || (import.starts_with("wasi:http/")
             && allowed_host_imports
                 .iter()
                 .any(|allowed| allowed == "wasi:http"))
+        || (import.starts_with("wasi:sockets/")
+            && allowed_host_imports
+                .iter()
+                .any(|allowed| allowed == "wasi:sockets"))
 }
 
 pub fn canonical_host_imports() -> Vec<String> {
@@ -340,8 +360,13 @@ pub fn canonical_host_imports() -> Vec<String> {
         "kubernetes-read".to_string(),
         "log".to_string(),
         "cancel".to_string(),
+        "wasi:cli".to_string(),
+        "wasi:clocks".to_string(),
+        "wasi:filesystem".to_string(),
         "wasi:io".to_string(),
+        "wasi:random".to_string(),
         "wasi:http".to_string(),
+        "wasi:sockets".to_string(),
     ]
 }
 

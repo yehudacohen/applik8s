@@ -53,6 +53,10 @@ export interface CompileOperatorRequest extends CompileOptions {
   readonly dispatcherMode?: 'importEntrypoint' | 'staticSerializable';
 }
 
+interface CompileOperatorRequestWithDefinition extends CompileOperatorRequest {
+  readonly operatorDefinition?: OperatorDefinition;
+}
+
 export interface CompileOperatorPlan {
   readonly entrypoint: string;
   readonly outDir: string;
@@ -150,7 +154,7 @@ interface EntrypointExports {
 
 interface TypeKroCompositionExport {
   readonly name?: string;
-  readonly operatorInstalls: readonly { readonly operatorName: string }[];
+  readonly operatorInstalls: readonly { readonly operatorName: string; readonly operator?: unknown }[];
   resolveOperatorInstalls(options: { readonly manifests: readonly CompileResult[] }): Result<unknown>;
 }
 
@@ -212,20 +216,33 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
     return composition;
   }
   const installNames = unique(composition.value.operatorInstalls.map((install) => install.operatorName));
-  const missingOperator = installNames.find((operatorName) => !discovered.value.operators.some((operator) => operator.name === operatorName));
+  const capturedOperators = new Map<string, OperatorDefinition>();
+  for (const install of composition.value.operatorInstalls) {
+    if (isOperatorDefinitionLike(install.operator)) {
+      capturedOperators.set(install.operatorName, install.operator);
+    }
+  }
+  const exportedOperators = new Map(discovered.value.operators.map((operator) => [operator.name, operator]));
+  const missingOperator = installNames.find((operatorName) => !capturedOperators.has(operatorName) && !exportedOperators.has(operatorName));
   if (missingOperator) {
-    return error('BUNDLE_INVALID', `TypeKro composition captures operator ${missingOperator}, but the entrypoint does not export an applik8s operator with that name.`);
+    return error('BUNDLE_INVALID', `TypeKro composition captures operator ${missingOperator}, but the captured install does not include an applik8s operator definition and the entrypoint does not export one with that name.`);
   }
 
   const { compositionName: _compositionName, outDir: _outDir, operatorName: _operatorName, ...operatorRequest } = request;
   const operatorCompiles: CompileResult[] = [];
   for (const operatorName of installNames) {
-    const compiled = await createCompilerPipeline().run({
+    const operatorDefinition = capturedOperators.get(operatorName) ?? exportedOperators.get(operatorName);
+    if (!operatorDefinition) {
+      return error('BUNDLE_INVALID', `TypeKro composition captures operator ${operatorName}, but no operator definition is available for compilation.`);
+    }
+    const compileRequest: CompileOperatorRequestWithDefinition = {
       ...operatorRequest,
       operatorName,
+      operatorDefinition,
       dispatcherMode: 'staticSerializable',
       outDir: join(outputDirectory(request), 'operators', safePathSegment(operatorName)),
-    });
+    };
+    const compiled = await createCompilerPipeline().run(compileRequest);
     if (!compiled.ok) {
       return compiled;
     }
@@ -334,7 +351,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
       const path = join(resourcesDir, fileName);
       await writeFile(path, stringify(resource));
       resourceYamlPaths.push(path);
-      if (isTypeKroTemplateResource(resource, templateFingerprints)) {
+      if (isTypeKroTemplateResource(resource, templateFingerprints) || isTypeKroExternalReferenceResource(resource)) {
         templateManifestFileNames.push(fileName);
       }
     }
@@ -534,6 +551,10 @@ function isTypeKroCompositionResource(value: unknown): value is TypeKroCompositi
   );
 }
 
+function isTypeKroExternalReferenceResource(resource: TypeKroCompositionResource): boolean {
+  return Reflect.get(resource, '__externalRef') === true;
+}
+
 function compositionResourceFileName(resource: TypeKroCompositionResource, index: number): string {
   const metadata = resource.metadata;
   const namespace = typeof metadata.namespace === 'string' ? `${metadata.namespace}-` : '';
@@ -666,12 +687,11 @@ class MinimalCompileOperatorPipeline implements CompileOperatorPipeline {
       return planned;
     }
 
-    const discovered = await discoverExportedOperators(request.entrypoint);
-    if (!discovered.ok) {
-      return discovered;
-    }
-
-    const selected = selectOperator(discovered.value.operators, request.operatorName);
+    // typecast: CompileOperatorRequest may carry an in-memory operator definition on the generated TypeKro path.
+    const providedOperator = (request as CompileOperatorRequestWithDefinition).operatorDefinition;
+    const selected = providedOperator
+      ? selectProvidedOperator(providedOperator, request.operatorName)
+      : await discoverAndSelectOperator(request.entrypoint, request.operatorName);
     if (!selected.ok) {
       return selected;
     }
@@ -947,7 +967,7 @@ function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: 
   if (freeIdentifiers.length > 0) {
     return error(
       'BUNDLE_INVALID',
-      `Handler ${handlerId} cannot be statically bundled because it appears to reference module-scope value(s) that are not serialized into the WASM dispatcher: ${freeIdentifiers.join(', ')}. Move helper functions/constants inside the handler body or pass literal data through the reconciled resource spec/status so the generated handler is self-contained.`
+      `Handler ${handlerId} cannot be statically bundled. The app-level reconcile callback references module-scope identifier(s) that are not available inside the generated runtime: ${freeIdentifiers.join(', ')}. Keep plain constants and helper functions inside the reconcile handler, or pass literal data through the reconciled resource spec/status so the generated handler is self-contained. Substrate detail: static handler serialization cannot capture JavaScript module scope into the WASM dispatcher.`
     );
   }
   try {
@@ -1337,6 +1357,28 @@ function selectOperator(operators: readonly OperatorDefinition[], name: string |
   }
   const [operator] = operators;
   return operator ? { ok: true, value: operator } : error('BUNDLE_INVALID', 'Entrypoint does not export an applik8s operator.');
+}
+
+async function discoverAndSelectOperator(entrypoint: string, name: string | undefined): Promise<Result<OperatorDefinition>> {
+  const discovered = await discoverExportedOperators(entrypoint);
+  return discovered.ok ? selectOperator(discovered.value.operators, name) : discovered;
+}
+
+function selectProvidedOperator(operator: OperatorDefinition, name: string | undefined): Result<OperatorDefinition> {
+  if (name && operator.name !== name) {
+    return error('BUNDLE_INVALID', `Provided operator definition is named ${operator.name}, but compile requested operator ${name}.`);
+  }
+  return { ok: true, value: operator };
+}
+
+function isOperatorDefinitionLike(value: unknown): value is OperatorDefinition {
+  return Boolean(
+    value &&
+      (typeof value === 'object' || typeof value === 'function') &&
+      typeof Reflect.get(value, 'name') === 'string' &&
+      isJsonObject(Reflect.get(value, 'resources')) &&
+      Array.isArray(Reflect.get(value, 'handlers'))
+  );
 }
 
 function safePathSegment(value: string): string {

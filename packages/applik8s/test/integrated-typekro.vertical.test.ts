@@ -2,12 +2,20 @@ import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import { app, applicationGraphFor, cel, CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ModelStore, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, sdk, Secret, typeKro } from '@applik8s/applik8s';
 import type { ApplicationModelBinding, ApplicationModelStoreProvider, ApplicationProviderToken } from '@applik8s/applik8s';
-import { serializeApplicationGraph, validateApplicationJobStatusLifecycleContract, validateApplicationModelStoreSemanticsContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract } from '@applik8s/core';
+import type { ApplicationRuntimeModuleInterfaceContract, ApplicationRuntimeModuleManifestContract, OperationTarget, Result } from '@applik8s/core';
+import { serializeApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationJobStatusLifecycleContract, validateApplicationModelStoreSemanticsContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract } from '@applik8s/core';
 import { transformSync } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { entity, field, label, metadata, type } from '../src/dsl.js';
 import * as kubernetesFactories from '../src/factories/kubernetes.js';
 import { cnpg, simple, valkey } from '../src/factories.js';
+import { generatedRuntimeModuleBundle } from '../src/application-runtime-module-bundle.js';
+import { generatedApplicationRuntimeModuleKinds, generatedApplicationRuntimeModuleManifest } from '../src/application-runtime-module-manifest.js';
+import { validateGeneratedServerRuntimeBundleContract, type GeneratedServerRuntimeBundleContract } from '../src/application-server-runtime-bundle.js';
+import { generatedRuntimeModuleSource, generatedRuntimeModuleSourcePreamble } from '../src/application-runtime-module-sources.js';
+import { mergeGeneratedJobStatusConfigMapData, patchGeneratedJobStatusConfigMapData, persistGeneratedJobStatusWithDurableFallback, summarizeGeneratedJobStatusConfigMapMerge } from '../src/application-generated-job-status.js';
+import { applicationGeneratedStatusConcurrencyContract } from '../src/application-jobs.js';
+import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
 import { decoratedRouteMessage } from './fixtures/route-helpers.js';
 
 interface GeneratedRouteHandler {
@@ -85,8 +93,8 @@ describe('integrated TypeKro package surface', () => {
     expect(typeKro.permissions).toBe(permissions);
     expect(typeKro.operationTarget).toBeTypeOf('function');
     expect(sdk.withPermissions).toBeTypeOf('function');
-    expect(app).toBe(kubernetesComposition);
-    expect(sdk.app).toBe(kubernetesComposition);
+    expect(app).toBeTypeOf('function');
+    expect(sdk.app).toBe(app);
     expect(sdk.kubernetesComposition).toBe(kubernetesComposition);
     expect(providers.IndexStore).toBe(IndexStore);
     expect(providers.ModelStore).toBe(ModelStore);
@@ -105,6 +113,40 @@ describe('integrated TypeKro package surface', () => {
     expect(label('guestbook.applik8s.dev/book').value).toBe('guestbook.applik8s.dev/book');
     expect(metadata.creationTimestamp.desc()).toMatchObject({ expressionKind: 'ordering', direction: 'desc' });
     expect(entity('Note', { spec: type({ message: 'string' }) })).toMatchObject({ kind: 'applik8sEntity', name: 'Note' });
+  });
+
+  it('plans generated server and job operation targets from dry-run artifacts without effects', () => {
+    const target = artifactOnlyOperationTarget();
+    let serverPlan: unknown;
+    let jobPlan: unknown;
+    let serverApplyPlan: unknown;
+    let missingDryRunPlan: unknown;
+    let missingApplyPlan: unknown;
+    const composition = sdk.kubernetesComposition({
+      name: 'generated-binding-plan-app',
+      apiVersion: 'plans.applik8s.dev/v1alpha1',
+      kind: 'GeneratedBindingPlanApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      const server = app.server('admin', {}, (routes) => {
+        routes.get('/', async () => ({ ready: true }));
+      });
+      const job = app.job('repair', { taskKind: 'repair' });
+      serverPlan = server.plan(target, { dryRun: true, fieldManager: 'generated-server-dry-run' });
+      jobPlan = job.plan(target, { dryRun: true, fieldManager: 'generated-job-dry-run' });
+      serverApplyPlan = server.plan(target, { fieldManager: 'generated-server-apply-plan' });
+      missingDryRunPlan = job.plan(artifactOnlyOperationTarget({ dryRun: false }), { dryRun: true });
+      missingApplyPlan = job.plan(artifactOnlyOperationTarget({ apply: false }));
+      return { ready: true };
+    });
+
+    expect(serverPlan).toMatchObject({ ok: true, value: { operations: [expect.objectContaining({ kind: 'apply', fieldManager: 'generated-server-dry-run', resource: expect.objectContaining({ kind: 'ConfigMap' }) })] } });
+    expect(jobPlan).toMatchObject({ ok: true, value: { operations: [expect.objectContaining({ kind: 'apply', fieldManager: 'generated-job-dry-run', resource: expect.objectContaining({ metadata: expect.objectContaining({ name: 'artifact-dry-run' }) }) })] } });
+    expect(serverApplyPlan).toMatchObject({ ok: true, value: { operations: [expect.objectContaining({ kind: 'apply', fieldManager: 'generated-server-apply-plan', resource: expect.objectContaining({ metadata: expect.objectContaining({ name: 'artifact-apply' }) }) })] } });
+    expect(missingDryRunPlan).toMatchObject({ ok: false, error: expect.objectContaining({ code: 'LIFECYCLE_UNSAFE', message: expect.stringContaining('dryRunPlan artifact') }) });
+    expect(missingApplyPlan).toMatchObject({ ok: false, error: expect.objectContaining({ code: 'LIFECYCLE_UNSAFE', message: expect.stringContaining('applyPlan artifact') }) });
+    expect(composition.resources.map((resource) => resource.metadata.name)).not.toEqual(expect.arrayContaining(['artifact-apply', 'artifact-dry-run']));
   });
 
   it('exposes the future app.model resource-like contract without enabling model runtime', () => {
@@ -139,7 +181,7 @@ describe('integrated TypeKro package surface', () => {
     expect(role).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['create'] }] });
     expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const Note = resourceClients["Note"];') } });
 
-    expect(() => sdk.kubernetesComposition({
+    const modelImplicitDefaultComposition = sdk.kubernetesComposition({
       name: 'notes-model-app',
       apiVersion: 'notes.applik8s.dev/v1alpha1',
       kind: 'NotesModelApp',
@@ -148,7 +190,11 @@ describe('integrated TypeKro package surface', () => {
     }, (_spec, app) => {
       app.model(NoteEntity);
       return { ready: true };
-    })).toThrow(/app\.model\("Note"\) requires a typed ModelStore provider/);
+    });
+    expect(applicationGraphFor(modelImplicitDefaultComposition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore', implementation: 'postgres' }),
+      expect.objectContaining({ id: 'model.note', kind: 'model', name: 'Note' }),
+    ]));
 
     const modelDefaultComposition = sdk.kubernetesComposition({
       name: 'notes-model-default-app',
@@ -165,28 +211,43 @@ describe('integrated TypeKro package surface', () => {
     ]));
 
     expect(() => sdk.kubernetesComposition({
+      name: 'notes-model-events-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesModelEventsApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      const store = app.provide(ModelStore, { kind: 'postgres', name: 'notes-db', database: 'notes' });
+      const Note = app.model(NoteEntity, { store });
+      Note.on.created(async () => undefined);
+      return { ready: true };
+    })).toThrow(/requires transactional model event delivery/);
+
+    const counterDefaultComposition = sdk.kubernetesComposition({
       name: 'notes-counter-default-app',
       apiVersion: 'notes.applik8s.dev/v1alpha1',
       kind: 'NotesCounterDefaultApp',
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.defaults({ counters: 'valkey' });
+      app.defaults({ counters: { kind: 'kubernetes-resource-counter' } });
       return { ready: true };
-    })).toThrow(/app\.defaults\(\{ counters: \.\.\. \}\) requires a storage-backed CounterStore implementation/);
+    });
+    expect(applicationGraphFor(counterDefaultComposition)?.nodes).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'provider', name: 'CounterStore', implementation: 'kubernetes-resource-counter' })]));
 
-    expect(() => sdk.kubernetesComposition({
+    const eventDefaultComposition = sdk.kubernetesComposition({
       name: 'notes-events-default-app',
       apiVersion: 'notes.applik8s.dev/v1alpha1',
       kind: 'NotesEventsDefaultApp',
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.defaults({ events: 'watch' });
+      app.defaults({ events: { kind: 'kubernetes-watch' } });
       return { ready: true };
-    })).toThrow(/app\.defaults\(\{ events: \.\.\. \}\) requires an EventSource implementation/);
+    });
+    expect(applicationGraphFor(eventDefaultComposition)?.nodes).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'provider', name: 'EventSource', implementation: 'kubernetes-watch' })]));
 
-    expect(() => sdk.kubernetesComposition({
+    const exposureDefaultComposition = sdk.kubernetesComposition({
       name: 'notes-expose-default-app',
       apiVersion: 'notes.applik8s.dev/v1alpha1',
       kind: 'NotesExposeDefaultApp',
@@ -195,7 +256,104 @@ describe('integrated TypeKro package surface', () => {
     }, (_spec, app) => {
       app.defaults({ expose: 'ingress' });
       return { ready: true };
-    })).toThrow(/app\.defaults\(\{ expose: \.\.\. \}\) requires an HttpExposure implementation/);
+    });
+    expect(applicationGraphFor(exposureDefaultComposition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider.http-exposure', kind: 'provider', name: 'HttpExposure', implementation: 'ingress', config: { bindingKind: 'default', provider: 'ingress' } }),
+    ]));
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-expose-default-gateway-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesExposeDefaultGatewayApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      // typecast: force an unsupported exposure provider shape to verify fail-closed validation.
+      app.defaults({ expose: { kind: 'gateway' } as never });
+      return { ready: true };
+    })).toThrow(/currently supports only the Ingress HttpExposure provider slice/);
+
+    const appInfraComposition = sdk.kubernetesComposition({
+      name: 'notes-infra-bindings-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesInfraBindingsApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.provide(HttpExposure, { kind: 'ingress', ingressClassName: 'nginx' });
+      const config = app.config('database-url', { namespace: 'notes', env: 'DATABASE_URL', mountPath: '/etc/applik8s/config', configMapName: 'notes-app-config', key: 'database-url', value: 'postgres://example.invalid/notes' });
+      const secret = app.secret('database-password', { namespace: 'notes', env: 'DATABASE_PASSWORD', mountPath: '/etc/applik8s/secrets', secretName: 'notes-db-app', key: 'password', redaction: 'required' });
+      const generatedSecret = app.secret('session-key', { namespace: 'notes', ownership: 'generated' });
+      const web = app.server('web', { namespace: 'notes', config: [config], secrets: [secret] }, (server) => {
+        server.get('/healthz', async () => ({ ok: true }));
+      });
+      const exposure = app.expose('web', { service: web, servicePort: 8080, hostnames: ['notes.example.test'], tls: 'required', tlsSecretName: 'notes-web-tls' });
+      expect(config.resourceName).toBe('notes-app-config');
+      expect(secret.resourceName).toBe('notes-db-app');
+      expect(secret.ownership).toBe('external');
+      expect(generatedSecret.ownership).toBe('generated');
+      expect(web.serviceName).toBe('web');
+      expect(exposure.hostnames).toEqual(['notes.example.test']);
+      expect(exposure.tls).toBe('required');
+      return { ready: true };
+    });
+    expect(appInfraComposition.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-app-config', namespace: 'notes' }), data: { 'database-url': 'postgres://example.invalid/notes' } }),
+      expect.objectContaining({ kind: 'Secret', metadata: expect.objectContaining({ name: 'session-key-secret', namespace: 'notes' }), type: 'Opaque' }),
+      expect.objectContaining({
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: expect.objectContaining({ name: 'web', namespace: 'notes' }),
+        spec: expect.objectContaining({
+          template: expect.objectContaining({
+            spec: expect.objectContaining({
+              containers: [expect.objectContaining({
+                env: expect.arrayContaining([
+                  expect.objectContaining({ name: 'DATABASE_URL', valueFrom: { configMapKeyRef: { name: 'notes-app-config', key: 'database-url' } } }),
+                  expect.objectContaining({ name: 'DATABASE_PASSWORD', valueFrom: { secretKeyRef: { name: 'notes-db-app', key: 'password' } } }),
+                ]),
+                volumeMounts: expect.arrayContaining([
+                  expect.objectContaining({ name: 'applik8s-config-database-url', mountPath: '/etc/applik8s/config', readOnly: true }),
+                  expect.objectContaining({ name: 'applik8s-secret-database-password', mountPath: '/etc/applik8s/secrets', readOnly: true }),
+                ]),
+              })],
+              volumes: expect.arrayContaining([
+                expect.objectContaining({ name: 'applik8s-config-database-url', configMap: { name: 'notes-app-config' } }),
+                expect.objectContaining({ name: 'applik8s-secret-database-password', secret: { secretName: 'notes-db-app' } }),
+              ]),
+            }),
+          }),
+        }),
+      }),
+      expect.objectContaining({ apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', metadata: expect.objectContaining({ name: 'web-ingress', namespace: 'notes' }), spec: expect.objectContaining({ ingressClassName: 'nginx', rules: [expect.objectContaining({ host: 'notes.example.test' })], tls: [{ hosts: ['notes.example.test'], secretName: 'notes-web-tls' }] }) }),
+    ]));
+    expect(appInfraComposition.resources).not.toContainEqual(expect.objectContaining({ kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }));
+    expect(applicationGraphFor(appInfraComposition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider.http-exposure', kind: 'provider', implementation: 'ingress', config: { bindingKind: 'provided', provider: 'ingress' } }),
+      expect.objectContaining({ id: 'config.database-url', kind: 'config', provider: 'ConfigMap', key: 'database-url' }),
+      expect.objectContaining({ id: 'secret.database-password', kind: 'secret', provider: 'Secret', ownership: 'external', redaction: 'required', generatedResources: [] }),
+      expect.objectContaining({ id: 'secret.session-key', kind: 'secret', provider: 'Secret', ownership: 'generated', generatedResources: [expect.objectContaining({ role: 'secret' })] }),
+      expect.objectContaining({ id: 'exposure.web', kind: 'exposure', provider: { interface: 'HttpExposure', nodeId: 'provider.http-exposure' }, hostnames: ['notes.example.test'] }),
+      expect.objectContaining({ id: 'server.web', kind: 'server', generatedResources: expect.arrayContaining([
+        expect.objectContaining({ role: 'config', dependsOn: [{ nodeId: 'config.database-url' }] }),
+        expect.objectContaining({ role: 'secret', dependsOn: [{ nodeId: 'secret.database-password' }] }),
+      ]) }),
+    ]));
+    expect(applicationGraphFor(appInfraComposition)?.edges).toEqual(expect.arrayContaining([
+      { from: { nodeId: 'server.web' }, to: { nodeId: 'config.database-url' }, relationship: 'reads' },
+      { from: { nodeId: 'server.web' }, to: { nodeId: 'secret.database-password' }, relationship: 'reads' },
+    ]));
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-expose-required-tls-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesExposeRequiredTlsApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.expose('web', { service: 'notes-web', hostnames: ['notes.example.test'], tls: 'required' });
+      return { ready: true };
+    })).toThrow(/requires tlsSecretName/);
 
     const postgresModelStore: ApplicationModelStoreProvider = {
       kind: 'postgres',
@@ -307,6 +465,8 @@ describe('integrated TypeKro package surface', () => {
           materialization: 'kubernetes-job',
           idempotency: { keySource: 'metadata.generation', conflictPolicy: 'skipCompleted' },
           phaseStatus: expect.objectContaining({ statusPath: 'status.applik8s.jobs.notes-model-migration' }),
+          statusLifecycle: expect.objectContaining({ ownership: expect.objectContaining({ durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'notes-model-direct-provider-app-status-reconciler-status' } }) }),
+          durableStatusUpdater: expect.objectContaining({ statusOwnership: expect.objectContaining({ durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'notes-model-direct-provider-app-status-reconciler-status' } }) }),
           permissions: expect.arrayContaining([expect.objectContaining({ apiGroups: ['batch'], resources: ['jobs'], verbs: ['create', 'get', 'list', 'watch'] })]),
           environment: expect.objectContaining({ secretRefs: expect.arrayContaining([expect.objectContaining({ name: 'notes-db-app' })]) }),
         }),
@@ -383,16 +543,16 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.provide(CounterStore, 'valkey');
+      // typecast: deliberately violate the token contract to exercise fail-closed runtime validation.
+      app.provide(CounterStore, 'valkey' as never);
       return { ready: true };
-    })).toThrow(/app\.provide\(CounterStore, \.\.\.\) requires a generated provider adapter/);
+    })).toThrow(/app\.provide\(CounterStore, \.\.\.\) does not match the bounded v0\.3 Kubernetes-native provider contract/);
 
     const reservedProviderTokens: readonly [ApplicationProviderToken<unknown>, string][] = [
       [EventSource, 'EventSource'],
       [Secret, 'Secret'],
       [Queue, 'Queue'],
       [ObjectStorage, 'ObjectStorage'],
-      [HttpExposure, 'HttpExposure'],
       [CredentialStore, 'CredentialStore'],
     ];
     for (const [token, tokenName] of reservedProviderTokens) {
@@ -403,10 +563,23 @@ describe('integrated TypeKro package surface', () => {
         spec: type({}),
         status: type({ ready: 'boolean' }),
       }, (_spec, app) => {
-        app.provide(token, 'reserved');
+        // typecast: deliberately violate each token contract to exercise fail-closed runtime validation.
+        app.provide(token, 'reserved' as never);
         return { ready: true };
-      })).toThrow(new RegExp(`app\\.provide\\(${tokenName}, \\.\\.\\.\\) requires a generated provider adapter`));
+      })).toThrow(new RegExp(`app\\.provide\\(${tokenName}, \\.\\.\\.\\) does not match the bounded v0\\.3 Kubernetes-native provider contract`));
     }
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-http-exposure-provider-invalid-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesHttpExposureProviderInvalidApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      // typecast: force an unsupported HttpExposure alias to verify fail-closed provider validation.
+      app.provide(HttpExposure, 'gateway' as never);
+      return { ready: true };
+    })).toThrow(/app\.provide\(HttpExposure, \.\.\.\) currently supports only the Ingress HTTP exposure provider slice/);
 
     const jobComposition = sdk.kubernetesComposition({
       name: 'notes-job-app',
@@ -424,27 +597,39 @@ describe('integrated TypeKro package surface', () => {
       expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'migrate-diagnostics' }), data: expect.objectContaining({ phaseStatusPath: 'status.applik8s.jobs.migrate' }) }),
       expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'migrate-status-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('runGeneratedJobStatusReconciler'), 'status-runtime.json': expect.stringContaining('notesjobapps') }) }),
       expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-job-app-status-reconciler-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('discoverApplicationResourceIdentity'), 'status-runtime.json': expect.stringContaining('"statusConfigMapName"') }) }),
-      expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-job-app-status-reconciler-status' }), data: expect.objectContaining({ 'status.json': '{}', 'applik8s-jobs.json': '{}' }) }),
+      expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-job-app-status-reconciler-status' }) }),
       expect.objectContaining({ apiVersion: 'v1', kind: 'ServiceAccount', metadata: expect.objectContaining({ name: 'notes-job-app-status-reconciler' }) }),
       expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'notes-job-app-status-reconciler' }), rules: expect.arrayContaining([
-        expect.objectContaining({ apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'patch', 'update'] }),
+        expect.objectContaining({ apiGroups: [''], resources: ['configmaps'], verbs: ['create', 'get', 'patch', 'update'] }),
         expect.objectContaining({ apiGroups: ['batch'], resources: ['jobs'], verbs: ['get', 'list', 'watch'] }),
-        expect.objectContaining({ apiGroups: ['notes.applik8s.dev'], resources: ['notesjobapps'], verbs: ['get', 'list'] }),
-        expect.objectContaining({ apiGroups: ['notes.applik8s.dev'], resources: ['notesjobapps/status'], verbs: ['get', 'patch', 'update'] }),
       ]) }),
       expect.objectContaining({ apiVersion: 'apps/v1', kind: 'Deployment', metadata: expect.objectContaining({ name: 'notes-job-app-status-reconciler' }), spec: expect.objectContaining({ template: expect.objectContaining({ spec: expect.objectContaining({ serviceAccountName: 'notes-job-app-status-reconciler' }) }) }) }),
     ]));
     const jobRuntimeConfigMap = jobComposition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'notes-job-app-status-reconciler-runtime');
     expect(() => transformSync(String(jobRuntimeConfigMap?.data?.['runtime__job-runner.mjs'] ?? ''), { loader: 'js', format: 'esm' })).not.toThrow();
+    expect(jobRuntimeConfigMap?.data?.['runtime__job-runner.mjs']).toContain('history.json');
+    expect(jobRuntimeConfigMap?.data?.['runtime__job-runner.mjs']).toContain('appendGeneratedJobHistory');
+    expect(jobRuntimeConfigMap?.data?.['runtime__job-runner.mjs']).toContain('slice(-20)');
+    expect(jobRuntimeConfigMap?.data?.['status-runtime.json']).toContain('"statusRoot": "status.applik8s"');
+    expect(jobRuntimeConfigMap?.data?.['status-runtime.json']).toContain('"jobsPath": "status.applik8s.jobs"');
+    expect(jobRuntimeConfigMap?.data?.['status-runtime.json']).toContain('"dataKeys"');
+    expect(jobRuntimeConfigMap?.data?.['status-runtime.json']).toContain('"resourceVersionMergePatch"');
+    const jobStatusConfigMap = jobComposition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'notes-job-app-status-reconciler-status');
+    expect(Reflect.get(jobStatusConfigMap ?? {}, '__externalRef')).toBe(true);
     const jobDiagnostics = jobComposition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'migrate-diagnostics');
     expect(jobDiagnostics?.data?.phaseStatusContract).toContain('observedGeneration');
     expect(jobDiagnostics?.data?.phaseStatusContract).toContain('metadata.generation');
+    expect(jobDiagnostics?.data?.statusOwnershipContract).toContain('status.applik8s.jobs');
+    expect(jobDiagnostics?.data?.statusOwnershipContract).toContain('conflicts.json');
     expect(jobDiagnostics?.data?.terminalFailureStatus).toContain('partialEffects');
+    expect(jobDiagnostics?.data?.terminalFailureStatus).toContain('GeneratedJobFailed');
+    expect(jobDiagnostics?.data?.observabilityContract).toContain('applik8s_generated_job_observations_total');
     expect(applicationGraphFor(jobComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'job.migrate', kind: 'job', name: 'migrate', task: expect.objectContaining({ taskKind: 'migration' }), runtime: expect.objectContaining({ materialization: 'kubernetes-job', phaseStatus: expect.objectContaining({ statusPath: 'status.applik8s.jobs.migrate' }), statusLifecycle: expect.objectContaining({ multiJob: 'appLevelReconciler', fallback: 'generatedStatusConfigMap' }), durableStatusUpdater: expect.objectContaining({ runtimeModule: { kind: 'jobRunnerRuntime', name: 'generated-job-status-updater' } }) }) }),
+      expect.objectContaining({ id: 'job.migrate', kind: 'job', name: 'migrate', task: expect.objectContaining({ taskKind: 'migration' }), runtime: expect.objectContaining({ materialization: 'kubernetes-job', phaseStatus: expect.objectContaining({ statusPath: 'status.applik8s.jobs.migrate' }), statusLifecycle: expect.objectContaining({ multiJob: 'appLevelReconciler', fallback: 'generatedStatusConfigMap', ownership: expect.objectContaining({ applicationStatusProjection: 'requiredAuthoritative', appStatusSchemaContract: expect.objectContaining({ jobsPath: 'status.applik8s.jobs', ownership: 'kroStatusProjection' }), durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'notes-job-app-status-reconciler-status' }, fallbackStore: expect.objectContaining({ objectOwnership: 'runtimeCreatedResource', dataKeys: expect.arrayContaining(['status.json', 'applik8s-jobs.json', 'history.json', 'conflicts.json', 'updatedAt']) }) }) }), durableStatusUpdater: expect.objectContaining({ runtimeModule: { kind: 'jobRunnerRuntime', name: 'generated-job-status-updater' }, statusOwnership: expect.objectContaining({ durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'notes-job-app-status-reconciler-status' } }) }) }) }),
     ]));
     const jobGraphNode = applicationGraphFor(jobComposition)?.nodes.find((node) => node.kind === 'job' && node.id === 'job.migrate');
     expect(jobGraphNode?.kind === 'job' && jobGraphNode.runtime.statusLifecycle ? validateApplicationJobStatusLifecycleContract(jobGraphNode.runtime.statusLifecycle) : []).toEqual([]);
+    expect(jobGraphNode?.kind === 'job' ? jobGraphNode.runtime.statusLifecycle : undefined).toMatchObject({ historyRetention: { maxEntries: 20, terminalRetention: 'retain' } });
 
     const scheduleComposition = sdk.kubernetesComposition({
       name: 'notes-schedule-app',
@@ -489,10 +674,126 @@ describe('integrated TypeKro package surface', () => {
     expect(multiJobComposition.resources).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-maintenance-app-status-reconciler-runtime' }), data: expect.objectContaining({ 'status-runtime.json': expect.stringContaining('compact'), 'runtime__job-runner.mjs': expect.stringContaining('deepMerge') }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-maintenance-app-status-reconciler-runtime' }), data: expect.objectContaining({ 'status-runtime.json': expect.stringContaining('sweep') }) }),
-      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-maintenance-app-status-reconciler-status' }), data: expect.objectContaining({ 'applik8s-jobs.json': '{}' }) }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'compact-diagnostics' }), data: expect.objectContaining({ terminalFailureStatus: expect.stringContaining('partialEffects') }) }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'sweep-diagnostics' }), data: expect.objectContaining({ terminalFailureStatus: expect.stringContaining('GeneratedJobFailed') }) }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-maintenance-app-status-reconciler-status' }) }),
       expect.objectContaining({ kind: 'Role', metadata: expect.objectContaining({ name: 'notes-maintenance-app-status-reconciler' }), rules: expect.arrayContaining([
         expect.objectContaining({ apiGroups: ['batch'], resources: ['jobs', 'cronjobs'], verbs: ['get', 'list', 'watch'] }),
       ]) }),
+    ]));
+    const maintenanceStatusConfigMap = multiJobComposition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'notes-maintenance-app-status-reconciler-status');
+    expect(Reflect.get(maintenanceStatusConfigMap ?? {}, '__externalRef')).toBe(true);
+  });
+
+  it('supports the v0.3 golden-path resource model http storage and reconcile authoring surface', () => {
+    const composition = sdk.kubernetesComposition({
+      name: 'tenant-platform-golden-dx',
+      apiVersion: 'tenants.applik8s.dev/v1alpha1',
+      kind: 'TenantPlatformGoldenDx',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      const Tenant = app.resource('Tenant', {
+        spec: type({ plan: "'free' | 'team' | 'enterprise'", ownerEmail: 'string' }),
+        status: type({ phase: "'Pending' | 'Ready' | 'Failed'", url: 'string?' }),
+      });
+
+      app.storage.postgres('tenant-platform-db', {
+        namespace: 'platform',
+        database: 'tenant_platform',
+        migrations: 'generated-job',
+      });
+
+      const Account = app.model('Account', {
+        spec: type({ tenant: 'string', email: 'string', role: "'owner' | 'admin' | 'viewer'" }),
+        indexes: { byTenant: ['tenant', 'email'] },
+      });
+
+      app.http('admin', { namespace: 'platform', resources: { Tenant }, models: { Account } }, (http) => {
+        http.post('/tenants/:tenant/accounts', async () => Account.create({
+          spec: { tenant: 'main', email: 'owner@example.com', role: 'owner' },
+        }));
+      });
+
+      app.reconcile(Tenant, async (tenant) => {
+        tenant.status.phase = 'Ready';
+      }, { namespace: 'platform' });
+
+      return { ready: true };
+    });
+
+    expect(composition.operatorInstalls).toHaveLength(1);
+    expect(composition.operatorInstalls[0]?.operatorName).toBe('tenant-controller');
+    expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'admin' }) }));
+    expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'Job', metadata: expect.objectContaining({ name: 'account-migration' }) }));
+
+    const graph = applicationGraphFor(composition);
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'crd.tenant', kind: 'crd', name: 'Tenant', resource: expect.objectContaining({ apiVersion: 'tenants.applik8s.dev/v1alpha1' }) }),
+      expect.objectContaining({ id: 'model.account', kind: 'model', name: 'Account' }),
+      expect.objectContaining({ id: 'server.admin', kind: 'server', name: 'admin' }),
+      expect.objectContaining({ id: 'operator.tenant-controller', kind: 'operator', name: 'tenant-controller' }),
+      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore', implementation: 'postgres' }),
+    ]));
+    expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining([
+      'app.resource',
+      'app.http',
+      'app.reconcile',
+      'app.storage.postgres',
+    ]));
+  });
+
+  it('supports top-level v0.3 app builder authoring with inferred HTTP bindings and flat model create', () => {
+    const tenantPlatform = app('tenant-platform-builder-dx', {
+      namespace: 'platform',
+      apiVersion: 'tenants.applik8s.dev/v1alpha1',
+      kind: 'TenantPlatformBuilderDx',
+    });
+
+    const Tenant = tenantPlatform.resource('Tenant', {
+      spec: type({ plan: "'free' | 'team' | 'enterprise'", ownerEmail: 'string' }),
+      status: type({ phase: "'Pending' | 'Ready' | 'Failed'", url: 'string?' }),
+    });
+
+    tenantPlatform.storage.postgres('tenant-platform-db', {
+      database: 'tenant_platform',
+      migrations: 'generated-job',
+    });
+
+    const Account = tenantPlatform.model('Account', {
+      spec: type({ tenant: 'string', email: 'string', role: "'owner' | 'admin' | 'viewer'" }),
+      indexes: { byTenant: ['tenant', 'email'] },
+    });
+
+    tenantPlatform.http('admin', (http) => {
+      http.post('/tenants/:tenant/accounts', async ({ params, form }) => Account.create({
+        tenant: params.tenant ?? 'main',
+        email: form.string('email'),
+        role: form.enum('role', ['owner', 'admin', 'viewer']),
+      }));
+    });
+
+    tenantPlatform.reconcile(Tenant, async (tenant) => {
+      tenant.status.phase = 'Ready';
+    });
+
+    expect(tenantPlatform.operatorInstalls).toHaveLength(1);
+    expect(tenantPlatform.resources).toContainEqual(expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'admin', namespace: 'platform' }) }));
+    expect(tenantPlatform.resources).toContainEqual(expect.objectContaining({ kind: 'Job', metadata: expect.objectContaining({ name: 'account-migration', namespace: 'platform' }) }));
+    expect(tenantPlatform.factory('kro')).toBeTruthy();
+
+    // typecast: this assertion inspects heterogeneous generated resource objects for the admin source ConfigMap fixture.
+    const sourceConfigMap = tenantPlatform.resources.find((resource) => Reflect.get(resource as object, 'kind') === 'ConfigMap' && Reflect.get(Reflect.get(resource as object, 'metadata') as object, 'name') === 'admin-source') as { readonly data?: Readonly<Record<string, string>> } | undefined;
+    expect(JSON.stringify(sourceConfigMap?.data ?? {})).toContain('params.tenant');
+    expect(JSON.stringify(sourceConfigMap?.data ?? {})).toContain('form.enum');
+    expect(JSON.stringify(sourceConfigMap?.data ?? {})).toContain('Account.create');
+
+    const graph = applicationGraphFor(tenantPlatform);
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'crd.tenant', kind: 'crd', name: 'Tenant' }),
+      expect.objectContaining({ id: 'model.account', kind: 'model', name: 'Account' }),
+      expect.objectContaining({ id: 'server.admin', kind: 'server', name: 'admin' }),
+      expect.objectContaining({ id: 'operator.tenant-controller', kind: 'operator', name: 'tenant-controller' }),
     ]));
   });
 
@@ -571,7 +872,9 @@ describe('integrated TypeKro package surface', () => {
               generatedRuntimeParity: 'required',
               scriptRuntimeParity: 'required',
               query: { defaultLimit: 50, maxLimit: 500, cursor: 'offset', unsupportedFilters: 'failClosed' },
-              retention: { mode: 'ttl', ttlSeconds: 86_400, deletionPolicy: 'explicitOnly' },
+              indexes: { partitionRequired: true, uniqueEnforcedBy: 'databaseConstraint', orderBy: 'declaredIndexFieldsOnly', unsupportedOrderBy: 'failClosed' },
+              transactions: { declaration: 'required', singleOperationAtomicity: 'databaseStatement', multiOperationApi: 'implemented', multiOperationBehavior: 'runtimeTransaction' },
+              retention: { mode: 'ttl', ttlSeconds: 86_400, deletionPolicy: 'explicitOnly', enforcement: 'runtimeEnforced' },
             }),
           }),
         }),
@@ -587,6 +890,42 @@ describe('integrated TypeKro package surface', () => {
     expect(modelNode?.kind === 'model' && modelNode.schema.guarantees?.semantics ? validateApplicationModelStoreSemanticsContract(modelNode.schema.guarantees.semantics) : []).toEqual([]);
     const providerNode = graph?.nodes.find((node) => node.kind === 'provider' && node.id === 'provider.model-store');
     expect(providerNode?.kind === 'provider' && providerNode.contract ? validateApplicationProviderInterfaceContract(providerNode.contract) : []).toEqual([]);
+  });
+
+  it('fails closed when a model declares multi-operation transactions unsupported', async () => {
+    const NoteEntity = entity('Note', {
+      spec: type({ message: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+    let notes: ApplicationModelBinding<{ readonly message: string }, { readonly phase?: string }> | undefined;
+    const composition = sdk.kubernetesComposition({
+      name: 'notes-model-transaction-boundary-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesModelTransactionBoundaryApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      notes = app.model(NoteEntity, {
+        store: { kind: 'postgres', name: 'notes-db', database: 'notes' },
+        schema: { transactions: 'unsupported' },
+      });
+      return { ready: true };
+    });
+
+    const graph = applicationGraphFor(composition);
+    const modelNode = graph?.nodes.find((node) => node.kind === 'model' && node.id === 'model.note');
+    if (!notes) {
+      throw new Error('expected model binding');
+    }
+    expect(notes?.backend.transactions).toBe('unsupported');
+    expect(modelNode?.kind === 'model' ? modelNode.schema.guarantees?.semantics?.transactions : undefined).toEqual({
+      declaration: 'unsupported',
+      singleOperationAtomicity: 'databaseStatement',
+      multiOperationApi: 'implemented',
+      multiOperationBehavior: 'failClosed',
+    });
+    expect(modelNode?.kind === 'model' && modelNode.schema.guarantees?.semantics ? validateApplicationModelStoreSemanticsContract(modelNode.schema.guarantees.semantics) : []).toEqual([]);
+    await expect(notes.transaction(async (transaction) => transaction.create({ spec: { message: 'hello' } }))).rejects.toThrow(/transaction\(\.\.\.\) is unsupported/);
   });
 
   it('generates server runtime ModelStore clients backed by a singleton app-scoped CNPG provider', () => {
@@ -724,13 +1063,22 @@ describe('integrated TypeKro package surface', () => {
     const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
     const deployment = composition.resources.find((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'web');
     const sourceDataKeys = Object.keys(sourceConfigMap?.data ?? {});
+    const extractedModuleBundleKeys = Object.keys(generatedRuntimeModuleBundle(() => ''));
+    const extractedSource = generatedRuntimeModuleSource('serverRuntime', { modelRuntime: () => 'model-source', jobRunnerRuntime: () => 'job-source' });
     expect(sourceDataKeys.every((key) => !key.includes('/'))).toBe(true);
+    expect(sourceDataKeys).toEqual(expect.arrayContaining(extractedModuleBundleKeys.map((key) => key.replaceAll('/', '__'))));
+    expect(extractedSource).toContain('createServerRuntime');
+    expect(generatedApplicationRuntimeModuleSource('modelRuntime')).toContain(generatedRuntimeModuleSourcePreamble('modelRuntime'));
+    expect(generatedApplicationRuntimeModuleSource('jobRunnerRuntime')).toContain(generatedRuntimeModuleSourcePreamble('jobRunnerRuntime'));
+    expect(generatedRuntimeModuleSource('modelRuntime', { modelRuntime: () => 'model-source', jobRunnerRuntime: () => 'job-source' })).toBe('model-source');
+    expect(generatedRuntimeModuleSource('jobRunnerRuntime', { modelRuntime: () => 'model-source', jobRunnerRuntime: () => 'job-source' })).toBe('job-source');
     expect(sourceConfigMap?.data).toMatchObject({
       'runtime__server.mjs': expect.stringContaining('serverRuntime'),
       'runtime__model-store-postgres.mjs': expect.stringContaining('modelRuntime'),
       'runtime__kubernetes-client.mjs': expect.stringContaining('kubernetesClient'),
       'runtime__diagnostics.mjs': expect.stringContaining('diagnostics'),
       'runtime__providers__postgres.mjs': expect.stringContaining('providerAdapter'),
+      'runtime.modules.json': expect.stringContaining('GeneratedRuntimeModuleManifest'),
     });
     expect(sourceConfigMap?.data?.['runtime__server.mjs']).toContain('export const runtimeModule');
     expect(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs']).toContain('"kind":"modelRuntime"');
@@ -747,18 +1095,58 @@ describe('integrated TypeKro package surface', () => {
     expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain("from './runtime/model-store-postgres.mjs'");
     expect(String(sourceConfigMap?.data?.['bindings.mjs'] ?? '')).toContain("import { createRuntimeBindings } from './runtime.mjs'");
     expect(String(sourceConfigMap?.data?.['routes.mjs'] ?? '')).toContain("from './route-");
-    expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).toContain('./routes.mjs');
-    expect(deployment).toMatchObject({ spec: { template: { spec: { volumes: expect.arrayContaining([
-      expect.objectContaining({ name: 'applik8s-server-source', configMap: { name: 'web-source', items: expect.arrayContaining([
-        expect.objectContaining({ key: 'runtime__server.mjs', path: 'runtime/server.mjs' }),
-        expect.objectContaining({ key: 'runtime__model-store-postgres.mjs', path: 'runtime/model-store-postgres.mjs' }),
-        expect.objectContaining({ key: 'runtime__job-runner.mjs', path: 'runtime/job-runner.mjs' }),
-        expect.objectContaining({ key: 'runtime__kubernetes-client.mjs', path: 'runtime/kubernetes-client.mjs' }),
-        expect.objectContaining({ key: 'runtime__diagnostics.mjs', path: 'runtime/diagnostics.mjs' }),
-        expect.objectContaining({ key: 'runtime__providers__postgres.mjs', path: 'runtime/providers/postgres.mjs' }),
-      ]) } }),
-    ]) } } } });
-    expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).not.toContain('function createModelClient');
+    expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).toContain('applik8sServerRuntime');
+    expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).toContain('/-/healthz');
+    // typecast: runtime.bundle.json is generated by applik8s and immediately validated against the generated server runtime bundle contract.
+    const serverRuntimeBundle = JSON.parse(String(sourceConfigMap?.data?.['runtime.bundle.json'] ?? '{}')) as GeneratedServerRuntimeBundleContract;
+    expect(validateGeneratedServerRuntimeBundleContract(serverRuntimeBundle)).toEqual([]);
+    expect(serverRuntimeBundle).toMatchObject({ packageManagerAtStartup: false, releasePolicy: { dependencyInstallation: 'buildTimeOnly', runtimeImage: 'explicitImageOrGeneratedRecipe', supplyChain: 'metadataOnlyUntilSignedArtifacts', failurePolicy: 'failClosed' } });
+    expect(serverRuntimeBundle.observability.logs.failureEvents).toContain('applik8s-route-action-failure');
+    expect(String(sourceConfigMap?.data?.['routes.manifest.json'] ?? '')).toContain('"observability"');
+    // typecast: runtime.modules.json is validated immediately through the exported runtime module manifest contract.
+    const runtimeModules = JSON.parse(String(sourceConfigMap?.data?.['runtime.modules.json'] ?? '{}')) as ApplicationRuntimeModuleManifestContract;
+    expect(validateApplicationRuntimeModuleManifestContract(runtimeModules)).toEqual([]);
+    expect(runtimeModules).toEqual(generatedApplicationRuntimeModuleManifest());
+    expect(runtimeModules.modules.map((module) => module.kind)).toEqual([...generatedApplicationRuntimeModuleKinds]);
+    expect(runtimeModules.modules).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiVersion: 'applik8s.runtime/v1alpha1', kind: 'serverRuntime', name: 'server', artifact: { kind: 'runtimeModule', path: 'runtime/server.mjs', name: 'server' }, path: 'runtime/server.mjs', imports: expect.arrayContaining([expect.objectContaining({ kind: 'modelRuntime' })]) }),
+      expect.objectContaining({ apiVersion: 'applik8s.runtime/v1alpha1', kind: 'modelRuntime', name: 'postgres-models', artifact: { kind: 'runtimeModule', path: 'runtime/model-store-postgres.mjs', name: 'postgres-models' }, path: 'runtime/model-store-postgres.mjs', exports: expect.arrayContaining([expect.objectContaining({ name: 'createPostgresModelClient' })]) }),
+      expect.objectContaining({ apiVersion: 'applik8s.runtime/v1alpha1', kind: 'jobRunnerRuntime', name: 'generated-job-status', artifact: { kind: 'runtimeModule', path: 'runtime/job-runner.mjs', name: 'generated-job-status' }, path: 'runtime/job-runner.mjs', entrypoint: 'createJobStatusUpdater', imports: expect.arrayContaining([expect.objectContaining({ kind: 'kubernetesClient' })]) }),
+      expect.objectContaining({ apiVersion: 'applik8s.runtime/v1alpha1', kind: 'diagnostics', name: 'diagnostics', artifact: { kind: 'runtimeModule', path: 'runtime/diagnostics.mjs', name: 'diagnostics' }, path: 'runtime/diagnostics.mjs' }),
+      expect.objectContaining({ apiVersion: 'applik8s.runtime/v1alpha1', kind: 'providerAdapter', name: 'postgres', artifact: { kind: 'runtimeModule', path: 'runtime/providers/postgres.mjs', name: 'postgres' }, path: 'runtime/providers/postgres.mjs' }),
+    ]));
+    for (const module of runtimeModules.modules) {
+      const sourceKey = module.path.replaceAll('/', '__');
+      const sourceModuleJson = String(sourceConfigMap?.data?.[sourceKey] ?? '').match(/export const runtimeModule = (\{.*\});/)?.[1] ?? '{}';
+      // typecast: runtime module source self-description is compared immediately to the validated manifest entry.
+      const sourceModule = JSON.parse(sourceModuleJson) as ApplicationRuntimeModuleManifestContract['modules'][number];
+      expect(sourceModule).toEqual(module);
+      expect(sourceModule.artifact.path).toBe(module.path);
+      expect(sourceModule.interface.imports).toEqual(module.imports);
+      expect(sourceModule.interface.exports).toEqual(module.exports);
+    }
+    expect(runtimeModules.modules.flatMap((module: { readonly interface?: ApplicationRuntimeModuleInterfaceContract }) => module.interface ? validateApplicationRuntimeModuleInterfaceContract(module.interface) : [])).toEqual([]);
+    const serverGraphNode = applicationGraphFor(composition)?.nodes.find((node) => node.kind === 'server' && node.id === 'server.web');
+    expect(serverGraphNode?.kind === 'server' ? serverGraphNode.routes : []).toEqual(expect.arrayContaining([
+      expect.objectContaining({ diagnostics: expect.objectContaining({ routeFailureEvent: 'applik8s-server-route-failure', actionFailureEvent: 'applik8s-route-action-failure', failurePolicy: 'failClosed', partialEffects: 'unknownAfterActionStarted', includes: expect.arrayContaining(['routeId', 'action', 'diagnostic', 'stack']) }) }),
+    ]));
+    expect(String(sourceConfigMap?.data?.['routes.manifest.json'] ?? '')).toContain('applik8s-route-action-failure');
+    expect(String(sourceConfigMap?.data?.['routes.manifest.json'] ?? '')).toContain('unknownAfterActionStarted');
+    expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).toContain('applik8s-route-action-failure');
+    expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).toContain('unknownAfterActionStarted');
+    expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).toContain('routeId');
+    expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).toContain('failurePolicy');
+    expect(String(sourceConfigMap?.data?.['routes.mjs'] ?? '')).toContain('export: "route_post_accounts_0"');
+    const deploymentJson = JSON.stringify(deployment);
+    expect(deploymentJson).toContain('"path":"runtime.modules.json"');
+    expect(deploymentJson).toContain('"path":"runtime/server.mjs"');
+    expect(deploymentJson).toContain('"path":"runtime/model-store-postgres.mjs"');
+    expect(deploymentJson).toContain('"path":"runtime/job-runner.mjs"');
+    expect(deploymentJson).toContain('"path":"runtime/kubernetes-client.mjs"');
+    expect(deploymentJson).toContain('"path":"runtime/diagnostics.mjs"');
+    expect(deploymentJson).toContain('"path":"runtime/providers/postgres.mjs"');
+    expect(deploymentJson).toContain('"readinessProbe":{"httpGet":{"path":"/-/healthz","port":"http"}');
+    expect(deploymentJson).toContain('"livenessProbe":{"httpGet":{"path":"/-/healthz","port":"http"}');
     expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).not.toContain('function createPostgresModelClient');
     const runtimeModule = JSON.parse(String(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs'] ?? '').match(/export const runtimeModule = (\{.*\});/)?.[1] ?? '{}');
     expect(validateApplicationRuntimeModuleInterfaceContract(runtimeModule.interface)).toEqual([]);
@@ -801,6 +1189,12 @@ describe('integrated TypeKro package surface', () => {
     expect(preflightSql).toContain('incompatibleIndex');
     expect(preflightSql).toContain('unknownExistingObject');
     expect(preflightSql).toContain('destructiveChange');
+    expect(preflightSql).toContain('actual_history');
+    expect(preflightSql).toContain('missingHistoryColumn');
+    expect(preflightSql).toContain('pg_index');
+    expect(preflightSql).toContain('pg_get_indexdef');
+    expect(preflightSql).toContain('indisunique');
+    expect(preflightSql).toContain('normalized_index_definition');
     expect(preflightSql).toContain('account-email-unique');
     expect(preflightSql).toContain('accounts-by-email');
     expect(migrationSql).toContain('CREATE TABLE IF NOT EXISTS "applik8s_model_migrations"');
@@ -809,6 +1203,7 @@ describe('integrated TypeKro package surface', () => {
       compatibilityPolicy: expect.stringContaining('explicitPlanRequired'),
       driftPolicy: 'failClosed',
       phaseStatusContract: expect.stringContaining('observedGeneration'),
+      statusOwnershipContract: expect.stringContaining('status.applik8s.jobs'),
       durableStatusTemplate: expect.stringContaining('provider-readiness'),
       terminalFailureStatus: expect.stringContaining('partialEffects'),
       migrationPlan: expect.stringContaining('account-email-unique'),
@@ -825,6 +1220,8 @@ describe('integrated TypeKro package surface', () => {
     expect(diagnosticsConfigMap?.data?.failureModes).toContain('incompatibleIndex');
     expect(diagnosticsConfigMap?.data?.failureModes).toContain('unknownExistingObject');
     expect(diagnosticsConfigMap?.data?.failureModes).toContain('destructiveChange');
+    expect(diagnosticsConfigMap?.data?.statusOwnershipContract).toContain('resourceVersionMergePatch');
+    expect(diagnosticsConfigMap?.data?.statusOwnershipContract).toContain('history.json');
     expect(diagnosticsConfigMap?.data?.migrationPlan).toContain('destructive-change');
     expect(diagnosticsConfigMap?.data?.migrationPlan).toContain('schema-drift');
     expect(diagnosticsConfigMap?.data?.migrationPreflightSql).toContain('pg_advisory_xact_lock');
@@ -920,18 +1317,422 @@ describe('integrated TypeKro package surface', () => {
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-diagnostics' }), data: expect.objectContaining({ phaseStatusContract: expect.stringContaining('status.applik8s.jobs.notes-model-migration'), terminalFailureStatus: expect.stringContaining('runMigrationJob') }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-status-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('patchApplicationStatus'), 'status-runtime.json': expect.stringContaining('notesmodelmigrationartifactsapps') }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-artifacts-app-status-reconciler-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('patchGeneratedStatusConfigMap'), 'status-runtime.json': expect.stringContaining('notes-model-migration') }) }),
-      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-artifacts-app-status-reconciler-status' }), data: expect.objectContaining({ 'status.json': '{}', 'applik8s-jobs.json': '{}' }) }),
+      expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-model-migration-artifacts-app-status-reconciler-status' }) }),
       expect.objectContaining({ kind: 'ClusterRole', metadata: expect.objectContaining({ name: 'notes-notes-model-migration-artifacts-app-status-reconciler' }), rules: expect.arrayContaining([
-        expect.objectContaining({ apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'patch', 'update'] }),
-        expect.objectContaining({ apiGroups: ['notes.applik8s.dev'], resources: ['notesmodelmigrationartifactsapps/status'], verbs: ['get', 'patch', 'update'] }),
+        expect.objectContaining({ apiGroups: [''], resources: ['configmaps'], verbs: ['create', 'get', 'patch', 'update'] }),
       ]) }),
       expect.objectContaining({ kind: 'ClusterRoleBinding', metadata: expect.objectContaining({ name: 'notes-notes-model-migration-artifacts-app-status-reconciler' }) }),
       expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'notes-model-migration-artifacts-app-status-reconciler' }), spec: expect.objectContaining({ template: expect.objectContaining({ spec: expect.objectContaining({ serviceAccountName: 'notes-model-migration-artifacts-app-status-reconciler' }) }) }) }),
     ]));
     const migrationRuntimeConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'notes-model-migration-artifacts-app-status-reconciler-runtime');
-    expect(() => transformSync(String(migrationRuntimeConfigMap?.data?.['runtime__job-runner.mjs'] ?? ''), { loader: 'js', format: 'esm' })).not.toThrow();
+    const generatedJobRunnerRuntime = String(migrationRuntimeConfigMap?.data?.['runtime__job-runner.mjs'] ?? '');
+    expect(() => transformSync(generatedJobRunnerRuntime, { loader: 'js', format: 'esm' })).not.toThrow();
+    expect(generatedJobRunnerRuntime).toContain('{ ...entry, observedAt }');
+    expect(generatedJobRunnerRuntime).not.toContain('{ ...previous, observedAt }');
+    const migrationStatusConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'notes-model-migration-artifacts-app-status-reconciler-status');
+    expect(Reflect.get(migrationStatusConfigMap ?? {}, '__externalRef')).toBe(true);
     expect(JSON.stringify(composition.resources)).not.toContain('$' + '{APPLIK8S_MODEL_STORE_MODEL}');
     expect(JSON.stringify(composition.resources)).not.toContain('$' + '{attempt}');
+  });
+
+  it('merges generated-job status ConfigMap data without losing concurrent job status or history', () => {
+    const existingData = mergeGeneratedJobStatusConfigMapData({
+      observedAt: '2026-07-06T00:00:00.000Z',
+      statusPatch: {
+        applik8s: {
+          jobs: {
+            migration: { phase: 'Complete', observedGeneration: 1, idempotencyKey: 'migration-1', retryCount: 0 },
+          },
+        },
+      },
+    });
+    const mergedData = mergeGeneratedJobStatusConfigMapData({
+      existingData,
+      observedAt: '2026-07-06T00:01:00.000Z',
+      statusPatch: {
+        applik8s: {
+          jobs: {
+            cleanup: { phase: 'Progressing', observedGeneration: 4, idempotencyKey: 'cleanup-4', retryCount: 1 },
+          },
+        },
+      },
+    });
+    const repeatedData = mergeGeneratedJobStatusConfigMapData({
+      existingData: mergedData,
+      observedAt: '2026-07-06T00:02:00.000Z',
+      statusPatch: {
+        applik8s: {
+          jobs: {
+            cleanup: { phase: 'Progressing', observedGeneration: 4, idempotencyKey: 'cleanup-4', retryCount: 1 },
+          },
+        },
+      },
+    });
+    const concurrentData = mergeGeneratedJobStatusConfigMapData({
+      existingData: repeatedData,
+      observedAt: '2026-07-06T00:02:30.000Z',
+      statusPatch: {
+        applik8s: {
+          jobs: {
+            cleanup: { phase: 'Progressing', observedGeneration: 4, idempotencyKey: 'cleanup-4-rerun', retryCount: 2 },
+          },
+        },
+      },
+    });
+    const staleData = mergeGeneratedJobStatusConfigMapData({
+      existingData: repeatedData,
+      observedAt: '2026-07-06T00:03:00.000Z',
+      statusPatch: {
+        applik8s: {
+          jobs: {
+            cleanup: { phase: 'Pending', observedGeneration: 3, idempotencyKey: 'cleanup-3', retryCount: 0 },
+          },
+        },
+      },
+    });
+    const completedConflictData = mergeGeneratedJobStatusConfigMapData({
+      existingData: staleData,
+      observedAt: '2026-07-06T00:04:00.000Z',
+      statusPatch: {
+        applik8s: {
+          jobs: {
+            migration: { phase: 'Failed', observedGeneration: 1, idempotencyKey: 'migration-1', retryCount: 1 },
+          },
+        },
+      },
+    });
+
+    expect(JSON.parse(String(mergedData['applik8s-jobs.json']))).toMatchObject({
+      migration: { phase: 'Complete' },
+      cleanup: { phase: 'Progressing' },
+    });
+    expect(JSON.parse(String(mergedData['status.json']))).toEqual({ applik8s: { jobs: { migration: { phase: 'Complete', observedGeneration: 1, idempotencyKey: 'migration-1', retryCount: 0 }, cleanup: { phase: 'Progressing', observedGeneration: 4, idempotencyKey: 'cleanup-4', retryCount: 1 } } } });
+    expect(JSON.parse(String(mergedData['history.json']))).toMatchObject({
+      migration: [expect.objectContaining({ phase: 'Complete', observedAt: '2026-07-06T00:00:00.000Z' })],
+      cleanup: [expect.objectContaining({ phase: 'Progressing', observedAt: '2026-07-06T00:01:00.000Z' })],
+    });
+    expect(JSON.parse(String(repeatedData['history.json'])).cleanup).toHaveLength(1);
+    expect(JSON.parse(String(repeatedData['history.json'])).cleanup[0]).toMatchObject({ observedAt: '2026-07-06T00:02:00.000Z' });
+    expect(JSON.parse(String(concurrentData['applik8s-jobs.json'])).cleanup).toMatchObject({ phase: 'Progressing', observedGeneration: 4, idempotencyKey: 'cleanup-4-rerun' });
+    expect(JSON.parse(String(concurrentData['conflicts.json'])).cleanup).toEqual([
+      expect.objectContaining({ reason: 'ConcurrentObservationAccepted', observedAt: '2026-07-06T00:02:30.000Z', accepted: expect.objectContaining({ idempotencyKey: 'cleanup-4-rerun' }) }),
+    ]);
+    expect(JSON.parse(String(staleData['applik8s-jobs.json'])).cleanup).toMatchObject({ phase: 'Progressing', observedGeneration: 4 });
+    expect(JSON.parse(String(staleData['status.json'])).applik8s.jobs.cleanup).toMatchObject({ phase: 'Progressing', observedGeneration: 4 });
+    expect(JSON.parse(String(staleData['history.json'])).cleanup).toHaveLength(1);
+    expect(JSON.parse(String(staleData['conflicts.json'])).cleanup).toEqual([
+      expect.objectContaining({ reason: 'StaleObservedGeneration', observedAt: '2026-07-06T00:03:00.000Z', rejected: expect.objectContaining({ observedGeneration: 3 }) }),
+    ]);
+    expect(JSON.parse(String(completedConflictData['applik8s-jobs.json'])).migration).toMatchObject({ phase: 'Complete', idempotencyKey: 'migration-1' });
+    expect(JSON.parse(String(completedConflictData['status.json'])).applik8s.jobs.migration).toMatchObject({ phase: 'Complete', idempotencyKey: 'migration-1' });
+    expect(JSON.parse(String(completedConflictData['history.json'])).migration).toHaveLength(1);
+    expect(JSON.parse(String(completedConflictData['conflicts.json'])).migration).toEqual([
+      expect.objectContaining({ reason: 'CompletedIdempotencyKeyRetained', observedAt: '2026-07-06T00:04:00.000Z', rejected: expect.objectContaining({ phase: 'Failed', idempotencyKey: 'migration-1' }) }),
+    ]);
+  });
+
+  it('summarizes generated-job status merges for adversarial multi-job conflict metrics', () => {
+    const initial = summarizeGeneratedJobStatusConfigMapMerge({
+      observedAt: '2026-07-06T02:00:00.000Z',
+      statusPatch: {
+        applik8s: {
+          jobs: {
+            migration: { phase: 'Complete', observedGeneration: 5, idempotencyKey: 'migration-5', retryCount: 0 },
+            cleanup: { phase: 'Progressing', observedGeneration: 7, idempotencyKey: 'cleanup-7', retryCount: 1 },
+          },
+        },
+      },
+    });
+    const adversarial = summarizeGeneratedJobStatusConfigMapMerge({
+      existingData: { ...initial.data, 'history.json': '{not-json', 'conflicts.json': String(initial.data['conflicts.json']) },
+      observedAt: '2026-07-06T02:01:00.000Z',
+      statusPatch: {
+        applik8s: {
+          jobs: {
+            migration: { phase: 'Failed', observedGeneration: 5, idempotencyKey: 'migration-5', retryCount: 2 },
+            cleanup: { phase: 'Progressing', observedGeneration: 6, idempotencyKey: 'cleanup-6', retryCount: 0 },
+            repair: { phase: 'Progressing', observedGeneration: 1, idempotencyKey: 'repair-1', retryCount: 0 },
+          },
+        },
+      },
+    });
+    const concurrent = summarizeGeneratedJobStatusConfigMapMerge({
+      existingData: adversarial.data,
+      observedAt: '2026-07-06T02:02:00.000Z',
+      statusPatch: {
+        applik8s: {
+          jobs: {
+            repair: { phase: 'Progressing', observedGeneration: 1, idempotencyKey: 'repair-1-rerun', retryCount: 1 },
+          },
+        },
+      },
+    });
+
+    expect(initial.metrics).toEqual({ observedJobs: 2, retainedJobs: 2, acceptedUpdates: 2, rejectedUpdates: 0, conflictUpdates: 0 });
+    expect(adversarial.metrics).toEqual({ observedJobs: 3, retainedJobs: 3, acceptedUpdates: 1, rejectedUpdates: 2, conflictUpdates: 0 });
+    expect(concurrent.metrics).toEqual({ observedJobs: 1, retainedJobs: 3, acceptedUpdates: 1, rejectedUpdates: 0, conflictUpdates: 1 });
+    expect(JSON.parse(String(adversarial.data['applik8s-jobs.json']))).toMatchObject({
+      migration: { phase: 'Complete', idempotencyKey: 'migration-5' },
+      cleanup: { phase: 'Progressing', observedGeneration: 7 },
+      repair: { phase: 'Progressing', idempotencyKey: 'repair-1' },
+    });
+    expect(JSON.parse(String(adversarial.data['history.json']))).toMatchObject({
+      repair: [expect.objectContaining({ phase: 'Progressing', observedAt: '2026-07-06T02:01:00.000Z' })],
+    });
+    expect(JSON.parse(String(adversarial.data['conflicts.json']))).toMatchObject({
+      migration: [expect.objectContaining({ reason: 'CompletedIdempotencyKeyRetained', rejected: expect.objectContaining({ phase: 'Failed' }) })],
+      cleanup: [expect.objectContaining({ reason: 'StaleObservedGeneration', rejected: expect.objectContaining({ observedGeneration: 6 }) })],
+    });
+    expect(JSON.parse(String(concurrent.data['applik8s-jobs.json'])).repair).toMatchObject({ idempotencyKey: 'repair-1-rerun' });
+    expect(JSON.parse(String(concurrent.data['conflicts.json'])).repair).toEqual([
+      expect.objectContaining({ reason: 'ConcurrentObservationAccepted', accepted: expect.objectContaining({ idempotencyKey: 'repair-1-rerun' }) }),
+    ]);
+  });
+
+  it('keeps CronJob generated status latest-run state while retaining bounded history', () => {
+    const firstRun = mergeGeneratedJobStatusConfigMapData({
+      observedAt: '2026-07-06T04:00:00.000Z',
+      statusPatch: { applik8s: { jobs: { 'cleanup-hourly': { phase: 'Complete', observedGeneration: 11, idempotencyKey: 'cleanup-hourly-202607060400', retryCount: 0 } } } },
+    });
+    const refreshedSameRun = mergeGeneratedJobStatusConfigMapData({
+      existingData: firstRun,
+      observedAt: '2026-07-06T04:01:00.000Z',
+      statusPatch: { applik8s: { jobs: { 'cleanup-hourly': { phase: 'Complete', observedGeneration: 11, idempotencyKey: 'cleanup-hourly-202607060400', retryCount: 0 } } } },
+    });
+    const nextRun = mergeGeneratedJobStatusConfigMapData({
+      existingData: refreshedSameRun,
+      observedAt: '2026-07-06T05:00:00.000Z',
+      statusPatch: { applik8s: { jobs: { 'cleanup-hourly': { phase: 'Progressing', observedGeneration: 12, idempotencyKey: 'cleanup-hourly-202607060500', retryCount: 1 } } } },
+    });
+
+    expect(JSON.parse(String(refreshedSameRun['history.json']))['cleanup-hourly']).toHaveLength(1);
+    expect(JSON.parse(String(refreshedSameRun['history.json']))['cleanup-hourly'][0]).toMatchObject({ observedAt: '2026-07-06T04:01:00.000Z', idempotencyKey: 'cleanup-hourly-202607060400' });
+    expect(JSON.parse(String(nextRun['applik8s-jobs.json']))['cleanup-hourly']).toMatchObject({ phase: 'Progressing', observedGeneration: 12, idempotencyKey: 'cleanup-hourly-202607060500' });
+    expect(JSON.parse(String(nextRun['history.json']))['cleanup-hourly']).toEqual([
+      expect.objectContaining({ phase: 'Complete', idempotencyKey: 'cleanup-hourly-202607060400' }),
+      expect.objectContaining({ phase: 'Progressing', idempotencyKey: 'cleanup-hourly-202607060500' }),
+    ]);
+  });
+
+  it('recovers retained generated-job state from status.json after status-store restart or old data shape', () => {
+    const recovered = mergeGeneratedJobStatusConfigMapData({
+      existingData: {
+        'status.json': JSON.stringify({ applik8s: { jobs: { migration: { phase: 'Complete', observedGeneration: 9, idempotencyKey: 'migration-9', retryCount: 0 } } } }),
+        updatedAt: '2026-07-06T06:00:00.000Z',
+      },
+      observedAt: '2026-07-06T06:05:00.000Z',
+      statusPatch: { applik8s: { jobs: { repair: { phase: 'Progressing', observedGeneration: 1, idempotencyKey: 'repair-1', retryCount: 0 } } } },
+    });
+    const completedConflict = mergeGeneratedJobStatusConfigMapData({
+      existingData: {
+        'status.json': JSON.stringify({ applik8s: { jobs: { migration: { phase: 'Complete', observedGeneration: 9, idempotencyKey: 'migration-9', retryCount: 0 } } } }),
+      },
+      observedAt: '2026-07-06T06:06:00.000Z',
+      statusPatch: { applik8s: { jobs: { migration: { phase: 'Failed', observedGeneration: 9, idempotencyKey: 'migration-9', retryCount: 1 } } } },
+    });
+
+    expect(JSON.parse(String(recovered['applik8s-jobs.json']))).toMatchObject({
+      migration: { phase: 'Complete', idempotencyKey: 'migration-9' },
+      repair: { phase: 'Progressing', idempotencyKey: 'repair-1' },
+    });
+    expect(JSON.parse(String(recovered['status.json'])).applik8s.jobs).toMatchObject({
+      migration: { phase: 'Complete' },
+      repair: { phase: 'Progressing' },
+    });
+    expect(JSON.parse(String(completedConflict['applik8s-jobs.json'])).migration).toMatchObject({ phase: 'Complete', idempotencyKey: 'migration-9' });
+    expect(JSON.parse(String(completedConflict['conflicts.json'])).migration).toEqual([
+      expect.objectContaining({ reason: 'CompletedIdempotencyKeyRetained', rejected: expect.objectContaining({ phase: 'Failed' }) }),
+    ]);
+  });
+
+  it('retries generated-job status ConfigMap writes on resourceVersion conflicts and preserves merged status', async () => {
+    const diagnostics: Readonly<Record<string, unknown>>[] = [];
+    const patches: { readonly metadata?: { readonly resourceVersion: string }; readonly data: Readonly<Record<string, string>> }[] = [];
+    let reads = 0;
+    const result = await patchGeneratedJobStatusConfigMapData({
+      concurrency: applicationGeneratedStatusConcurrencyContract(),
+      statusPatch: { applik8s: { jobs: { repair: { phase: 'Progressing', observedGeneration: 2, idempotencyKey: 'repair-2', retryCount: 0 } } } },
+      observedAt: () => `2026-07-06T03:00:0${reads}.000Z`,
+      diagnostic: (event) => diagnostics.push(event),
+      isConflict: (error) => error instanceof Error && error.message.includes('HTTP 409'),
+      read: async () => {
+        reads += 1;
+        return reads === 1
+          ? { data: {}, resourceVersion: 'rv-1' }
+          : { data: { 'applik8s-jobs.json': JSON.stringify({ cleanup: { phase: 'Complete', observedGeneration: 1, idempotencyKey: 'cleanup-1', retryCount: 0 } }) }, resourceVersion: 'rv-2' };
+      },
+      patch: async (payload) => {
+        patches.push(payload);
+        if (patches.length === 1) {
+          throw new Error('HTTP 409 conflict');
+        }
+      },
+    });
+
+    expect(result.attempts).toBe(2);
+    expect(patches.map((patch) => patch.metadata?.resourceVersion)).toEqual(['rv-1', 'rv-2']);
+    expect(JSON.parse(String(patches[1]?.data['applik8s-jobs.json']))).toMatchObject({ cleanup: { phase: 'Complete' }, repair: { phase: 'Progressing' } });
+    expect(diagnostics).toEqual([
+      expect.objectContaining({ event: 'applik8s-job-status-reconciler-status-store-conflict-retry', attempt: 1 }),
+      expect.objectContaining({ event: 'applik8s-job-status-reconciler-status-store-merged', attempt: 2, acceptedUpdates: 1, retainedJobs: 2 }),
+    ]);
+  });
+
+  it('fails closed and reports retry exhaustion when generated-job status ConfigMap conflicts persist', async () => {
+    const diagnostics: Readonly<Record<string, unknown>>[] = [];
+    const concurrency = applicationGeneratedStatusConcurrencyContract();
+    let patches = 0;
+    await expect(patchGeneratedJobStatusConfigMapData({
+      concurrency,
+      statusPatch: { applik8s: { jobs: { repair: { phase: 'Progressing', observedGeneration: 2, idempotencyKey: 'repair-2', retryCount: 0 } } } },
+      diagnostic: (event) => diagnostics.push(event),
+      isConflict: (error) => error instanceof Error && error.message.includes('HTTP 409'),
+      read: async () => ({ data: {}, resourceVersion: `rv-${patches + 1}` }),
+      patch: async () => {
+        patches += 1;
+        throw new Error('HTTP 409 conflict');
+      },
+    })).rejects.toThrow('HTTP 409 conflict');
+
+    expect(patches).toBe(concurrency.maxAttempts);
+    expect(diagnostics.filter((event) => event.event === concurrency.retryDiagnostic)).toHaveLength(concurrency.maxAttempts - 1);
+    expect(diagnostics.at(-1)).toMatchObject({ event: concurrency.retryExhaustedDiagnostic, severity: 'error', attempt: concurrency.maxAttempts, maxAttempts: concurrency.maxAttempts });
+  });
+
+  it('writes durable generated-job status before diagnosing best-effort app status patch failure', async () => {
+    const diagnostics: Readonly<Record<string, unknown>>[] = [];
+    const operations: string[] = [];
+    const result = await persistGeneratedJobStatusWithDurableFallback({
+      concurrency: applicationGeneratedStatusConcurrencyContract(),
+      statusPatch: { applik8s: { jobs: { migration: { phase: 'Complete', observedGeneration: 4, idempotencyKey: 'migration-4', retryCount: 0 } } } },
+      diagnostic: (event) => diagnostics.push(event),
+      isConflict: () => false,
+      read: async () => ({ data: {}, resourceVersion: 'rv-1' }),
+      patch: async () => {
+        operations.push('status-configmap');
+      },
+      patchApplicationStatus: async () => {
+        operations.push('app-status');
+        throw new Error('status.applik8s pruned');
+      },
+    });
+
+    expect(result.appStatus).toBe('failed');
+    expect(result.statusStore.metrics).toMatchObject({ acceptedUpdates: 1, retainedJobs: 1 });
+    expect(operations).toEqual(['status-configmap', 'app-status']);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: 'applik8s-job-status-reconciler-status-store-merged' }),
+      expect.objectContaining({ event: 'applik8s-job-status-reconciler-app-status-error', durableFallback: 'generatedStatusConfigMap' }),
+    ]));
+  });
+
+  it('caps generated-job status history and conflict diagnostics to release-bounded retention', () => {
+    let historyData: Readonly<Record<string, string>> | undefined;
+    for (let observedGeneration = 1; observedGeneration <= 25; observedGeneration += 1) {
+      historyData = mergeGeneratedJobStatusConfigMapData({
+        ...(historyData ? { existingData: historyData } : {}),
+        observedAt: `2026-07-06T00:${String(observedGeneration).padStart(2, '0')}:00.000Z`,
+        statusPatch: {
+          applik8s: {
+            jobs: {
+              cleanup: { phase: 'Progressing', observedGeneration, idempotencyKey: `cleanup-${observedGeneration}`, retryCount: observedGeneration },
+            },
+          },
+        },
+      });
+    }
+
+    const retainedHistory = JSON.parse(String(historyData?.['history.json'])).cleanup;
+    expect(retainedHistory).toHaveLength(20);
+    expect(retainedHistory[0]).toMatchObject({ observedGeneration: 6, idempotencyKey: 'cleanup-6' });
+    expect(retainedHistory[19]).toMatchObject({ observedGeneration: 25, idempotencyKey: 'cleanup-25' });
+
+    let conflictData = mergeGeneratedJobStatusConfigMapData({
+      observedAt: '2026-07-06T01:00:00.000Z',
+      statusPatch: { applik8s: { jobs: { repair: { phase: 'Progressing', observedGeneration: 7, idempotencyKey: 'repair-0', retryCount: 0 } } } },
+    });
+    for (let attempt = 1; attempt <= 25; attempt += 1) {
+      conflictData = mergeGeneratedJobStatusConfigMapData({
+        existingData: conflictData,
+        observedAt: `2026-07-06T01:${String(attempt).padStart(2, '0')}:00.000Z`,
+        statusPatch: {
+          applik8s: {
+            jobs: {
+              repair: { phase: 'Progressing', observedGeneration: 7, idempotencyKey: `repair-${attempt}`, retryCount: attempt },
+            },
+          },
+        },
+      });
+    }
+
+    const retainedConflicts = JSON.parse(String(conflictData['conflicts.json'])).repair;
+    expect(retainedConflicts).toHaveLength(20);
+    expect(retainedConflicts[0]).toMatchObject({ reason: 'ConcurrentObservationAccepted', accepted: expect.objectContaining({ idempotencyKey: 'repair-6' }) });
+    expect(retainedConflicts[19]).toMatchObject({ reason: 'ConcurrentObservationAccepted', accepted: expect.objectContaining({ idempotencyKey: 'repair-25' }) });
+  });
+
+  it('emits one durable status reconciler for multiple generated Jobs and CronJobs with runtime-owned status data', () => {
+    const composition = sdk.kubernetesComposition({
+      name: 'maintenance-jobs-app',
+      apiVersion: 'maintenance.applik8s.dev/v1alpha1',
+      kind: 'MaintenanceJobsApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      const repair = app.job('repair accounts', { namespace: 'maintenance', taskKind: 'repair', image: 'busybox:1.36' });
+      const cleanup = app.schedule('cleanup accounts', { namespace: 'maintenance', taskKind: 'cleanup', cron: '*/15 * * * *', timezone: 'UTC', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+      expect(repair.statusPath).toBe('status.applik8s.jobs.repair-accounts');
+      expect(cleanup.statusPath).toBe('status.applik8s.jobs.cleanup-accounts');
+      return { ready: true };
+    });
+
+    expect(composition.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', metadata: expect.objectContaining({ name: 'repair-accounts', namespace: 'maintenance' }) }),
+      expect.objectContaining({ apiVersion: 'batch/v1', kind: 'CronJob', metadata: expect.objectContaining({ name: 'cleanup-accounts', namespace: 'maintenance', annotations: { 'applik8s.dev/missed-run-policy': 'failClosed' } }) }),
+    ]));
+    const statusRuntime = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'maintenance-jobs-app-status-reconciler-runtime');
+    expect(statusRuntime).toMatchObject({
+      data: {
+        'status-runtime.json': expect.stringContaining('repair-accounts'),
+        'runtime__job-runner.mjs': expect.stringContaining('history.json'),
+      },
+    });
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('conflicts.json');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('StaleObservedGeneration');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('CompletedIdempotencyKeyRetained');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('ConcurrentObservationAccepted');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('metadata: { resourceVersion: existing.resourceVersion }');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('statusStoreConcurrency');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('attempt <= statusStoreConcurrency.maxAttempts');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('!isKubernetesConflict(error) || attempt === statusStoreConcurrency.maxAttempts');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('applik8s-job-status-reconciler-status-store-conflict-retry');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('applik8s-job-status-reconciler-status-store-conflict-exhausted');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('applik8s-job-status-reconciler-status-store-merged');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('acceptedUpdates');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('rejectedUpdates');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('conflictUpdates');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('statusPatchWithMergedGeneratedJobs');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain('parseGeneratedStatusJobs(existingData)');
+    expect(String(statusRuntime?.data?.['runtime__job-runner.mjs'] ?? '')).toContain("status?.applik8s?.jobs");
+    const statusRuntimeConfig = JSON.parse(String(statusRuntime?.data?.['status-runtime.json'] ?? '{}'));
+    expect(statusRuntimeConfig.statusOwnership).toMatchObject({
+      durableAuthority: 'generatedStatusConfigMap',
+      releasePolicy: 'kroStatusProjectionRequired',
+      applicationStatusProjection: 'requiredAuthoritative',
+      appStatusSchemaContract: { ownership: 'kroStatusProjection' },
+      concurrency: { maxAttempts: 5, retryExhaustedDiagnostic: 'applik8s-job-status-reconciler-status-store-conflict-exhausted' },
+    });
+    expect(statusRuntimeConfig.targets).toEqual([
+      expect.objectContaining({ jobName: 'repair-accounts', jobKind: 'Job', materialization: 'kubernetes-job' }),
+      expect.objectContaining({ jobName: 'cleanup-accounts', jobKind: 'CronJob', materialization: 'kubernetes-cronjob' }),
+    ]);
+    const statusStore = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'maintenance-jobs-app-status-reconciler-status');
+    expect(statusStore).toBeDefined();
+    expect(Reflect.get(statusStore ?? {}, '__externalRef')).toBe(true);
+    expect(applicationGraphFor(composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'job.repair-accounts', kind: 'job', runtime: expect.objectContaining({ statusLifecycle: expect.objectContaining({ multiJob: 'appLevelReconciler' }) }) }),
+      expect.objectContaining({ id: 'job.cleanup-accounts', kind: 'job', schedule: expect.objectContaining({ cron: '*/15 * * * *', missedRunPolicy: 'failClosed' }), runtime: expect.objectContaining({ statusLifecycle: expect.objectContaining({ cronJob: 'latestRunAndHistory' }) }) }),
+    ]));
   });
 
   it('supports composition-scoped app authoring with explicit operator and server registration', () => {
@@ -1025,15 +1826,22 @@ describe('integrated TypeKro package surface', () => {
     expect(JSON.stringify(sourceConfigMap)).toContain('runtime.mjs');
     expect(JSON.stringify(sourceConfigMap)).toContain('routes.mjs');
     expect(JSON.stringify(sourceConfigMap)).toContain('routes.manifest.json');
+    expect(JSON.stringify(sourceConfigMap)).toContain('runtime.bundle.json');
+    expect(sourceConfigMap?.data?.['runtime.bundle.json']).toContain('"packageManagerAtStartup": false');
     expect(JSON.stringify(sourceConfigMap)).toContain('route-get-root-0.mjs');
     expect(JSON.stringify(sourceConfigMap)).toContain('route-post-notes-1.mjs');
     expect(JSON.stringify(sourceConfigMap)).not.toContain('Function(');
     expect(JSON.stringify(sourceConfigMap)).toContain('applik8s-server-route-failure');
+    expect(JSON.stringify(sourceConfigMap)).toContain('context.req.param()');
     expect(JSON.stringify(sourceConfigMap)).toContain('get-root-0');
     expect(JSON.stringify(sourceConfigMap)).toContain('post-notes-1');
     expect(JSON.stringify(sourceConfigMap)).toContain('queryValkeyIndex');
     expect(JSON.stringify(sourceConfigMap)).toContain('ZREVRANGE');
     expect(JSON.stringify(sourceConfigMap)).toContain('web-index.default.svc.cluster.local');
+    const emittedWebDeployment = composition.resources.find((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'web');
+    expect(JSON.stringify(emittedWebDeployment)).not.toContain('npm install');
+    expect(JSON.stringify(emittedWebDeployment)).toContain('node');
+    expect(JSON.stringify(emittedWebDeployment)).toContain('/app/server.mjs');
     expect(JSON.stringify(indexerSourceConfigMap)).toContain('syncAllIndexes');
     expect(JSON.stringify(indexerSourceConfigMap)).toContain('startWatchLoop');
     expect(JSON.stringify(indexerSourceConfigMap)).toContain('watchIndex');
@@ -1197,12 +2005,148 @@ describe('integrated TypeKro package surface', () => {
     expect(graph?.compatibility.postV3Surfaces).toContain('workload-movement-operator');
     expect(graph?.compatibility.labels).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'ApplicationGraph', surface: 'documentedInternalContract' }),
-      expect.objectContaining({ name: 'app.model', surface: 'stablePublicApi' }),
-      expect.objectContaining({ name: 'provider.ModelStore', surface: 'stablePublicApi' }),
+      expect.objectContaining({ name: 'app.model', surface: 'stablePublicApi', implementation: 'implemented' }),
+      expect.objectContaining({ name: 'provider.ModelStore', surface: 'stablePublicApi', implementation: 'implemented' }),
+      expect.objectContaining({ name: 'provider.Queue', surface: 'stablePublicApi', implementation: 'implemented' }),
     ]));
+    const providerImplementationByName = new Map(graph?.compatibility.labels.filter((label) => label.name.startsWith('provider.')).map((label) => [label.name, label.implementation]));
+    expect(providerImplementationByName).toEqual(new Map([
+      ['provider.CounterStore', 'implemented'],
+      ['provider.CredentialStore', 'implemented'],
+      ['provider.EventSource', 'implemented'],
+      ['provider.HttpExposure', 'implemented'],
+      ['provider.IndexStore', 'implemented'],
+      ['provider.ModelStore', 'implemented'],
+      ['provider.ObjectStorage', 'implemented'],
+      ['provider.Queue', 'implemented'],
+      ['provider.Secret', 'implemented'],
+    ]));
+    expect(graph?.compatibility.labels.filter((label) => label.name.startsWith('provider.')).every((label) => label.implementation === 'implemented')).toBe(true);
     const stableLabels = new Set(graph?.compatibility.labels.filter((label) => label.surface === 'stablePublicApi').map((label) => label.name));
     expect(graph?.compatibility.stablePublicApis.every((api) => stableLabels.has(api))).toBe(true);
-    expect(graph?.compatibility.stablePublicApis).not.toEqual(expect.arrayContaining(['provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.CredentialStore']));
+    expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.CredentialStore']));
+  });
+
+  it('keeps the emitted v0.3 app graph IR versioned and golden-stable for public substrate nodes', () => {
+    const AccountEntity = entity('Account', {
+      spec: type({ email: 'string', displayName: 'string' }),
+      status: type({ phase: 'string?' }),
+    });
+    const composition = sdk.kubernetesComposition({
+      name: 'accounts-golden-graph',
+      apiVersion: 'accounts.applik8s.dev/v1alpha1',
+      kind: 'AccountsGoldenGraph',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      const store = ModelStore.postgres({ name: 'accounts-db', database: 'accounts', migrations: ModelStore.migrations.generatedJob({ jobName: 'accounts-model-migration' }) });
+      const Account = app.model(AccountEntity, { store, schema: { identity: ['id'], constraints: [{ name: 'account-email-unique', kind: 'unique', fields: ['email'] }], indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }], transactions: 'supported', retention: { mode: 'retain' } } });
+      app.server('admin', {}, (server) => {
+        server.get('/accounts/:id', async (request) => Account.get({ id: request.query.id ?? '' }));
+      });
+      app.job('repair accounts', { taskKind: 'repair' });
+      app.schedule('cleanup accounts', { taskKind: 'cleanup', cron: '0 3 * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
+      return { ready: true };
+    });
+    const graph = applicationGraphFor(composition);
+    if (!graph) {
+      throw new Error('expected generated application graph');
+    }
+    const serialized = serializeApplicationGraph(graph);
+    const nodesById = new Map(graph.nodes.map((node) => [node.id, node]));
+
+    expect(graph).toMatchObject({ apiVersion: 'applik8s.appGraph/v1alpha1', kind: 'ApplicationGraph', metadata: { name: 'accounts-golden-graph' } });
+    expect(validateApplicationGraphCompatibilityPolicy(graph)).toEqual([]);
+    expect(serialized).toContain('"apiVersion":"applik8s.appGraph/v1alpha1"');
+    expect(graph.nodes.map((node) => node.id)).toEqual([
+      'job.accounts-model-migration',
+      'job.cleanup-accounts',
+      'job.repair-accounts',
+      'model.account',
+      'provider.counter-store',
+      'provider.credential-store',
+      'provider.event-source',
+      'provider.http-exposure',
+      'provider.index-store',
+      'provider.model-store',
+      'provider.object-storage',
+      'provider.queue',
+      'provider.secret',
+      'server.admin',
+    ]);
+    expect(nodesById.get('job.cleanup-accounts')).toMatchObject({ id: 'job.cleanup-accounts', kind: 'job', schedule: expect.objectContaining({ cron: '0 3 * * *' }) });
+    expect(nodesById.get('job.repair-accounts')).toMatchObject({ id: 'job.repair-accounts', kind: 'job', observability: expect.objectContaining({ diagnosticsArtifact: { kind: 'jobDiagnostics', name: 'repair-accounts-diagnostics' } }) });
+    expect(nodesById.get('model.account')).toMatchObject({ id: 'model.account', kind: 'model', materialization: expect.objectContaining({ mode: 'providerBacked', provider: { interface: 'ModelStore', nodeId: 'provider.model-store' } }) });
+    expect(nodesById.get('provider.model-store')).toMatchObject({ id: 'provider.model-store', kind: 'provider', interface: 'ModelStore', implementation: 'postgres' });
+    expect(nodesById.get('server.admin')).toMatchObject({ id: 'server.admin', kind: 'server', observability: expect.objectContaining({ health: { mode: 'http', readinessPath: '/-/healthz', livenessPath: '/-/healthz' } }) });
+    expect(graph?.edges.map((edge) => `${edge.from.nodeId}:${edge.relationship}:${edge.to.nodeId}`)).toEqual([
+      'job.accounts-model-migration:dependsOn:model.account',
+      'provider.model-store:provides:model.account',
+    ]);
+    expect(graph?.compatibility.stablePublicApis).toEqual([
+      'Resource.increment',
+      'Resource.index',
+      'app.aggregate',
+      'app.config',
+      'app.crd',
+      'app.defaults',
+      'app.expose',
+      'app.http',
+      'app.job',
+      'app.model',
+      'app.provide',
+      'app.reconcile',
+      'app.resource',
+      'app.schedule',
+      'app.secret',
+      'app.server',
+      'app.storage.postgres',
+      'provider.CounterStore',
+      'provider.CredentialStore',
+      'provider.EventSource',
+      'provider.HttpExposure',
+      'provider.IndexStore',
+      'provider.ModelStore',
+      'provider.ObjectStorage',
+      'provider.Queue',
+      'provider.Secret',
+      'sdk.kubernetesComposition',
+    ]);
+  });
+
+  it('fails fast when aggregate callbacks capture unsupported closure values', () => {
+    const Note = sdk.crd({
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'Note',
+      spec: type({ message: 'string' }),
+      status: type({ count: 'number?' }),
+    });
+    const byBook = Note.index('byBook', {
+      partitionBy: label('notes.applik8s.dev/book'),
+      orderBy: metadata.creationTimestamp.desc(),
+    });
+    const increment = 1;
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-app-aggregate-closure-capture',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesAppAggregateClosureCapture',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.defaults({ indexes: 'valkey' });
+      app.aggregate('noteStats', {
+        source: byBook,
+        target: {
+          resource: Note,
+          name: 'main',
+          status: (stats: { readonly count: number }) => ({ count: stats.count }),
+        },
+        initial: { count: 0 },
+        reduce: (stats: { readonly count: number }) => ({ count: stats.count + increment }),
+      });
+      return { ready: true };
+    })).toThrow(/app\.aggregate noteStats reduce references module-scope identifier\(s\) that are not available inside the generated runtime: increment/);
   });
 
   it('infers app.server resource CRUD RBAC from typed resource actions', () => {
@@ -1353,7 +2297,7 @@ describe('integrated TypeKro package surface', () => {
         server.get('/', async () => ({ message: prefix }));
       });
       return { ready: true };
-    })).toThrow(/app\.server route GET \/ cannot serialize closure identifier\(s\): prefix/);
+    })).toThrow(/app\.server route GET \/.*references module-scope identifier\(s\) that are not available inside the generated runtime: prefix/);
   });
 
   it('allows generated server routes to return Web Response objects', () => {
@@ -1546,10 +2490,10 @@ describe('integrated TypeKro package surface', () => {
         server.get('/config', async () => ({ label: label(10) }));
       });
       return { ready: true };
-    })).toThrow(/app\.server capture "label" cannot serialize closure identifier\(s\): prefix/);
+    })).toThrow(/app\.server capture "label" references module-scope identifier\(s\) that are not available inside the generated runtime: prefix/);
   });
 
-  it('infers server list RBAC for uncached request-path index queries', () => {
+  it('uses the default Valkey IndexStore for request-path index queries', () => {
     const Note = sdk.crd({
       apiVersion: 'notes.applik8s.dev/v1alpha1',
       kind: 'Note',
@@ -1576,7 +2520,9 @@ describe('integrated TypeKro package surface', () => {
     });
 
     const role = composition.resources.find((resource) => resource.kind === 'Role' && resource.metadata.name === 'web');
-    expect(role).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['get', 'list'] }] });
+    const defaultValkey = composition.resources.find((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'web-index');
+    expect(role).toBeUndefined();
+    expect(defaultValkey).toMatchObject({ metadata: { name: 'web-index' } });
   });
 
   it('infers server RBAC from supported route method aliases without scanning strings', () => {
@@ -2264,5 +3210,23 @@ function noteObject(name: string, phase: string, creationTimestamp: string): obj
     },
     spec: { message: `${name} says hi` },
     status: { phase },
+  };
+}
+
+function artifactOnlyOperationTarget(options: { readonly apply?: boolean; readonly dryRun?: boolean } = {}): OperationTarget<{ readonly ready: boolean }> {
+  const unsupported = <T>(): Result<T> => ({
+    ok: false,
+    error: { code: 'LIFECYCLE_UNSAFE', message: 'adapter path must not run', severity: 'error', context: {}, recovery: { summary: 'Use operationTargetArtifacts.' } },
+  });
+  const operationTargetArtifacts = {
+    ...(options.apply === false ? {} : { applyPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-apply' } } }] } }),
+    deletePlan: { operations: [{ kind: 'delete', ref: { apiVersion: 'v1', kind: 'ConfigMap', name: 'artifact-apply' } }] },
+    ...(options.dryRun === false ? {} : { dryRunPlan: { operations: [{ kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'artifact-dry-run' } } }] } }),
+  };
+  return {
+    targetKind: 'operationTarget',
+    adapter: { renderApply: unsupported, renderDelete: unsupported, inferRbac: unsupported },
+    // typecast: this fixture intentionally omits applyPlan/dryRunPlan in negative cases to exercise generated binding runtime validation.
+    operationTargetArtifacts: operationTargetArtifacts as never,
   };
 }
