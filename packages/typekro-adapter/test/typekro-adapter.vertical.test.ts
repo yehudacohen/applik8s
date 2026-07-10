@@ -241,6 +241,9 @@ describe('TypeKro adapter operation targets', () => {
       });
       expect(composition.factory('direct')).toBeTruthy();
       expect(composition.factory('kro')).toBeTruthy();
+      const kroYaml = composition.factory('kro').toYaml();
+      expect(kroYaml).toContain('replicas: integer');
+      expect(kroYaml).toContain('has(schema.spec.replicas) ? schema.spec.replicas : 1');
     }
   });
 

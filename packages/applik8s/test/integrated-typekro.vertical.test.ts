@@ -1,21 +1,21 @@
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
-import { app, applicationGraphFor, cel, CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ModelStore, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, sdk, Secret, typeKro } from '@applik8s/applik8s';
 import type { ApplicationModelBinding, ApplicationModelStoreProvider, ApplicationProviderToken } from '@applik8s/applik8s';
+import { app, applicationGraphFor, CounterStore, CredentialStore, cel, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ModelStore, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, Secret, sdk, typeKro } from '@applik8s/applik8s';
 import type { ApplicationRuntimeModuleInterfaceContract, ApplicationRuntimeModuleManifestContract, OperationTarget, Result } from '@applik8s/core';
 import { serializeApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationJobStatusLifecycleContract, validateApplicationModelStoreSemanticsContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract } from '@applik8s/core';
 import { transformSync } from 'esbuild';
 import { describe, expect, it } from 'vitest';
-import { entity, field, label, metadata, type } from '../src/dsl.js';
-import * as kubernetesFactories from '../src/factories/kubernetes.js';
-import { cnpg, simple, valkey } from '../src/factories.js';
-import { generatedRuntimeModuleBundle } from '../src/application-runtime-module-bundle.js';
-import { generatedApplicationRuntimeModuleKinds, generatedApplicationRuntimeModuleManifest } from '../src/application-runtime-module-manifest.js';
-import { validateGeneratedServerRuntimeBundleContract, type GeneratedServerRuntimeBundleContract } from '../src/application-server-runtime-bundle.js';
-import { generatedRuntimeModuleSource, generatedRuntimeModuleSourcePreamble } from '../src/application-runtime-module-sources.js';
 import { mergeGeneratedJobStatusConfigMapData, patchGeneratedJobStatusConfigMapData, persistGeneratedJobStatusWithDurableFallback, summarizeGeneratedJobStatusConfigMapMerge } from '../src/application-generated-job-status.js';
 import { applicationGeneratedStatusConcurrencyContract } from '../src/application-jobs.js';
+import { generatedRuntimeModuleBundle } from '../src/application-runtime-module-bundle.js';
+import { generatedApplicationRuntimeModuleKinds, generatedApplicationRuntimeModuleManifest } from '../src/application-runtime-module-manifest.js';
+import { generatedRuntimeModuleSource, generatedRuntimeModuleSourcePreamble } from '../src/application-runtime-module-sources.js';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
+import { type GeneratedServerRuntimeBundleContract, validateGeneratedServerRuntimeBundleContract } from '../src/application-server-runtime-bundle.js';
+import { entity, field, label, metadata, type } from '../src/dsl.js';
+import * as kubernetesFactories from '../src/factories/kubernetes.js';
+import { cnpg, rook, simple, valkey } from '../src/factories.js';
 import { decoratedRouteMessage } from './fixtures/route-helpers.js';
 
 interface GeneratedRouteHandler {
@@ -2722,7 +2722,22 @@ describe('integrated TypeKro package surface', () => {
     expect(cnpg.cluster).toBeTypeOf('function');
     expect(simple.Deployment).toBeTypeOf('function');
     expect(valkey.valkey).toBeTypeOf('function');
+    expect(valkey.valkeyBootstrap).toBeDefined();
+    expect(rook.rookCephOperatorBootstrap).toBeDefined();
+    expect(rook.rookObjectStorageClaim).toBeDefined();
     expect(kubernetesFactories).toBeTypeOf('object');
+  });
+
+  it('consumes the released TypeKro production provider surface', async () => {
+    const workspacePackage = JSON.parse(await readFile('package.json', 'utf8'));
+    const applik8sPackage = JSON.parse(await readFile('packages/applik8s/package.json', 'utf8'));
+    const adapterPackage = JSON.parse(await readFile('packages/typekro-adapter/package.json', 'utf8'));
+    const installedPackage = JSON.parse(await readFile('node_modules/typekro/package.json', 'utf8'));
+
+    expect(workspacePackage.dependencies.typekro).toBe('^0.25.0');
+    expect(applik8sPackage.dependencies.typekro).toBe('^0.25.0');
+    expect(adapterPackage.dependencies.typekro).toBe('^0.25.0');
+    expect(installedPackage.version).toBe('0.25.0');
   });
 
   it('builds generated app infrastructure on existing TypeKro Kubernetes factories', async () => {

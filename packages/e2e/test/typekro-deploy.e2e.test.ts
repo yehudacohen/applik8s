@@ -4,13 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-
 import { createCompilerPipeline } from '@applik8s/compiler';
 import type { OperatorDefinition, OperatorManifest } from '@applik8s/core';
 import { asComposition } from '@applik8s/typekro-adapter';
 import { imageRef } from '@applik8s/typetainer';
 import { typeKroRuntimeBootstrap } from 'typekro';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 const execFileAsync = promisify(execFile);
 const expectedContext = process.env.APPLIK8S_E2E_CONTEXT;
@@ -145,8 +144,7 @@ async function buildOperatorImages(bundle: OperatorManifest): Promise<void> {
 }
 
 async function buildWithTypeKroContainerUtility(options: Record<string, unknown>): Promise<void> {
-  const buildModule = pathToFileURL(join(process.cwd(), 'node_modules/.bun/typekro@file+..+typekro+e8493996db3ef19f/node_modules/typekro/src/core/containers/index.ts')).href;
-  const script = `const options = JSON.parse(process.env.TYPEKRO_BUILD_OPTIONS ?? '{}'); const { buildContainer } = await import(${JSON.stringify(buildModule)}); await buildContainer(options);`;
+  const script = `const options = JSON.parse(process.env.TYPEKRO_BUILD_OPTIONS ?? '{}'); const { buildContainer } = await import('typekro/containers'); await buildContainer(options);`;
   await execFileAsync('bun', ['--eval', script], {
     env: { ...process.env, TYPEKRO_BUILD_OPTIONS: JSON.stringify(options) },
     maxBuffer: 20 * 1024 * 1024,

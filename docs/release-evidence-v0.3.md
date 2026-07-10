@@ -32,18 +32,18 @@ bun run test:v03:local
 
 This gate is wired into CI and release evidence workflows and does not mutate a live cluster.
 
-Captured for the current release-candidate pass on 2026-07-09:
+Captured for the current release-candidate pass on 2026-07-10:
 
 ```sh
 bun run check:v03:local
 ```
 
-Current-tree local candidate pass on 2026-07-09:
+Current-tree local candidate pass on 2026-07-10:
 
 - `tsc --noEmit --project tsconfig.json`: passed
 - `biome lint .`: checked 150 files, no fixes applied; existing GuestBook style warnings were reported
 - runtime-contract, docs-consistency, release-readiness, typecast, static-import, and test-taxonomy checks: passed
-- `test:v03:contracts`: 4 files passed, 134 tests passed, 8 skipped
+- `test:v03:contracts`: 4 files passed, 135 tests passed, 8 skipped
 - `test:v03:generated`: 1 file passed, 2 offline tests passed, 2 live tests skipped
 - `test:character`: 2 files passed, 5 skipped, 15 tests passed, 78 todo
 
@@ -79,7 +79,7 @@ APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL=<postgres-url> bun run test:mode
 
 The selected context is mutated. Do not use a shared or production cluster.
 
-Captured for the current release-candidate pass on 2026-07-09:
+Captured for the current release-candidate pass on 2026-07-10:
 
 ```sh
 bun run test:v03:live:orbstack
@@ -93,7 +93,19 @@ Current-tree live candidate pass completed against `orbstack`:
 - `packages/e2e/test/typekro-scoped-listener.e2e.test.ts`: 6 tests passed
 - Overall live summary: 4 files passed, 12 tests passed
 
-The final single-command pass completed in 130.45 seconds. Tenant Platform assertions read migration completion from the application CR's KRO-projected `status.applik8s.jobs` path; the durable ConfigMap is checked separately for retained history.
+The final single-command pass completed in 140.76 seconds. Tenant Platform assertions read migration completion from the application CR's KRO-projected `status.applik8s.jobs` path; the durable ConfigMap is checked separately for retained history.
+
+TypeKro 0.25 direct/KRO compatibility was also exercised explicitly against `orbstack`:
+
+```sh
+APPLIK8S_E2E=1 APPLIK8S_E2E_TYPEKRO=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/typekro-deploy.e2e.test.ts
+```
+
+- direct factory deployment and reconciliation: passed
+- KRO ResourceGraphDefinition/instance deployment and reconciliation: passed
+- Overall compatibility summary: 1 file passed, 2 tests passed in 55.62 seconds
+
+The TypeKro 0.25 pass also validates the public `typekro/containers` export and integer replica schema. This prevents KRO CEL from mixing `float` and `int` branches in the optional-replica fallback.
 
 ## Generated Artifact Evidence
 
@@ -138,7 +150,7 @@ This is the intentional v0.3 support boundary, not a claim of signed artifacts o
 
 ## Package Publish Dry-Run
 
-Captured for the current release-candidate pass on 2026-07-09:
+Captured for the current release-candidate pass on 2026-07-10:
 
 ```sh
 bun run check:publish-dry-run
@@ -146,14 +158,14 @@ bun run check:publish-dry-run
 
 Publish dry-run output:
 
-- `@applik8s/applik8s`: `applik8s-applik8s-0.3.0.tgz`, 39 files, 449915 bytes unpacked
+- `@applik8s/applik8s`: `applik8s-applik8s-0.3.0.tgz`, 40 files, 449983 bytes unpacked
 - `@applik8s/core`: `applik8s-core-0.3.0.tgz`, 13 files, 195385 bytes unpacked
 - `@applik8s/sdk`: `applik8s-sdk-0.3.0.tgz`, 7 files, 97715 bytes unpacked
 - `@applik8s/compiler`: `applik8s-compiler-0.3.0.tgz`, 16 files, 201839 bytes unpacked
 - `@applik8s/runtime-contract`: `applik8s-runtime-contract-0.3.0.tgz`, 2 files, 13868 bytes unpacked
 - `@applik8s/runtime`: `applik8s-runtime-0.3.0.tgz`, 4 files, 4809 bytes unpacked
 - `@applik8s/testing`: `applik8s-testing-0.3.0.tgz`, 5 files, 56472 bytes unpacked
-- `@applik8s/typekro-adapter`: `applik8s-typekro-adapter-0.3.0.tgz`, 5 files, 135772 bytes unpacked
+- `@applik8s/typekro-adapter`: `applik8s-typekro-adapter-0.3.0.tgz`, 5 files, 135780 bytes unpacked
 - `@applik8s/typetainer`: `applik8s-typetainer-0.3.0.tgz`, 2 files, 3270 bytes unpacked
 
 The release package gate also packs all nine packages into a clean temporary consumer tree and bundles imports from all 14 documented public entrypoints:

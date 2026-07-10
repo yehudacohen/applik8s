@@ -12,6 +12,7 @@ v0.3.0 is the infrastructure-from-code substrate-freeze release. It turns the v0
 - Define generated `app.job(...)` and `app.schedule(...)` tasks with a durable runtime-created status ConfigMap, bounded history, conflict diagnostics, and authoritative KRO-owned app-status projection.
 - Use stable operation-target contracts for TypeKro apply/delete and artifact-backed dry-run planning.
 - Use stable TypeKro watch-scope contracts for exact objects, finite sets, label selectors, field selectors, and mixed resource groups; unsupported predicates fail closed.
+- Consume TypeKro 0.25 through the published package, including first-class Valkey operator and Rook/Ceph object-storage factory re-exports.
 - Generate deterministic server bundles with source maps, route manifests, runtime bundle manifests, health checks, route/action diagnostics, and no startup package installation.
 - Declare generated versus external Secret object ownership without claiming externally populated Secret data.
 - Validate packed packages through a clean consumer import smoke test, and exercise imported async `Proxy` plus `fetch` closure bundling through the Rust runtime bridge.
@@ -28,11 +29,11 @@ v0.3.0 is the infrastructure-from-code substrate-freeze release. It turns the v0
 
 ### Maturity Boundary
 
-v0.3 ships one bounded Kubernetes-native default for every native provider interface: Postgres/CNPG models, Valkey indexes, Kubernetes-resource counters and watches, Kubernetes Secret material and credentials, bounded ConfigMap queue/object storage, and Ingress exposure. Users do not need `app.provide(...)` for the golden path; additional cloud and hosted-service adapters remain incremental. KRO owns the root application status projection, while the runtime-created status ConfigMap remains the durable concurrency/history store. Runtime supply-chain posture is metadata-only: generated artifacts declare unsigned/no-SBOM/no-provenance status rather than claiming verification.
+v0.3 ships one bounded Kubernetes-native default for every native provider interface: Postgres/CNPG models, Valkey indexes, Kubernetes-resource counters and watches, Kubernetes Secret material and credentials, bounded ConfigMap queue/object storage, and Ingress exposure. Users do not need `app.provide(...)` for the golden path. TypeKro 0.25's operator-backed Valkey and Rook/Ceph surfaces are available for explicit production-scale infrastructure, where their cluster lifecycle prerequisites remain visible. KRO owns the root application status projection, while the runtime-created status ConfigMap remains the durable concurrency/history store. Runtime supply-chain posture is metadata-only: generated artifacts declare unsigned/no-SBOM/no-provenance status rather than claiming verification.
 
 Not included:
 
-- broad external provider implementations beyond the concrete slices needed to prove stable seams
+- broad external provider catalogs beyond the concrete and explicitly re-exported infrastructure slices
 - generic workflow orchestration beyond Kubernetes-native generated jobs and durable phase/status primitives
 - full Helm, Kustomize, OLM, OCI, SLSA, SBOM, or admission-policy enforcement
 - workload-movement or disaster-recovery product guarantees

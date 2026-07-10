@@ -95,7 +95,7 @@ interface DeploymentSpecProjection {
 
 const installSpecSchema = arktype({
   'namespace?': 'string',
-  'replicas?': 'number',
+  'replicas?': 'number.integer',
   'config?': 'Record<string, unknown>',
 });
 

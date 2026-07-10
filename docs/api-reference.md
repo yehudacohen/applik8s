@@ -144,6 +144,8 @@ The defaults are deliberately bounded: Postgres/CNPG for models; Valkey for inde
 
 “Broad provider implementations” can also mean multiple production-scale adapters behind each contract—for example S3 and GCS, several hosted queues, multiple SQL databases, secret managers, and several gateway choices. v0.3 does not require that catalog: it requires one working zero-configuration default for every native interface. `defaultApplicationProviders` exposes those choices, while `app.defaults(...)` and `app.provide(...)` remain override points.
 
+Applik8s consumes TypeKro 0.25 and re-exports its production Valkey and Rook/Ceph integration surfaces from `@applik8s/applik8s/factories/valkey` and `@applik8s/applik8s/factories/rook`. These are explicit scale-up paths rather than unconditional defaults: the Hyperspike Valkey resource requires its cluster operator, while a Rook `ObjectBucketClaim` requires platform-owned Ceph object-store infrastructure and is intentionally direct-only so KRO does not continuously reapply a controller-mutated claim. Keeping those lifecycle prerequisites explicit preserves the bounded-application contract.
+
 There are two distinct status ownership cases:
 
 - CRDs declared by applik8s admit their status schema, and the Rust host is the authoritative status writer through validated `status` operations. This is the relevant substrate for downstream workload, replica, and failover APIs.

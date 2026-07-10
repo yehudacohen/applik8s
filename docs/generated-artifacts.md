@@ -120,7 +120,9 @@ The proof is intentionally artifact-inspectable:
 
 `examples/guestbook.ts` uses `app.defaults({ indexes: 'valkey' })`, so generated request paths read `GuestBookEntry` pages from the cached `publishedGuestBookEntries` index instead of listing CRDs on every HTTP request. The server also calls `GuestBookPageViewBucket.increment(...)`; generated runtime code buffers those increments, flushes them into per-minute `GuestBookPageViewBucket` CRDs with inferred get/create/patch RBAC, and logs `applik8s-server-counter-flush-failure` if a flush fails. The page-view aggregate watches those buckets and updates `GuestBook.status.pageViewsTotal` and `pageViewsLastMinute` without hot parent patches.
 
-The default generated Valkey backend is a plain Kubernetes `Deployment` plus `Service` using `valkey/valkey:8.1-alpine`. Set the Valkey index backend `provisioner` to `hyperspike` only when the generated client and deployment environment are ready for that CRD-backed topology.
+The default generated Valkey backend is a plain Kubernetes `Deployment` plus `Service` using `valkey/valkey:8.1-alpine`. Set the Valkey index backend `provisioner` to `hyperspike` only when the generated client and deployment environment are ready for that CRD-backed topology. Applik8s also re-exports TypeKro 0.25's `valkeyBootstrap` and Valkey resource factories for explicitly owned operator installations.
+
+For production S3-compatible object storage, import the TypeKro 0.25 Rook surface from `@applik8s/applik8s/factories/rook`. `rookCephOperatorBootstrap` owns the operator installation; `rookObjectStorageClaim` owns an application claim against a platform-provided bucket `StorageClass`. The claim factory is direct-only by design because Rook mutates `ObjectBucketClaim` resources continuously. The bounded ConfigMap object provider remains the zero-configuration v0.3 default.
 
 ## App-Scoped Inference
 
