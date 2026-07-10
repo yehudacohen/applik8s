@@ -25,7 +25,7 @@ try {
     format: 'esm',
     target: 'node22',
     sourcemap: false,
-    external: ['@bytecodealliance/componentize-js', '@kubernetes/client-node', 'arktype', 'esbuild', 'typekro', 'typescript', 'yaml'],
+    external: ['@bytecodealliance/componentize-js', '@kubernetes/client-node', 'arktype', 'esbuild', 'typekro', 'typekro/*', 'typescript', 'yaml'],
     plugins: [workspaceSourcePlugin(cwd)],
   });
 

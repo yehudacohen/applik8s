@@ -821,6 +821,9 @@ async function discoverEntrypointExports(entrypoint: string): Promise<Result<Ent
       nodePaths: [join(process.cwd(), 'node_modules')],
       tsconfigRaw: { compilerOptions: {} },
       outfile: discoveryBundle,
+      banner: {
+        js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);",
+      },
       external: ['applik8s:handler/capabilities', 'applik8s:handler/kubernetes', '@applik8s/compiler', '@applik8s/compiler/*', 'esbuild', 'typekro', 'typekro/*', '@napi-rs/lzma-*', '@oxc-parser/binding-*'],
       plugins: [applik8sWorkspaceSourcePlugin()],
     });
