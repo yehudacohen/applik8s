@@ -105,7 +105,7 @@ APPLIK8S_E2E=1 APPLIK8S_E2E_TYPEKRO=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest 
 - KRO ResourceGraphDefinition/instance deployment and reconciliation: passed
 - Overall compatibility summary: 1 file passed, 2 tests passed in 55.62 seconds
 
-The TypeKro 0.25 pass also validates the public `typekro/containers` export and integer replica schema. This prevents KRO CEL from mixing `float` and `int` branches in the optional-replica fallback.
+The TypeKro 0.25 pass also validates the public `typekro/containers` export and integer replica schema. This prevents KRO CEL from mixing `float` and `int` branches in the optional-replica fallback. Workspace typechecking resolves the published package rather than a sibling TypeKro source checkout, keeping local and clean-CI dependency contracts identical.
 
 ## Generated Artifact Evidence
 

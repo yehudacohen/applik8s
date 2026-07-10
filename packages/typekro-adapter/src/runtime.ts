@@ -5,7 +5,7 @@ import { sdk, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
 import { imageRefString } from '@applik8s/typetainer';
 import type { Type } from 'arktype';
 import { type as arktype } from 'arktype';
-import type { CallableComposition, Enhanced, KroCompatibleType, KubernetesResource, MagicAssignableShape, PublicFactoryOptions, ResourceStatus, SerializationOptions } from 'typekro';
+import type { CallableComposition, Enhanced, KroCompatibleType, KubernetesResource, MagicAssignableShape, PrerequisiteResource, PublicFactoryOptions, ResourceStatus, SerializationOptions } from 'typekro';
 import { createResource, kubernetesComposition as createTypeKroComposition } from 'typekro';
 import { clusterRole as typeKroClusterRole, clusterRoleBinding as typeKroClusterRoleBinding, customResourceDefinition as typeKroCustomResourceDefinition, deployment as typeKroDeployment, role as typeKroRole, roleBinding as typeKroRoleBinding, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import type {
@@ -72,17 +72,6 @@ interface KubernetesManifestResource<TSpec extends object = JsonObject, TStatus 
   readonly roleRef?: JsonObject;
   readonly subjects?: JsonObject[];
 }
-
-type KroPrerequisiteResource =
-  | Enhanced<unknown, unknown>
-  | (KubernetesManifestResource & { readonly scope?: 'cluster' | 'namespaced' });
-
-type PublicFactoryOptionsWithKroPrerequisites = PublicFactoryOptions & {
-  readonly kroPrerequisites?: {
-    readonly resources?: readonly KroPrerequisiteResource[];
-    readonly beforeResourceGraphDefinition?: unknown;
-  };
-};
 
 interface DeploymentStatusProjection {
   readonly availableReplicas: number;
@@ -292,7 +281,7 @@ export function resolveOperatorInstalls<TSpec extends KroCompatibleType, TStatus
 
     const manifests = manifestMap(options.manifests);
     const resolvedInstallCompositions = new Map<string, TypeKroOperatorComposition>();
-    const generatedCrdPrerequisites: KroPrerequisiteResource[] = [];
+    const generatedCrdPrerequisites: PrerequisiteResource[] = [];
     for (const install of captured) {
       if (!isOperatorDefinitionLike(install.operator)) {
         return err('BUNDLE_INVALID', `Captured TypeKro operator install ${install.operatorName} is missing an applik8s operator definition.`);
@@ -343,7 +332,7 @@ function createResolvedListenerComposition<TSpec extends KroCompatibleType, TSta
   source: ListenerCompositionSource<TSpec, TStatus>,
   options: TypeKroResolveOperatorInstallsOptions,
   resolvedInstallCompositions: ReadonlyMap<string, TypeKroOperatorComposition>,
-  generatedCrdPrerequisites: readonly KroPrerequisiteResource[]
+  generatedCrdPrerequisites: readonly PrerequisiteResource[]
 ): TypeKroListenerComposition<TSpec, TStatus> {
   const group = createListenerGroup();
   let recording = true;
@@ -384,9 +373,9 @@ function createResolvedListenerComposition<TSpec extends KroCompatibleType, TSta
 }
 
 function withGeneratedCrdPrerequisites(
-  factoryOptions: PublicFactoryOptionsWithKroPrerequisites | undefined,
-  generatedCrdPrerequisites: readonly KroPrerequisiteResource[]
-): PublicFactoryOptionsWithKroPrerequisites | undefined {
+  factoryOptions: PublicFactoryOptions | undefined,
+  generatedCrdPrerequisites: readonly PrerequisiteResource[]
+): PublicFactoryOptions | undefined {
   if (generatedCrdPrerequisites.length === 0) {
     return factoryOptions;
   }
@@ -1229,19 +1218,20 @@ function installResources(
 function operatorGeneratedCrdPrerequisites(
   operator: OperatorDefinition,
   manifest: OperatorManifest
-): readonly KroPrerequisiteResource[] {
+): readonly PrerequisiteResource[] {
   // typecast: SDK operator resources are ResourceDefinition values with event sources; CRD emission only needs erased resource metadata.
   const resources = Object.values(operator.resources) as unknown as readonly AnyResourceDefinition[];
   const crds = resources
     .filter(isOwnedResource)
-    .map((resource, index): KroPrerequisiteResource => ({
-      ...crdDocument(
+    .map((resource, index): PrerequisiteResource => {
+      const document = crdDocument(
         resource,
         `${operator.name.replace(/[^a-zA-Z0-9]/g, '')}PrerequisiteCrd${index + 1}`,
         manifest
-      ),
-      scope: 'cluster',
-    }));
+      );
+      // typecast: this concrete CRD is cluster-scoped; only the adapter's erased manifest union carries unrelated optional RBAC fields.
+      return { ...document, scope: 'cluster' } as unknown as PrerequisiteResource;
+    });
   return crds;
 }
 
