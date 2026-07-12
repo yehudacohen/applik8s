@@ -20,7 +20,7 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
     compatibility: {
       stablePublicApis: ['sdk.kubernetesComposition', 'app.server', 'app.http', 'app.crd', 'app.resource', 'app.model', 'app.reconcile', 'app.storage.postgres', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'app.aggregate', 'app.config', 'app.secret', 'app.expose', 'Resource.index', 'Resource.increment', 'provider.ModelStore', 'provider.IndexStore', 'provider.CounterStore', 'provider.EventSource', 'provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.CredentialStore'],
       documentedInternalContracts: ['ApplicationGraph'],
-      experimentalSurfaces: ['app.graph'],
+      experimentalSurfaces: ['app.graph', 'command', 'event', 'Model.on.command', 'provider.EventLog', 'provider.Certificate', 'provider.DnsPublication'],
       postV3Surfaces: ['workload-movement-operator', 'generic-workflow-orchestration', 'additional-provider-adapters'],
       labels: [
         stableApiLabel('sdk.kubernetesComposition', 'v0.2', 'Canonical TypeKro-backed app composition entrypoint.'),
@@ -52,6 +52,12 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
         stableApiLabel('provider.HttpExposure', 'v0.3', 'Typed HTTP exposure capability contract backed by the Ingress app.expose slice; unsupported provider adapters fail closed.'),
         stableApiLabel('provider.CredentialStore', 'v0.3', 'Defaults to Kubernetes SecretRef credentials with external object ownership.'),
         { name: 'app.graph', surface: 'experimentalSurface', since: 'v0.3', rationale: 'Direct graph introspection remains experimental while the serialized ApplicationGraph artifact is the documented contract.', implementation: 'failClosedReserved' },
+        { name: 'command', surface: 'experimentalSurface', since: 'v0.4', rationale: 'Inert, versioned command contracts are implemented while the durable processor runtime is completed.', implementation: 'implemented' },
+        { name: 'event', surface: 'experimentalSurface', since: 'v0.4', rationale: 'Inert, versioned committed-fact contracts are implemented while EventLog lowering is completed.', implementation: 'implemented' },
+        { name: 'Model.on.command', surface: 'experimentalSurface', since: 'v0.4', rationale: 'Model command declarations lower to explicit handler and inferred processor graph nodes; execution remains gated on the transaction kernel.', implementation: 'implemented' },
+        { name: 'provider.EventLog', surface: 'experimentalSurface', since: 'v0.4', rationale: 'Durable event transport is implemented by NATS JetStream while infrastructure lifecycle is delegated to TypeKro.', implementation: 'implemented' },
+        { name: 'provider.Certificate', surface: 'experimentalSurface', since: 'v0.4', rationale: 'Managed TLS intent materializes cert-manager Certificate resources while issuer lifecycle remains platform-owned.', implementation: 'implemented' },
+        { name: 'provider.DnsPublication', surface: 'experimentalSurface', since: 'v0.4', rationale: 'Managed DNS intent materializes external-dns annotations without embedding provider credentials or claiming propagation readiness.', implementation: 'implemented' },
         { name: 'workload-movement-operator', surface: 'postV3Surface', rationale: 'Pressure-test application after v0.3 substrate freeze.', implementation: 'postV3' },
         { name: 'generic-workflow-orchestration', surface: 'postV3Surface', rationale: 'Generic workflow orchestration is intentionally deferred beyond Kubernetes-native generated jobs.', implementation: 'postV3' },
         { name: 'additional-provider-adapters', surface: 'postV3Surface', rationale: 'v0.3 ships bounded Kubernetes-native defaults; additional cloud and hosted-service adapters remain incremental.', implementation: 'postV3' },
@@ -64,7 +70,7 @@ function stableApiLabel(name: string, since: string, rationale: string): Applica
   return { name, surface: 'stablePublicApi', since, rationale, implementation: 'implemented' };
 }
 
-function reservedProviderApiLabel(providerInterface: ApplicationProviderInterfaceKind): ApplicationCompatibilityLabel {
+function _reservedProviderApiLabel(providerInterface: ApplicationProviderInterfaceKind): ApplicationCompatibilityLabel {
   return {
     name: `provider.${providerInterface}`,
     surface: 'stablePublicApi',

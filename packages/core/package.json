@@ -1,11 +1,11 @@
 {
   "name": "@applik8s/core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Core types and contracts for applik8s TypeScript Kubernetes operators.",
   "license": "Apache-2.0",
   "type": "module",
   "files": [
-    "src"
+    "dist"
   ],
   "publishConfig": {
     "access": "public"
@@ -16,6 +16,6 @@
     "directory": "packages/core"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
   }
 }

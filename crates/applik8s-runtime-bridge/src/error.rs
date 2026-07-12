@@ -18,6 +18,8 @@ pub enum RuntimeBridgeError {
     InvalidPayload(String),
     #[error("handler returned error: {0}")]
     HandlerFailed(String),
+    #[error("handler trapped: {0}")]
+    HandlerTrap(String),
     #[error("handler invocation timed out after {timeout_ms}ms")]
     HandlerTimedOut { timeout_ms: u64 },
     #[error("wasmtime configuration failed: {0}")]

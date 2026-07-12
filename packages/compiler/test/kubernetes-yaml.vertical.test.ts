@@ -118,6 +118,49 @@ describe('Kubernetes YAML generation', () => {
         name: 'cluster-operator-controller',
         namespace: 'operators',
       });
+      expect(documents.find((document) => document.kind === 'ClusterRole')?.metadata?.name).toBe('operators-cluster-operator-controller');
+      expect(documents.find((document) => document.kind === 'ClusterRoleBinding')?.roleRef.name).toBe('operators-cluster-operator-controller');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('emits read-only manifest entries and cluster RBAC for cluster and cross-namespace reads', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-read-resource-rbac-'));
+    try {
+      const ImageJob = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', spec: imageSpecSchema, status: imageStatusSchema });
+      const externalOperator = sdk.operator({
+        name: 'external-read-operator',
+        deployment: { namespace: 'operators' },
+        resources: { ImageJob },
+        reads: {
+          Namespace: sdk.kubernetes.Namespace,
+          Deployment: sdk.kubernetes.resource({ apiVersion: 'apps/v1', kind: 'Deployment', plural: 'deployments', namespaces: ['destination'] }),
+        },
+        handlers: [],
+      });
+      const digest = 'sha256:0000000000000000000000000000000000000000000000000000000000000000';
+      const handlerArtifactPath = join(dir, 'handler.wasm');
+      await writeFile(handlerArtifactPath, new Uint8Array([0, 97, 115, 109]));
+      const manifest = buildOperatorManifest({ operator: externalOperator.definition, handlerArtifactPath, handlerArtifactDigest: digest, runtimeContractPath: 'runtime-contract.json', runtimeContractDigest: digest });
+      expect(manifest.ok).toBe(true);
+      if (!manifest.ok) return;
+      expect(manifest.value.spec.ownedCrds.map((resource) => resource.kind)).toEqual(['ImageJob']);
+      expect(manifest.value.spec.readResources).toEqual([
+        { apiVersion: 'v1', kind: 'Namespace', plural: 'namespaces', scope: 'Cluster' },
+        { apiVersion: 'apps/v1', kind: 'Deployment', plural: 'deployments', scope: 'Namespaced', namespaces: ['destination'] },
+      ]);
+      expect(manifest.value.spec.permissions).toEqual(expect.arrayContaining([
+        { apiGroups: [''], resources: ['namespaces'], verbs: ['get', 'list'] },
+        { apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list'] },
+      ]));
+      const yaml = await emitOperatorKubernetesYaml({ manifest: manifest.value, operator: externalOperator.definition, outDir: join(dir, 'kubernetes') });
+      expect(yaml.ok).toBe(true);
+      if (!yaml.ok) return;
+      const documents = await Promise.all(yaml.value.paths.map(async (path) => parse(await readFile(path, 'utf8'))));
+      expect(documents.some((document) => document.kind === 'ClusterRole')).toBe(true);
+      expect(documents.some((document) => document.kind === 'ClusterRoleBinding')).toBe(true);
+      expect(documents.filter((document) => document.kind === 'CustomResourceDefinition')).toHaveLength(1);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -303,6 +346,7 @@ describe('Kubernetes YAML generation', () => {
           },
         },
         statusConvention: {
+          ownership: 'handlerAuthoritative',
           observedGenerationField: 'observedGeneration',
           conditionsField: 'conditions',
         },
@@ -330,6 +374,7 @@ describe('Kubernetes YAML generation', () => {
 
       expect(manifest.value.spec.ownedCrds[0]?.statusSubresource).toBe(true);
       expect(manifest.value.spec.ownedCrds[0]?.statusConvention).toEqual({
+        ownership: 'handlerAuthoritative',
         observedGenerationField: 'observedGeneration',
         conditionsField: 'conditions',
       });

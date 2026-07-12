@@ -39,9 +39,9 @@ export async function emitOperatorKubernetesYaml(request: KubernetesYamlRequest)
     const image = request.manifest.spec.container ? imageRefString(request.manifest.spec.container.image) : 'ghcr.io/applik8s/applik8s-operator-host:dev';
     const resources = Object.values(request.operator.resources);
     const ownedResources = resources.filter(isOwnedResource);
-    const clusterRbac = requiresClusterRbac(resources);
+    const clusterRbac = requiresClusterRbac(request.operator, namespace);
     if (clusterRbac && !namespace) {
-      throw new Error('Operators that own cluster-scoped resources must set deployment.namespace so ClusterRoleBinding can reference the ServiceAccount namespace.');
+      throw new Error('Operators requiring cluster or cross-namespace RBAC must set deployment.namespace so ClusterRoleBinding can reference the ServiceAccount namespace.');
     }
     validateDeploymentOperationalSafety(request.operator, request.manifest);
     const documents = [
@@ -283,11 +283,11 @@ function roleDocument(operatorName: string, permissions: readonly PermissionRule
   };
 }
 
-function clusterRoleDocument(operatorName: string, permissions: readonly PermissionRule[], manifest: OperatorManifest): V1ClusterRole {
+function clusterRoleDocument(operatorName: string, permissions: readonly PermissionRule[], namespace: string, manifest: OperatorManifest): V1ClusterRole {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'ClusterRole',
-    metadata: metadata(`${operatorName}-controller`, undefined, manifest),
+    metadata: metadata(clusterRbacName(operatorName, namespace), undefined, manifest),
     rules: permissions.map((permission): V1PolicyRule => ({
       apiGroups: [...permission.apiGroups],
       resources: [...permission.resources],
@@ -298,7 +298,7 @@ function clusterRoleDocument(operatorName: string, permissions: readonly Permiss
 }
 
 function rbacRoleDocument(operatorName: string, permissions: readonly PermissionRule[], namespace: string | undefined, clusterRbac: boolean, manifest: OperatorManifest): V1Role | V1ClusterRole {
-  return clusterRbac ? clusterRoleDocument(operatorName, permissions, manifest) : roleDocument(operatorName, permissions, namespace, manifest);
+  return clusterRbac ? clusterRoleDocument(operatorName, permissions, namespace ?? 'default', manifest) : roleDocument(operatorName, permissions, namespace, manifest);
 }
 
 function roleBindingDocument(operatorName: string, serviceAccountName: string, namespace: string | undefined, manifest: OperatorManifest): V1RoleBinding {
@@ -322,14 +322,15 @@ function roleBindingDocument(operatorName: string, serviceAccountName: string, n
 }
 
 function clusterRoleBindingDocument(operatorName: string, serviceAccountName: string, namespace: string, manifest: OperatorManifest): V1ClusterRoleBinding {
+  const name = clusterRbacName(operatorName, namespace);
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'ClusterRoleBinding',
-    metadata: metadata(`${operatorName}-controller`, undefined, manifest),
+    metadata: metadata(name, undefined, manifest),
     roleRef: {
       apiGroup: 'rbac.authorization.k8s.io',
       kind: 'ClusterRole',
-      name: `${operatorName}-controller`,
+      name,
     },
     subjects: [
       {
@@ -339,6 +340,10 @@ function clusterRoleBindingDocument(operatorName: string, serviceAccountName: st
       },
     ],
   };
+}
+
+function clusterRbacName(operatorName: string, namespace: string): string {
+  return `${namespace}-${operatorName}-controller`;
 }
 
 function rbacBindingDocument(operatorName: string, serviceAccountName: string, namespace: string | undefined, clusterRbac: boolean, manifest: OperatorManifest): V1RoleBinding | V1ClusterRoleBinding {
@@ -505,8 +510,14 @@ function documentFileName(document: KubernetesDocument): string {
   return `${document.kind?.toLowerCase() ?? 'kubernetes'}-${document.metadata.name}`;
 }
 
-function requiresClusterRbac(resources: readonly AnyResourceDefinition[]): boolean {
-  return resources.some((resource) => resource.scope === 'Cluster');
+function requiresClusterRbac(operator: OperatorDefinition, controllerNamespace: string | undefined): boolean {
+  if (operator.deployment?.scope === 'Cluster') return true;
+  if (Object.values(operator.resources).some((resource) => resource.scope === 'Cluster')) return true;
+  return Object.values(operator.reads ?? {}).some((resource) => {
+    if (resource.scope === 'Cluster' || resource.namespaces === 'all') return true;
+    if (!resource.namespaces || resource.namespaces.length === 0) return false;
+    return !controllerNamespace || resource.namespaces.some((namespace) => namespace !== controllerNamespace);
+  });
 }
 
 function managedLabels(): Readonly<Record<string, string>> {

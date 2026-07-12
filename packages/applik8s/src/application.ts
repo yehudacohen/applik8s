@@ -3,7 +3,7 @@ import { dirname, join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { applicationGraphMetadataProperty } from '@applik8s/core';
-import type { AnyResourceDefinition, ApplicationDiagnosticContract, ApplicationGeneratedResourceContract, ApplicationGraph, ApplicationObservabilityContract, ApplicationProviderInterfaceKind, ApplicationWatchScope, ApplicationWatchScopeLoweringContract, NormalizedOperationPlan, OperationTarget, PlanTargetOptions, Result, HandlerRegistration, JsonValue, OperatorDeploymentOptions, PermissionRule, ResourceDefinition, ResourceIndex, ResourceWatchAddress } from '@applik8s/core';
+import type { AnyResourceDefinition, ApplicationDiagnosticContract, ApplicationExposureReadinessContract, ApplicationGeneratedResourceContract, ApplicationGraph, ApplicationObservabilityContract, ApplicationProviderInterfaceKind, ApplicationWatchScope, ApplicationWatchScopeLoweringContract, NormalizedOperationPlan, OperationTarget, PlanTargetOptions, Result, HandlerRegistration, JsonValue, OperatorDeploymentOptions, PermissionRule, ResourceDefinition, ResourceIndex, ResourceWatchAddress } from '@applik8s/core';
 import type { CrdOptions, SchemaInput } from '@applik8s/sdk';
 import { sdk as baseSdk, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
 import type { TypeKroListenerComposition, TypeKroListenerCompositionDefinition } from '@applik8s/typekro-adapter';
@@ -13,14 +13,15 @@ import { type as arkType } from 'arktype';
 import { Cel } from 'typekro';
 import type { Enhanced, KroCompatibleType, MagicAssignableShape, SerializationOptions } from 'typekro';
 import { cluster as typeKroCnpgCluster } from 'typekro/cnpg';
+import { certificate as typeKroCertificate } from 'typekro/cert-manager';
 import { configMap as typeKroConfigMap, cronJob as typeKroCronJob, deployment as typeKroDeployment, ingress as typeKroIngress, job as typeKroJob, role as typeKroRole, roleBinding as typeKroRoleBinding, secret as typeKroSecret, service as typeKroService, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import { valkey as typeKroValkey } from 'typekro/valkey';
 import { addApplicationGraphEdge, addApplicationGraphNode, applicationGraphFromState, isApplicationGraph, type ApplicationGraphState } from './application-graph-state.js';
-import { applicationModelBinding, applicationModelMigrationPlan, applicationModelMigrationPreflightSql, applicationModelMigrationSql, applicationRuntimeModelContract, recordApplicationModelGraph, resolveApplicationModelStore } from './application-models.js';
+import { applicationModelBinding, applicationModelMigrationPlan, applicationModelMigrationPreflightSql, applicationModelMigrationSql, applicationRuntimeModelContract, recordApplicationModelCommandGraph, recordApplicationModelGraph, resolveApplicationModelStore } from './application-models.js';
 import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationRuntimeModelContract } from './application-models.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobPhaseStatusContract, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
-import { applicationHttpExposureImplementation, applicationModelStoreImplementation, applyApplicationProvider, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, isIngressHttpExposureProvider, isValkeyIndexDefault, ModelStore } from './application-providers.js';
-import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationPostgresModelStoreOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
+import { applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHttpExposureImplementation, applicationModelStoreImplementation, applyApplicationProvider, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, applicationTypedProviderContract, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, isIngressHttpExposureProvider, isValkeyIndexDefault, ModelStore } from './application-providers.js';
+import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationPostgresModelStoreOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend } from './application-providers.js';
 import { generatedApplicationServerRuntimeSource, runtimeIndexTable } from './application-server-runtime.js';
 import { generatedServerRuntimeBundleContract } from './application-server-runtime-bundle.js';
 import type { EntityDefinition } from './dsl.js';
@@ -30,9 +31,9 @@ import type { ApplicationGeneratedJobStatusProjectionStore, ApplicationGenerated
 import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationRouteHandlerSource, normalizeSerializableFunctionSource, routeAnalysisCallsMethod, routeDynamicBindingAccesses, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 import type { ApplicationRouteSourceLocation, ApplicationServerRouteSourceAnalysis, SerializedApplicationServerRouteWithDependencies } from './application-route-source.js';
 
-export { CounterStore, CredentialStore, defaultApplicationProviders, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, providers, Queue, Secret } from './application-providers.js';
-export type { ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
-export type { ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationEventSourceProvider, ApplicationGeneratedModelStoreMigrationJobOptions, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationModelStoreProviderToken, ApplicationObjectStorageProvider, ApplicationPostgresModelStoreOptions, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationQueueProvider, ApplicationSecretProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
+export { Certificate, CounterStore, CredentialStore, defaultApplicationEventLogProvider, defaultApplicationProviders, defineApplicationProvider, DnsPublication, EventLog, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, providers, Queue, Secret } from './application-providers.js';
+export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationCommandSubmissionAcknowledgement, ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandOptions, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
+export type { ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalDnsPublicationProvider, ApplicationGeneratedModelStoreMigrationJobOptions, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationObjectStorageProvider, ApplicationPostgresModelStoreOptions, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationQueueProvider, ApplicationSecretProvider, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend } from './application-providers.js';
 
 export interface KubernetesApplicationScope {
   readonly api: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
@@ -92,6 +93,8 @@ export type ApplicationReconcileHandler<TSpec extends object, TStatus extends ob
 
 export interface ApplicationReconcileOptions extends OperatorDeploymentOptions {
   readonly name?: string;
+  /** Explicit RBAC required by direct Kubernetes SDK calls in this handler. */
+  readonly permissions?: readonly PermissionRule[];
 }
 
 export type ApplicationCrdOptions<TSpec extends object, TStatus extends object> = Omit<CrdOptions<TSpec, TStatus>, 'kind' | 'spec' | 'status'> & {
@@ -162,12 +165,27 @@ export interface ApplicationExposureOptions {
   readonly service?: string | ApplicationServerBinding;
   readonly servicePort?: number;
   readonly hostnames?: readonly string[];
-  readonly tls?: 'required' | 'optional' | 'disabled';
+  readonly tls?: 'required' | 'optional' | 'disabled' | ApplicationTlsIntent;
   readonly tlsSecretName?: string;
+  readonly dns?: ApplicationDnsIntent;
   readonly gateway?: string;
   readonly ingressClassName?: string;
   readonly path?: string;
 }
+
+export type ApplicationTlsIntent =
+  | { readonly mode: 'disabled' }
+  | { readonly mode: 'external'; readonly secretName: string }
+  | { readonly mode: 'managed'; readonly secretName?: string };
+
+export type ApplicationDnsIntent =
+  | { readonly mode: 'disabled' }
+  | { readonly mode: 'managed'; readonly ttlSeconds?: number };
+
+type NormalizedApplicationTlsIntent =
+  | { readonly mode: 'disabled' }
+  | { readonly mode: 'external'; readonly secretName: string }
+  | { readonly mode: 'managed'; readonly secretName: string };
 
 export interface ApplicationExposureBinding {
   readonly kind: 'applicationExposure';
@@ -177,6 +195,16 @@ export interface ApplicationExposureBinding {
   readonly namespace?: string;
   readonly hostnames: readonly string[];
   readonly tls: 'required' | 'optional' | 'disabled';
+  readonly tlsIntent: ApplicationTlsIntent & { readonly secretName?: string };
+  readonly dnsIntent: ApplicationDnsIntent;
+  readonly publicUrl: string;
+  readonly readiness: {
+    readonly ingress: 'resourceApplied';
+    readonly loadBalancer: 'statusObserved';
+    readonly certificate: 'notRequested' | 'external' | 'readyCondition';
+    readonly dns: 'notRequested' | 'intentApplied' | 'propagationUnverified';
+    readonly publicUrl: 'derived';
+  };
   readonly statusPath: string;
 }
 
@@ -217,6 +245,10 @@ export interface ApplicationServerOptions {
   readonly volumeMounts?: readonly ApplicationServerVolumeMount[];
   readonly replicas?: number;
   readonly service?: { readonly port: number };
+  /** Maximum accepted request body size. Defaults to 1 MiB. */
+  readonly maxRequestBodyBytes?: number;
+  /** Fixed-window limit for non-GET requests, keyed by remote address and path. */
+  readonly mutationRateLimit?: { readonly maxRequests: number; readonly windowSeconds: number };
   readonly resources?: Readonly<Record<string, AnyResourceDefinition>>;
   readonly indexes?: Readonly<Record<string, ResourceIndex<object, object>>>;
   readonly models?: Readonly<Record<string, ApplicationServerModelBinding>>;
@@ -527,6 +559,14 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
   const declaredModels: Record<string, ApplicationModelBinding<object, object>> = {};
   let materialized: TypeKroListenerComposition<KroCompatibleType, KroCompatibleType> | undefined;
 
+  if (options.namespace) {
+    const eventLog = { ...defaultApplicationEventLogProvider, namespace: options.namespace };
+    preview.defaults({ eventLog });
+    replays.push((scope) => {
+      scope.defaults({ eventLog });
+    });
+  }
+
   const invalidate = () => {
     materialized = undefined;
   };
@@ -631,20 +671,36 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
       return resource;
     },
     model<TSpec extends object, TStatus extends object = Record<string, never>>(entityOrName: EntityDefinition<TSpec, TStatus> | string, modelOptions?: ApplicationModelOptions<TSpec, TStatus> | ApplicationNamedModelOptions<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus> {
-      const model = typeof entityOrName === 'string'
+      const previewModel = typeof entityOrName === 'string'
         // typecast: named golden-path models require ApplicationNamedModelOptions and are guarded by the string branch.
         ? preview.model(entityOrName, modelOptions as ApplicationNamedModelOptions<TSpec, TStatus>)
         // typecast: entity-backed models accept ApplicationModelOptions and are guarded by the non-string branch.
         : preview.model(entityOrName, modelOptions as ApplicationModelOptions<TSpec, TStatus> | undefined);
+      const commandReplays: ((model: ApplicationModelBinding<TSpec, TStatus>) => void)[] = [];
+      const model: ApplicationModelBinding<TSpec, TStatus> = {
+        ...previewModel,
+        on: {
+          ...previewModel.on,
+          command(command, commandOptions, handler) {
+            const binding = previewModel.on.command(command, commandOptions, handler);
+            commandReplays.push((replayedModel) => {
+              replayedModel.on.command(command, commandOptions, handler);
+            });
+            invalidate();
+            return binding;
+          },
+        },
+      };
       // typecast: declaredModels stores heterogeneous model bindings for later inferred app.http bindings.
       declaredModels[model.name] = model as unknown as ApplicationModelBinding<object, object>;
       replays.push((scope) => {
-        if (typeof entityOrName === 'string') {
+        const replayedModel = typeof entityOrName === 'string'
           // typecast: replay preserves the named-model overload chosen above.
-          scope.model(entityOrName, modelOptions as ApplicationNamedModelOptions<TSpec, TStatus>);
-        } else {
+          ? scope.model(entityOrName, modelOptions as ApplicationNamedModelOptions<TSpec, TStatus>)
           // typecast: replay preserves the entity-model overload chosen above.
-          scope.model(entityOrName, modelOptions as ApplicationModelOptions<TSpec, TStatus> | undefined);
+          : scope.model(entityOrName, modelOptions as ApplicationModelOptions<TSpec, TStatus> | undefined);
+        for (const replayCommand of commandReplays) {
+          replayCommand(replayedModel);
         }
       });
       invalidate();
@@ -769,6 +825,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       models: defaultApplicationProviders.ModelStore,
       counters: defaultApplicationProviders.CounterStore,
       events: defaultApplicationProviders.EventSource,
+      eventLogs: defaultApplicationEventLogProvider,
       secrets: defaultApplicationProviders.Secret,
       queues: defaultApplicationProviders.Queue,
       objects: defaultApplicationProviders.ObjectStorage,
@@ -814,6 +871,10 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       state.defaults.events = defaults.events;
       recordApplicationProviderGraph(state, 'EventSource', 'default', defaults.events);
     }
+    if ('eventLog' in defaults) {
+      state.defaults.eventLogs = defaults.eventLog;
+      recordApplicationProviderGraph(state, 'EventLog', 'default', defaults.eventLog);
+    }
     if ('secrets' in defaults) {
       state.defaults.secrets = defaults.secrets;
       recordApplicationProviderGraph(state, 'Secret', 'default', defaults.secrets);
@@ -838,6 +899,22 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       state.defaults.expose = defaults.expose;
       recordApplicationProviderGraph(state, 'HttpExposure', 'default', exposureProvider);
     }
+    if ('certificates' in defaults) {
+      const certificateProvider = applicationCertificateImplementation(defaults.certificates);
+      if (!certificateProvider) {
+        throw new Error('app.defaults({ certificates: ... }) requires a cert-manager provider with an explicit Issuer or ClusterIssuer reference.');
+      }
+      state.defaults.certificates = defaults.certificates;
+      recordApplicationProviderGraph(state, 'Certificate', 'default', certificateProvider);
+    }
+    if ('dns' in defaults) {
+      const dnsProvider = applicationDnsPublicationImplementation(defaults.dns);
+      if (!dnsProvider) {
+        throw new Error('app.defaults({ dns: ... }) requires an external-dns publication provider.');
+      }
+      state.defaults.dns = defaults.dns;
+      recordApplicationProviderGraph(state, 'DnsPublication', 'default', dnsProvider);
+    }
     if ('indexes' in defaults) {
       state.defaults.indexes = defaults.indexes;
       recordApplicationProviderGraph(state, 'IndexStore', 'default', defaults.indexes);
@@ -846,7 +923,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
   };
   const provide = <TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): ApplicationProviderBinding<TImplementation> => {
     applyApplicationProvider(state, token, implementation);
-    recordApplicationProviderGraph(state, applicationProviderTokenName(token), 'provided', implementation);
+    recordApplicationProviderGraph(state, applicationProviderTokenName(token), 'provided', implementation, token.contract);
     return { kind: 'applicationProvider', token, implementation };
   };
   const storage: ApplicationStorageRegistrar = {
@@ -877,12 +954,14 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     return definitionResource;
   };
   const reconcile = <TSpec extends object, TStatus extends object = Record<string, never>>(resource: ResourceDefinition<TSpec, TStatus>, handler: ApplicationReconcileHandler<TSpec, TStatus>, options: ApplicationReconcileOptions = {}): unknown => {
-    const { name, ...deploymentOptions } = options;
+    const { name, permissions, ...deploymentOptions } = options;
     const registration = resource.on.reconcile(handler);
     const operator = baseSdk.operator({
       name: name ?? `${kubernetesNameSegment(resource.kind)}-controller`,
       resources: { [resource.kind]: resource },
       handlers: [registration],
+      ...(permissions && permissions.length > 0 ? { permissions } : {}),
+      ...(Object.keys(deploymentOptions).length > 0 ? { deployment: deploymentOptions } : {}),
     });
     collectApplicationResources(state, applicationOperatorResources(operator));
     recordApplicationOperatorGraph(state, operator);
@@ -908,9 +987,9 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       const modelStore = resolveApplicationModelStore(state, entity.name, modelOptions?.store);
       const runtimeModel = applicationRuntimeModelContract(entity, modelStore, modelOptions);
       emitApplicationModelStoreResources(state, runtimeModel, modelStore);
-      recordApplicationModelGraph(state, entity, modelStore, modelOptions);
+      recordApplicationModelGraph(state, entity, modelStore, modelOptions, runtimeModel);
       state.models[runtimeModel.name] = runtimeModel;
-      return applicationModelBinding(entity, modelStore, modelOptions, runtimeModel);
+      return applicationModelBindingWithCommandGraph(state, entity, modelStore, modelOptions, runtimeModel);
     },
     reconcile,
     infra(resource) {
@@ -942,6 +1021,24 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     },
   };
   return { scope, state };
+}
+
+function applicationModelBindingWithCommandGraph<TSpec extends object, TStatus extends object>(
+  state: ApplicationScopeState,
+  entity: EntityDefinition<TSpec, TStatus>,
+  modelStore: ApplicationModelStoreProvider,
+  modelOptions: ApplicationModelOptions<TSpec, TStatus> | undefined,
+  runtimeModel: ApplicationRuntimeModelContract,
+): ApplicationModelBinding<TSpec, TStatus> {
+  let binding: ApplicationModelBinding<TSpec, TStatus>;
+  binding = applicationModelBinding(
+    entity,
+    modelStore,
+    modelOptions,
+    runtimeModel,
+    (command, commandOptions, handler) => recordApplicationModelCommandGraph(state, binding, command, commandOptions, handler),
+  );
+  return binding;
 }
 
 function applicationStoragePostgresOptions(name: string, options: ApplicationStoragePostgresOptions): ApplicationPostgresModelStoreOptions {
@@ -1226,33 +1323,91 @@ function emitApplicationExposure(state: ApplicationScopeState, name: string, opt
   if (!options.hostnames || options.hostnames.length === 0) {
     throw new Error(`app.expose(${JSON.stringify(name)}, ...) requires at least one hostname so generated Ingress exposure does not broaden traffic accidentally.`);
   }
-  if (options.tls === 'required' && !options.tlsSecretName) {
-    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with tls: "required" requires tlsSecretName so generated Ingress TLS Secret ownership stays explicit.`);
-  }
   const resourceName = `${kubernetesNameSegment(name)}-ingress`;
   const namespace = exposedNamespace;
   const hostnames = [...options.hostnames];
   const nodeId = applicationGraphNodeId('exposure', name);
   const resource = { apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', name: resourceName, ...(namespace ? { namespace } : {}) };
+  const tlsIntent = normalizeApplicationTlsIntent(name, options);
+  const dnsIntent = options.dns ?? { mode: 'disabled' };
+  const certificateProvider = tlsIntent.mode === 'managed'
+    ? applicationCertificateImplementation(state.providers.certificates) ?? applicationCertificateImplementation(state.defaults.certificates)
+    : undefined;
+  const dnsProvider = dnsIntent.mode === 'managed'
+    ? applicationDnsPublicationImplementation(state.providers.dns) ?? applicationDnsPublicationImplementation(state.defaults.dns)
+    : undefined;
+  if (tlsIntent.mode === 'managed' && !certificateProvider) {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with tls: { mode: "managed" } requires a Certificate provider. Bind Certificate.certManager({ issuerRef: ... }) before declaring public exposure.`);
+  }
+  if (dnsIntent.mode === 'managed' && !dnsProvider) {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with dns: { mode: "managed" } requires a DnsPublication provider. Bind DnsPublication.externalDns() before declaring public exposure.`);
+  }
   if (!state.graphNodes.some((node) => node.id === applicationProviderNodeId('HttpExposure'))) {
     recordApplicationProviderGraph(state, 'HttpExposure', 'generated', provider);
   }
+  if (certificateProvider && !state.graphNodes.some((node) => node.id === applicationProviderNodeId('Certificate'))) {
+    recordApplicationProviderGraph(state, 'Certificate', 'provided', certificateProvider);
+  }
+  if (dnsProvider && !state.graphNodes.some((node) => node.id === applicationProviderNodeId('DnsPublication'))) {
+    recordApplicationProviderGraph(state, 'DnsPublication', 'provided', dnsProvider);
+  }
   const providerIngressClassName = typeof provider === 'object' ? provider.ingressClassName : undefined;
   const ingressClassName = options.ingressClassName ?? providerIngressClassName;
+  const externalDnsAnnotations = dnsProvider
+    ? applicationExternalDnsAnnotations(dnsProvider, hostnames, dnsIntent)
+    : {};
+  const annotations = {
+    ...(ingressClassName ? { 'kubernetes.io/ingress.class': ingressClassName } : {}),
+    ...externalDnsAnnotations,
+  };
   typeKroIngress({
     id: graphResourceId(resourceName, 'applicationExposure'),
     apiVersion: 'networking.k8s.io/v1',
     kind: 'Ingress',
-    metadata: { name: resourceName, ...(namespace ? { namespace } : {}), labels: applicationConfigLabels(name, 'exposure'), ...(ingressClassName ? { annotations: { 'kubernetes.io/ingress.class': ingressClassName } } : {}) },
+    metadata: { name: resourceName, ...(namespace ? { namespace } : {}), labels: applicationConfigLabels(name, 'exposure'), ...(Object.keys(annotations).length > 0 ? { annotations } : {}) },
     spec: {
       ...(ingressClassName ? { ingressClassName } : {}),
       rules: hostnames.map((host) => ({
         host,
         http: { paths: [{ path: options.path ?? '/', pathType: 'Prefix', backend: { service: { name: exposedService, port: { number: options.servicePort ?? 80 } } } }] },
       })),
-      ...(options.tlsSecretName ? { tls: [{ hosts: hostnames, secretName: options.tlsSecretName }] } : {}),
+      ...(tlsIntent.mode !== 'disabled' ? { tls: [{ hosts: hostnames, secretName: tlsIntent.secretName }] } : {}),
     },
   });
+  const generatedResources: ApplicationGeneratedResourceContract[] = [
+    { role: 'exposure', graphNode: { nodeId }, resource, artifact: { kind: 'kubernetesManifest', name: resourceName } },
+  ];
+  if (tlsIntent.mode === 'managed' && certificateProvider) {
+    const certificateName = `${kubernetesNameSegment(name)}-certificate`;
+    const certificateResource = { apiVersion: 'cert-manager.io/v1', kind: 'Certificate', name: certificateName, ...(namespace ? { namespace } : {}) };
+    typeKroCertificate({
+      id: graphResourceId(certificateName, 'applicationCertificate'),
+      name: certificateName,
+      ...(namespace ? { namespace } : {}),
+      spec: {
+        secretName: tlsIntent.secretName,
+        dnsNames: hostnames,
+        issuerRef: certificateProvider.issuerRef,
+        ...(certificateProvider.duration ? { duration: certificateProvider.duration } : {}),
+        ...(certificateProvider.renewBefore ? { renewBefore: certificateProvider.renewBefore } : {}),
+      },
+    });
+    generatedResources.push({ role: 'exposure', graphNode: { nodeId }, resource: certificateResource, artifact: { kind: 'typeKroResource', name: certificateName }, dependsOn: [{ nodeId: applicationProviderNodeId('Certificate') }] });
+  }
+  const tls = applicationLegacyTlsMode(options.tls, tlsIntent);
+  const publicUrl = `${tlsIntent.mode === 'disabled' ? 'http' : 'https'}://${hostnames[0]}`;
+  const readiness: ApplicationExposureReadinessContract = {
+    ingress: 'resourceApplied',
+    loadBalancer: 'statusObserved',
+    certificate: tlsIntent.mode === 'managed' ? 'readyCondition' : tlsIntent.mode === 'external' ? 'external' : 'notRequested',
+    dns: dnsIntent.mode === 'managed' ? 'propagationUnverified' : 'notRequested',
+    publicUrl: 'derived',
+  };
+  const graphTlsIntent = (() => {
+    if (tlsIntent.mode !== 'managed') return tlsIntent;
+    if (!certificateProvider) throw new Error(`app.expose(${JSON.stringify(name)}, ...) lost its managed Certificate provider during graph lowering.`);
+    return { ...tlsIntent, issuerRef: certificateProvider.issuerRef };
+  })();
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'exposure',
@@ -1261,10 +1416,46 @@ function emitApplicationExposure(state: ApplicationScopeState, name: string, opt
     provider: { interface: 'HttpExposure', nodeId: applicationGraphNodeId('provider', 'HttpExposure') },
     service: exposedService,
     hostnames,
-    tls: options.tls ?? 'disabled',
-    generatedResources: [{ role: 'exposure', graphNode: { nodeId }, resource, artifact: { kind: 'kubernetesManifest', name: resourceName } }],
+    tls,
+    tlsIntent: graphTlsIntent,
+    dnsIntent,
+    publicUrl,
+    readiness,
+    ...(certificateProvider ? { certificate: { interface: 'Certificate', nodeId: applicationProviderNodeId('Certificate') } } : {}),
+    ...(dnsProvider ? { dnsPublication: { interface: 'DnsPublication', nodeId: applicationProviderNodeId('DnsPublication') } } : {}),
+    generatedResources,
   });
-  return { kind: 'applicationExposure', name, provider: 'HttpExposure', resourceName, ...(namespace ? { namespace } : {}), hostnames, tls: options.tls ?? 'disabled', statusPath: `exposure/${name}` };
+  addApplicationGraphEdge(state, { from: { nodeId: applicationProviderNodeId('HttpExposure') }, to: { nodeId }, relationship: 'provides' });
+  if (certificateProvider) addApplicationGraphEdge(state, { from: { nodeId: applicationProviderNodeId('Certificate') }, to: { nodeId }, relationship: 'provides' });
+  if (dnsProvider) addApplicationGraphEdge(state, { from: { nodeId: applicationProviderNodeId('DnsPublication') }, to: { nodeId }, relationship: 'provides' });
+  return { kind: 'applicationExposure', name, provider: 'HttpExposure', resourceName, ...(namespace ? { namespace } : {}), hostnames, tls, tlsIntent, dnsIntent, publicUrl, readiness, statusPath: `exposure/${name}` };
+}
+
+function normalizeApplicationTlsIntent(name: string, options: ApplicationExposureOptions): NormalizedApplicationTlsIntent {
+  if (options.tls && typeof options.tls === 'object') {
+    if (options.tls.mode === 'managed') return { mode: 'managed', secretName: options.tls.secretName ?? options.tlsSecretName ?? `${kubernetesNameSegment(name)}-tls` };
+    if (options.tls.mode === 'external') return options.tls;
+    return { mode: 'disabled' };
+  }
+  if (options.tls === 'required' && !options.tlsSecretName) {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with tls: "required" requires tlsSecretName so generated Ingress TLS Secret ownership stays explicit.`);
+  }
+  if (options.tlsSecretName) return { mode: 'external', secretName: options.tlsSecretName };
+  return { mode: 'disabled' };
+}
+
+function applicationLegacyTlsMode(tls: ApplicationExposureOptions['tls'], intent: ApplicationTlsIntent): 'required' | 'optional' | 'disabled' {
+  if (typeof tls === 'string') return tls;
+  return intent.mode === 'disabled' ? 'disabled' : 'required';
+}
+
+function applicationExternalDnsAnnotations(provider: ApplicationDnsPublicationProvider, hostnames: readonly string[], intent: ApplicationDnsIntent): Readonly<Record<string, string>> {
+  if (intent.mode !== 'managed') return {};
+  const prefix = provider.annotationPrefix ?? 'external-dns.alpha.kubernetes.io';
+  return {
+    [`${prefix}/hostname`]: hostnames.join(','),
+    ...(intent.ttlSeconds === undefined ? {} : { [`${prefix}/ttl`]: String(intent.ttlSeconds) }),
+  };
 }
 
 function applicationExposureServiceName(service: string | ApplicationServerBinding | undefined): string | undefined {
@@ -1299,6 +1490,27 @@ function recordApplicationOperatorGraph(state: ApplicationScopeState, operator: 
     watches: watchContracts.map((contract) => contract.scope),
     ...(watchContracts.length > 0 ? { watchContracts } : {}),
   });
+  const explicitPermissions = definition && typeof definition === 'object' ? Reflect.get(definition, 'permissions') : undefined;
+  if (Array.isArray(explicitPermissions) && explicitPermissions.length > 0) {
+    const permissionNodeId = applicationGraphNodeId('permission', `${name}-permissions`);
+    // typecast: sdk.operator has already validated the structural PermissionRule array stored on its definition.
+    const rules = explicitPermissions as readonly PermissionRule[];
+    addApplicationGraphNode(state, {
+      id: permissionNodeId,
+      kind: 'permission',
+      name: `${name}-permissions`,
+      stability: 'experimental',
+      owner: { nodeId },
+      mode: 'explicit',
+      rules: rules.map((rule) => ({
+        apiGroups: [...rule.apiGroups],
+        resources: [...rule.resources],
+        verbs: [...rule.verbs],
+        ...(rule.resourceNames ? { resourceNames: [...rule.resourceNames] } : {}),
+      })),
+    });
+    addApplicationGraphEdge(state, { from: { nodeId: permissionNodeId }, to: { nodeId }, relationship: 'writes' });
+  }
   for (const [resourceName] of Object.entries(resources)) {
     addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: applicationGraphNodeId('crd', resourceName) }, relationship: 'owns' });
   }
@@ -1384,8 +1596,9 @@ function applicationWatchScopeLowering(scope: ApplicationWatchScope): Applicatio
   return scope.kind === 'labelSelector' ? 'labelSelector' : scope.kind === 'fieldSelector' ? 'fieldSelector' : scope.kind;
 }
 
-function recordApplicationProviderGraph(state: ApplicationScopeState, tokenName: string | undefined, bindingKind: string, implementation: unknown): void {
-  const providerInterface = applicationProviderInterface(tokenName);
+function recordApplicationProviderGraph(state: ApplicationScopeState, tokenName: string | undefined, bindingKind: string, implementation: unknown, typedContract?: ApplicationTypedProviderContract): void {
+  const resolvedContract = typedContract ?? applicationTypedProviderContract(tokenName);
+  const providerInterface = applicationProviderInterface(tokenName) ?? resolvedContract?.interface;
   if (!providerInterface) {
     return;
   }
@@ -1397,6 +1610,15 @@ function recordApplicationProviderGraph(state: ApplicationScopeState, tokenName:
     stability: 'stable',
     interface: providerInterface,
     implementation: applicationProviderImplementationName(implementation),
+    ...(resolvedContract ? {
+      contract: {
+        ...resolvedContract,
+        surface: providerInterface === 'EventLog' || providerInterface === 'Certificate' || providerInterface === 'DnsPublication' || !applicationProviderInterface(providerInterface) ? 'experimentalSurface' : 'stablePublicApi',
+        support: 'implemented',
+        implementation: { name: applicationProviderImplementationName(implementation) },
+        diagnostics: [],
+      },
+    } : {}),
     config: { bindingKind, provider: applicationProviderImplementationName(implementation) },
   });
 }
@@ -2099,6 +2321,9 @@ function emitApplicationServerResources(name: string, options: ApplicationServer
   const env = {
     NODE_OPTIONS: '--enable-source-maps',
     APPLIK8S_SERVER_NAMESPACE: namespace ?? 'default',
+    APPLIK8S_HTTP_MAX_BODY_BYTES: String(options.maxRequestBodyBytes ?? 1_048_576),
+    APPLIK8S_HTTP_MUTATION_RATE_LIMIT_MAX: String(options.mutationRateLimit?.maxRequests ?? 120),
+    APPLIK8S_HTTP_MUTATION_RATE_LIMIT_WINDOW_SECONDS: String(options.mutationRateLimit?.windowSeconds ?? 60),
     ...(runtimeIndexBackend ? {
       APPLIK8S_INDEX_BACKEND: runtimeIndexBackend.kind,
       APPLIK8S_INDEX_VALKEY_HOST: runtimeIndexBackend.host,
@@ -3881,11 +4106,40 @@ function generatedApplicationServerHonoEntrypointSource(): string {
   return `
 import { Hono } from 'hono';
 import { createServer } from 'node:http';
+import { Transform } from 'node:stream';
 import { routes } from './routes.mjs';
 
 const applik8sServerRuntime = 'hono';
+const maxRequestBodyBytes = positiveInteger(process.env.APPLIK8S_HTTP_MAX_BODY_BYTES, 1048576);
+const mutationRateLimitMax = positiveInteger(process.env.APPLIK8S_HTTP_MUTATION_RATE_LIMIT_MAX, 120);
+const mutationRateLimitWindowMs = positiveInteger(process.env.APPLIK8S_HTTP_MUTATION_RATE_LIMIT_WINDOW_SECONDS, 60) * 1000;
+const mutationWindows = new Map();
 
 const app = new Hono();
+
+app.use('*', async (context, next) => {
+  const contentLength = Number(context.req.header('content-length') || '0');
+  if (Number.isFinite(contentLength) && contentLength > maxRequestBodyBytes) {
+    return context.text('Request body exceeds ' + maxRequestBodyBytes + ' bytes.', 413);
+  }
+  if (context.req.method !== 'GET' && context.req.method !== 'HEAD' && context.req.method !== 'OPTIONS') {
+    const now = Date.now();
+    const url = new URL(context.req.url);
+    const client = context.req.header('x-applik8s-remote-address') || 'unknown';
+    const key = client + ':' + context.req.method + ':' + url.pathname;
+    const current = mutationWindows.get(key);
+    const window = !current || current.resetAt <= now ? { count: 0, resetAt: now + mutationRateLimitWindowMs } : current;
+    window.count += 1;
+    mutationWindows.set(key, window);
+    if (mutationWindows.size > 10000) {
+      for (const [candidate, value] of mutationWindows) if (value.resetAt <= now) mutationWindows.delete(candidate);
+    }
+    if (window.count > mutationRateLimitMax) {
+      return context.text('Too many mutation requests. Retry after the current rate-limit window.', 429, { 'retry-after': String(Math.max(1, Math.ceil((window.resetAt - now) / 1000))) });
+    }
+  }
+  await next();
+});
 
 for (const route of routes) {
   app.on(route.method, route.path, async (context) => {
@@ -3927,7 +4181,8 @@ createServer(async (incoming, outgoing) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(JSON.stringify({ level: 'error', component: 'applik8s-server', event: 'applik8s-server-request-failure', runtime: applik8sServerRuntime, message }));
-    outgoing.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+    const statusCode = error && typeof error === 'object' && 'statusCode' in error && typeof error.statusCode === 'number' ? error.statusCode : 500;
+    outgoing.writeHead(statusCode, { 'content-type': 'text/plain; charset=utf-8' });
     outgoing.end(message);
   }
 }).listen(8080, '0.0.0.0');
@@ -3945,9 +4200,32 @@ function nodeRequestToFetchRequest(request) {
       headers.set(name, String(value));
     }
   }
+  headers.set('x-applik8s-remote-address', request.socket.remoteAddress || 'unknown');
   const method = request.method || 'GET';
   const hasBody = method !== 'GET' && method !== 'HEAD';
-  return new Request(url, { method, headers, ...(hasBody ? { body: request, duplex: 'half' } : {}) });
+  return new Request(url, { method, headers, ...(hasBody ? { body: boundedRequestBody(request), duplex: 'half' } : {}) });
+}
+
+function boundedRequestBody(request) {
+  let bytes = 0;
+  const limiter = new Transform({
+    transform(chunk, _encoding, callback) {
+      bytes += Buffer.byteLength(chunk);
+      if (bytes > maxRequestBodyBytes) {
+        const error = new Error('Request body exceeds ' + maxRequestBodyBytes + ' bytes.');
+        error.statusCode = 413;
+        callback(error);
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+  return request.pipe(limiter);
+}
+
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 async function writeFetchResponse(outgoing, response) {

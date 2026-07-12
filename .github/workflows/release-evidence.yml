@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   evidence:
-    name: v0.3 release evidence
+    name: v0.4 release evidence
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -37,8 +37,8 @@ jobs:
       - name: Run local gates
         run: bun run check:local
 
-      - name: Run v0.3 substrate gates
-        run: bun run test:v03:local
+      - name: Run v0.4 durable-behavior gates
+        run: bun run test:v04:local
 
       - name: Run package release checks
         run: bun run check:packages
@@ -46,11 +46,11 @@ jobs:
       - name: Build ImageJob artifacts
         run: bun run build:imagejob
 
-      - name: Build Tenant Platform artifacts
-        run: bun run applik8s build examples/tenant-platform.ts --typekro --composition-name tenantPlatform --out-dir dist/examples/tenant-platform
+      - name: Build Tenant Platform v0.4 artifacts
+        run: bun run build:tenant-platform-v04
 
       - name: Capture artifact listing
-        run: find dist/applik8s dist/examples/tenant-platform -maxdepth 4 -type f | sort > dist/applik8s-artifact-list.txt
+        run: find dist/applik8s dist/examples/tenant-platform-v04 -maxdepth 4 -type f | sort > dist/applik8s-artifact-list.txt
 
       - name: Configure live kubeconfig
         if: ${{ inputs.run_live_e2e == 'true' }}
@@ -66,15 +66,15 @@ jobs:
 
       - name: Run live prerelease gates
         if: ${{ inputs.run_live_e2e == 'true' }}
-        run: APPLIK8S_E2E_CONTEXT=${APPLIK8S_E2E_CONTEXT} bun run check:v03:prerelease
+        run: APPLIK8S_E2E_CONTEXT=${APPLIK8S_E2E_CONTEXT} bun run check:v04:prerelease
         env:
           APPLIK8S_E2E_CONTEXT: ${{ vars.APPLIK8S_E2E_CONTEXT }}
 
       - name: Upload release evidence
         uses: actions/upload-artifact@v4
         with:
-          name: applik8s-v0.3-release-evidence
+          name: applik8s-v0.4-release-evidence
           path: |
             dist/applik8s
-            dist/examples/tenant-platform
+            dist/examples/tenant-platform-v04
             dist/applik8s-artifact-list.txt

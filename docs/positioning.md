@@ -32,7 +32,7 @@ applik8s complements TypeKro by producing operators that TypeKro can install and
 
 Those systems provide application runtime, serverless, workflow, or orchestration models.
 
-applik8s is an operator authoring and runtime framework. It models Kubernetes reconciliation and explicit Kubernetes side effects, not general workflow execution.
+applik8s is an operator and Kubernetes-native application framework. v0.4 includes durable keyed model commands and event transport, but not general workflow orchestration. External-effect tasks and provider-neutral workflows begin in v0.5 rather than being smuggled into database transactions.
 
 ## v0.1 Message
 

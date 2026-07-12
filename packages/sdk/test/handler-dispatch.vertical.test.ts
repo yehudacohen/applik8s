@@ -350,6 +350,58 @@ describe('generated handler dispatcher', () => {
     expect(JSON.parse(output)).toEqual({ operations: [{ kind: 'status', status: { entryCount: 2 } }] });
   });
 
+  it('registers declared external and arbitrary-GVK resources without treating them as owned CRDs', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const Widget = sdk.kubernetes.resource<{ readonly color?: string }>({
+      apiVersion: 'provider.example.io/v1beta1',
+      kind: 'Widget',
+      plural: 'widgets',
+      namespaces: ['media'],
+    });
+    const operator = sdk.operator({
+      name: 'external-read-pipeline',
+      resources: { ImageJob },
+      reads: { Deployment: sdk.kubernetes.Deployment, Widget },
+      deployment: { namespace: 'media' },
+      handlers: [
+        ImageJob.on.context.reconcile(async (_job, ctx) => {
+          const deployments = await ctx.read.kind('Deployment').list({ namespace: 'media', limit: 10, continueToken: 'next', fieldSelector: 'metadata.name=worker' });
+          const widget = await ctx.read.resource(Widget).get({ namespace: 'media', name: 'primary' });
+          return ctx.apply({ status: { phase: deployments.items.length === 1 && widget?.spec.color === 'blue' ? 'Processing' : 'Pending' } });
+        }),
+      ],
+    });
+    const requests: unknown[] = [];
+    const output = await dispatchOperatorHandler(operator.definition, JSON.stringify({
+      abiVersion: 'applik8s.handler/v1alpha1',
+      handlerId: 'ImageJob.reconcile.0',
+      event: 'reconcile',
+      object: { apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', metadata: { name: 'hero', namespace: 'media' }, spec: { sourceUrl: 's3://hero' } },
+      runtime: { reconcileId: 'external-read' },
+    }), {
+      kubernetesRead(requestJson) {
+        // typecast: the fixture inspects the declared read wire request before returning a matching Kubernetes object or list.
+        const request = JSON.parse(requestJson) as { readonly operation: string; readonly kind: string };
+        requests.push(request);
+        return request.operation === 'list'
+          ? JSON.stringify({ ok: true, value: { items: [{ apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name: 'worker', namespace: 'media' }, spec: {} }], continueToken: 'after' } })
+          : JSON.stringify({ ok: true, value: { apiVersion: 'provider.example.io/v1beta1', kind: 'Widget', metadata: { name: 'primary', namespace: 'media' }, spec: { color: 'blue' } } });
+      },
+    });
+
+    expect(operator.definition.reads).toMatchObject({ Deployment: { scope: 'Namespaced' }, Widget: { plural: 'widgets', namespaces: ['media'] } });
+    expect(requests).toEqual([
+      expect.objectContaining({ operation: 'list', apiVersion: 'apps/v1', kind: 'Deployment', plural: 'deployments', scope: 'Namespaced', query: { namespace: 'media', limit: 10, continueToken: 'next', fieldSelector: 'metadata.name=worker' } }),
+      expect.objectContaining({ operation: 'get', apiVersion: 'provider.example.io/v1beta1', kind: 'Widget', plural: 'widgets', scope: 'Namespaced', query: { namespace: 'media', name: 'primary' } }),
+    ]);
+    expect(JSON.parse(output)).toEqual({ operations: [{ kind: 'status', status: { phase: 'Processing' } }] });
+  });
+
   it('fails explicitly when typed Kubernetes reads have no host import', async () => {
     const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
       apiVersion: 'media.applik8s.dev/v1alpha1',

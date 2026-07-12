@@ -1,8 +1,12 @@
 import postgres from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
-import { applicationModelMigrationPreflightSql, type ApplicationRuntimeModelContract } from '../src/application-models.js';
+import { applicationModelMigrationPreflightSql, applicationModelMigrationSql, type ApplicationRuntimeModelContract } from '../src/application-models.js';
+import { closePostgresModelCommandRuntime, executePostgresModelCommand, isRetryablePostgresTransactionError } from '../src/model-command-postgres-runtime.js';
 import { closePostgresModelClients, createPostgresModelClient } from '../src/model-store-postgres-runtime.js';
+import { command, event } from '../src/dsl.js';
+import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/event-log-jetstream-runtime.js';
+import { type } from 'arktype';
 
 const liveDatabaseUrl = process.env.APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL;
 
@@ -11,6 +15,28 @@ describe('Postgres ModelStore script runtime', () => {
     delete process.env.APPLIK8S_MODEL_STORE_SCRIPT_NOTE_DATABASE_URL;
     delete process.env.APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL;
     await closePostgresModelClients();
+    await closePostgresModelCommandRuntime();
+  });
+
+  it('generates the durable command inbox, result, transition, history, and outbox schema', () => {
+    const migration = applicationModelMigrationSql(scriptNoteModel('applik8s_script_note_commands'));
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_command_inbox"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_command_results"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_model_transitions"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_model_history"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_event_outbox"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_command_outbox"');
+    expect(migration).toContain('WHERE published_at IS NULL');
+    expect(migration).toContain('applik8s_command_inbox_cleanup');
+    expect(migration).toContain('applik8s_event_outbox_cleanup');
+  });
+
+  it('classifies only PostgreSQL transaction-abort codes as safe whole-transaction retries', () => {
+    expect(isRetryablePostgresTransactionError({ code: '40P01' })).toBe(true);
+    expect(isRetryablePostgresTransactionError({ code: '40001' })).toBe(true);
+    expect(isRetryablePostgresTransactionError({ code: '23505' })).toBe(false);
+    expect(isRetryablePostgresTransactionError(new Error('connection failed'))).toBe(false);
   });
 
   it('fails closed with diagnostics when script execution has no database credentials', async () => {
@@ -97,6 +123,7 @@ describe.runIf(liveDatabaseUrl)('Postgres ModelStore script runtime live databas
 
   afterEach(async () => {
     await closePostgresModelClients();
+    await closePostgresModelCommandRuntime();
     await sql?.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(tableName)}`);
     await sql?.end({ timeout: 1 });
     delete process.env.APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL;
@@ -196,15 +223,445 @@ describe.runIf(liveDatabaseUrl)('Postgres ModelStore script runtime live databas
     });
   });
 
+  it('commits model state, history, transitions, results, and event outbox atomically and replays duplicate results', async () => {
+    if (!liveDatabaseUrl) {
+      throw new Error('Live command transaction test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    }
+    const commandModel = { ...scriptNoteModel(`${tableName}_commands`, 'APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL'), name: 'ScriptCommandNote' };
+    const bindingId = `script-note-command-${process.pid}`;
+    const NoteChanged = event('note.changed.v1', { payload: type({ message: 'string' }) });
+    await sql.unsafe(applicationModelMigrationSql(commandModel));
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+    const client = createPostgresModelClient<{ readonly message: string }>(commandModel);
+    await client.create({ id: 'note-command-1', spec: { message: 'before' } });
+    let invocations = 0;
+    const execution = {
+      bindingId,
+      command: { name: 'note.rename', version: 'v1' },
+      schemas: {
+        input: { type: 'object', properties: { message: { type: 'string' } }, required: ['message'], additionalProperties: false },
+        output: { type: 'object', properties: { previous: { type: 'string' }, current: { type: 'string' } }, required: ['previous', 'current'], additionalProperties: false },
+        errors: { nameReserved: { type: 'object', properties: { reason: { type: 'string' } }, required: ['reason'], additionalProperties: false } },
+      },
+      model: commandModel,
+      message: { id: 'message-1', input: { message: 'after' }, targetKey: 'note-command-1', idempotencyKey: 'request-1', recordedAt: '2026-07-10T12:00:00.000Z' },
+      history: true,
+      outbox: [NoteChanged],
+      databaseUrl: liveDatabaseUrl,
+      async handler(note: { readonly spec: { readonly message: string }; patch(patch: { readonly spec?: { readonly message?: string } }): void }, input: { readonly message: string }, context: { emit(eventDefinition: typeof NoteChanged, payload: { readonly message: string }): void }) {
+        invocations += 1;
+        const previous = note.spec.message;
+        note.patch({ spec: { message: input.message } });
+        context.emit(NoteChanged, { message: input.message });
+        return { previous, current: input.message };
+      },
+    };
+
+    const first = await executePostgresModelCommand(execution);
+    const duplicate = await executePostgresModelCommand(execution);
+
+    expect(first).toMatchObject({ replayed: false, output: { previous: 'before', current: 'after' }, model: { spec: { message: 'after' } }, events: [expect.objectContaining({ contract: { name: 'note.changed', version: 'v1' }, causationId: 'message-1', recordedAt: '2026-07-10T12:00:00.000Z' })] });
+    expect(duplicate).toMatchObject({ replayed: true, output: first.output, model: { spec: { message: 'after' } }, events: [] });
+    expect(first.observation).toEqual({ commandId: 'message-1', correlationId: 'message-1', target: { model: 'ScriptCommandNote', key: 'note-command-1' }, phase: 'completed', replayed: false, resultRevision: first.model.revision, stateRevision: { authority: 'model', model: 'ScriptCommandNote', target: 'note-command-1', revision: first.model.revision } });
+    expect(first.events[0]).toMatchObject({ stateRevision: first.observation.stateRevision });
+    expect(duplicate.observation).toEqual({ ...first.observation, replayed: true });
+    expect(invocations).toBe(1);
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_model_transitions WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_model_history WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
+
+    const conflictExecution = {
+      ...execution,
+      message: { ...execution.message, id: 'message-conflict', idempotencyKey: 'request-conflict', expectedRevision: 'stale-revision' },
+    };
+    await expect(executePostgresModelCommand(conflictExecution)).rejects.toMatchObject({
+      code: 'applik8s-command-rejected',
+      replayed: false,
+      rejection: { name: 'revisionConflict', payload: { expectedRevision: 'stale-revision', actualRevision: first.model.revision } },
+      observation: expect.objectContaining({ commandId: 'message-conflict', target: { model: 'ScriptCommandNote', key: 'note-command-1' }, phase: 'rejected', resultRevision: first.model.revision, stateRevision: { authority: 'model', model: 'ScriptCommandNote', target: 'note-command-1', revision: first.model.revision } }),
+    });
+    await expect(executePostgresModelCommand(conflictExecution)).rejects.toMatchObject({
+      replayed: true,
+      rejection: { name: 'revisionConflict' },
+      observation: expect.objectContaining({ commandId: 'message-conflict', target: { model: 'ScriptCommandNote', key: 'note-command-1' }, phase: 'rejected', resultRevision: first.model.revision }),
+    });
+
+    const rejectedExecution = {
+      ...execution,
+      message: { ...execution.message, id: 'message-rejected', idempotencyKey: 'request-rejected' },
+      errors: ['nameReserved'],
+      async handler(_note: { readonly spec: { readonly message: string } }, _input: { readonly message: string }, context: { reject(name: 'nameReserved', payload: { readonly reason: string }): never }) {
+        context.reject('nameReserved', { reason: 'reserved' });
+      },
+    };
+    await expect(executePostgresModelCommand(rejectedExecution)).rejects.toMatchObject({
+      code: 'applik8s-command-rejected',
+      replayed: false,
+      rejection: { name: 'nameReserved', payload: { reason: 'reserved' } },
+      observation: expect.objectContaining({ commandId: 'message-rejected', correlationId: 'message-rejected', phase: 'rejected', replayed: false, resultRevision: expect.any(String), stateRevision: expect.objectContaining({ authority: 'model', model: 'ScriptCommandNote', target: 'note-command-1' }) }),
+    });
+    await expect(executePostgresModelCommand(rejectedExecution)).rejects.toMatchObject({
+      code: 'applik8s-command-rejected',
+      replayed: true,
+      rejection: { name: 'nameReserved', payload: { reason: 'reserved' } },
+      observation: expect.objectContaining({ commandId: 'message-rejected', correlationId: 'message-rejected', phase: 'rejected', replayed: true, resultRevision: expect.any(String) }),
+    });
+    await expect(sql.unsafe("SELECT count(*)::int AS count FROM applik8s_command_results WHERE error ->> 'name' = 'nameReserved'", [])).resolves.toMatchObject([{ count: 1 }]);
+
+    const invalidOutputExecution = {
+      ...execution,
+      message: { ...execution.message, id: 'message-invalid-output', idempotencyKey: 'request-invalid-output' },
+      async handler() {
+        // typecast: this malformed handler result deliberately bypasses its compile-time output contract to test rollback.
+        return { previous: 1, current: 'after' } as never;
+      },
+    };
+    await expect(executePostgresModelCommand(invalidOutputExecution)).rejects.toThrow(/applik8s-message-schema-invalid.*output/);
+
+    const invalidRejectionExecution = {
+      ...execution,
+      message: { ...execution.message, id: 'message-invalid-rejection', idempotencyKey: 'request-invalid-rejection' },
+      errors: ['nameReserved'],
+      async handler(_note: unknown, _input: unknown, context: { reject(name: string, payload: object): never }) {
+        context.reject('nameReserved', { reason: 1 });
+      },
+    };
+    await expect(executePostgresModelCommand(invalidRejectionExecution)).rejects.toThrow(/applik8s-message-schema-invalid.*errors\.nameReserved/);
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId])).resolves.toMatchObject([{ count: 3 }]);
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(commandModel.tableName)}`);
+  });
+
+  it('serializes concurrent same-key commands and rolls back state plus outbox before commit', async () => {
+    if (!liveDatabaseUrl) {
+      throw new Error('Live command concurrency test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    }
+    const counterModel = commandCounterModel(`applik8s_script_command_counter_${process.pid}`);
+    const bindingId = `script-counter-command-${process.pid}`;
+    const CounterChanged = event('counter.changed.v1', { payload: type({ count: 'number' }) });
+    await sql.unsafe(applicationModelMigrationSql(counterModel));
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+    const client = createPostgresModelClient<{ readonly count: number }>(counterModel);
+    await client.create({ id: 'shared-counter', spec: { count: 0 } });
+
+    const results = await Promise.all(Array.from({ length: 10 }, async (_, index) => executePostgresModelCommand<{ readonly count: number }, Record<string, never>, { readonly amount: number }, { readonly count: number }>({
+      bindingId,
+      command: { name: 'counter.increment', version: 'v1' },
+      model: counterModel,
+      message: { id: `increment-message-${index}`, input: { amount: 1 }, targetKey: 'shared-counter', idempotencyKey: `increment-${index}` },
+      outbox: [CounterChanged],
+      databaseUrl: liveDatabaseUrl,
+      async handler(counter, input, context) {
+        const count = counter.spec.count + input.amount;
+        await Promise.resolve();
+        counter.patch({ spec: { count } });
+        context.emit(CounterChanged, { count });
+        return { count };
+      },
+    })));
+
+    expect(results.map((result) => result.output.count).sort((left, right) => left - right)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    await expect(client.get({ id: 'shared-counter' })).resolves.toMatchObject({ spec: { count: 10 } });
+
+    await expect(executePostgresModelCommand<{ readonly count: number }, Record<string, never>, { readonly amount: number }, { readonly count: number }>({
+      bindingId,
+      command: { name: 'counter.increment', version: 'v1' },
+      model: counterModel,
+      message: { id: 'crash-message', input: { amount: 100 }, targetKey: 'shared-counter', idempotencyKey: 'crash-before-commit' },
+      outbox: [CounterChanged],
+      databaseUrl: liveDatabaseUrl,
+      async handler(counter, input, context) {
+        const count = counter.spec.count + input.amount;
+        counter.patch({ spec: { count } });
+        context.emit(CounterChanged, { count });
+        throw new Error('simulated-crash-before-commit');
+      },
+    })).rejects.toThrow(/simulated-crash-before-commit/);
+    await expect(client.get({ id: 'shared-counter' })).resolves.toMatchObject({ spec: { count: 10 } });
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId])).resolves.toMatchObject([{ count: 10 }]);
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 10 }]);
+
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(counterModel.tableName)}`);
+  });
+
+  it('executes concurrent optimistic commands, alternate-key routing, transactional command outbox, and runtime effect denial', async () => {
+    if (!liveDatabaseUrl) throw new Error('Live complete command semantics test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    const model = commandCounterModel(`applik8s_script_complete_command_${process.pid}`);
+    const bindingId = `script-complete-command-${process.pid}`;
+    const Followup = command('counter.followup.v1', { input: type({ counterId: 'string', count: 'number' }), output: type({ accepted: 'boolean' }) });
+    await sql.unsafe(applicationModelMigrationSql(model));
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+    const client = createPostgresModelClient<{ readonly count: number }>(model);
+    await Promise.all([
+      client.create({ id: 'fallback-counter', spec: { count: 0 } }),
+      client.create({ id: 'parallel-a', spec: { count: 0 } }),
+      client.create({ id: 'parallel-b', spec: { count: 0 } }),
+    ]);
+
+    const routed = await executePostgresModelCommand<{ readonly count: number }, Record<string, never>, { readonly amount: number }, { readonly count: number }>({
+      bindingId,
+      command: { name: 'counter.increment', version: 'v1' },
+      schemas: { input: {}, output: {}, errors: {}, commands: { [Followup.id]: { type: 'object', properties: { counterId: { type: 'string' }, count: { type: 'number' } }, required: ['counterId', 'count'], additionalProperties: false } } },
+      model,
+      ordering: 'concurrent',
+      missingRoute: 'fallback-counter',
+      retry: { mode: 'boundedExponentialBackoff', maxAttempts: 20, initialDelayMs: 1, maxDelayMs: 10 },
+      message: { id: 'routed-message', input: { amount: 1 }, targetKey: 'missing-counter', idempotencyKey: 'routed-request' },
+      commands: [Followup],
+      databaseUrl: liveDatabaseUrl,
+      async handler(target, input, context) {
+        const count = target.spec.count + input.amount;
+        target.patch({ spec: { count } });
+        context.send(Followup, { counterId: target.id, count }, { targetKey: target.id });
+        return { count };
+      },
+    });
+    expect(routed).toMatchObject({ model: { id: 'fallback-counter', spec: { count: 1 } }, observation: { target: { model: model.name, key: 'fallback-counter' } } });
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_command_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
+    const relayed: { readonly id: string; readonly channel?: string }[] = [];
+    await expect(relayPostgresCommandOutbox({ databaseUrl: liveDatabaseUrl, eventLog: { async publish(envelope, channel) { relayed.push({ id: envelope.id, ...(channel ? { channel } : {}) }); return { stream: 'APPLIK8S_EVENTS', sequence: 1, duplicate: false, subject: 'applik8s.commands.counter-followup.v1.fallback-counter', messageId: envelope.id }; } } })).resolves.toMatchObject({ selected: 1, published: 1 });
+    expect(relayed).toEqual([expect.objectContaining({ channel: 'commands' })]);
+
+    let entered = 0;
+    let release: (() => void) | undefined;
+    const bothEntered = new Promise<void>((resolve) => { release = resolve; });
+    const runParallel = (targetKey: string) => executePostgresModelCommand<{ readonly count: number }, Record<string, never>, { readonly amount: number }, { readonly count: number }>({
+      bindingId: `${bindingId}-parallel`, command: { name: 'counter.parallel', version: 'v1' }, model, ordering: 'concurrent',
+      message: { id: `parallel-${targetKey}`, input: { amount: 1 }, targetKey, idempotencyKey: targetKey }, databaseUrl: liveDatabaseUrl,
+      async handler(target, input) { entered += 1; if (entered === 2) release?.(); await bothEntered; const count = target.spec.count + input.amount; target.patch({ spec: { count } }); return { count }; },
+    });
+    await expect(Promise.all([runParallel('parallel-a'), runParallel('parallel-b')])).resolves.toHaveLength(2);
+
+    const optimistic = await Promise.all(Array.from({ length: 10 }, (_, index) => executePostgresModelCommand<{ readonly count: number }, Record<string, never>, { readonly amount: number }, { readonly count: number }>({
+      bindingId: `${bindingId}-optimistic`, command: { name: 'counter.optimistic', version: 'v1' }, model, ordering: 'concurrent',
+      retry: { mode: 'boundedExponentialBackoff', maxAttempts: 20, initialDelayMs: 1, maxDelayMs: 10 },
+      message: { id: `optimistic-${index}`, input: { amount: 1 }, targetKey: 'fallback-counter', idempotencyKey: `optimistic-${index}` }, databaseUrl: liveDatabaseUrl,
+      async handler(target, input) { const count = target.spec.count + input.amount; await Promise.resolve(); target.patch({ spec: { count } }); return { count }; },
+    })));
+    expect(optimistic.map((result) => result.output.count).sort((left, right) => left - right)).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+
+    await expect(executePostgresModelCommand<{ readonly count: number }, Record<string, never>, Record<string, never>, { readonly ok: boolean }>({
+      bindingId: `${bindingId}-effect`, command: { name: 'counter.effect', version: 'v1' }, model,
+      message: { id: 'effect-message', input: {}, targetKey: 'fallback-counter', idempotencyKey: 'effect-request' }, databaseUrl: liveDatabaseUrl,
+      async handler() { await globalThis['fetch']('http://127.0.0.1:1/forbidden'); return { ok: true }; },
+    })).rejects.toThrow(/applik8s-command-external-effect-forbidden/);
+    await expect(client.get({ id: 'fallback-counter' })).resolves.toMatchObject({ spec: { count: 11 } });
+
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id LIKE $1', [`${bindingId}%`]);
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(model.tableName)}`);
+  });
+
+  it('cleans only completed binding-scoped command data after audit and published-outbox windows', async () => {
+    if (!liveDatabaseUrl) throw new Error('Live command cleanup test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    const cleanupModel = commandCounterModel(`applik8s_script_cleanup_${process.pid}`);
+    const bindingId = `script-cleanup-command-${process.pid}`;
+    const otherBindingId = `${bindingId}-other`;
+    await sql.unsafe(applicationModelMigrationSql(cleanupModel));
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[])', [[bindingId, otherBindingId]]);
+    const insert = async (scope: string, owner: string, receivedAt: string, publishedAt: string | undefined) => {
+      await sql.unsafe("INSERT INTO applik8s_command_inbox (scope, binding_id, model, target_key, idempotency_key, message_id, input, received_at) VALUES ($1, $2, 'Cleanup', $3, $3, $3, '{}'::jsonb, $4::timestamptz)", [scope, owner, scope, receivedAt]);
+      await sql.unsafe("INSERT INTO applik8s_command_results (scope, output, model_revision, completed_at) VALUES ($1, '{}'::jsonb, 'revision', $2::timestamptz)", [scope, receivedAt]);
+      await sql.unsafe('INSERT INTO applik8s_event_outbox (id, scope, contract_name, contract_version, partition_key, envelope, payload, published_at, created_at) VALUES ($1, $2, \'cleanup.changed\', \'v1\', $2, $3::jsonb, \'{}\'::jsonb, $4::timestamptz, $5::timestamptz)', [`${scope}-event`, scope, JSON.stringify({ id: `${scope}-event`, contract: { name: 'cleanup.changed', version: 'v1' }, payload: {}, recordedAt: receivedAt }), publishedAt ?? null, receivedAt]);
+    };
+    await insert(`${bindingId}-expired`, bindingId, '2026-05-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z');
+    await insert(`${bindingId}-pending`, bindingId, '2026-05-01T00:00:00.000Z', undefined);
+    await insert(`${bindingId}-recent`, bindingId, '2026-07-10T00:00:00.000Z', '2026-07-10T00:00:00.000Z');
+    await insert(`${otherBindingId}-expired`, otherBindingId, '2026-05-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z');
+
+    const cleanup = await cleanupPostgresCommandData({ databaseUrl: liveDatabaseUrl, bindingIds: [bindingId], auditWindowSeconds: 30 * 24 * 60 * 60, publishedOutboxWindowSeconds: 24 * 60 * 60, batchSize: 100, now: '2026-07-11T00:00:00.000Z' });
+    expect(cleanup).toEqual({ eventOutboxDeleted: 1, commandOutboxDeleted: 0, commandsDeleted: 1 });
+    await expect(sql.unsafe('SELECT scope FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[]) ORDER BY scope', [[bindingId, otherBindingId]])).resolves.toMatchObject([
+      { scope: `${bindingId}-pending` },
+      { scope: `${bindingId}-recent` },
+      { scope: `${otherBindingId}-expired` },
+    ]);
+    await expect(observePostgresOutboxLag(liveDatabaseUrl)).resolves.toEqual(expect.objectContaining({ pendingEvents: expect.any(Number), pendingCommands: expect.any(Number), oldestPendingSeconds: expect.any(Number) }));
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[])', [[bindingId, otherBindingId]]);
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(cleanupModel.tableName)}`);
+  });
+
+  it('recovers from broker outage and crash-after-publish using the stable outbox message id', async () => {
+    if (!liveDatabaseUrl) throw new Error('Live outbox recovery test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    const relayModel = commandCounterModel(`applik8s_script_relay_${process.pid}`);
+    const bindingId = `script-relay-command-${process.pid}`;
+    const RelayChanged = event('relay.changed.v1', { payload: type({ count: 'number' }) });
+    await sql.unsafe(applicationModelMigrationSql(relayModel));
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+    const client = createPostgresModelClient<{ readonly count: number }>(relayModel);
+    await client.create({ id: 'relay-target', spec: { count: 0 } });
+    await executePostgresModelCommand<{ readonly count: number }, Record<string, never>, { readonly amount: number }, { readonly count: number }>({
+      bindingId,
+      command: { name: 'relay.increment', version: 'v1' },
+      model: relayModel,
+      message: { id: 'relay-message', input: { amount: 1 }, targetKey: 'relay-target', idempotencyKey: 'relay-request' },
+      outbox: [RelayChanged],
+      databaseUrl: liveDatabaseUrl,
+      async handler(target, input: { readonly amount: number }, context) {
+        const count = target.spec.count + input.amount;
+        target.patch({ spec: { count } });
+        context.emit(RelayChanged, { count });
+        return { count };
+      },
+    });
+
+    await expect(relayPostgresEventOutbox({ databaseUrl: liveDatabaseUrl, eventLog: { publish: async () => { throw new Error('simulated-broker-outage'); } } })).rejects.toThrow(/simulated-broker-outage/);
+    await expect(sql.unsafe('SELECT published_at FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ published_at: null }]);
+
+    const publications: string[] = [];
+    const eventLog = { publish: async (envelope: { readonly id: string }) => {
+      publications.push(envelope.id);
+      return { stream: 'APPLIK8S_EVENTS', sequence: 1, duplicate: publications.length > 1, subject: 'applik8s.events.relay.changed.v1.relay-target', messageId: envelope.id };
+    } };
+    await expect(relayPostgresEventOutbox({ databaseUrl: liveDatabaseUrl, eventLog, onPublishAcknowledged: async () => { throw new Error('simulated-crash-after-publish'); } })).rejects.toThrow(/simulated-crash-after-publish/);
+    await expect(sql.unsafe('SELECT published_at FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ published_at: null }]);
+    await expect(relayPostgresEventOutbox({ databaseUrl: liveDatabaseUrl, eventLog })).resolves.toMatchObject({ selected: 1, published: 1, duplicates: 1, messageIds: [publications[0]] });
+    expect(publications).toEqual([publications[0], publications[0]]);
+    await expect(sql.unsafe('SELECT published_at IS NOT NULL AS published FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ published: true }]);
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(relayModel.tableName)}`);
+  });
+
+  it('commits declared same-database participant model changes in the command transaction', async () => {
+    if (!liveDatabaseUrl) throw new Error('Live participant transaction test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    const accountModel = commandCounterModel(`applik8s_script_account_${process.pid}`);
+    const auditModel = { ...commandCounterModel(`applik8s_script_audit_${process.pid}`), name: 'Audit' };
+    const bindingId = `script-participant-command-${process.pid}`;
+    await sql.unsafe(applicationModelMigrationSql(accountModel));
+    await sql.unsafe(applicationModelMigrationSql(auditModel));
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+    const accountClient = createPostgresModelClient<{ readonly count: number }>(accountModel);
+    const auditClient = createPostgresModelClient<{ readonly count: number }>(auditModel);
+    await accountClient.create({ id: 'account-1', spec: { count: 0 } });
+    await auditClient.create({ id: 'audit-1', spec: { count: 0 } });
+
+    await executePostgresModelCommand<{ readonly count: number }, Record<string, never>, { readonly amount: number }, { readonly count: number }>({
+      bindingId,
+      command: { name: 'account.increment', version: 'v1' },
+      model: accountModel,
+      models: [accountModel, auditModel],
+      historyModels: ['Audit'],
+      message: { id: 'participant-message', input: { amount: 1 }, targetKey: 'account-1', idempotencyKey: 'participant-request' },
+      databaseUrl: liveDatabaseUrl,
+      async handler(account, input, context) {
+        account.patch({ spec: { count: account.spec.count + input.amount } });
+        await context.models.Audit?.patch({ id: 'audit-1' }, { spec: { count: 1 } });
+        return { count: account.spec.count };
+      },
+    });
+
+    await expect(accountClient.get({ id: 'account-1' })).resolves.toMatchObject({ spec: { count: 1 } });
+    await expect(auditClient.get({ id: 'audit-1' })).resolves.toMatchObject({ spec: { count: 1 } });
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_model_transitions WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 2 }]);
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_model_history WHERE model = $1 AND scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $2)', ['Audit', bindingId])).resolves.toMatchObject([{ count: 1 }]);
+
+    const rejectedBindingId = `${bindingId}-rejected`;
+    const rejectedExecution = {
+      bindingId: rejectedBindingId,
+      command: { name: 'account.increment', version: 'v1' },
+      errors: ['auditRejected'],
+      model: accountModel,
+      models: [accountModel, auditModel],
+      historyModels: ['Audit'],
+      message: { id: 'participant-rejected-message', input: { amount: 10 }, targetKey: 'account-1', idempotencyKey: 'participant-rejected-request' },
+      databaseUrl: liveDatabaseUrl,
+      async handler(account: { readonly spec: { readonly count: number }; patch(patch: { readonly spec: { readonly count: number } }): void }, input: { readonly amount: number }, context: { readonly models: Readonly<Record<string, { patch(ref: { readonly id: string }, patch: { readonly spec: { readonly count: number } }): Promise<unknown> }>>; reject(name: 'auditRejected', payload: { readonly reason: string }): never }) {
+        account.patch({ spec: { count: account.spec.count + input.amount } });
+        await context.models.Audit?.patch({ id: 'audit-1' }, { spec: { count: 11 } });
+        context.reject('auditRejected', { reason: 'policy' });
+      },
+    };
+    await expect(executePostgresModelCommand(rejectedExecution)).rejects.toMatchObject({
+      code: 'applik8s-command-rejected',
+      replayed: false,
+      rejection: { name: 'auditRejected', payload: { reason: 'policy' } },
+    });
+    await expect(accountClient.get({ id: 'account-1' })).resolves.toMatchObject({ spec: { count: 1 } });
+    await expect(auditClient.get({ id: 'audit-1' })).resolves.toMatchObject({ spec: { count: 1 } });
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_model_transitions WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [rejectedBindingId])).resolves.toMatchObject([{ count: 0 }]);
+    await expect(sql.unsafe("SELECT count(*)::int AS count FROM applik8s_command_results WHERE error ->> 'name' = 'auditRejected'", [])).resolves.toMatchObject([{ count: 1 }]);
+
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [rejectedBindingId]);
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(accountModel.tableName)}`);
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(auditModel.tableName)}`);
+  });
+
+  it('retries an intentionally deadlocked multi-model transaction from a clean boundary', async () => {
+    if (!liveDatabaseUrl) throw new Error('Live command deadlock test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    const accountModel = commandCounterModel(`applik8s_script_deadlock_account_${process.pid}`);
+    const auditModel = { ...commandCounterModel(`applik8s_script_deadlock_audit_${process.pid}`), name: 'DeadlockAudit' };
+    const bindingId = `script-deadlock-command-${process.pid}`;
+    await sql.unsafe(applicationModelMigrationSql(accountModel));
+    await sql.unsafe(applicationModelMigrationSql(auditModel));
+    const accountClient = createPostgresModelClient<{ readonly count: number }>(accountModel);
+    const auditClient = createPostgresModelClient<{ readonly count: number }>(auditModel);
+    await Promise.all([
+      accountClient.create({ id: 'account-a', spec: { count: 0 } }),
+      accountClient.create({ id: 'account-b', spec: { count: 0 } }),
+      auditClient.create({ id: 'audit-a', spec: { count: 0 } }),
+      auditClient.create({ id: 'audit-b', spec: { count: 0 } }),
+    ]);
+    let waiting = 0;
+    let releaseBarrier: (() => void) | undefined;
+    const barrier = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+    const invocations = new Map<string, number>();
+    const execute = (id: string, targetKey: string, first: string, second: string) => executePostgresModelCommand<{ readonly count: number }, Record<string, never>, { readonly first: string; readonly second: string }, { readonly ok: boolean }>({
+      bindingId,
+      command: { name: 'account.audit-pair', version: 'v1' },
+      model: accountModel,
+      models: [accountModel, auditModel],
+      retry: { mode: 'boundedExponentialBackoff', maxAttempts: 3, initialDelayMs: 5, maxDelayMs: 20 },
+      message: { id, input: { first, second }, targetKey, idempotencyKey: id },
+      databaseUrl: liveDatabaseUrl,
+      async handler(_account, input, context) {
+        const invocation = (invocations.get(id) ?? 0) + 1;
+        invocations.set(id, invocation);
+        const firstObject = await context.models.DeadlockAudit?.get({ id: input.first });
+        await context.models.DeadlockAudit?.patch({ id: input.first }, { spec: { count: Number(Reflect.get(firstObject?.spec ?? {}, 'count') ?? 0) + 1 } });
+        if (invocation === 1) {
+          waiting += 1;
+          if (waiting === 2) releaseBarrier?.();
+          await barrier;
+        }
+        const secondObject = await context.models.DeadlockAudit?.get({ id: input.second });
+        await context.models.DeadlockAudit?.patch({ id: input.second }, { spec: { count: Number(Reflect.get(secondObject?.spec ?? {}, 'count') ?? 0) + 1 } });
+        return { ok: true };
+      },
+    });
+
+    await expect(Promise.all([
+      execute('deadlock-a', 'account-a', 'audit-a', 'audit-b'),
+      execute('deadlock-b', 'account-b', 'audit-b', 'audit-a'),
+    ])).resolves.toHaveLength(2);
+    expect([...invocations.values()].some((count) => count > 1)).toBe(true);
+    await expect(auditClient.get({ id: 'audit-a' })).resolves.toMatchObject({ spec: { count: 2 } });
+    await expect(auditClient.get({ id: 'audit-b' })).resolves.toMatchObject({ spec: { count: 2 } });
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId])).resolves.toMatchObject([{ count: 2 }]);
+
+    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(accountModel.tableName)}`);
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(auditModel.tableName)}`);
+  });
+
   it('fails migration preflight closed against existing schema drift before migration SQL runs', async () => {
     const driftTableName = `${tableName}_drift`;
     const driftModel = scriptNoteModel(driftTableName, 'APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL');
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(driftTableName)}`);
+    await sql.unsafe('DELETE FROM applik8s_model_migrations WHERE model = $1', [driftModel.name]);
     await sql.unsafe('CREATE TABLE IF NOT EXISTS "applik8s_model_migrations" (id text PRIMARY KEY, model text NOT NULL, revision text NOT NULL, plan jsonb NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())');
     await sql.unsafe(`CREATE TABLE ${quoteIdentifier(driftTableName)} (id text PRIMARY KEY, spec jsonb NOT NULL, status jsonb, revision text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), unmanaged text)`);
 
     try {
-      await expect(sql.unsafe(applicationModelMigrationPreflightSql(driftModel))).rejects.toThrow(/applik8s-model-migration-drift-detected: unknownExistingObject/);
+      let preflightError: unknown;
+      try {
+        await sql.unsafe(applicationModelMigrationPreflightSql(driftModel));
+      } catch (error) {
+        preflightError = error;
+        await sql.unsafe('ROLLBACK');
+      }
+      expect(preflightError).toMatchObject({ message: expect.stringMatching(/applik8s-model-migration-drift-detected: unknownExistingObject/) });
     } finally {
       await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(driftTableName)}`);
     }
@@ -223,6 +680,22 @@ function scriptNoteModel(tableName: string, connectionEnvName = 'APPLIK8S_MODEL_
     connectionEnvName,
     constraints: [{ name: 'script-note-message-unique', kind: 'unique', fields: ['message'] }],
     indexes: [{ name: 'byMessage', fields: ['message'], unique: true }],
+    retention: { mode: 'retain' },
+  };
+}
+
+function commandCounterModel(tableName: string): ApplicationRuntimeModelContract {
+  return {
+    name: 'ScriptCommandCounter',
+    tableName,
+    provider: 'postgres',
+    database: 'script_runtime',
+    clusterName: 'script-runtime-db',
+    secretName: 'script-runtime-db-app',
+    secretKey: 'uri',
+    connectionEnvName: 'APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL',
+    constraints: [],
+    indexes: [],
     retention: { mode: 'retain' },
   };
 }

@@ -1035,7 +1035,8 @@ function regexLiteralEnd(source: string, start: number): number {
 
 function isRegexLiteralStart(source: string, index: number): boolean {
   const previous = previousNonWhitespace(source, index);
-  return previous === undefined || ['(', ',', '=', ':', '[', '{', '!', '?', ';'].includes(previous);
+  if (previous === undefined || ['(', ',', '=', ':', '[', '{', '!', '?', ';', '&', '|'].includes(previous)) return true;
+  return /(?:^|[^\w$])(?:return|throw|case|delete|typeof|void|yield|await)\s*$/.test(source.slice(0, index));
 }
 
 function previousNonWhitespace(source: string, index: number): string | undefined {

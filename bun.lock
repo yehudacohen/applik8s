@@ -5,21 +5,22 @@
     "": {
       "name": "@applik8s/workspace",
       "dependencies": {
-        "@applik8s/applik8s": "0.3.0",
-        "@applik8s/compiler": "0.3.0",
-        "@applik8s/core": "0.3.0",
-        "@applik8s/sdk": "0.3.0",
-        "@applik8s/testing": "0.3.0",
-        "@applik8s/typekro-adapter": "0.3.0",
-        "@applik8s/typetainer": "0.3.0",
+        "@applik8s/applik8s": "0.4.0",
+        "@applik8s/compiler": "0.4.0",
+        "@applik8s/core": "0.4.0",
+        "@applik8s/sdk": "0.4.0",
+        "@applik8s/testing": "0.4.0",
+        "@applik8s/typekro-adapter": "0.4.0",
+        "@applik8s/typetainer": "0.4.0",
         "@aws-sdk/client-s3": "^3.1075.0",
         "@kubernetes/client-node": "^1.3.0",
         "arktype": "^2.1.20",
         "commander": "^15.0.0",
         "drizzle-orm": "^0.45.1",
         "hono": "^4.10.7",
+        "nats": "^2.29.3",
         "postgres": "^3.4.7",
-        "typekro": "^0.25.0",
+        "typekro": "^0.26.0",
       },
       "devDependencies": {
         "@biomejs/biome": "^2.5.0",
@@ -33,69 +34,71 @@
     },
     "packages/applik8s": {
       "name": "@applik8s/applik8s",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "bin": {
-        "applik8s": "src/cli.ts",
+        "applik8s": "dist/cli.js",
       },
       "dependencies": {
-        "@applik8s/compiler": "0.3.0",
-        "@applik8s/core": "0.3.0",
-        "@applik8s/sdk": "0.3.0",
-        "@applik8s/typekro-adapter": "0.3.0",
-        "@applik8s/typetainer": "0.3.0",
+        "@applik8s/compiler": "0.4.0",
+        "@applik8s/core": "0.4.0",
+        "@applik8s/sdk": "0.4.0",
+        "@applik8s/typekro-adapter": "0.4.0",
+        "@applik8s/typetainer": "0.4.0",
         "commander": "^15.0.0",
         "drizzle-orm": "^0.45.1",
         "esbuild": "^0.28.1",
         "hono": "^4.10.7",
+        "nats": "^2.29.3",
         "postgres": "^3.4.7",
-        "typekro": "^0.25.0",
+        "typekro": "^0.26.0",
       },
     },
     "packages/compiler": {
       "name": "@applik8s/compiler",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
-        "@applik8s/core": "0.3.0",
-        "@applik8s/runtime-contract": "0.3.0",
-        "@applik8s/typetainer": "0.3.0",
+        "@applik8s/core": "0.4.0",
+        "@applik8s/runtime-contract": "0.4.0",
+        "@applik8s/typetainer": "0.4.0",
         "@bytecodealliance/componentize-js": "^0.21.0",
         "@kubernetes/client-node": "^1.3.0",
         "esbuild": "^0.28.1",
+        "typescript": "^5.3.0",
         "yaml": "^2.9.0",
       },
     },
     "packages/core": {
       "name": "@applik8s/core",
-      "version": "0.3.0",
+      "version": "0.4.0",
     },
     "packages/e2e": {
       "name": "@applik8s/e2e",
     },
     "packages/runtime": {
       "name": "@applik8s/runtime",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
-        "@applik8s/core": "0.3.0",
+        "@applik8s/core": "0.4.0",
       },
     },
     "packages/runtime-contract": {
       "name": "@applik8s/runtime-contract",
-      "version": "0.3.0",
+      "version": "0.4.0",
     },
     "packages/sdk": {
       "name": "@applik8s/sdk",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
-        "@applik8s/core": "0.3.0",
+        "@applik8s/core": "0.4.0",
         "arktype": "^2.1.20",
       },
     },
     "packages/testing": {
       "name": "@applik8s/testing",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
-        "@applik8s/core": "0.3.0",
-        "@applik8s/sdk": "0.3.0",
+        "@applik8s/core": "0.4.0",
+        "@applik8s/sdk": "0.4.0",
       },
     },
     "packages/type-tests": {
@@ -103,19 +106,19 @@
     },
     "packages/typekro-adapter": {
       "name": "@applik8s/typekro-adapter",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
-        "@applik8s/compiler": "0.3.0",
-        "@applik8s/core": "0.3.0",
-        "@applik8s/sdk": "0.3.0",
-        "@applik8s/typetainer": "0.3.0",
+        "@applik8s/compiler": "0.4.0",
+        "@applik8s/core": "0.4.0",
+        "@applik8s/sdk": "0.4.0",
+        "@applik8s/typetainer": "0.4.0",
         "arktype": "^2.1.20",
-        "typekro": "^0.25.0",
+        "typekro": "^0.26.0",
       },
     },
     "packages/typetainer": {
       "name": "@applik8s/typetainer",
-      "version": "0.3.0",
+      "version": "0.4.0",
     },
   },
   "packages": {
@@ -1021,6 +1024,10 @@
 
     "nanoid": ["nanoid@3.3.12", "", { "bin": { "nanoid": "bin/nanoid.cjs" } }, "sha512-ZB9RH/39qpq5Vu6Y+NmUaFhQR6pp+M2Xt76XBnEwDaGcVAqhlvxrl3B2bKS5D3NH3QR76v3aSrKaF/Kiy7lEtQ=="],
 
+    "nats": ["nats@2.29.3", "", { "dependencies": { "nkeys.js": "1.1.0" } }, "sha512-tOQCRCwC74DgBTk4pWZ9V45sk4d7peoE2njVprMRCBXrhJ5q5cYM7i6W+Uvw2qUrcfOSnuisrX7bEx3b3Wx4QA=="],
+
+    "nkeys.js": ["nkeys.js@1.1.0", "", { "dependencies": { "tweetnacl": "1.0.3" } }, "sha512-tB/a0shZL5UZWSwsoeyqfTszONTt4k2YS0tuQioMOD180+MbombYVgzDUYHlx+gejYK6rgf08n/2Df99WY0Sxg=="],
+
     "node-fetch": ["node-fetch@2.7.0", "", { "dependencies": { "whatwg-url": "^5.0.0" }, "peerDependencies": { "encoding": "^0.1.0" }, "optionalPeers": ["encoding"] }, "sha512-c4FRfUm/dbcWZ7U+1Wq0AwCyFL+3nt2bEw05wfxSz+DWpWsitgmSgYmy2dQdWyKC1694ELPqMs/YzUSNozLt8A=="],
 
     "node-gyp-build-optional-packages": ["node-gyp-build-optional-packages@5.2.2", "", { "dependencies": { "detect-libc": "^2.0.1" }, "bin": { "node-gyp-build-optional-packages": "bin.js", "node-gyp-build-optional-packages-optional": "optional.js", "node-gyp-build-optional-packages-test": "build-test.js" } }, "sha512-s+w+rBWnpTMwSFbaE0UXsRlg7hU4FjekKU4eyAih5T8nJuNZT1nNsskXpxmeqSK9UzkBl6UgRlnKc8hz8IEqOw=="],
@@ -1243,11 +1250,13 @@
 
     "tslib": ["tslib@2.8.1", "", {}, "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w=="],
 
+    "tweetnacl": ["tweetnacl@1.0.3", "", {}, "sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw=="],
+
     "type-fest": ["type-fest@5.7.0", "", { "dependencies": { "tagged-tag": "^1.0.0" } }, "sha512-1URUxUqfHFM1c+zfSPsa3gnkO7Aq21qyH75SIduNYz4SzY964rn1X2vCMQaHSHhktiw+0kPa2iyb6PUpXqB6Vg=="],
 
     "typed-array-buffer": ["typed-array-buffer@1.0.3", "", { "dependencies": { "call-bound": "^1.0.3", "es-errors": "^1.3.0", "is-typed-array": "^1.1.14" } }, "sha512-nAYYwfY3qnzX30IkA6AQZjVbtK6duGontcQm1WSG1MD94YLqK0515GNApXkoxKOWMusVssAHWLh9SeaoefYFGw=="],
 
-    "typekro": ["typekro@0.25.0", "", { "dependencies": { "@aws-sdk/client-ecr": "^3.1019.0", "@aws-sdk/client-sts": "^3.1019.0", "@aws-sdk/credential-providers": "^3.1019.0", "@kubernetes/client-node": "1.3.0", "acorn": "8.15.0", "alchemy": "2.0.0-beta.51", "angular-expressions": "1.5.1", "arktype": "^2.2.0", "cel-js": "^0.8.2", "effect": "4.0.0-beta.75", "estraverse": "^5.3.0", "ignore": "^7.0.5", "js-yaml": "4.1.0", "pino": "^9.8.0" }, "peerDependencies": { "typescript": ">=5.0.0" } }, "sha512-K+kwh3sPUQw//ceqRp4FPkJBW/nofv1kmO/TumgscCscq+9NPjiBy3L0vlEJpNtZiGf0sCJQpQtJ+fjg5HNDvw=="],
+    "typekro": ["typekro@0.26.0", "", { "dependencies": { "@aws-sdk/client-ecr": "^3.1019.0", "@aws-sdk/client-sts": "^3.1019.0", "@aws-sdk/credential-providers": "^3.1019.0", "@kubernetes/client-node": "1.3.0", "acorn": "8.15.0", "alchemy": "2.0.0-beta.51", "angular-expressions": "1.5.1", "arktype": "^2.2.0", "cel-js": "^0.8.2", "effect": "4.0.0-beta.75", "estraverse": "^5.3.0", "ignore": "^7.0.5", "js-yaml": "4.1.0", "pino": "^9.8.0" }, "peerDependencies": { "typescript": ">=5.0.0" } }, "sha512-c//O6MiUZmbji5HtFEjY4aH7AmkE8Lkqek+GxZIpbK9p1bM3MuIqOJ6DXKpyvxKVWA+9mO83MABHaINXNaR/Bg=="],
 
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

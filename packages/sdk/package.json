@@ -1,11 +1,11 @@
 {
   "name": "@applik8s/sdk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "TypeScript authoring SDK for applik8s Kubernetes operators.",
   "license": "Apache-2.0",
   "type": "module",
   "files": [
-    "src"
+    "dist"
   ],
   "publishConfig": {
     "access": "public"
@@ -16,10 +16,10 @@
     "directory": "packages/sdk"
   },
   "exports": {
-    ".": "./src/index.ts"
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
   },
   "dependencies": {
-    "@applik8s/core": "0.3.0",
+    "@applik8s/core": "0.4.0",
     "arktype": "^2.1.20"
   }
 }

@@ -64,7 +64,7 @@ export async function dispatchOperatorHandler(operator: OperatorDefinition, inpu
   }
 
   const reconcileId = input.runtime?.reconcileId ?? 'runtime-reconcile';
-  const invocation = await invokeRunnableHandler(registration, input.object, input.event, reconcileId, capabilityClients(input.capabilities ?? {}, reconcileId, hostImports), operator.resources, hostImports.kubernetesRead);
+  const invocation = await invokeRunnableHandler(registration, input.object, input.event, reconcileId, capabilityClients(input.capabilities ?? {}, reconcileId, hostImports), { ...operator.resources, ...(operator.reads ?? {}) }, hostImports.kubernetesRead);
   if (!invocation.ok) {
     throw new Error(invocation.error.message);
   }
@@ -83,7 +83,7 @@ export function dispatchOperatorHandlerSync(operator: OperatorDefinition, inputJ
   }
 
   const reconcileId = input.runtime?.reconcileId ?? 'runtime-reconcile';
-  const invocation = invokeRunnableHandlerSync(registration, input.object, input.event, reconcileId, capabilityClients(input.capabilities ?? {}, reconcileId, hostImports), operator.resources, hostImports.kubernetesRead);
+  const invocation = invokeRunnableHandlerSync(registration, input.object, input.event, reconcileId, capabilityClients(input.capabilities ?? {}, reconcileId, hostImports), { ...operator.resources, ...(operator.reads ?? {}) }, hostImports.kubernetesRead);
   if (!invocation.ok) {
     throw new Error(invocation.error.message);
   }
@@ -103,7 +103,7 @@ interface InvocationResult {
   readonly plan: NormalizedOperationPlan;
 }
 
-async function invokeRunnableHandler(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, resources: Readonly<Record<string, AnyResourceDefinition>>, kubernetesRead?: KubernetesReadImport): Promise<Result<InvocationResult>> {
+async function invokeRunnableHandler(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport): Promise<Result<InvocationResult>> {
   const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
   try {
     if (registration.handlerStyle === 'context') {
@@ -128,7 +128,7 @@ async function invokeRunnableHandler(registration: RunnableHandlerRegistration, 
   }
 }
 
-function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, resources: Readonly<Record<string, AnyResourceDefinition>>, kubernetesRead?: KubernetesReadImport): Result<InvocationResult> {
+function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport): Result<InvocationResult> {
   const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
   try {
     if (registration.handlerStyle === 'context') {
@@ -265,9 +265,9 @@ function compactCapabilityRequest(request: Readonly<Record<string, unknown>>): C
   return Object.fromEntries(Object.entries(request).filter(([, value]) => value !== undefined)) as unknown as CapabilityRequestPayload;
 }
 
-function createReadClients(resources: Readonly<Record<string, AnyResourceDefinition>>, reconcileId: string, kubernetesRead: KubernetesReadImport | undefined) {
+function createReadClients(resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, reconcileId: string, kubernetesRead: KubernetesReadImport | undefined) {
   const clients: Record<string, unknown> = {};
-  const readFor = <TSpec extends object, TStatus extends object>(resource: ResourceDefinition<TSpec, TStatus>) => readClient(resource, reconcileId, kubernetesRead);
+  const readFor = <TSpec extends object, TStatus extends object>(resource: Pick<ResourceDefinition<TSpec, TStatus>, 'apiVersion' | 'kind' | 'plural' | 'scope'>) => readClient(resource, reconcileId, kubernetesRead);
   Object.defineProperty(clients, 'resource', {
     value: readFor,
     enumerable: false,
@@ -292,7 +292,7 @@ function createReadClients(resources: Readonly<Record<string, AnyResourceDefinit
   return clients;
 }
 
-function readClient<TSpec extends object, TStatus extends object>(resource: ResourceDefinition<TSpec, TStatus>, reconcileId: string, kubernetesRead: KubernetesReadImport | undefined) {
+function readClient<TSpec extends object, TStatus extends object>(resource: Pick<ResourceDefinition<TSpec, TStatus>, 'apiVersion' | 'kind' | 'plural' | 'scope'>, reconcileId: string, kubernetesRead: KubernetesReadImport | undefined) {
   const request = async (operation: 'get' | 'list', query: ResourceGetQuery | ResourceReadQuery | undefined) => {
     if (!kubernetesRead) {
       throw new Error('Typed Kubernetes reads require the kubernetes-read host import, but this runtime did not provide it.');
@@ -346,7 +346,7 @@ interface RecorderOptions {
   readonly event: HandlerEventType;
   readonly reconcileId: string;
   readonly capabilities: CapabilityClientSet;
-  readonly resources: Readonly<Record<string, AnyResourceDefinition>>;
+  readonly resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>;
   readonly kubernetesRead?: KubernetesReadImport;
 }
 

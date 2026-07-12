@@ -1,6 +1,6 @@
 # applik8s Backlog
 
-Last updated: 2026-07-06
+Last updated: 2026-07-12
 
 This backlog prioritizes correctness, excellence, and the public developer experience over feature completeness.
 
@@ -9,6 +9,27 @@ This backlog prioritizes correctness, excellence, and the public developer exper
 `applik8s` should become the easiest serious way to build Kubernetes operators and durable, event-driven applications on the Kubernetes control plane. To get there, the next phase should harden the core programming and runtime semantics before expanding surface area.
 
 The order below is intentional. Later packaging, CLI, and extension work should not outrun reconciliation correctness, observability, and ABI discipline.
+
+## v0.4 Durable Application Behavior Release
+
+Status: release candidate
+
+Completed:
+
+- Versioned command/event contracts, canonical envelopes, and application-graph command/handler/processor nodes.
+- PostgreSQL keyed serialization, optimistic concurrency, durable results, history, transitions, event/command outboxes, retention cleanup, and crash-safe relay.
+- Generated JetStream processors with retry, dead-letter, lag observations, graceful drain, heartbeat probes, bounded resources, restricted networking, and non-root/read-only execution.
+- Released TypeKro 0.26 NATS/NACK/JetStream integration with direct and KRO lifecycle evidence.
+- Tree-shaken `@kubernetes/client-node` Core, Apps, and Custom Objects calls through the credential-safe WASM host boundary.
+- Tenant Platform command, duplicate, concurrency, history/outbox, graceful restart, abrupt crash/redelivery, backlog, Kubernetes SDK, and clean deletion release evidence.
+- Node-loadable packed JavaScript/declaration packages and normalized static handler schemas.
+
+Deferred beyond v0.4:
+
+- Provider-neutral tasks/workflows and Hatchet integration belong to v0.5.
+- Public streams, subscriptions, projections, authenticated reactive delivery, ClickHouse, and React adapters belong to v0.6.
+- KEDA and public processor placement/grouping overrides follow the fixed-concurrency release boundary.
+- Refactor durable contract, graph, lowering, runtime, and provider modules before broadening v0.5 orchestration surface.
 
 ## Scoring
 

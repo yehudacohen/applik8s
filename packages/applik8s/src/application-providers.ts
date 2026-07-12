@@ -9,6 +9,8 @@ export type ApplicationIndexBackend = ApplicationValkeyIndexBackend;
 export type ApplicationModelStoreProvider = ApplicationPostgresModelStoreProvider;
 
 export type ApplicationHttpExposureProvider = 'ingress' | ApplicationIngressHttpExposureProvider;
+export type ApplicationCertificateProvider = ApplicationCertManagerCertificateProvider;
+export type ApplicationDnsPublicationProvider = ApplicationExternalDnsPublicationProvider;
 
 export interface ApplicationKubernetesResourceCounterStoreProvider { readonly kind: 'kubernetes-resource-counter'; readonly flushMs?: number }
 export interface ApplicationKubernetesWatchEventSourceProvider { readonly kind: 'kubernetes-watch'; readonly resyncSeconds?: number }
@@ -16,6 +18,22 @@ export interface ApplicationKubernetesSecretProvider { readonly kind: 'kubernete
 export interface ApplicationKubernetesConfigMapQueueProvider { readonly kind: 'kubernetes-configmap-queue'; readonly maxDepth?: number; readonly maxMessageBytes?: number }
 export interface ApplicationKubernetesConfigMapObjectStorageProvider { readonly kind: 'kubernetes-configmap-objects'; readonly maxObjectBytes?: number }
 export interface ApplicationKubernetesCredentialStoreProvider { readonly kind: 'kubernetes-secret-credentials'; readonly defaultOwnership?: 'external' | 'generated' }
+export interface ApplicationNatsJetStreamEventLogProvider {
+  readonly kind: 'nats-jetstream';
+  readonly name?: string;
+  readonly namespace?: string;
+  readonly provision?: boolean;
+  readonly servers?: readonly string[];
+  readonly stream?: string;
+  readonly subjectPrefix?: string;
+  readonly replicas?: number;
+  readonly storageSize?: string;
+  readonly connectionSecret?: ApplicationResourceRef;
+  readonly authMode?: 'token' | 'userPassword';
+  readonly tokenKey?: string;
+  readonly userKey?: string;
+  readonly passwordKey?: string;
+}
 
 export type ApplicationCounterStoreProvider = ApplicationKubernetesResourceCounterStoreProvider;
 export type ApplicationEventSourceProvider = ApplicationKubernetesWatchEventSourceProvider;
@@ -23,6 +41,7 @@ export type ApplicationSecretProvider = ApplicationKubernetesSecretProvider;
 export type ApplicationQueueProvider = ApplicationKubernetesConfigMapQueueProvider;
 export type ApplicationObjectStorageProvider = ApplicationKubernetesConfigMapObjectStorageProvider;
 export type ApplicationCredentialStoreProvider = ApplicationKubernetesCredentialStoreProvider;
+export type ApplicationEventLogProvider = ApplicationNatsJetStreamEventLogProvider;
 
 export type ApplicationPostgresModelStoreOptions = Omit<ApplicationPostgresModelStoreProvider, 'kind'>;
 
@@ -70,16 +89,34 @@ export interface ApplicationIngressHttpExposureProvider {
   readonly ingressClassName?: string;
 }
 
+export interface ApplicationCertManagerCertificateProvider {
+  readonly kind: 'cert-manager';
+  readonly issuerRef: {
+    readonly name: string;
+    readonly kind: 'Issuer' | 'ClusterIssuer';
+  };
+  readonly duration?: string;
+  readonly renewBefore?: string;
+}
+
+export interface ApplicationExternalDnsPublicationProvider {
+  readonly kind: 'external-dns';
+  readonly annotationPrefix?: string;
+}
+
 export interface ApplicationDefaults {
   readonly models?: ApplicationModelStoreProvider | ApplicationProviderBinding<ApplicationModelStoreProvider>;
   readonly indexes?: unknown;
   readonly counters?: ApplicationCounterStoreProvider;
   readonly events?: ApplicationEventSourceProvider;
+  readonly eventLog?: ApplicationEventLogProvider | ApplicationProviderBinding<ApplicationEventLogProvider>;
   readonly secrets?: ApplicationSecretProvider;
   readonly queues?: ApplicationQueueProvider;
   readonly objects?: ApplicationObjectStorageProvider;
   readonly credentials?: ApplicationCredentialStoreProvider;
   readonly expose?: ApplicationHttpExposureProvider | ApplicationProviderBinding<ApplicationHttpExposureProvider>;
+  readonly certificates?: ApplicationCertificateProvider | ApplicationProviderBinding<ApplicationCertificateProvider>;
+  readonly dns?: ApplicationDnsPublicationProvider | ApplicationProviderBinding<ApplicationDnsPublicationProvider>;
 }
 
 export interface ApplicationDefaultsBinding {
@@ -88,9 +125,37 @@ export interface ApplicationDefaultsBinding {
 }
 
 export interface ApplicationProviderToken<TImplementation = unknown> {
-  readonly name?: string;
+  readonly name: string;
   readonly description?: string;
+  readonly contract?: ApplicationTypedProviderContract;
+  readonly accepts?: (implementation: unknown) => implementation is TImplementation;
   readonly __implementation?: TImplementation;
+}
+
+export interface ApplicationTypedProviderContract {
+  readonly apiVersion: 'applik8s.provider/v1alpha1';
+  readonly interface: string;
+  readonly version: string;
+  readonly requirements: readonly string[];
+  readonly guarantees: readonly string[];
+}
+
+export function defineApplicationProvider<TImplementation>(options: {
+  readonly interface: string;
+  readonly version: string;
+  readonly description?: string;
+  readonly requirements?: readonly string[];
+  readonly guarantees?: readonly string[];
+  readonly accepts: (implementation: unknown) => implementation is TImplementation;
+}): ApplicationProviderToken<TImplementation> {
+  if (!/^[A-Z][A-Za-z0-9]*$/.test(options.interface)) throw new Error(`Application provider interface ${JSON.stringify(options.interface)} must be a stable UpperCamelCase identifier.`);
+  if (!/^v[1-9][0-9]*(?:(?:alpha|beta)[1-9][0-9]*)?$/.test(options.version)) throw new Error(`Application provider interface ${options.interface} must declare an explicit version such as v1 or v1alpha1.`);
+  return {
+    name: options.interface,
+    ...(options.description ? { description: options.description } : {}),
+    contract: { apiVersion: 'applik8s.provider/v1alpha1', interface: options.interface, version: options.version, requirements: [...(options.requirements ?? [])], guarantees: [...(options.guarantees ?? [])] },
+    accepts: options.accepts,
+  };
 }
 
 export interface ApplicationModelStoreProviderToken extends ApplicationProviderToken<ApplicationModelStoreProvider> {
@@ -100,6 +165,14 @@ export interface ApplicationModelStoreProviderToken extends ApplicationProviderT
   };
 }
 
+export interface ApplicationCertificateProviderToken extends ApplicationProviderToken<ApplicationCertificateProvider> {
+  certManager(options: Omit<ApplicationCertManagerCertificateProvider, 'kind'>): ApplicationCertManagerCertificateProvider;
+}
+
+export interface ApplicationDnsPublicationProviderToken extends ApplicationProviderToken<ApplicationDnsPublicationProvider> {
+  externalDns(options?: Omit<ApplicationExternalDnsPublicationProvider, 'kind'>): ApplicationExternalDnsPublicationProvider;
+}
+
 export interface ApplicationProviderBinding<TImplementation = unknown> {
   readonly kind: 'applicationProvider';
   readonly token: ApplicationProviderToken<TImplementation>;
@@ -107,18 +180,20 @@ export interface ApplicationProviderBinding<TImplementation = unknown> {
 }
 
 export interface ApplicationProviderState {
-  readonly defaults: { indexes?: unknown; models?: unknown; counters?: unknown; events?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; credentials?: unknown };
-  readonly providers: { indexes?: unknown; models?: unknown; counters?: unknown; events?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; credentials?: unknown };
+  readonly defaults: { indexes?: unknown; models?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown };
+  readonly providers: { indexes?: unknown; models?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown; extensions?: Record<string, unknown> };
 }
 
 export const IndexStore: ApplicationProviderToken<ApplicationIndexBackend | 'valkey'> = {
   name: 'IndexStore',
   description: 'Default app-scoped index backend provider.',
+  contract: builtInProviderContract('IndexStore', ['typedIndexes']),
 };
 
 export const ModelStore: ApplicationModelStoreProviderToken = {
   name: 'ModelStore',
   description: 'Default app-scoped storage-backed model provider.',
+  contract: builtInProviderContract('ModelStore', ['transactions', 'strongReads']),
   postgres(options = {}) {
     return { kind: 'postgres', ...options };
   },
@@ -137,40 +212,90 @@ export const ModelStore: ApplicationModelStoreProviderToken = {
 export const CounterStore: ApplicationProviderToken<ApplicationCounterStoreProvider> = {
   name: 'CounterStore',
   description: 'Default app-scoped counter backend provider.',
+  contract: builtInProviderContract('CounterStore', ['atomicIncrement']),
 };
 
 export const EventSource: ApplicationProviderToken<ApplicationEventSourceProvider> = {
   name: 'EventSource',
   description: 'Default app-scoped event source provider.',
+  contract: builtInProviderContract('EventSource', ['watch']),
+};
+
+export const EventLog: ApplicationProviderToken<ApplicationEventLogProvider> = {
+  name: 'EventLog',
+  description: 'Durable app-scoped command and committed-event transport provider.',
+  contract: builtInProviderContract('EventLog', ['atLeastOnce', 'stableMessageIds', 'replay']),
 };
 
 export const Secret: ApplicationProviderToken<ApplicationSecretProvider> = {
   name: 'Secret',
   description: 'Default app-scoped secret material provider.',
+  contract: builtInProviderContract('Secret', ['secretReferences']),
 };
 
 export const Queue: ApplicationProviderToken<ApplicationQueueProvider> = {
   name: 'Queue',
   description: 'Default app-scoped queue provider.',
+  contract: builtInProviderContract('Queue', ['boundedDelivery']),
 };
 
 export const ObjectStorage: ApplicationProviderToken<ApplicationObjectStorageProvider> = {
   name: 'ObjectStorage',
   description: 'Default app-scoped object storage provider.',
+  contract: builtInProviderContract('ObjectStorage', ['objectReadWrite']),
 };
 
 export const HttpExposure: ApplicationProviderToken<ApplicationHttpExposureProvider> = {
   name: 'HttpExposure',
   description: 'Default app-scoped HTTP exposure provider.',
+  contract: builtInProviderContract('HttpExposure', ['httpRouting']),
+};
+
+export const Certificate: ApplicationCertificateProviderToken = {
+  name: 'Certificate',
+  description: 'Managed TLS certificate provider for public application exposure.',
+  contract: builtInProviderContract('Certificate', ['managedCertificate']),
+  certManager(options) {
+    return { kind: 'cert-manager', ...options };
+  },
+};
+
+export const DnsPublication: ApplicationDnsPublicationProviderToken = {
+  name: 'DnsPublication',
+  description: 'Managed DNS publication provider for public application exposure.',
+  contract: builtInProviderContract('DnsPublication', ['dnsPublication']),
+  externalDns(options = {}) {
+    return { kind: 'external-dns', ...options };
+  },
 };
 
 export const CredentialStore: ApplicationProviderToken<ApplicationCredentialStoreProvider> = {
   name: 'CredentialStore',
   description: 'Default app-scoped credential storage provider.',
+  contract: builtInProviderContract('CredentialStore', ['credentialReferences']),
 };
 
+function builtInProviderContract(providerInterface: string, guarantees: readonly string[]): ApplicationTypedProviderContract {
+  return { apiVersion: 'applik8s.provider/v1alpha1', interface: providerInterface, version: 'v1alpha1', requirements: [], guarantees };
+}
+
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, ModelStore, CounterStore, EventSource, Secret, Queue, ObjectStorage, HttpExposure, CredentialStore } as const;
+export const providers = { IndexStore, ModelStore, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore } as const;
+
+export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
+  if (!name) return undefined;
+  return Object.values(providers).find((token) => token.name === name)?.contract;
+}
+
+export const defaultApplicationEventLogProvider: ApplicationEventLogProvider = {
+  kind: 'nats-jetstream',
+  name: 'applik8s-events',
+  provision: true,
+  stream: 'APPLIK8S_EVENTS',
+  subjectPrefix: 'applik8s',
+  replicas: 1,
+  storageSize: '8Gi',
+};
 
 export const defaultApplicationProviders: {
   readonly IndexStore: ApplicationValkeyIndexBackend;
@@ -181,6 +306,8 @@ export const defaultApplicationProviders: {
   readonly Queue: ApplicationQueueProvider;
   readonly ObjectStorage: ApplicationObjectStorageProvider;
   readonly HttpExposure: ApplicationIngressHttpExposureProvider;
+  readonly Certificate: undefined;
+  readonly DnsPublication: undefined;
   readonly CredentialStore: ApplicationCredentialStoreProvider;
 } = {
   IndexStore: { kind: 'valkey' },
@@ -191,6 +318,8 @@ export const defaultApplicationProviders: {
   Queue: { kind: 'kubernetes-configmap-queue', maxDepth: 1000, maxMessageBytes: 65536 },
   ObjectStorage: { kind: 'kubernetes-configmap-objects', maxObjectBytes: 524288 },
   HttpExposure: { kind: 'ingress' },
+  Certificate: undefined,
+  DnsPublication: undefined,
   CredentialStore: { kind: 'kubernetes-secret-credentials', defaultOwnership: 'external' },
 };
 
@@ -243,6 +372,20 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.expose = implementation;
     return;
   }
+  if (applicationProviderTokenName(token) === 'Certificate') {
+    if (!isCertManagerCertificateProvider(implementation)) {
+      throw new Error('app.provide(Certificate, ...) currently supports only the cert-manager certificate provider. Use Certificate.certManager({ issuerRef: ... }).');
+    }
+    state.providers.certificates = implementation;
+    return;
+  }
+  if (applicationProviderTokenName(token) === 'DnsPublication') {
+    if (!isExternalDnsPublicationProvider(implementation)) {
+      throw new Error('app.provide(DnsPublication, ...) currently supports only the external-dns publication provider. Use DnsPublication.externalDns().');
+    }
+    state.providers.dns = implementation;
+    return;
+  }
   const tokenName = applicationProviderTokenName(token);
   const field = applicationProviderStateField(tokenName);
   if (field && isSupportedDefaultProvider(tokenName, implementation)) {
@@ -252,11 +395,20 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
   if (applicationProviderInterface(tokenName)) {
     throw new Error(`app.provide(${tokenName}, ...) does not match the bounded v0.3 Kubernetes-native provider contract.`);
   }
+  if (token.contract) {
+    if (token.contract.interface !== token.name) throw new Error(`app.provide(${token.name}, ...) provider token contract interface does not match its public name.`);
+    if (!token.accepts?.(implementation)) throw new Error(`app.provide(${token.name}, ...) does not satisfy versioned provider contract ${token.contract.interface}/${token.contract.version}.`);
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions[`${token.contract.interface}@${token.contract.version}`] = implementation;
+    return;
+  }
+  throw new Error(`app.provide(${tokenName}, ...) requires a versioned provider token created with defineApplicationProvider().`);
 }
 
-function applicationProviderStateField(tokenName: string | undefined): 'counters' | 'events' | 'secrets' | 'queues' | 'objects' | 'credentials' | undefined {
+function applicationProviderStateField(tokenName: string | undefined): 'counters' | 'events' | 'eventLogs' | 'secrets' | 'queues' | 'objects' | 'credentials' | undefined {
   if (tokenName === 'CounterStore') return 'counters';
   if (tokenName === 'EventSource') return 'events';
+  if (tokenName === 'EventLog') return 'eventLogs';
   if (tokenName === 'Secret') return 'secrets';
   if (tokenName === 'Queue') return 'queues';
   if (tokenName === 'ObjectStorage') return 'objects';
@@ -268,6 +420,7 @@ function isSupportedDefaultProvider(tokenName: string | undefined, implementatio
   const kind = implementation && typeof implementation === 'object' ? Reflect.get(implementation, 'kind') : undefined;
   return (tokenName === 'CounterStore' && kind === 'kubernetes-resource-counter')
     || (tokenName === 'EventSource' && kind === 'kubernetes-watch')
+    || (tokenName === 'EventLog' && kind === 'nats-jetstream')
     || (tokenName === 'Secret' && kind === 'kubernetes-secret')
     || (tokenName === 'Queue' && kind === 'kubernetes-configmap-queue')
     || (tokenName === 'ObjectStorage' && kind === 'kubernetes-configmap-objects')
@@ -288,6 +441,39 @@ export function applicationHttpExposureImplementation(value: unknown): Applicati
   return undefined;
 }
 
+export function isCertManagerCertificateProvider(value: unknown): value is ApplicationCertManagerCertificateProvider {
+  const issuerRef = value && typeof value === 'object' ? Reflect.get(value, 'issuerRef') : undefined;
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'cert-manager'
+    && issuerRef
+    && typeof issuerRef === 'object'
+    && typeof Reflect.get(issuerRef, 'name') === 'string'
+    && (Reflect.get(issuerRef, 'kind') === 'Issuer' || Reflect.get(issuerRef, 'kind') === 'ClusterIssuer')
+  );
+}
+
+export function applicationCertificateImplementation(value: unknown): ApplicationCertificateProvider | undefined {
+  if (isCertManagerCertificateProvider(value)) return value;
+  if (isApplicationProviderBinding(value) && value.token === Certificate && isCertManagerCertificateProvider(value.implementation)) {
+    return value.implementation;
+  }
+  return undefined;
+}
+
+export function isExternalDnsPublicationProvider(value: unknown): value is ApplicationExternalDnsPublicationProvider {
+  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'external-dns');
+}
+
+export function applicationDnsPublicationImplementation(value: unknown): ApplicationDnsPublicationProvider | undefined {
+  if (isExternalDnsPublicationProvider(value)) return value;
+  if (isApplicationProviderBinding(value) && value.token === DnsPublication && isExternalDnsPublicationProvider(value.implementation)) {
+    return value.implementation;
+  }
+  return undefined;
+}
+
 export function isPostgresModelStoreProvider(value: unknown): value is ApplicationPostgresModelStoreProvider {
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'postgres');
 }
@@ -302,16 +488,28 @@ export function applicationModelStoreImplementation(store: unknown): Application
   return undefined;
 }
 
+export function applicationEventLogImplementation(value: unknown): ApplicationEventLogProvider | undefined {
+  if (value && typeof value === 'object' && Reflect.get(value, 'kind') === 'nats-jetstream') {
+    // typecast: the provider kind discriminant narrows the supported JetStream EventLog provider.
+    return value as ApplicationEventLogProvider;
+  }
+  if (isApplicationProviderBinding(value) && value.token === EventLog && value.implementation && typeof value.implementation === 'object' && Reflect.get(value.implementation, 'kind') === 'nats-jetstream') {
+    // typecast: the EventLog token plus provider kind narrows the bound implementation.
+    return value.implementation as ApplicationEventLogProvider;
+  }
+  return undefined;
+}
+
 function isApplicationProviderBinding(value: unknown): value is ApplicationProviderBinding<unknown> {
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'applicationProvider');
 }
 
-export function applicationProviderTokenName(token: ApplicationProviderToken<unknown>): string | undefined {
+export function applicationProviderTokenName(token: ApplicationProviderToken<unknown>): string {
   return token.name;
 }
 
 export function applicationProviderInterface(tokenName: string | undefined): ApplicationProviderInterfaceKind | undefined {
-  if (tokenName === 'IndexStore' || tokenName === 'ModelStore' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'CredentialStore') {
+  if (tokenName === 'IndexStore' || tokenName === 'ModelStore' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore') {
     return tokenName;
   }
   return undefined;

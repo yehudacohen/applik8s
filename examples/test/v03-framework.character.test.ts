@@ -93,6 +93,8 @@ describe('v0.3 infrastructure-from-code product story', () => {
     expect(guestbookSource).toMatch(/from ['"]@applik8s\/applik8s\/dsl['"]/);
     expect(`${tenantPlatformSource}\n${guestbookSource}`).not.toContain("../packages/applik8s/src");
     expect(`${tenantPlatformSource}\n${guestbookSource}`).not.toContain("../src/dsl");
+    expect(guestbookSource).not.toMatch(/const\s+CRDs\s*=\s*0/);
+    expect(guestbookSource).not.toMatch(/const\s+DOMContentLoaded\s*=\s*0/);
   });
 
   it('treats v0.3 model/provider APIs as stable and records the runtime execution boundary', () => {
@@ -410,10 +412,13 @@ function providerInterfaces(): readonly ApplicationProviderInterfaceContract[] {
     { interface: 'IndexStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'CounterStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'EventSource', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'EventLog', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
     { interface: 'Secret', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'Queue', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'ObjectStorage', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'HttpExposure', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'Certificate', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
+    { interface: 'DnsPublication', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
     { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   ];
 }

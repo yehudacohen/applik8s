@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import type { ApplicationModelBinding, ApplicationModelStoreProvider, ApplicationProviderToken } from '@applik8s/applik8s';
-import { app, applicationGraphFor, CounterStore, CredentialStore, cel, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ModelStore, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, Secret, sdk, typeKro } from '@applik8s/applik8s';
+import { app, applicationGraphFor, Certificate, CounterStore, CredentialStore, cel, DnsPublication, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ModelStore, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, Secret, sdk, typeKro } from '@applik8s/applik8s';
 import type { ApplicationRuntimeModuleInterfaceContract, ApplicationRuntimeModuleManifestContract, OperationTarget, Result } from '@applik8s/core';
 import { serializeApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationJobStatusLifecycleContract, validateApplicationModelStoreSemanticsContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract } from '@applik8s/core';
 import { transformSync } from 'esbuild';
@@ -354,6 +354,72 @@ describe('integrated TypeKro package surface', () => {
       app.expose('web', { service: 'notes-web', hostnames: ['notes.example.test'], tls: 'required' });
       return { ready: true };
     })).toThrow(/requires tlsSecretName/);
+
+    const managedExposureComposition = sdk.kubernetesComposition({
+      name: 'notes-managed-exposure-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesManagedExposureApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.provide(Certificate, Certificate.certManager({ issuerRef: { name: 'letsencrypt-prod', kind: 'ClusterIssuer' } }));
+      app.provide(DnsPublication, DnsPublication.externalDns());
+      const exposure = app.expose('public-web', {
+        service: 'notes-web',
+        namespace: 'notes',
+        hostnames: ['notes.example.test', 'www.notes.example.test'],
+        tls: { mode: 'managed' },
+        dns: { mode: 'managed', ttlSeconds: 120 },
+      });
+      expect(exposure.publicUrl).toBe('https://notes.example.test');
+      expect(exposure.tlsIntent).toEqual({ mode: 'managed', secretName: 'public-web-tls' });
+      expect(exposure.readiness.dns).toBe('propagationUnverified');
+      return { ready: true };
+    });
+    expect(managedExposureComposition.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'Ingress',
+        metadata: expect.objectContaining({
+          annotations: expect.objectContaining({
+            'external-dns.alpha.kubernetes.io/hostname': 'notes.example.test,www.notes.example.test',
+            'external-dns.alpha.kubernetes.io/ttl': '120',
+          }),
+        }),
+        spec: expect.objectContaining({ tls: [{ hosts: ['notes.example.test', 'www.notes.example.test'], secretName: 'public-web-tls' }] }),
+      }),
+      expect.objectContaining({
+        apiVersion: 'cert-manager.io/v1',
+        kind: 'Certificate',
+        metadata: expect.objectContaining({ name: 'public-web-certificate', namespace: 'notes' }),
+        spec: expect.objectContaining({
+          secretName: 'public-web-tls',
+          dnsNames: ['notes.example.test', 'www.notes.example.test'],
+          issuerRef: { name: 'letsencrypt-prod', kind: 'ClusterIssuer', group: 'cert-manager.io' },
+        }),
+      }),
+    ]));
+    expect(applicationGraphFor(managedExposureComposition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'provider.certificate', interface: 'Certificate', implementation: 'cert-manager' }),
+      expect.objectContaining({ id: 'provider.dns-publication', interface: 'DnsPublication', implementation: 'external-dns' }),
+      expect.objectContaining({
+        id: 'exposure.public-web',
+        publicUrl: 'https://notes.example.test',
+        certificate: { interface: 'Certificate', nodeId: 'provider.certificate' },
+        dnsPublication: { interface: 'DnsPublication', nodeId: 'provider.dns-publication' },
+        readiness: expect.objectContaining({ certificate: 'readyCondition', dns: 'propagationUnverified' }),
+      }),
+    ]));
+
+    expect(() => sdk.kubernetesComposition({
+      name: 'notes-missing-certificate-provider-app',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesMissingCertificateProviderApp',
+      spec: type({}),
+      status: type({ ready: 'boolean' }),
+    }, (_spec, app) => {
+      app.expose('web', { service: 'notes-web', hostnames: ['notes.example.test'], tls: { mode: 'managed' } });
+      return { ready: true };
+    })).toThrow(/requires a Certificate provider/);
 
     const postgresModelStore: ApplicationModelStoreProvider = {
       kind: 'postgres',
@@ -2011,8 +2077,11 @@ describe('integrated TypeKro package surface', () => {
     ]));
     const providerImplementationByName = new Map(graph?.compatibility.labels.filter((label) => label.name.startsWith('provider.')).map((label) => [label.name, label.implementation]));
     expect(providerImplementationByName).toEqual(new Map([
+      ['provider.Certificate', 'implemented'],
       ['provider.CounterStore', 'implemented'],
       ['provider.CredentialStore', 'implemented'],
+      ['provider.DnsPublication', 'implemented'],
+      ['provider.EventLog', 'implemented'],
       ['provider.EventSource', 'implemented'],
       ['provider.HttpExposure', 'implemented'],
       ['provider.IndexStore', 'implemented'],
@@ -2063,8 +2132,10 @@ describe('integrated TypeKro package surface', () => {
       'job.cleanup-accounts',
       'job.repair-accounts',
       'model.account',
+      'provider.certificate',
       'provider.counter-store',
       'provider.credential-store',
+      'provider.dns-publication',
       'provider.event-source',
       'provider.http-exposure',
       'provider.index-store',
@@ -2734,10 +2805,10 @@ describe('integrated TypeKro package surface', () => {
     const adapterPackage = JSON.parse(await readFile('packages/typekro-adapter/package.json', 'utf8'));
     const installedPackage = JSON.parse(await readFile('node_modules/typekro/package.json', 'utf8'));
 
-    expect(workspacePackage.dependencies.typekro).toBe('^0.25.0');
-    expect(applik8sPackage.dependencies.typekro).toBe('^0.25.0');
-    expect(adapterPackage.dependencies.typekro).toBe('^0.25.0');
-    expect(installedPackage.version).toBe('0.25.0');
+    expect(workspacePackage.dependencies.typekro).toBe('^0.26.0');
+    expect(applik8sPackage.dependencies.typekro).toBe('^0.26.0');
+    expect(adapterPackage.dependencies.typekro).toBe('^0.26.0');
+    expect(installedPackage.version).toBe('0.26.0');
   });
 
   it('builds generated app infrastructure on existing TypeKro Kubernetes factories', async () => {
@@ -2753,10 +2824,10 @@ describe('integrated TypeKro package surface', () => {
     const packageJson = JSON.parse(await readFile('packages/applik8s/package.json', 'utf8'));
 
     expect(packageJson.exports).toMatchObject({
-      './dsl': './src/dsl.ts',
-      './typekro': './src/typekro.ts',
-      './factories': './src/factories.ts',
-      './factories/*': './src/factories/*.ts',
+      './dsl': { types: './dist/dsl.d.ts', import: './dist/dsl.js' },
+      './typekro': { types: './dist/typekro.d.ts', import: './dist/typekro.js' },
+      './factories': { types: './dist/factories.d.ts', import: './dist/factories.js' },
+      './factories/*': { types: './dist/factories/*.d.ts', import: './dist/factories/*.js' },
     });
   });
 });

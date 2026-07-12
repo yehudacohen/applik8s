@@ -53,15 +53,24 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     ...(handler.finalizers && handler.finalizers.length > 0 ? { finalizers: [...handler.finalizers] } : {}),
   }));
   const resources = Object.values(request.operator.resources);
+  const readDefinitions = Object.values(request.operator.reads ?? {});
   const ownedResources = resources.filter(isOwnedResource);
   const permissions = runtimePermissions(request.operator, mergePermissionRules([
     ...inferRuntimeResourcePermissions(resources, resourceHandlers),
+    ...readDefinitions.map((resource) => resource.permissions.read()),
     ...handlerDeclaredPermissions(resourceHandlers),
     ...(request.operator.permissions ?? []),
   ]));
   const capabilities = normalizedCapabilities(request.operator.capabilities ?? {});
   const schemaDigests = payloadSchemaDigests(contract.payloadSchemas);
   const ownedCrds = ownedResources.map(ownedCrdManifestEntry);
+  const readResources = readDefinitions.map((resource) => ({
+    apiVersion: resource.apiVersion,
+    kind: resource.kind,
+    plural: resource.plural,
+    scope: resource.scope,
+    ...(resource.namespaces ? { namespaces: resource.namespaces } : {}),
+  }));
   const artifactInventory = canonicalBundleArtifacts([
     { kind: 'wasm-component', path: request.handlerArtifactPath, digest: request.handlerArtifactDigest },
     { kind: 'runtime-contract', path: request.runtimeContractPath, digest: request.runtimeContractDigest },
@@ -78,6 +87,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     artifacts: artifactInventory,
     handlerExports,
     ownedCrds,
+    readResources,
     payloadSchemaDigests: schemaDigests,
   });
   const container = implicitRuntimeContainer(request.operator.name, bundleDigest, request.containerBuildContext ?? '.');
@@ -114,6 +124,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
       },
       handlerExports,
       ownedCrds,
+      readResources,
       watches: watchRegistrations(resources, resourceHandlers),
       permissions,
       ...(Object.keys(capabilities).length > 0 ? { capabilities } : {}),
