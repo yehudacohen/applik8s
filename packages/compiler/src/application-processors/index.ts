@@ -5,6 +5,8 @@ import type { ApplicationCommandHandlerNode, ApplicationCommandNode, Application
 import { build } from 'esbuild';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
+const DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
+
 export interface GeneratedApplicationProcessorArtifact {
   readonly name: string;
   readonly sourcePath: string;
@@ -85,7 +87,7 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
       graph: graph.metadata.name,
       processor: processor.id,
       handlers: contract.handlers.map((handler) => handler.node.id),
-      runtime: { entrypoint: sourcePath, sourceMap: sourceMapPath, digest, sizeBytes, packageManagerAtStartup: false },
+      runtime: { entrypoint: sourcePath, sourceMap: sourceMapPath, digest, sizeBytes, packageManagerAtStartup: false, image: processor.runtimeImage ?? DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE },
       resources: resources.map((resource) => ({ apiVersion: resource.apiVersion, kind: resource.kind, metadata: resource.metadata })),
       guarantees: { delivery: 'atLeastOnce', authority: 'postgresInboxAndDeclaredOrdering', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
     },
@@ -409,7 +411,7 @@ function processorResources(contract: ProcessorContract, source: string, digest:
             },
             containers: [{
               name: 'processor',
-              image: 'node:22-alpine',
+              image: contract.processor.runtimeImage ?? DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE,
               imagePullPolicy: 'IfNotPresent',
               command: ['node', '/app/processor.mjs'],
               env,

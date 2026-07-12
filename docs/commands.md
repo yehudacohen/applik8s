@@ -41,6 +41,21 @@ Account.on.command(RenameAccount, {
 
 Event and command relays use stable message IDs. A crash after publish but before database acknowledgement safely republishes the same ID.
 
+## Processor runtime image
+
+Inferred processors default to a multi-architecture, digest-pinned official Node 22 Alpine image. Applications that mirror or harden their own runtime can override it per model command; all handlers sharing the inferred model processor must agree on the same image:
+
+```ts
+Account.on.command(RenameAccount, {
+  key: ({ accountId }) => accountId,
+  processor: {
+    image: 'registry.example.com/platform/applik8s-node@sha256:…',
+  },
+}, handler);
+```
+
+The selected image is recorded in the application graph, generated processor manifest, and Deployment.
+
 ## Transaction effect boundary
 
 Transactional handlers may use their target, declared transaction-scoped model participants, deterministic computation, `context.now`, `context.id`, and declared outboxes. Source analysis rejects direct external effects, while the Node runtime independently denies `fetch` reached through dynamic global access during handler execution. External work belongs in durable tasks or follow-up commands outside the transaction.

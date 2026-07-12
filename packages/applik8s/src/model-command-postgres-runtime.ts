@@ -274,7 +274,10 @@ export async function executePostgresModelCommand<
       // transition, history, or outbox side effects attempted by the handler.
       await transaction.unsafe('ROLLBACK TO SAVEPOINT applik8s_command_handler');
       await transaction.unsafe('RELEASE SAVEPOINT applik8s_command_handler');
-      await recordCommandRejection(transaction, effectiveExecution, scope, error.rejection, before.revision ?? commandDeterministicId(scope, 'rejected'), true);
+      // The inbox insert happened after this savepoint and was rolled back with the
+      // handler's model/participant/outbox effects. Recreate it before recording the
+      // FK-backed durable rejection result.
+      await recordCommandRejection(transaction, effectiveExecution, scope, error.rejection, before.revision ?? commandDeterministicId(scope, 'rejected'));
       return {
         rejected: true,
         rejection: error.rejection,

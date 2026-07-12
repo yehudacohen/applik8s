@@ -11,7 +11,7 @@ v0.4.0 is the durable application-behavior release. It adds versioned command an
 - Commit model state, transitions, history, durable results, and event/command outboxes atomically in PostgreSQL.
 - Recover duplicate delivery from durable results without invoking the handler again; retain stable command, correlation, causation, target, result-revision, and model-revision identities.
 - Generate self-contained Node processors, NACK Consumers, JetStream Streams, Deployments, NetworkPolicies, source maps, retention cleanup, lag observations, retry/dead-letter behavior, heartbeat probes, and graceful drain lifecycle.
-- Run generated processors as non-root, read-only workloads with no service-account token, dropped capabilities, bounded resources, restricted ingress/egress, and fail-closed token or username/password Secret bindings.
+- Run generated processors on a digest-pinned multi-architecture Node runtime by default (with an explicit image override), as non-root, read-only workloads with no service-account token, dropped capabilities, bounded resources, restricted ingress/egress, and fail-closed token or username/password Secret bindings.
 - Use released TypeKro 0.26 NATS/NACK/JetStream infrastructure in direct and KRO modes, with application-owned Stream/Consumer/processor lifecycle.
 - Import tree-shakeable `@kubernetes/client-node` Core, Apps, and Custom Objects clients inside WASM handlers through the host-owned Kubernetes credential and trust boundary.
 - Use provider-neutral HTTP exposure intents with local Ingress or explicit cert-manager and external-dns bindings for managed public HTTPS.

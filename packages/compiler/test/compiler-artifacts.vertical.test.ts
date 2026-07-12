@@ -927,7 +927,7 @@ export const commandStack = platform.composition;
         kind: 'GeneratedCommandProcessor',
         spec: {
           guarantees: { delivery: 'atLeastOnce', authority: 'postgresInboxAndDeclaredOrdering', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
-          runtime: { packageManagerAtStartup: false },
+          runtime: { packageManagerAtStartup: false, image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2' },
         },
       });
       expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
@@ -963,6 +963,7 @@ export const commandStack = platform.composition;
               securityContext: expect.objectContaining({ runAsNonRoot: true, seccompProfile: { type: 'RuntimeDefault' } }),
               containers: [expect.objectContaining({
                 name: 'processor',
+                image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2',
                 imagePullPolicy: 'IfNotPresent',
                 securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
                 resources: { requests: { cpu: '50m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } },

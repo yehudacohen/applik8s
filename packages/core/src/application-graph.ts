@@ -286,6 +286,7 @@ export interface ApplicationCommandRetentionContract {
 export interface ApplicationProcessorNode extends ApplicationGraphNodeBase<'processor'> {
   readonly handlers: readonly ApplicationGraphNodeRef[];
   readonly runtime: 'node';
+  readonly runtimeImage?: string;
   readonly inference: 'generated';
   readonly lifecycle: 'longLived';
   readonly eventLog?: ApplicationProviderRef<'EventLog'>;

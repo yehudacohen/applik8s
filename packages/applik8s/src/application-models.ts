@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelStoreGuaranteesContract, ApplicationModelStoreSemanticsContract, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, JsonValue } from '@applik8s/core';
+import type { ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelStoreGuaranteesContract, ApplicationModelStoreSemanticsContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, JsonValue } from '@applik8s/core';
 import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
 import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement, type ApplicationGraphState } from './application-graph-state.js';
 import { applicationEventLogImplementation, applicationModelStoreImplementation, applicationProviderImplementationName, applicationProviderInterface } from './application-providers.js';
@@ -72,6 +72,8 @@ export interface ApplicationModelCommandOptions<
   };
   readonly retry?: ApplicationRetryPolicy;
   readonly retention?: Partial<ApplicationCommandRetentionContract>;
+  /** Override the digest-pinned Node runtime image used by the inferred processor. */
+  readonly processor?: { readonly image?: string };
 }
 
 export const defaultApplicationCommandRetention: ApplicationCommandRetentionContract = {
@@ -470,8 +472,16 @@ export function recordApplicationModelCommandGraph<
     ...(commandBindings.length > 0 ? { commandBindings } : {}),
   });
 
-  const currentProcessor = state.graphNodes.find((node) => node.id === processorNodeId && node.kind === 'processor');
+  const currentProcessor = state.graphNodes.find((node): node is ApplicationProcessorNode => node.id === processorNodeId && node.kind === 'processor');
   const currentHandlers = currentProcessor?.kind === 'processor' ? currentProcessor.handlers : [];
+  const requestedProcessorImage = options.processor?.image?.trim();
+  if (options.processor?.image !== undefined && !requestedProcessorImage) {
+    throw new Error(`Model ${model.name} command ${command.id} processor.image must be a non-empty OCI image reference.`);
+  }
+  if (requestedProcessorImage && currentProcessor?.runtimeImage && requestedProcessorImage !== currentProcessor.runtimeImage) {
+    throw new Error(`Model ${model.name} command ${command.id} requests processor image ${requestedProcessorImage}, but shared processor ${processorName} already uses ${currentProcessor.runtimeImage}.`);
+  }
+  const runtimeImage = requestedProcessorImage ?? currentProcessor?.runtimeImage;
   addApplicationGraphNode(state, {
     id: processorNodeId,
     kind: 'processor',
@@ -479,6 +489,7 @@ export function recordApplicationModelCommandGraph<
     stability: 'experimental',
     handlers: [...currentHandlers, { nodeId: handlerNodeId }],
     runtime: 'node',
+    ...(runtimeImage ? { runtimeImage } : {}),
     inference: 'generated',
     lifecycle: 'longLived',
     eventLog: { interface: 'EventLog', nodeId: applicationProviderNodeId('EventLog') },
