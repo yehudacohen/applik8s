@@ -18,8 +18,11 @@ import type {
 import { applicationGraphArtifactFileName, applicationGraphMetadataProperty, serializeApplicationGraph, validateApplicationGraph } from '@applik8s/core';
 import { imageRefString } from '@applik8s/typetainer';
 import { build } from 'esbuild';
+import ts from 'typescript';
 import { parseAllDocuments, stringify } from 'yaml';
 import { compilerArtifactLayout } from '../artifacts/index.js';
+import { emitGeneratedApplicationProcessors } from '../application-processors/index.js';
+import type { GeneratedApplicationProcessorArtifact } from '../application-processors/index.js';
 import { applik8sWorkspaceSourcePlugin, bundleHandlerEntrypoint } from '../bundling/index.js';
 import type {
   ClosureGraph,
@@ -119,6 +122,7 @@ export interface TypeKroCompositionBundleManifest extends JsonObject {
     readonly resourceCount: number;
     readonly operators: readonly TypeKroCompositionOperatorArtifactReference[];
     readonly applicationGraph?: ApplicationGraphArtifactReference;
+    readonly processors?: readonly TypeKroCompositionProcessorArtifactReference[];
   };
 }
 
@@ -126,6 +130,14 @@ export interface TypeKroCompositionOperatorArtifactReference extends JsonObject 
   readonly name: string;
   readonly manifest: string;
   readonly outDir: string;
+}
+
+export interface TypeKroCompositionProcessorArtifactReference extends JsonObject {
+  readonly name: string;
+  readonly manifest: string;
+  readonly source: string;
+  readonly digest: string;
+  readonly sizeBytes: number;
 }
 
 export interface TypeKroCompositionArtifacts {
@@ -138,6 +150,7 @@ export interface TypeKroCompositionArtifacts {
   readonly resourceYamlPaths: readonly string[];
   readonly instanceYamlPaths: readonly string[];
   readonly applicationGraphJsonPath?: string;
+  readonly processorArtifacts: readonly GeneratedApplicationProcessorArtifact[];
   readonly operatorArtifacts: readonly TypeKroCompositionOperatorArtifacts[];
 }
 
@@ -288,10 +301,19 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
 
 async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionArtifactsRequest): Promise<Result<TypeKroCompositionArtifacts>> {
   try {
-    const factoryArtifacts = typeKroFactoryArtifacts(request.composition);
+    const processorArtifacts = request.applicationGraph
+      ? await emitGeneratedApplicationProcessors({ graph: request.applicationGraph, outDir: join(request.outDir, 'processors'), entrypoint: request.entrypoint })
+      : [];
+    // typecast: generated processor resources are concrete Kubernetes JSON objects and are validated by the same serialization path as composition resources.
+    const processorResources = processorArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
+    const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition);
+    const factoryArtifacts = request.applicationGraph
+      ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, processorResources, request.applicationGraph.metadata.name)
+      : baseFactoryArtifacts;
     const resources = uniqueCompositionResources([
       ...factoryArtifacts.resources,
       ...compositionResources(request.composition),
+      ...processorResources,
     ]);
     const resourcesDir = join(request.outDir, 'resources');
     const instancesDir = join(request.outDir, 'instances');
@@ -337,6 +359,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           manifest: compiled.artifacts.manifestJsonPath,
           outDir: dirname(compiled.artifacts.manifestJsonPath),
         })),
+        ...(processorArtifacts.length > 0 ? { processors: processorArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes })) } : {}),
       },
     };
 
@@ -376,6 +399,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         resourceYamlPaths,
         instanceYamlPaths,
         ...(applicationGraphJsonPath ? { applicationGraphJsonPath } : {}),
+        processorArtifacts,
         operatorArtifacts: request.operatorCompiles.map((compiled) => ({
           operatorName: compiled.manifest.metadata.name,
           outDir: dirname(compiled.artifacts.manifestJsonPath),
@@ -386,6 +410,45 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
   } catch (cause) {
     return error('BUNDLE_INVALID', cause instanceof Error ? cause.message : 'Failed to emit TypeKro composition artifacts.');
   }
+}
+
+function injectGeneratedResourcesIntoApplicationRgd(
+  artifacts: TypeKroFactoryArtifactsProjection,
+  generatedResources: readonly TypeKroCompositionResource[],
+  applicationName: string,
+): TypeKroFactoryArtifactsProjection {
+  const target = artifacts.resources.find((resource) => resource.apiVersion === 'kro.run/v1alpha1' && resource.kind === 'ResourceGraphDefinition' && resource.metadata.name === applicationName);
+  if (!target) {
+    if (generatedResources.length === 0) return artifacts;
+    throw new Error(`Application ${applicationName} generated processor resources but its TypeKro ResourceGraphDefinition was not found.`);
+  }
+  const spec = target.spec;
+  if (!isJsonObject(spec) || !Array.isArray(spec.resources)) throw new Error(`Application ResourceGraphDefinition ${applicationName} does not expose spec.resources.`);
+  // CRDs are cluster-scoped installation prerequisites shared by every instance.
+  // Keeping them outside the per-instance graph prevents one instance deletion
+  // from removing the API and avoids CRD cleanup finalizers blocking KRO teardown.
+  const existingResources = spec.resources.filter((resource) => !isResourceGraphTemplateKind(resource, 'CustomResourceDefinition'));
+  const injected = generatedResources.map((resource, index) => ({
+    id: `applik8sGenerated${safeResourceIdentifier(resource.kind)}${safeResourceIdentifier(String(resource.metadata.name))}${index + 1}`,
+    template: resource,
+  }));
+  return {
+    ...artifacts,
+    resources: artifacts.resources.map((resource) => resource === target ? {
+      ...resource,
+      spec: { ...spec, resources: [...existingResources, ...injected] },
+    } : resource),
+  };
+}
+
+function isResourceGraphTemplateKind(resource: unknown, kind: string): boolean {
+  if (!isJsonObject(resource) || !isJsonObject(resource.template)) return false;
+  return resource.template.kind === kind;
+}
+
+function safeResourceIdentifier(value: string): string {
+  const identifier = value.replace(/[^a-zA-Z0-9]+(.)?/g, (_, next: string | undefined) => next?.toUpperCase() ?? '');
+  return identifier.length > 0 ? `${identifier[0]?.toUpperCase()}${identifier.slice(1)}` : 'Resource';
 }
 
 function applicationGraphForComposition(composition: object): ApplicationGraph | undefined {
@@ -870,20 +933,12 @@ function deferTemporaryDirectoryCleanup(directory: string): void {
 }
 
 function generatedDispatcherEntrypoint(userEntrypoint: string, operator: OperatorDefinition, hasCapabilities: boolean, hasKubernetesRead: boolean, mode: CompileOperatorRequest['dispatcherMode']): Result<string> {
-  if (mode === 'staticSerializable') {
-    const staticOperator = staticSerializableOperatorSource(operator);
-    if (!staticOperator.ok) {
-      return staticOperator;
-    }
-    return { ok: true, value: dispatcherProgram(staticOperator.value, hasCapabilities, hasKubernetesRead) };
+  const staticOperator = staticSerializableOperatorSource(operator);
+  if (staticOperator.ok) {
+    return { ok: true, value: dispatcherProgram(staticOperator.value.source, hasCapabilities, hasKubernetesRead, staticOperator.value.imports) };
   }
-
-  if (operator.handlers.length === 0) {
-    const staticOperator = staticSerializableOperatorSource(operator);
-    if (!staticOperator.ok) {
-      return staticOperator;
-    }
-    return { ok: true, value: dispatcherProgram(staticOperator.value, hasCapabilities, hasKubernetesRead) };
+  if (mode === 'staticSerializable' || operator.handlers.length === 0) {
+    return staticOperator;
   }
 
   const operatorName = operator.name;
@@ -900,14 +955,16 @@ export async function handle(inputJson: string): Promise<string> {
   try {
     return await dispatchOperatorHandler(selectedExport.definition, inputJson${hasCapabilities || hasKubernetesRead ? `, {${hasCapabilities ? ' capabilityRequest,' : ''}${hasKubernetesRead ? ' kubernetesRead' : ''} }` : ''});
   } catch (cause) {
-    throw new Error(cause instanceof Error ? (cause.stack ?? cause.message) : 'Handler threw an unknown error.');
+    const message = cause instanceof Error ? cause.message : 'Handler threw an unknown error.';
+    const stack = cause instanceof Error ? cause.stack : undefined;
+    throw (stack && !stack.includes(message) ? message + '\\n' + stack : (stack ?? message));
   }
 }
 ` };
 }
 
-function dispatcherProgram(operatorSource: string, hasCapabilities: boolean, hasKubernetesRead: boolean): string {
-  return `${hasCapabilities ? "import { capabilityRequest } from 'applik8s:handler/capabilities';\n" : ''}${hasKubernetesRead ? "import { kubernetesRead } from 'applik8s:handler/kubernetes';\n" : ''}
+function dispatcherProgram(operatorSource: string, hasCapabilities: boolean, hasKubernetesRead: boolean, capturedImports: readonly string[] = []): string {
+  return `${capturedImports.join('\n')}${capturedImports.length > 0 ? '\n' : ''}${hasCapabilities ? "import { capabilityRequest } from 'applik8s:handler/capabilities';\n" : ''}${hasKubernetesRead ? "import { kubernetesRead } from 'applik8s:handler/kubernetes';\n" : ''}
 import { dispatchOperatorHandler } from '@applik8s/sdk';
 
 const selectedExport = { definition: ${operatorSource} };
@@ -916,14 +973,17 @@ export async function handle(inputJson: string): Promise<string> {
   try {
     return await dispatchOperatorHandler(selectedExport.definition, inputJson${hasCapabilities || hasKubernetesRead ? `, {${hasCapabilities ? ' capabilityRequest,' : ''}${hasKubernetesRead ? ' kubernetesRead' : ''} }` : ''});
   } catch (cause) {
-    throw new Error(cause instanceof Error ? (cause.stack ?? cause.message) : 'Handler threw an unknown error.');
+    const message = cause instanceof Error ? cause.message : 'Handler threw an unknown error.';
+    const stack = cause instanceof Error ? cause.stack : undefined;
+    throw (stack && !stack.includes(message) ? message + '\\n' + stack : (stack ?? message));
   }
 }
 `;
 }
 
-function staticSerializableOperatorSource(operator: OperatorDefinition): Result<string> {
+function staticSerializableOperatorSource(operator: OperatorDefinition): Result<{ readonly source: string; readonly imports: readonly string[] }> {
   const handlerRegistrations: string[] = [];
+  const capturedImports = new Set<string>();
   const resourceIdentifiers = staticResourceIdentifiers(operator.resources);
   const allowedFreeIdentifiers = new Set(resourceIdentifiers.map((resource) => resource.identifier));
   for (const registration of operator.handlers) {
@@ -939,7 +999,8 @@ function staticSerializableOperatorSource(operator: OperatorDefinition): Result<
     if (!serializableRegistration.ok) {
       return serializableRegistration;
     }
-    handlerRegistrations.push(`Object.assign(${JSON.stringify(serializableRegistration.value)}, { handler: (${handlerSource.value}) })`);
+    for (const capturedImport of handlerSource.value.imports) capturedImports.add(capturedImport);
+    handlerRegistrations.push(`Object.assign(${JSON.stringify(serializableRegistration.value)}, { handler: (${handlerSource.value.source}) })`);
   }
 
   const operatorWithoutHandlers = toSerializableJson({ ...operator, handlers: [] }, `operator ${operator.name}`);
@@ -948,25 +1009,28 @@ function staticSerializableOperatorSource(operator: OperatorDefinition): Result<
   }
   const operatorSource = JSON.stringify(operatorWithoutHandlers.value);
   if (resourceIdentifiers.length === 0) {
-    return { ok: true, value: `Object.assign(${operatorSource}, { handlers: [${handlerRegistrations.join(', ')}] })` };
+    return { ok: true, value: { source: `Object.assign(${operatorSource}, { handlers: [${handlerRegistrations.join(', ')}] })`, imports: [...capturedImports].sort() } };
   }
   const resourceBindings = resourceIdentifiers.map((resource) => `const ${resource.identifier} = __operator.resources[${JSON.stringify(resource.key)}];`).join('\n');
   return {
     ok: true,
-    value: `(() => {
+    value: { source: `(() => {
 const __operator = ${operatorSource};
 ${resourceBindings}
 return Object.assign(__operator, { handlers: [${handlerRegistrations.join(', ')}] });
-})()`,
+})()`, imports: [...capturedImports].sort() },
   };
 }
 
-function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: string, allowedFreeIdentifiers: ReadonlySet<string>): Result<string> {
+function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: string, allowedFreeIdentifiers: ReadonlySet<string>): Result<{ readonly source: string; readonly imports: readonly string[] }> {
   const source = handler.toString();
   if (source.includes('[native code]')) {
     return error('BUNDLE_INVALID', `Handler ${handlerId} cannot be statically bundled because it is native code.`);
   }
-  const freeIdentifiers = likelyFreeIdentifiers(source).filter((identifier) => !allowedFreeIdentifiers.has(identifier));
+  const capturedImports = likelyFreeIdentifiers(source)
+    .filter((identifier) => !allowedFreeIdentifiers.has(identifier))
+    .flatMap((identifier) => staticHandlerCapturedImports.get(identifier) ?? []);
+  const freeIdentifiers = likelyFreeIdentifiers(source).filter((identifier) => !allowedFreeIdentifiers.has(identifier) && !staticHandlerCapturedImports.has(identifier));
   if (freeIdentifiers.length > 0) {
     return error(
       'BUNDLE_INVALID',
@@ -978,8 +1042,15 @@ function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: 
   } catch (cause) {
     return error('BUNDLE_INVALID', `Handler ${handlerId} cannot be statically bundled from its function source: ${cause instanceof Error ? cause.message : 'invalid function source'}.`);
   }
-  return { ok: true, value: source };
+  return { ok: true, value: { source, imports: [...new Set(capturedImports)].sort() } };
 }
+
+const staticHandlerCapturedImports = new Map<string, readonly string[]>([
+  ['KubeConfig', ["import { KubeConfig } from '@kubernetes/client-node';"]],
+  ['ObjectCoreV1Api', ["import { CoreV1Api as ObjectCoreV1Api } from '@kubernetes/client-node';"]],
+  ['ObjectAppsV1Api', ["import { AppsV1Api as ObjectAppsV1Api } from '@kubernetes/client-node';"]],
+  ['ObjectCustomObjectsApi', ["import { CustomObjectsApi as ObjectCustomObjectsApi } from '@kubernetes/client-node';"]],
+]);
 
 function staticResourceIdentifiers(resources: Readonly<Record<string, AnyResourceDefinition>>): readonly { readonly identifier: string; readonly key: string }[] {
   const identifiers = new Map<string, string>();
@@ -1024,6 +1095,7 @@ const staticHandlerKnownGlobals = new Set([
   'isNaN',
   'parseFloat',
   'parseInt',
+  'process',
   'undefined',
 ]);
 
@@ -1065,176 +1137,69 @@ const staticHandlerKeywords = new Set([
 
 function likelyFreeIdentifiers(source: string): readonly string[] {
   const declared = new Set<string>();
-  const stripped = stripStaticHandlerLiterals(source);
-  for (const parameter of staticHandlerParameters(stripped)) {
-    declared.add(parameter);
-  }
-  collectDeclaredIdentifiers(stripped, declared);
-
-  const free = new Set<string>();
-  const identifierPattern = /[$A-Z_a-z][$\w]*/g;
-  for (const match of stripped.matchAll(identifierPattern)) {
-    const identifier = match[0];
-    const index = match.index;
-    if (
-      staticHandlerKeywords.has(identifier) ||
-      staticHandlerKnownGlobals.has(identifier) ||
-      declared.has(identifier) ||
-      isPropertyAccess(stripped, index) ||
-      isObjectKey(stripped, index + identifier.length) ||
-      isDeclarationKeyword(stripped, index)
-    ) {
-      continue;
+  const file = ts.createSourceFile('applik8s-static-handler.ts', `const __applik8sHandler = (${source});`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const collectBindingName = (name: ts.BindingName): void => {
+    if (ts.isIdentifier(name)) {
+      declared.add(name.text);
+      return;
     }
-    free.add(identifier);
-  }
+    for (const element of name.elements) {
+      if (!ts.isOmittedExpression(element)) collectBindingName(element.name);
+    }
+  };
+  const collectDeclarations = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)) collectBindingName(node.name);
+    if ((ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isClassDeclaration(node) || ts.isClassExpression(node)) && node.name) declared.add(node.name.text);
+    if (ts.isCatchClause(node) && node.variableDeclaration) collectBindingName(node.variableDeclaration.name);
+    ts.forEachChild(node, collectDeclarations);
+  };
+  collectDeclarations(file);
+  const free = new Set<string>();
+  const collectReferences = (node: ts.Node): void => {
+    if (ts.isIdentifier(node)) {
+      const identifier = node.text;
+      if (!declared.has(identifier) && !staticHandlerKnownGlobals.has(identifier) && isStaticHandlerIdentifierReference(node)) {
+        free.add(identifier);
+        if (process.env.APPLIK8S_DEBUG_STATIC_CAPTURES === '1') {
+          console.error(JSON.stringify({ component: 'static-handler-capture-analysis', identifier, node: node.getText(file), parent: ts.SyntaxKind[node.parent.kind], context: node.parent.getText(file).slice(0, 240) }));
+        }
+      }
+    }
+    ts.forEachChild(node, collectReferences);
+  };
+  collectReferences(file);
   return [...free].sort();
 }
 
-function stripStaticHandlerLiterals(source: string): string {
-  return stripTemplateLiterals(source)
-    .replace(/'(?:\\.|[^'\\])*'/g, "''")
-    .replace(/"(?:\\.|[^"\\])*"/g, '""')
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/.*$/gm, '')
-    .replace(/\/(?:\\.|[^/\\\n])+\/[dgimsuvy]*/g, '//');
+function isStaticHandlerIdentifierReference(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if ((ts.isPropertyAccessExpression(parent) && parent.name === node)
+    || (ts.isPropertyAssignment(parent) && parent.name === node)
+    || (ts.isMethodDeclaration(parent) && parent.name === node)
+    || (ts.isPropertyDeclaration(parent) && parent.name === node)
+    || (ts.isPropertySignature(parent) && parent.name === node)
+    || (ts.isMethodSignature(parent) && parent.name === node)
+    || (ts.isBindingElement(parent) && parent.propertyName === node)
+    || (ts.isLabeledStatement(parent) && parent.label === node)
+    || ((ts.isBreakStatement(parent) || ts.isContinueStatement(parent)) && parent.label === node)
+    || (ts.isQualifiedName(parent) && parent.right === node)
+    || ts.isImportSpecifier(parent)
+    || ts.isImportClause(parent)
+    || ts.isNamespaceImport(parent)
+    || ts.isExportSpecifier(parent)) {
+    return false;
+  }
+  return !isTypeOnlyStaticHandlerIdentifier(node);
 }
 
-function stripTemplateLiterals(source: string): string {
-  let output = '';
-  for (let index = 0; index < source.length; index += 1) {
-    const character = source[index];
-    if (character !== '`') {
-      output += character;
-      continue;
-    }
-    const template = templateLiteralExpressionsOnly(source, index);
-    output += template.output;
-    index = template.end;
+function isTypeOnlyStaticHandlerIdentifier(node: ts.Identifier): boolean {
+  let current: ts.Node = node;
+  while (current.parent) {
+    current = current.parent;
+    if (ts.isTypeNode(current) || ts.isTypeParameterDeclaration(current) || ts.isInterfaceDeclaration(current) || ts.isTypeAliasDeclaration(current)) return true;
+    if (ts.isExpression(current) || ts.isStatement(current) || ts.isSourceFile(current)) return false;
   }
-  return output;
-}
-
-function templateLiteralExpressionsOnly(source: string, start: number): { readonly output: string; readonly end: number } {
-  let output = '';
-  for (let index = start + 1; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === '\\') {
-      index += 1;
-      output += ' ';
-      continue;
-    }
-    if (character === '`') {
-      return { output, end: index };
-    }
-    if (character === '$' && source[index + 1] === '{') {
-      const expression = templateExpression(source, index + 2);
-      output += ` ${stripStaticHandlerLiterals(expression.source)} `;
-      index = expression.end;
-      continue;
-    }
-    output += ' ';
-  }
-  return { output, end: source.length - 1 };
-}
-
-function templateExpression(source: string, start: number): { readonly source: string; readonly end: number } {
-  let depth = 1;
-  for (let index = start; index < source.length; index += 1) {
-    const character = source[index];
-    if (character === '\'' || character === '"') {
-      index = quotedLiteralEnd(source, index, character);
-      continue;
-    }
-    if (character === '`') {
-      index = templateLiteralExpressionsOnly(source, index).end;
-      continue;
-    }
-    if (character === '{') {
-      depth += 1;
-    } else if (character === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return { source: source.slice(start, index), end: index };
-      }
-    }
-  }
-  return { source: source.slice(start), end: source.length - 1 };
-}
-
-function quotedLiteralEnd(source: string, start: number, quote: string): number {
-  for (let index = start + 1; index < source.length; index += 1) {
-    if (source[index] === '\\') {
-      index += 1;
-      continue;
-    }
-    if (source[index] === quote) {
-      return index;
-    }
-  }
-  return source.length - 1;
-}
-
-function staticHandlerParameters(source: string): readonly string[] {
-  const parameters = new Set<string>();
-  const arrowMatch = source.match(/^\s*(?:async\s*)?(?:\(([^)]*)\)|([$A-Z_a-z][$\w]*))\s*=>/);
-  const functionMatch = source.match(/^\s*(?:async\s*)?function(?:\s+[$A-Z_a-z][$\w]*)?\s*\(([^)]*)\)/);
-  const rawParameters = arrowMatch?.[1] ?? arrowMatch?.[2] ?? functionMatch?.[1] ?? '';
-  for (const parameter of rawParameters.split(',')) {
-    const name = parameter.trim().match(/^[$A-Z_a-z][$\w]*/)?.[0];
-    if (name) {
-      parameters.add(name);
-    }
-  }
-  return [...parameters];
-}
-
-function collectDeclaredIdentifiers(source: string, declared: Set<string>): void {
-  const declarationPattern = /\b(?:const|let|var|function)\s+([$A-Z_a-z][$\w]*)/g;
-  for (const declaration of source.matchAll(declarationPattern)) {
-    declared.add(declaration[1] ?? '');
-  }
-
-  const arrowParameterPattern = /(?:^|[=(,]\s*)([$A-Z_a-z][$\w]*)\s*=>/g;
-  for (const arrowParameter of source.matchAll(arrowParameterPattern)) {
-    declared.add(arrowParameter[1] ?? '');
-  }
-
-  const parenthesizedArrowParameterPattern = /\(\s*([$A-Z_a-z][$\w]*)\s*\)\s*=>/g;
-  for (const arrowParameter of source.matchAll(parenthesizedArrowParameterPattern)) {
-    declared.add(arrowParameter[1] ?? '');
-  }
-
-  const loopDeclarationPattern = /\bfor\s*\(\s*(?:const|let|var)\s+([$A-Z_a-z][$\w]*)\s+(?:of|in)\b/g;
-  for (const loopDeclaration of source.matchAll(loopDeclarationPattern)) {
-    declared.add(loopDeclaration[1] ?? '');
-  }
-
-  const catchPattern = /\bcatch\s*\(\s*([$A-Z_a-z][$\w]*)\s*\)/g;
-  for (const catchParameter of source.matchAll(catchPattern)) {
-    declared.add(catchParameter[1] ?? '');
-  }
-}
-
-function isPropertyAccess(source: string, index: number): boolean {
-  let cursor = index - 1;
-  while (cursor >= 0 && /\s/.test(source[cursor] ?? '')) {
-    cursor -= 1;
-  }
-  return source[cursor] === '.';
-}
-
-function isObjectKey(source: string, afterIndex: number): boolean {
-  let cursor = afterIndex;
-  while (cursor < source.length && /\s/.test(source[cursor] ?? '')) {
-    cursor += 1;
-  }
-  return source[cursor] === ':';
-}
-
-function isDeclarationKeyword(source: string, index: number): boolean {
-  const before = source.slice(Math.max(0, index - 12), index);
-  return /\b(?:const|let|var|function|catch)\s*$/.test(before);
+  return false;
 }
 
 function registrationWithoutHandler(registration: object): Record<string, unknown> {

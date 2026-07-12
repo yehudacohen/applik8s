@@ -6,12 +6,13 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use applik8s_runtime_bridge::{
-    RuntimeBridgeError, capability_denied_payload, component_host_imports, component_model_engine,
-    decode_handler_input_payload, decode_handler_output_plan_payload,
+    KubernetesHttpTransport, RuntimeBridgeError, capability_denied_payload, component_host_imports,
+    component_model_engine, decode_handler_input_payload, decode_handler_output_plan_payload,
     invoke_handler_component_bytes, invoke_handler_component_bytes_with_timeout,
     invoke_handler_component_bytes_with_timeout_and_capabilities_async,
-    invoke_handler_component_bytes_with_timeout_async, retry_after, runtime_abi_version,
-    validate_component_host_imports, validate_handler_input, validate_operation_plan,
+    invoke_handler_component_bytes_with_timeout_and_kubernetes_http_async, retry_after,
+    runtime_abi_version, validate_component_host_imports, validate_handler_input,
+    validate_operation_plan,
 };
 use kube::runtime::controller::Action;
 use wasmtime::Store;
@@ -120,6 +121,28 @@ fn non_terminating_handler_component_bytes() -> Vec<u8> {
     .expect("non-terminating handler component fixture parses")
 }
 
+fn trapping_handler_component_bytes() -> Vec<u8> {
+    wat::parse_str(
+        r#"
+        (component
+          (core module $handler
+            (memory (export "memory") 1)
+            (func (export "cabi_realloc") (param i32 i32 i32 i32) (result i32) i32.const 64)
+            (func (export "handle") (param i32 i32) (result i32) unreachable)
+          )
+          (core instance $handler-instance (instantiate $handler))
+          (alias core export $handler-instance "memory" (core memory $memory))
+          (alias core export $handler-instance "cabi_realloc" (core func $realloc))
+          (alias core export $handler-instance "handle" (core func $handle-core))
+          (func $handle (param "input-json" string) (result (result string (error string)))
+            (canon lift (core func $handle-core) (memory $memory) (realloc $realloc) string-encoding=utf8))
+          (export "handle" (func $handle))
+        )
+        "#,
+    )
+    .expect("trapping handler component fixture parses")
+}
+
 #[test]
 fn configures_wasmtime_component_engine() {
     component_model_engine().expect("component model engine configures");
@@ -214,6 +237,22 @@ fn bridge_times_out_non_terminating_handler_component() {
             RuntimeBridgeError::HandlerTimedOut { timeout_ms: 30 }
         ),
         "expected HandlerTimedOut, got {error:?}"
+    );
+}
+
+#[test]
+fn bridge_classifies_guest_traps_as_handler_traps() {
+    let engine = component_model_engine().expect("component model engine configures");
+    let error = invoke_handler_component_bytes(
+        &engine,
+        &trapping_handler_component_bytes(),
+        valid_handler_input_payload(),
+    )
+    .expect_err("guest trap is surfaced");
+
+    assert!(
+        matches!(error, RuntimeBridgeError::HandlerTrap(_)),
+        "expected HandlerTrap, got {error:?}"
     );
 }
 
@@ -318,24 +357,7 @@ world handler {
 }
 
 #[test]
-fn bridge_invokes_componentize_js_handler_with_imported_async_proxy_and_direct_fetch() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("test server binds");
-    let addr = listener
-        .local_addr()
-        .expect("test server has local address");
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("test server accepts request");
-        let mut request = [0_u8; 1024];
-        let _ = stream
-            .read(&mut request)
-            .expect("test server reads request");
-        stream
-            .write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 14\r\nconnection: close\r\n\r\n{\"replicas\":3}",
-            )
-            .expect("test server writes response");
-    });
-
+fn bridge_injects_kubernetes_identity_and_restricts_component_wasi_http() {
     let workspace_root = workspace_root();
     let temp_dir = test_temp_dir("componentize-js-fetch-handler");
     fs::create_dir_all(&temp_dir).expect("test temp directory creates");
@@ -391,7 +413,7 @@ export async function unreachableNodeOnlyBranch() {
 import {{ transformFromEndpoint }} from './transformation.js';
 
 export async function handle(_inputJson) {{
-  const result = await transformFromEndpoint('http://{addr}/desired');
+  const result = await transformFromEndpoint('http://kubernetes.default.svc/desired');
   return JSON.stringify({{ operations: [{{ kind: 'status', status: {{ phase: result.replicas === 3 ? 'Ready' : 'NotReady', writes: result.writes }} }}] }});
 }}
 "#
@@ -454,22 +476,96 @@ world handler {
 
     let engine = component_model_engine().expect("component model engine configures");
     let component_bytes = fs::read(&wasm_path).expect("emitted component reads");
-    let plan = tokio::runtime::Builder::new_current_thread()
+    let certified = rcgen::generate_simple_self_signed(vec!["kubernetes.test".to_string()])
+        .expect("test certificate generates");
+    let certificate = certified.cert.der().clone();
+    let private_key =
+        rustls::pki_types::PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der());
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let tls_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate.clone()], private_key.into())
+        .expect("test TLS server configures");
+    let tls_listener = TcpListener::bind("127.0.0.1:0").expect("TLS test server binds");
+    let tls_addr = tls_listener
+        .local_addr()
+        .expect("TLS test server has local address");
+    let tls_server = std::thread::spawn(move || {
+        let (stream, _) = tls_listener
+            .accept()
+            .expect("TLS test server accepts request");
+        let connection = rustls::ServerConnection::new(std::sync::Arc::new(tls_config))
+            .expect("TLS server connection creates");
+        let mut stream = rustls::StreamOwned::new(connection, stream);
+        let mut request = [0_u8; 1024];
+        let _ = stream
+            .read(&mut request)
+            .expect("TLS test server reads request");
+        let request = String::from_utf8_lossy(&request);
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer rotating-file-token")
+        );
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 14\r\nconnection: close\r\n\r\n{\"replicas\":3}",
+            )
+            .expect("TLS test server writes response");
+    });
+    let token_path = temp_dir.join("service-account-token");
+    fs::write(&token_path, "rotating-file-token\n").expect("rotating token fixture writes");
+    let tls_plan = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .enable_io()
         .build()
-        .expect("test runtime builds")
-        .block_on(invoke_handler_component_bytes_with_timeout_async(
-            &engine,
-            &component_bytes,
-            valid_handler_input_payload(),
-            &applik8s_runtime_bridge::canonical_host_imports(),
-            Duration::from_secs(30),
-        ))
-        .expect("bridge invokes ComponentizeJS-emitted handler with direct fetch");
+        .expect("TLS test runtime builds")
+        .block_on(
+            invoke_handler_component_bytes_with_timeout_and_kubernetes_http_async(
+                &engine,
+                &component_bytes,
+                valid_handler_input_payload(),
+                &applik8s_runtime_bridge::canonical_host_imports(),
+                Duration::from_secs(30),
+                KubernetesHttpTransport {
+                    guest_endpoint: "http://kubernetes.default.svc".to_string(),
+                    endpoint: format!("https://{tls_addr}"),
+                    bearer_token: None,
+                    bearer_token_file: Some(token_path),
+                    ca_certificates: vec![certificate.as_ref().to_vec()],
+                    tls_server_name: Some("kubernetes.test".to_string()),
+                },
+            ),
+        )
+        .expect("bridge trusts the cluster CA, overrides the TLS name, and reads the token file");
+    assert_eq!(tls_plan.operations.len(), 1);
+    tls_server.join().expect("TLS test server joins");
 
-    assert_eq!(plan.operations.len(), 1);
-    server.join().expect("test server joins");
+    let secret = "token-that-must-not-appear-in-errors";
+    let denied = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .enable_io()
+        .build()
+        .expect("denial test runtime builds")
+        .block_on(
+            invoke_handler_component_bytes_with_timeout_and_kubernetes_http_async(
+                &engine,
+                &component_bytes,
+                valid_handler_input_payload(),
+                &applik8s_runtime_bridge::canonical_host_imports(),
+                Duration::from_secs(30),
+                KubernetesHttpTransport {
+                    guest_endpoint: "http://different.invalid".to_string(),
+                    endpoint: format!("https://{tls_addr}"),
+                    bearer_token: Some(secret.to_string()),
+                    bearer_token_file: None,
+                    ca_certificates: Vec::new(),
+                    tls_server_name: None,
+                },
+            ),
+        )
+        .expect_err("undeclared Kubernetes guest authority is denied");
+    assert!(!denied.to_string().contains(secret));
     fs::remove_dir_all(&temp_dir).expect("test temp directory removes");
 }
 

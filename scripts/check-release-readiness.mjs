@@ -12,7 +12,7 @@ const publishablePackages = [
   'packages/typetainer/package.json',
 ];
 
-const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.3.0';
+const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.4.0';
 const releaseLabel = `v${expectedVersion}`;
 const publishablePackageNames = new Set();
 
@@ -44,6 +44,9 @@ const requiredDocs = [
   'docs/maintainer-policy.md',
   'docs/release-evidence-v0.2.md',
   'docs/release-evidence-v0.3.md',
+  'docs/release-evidence-v0.4.md',
+  'docs/commands.md',
+  'docs/guestbook-show-hn.md',
   'docs/kubernetes-compatibility.md',
 ];
 
@@ -57,6 +60,7 @@ const publicReleaseFiles = [
   'scripts/check-local-gates.mjs',
   'scripts/check-prerelease-gates.mjs',
   'scripts/check-docs-consistency.mjs',
+  'scripts/build-publishable-packages.mjs',
   'scripts/package-publish-dry-run.mjs',
   'scripts/package-consumer-smoke.mjs',
   'scripts/publish-packages.mjs',
@@ -69,14 +73,21 @@ const publicReleaseFiles = [
   'docs/generated-artifacts.md',
   'docs/replay-debugging.md',
   'docs/runtime-diagnostics.md',
+  'docs/commands.md',
+  'docs/guestbook-show-hn.md',
+  'docs/release-evidence-v0.4.md',
   'docs/security-model.md',
   'docs/leader-election.md',
   'docs/schema-evolution.md',
   'docs/contract-evolution.md',
   'examples/imagejob.ts',
   'examples/guestbook.ts',
+  'examples/tenant-platform.ts',
+  'examples/guestbook-minimal.ts',
   'examples/test/product-stories.character.test.ts',
   'packages/e2e/test/typekro-guestbook.e2e.test.ts',
+  'packages/e2e/test/tenant-platform-live.e2e.test.ts',
+  'packages/e2e/test/kubernetes-sdk-wasm-live.e2e.test.ts',
 ];
 
 const privateBrand = ['ska', 'tes'].join('');
@@ -143,8 +154,8 @@ for (const path of publishablePackages) {
   if (manifest.publishConfig?.access !== 'public') {
     failures.push(`${path}: publishConfig.access must be public.`);
   }
-  if (!Array.isArray(manifest.files) || !manifest.files.includes('src')) {
-    failures.push(`${path}: files must include src.`);
+  if (!Array.isArray(manifest.files) || !manifest.files.includes('dist')) {
+    failures.push(`${path}: files must include compiled dist output.`);
   }
   for (const [name, range] of Object.entries(manifest.dependencies ?? {})) {
     if (typeof range === 'string' && range.startsWith('file:')) {

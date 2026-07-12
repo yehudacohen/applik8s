@@ -41,6 +41,7 @@ export function validateOperatorManifest(manifest: OperatorManifest): Result<rea
 
   const knownResources = new Set([
     ...manifest.spec.ownedCrds.map((crd) => `${crd.apiVersion}/${crd.kind}`),
+    ...(manifest.spec.readResources ?? []).map((resource) => `${resource.apiVersion}/${resource.kind}`),
     ...manifest.spec.watches.map((watch) => `${watch.apiVersion}/${watch.kind}`),
   ]);
   for (const handler of manifest.spec.handlerExports) {
@@ -71,6 +72,7 @@ export function validateOperatorManifest(manifest: OperatorManifest): Result<rea
     artifacts: manifest.spec.bundle.artifacts,
     handlerExports: manifest.spec.handlerExports,
     ownedCrds: manifest.spec.ownedCrds,
+    readResources: manifest.spec.readResources ?? [],
     payloadSchemaDigests: manifest.spec.payloadSchemaDigests,
   });
   if (expectedBundleDigest !== manifest.spec.bundle.digest) {

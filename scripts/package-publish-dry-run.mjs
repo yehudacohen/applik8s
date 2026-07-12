@@ -4,6 +4,8 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+await execFileAsync(process.execPath, ['scripts/build-publishable-packages.mjs']);
+
 const publishablePackages = [
   'packages/applik8s',
   'packages/core',
@@ -26,7 +28,7 @@ for (const packageDir of publishablePackages) {
   const files = new Set((packResult?.files ?? []).map((file) => file.path));
 
   requirePackedFile(manifest.name, files, 'package.json');
-  requireSomePackedFile(manifest.name, files, 'src/');
+  requireSomePackedFile(manifest.name, files, 'dist/');
 
   for (const target of exportTargets(manifest.exports)) {
     requirePackedTarget(manifest.name, files, stripDotSlash(target));

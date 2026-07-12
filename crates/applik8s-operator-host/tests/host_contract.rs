@@ -1196,6 +1196,61 @@ async fn rejects_kubernetes_read_for_undeclared_resource_before_live_api() {
 }
 
 #[tokio::test]
+async fn authorizes_only_declared_external_read_resource_namespaces() {
+    let manifest = serde_json::json!({
+        "metadata": { "name": "external-reader", "annotations": { "applik8s.dev/namespace": "operators" } },
+        "spec": {
+            "permissions": [{ "apiGroups": ["apps"], "resources": ["deployments"], "verbs": ["get", "list"] }],
+            "ownedCrds": [],
+            "readResources": [{
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "plural": "deployments",
+                "scope": "Namespaced",
+                "namespaces": ["destination"]
+            }]
+        }
+    });
+    let denied = kubernetes_read_error(
+        &manifest,
+        serde_json::json!({
+            "operation": "list",
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "plural": "deployments",
+            "scope": "Namespaced",
+            "query": { "namespace": "other", "limit": 10, "continueToken": "next", "fieldSelector": "metadata.name=worker" }
+        }),
+    )
+    .await;
+    assert!(
+        denied["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not declared for namespace other")
+    );
+
+    let allowed = kubernetes_read_error(
+        &manifest,
+        serde_json::json!({
+            "operation": "list",
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "plural": "deployments",
+            "scope": "Namespaced",
+            "query": { "namespace": "destination", "limit": 10, "continueToken": "next", "fieldSelector": "metadata.name=worker" }
+        }),
+    )
+    .await;
+    assert!(
+        allowed["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Kubernetes list read failed")
+    );
+}
+
+#[tokio::test]
 async fn rejects_kubernetes_read_without_declared_rbac_before_live_api() {
     let bundle = rbac_bundle(vec![]);
 
@@ -1704,6 +1759,7 @@ fn discovers_status_conventions_from_owned_crd_manifest_metadata() {
                     "versions": ["v1alpha1"],
                     "storageVersion": "v1alpha1",
                     "statusConvention": {
+                        "ownership": "handlerAuthoritative",
                         "observedGenerationField": "observedGeneration",
                         "conditionsField": "conditions"
                     }
@@ -1720,12 +1776,18 @@ fn discovers_status_conventions_from_owned_crd_manifest_metadata() {
         handler_wasm: vec![0, 97, 115, 109],
     };
 
+    let convention = bundle
+        .status_convention_for_object("media.applik8s.dev/v1alpha1", "ImageJob")
+        .expect("status convention")
+        .expect("ImageJob convention exists");
     assert_eq!(
-        bundle
-            .status_convention_for_object("media.applik8s.dev/v1alpha1", "ImageJob")
-            .expect("status convention"),
-        Some(StatusConvention::default())
+        convention,
+        StatusConvention {
+            ownership: applik8s_operator_host::StatusOwnership::HandlerAuthoritative,
+            ..StatusConvention::default()
+        }
     );
+    assert!(!convention.lifecycle_managed());
     assert_eq!(
         bundle
             .status_convention_for_object("media.applik8s.dev/v1alpha1", "OtherJob")

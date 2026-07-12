@@ -4,7 +4,29 @@
 
 You write typed Kubernetes APIs and event listeners. `applik8s` compiles them into a WASM component, packages that component with a Rust operator host, and emits the Kubernetes YAML needed to install the whole thing into a cluster.
 
-The result is not a sidecar script or a long-running Node process. Your TypeScript becomes reconciler logic evaluated by Kubernetes events through a WASM component loaded by a Rust operator.
+Reconciliation TypeScript becomes WASM component logic evaluated by Kubernetes events through a Rust operator host. Application servers and durable command processors compile into separate, inspectable Node workloads when the application graph requires them.
+
+## v0.4 Flagship: Durable Tenant Behavior
+
+v0.4 adds typed, durable application behavior to the v0.3 application substrate. `examples/tenant-platform.ts` now has an opt-in v0.4 slice where one `Model.on.command()` declaration infers PostgreSQL inbox/result/history/outbox semantics, a generated processor, NATS JetStream Stream and Consumer resources, retry/dead-letter behavior, and TypeKro-owned lifecycle.
+
+PostgreSQL is authoritative for keyed serialization, idempotency, durable results, model revisions, history, and outboxes. JetStream is acknowledged at-least-once transport; a broker acknowledgement is not a completed command result. Command handlers cannot perform HTTP, object storage, workflow, or other external effects while model locks are held.
+
+The same release proves tree-shaken `@kubernetes/client-node` Core, Apps, and Custom Objects calls inside WASM reconciliation closures. Kubernetes endpoint, bearer identity, and CA trust remain host-owned and bound to declared origins.
+
+Run the complete v0.4 release gate against OrbStack:
+
+```sh
+bun run check:v04:prerelease:orbstack
+```
+
+Build the v0.4 Tenant Platform artifacts without a cluster:
+
+```sh
+bun run build:tenant-platform-v04
+```
+
+See [`docs/commands.md`](docs/commands.md) for the durable-command contract and [`docs/release-evidence-v0.4.md`](docs/release-evidence-v0.4.md) for captured evidence and maturity boundaries.
 
 ## v0.3 Flagship: Tenant Platform App
 
@@ -319,10 +341,10 @@ APPLIK8S_E2E=1 APPLIK8S_E2E_CONTEXT=orbstack bun run test:e2e
 
 For the README live test, Ministack is installed from Docker Hub inside the test namespace and exposed at `http://ministack.media.svc.cluster.local:4566`.
 
-For a release-candidate pass, run the full v0.3 prerelease gate with live E2E enabled:
+For a v0.4 release-candidate pass, run the durable-behavior, Kubernetes-WASM, packaging, and live lifecycle gates:
 
 ```sh
-bun run check:v03:prerelease:orbstack
+bun run check:v04:prerelease:orbstack
 ```
 
 ## Documentation
@@ -331,6 +353,8 @@ bun run check:v03:prerelease:orbstack
 - `docs/first-run.md`
 - `docs/typekro-golden-path.md`
 - `docs/generated-artifacts.md`
+- `docs/commands.md`
+- `docs/release-evidence-v0.4.md`
 - `docs/release-evidence-v0.3.md`
 - `docs/release-evidence-v0.2.md`
 - `docs/runtime-diagnostics.md`

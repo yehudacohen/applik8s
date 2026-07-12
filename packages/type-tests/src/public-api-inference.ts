@@ -7,7 +7,6 @@ import type {
   GeneratedJobDurableStatusUpdaterContract,
   GeneratedJobPhaseStatusContract,
   ApplicationMigrationDriftCheckContract,
-  ApplicationDiagnosticContract,
   ApplicationDurableStatusOwnershipContract,
   ApplicationModelStoreSemanticsContract,
   ApplicationOperationTargetContract,
@@ -29,7 +28,7 @@ import type {
 import type { Applik8sTestingApi } from '@applik8s/testing';
 import type { Applik8sTypeKroAdapterApi, TypeKroGraph } from '@applik8s/typekro-adapter';
 import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
-import { CounterStore, CredentialStore, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, Queue, Secret, sdk as appSdk, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationModelStoreProvider, type ApplicationSecretBinding } from '@applik8s/applik8s';
+import { Certificate, command, CounterStore, CredentialStore, DnsPublication, event, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, Queue, Secret, sdk as appSdk, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationModelStoreProvider, type ApplicationSecretBinding } from '@applik8s/applik8s';
 import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import { operationTarget as handlerOperationTargetFactory, targetFactory as handlerTargetFactory } from '@applik8s/typekro-adapter/targets';
 
@@ -106,6 +105,16 @@ const ImageJob = sdk.crd({
 const AccountEntity = appEntity('Account', {
   spec: appSchemaType({ email: 'string', displayName: 'string' }),
   status: appSchemaType({ phase: 'string?' }),
+});
+
+const RenameAccount = command('account.rename.v1', {
+  input: appSchemaType({ email: 'string', displayName: 'string', requestId: 'string' }),
+  output: appSchemaType({ changed: 'boolean', displayName: 'string' }),
+  errors: { accountNotFound: appSchemaType({ email: 'string' }) },
+});
+
+const AccountChanged = event('account.changed.v1', {
+  payload: appSchemaType({ email: 'string', displayName: 'string' }),
 });
 
 const accountModelStore = ModelStore.postgres({
@@ -269,6 +278,8 @@ const v03ProviderInterfaces = [
   { interface: 'Queue', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'ObjectStorage', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'HttpExposure', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'Certificate', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
+  { interface: 'DnsPublication', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
   { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
 ] satisfies ApplicationV03PressureTestContract['requiredProviderInterfaces'];
 
@@ -399,8 +410,25 @@ appSdk.kubernetesComposition({
     },
   });
   const accountModelBinding: ApplicationModelBinding<AccountSpec, AccountStatus> = Account;
+  const renameBinding = Account.on.command(RenameAccount, {
+    key: ({ email }) => email,
+    idempotencyKey: ({ requestId }) => requestId,
+    transaction: { history: [Account], outbox: [AccountChanged] },
+  }, async (account, input, context) => {
+    const priorDisplayName: string = account.spec.displayName;
+    context.emit(AccountChanged, { email: input.email, displayName: input.displayName });
+    expectTypeUsage(priorDisplayName, context.commandId, context.now);
+    return { changed: priorDisplayName !== input.displayName, displayName: input.displayName };
+  });
+  void (async () => {
+    const acknowledgement = await renameBinding.send({ email: 'ada@example.com', displayName: 'Ada Lovelace', requestId: 'request-1' }, { id: 'command-1', expectedRevision: 'revision-1' });
+    const phase: 'transportAcknowledged' = acknowledgement.phase;
+    const commandId: string = acknowledgement.commandId;
+    const correlationId: string = acknowledgement.correlationId;
+    expectTypeUsage(phase, commandId, correlationId);
+  });
   accountModelForScriptExecution = accountModelBinding;
-  expectTypeUsage(modelDefaults, maintenanceJob, maintenanceSchedule, maintenanceJobStatusPath, maintenanceScheduleDiagnostics, maintenanceJobDryRun, maintenanceSchedulePlan);
+  expectTypeUsage(modelDefaults, maintenanceJob, maintenanceSchedule, maintenanceJobStatusPath, maintenanceScheduleDiagnostics, maintenanceJobDryRun, maintenanceSchedulePlan, renameBinding);
 
   app.server('accounts-web', { namespace: spec.namespace }, (server) => {
     server.post('/accounts', async () => {
@@ -462,13 +490,15 @@ appSdk.kubernetesComposition({
   const queueProvider = app.provide(Queue, { kind: 'kubernetes-configmap-queue' });
   const objectStorageProvider = app.provide(ObjectStorage, { kind: 'kubernetes-configmap-objects' });
   const httpExposureProvider = app.provide(HttpExposure, { kind: 'ingress' });
+  const certificateProvider = app.provide(Certificate, Certificate.certManager({ issuerRef: { name: 'letsencrypt', kind: 'Issuer' } }));
+  const dnsProvider = app.provide(DnsPublication, DnsPublication.externalDns());
   const credentialProvider = app.provide(CredentialStore, { kind: 'kubernetes-secret-credentials' });
-  expectTypeUsage(counterProvider, secretProvider, eventProvider, queueProvider, objectStorageProvider, httpExposureProvider, credentialProvider);
+  expectTypeUsage(counterProvider, secretProvider, eventProvider, queueProvider, objectStorageProvider, httpExposureProvider, certificateProvider, dnsProvider, credentialProvider);
 
   const databaseConfig: ApplicationConfigBinding = app.config('database-url', { env: 'DATABASE_URL' });
   const databaseSecret: ApplicationSecretBinding = app.secret('database-url', { secretName: 'db-app', key: 'uri', redaction: 'required' });
   const generatedSecret: ApplicationSecretBinding = app.secret('session-key', { ownership: 'generated' });
-  const webExposure: ApplicationExposureBinding = app.expose('web', { service: 'accounts-web', hostnames: ['app.example.test'], tls: 'required' });
+  const webExposure: ApplicationExposureBinding = app.expose('web', { service: 'accounts-web', hostnames: ['app.example.test'], tls: { mode: 'managed' }, dns: { mode: 'managed', ttlSeconds: 120 } });
   expectTypeUsage(databaseConfig, databaseSecret, generatedSecret, webExposure);
 
   return { ready: true };

@@ -59,7 +59,7 @@ export async function bundleHandlerEntrypoint(request: HandlerBundleRequest): Pr
       sourcemap: true,
       sourcesContent: false,
       write: true,
-      plugins: [applik8sWorkspaceSourcePlugin()],
+      plugins: [applik8sWorkspaceSourcePlugin(), kubernetesClientWasmPlugin()],
     });
 
     const bundledDiagnostics = await validateBundledInputPortability(result.metafile.inputs, request);
@@ -84,10 +84,127 @@ export async function bundleHandlerEntrypoint(request: HandlerBundleRequest): Pr
   }
 }
 
+/**
+ * Keep the generated Kubernetes APIs inside WASM while replacing the package's
+ * Node-only kubeconfig and node-fetch entrypoints with explicit host-safe code.
+ * Unsupported root exports remain absent and therefore fail during bundling.
+ */
+export function kubernetesClientWasmPlugin(): Plugin {
+  const namespace = 'applik8s-kubernetes-client-wasm';
+  return {
+    name: namespace,
+    setup(build) {
+      build.onResolve({ filter: /^@kubernetes\/client-node$/ }, () => ({
+        path: 'client-node',
+        namespace,
+      }));
+      build.onResolve({ filter: /^(?:node:)?url$/ }, () => ({ path: 'url', namespace }));
+      build.onResolve({ filter: /^node-fetch$/ }, () => ({ path: 'node-fetch', namespace }));
+      build.onLoad({ filter: /^client-node$/, namespace }, () => ({
+        loader: 'js',
+        // The Bun CLI bundles the compiler into a temporary Node runner, so
+        // import.meta.url no longer points into the compiler package there.
+        // Resolve generated client modules from the explicit workspace root
+        // that runner provides; direct compiler consumers retain the stable
+        // package-relative fallback.
+        resolveDir: process.env.APPLIK8S_WORKSPACE_ROOT ?? sourceWorkspaceRoot,
+        contents: kubernetesClientWasmFacadeSource(),
+      }));
+      build.onLoad({ filter: /^url$/, namespace }, () => ({
+        loader: 'js',
+        contents: 'export const URL = globalThis.URL; export const URLSearchParams = globalThis.URLSearchParams; export default { URL, URLSearchParams };',
+      }));
+      build.onLoad({ filter: /^node-fetch$/, namespace }, () => ({
+        loader: 'js',
+        contents: 'export default (...args) => globalThis.fetch(...args); export const Headers = globalThis.Headers; export const Request = globalThis.Request; export const Response = globalThis.Response;',
+      }));
+    },
+  };
+}
+
+function kubernetesClientWasmFacadeSource(): string {
+  return `
+import { ObjectCoreV1Api as CoreV1Api, ObjectAppsV1Api as AppsV1Api, ObjectCustomObjectsApi as CustomObjectsApi } from '@kubernetes/client-node/dist/gen/types/ObjectParamAPI.js';
+import { ServerConfiguration } from '@kubernetes/client-node/dist/gen/servers.js';
+import { IsomorphicFetchHttpLibrary } from '@kubernetes/client-node/dist/gen/http/isomorphic-fetch.js';
+
+export { CoreV1Api, AppsV1Api, CustomObjectsApi };
+
+export class KubeConfig {
+  constructor() {
+    this.options = undefined;
+  }
+
+  loadFromOptions(options) {
+    if (!options || !Array.isArray(options.clusters) || !Array.isArray(options.users) || !Array.isArray(options.contexts)) {
+      throw new Error('applik8s-kubernetes-wasm-config-invalid: KubeConfig.loadFromOptions requires clusters, users, contexts, and currentContext.');
+    }
+    this.options = options;
+  }
+
+  getCurrentCluster() {
+    return this.resolve().cluster;
+  }
+
+  getCurrentUser() {
+    return this.resolve().user;
+  }
+
+  getCurrentContext() {
+    return this.options?.currentContext;
+  }
+
+  makeApiClient(Api) {
+    const { cluster, user } = this.resolve();
+    if (cluster.caData || cluster.caFile || user.certData || user.keyData || user.certFile || user.keyFile) {
+      throw new Error('applik8s-kubernetes-wasm-trust-unsupported: Inline CA and client-certificate material are not passed through JavaScript. Configure endpoint trust and workload identity at the WASI HTTP host boundary.');
+    }
+    if (!cluster.server || !/^https?:\\/\\//.test(cluster.server)) {
+      throw new Error('applik8s-kubernetes-wasm-endpoint-invalid: The selected Kubernetes cluster requires an explicit HTTP(S) server.');
+    }
+    const token = user.token;
+    if (token !== undefined && typeof token !== 'string') {
+      throw new Error('applik8s-kubernetes-wasm-identity-invalid: An explicitly configured guest bearer token must be a string. Omit it when the WASI HTTP host owns workload identity.');
+    }
+    const authMethods = {};
+    if (token) authMethods.BearerToken = {
+      applySecurityAuthentication(context) {
+        context.setHeaderParam('authorization', 'Bearer ' + token);
+      },
+    };
+    const configuration = {
+      baseServer: new ServerConfiguration(cluster.server.replace(/\\/$/, ''), {}),
+      httpApi: new IsomorphicFetchHttpLibrary(),
+      middleware: [],
+      authMethods,
+    };
+    return new Api(configuration);
+  }
+
+  resolve() {
+    if (!this.options) {
+      throw new Error('applik8s-kubernetes-wasm-config-missing: Call KubeConfig.loadFromOptions before creating a client.');
+    }
+    const context = this.options.contexts.find((candidate) => candidate.name === this.options.currentContext);
+    if (!context) {
+      throw new Error('applik8s-kubernetes-wasm-context-missing: currentContext does not name a declared context.');
+    }
+    const cluster = this.options.clusters.find((candidate) => candidate.name === context.cluster);
+    const user = this.options.users.find((candidate) => candidate.name === context.user);
+    if (!cluster || !user) {
+      throw new Error('applik8s-kubernetes-wasm-context-invalid: The selected context must reference a declared cluster and user.');
+    }
+    return { cluster, user };
+  }
+}
+`.trimStart();
+}
+
 export function applik8sWorkspaceSourcePlugin(): Plugin {
   const workspaceRoot = process.env.APPLIK8S_WORKSPACE_ROOT ?? sourceWorkspaceRoot;
   const packageAliases = new Map<string, string>([
     ['@applik8s/applik8s', resolve(workspaceRoot, 'packages/applik8s/src/index.ts')],
+    ['@applik8s/applik8s/processor-runtime', resolve(workspaceRoot, 'packages/applik8s/src/processor-runtime.ts')],
     ['@applik8s/core', resolve(workspaceRoot, 'packages/core/src/index.ts')],
     ['@applik8s/sdk', resolve(workspaceRoot, 'packages/sdk/src/index.ts')],
     ['@applik8s/testing', resolve(workspaceRoot, 'packages/testing/src/index.ts')],

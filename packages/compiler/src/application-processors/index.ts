@@ -1,0 +1,462 @@
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationEventNode, ApplicationGraph, ApplicationModelNode, ApplicationProcessorNode, ApplicationProviderNode } from '@applik8s/core';
+import { build } from 'esbuild';
+import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+
+const DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
+
+export interface GeneratedApplicationProcessorArtifact {
+  readonly name: string;
+  readonly sourcePath: string;
+  readonly sourceMapPath: string;
+  readonly manifestPath: string;
+  readonly metafilePath: string;
+  readonly digest: string;
+  readonly sizeBytes: number;
+  readonly resources: readonly GeneratedApplicationProcessorResource[];
+}
+
+export interface GeneratedApplicationProcessorResource {
+  readonly apiVersion: string;
+  readonly kind: string;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly data?: Readonly<Record<string, string>>;
+  readonly spec?: Readonly<Record<string, unknown>>;
+}
+
+export async function emitGeneratedApplicationProcessors(options: {
+  readonly graph: ApplicationGraph;
+  readonly outDir: string;
+  readonly entrypoint: string;
+}): Promise<readonly GeneratedApplicationProcessorArtifact[]> {
+  const processors = options.graph.nodes.filter((node): node is ApplicationProcessorNode => node.kind === 'processor');
+  if (processors.length === 0) return [];
+  await mkdir(options.outDir, { recursive: true });
+  const artifacts: GeneratedApplicationProcessorArtifact[] = [];
+  const emittedEventLogStreams = new Set<string>();
+  for (const processor of processors) {
+    const eventLogId = processor.eventLog?.nodeId ?? '';
+    const ownsStream = !emittedEventLogStreams.has(eventLogId);
+    if (eventLogId) emittedEventLogStreams.add(eventLogId);
+    artifacts.push(await emitProcessor(options.graph, processor, options.outDir, ownsStream));
+  }
+  return artifacts;
+}
+
+async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProcessorNode, outDir: string, ownsStream: boolean): Promise<GeneratedApplicationProcessorArtifact> {
+  const name = kubernetesName(processor.name);
+  const processorDir = join(outDir, name);
+  const generatedEntrypoint = join(processorDir, 'processor.generated.ts');
+  const sourcePath = join(processorDir, 'processor.mjs');
+  const sourceMapPath = `${sourcePath}.map`;
+  const manifestPath = join(processorDir, 'processor.manifest.json');
+  const metafilePath = join(processorDir, 'processor.esbuild-meta.json');
+  await mkdir(processorDir, { recursive: true });
+  const contract = processorContract(graph, processor, ownsStream);
+  await writeFile(generatedEntrypoint, generatedProcessorSource(contract));
+  const result = await build({
+    entryPoints: [generatedEntrypoint],
+    outfile: sourcePath,
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    target: 'node22',
+    legalComments: 'none',
+    minify: true,
+    lineLimit: 120,
+    sourcemap: 'external',
+    metafile: true,
+    banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
+    supported: { 'template-literal': false },
+    plugins: [applik8sWorkspaceSourcePlugin()],
+  });
+  const source = await readFile(sourcePath, 'utf8');
+  const sizeBytes = Buffer.byteLength(source);
+  if (sizeBytes > 900_000) {
+    throw new Error(`Generated command processor ${processor.name} is ${sizeBytes} bytes and exceeds the safe ConfigMap runtime-bundle limit. Use an explicit processor image override until OCI processor artifacts are implemented.`);
+  }
+  const digest = `sha256:${createHash('sha256').update(source).digest('hex')}`;
+  const resources = processorResources(contract, source, digest);
+  const manifest = {
+    apiVersion: 'applik8s.processor/v1alpha1',
+    kind: 'GeneratedCommandProcessor',
+    metadata: { name },
+    spec: {
+      graph: graph.metadata.name,
+      processor: processor.id,
+      handlers: contract.handlers.map((handler) => handler.node.id),
+      runtime: { entrypoint: sourcePath, sourceMap: sourceMapPath, digest, sizeBytes, packageManagerAtStartup: false, image: processor.runtimeImage ?? DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE },
+      resources: resources.map((resource) => ({ apiVersion: resource.apiVersion, kind: resource.kind, metadata: resource.metadata })),
+      guarantees: { delivery: 'atLeastOnce', authority: 'postgresInboxAndDeclaredOrdering', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
+    },
+  };
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
+  return { name, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, resources };
+}
+
+interface ProcessorContract {
+  readonly processor: ApplicationProcessorNode;
+  readonly provider: ApplicationProviderNode;
+  readonly namespace?: string;
+  readonly servers: readonly string[];
+  readonly stream: string;
+  readonly streamResourceName: string;
+  readonly provisionStream: boolean;
+  readonly streamReplicas: number;
+  readonly subjectPrefix: string;
+  readonly consumer: string;
+  readonly connectionSecret?: { readonly name: string; readonly namespace?: string; readonly authMode: 'token' | 'userPassword'; readonly tokenKey: string; readonly userKey: string; readonly passwordKey: string };
+  readonly retention: {
+    readonly bindingIds: readonly string[];
+    readonly auditWindowSeconds: number;
+    readonly publishedOutboxWindowSeconds: number;
+    readonly cleanupIntervalSeconds: number;
+    readonly cleanupBatchSize: number;
+  };
+  readonly handlers: readonly {
+    readonly node: ApplicationCommandHandlerNode;
+    readonly model: ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> };
+    readonly models: readonly (ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> })[];
+    readonly command: ApplicationCommandNode['contract'];
+    readonly events: readonly { readonly identifier: string; readonly definition: { readonly kind: 'applik8sEvent'; readonly id: string; readonly name: string; readonly version: string }; readonly schema: ApplicationEventNode['contract']['payload']['jsonSchema'] }[];
+    readonly commands: readonly { readonly identifier: string; readonly definition: { readonly kind: 'applik8sCommand'; readonly id: string; readonly name: string; readonly version: string; readonly input: object; readonly output: object; readonly errors: object }; readonly schema: ApplicationCommandNode['contract']['input']['jsonSchema'] }[];
+  }[];
+}
+
+function processorContract(graph: ApplicationGraph, processor: ApplicationProcessorNode, ownsStream: boolean): ProcessorContract {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const provider = nodes.get(processor.eventLog?.nodeId ?? '');
+  if (provider?.kind !== 'provider' || provider.interface !== 'EventLog') throw new Error(`Generated processor ${processor.id} requires one resolved EventLog provider node.`);
+  const handlers = processor.handlers.map((reference) => {
+    const node = nodes.get(reference.nodeId);
+    if (node?.kind !== 'commandHandler') throw new Error(`Generated processor ${processor.id} references missing command handler ${reference.nodeId}.`);
+    const model = nodes.get(node.model.nodeId);
+    if (model?.kind !== 'model' || !model.runtime) throw new Error(`Generated processor ${processor.id} handler ${node.id} requires a model runtime contract.`);
+    const commandNode = nodes.get(node.command.nodeId);
+    if (commandNode?.kind !== 'command') throw new Error(`Generated processor ${processor.id} handler ${node.id} requires a command contract.`);
+    const events = (node.eventBindings ?? []).map((binding) => {
+      const event = nodes.get(binding.event.nodeId);
+      if (event?.kind !== 'event') throw new Error(`Generated processor ${processor.id} handler ${node.id} has an invalid event binding ${binding.identifier}.`);
+      return { identifier: binding.identifier, definition: eventDefinition(event), schema: event.contract.payload.jsonSchema };
+    });
+    const commands = (node.commandBindings ?? []).map((binding) => {
+      const emitted = nodes.get(binding.command.nodeId);
+      if (emitted?.kind !== 'command') throw new Error(`Generated processor ${processor.id} handler ${node.id} has an invalid command binding ${binding.identifier}.`);
+      return { identifier: binding.identifier, definition: commandDefinition(emitted), schema: emitted.contract.input.jsonSchema };
+    });
+    const models = node.transaction.models.map((reference) => {
+      const participant = nodes.get(reference.nodeId);
+      if (participant?.kind !== 'model' || !participant.runtime) throw new Error(`Generated processor ${processor.id} handler ${node.id} has an invalid transaction model ${reference.nodeId}.`);
+      // typecast: the preceding graph guard proves this participant has the runtime contract required by generated execution.
+      return participant as ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> };
+    });
+    // typecast: the preceding runtime guard narrows the graph model more precisely than TypeScript preserves through the collection callback.
+    return { node, model: model as ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> }, models, command: commandNode.contract, events, commands };
+  });
+  const config = provider.config ?? {};
+  const namespace = handlers[0]?.model.runtime.secretNamespace || stringConfig(config.namespace) || undefined;
+  const serviceName = stringConfig(config.name) || 'applik8s-events';
+  const configuredServers = Array.isArray(config.servers) ? config.servers.filter((value): value is string => typeof value === 'string') : [];
+  const runtimeBinding = graph.providerBindings.find((binding) => graph.providerRequirements.some((requirement) => requirement.id === binding.requirement && requirement.consumer.nodeId === processor.id));
+  const secretRef = runtimeBinding?.runtime.secretRefs?.[0];
+  const processorNamespace = namespace ?? 'default';
+  if (secretRef?.namespace && secretRef.namespace !== processorNamespace) {
+    throw new Error(`Generated processor ${processor.id} cannot read EventLog Secret ${secretRef.namespace}/${secretRef.name} from namespace ${processorNamespace}. Kubernetes Secret env references must be in the processor namespace.`);
+  }
+  const configuredAuthMode = stringConfig(config.authMode);
+  if (configuredAuthMode && configuredAuthMode !== 'token' && configuredAuthMode !== 'userPassword') {
+    throw new Error(`Generated processor ${processor.id} EventLog authMode must be token or userPassword.`);
+  }
+  const authMode: 'token' | 'userPassword' = configuredAuthMode === 'userPassword' ? 'userPassword' : 'token';
+  return {
+    processor,
+    provider,
+    ...(namespace ? { namespace } : {}),
+    servers: configuredServers.length > 0 ? configuredServers : [`nats://${serviceName}${stringConfig(config.namespace) ? `.${stringConfig(config.namespace)}` : ''}.svc:4222`],
+    stream: stringConfig(config.stream) || 'APPLIK8S_EVENTS',
+    streamResourceName: kubernetesName(serviceName),
+    provisionStream: ownsStream && config.provision !== false,
+    streamReplicas: numberConfig(config.replicas, 1),
+    subjectPrefix: stringConfig(config.subjectPrefix) || 'applik8s',
+    consumer: kubernetesName(processor.name),
+    ...(secretRef?.name ? { connectionSecret: { name: secretRef.name, ...(secretRef.namespace ? { namespace: secretRef.namespace } : {}), authMode, tokenKey: stringConfig(config.tokenKey) || 'token', userKey: stringConfig(config.userKey) || 'user', passwordKey: stringConfig(config.passwordKey) || 'password' } } : {}),
+    retention: {
+      bindingIds: handlers.map((handler) => handler.node.name),
+      auditWindowSeconds: Math.max(...handlers.map((handler) => handler.node.retention.auditWindowSeconds)),
+      publishedOutboxWindowSeconds: Math.max(...handlers.map((handler) => handler.node.retention.publishedOutboxWindowSeconds)),
+      cleanupIntervalSeconds: Math.min(...handlers.map((handler) => handler.node.retention.cleanupIntervalSeconds)),
+      cleanupBatchSize: Math.max(...handlers.map((handler) => handler.node.retention.cleanupBatchSize)),
+    },
+    handlers,
+  };
+}
+
+function generatedProcessorSource(contract: ProcessorContract): string {
+  const bindingSources = contract.handlers.map((handler) => generatedBindingSource(handler)).join(',\n');
+  return `
+import { rm, writeFile } from 'node:fs/promises';
+import { canonicalApplicationCommandKey, cleanupPostgresCommandData, createJetStreamEventLog, executePostgresModelCommand, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox, startJetStreamCommandProcessor } from '@applik8s/applik8s/processor-runtime';
+
+const bindings = [
+${bindingSources}
+];
+
+const processor = await startJetStreamCommandProcessor({
+  servers: ${JSON.stringify(contract.servers)},
+  stream: ${JSON.stringify(contract.stream)},
+  consumer: ${JSON.stringify(contract.consumer)},
+  subjectPrefix: ${JSON.stringify(contract.subjectPrefix)},
+  bindings,
+  concurrency: 8,
+  databaseUrl: process.env.DATABASE_URL,
+  token: process.env.APPLIK8S_NATS_TOKEN,
+  user: process.env.APPLIK8S_NATS_USER,
+  pass: process.env.APPLIK8S_NATS_PASSWORD,
+  logger: (record) => console.log(JSON.stringify(record)),
+});
+const eventLog = createJetStreamEventLog({
+  servers: ${JSON.stringify(contract.servers)},
+  stream: ${JSON.stringify(contract.stream)},
+  subjectPrefix: ${JSON.stringify(contract.subjectPrefix)},
+  connectionName: ${JSON.stringify(`applik8s-${contract.consumer}-outbox`)},
+  token: process.env.APPLIK8S_NATS_TOKEN,
+  user: process.env.APPLIK8S_NATS_USER,
+  pass: process.env.APPLIK8S_NATS_PASSWORD,
+});
+await eventLog.verify();
+let relayStopping = false;
+let lastCleanupAt = 0;
+const relayClosed = (async () => {
+  while (!relayStopping) {
+    try {
+      const result = await relayPostgresEventOutbox({ databaseUrl: process.env.DATABASE_URL, eventLog, limit: 100 });
+      if (result.published > 0) console.log(JSON.stringify({ event: 'applik8s-event-outbox-relayed', ...result }));
+      const commandResult = await relayPostgresCommandOutbox({ databaseUrl: process.env.DATABASE_URL, eventLog, limit: 100 });
+      if (commandResult.published > 0) console.log(JSON.stringify({ event: 'applik8s-command-outbox-relayed', ...commandResult }));
+      const now = Date.now();
+      if (now - lastCleanupAt >= ${contract.retention.cleanupIntervalSeconds * 1_000}) {
+        const cleanup = await cleanupPostgresCommandData({ databaseUrl: process.env.DATABASE_URL, ...${JSON.stringify(contract.retention)} });
+        const databaseLag = await observePostgresOutboxLag(process.env.DATABASE_URL);
+        const consumerLag = await eventLog.consumerLag(${JSON.stringify(contract.consumer)});
+        console.log(JSON.stringify({ event: 'applik8s-command-processor-observation', cleanup, databaseLag, consumerLag }));
+        lastCleanupAt = now;
+      }
+    } catch (error) {
+      console.error(JSON.stringify({ event: 'applik8s-event-outbox-relay-failure', error: error instanceof Error ? error.message : String(error) }));
+    }
+    await writeFile('/tmp/applik8s-processor-heartbeat', String(Date.now()));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+})();
+await writeFile('/tmp/applik8s-processor-ready', 'ready\\n');
+await writeFile('/tmp/applik8s-processor-heartbeat', String(Date.now()));
+let draining = false;
+const drain = async (signal) => {
+  if (draining) return;
+  draining = true;
+  console.log(JSON.stringify({ event: 'applik8s-command-processor-draining', signal }));
+  await rm('/tmp/applik8s-processor-ready', { force: true });
+  relayStopping = true;
+  await processor.drain();
+  await relayClosed;
+  await eventLog.drain();
+};
+const terminate = (signal) => {
+  void drain(signal).then(
+    () => process.exit(0),
+    (error) => {
+      console.error(JSON.stringify({ event: 'applik8s-command-processor-drain-failure', signal, error: error instanceof Error ? error.message : String(error) }));
+      process.exit(1);
+    },
+  );
+};
+process.once('SIGTERM', () => terminate('SIGTERM'));
+process.once('SIGINT', () => terminate('SIGINT'));
+await processor.closed;
+`.trimStart();
+}
+
+function generatedBindingSource(handler: ProcessorContract['handlers'][number]): string {
+  const eventDeclarations = handler.events.map((event) => `const ${event.identifier} = ${JSON.stringify(event.definition)};`).join('\n      ');
+  const commandDeclarations = handler.commands.map((command) => `const ${command.identifier} = ${JSON.stringify(command.definition)};`).join('\n      ');
+  const outbox = handler.events.map((event) => event.identifier).join(', ');
+  const commands = handler.commands.map((command) => command.identifier).join(', ');
+  const keySource = handler.node.key.source;
+  const idempotencySource = handler.node.idempotencyKey?.source;
+  return `  {
+    bindingId: ${JSON.stringify(handler.node.name)},
+    contract: ${JSON.stringify(handler.command)},
+    async execute(input, delivery) {
+      ${eventDeclarations}
+      ${commandDeclarations}
+      const targetKey = delivery.targetKey ?? canonicalApplicationCommandKey((${keySource})(input));
+      const idempotencyKey = delivery.idempotencyKey ?? ${idempotencySource ? `(${idempotencySource})(input)` : 'delivery.id'};
+      return executePostgresModelCommand({
+        bindingId: ${JSON.stringify(handler.node.name)},
+        command: ${JSON.stringify(handler.command)},
+        errors: ${JSON.stringify(handler.command.errors.map((error) => error.name))},
+        schemas: ${JSON.stringify({ input: handler.command.input.jsonSchema, output: handler.command.output.jsonSchema, errors: Object.fromEntries(handler.command.errors.map((error) => [error.name, error.schema.jsonSchema])), events: Object.fromEntries(handler.events.map((event) => [event.definition.id, event.schema])), commands: Object.fromEntries(handler.commands.map((command) => [command.definition.id, command.schema])) })},
+        model: ${JSON.stringify(handler.model.runtime)},
+        models: ${JSON.stringify(handler.models.map((model) => model.runtime))},
+        historyModels: ${JSON.stringify(handler.node.transaction.history.map((reference) => handler.models.find((model) => model.id === reference.nodeId)?.name).filter(Boolean))},
+        retry: ${JSON.stringify(handler.node.retry)},
+        message: { ...delivery, input, targetKey, idempotencyKey },
+        history: ${String(handler.node.transaction.history.some((reference) => reference.nodeId === handler.model.id))},
+        outbox: [${outbox}],
+        commands: [${commands}],
+        ordering: ${JSON.stringify(handler.node.ordering)},
+        ${handler.node.missingRoute ? `missingRoute: ${JSON.stringify(handler.node.missingRoute)},` : ''}
+        ${handler.node.initializeSource ? `initialize: (${handler.node.initializeSource}),` : ''}
+        handler: (${handler.node.handlerSource}),
+        databaseUrl: delivery.databaseUrl,
+      });
+    },
+  }`;
+}
+
+function processorResources(contract: ProcessorContract, source: string, digest: string): readonly GeneratedApplicationProcessorResource[] {
+  const labels = { 'app.kubernetes.io/name': contract.consumer, 'app.kubernetes.io/component': 'command-processor', 'app.kubernetes.io/managed-by': 'applik8s' };
+  const metadata = { name: contract.consumer, ...(contract.namespace ? { namespace: contract.namespace } : {}), labels };
+  const model = contract.handlers[0]?.model.runtime;
+  if (!model) throw new Error(`Generated processor ${contract.processor.id} has no model runtime.`);
+  const env: unknown[] = [
+    { name: 'NODE_OPTIONS', value: '--enable-source-maps' },
+    { name: model.connectionEnvName, valueFrom: { secretKeyRef: { name: model.secretName, key: model.secretKey } } },
+  ];
+  if (model.connectionEnvName !== 'DATABASE_URL') env.push({ name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: model.secretName, key: model.secretKey } } });
+  if (contract.connectionSecret) {
+    if (contract.connectionSecret.authMode === 'token') {
+      env.push({ name: 'APPLIK8S_NATS_TOKEN', valueFrom: { secretKeyRef: { name: contract.connectionSecret.name, key: contract.connectionSecret.tokenKey, optional: false } } });
+    } else {
+      env.push(
+        { name: 'APPLIK8S_NATS_USER', valueFrom: { secretKeyRef: { name: contract.connectionSecret.name, key: contract.connectionSecret.userKey, optional: false } } },
+        { name: 'APPLIK8S_NATS_PASSWORD', valueFrom: { secretKeyRef: { name: contract.connectionSecret.name, key: contract.connectionSecret.passwordKey, optional: false } } },
+      );
+    }
+  }
+  const filterSubjects = contract.handlers.map((handler) => `${contract.subjectPrefix}.commands.${subjectToken(handler.command.name)}.${subjectToken(handler.command.version)}.>`);
+  return [
+    { apiVersion: 'v1', kind: 'ConfigMap', metadata: { ...metadata, name: `${contract.consumer}-source`, annotations: { 'applik8s.dev/runtime-digest': digest } }, data: { 'processor.mjs': source } },
+    ...(contract.provisionStream ? [{
+      apiVersion: 'jetstream.nats.io/v1beta2',
+      kind: 'Stream',
+      metadata: { ...metadata, name: contract.streamResourceName, labels: { ...labels, 'app.kubernetes.io/component': 'event-log' } },
+      spec: {
+        name: contract.stream,
+        subjects: [`${contract.subjectPrefix}.>`],
+        retention: 'limits',
+        storage: 'file',
+        replicas: contract.streamReplicas,
+        duplicateWindow: '2m',
+        servers: contract.servers,
+      },
+    }] : []),
+    {
+      apiVersion: 'jetstream.nats.io/v1beta2',
+      kind: 'Consumer',
+      metadata,
+      spec: {
+        durableName: contract.consumer,
+        streamName: contract.stream,
+        ackPolicy: 'explicit',
+        ackWait: '30s',
+        maxDeliver: 5,
+        maxAckPending: 8,
+        filterSubjects,
+        servers: contract.servers,
+      },
+    },
+    {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'NetworkPolicy',
+      metadata,
+      spec: {
+        podSelector: { matchLabels: labels },
+        policyTypes: ['Ingress', 'Egress'],
+        ingress: [],
+        egress: [
+          {
+            to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } }, podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } } }],
+            ports: [{ protocol: 'UDP', port: 53 }, { protocol: 'TCP', port: 53 }],
+          },
+          { ports: [{ protocol: 'TCP', port: 4222 }, { protocol: 'TCP', port: 5432 }] },
+        ],
+      },
+    },
+    {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      metadata,
+      spec: {
+        replicas: 1,
+        progressDeadlineSeconds: 600,
+        revisionHistoryLimit: 3,
+        strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } },
+        selector: { matchLabels: labels },
+        template: {
+          metadata: { labels, annotations: { 'applik8s.dev/runtime-digest': digest } },
+          spec: {
+            automountServiceAccountToken: false,
+            terminationGracePeriodSeconds: 60,
+            securityContext: {
+              runAsNonRoot: true,
+              runAsUser: 1000,
+              runAsGroup: 1000,
+              fsGroup: 1000,
+              fsGroupChangePolicy: 'OnRootMismatch',
+              seccompProfile: { type: 'RuntimeDefault' },
+            },
+            containers: [{
+              name: 'processor',
+              image: contract.processor.runtimeImage ?? DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE,
+              imagePullPolicy: 'IfNotPresent',
+              command: ['node', '/app/processor.mjs'],
+              env,
+              securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
+              resources: { requests: { cpu: '50m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } },
+              readinessProbe: { exec: { command: ['test', '-f', '/tmp/applik8s-processor-ready'] }, periodSeconds: 5, timeoutSeconds: 2, failureThreshold: 3 },
+              livenessProbe: { exec: { command: ['node', '-e', "const { mtimeMs } = require('node:fs').statSync('/tmp/applik8s-processor-heartbeat'); process.exit(Date.now() - mtimeMs < 60000 ? 0 : 1)"] }, periodSeconds: 20, timeoutSeconds: 2, failureThreshold: 3 },
+              volumeMounts: [{ name: 'source', mountPath: '/app', readOnly: true }, { name: 'tmp', mountPath: '/tmp' }],
+            }],
+            volumes: [{ name: 'source', configMap: { name: `${contract.consumer}-source` } }, { name: 'tmp', emptyDir: { sizeLimit: '16Mi' } }],
+          },
+        },
+      },
+    },
+  ];
+}
+
+function eventDefinition(event: ApplicationEventNode): { readonly kind: 'applik8sEvent'; readonly id: string; readonly name: string; readonly version: string } {
+  return { kind: 'applik8sEvent', id: event.name, name: event.contract.name, version: event.contract.version };
+}
+
+function commandDefinition(command: ApplicationCommandNode): { readonly kind: 'applik8sCommand'; readonly id: string; readonly name: string; readonly version: string; readonly input: object; readonly output: object; readonly errors: object } {
+  return {
+    kind: 'applik8sCommand',
+    id: command.name,
+    name: command.contract.name,
+    version: command.contract.version,
+    input: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: `${command.name}.input` }, schema: command.contract.input.jsonSchema },
+    output: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: `${command.name}.output` }, schema: command.contract.output.jsonSchema },
+    errors: Object.fromEntries(command.contract.errors.map((error) => [error.name, { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: `${command.name}.${error.name}` }, schema: error.schema.jsonSchema }])),
+  };
+}
+
+function stringConfig(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function numberConfig(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : fallback;
+}
+
+function kubernetesName(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 63) || 'processor';
+}
+
+function subjectToken(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'value';
+}

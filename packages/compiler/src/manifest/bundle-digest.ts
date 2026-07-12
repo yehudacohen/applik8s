@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { BundleArtifact, HandlerExport, OwnedCrd, RuntimePayloadSchemaDigests } from '@applik8s/core';
+import type { BundleArtifact, HandlerExport, OwnedCrd, ReadResource, RuntimePayloadSchemaDigests } from '@applik8s/core';
 
 export interface BundleDigestInput {
   readonly compilerVersion: string;
@@ -9,6 +9,7 @@ export interface BundleDigestInput {
   readonly artifacts: readonly BundleArtifact[];
   readonly handlerExports: readonly HandlerExport[];
   readonly ownedCrds: readonly OwnedCrd[];
+  readonly readResources?: readonly ReadResource[];
   readonly payloadSchemaDigests: RuntimePayloadSchemaDigests;
 }
 
@@ -34,6 +35,7 @@ export function computeBundleDigest(input: BundleDigestInput): string {
       versioning: crd.versioning,
       versions: crd.versions,
     })),
+    readResources: [...(input.readResources ?? [])].sort((left, right) => `${left.apiVersion}/${left.kind}`.localeCompare(`${right.apiVersion}/${right.kind}`)),
     payloadSchemaDigests: input.payloadSchemaDigests,
   });
 }

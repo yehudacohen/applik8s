@@ -1,6 +1,6 @@
 # Release Gates
 
-Release readiness has two layers: local gates and pre-release live gates. v0.3 uses an additional substrate-freeze gate because it freezes framework contracts beyond the normal package checks.
+Release readiness has two layers: local gates and pre-release live gates. v0.4 retains the v0.3 substrate gates and adds durable-command, JetStream, Kubernetes-WASM, processor-recovery, and clean TypeKro lifecycle evidence.
 
 ## Local Gates
 
@@ -41,7 +41,7 @@ bun run check:release
 The checker verifies:
 
 - publishable package metadata
-- version `0.3.0` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
+- version `0.4.0` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
 - Apache-2.0 license metadata
 - public publish config
 - no `file:` dependency ranges in publishable packages
@@ -130,7 +130,42 @@ APPLIK8S_RELEASE_ALLOW_SKIP_LIVE_E2E=1 bun run check:prerelease
 
 Do not use this for an actual v0.2 release announcement.
 
-## Required Evidence For v0.3
+## v0.4 Durable-Behavior Release Gates
+
+Run the CI-safe v0.4 contract and artifact suite:
+
+```sh
+bun run check:v04:local
+```
+
+This covers command/event contracts, application-graph authority metadata, PostgreSQL transactional behavior, outbox recovery, generated processors, JetStream transport, packed packages, character tests, and Kubernetes SDK WASM artifacts.
+
+Run the complete live release candidate against OrbStack:
+
+```sh
+bun run check:v04:prerelease:orbstack
+```
+
+For another explicitly selected disposable context:
+
+```sh
+APPLIK8S_E2E_CONTEXT=<context> bun run check:v04:prerelease
+```
+
+The live gate proves Core/Apps/Custom Objects Kubernetes SDK calls through WASM plus the unified Tenant Platform command path. The Tenant proof includes keyed concurrency, duplicate recovery, atomic history/outbox visibility, graceful drain/restart, abrupt processor crash, backlog redelivery, lag observations, and TypeKro `deleteInstance()` cleanup before RGD deletion.
+
+## Required Evidence For v0.4
+
+Before announcing v0.4, capture:
+
+- complete local and packed-package gate output
+- OrbStack Kubernetes SDK WASM output
+- unified Tenant Platform v0.4 output, including restart/crash/backlog and cleanup assertions
+- generated processor security, NetworkPolicy, health, and graceful-lifecycle artifact assertions
+- TypeKro 0.26 direct and KRO lifecycle evidence
+- release notes, clean version metadata, and `docs/release-evidence-v0.4.md`
+
+## Historical Required Evidence For v0.3
 
 Before announcing v0.3, capture:
 
@@ -150,7 +185,7 @@ Before announcing v0.3, capture:
 
 ## Publishing
 
-Publishing is tag-driven. Push a tag such as `v0.3.0` to run the deploy workflow. The workflow requires npm trusted publishing to be configured for each `@applik8s/*` package and this repository workflow.
+Publishing is tag-driven. Push tag `v0.4.0` only after the complete v0.4 gate passes. The deploy workflow requires npm trusted publishing to be configured for each `@applik8s/*` package and this repository workflow.
 
 Validate package contents and imports from unpacked tarballs before tagging:
 

@@ -10,13 +10,16 @@ pub use engine::{KubeRuntimeBridge, component_model_engine};
 pub use error::{OperationProgress, RuntimeBridgeError};
 pub use invocation::{
     CapabilityRequestFuture, CapabilityRequestHandler, HandlerInvocationPayload,
-    KubernetesReadFuture, KubernetesReadHandler, WasmComponentInvoker, canonical_host_imports,
-    capability_denied_payload, component_host_imports, invoke_handler_component_bytes,
-    invoke_handler_component_bytes_with_allowed_imports,
+    KubernetesHttpTransport, KubernetesReadFuture, KubernetesReadHandler, WasmComponentInvoker,
+    canonical_host_imports, capability_denied_payload, component_host_imports,
+    invoke_handler_component_bytes, invoke_handler_component_bytes_with_allowed_imports,
     invoke_handler_component_bytes_with_timeout,
     invoke_handler_component_bytes_with_timeout_and_capabilities_async,
     invoke_handler_component_bytes_with_timeout_and_host_imports_async,
-    invoke_handler_component_bytes_with_timeout_async, validate_component_host_imports,
+    invoke_handler_component_bytes_with_timeout_and_kubernetes_http_async,
+    invoke_handler_component_bytes_with_timeout_async,
+    invoke_handler_component_bytes_with_timeout_host_imports_and_kubernetes_http_async,
+    validate_component_host_imports,
 };
 pub use kube::retry_after;
 pub use payload::{

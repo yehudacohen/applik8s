@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -202,6 +202,6 @@ function isBunRuntime(): boolean {
   return 'bun' in process.versions;
 }
 
-if (process.argv[1]?.endsWith('/cli.ts')) {
+if (/\/cli\.(?:ts|js)$/.test(process.argv[1] ?? '')) {
   process.exitCode = await runCli(process.argv.slice(2));
 }

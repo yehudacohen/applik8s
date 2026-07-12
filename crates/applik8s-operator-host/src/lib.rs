@@ -1,7 +1,8 @@
 use applik8s_runtime_bridge::{
-    AppliedOperationSummary, KubeOperationPlanApplier, KubeRuntimeBridge, OperationProgress,
-    RuntimeBridgeError, component_model_engine,
+    AppliedOperationSummary, KubeOperationPlanApplier, KubeRuntimeBridge, KubernetesHttpTransport,
+    OperationProgress, RuntimeBridgeError, component_model_engine,
     invoke_handler_component_bytes_with_timeout_and_host_imports_async,
+    invoke_handler_component_bytes_with_timeout_host_imports_and_kubernetes_http_async,
     validate_component_host_imports,
 };
 use applik8s_runtime_contract::{ApplyOwnership, NormalizedOperationPlan, ObjectRef, Operation};
@@ -94,13 +95,28 @@ pub struct HandlerRoute {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusConvention {
+    pub ownership: StatusOwnership,
     pub observed_generation_field: String,
     pub conditions_field: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatusOwnership {
+    #[default]
+    LifecycleManaged,
+    HandlerAuthoritative,
+}
+
+impl StatusConvention {
+    pub fn lifecycle_managed(&self) -> bool {
+        self.ownership == StatusOwnership::LifecycleManaged
+    }
 }
 
 impl Default for StatusConvention {
     fn default() -> Self {
         Self {
+            ownership: StatusOwnership::LifecycleManaged,
             observed_generation_field: "observedGeneration".to_string(),
             conditions_field: "conditions".to_string(),
         }
@@ -399,6 +415,8 @@ pub enum OperatorHostError {
     Json(#[from] serde_json::Error),
     #[error("kubernetes client failed: {0}")]
     Kubernetes(#[from] kube::Error),
+    #[error("kubernetes configuration failed: {0}")]
+    KubernetesConfiguration(String),
     #[error("leader election failed: {0}")]
     LeaderElection(#[from] LeaseManagerError),
     #[error("controller stopped while leadership was held")]
@@ -557,6 +575,9 @@ impl OperatorHost {
         else {
             return Ok(());
         };
+        if !status_convention.lifecycle_managed() {
+            return Ok(());
+        }
         let watches = bundle.owned_resource_watches()?;
         let client = self.bridge.client().clone();
         tokio::spawn(async move {
@@ -717,7 +738,10 @@ impl OperatorHost {
         let status_applier = applier
             .with_field_manager("applik8s-status-lifecycle")
             .with_force_status(true);
-        if let Some(status_convention) = status_convention.as_ref() {
+        if let Some(status_convention) = status_convention
+            .as_ref()
+            .filter(|convention| convention.lifecycle_managed())
+        {
             report_reconcile_stale_status(
                 &status_applier,
                 &owner,
@@ -775,17 +799,31 @@ impl OperatorHost {
             }) as applik8s_runtime_bridge::KubernetesReadFuture
         });
         record_reconcile_otel_phase(&mut reconcile_span, "handler.invoke");
-        let plan = match invoke_handler_component_bytes_with_timeout_and_host_imports_async(
-            self.bridge.engine(),
-            &bundle.handler_wasm,
-            input.clone(),
-            &allowed_host_imports,
-            handler_timeout,
-            capability_handler,
-            kubernetes_read_handler,
-        )
-        .await
-        {
+        let invocation = if let Some(transport) = self.bridge.kubernetes_http().cloned() {
+            invoke_handler_component_bytes_with_timeout_host_imports_and_kubernetes_http_async(
+                self.bridge.engine(),
+                &bundle.handler_wasm,
+                input.clone(),
+                &allowed_host_imports,
+                handler_timeout,
+                capability_handler,
+                kubernetes_read_handler,
+                transport,
+            )
+            .await
+        } else {
+            invoke_handler_component_bytes_with_timeout_and_host_imports_async(
+                self.bridge.engine(),
+                &bundle.handler_wasm,
+                input.clone(),
+                &allowed_host_imports,
+                handler_timeout,
+                capability_handler,
+                kubernetes_read_handler,
+            )
+            .await
+        };
+        let plan = match invocation {
             Ok(plan) => {
                 record_reconcile_otel_phase(&mut reconcile_span, "handler.succeeded");
                 plan
@@ -828,7 +866,10 @@ impl OperatorHost {
                     include_payloads: self.config.replay_include_payloads,
                     created_at: &Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
                 });
-                if let Some(status_convention) = status_convention.as_ref() {
+                if let Some(status_convention) = status_convention
+                    .as_ref()
+                    .filter(|convention| convention.lifecycle_managed())
+                {
                     report_reconcile_failure_status(
                         &status_applier,
                         &owner,
@@ -887,7 +928,10 @@ impl OperatorHost {
                 include_payloads: self.config.replay_include_payloads,
                 created_at: &Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
             });
-            if let Some(status_convention) = status_convention.as_ref() {
+            if let Some(status_convention) = status_convention
+                .as_ref()
+                .filter(|convention| convention.lifecycle_managed())
+            {
                 report_reconcile_failure_status(
                     &status_applier,
                     &owner,
@@ -953,7 +997,10 @@ impl OperatorHost {
                     include_payloads: self.config.replay_include_payloads,
                     created_at: &Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
                 });
-                if let Some(status_convention) = status_convention.as_ref() {
+                if let Some(status_convention) = status_convention
+                    .as_ref()
+                    .filter(|convention| convention.lifecycle_managed())
+                {
                     report_reconcile_failure_status(
                         &status_applier,
                         &owner,
@@ -971,7 +1018,10 @@ impl OperatorHost {
                 return Err(error);
             }
         };
-        if let Some(status_convention) = status_convention.as_ref() {
+        if let Some(status_convention) = status_convention
+            .as_ref()
+            .filter(|convention| convention.lifecycle_managed())
+        {
             report_reconcile_success_status(
                 &status_applier,
                 &owner,
@@ -2193,13 +2243,15 @@ pub fn reconcile_error_details_with_source_map(
                 "timeoutMs": timeout_ms,
             }))
         }
-        OperatorHostError::RuntimeBridge(RuntimeBridgeError::HandlerFailed(message)) => {
+        OperatorHostError::RuntimeBridge(
+            RuntimeBridgeError::HandlerFailed(message) | RuntimeBridgeError::HandlerTrap(message),
+        ) => {
             let frames = handler_failure_stack_frames(message);
             let mapped_frames = source_map_path
                 .map(|path| source_mapped_handler_frames(&frames, path))
                 .unwrap_or_default();
             Some(serde_json::json!({
-                "type": "handlerFailed",
+                "type": if matches!(error, OperatorHostError::RuntimeBridge(RuntimeBridgeError::HandlerTrap(_))) { "handlerTrap" } else { "handlerFailed" },
                 "message": handler_failure_summary(message),
                 "sourceMapping": {
                     "status": handler_source_mapping_status(&frames, &mapped_frames, source_map_path),
@@ -2635,6 +2687,7 @@ fn reconcile_failure_reason(error: &OperatorHostError) -> &'static str {
             }
         }
         OperatorHostError::RuntimeBridge(RuntimeBridgeError::HandlerFailed(_)) => "HandlerFailed",
+        OperatorHostError::RuntimeBridge(RuntimeBridgeError::HandlerTrap(_)) => "HandlerTrap",
         OperatorHostError::RuntimeBridge(RuntimeBridgeError::HandlerTimedOut { .. }) => {
             "HandlerTimedOut"
         }
@@ -2928,7 +2981,17 @@ impl LoadedOperatorBundle {
                     "{api_version}/{kind} statusConvention.conditionsField must be a string"
                 ))
             })?;
+        let ownership = match convention.get("ownership").and_then(Value::as_str) {
+            None | Some("lifecycleManaged") => StatusOwnership::LifecycleManaged,
+            Some("handlerAuthoritative") => StatusOwnership::HandlerAuthoritative,
+            Some(value) => {
+                return Err(OperatorHostError::InvalidOwnedCrd(format!(
+                    "{api_version}/{kind} statusConvention.ownership {value:?} must be lifecycleManaged or handlerAuthoritative"
+                )));
+            }
+        };
         Ok(Some(StatusConvention {
+            ownership,
             observed_generation_field: observed_generation_field.to_string(),
             conditions_field: conditions_field.to_string(),
         }))
@@ -3941,11 +4004,6 @@ async fn execute_kubernetes_read_value(
     if scope != "Namespaced" && scope != "Cluster" {
         return Err(format!("Unsupported Kubernetes read scope {scope}."));
     }
-    if !manifest_declares_read_resource(manifest, &api_version, &kind, &plural) {
-        return Err(format!(
-            "Kubernetes read for {api_version}/{kind} is not declared by this operator."
-        ));
-    }
     let verb = if operation == "get" { "get" } else { "list" };
     let required = RequiredPermission {
         api_group: api_group(&api_version).map_err(|error| error.to_string())?,
@@ -3969,6 +4027,7 @@ async fn execute_kubernetes_read_value(
             "Kubernetes read for cluster-scoped resource {api_version}/{kind} must not set query.namespace."
         ));
     }
+    validate_manifest_read_resource(manifest, &api_version, &kind, &plural, &scope, namespace)?;
 
     let api_resource = api_resource_for_read(&api_version, &kind, &plural)?;
     let api = match namespace {
@@ -4033,22 +4092,74 @@ async fn execute_kubernetes_read_value(
     }))
 }
 
-fn manifest_declares_read_resource(
+fn validate_manifest_read_resource(
     manifest: &Value,
     api_version: &str,
     kind: &str,
     plural: &str,
-) -> bool {
-    manifest
+    scope: &str,
+    namespace: Option<&str>,
+) -> Result<(), String> {
+    let matches_identity = |resource: &Value| {
+        resource.get("apiVersion").and_then(Value::as_str) == Some(api_version)
+            && resource.get("kind").and_then(Value::as_str) == Some(kind)
+            && resource.get("plural").and_then(Value::as_str) == Some(plural)
+    };
+    if manifest
         .pointer("/spec/ownedCrds")
         .and_then(Value::as_array)
-        .is_some_and(|crds| {
-            crds.iter().any(|crd| {
-                crd.get("apiVersion").and_then(Value::as_str) == Some(api_version)
-                    && crd.get("kind").and_then(Value::as_str) == Some(kind)
-                    && crd.get("plural").and_then(Value::as_str) == Some(plural)
-            })
-        })
+        .is_some_and(|resources| resources.iter().any(matches_identity))
+    {
+        return Ok(());
+    }
+    let resource = manifest
+        .pointer("/spec/readResources")
+        .and_then(Value::as_array)
+        .and_then(|resources| resources.iter().find(|resource| matches_identity(resource)))
+        .ok_or_else(|| {
+            format!("Kubernetes read for {api_version}/{kind} is not declared by this operator.")
+        })?;
+    if resource.get("scope").and_then(Value::as_str) != Some(scope) {
+        return Err(format!(
+            "Kubernetes read for {api_version}/{kind} requested scope {scope}, which does not match its declaration."
+        ));
+    }
+    if scope == "Cluster" {
+        return Ok(());
+    }
+    let namespace = namespace.ok_or_else(|| {
+        format!(
+            "Kubernetes read for namespaced resource {api_version}/{kind} requires query.namespace."
+        )
+    })?;
+    match resource.get("namespaces") {
+        Some(Value::String(value)) if value == "all" => Ok(()),
+        Some(Value::Array(namespaces))
+            if namespaces
+                .iter()
+                .any(|value| value.as_str() == Some(namespace)) =>
+        {
+            Ok(())
+        }
+        Some(Value::Array(_)) => Err(format!(
+            "Kubernetes read for {api_version}/{kind} is not declared for namespace {namespace}."
+        )),
+        Some(_) => Err(format!(
+            "Kubernetes read declaration for {api_version}/{kind} has invalid namespaces."
+        )),
+        None => {
+            let controller_namespace = default_watch_namespace(manifest).ok_or_else(|| {
+                format!("Kubernetes read for {api_version}/{kind} must declare namespaces because the operator has no controller namespace.")
+            })?;
+            if controller_namespace == namespace {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Kubernetes read for {api_version}/{kind} defaults to controller namespace {controller_namespace}, not {namespace}."
+                ))
+            }
+        }
+    }
 }
 
 fn read_label_selector(query: &Value) -> Result<Option<String>, String> {
@@ -4916,9 +5027,30 @@ pub async fn run_from_env() -> Result<(), OperatorHostError> {
     init_otel_metrics();
     init_otel_traces();
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let client = Client::try_default().await?;
+    let kubernetes_config = kube::Config::infer()
+        .await
+        .map_err(|error| OperatorHostError::KubernetesConfiguration(error.to_string()))?;
+    let kubernetes_http = KubernetesHttpTransport {
+        guest_endpoint: std::env::var("APPLIK8S_KUBERNETES_GUEST_ENDPOINT")
+            .unwrap_or_else(|_| "https://kubernetes.default.svc".to_string()),
+        endpoint: kubernetes_config
+            .cluster_url
+            .to_string()
+            .trim_end_matches('/')
+            .to_string(),
+        bearer_token: None,
+        bearer_token_file: kubernetes_config
+            .auth_info
+            .token_file
+            .clone()
+            .map(PathBuf::from),
+        ca_certificates: kubernetes_config.root_cert.clone().unwrap_or_default(),
+        tls_server_name: kubernetes_config.tls_server_name.clone(),
+    };
+    let client = Client::try_from(kubernetes_config)?;
     let engine = component_model_engine()?;
-    let bridge = KubeRuntimeBridge::new(client.clone(), engine);
+    let bridge =
+        KubeRuntimeBridge::new(client.clone(), engine).with_kubernetes_http(kubernetes_http);
     let host = OperatorHost::new(
         bridge,
         OperatorHostConfig {

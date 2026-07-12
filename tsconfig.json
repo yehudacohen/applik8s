@@ -23,6 +23,7 @@
       "@applik8s/applik8s/typekro": ["packages/applik8s/src/typekro.ts"],
       "@applik8s/applik8s/factories": ["packages/applik8s/src/factories.ts"],
       "@applik8s/applik8s/factories/*": ["packages/applik8s/src/factories/*.ts"],
+      "@applik8s/applik8s/processor-runtime": ["packages/applik8s/src/processor-runtime.ts"],
       "@applik8s/sdk": ["packages/sdk/src/index.ts"],
       "@applik8s/testing": ["packages/testing/src/index.ts"],
       "@applik8s/compiler": ["packages/compiler/src/index.ts"],
@@ -30,6 +31,7 @@
       "@applik8s/runtime": ["packages/runtime/src/index.ts"],
       "@applik8s/runtime-contract": ["packages/runtime-contract/src/index.ts"],
       "@applik8s/typekro-adapter": ["packages/typekro-adapter/src/index.ts"],
+      "@applik8s/typekro-adapter/targets": ["packages/typekro-adapter/src/operation-targets.ts"],
       "@applik8s/typetainer": ["packages/typetainer/src/index.ts"]
     }
   },

@@ -3,16 +3,27 @@ use std::time::Duration;
 use wasmtime::{Config, Engine};
 
 use crate::error::RuntimeBridgeError;
+use crate::invocation::KubernetesHttpTransport;
 
 #[derive(Clone)]
 pub struct KubeRuntimeBridge {
     client: Client,
     engine: Engine,
+    kubernetes_http: Option<KubernetesHttpTransport>,
 }
 
 impl KubeRuntimeBridge {
     pub fn new(client: Client, engine: Engine) -> Self {
-        Self { client, engine }
+        Self {
+            client,
+            engine,
+            kubernetes_http: None,
+        }
+    }
+
+    pub fn with_kubernetes_http(mut self, transport: KubernetesHttpTransport) -> Self {
+        self.kubernetes_http = Some(transport);
+        self
     }
 
     pub fn client(&self) -> &Client {
@@ -21,6 +32,10 @@ impl KubeRuntimeBridge {
 
     pub fn engine(&self) -> &Engine {
         &self.engine
+    }
+
+    pub fn kubernetes_http(&self) -> Option<&KubernetesHttpTransport> {
+        self.kubernetes_http.as_ref()
     }
 }
 

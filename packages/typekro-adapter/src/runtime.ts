@@ -888,7 +888,7 @@ export function asComposition<
       (installSpec: TypeKroOperatorInstallSpec) => {
         const namespace = installSpec.namespace ?? options.defaultNamespace ?? operator.deployment?.namespace ?? 'default';
         const replicas = installSpec.replicas ?? operator.deployment?.replicas ?? 1;
-        const install = installResources(operator.name, operator.deployment, resources, manifest, namespace, replicas);
+        const install = installResources(operator, operator.deployment, resources, manifest, namespace, replicas);
         const deploymentResource = install.find((resource) => resource.kind === 'Deployment');
         if (!deploymentResource) {
           throw new Error('Generated TypeKro install composition is missing the operator Deployment.');
@@ -1190,17 +1190,21 @@ function attachNonEnumerableEventSources<TResource extends object, TEventSources
   return resource as TResource & { readonly on: TEventSources };
 }
 
-function installResources(
-  operatorName: string,
+function installResources<
+  TCapabilities extends CapabilityClientSet,
+  TResources extends Readonly<Record<string, AnyResourceDefinition<TCapabilities>>>,
+>(
+  operator: OperatorDefinition<TCapabilities, TResources>,
   deployment: OperatorDefinition['deployment'],
   resources: readonly AnyResourceDefinition[],
   manifest: OperatorManifest,
   namespace: string,
   replicas: number
 ): readonly KubernetesManifestResource[] {
+  const operatorName = operator.name;
   validateDeploymentOperationalSafety(operatorName, replicas, manifest);
   const serviceAccountName = deployment?.serviceAccountName ?? `${operatorName}-controller`;
-  const clusterRbac = resources.some((resource) => resource.scope === 'Cluster');
+  const clusterRbac = requiresClusterRbac(operator, deployment, namespace);
   const image = manifest.spec.container ? imageRefString(manifest.spec.container.image) : undefined;
   if (!image) {
     throw new Error('Operator manifest is missing the compiler-derived runtime image.');
@@ -1213,6 +1217,19 @@ function installResources(
     rbacBindingDocument(operatorName, serviceAccountName, namespace, clusterRbac, manifest),
     deploymentDocument(manifest, serviceAccountName, image, namespace, replicas),
   ];
+}
+
+function requiresClusterRbac<
+  TCapabilities extends CapabilityClientSet,
+  TResources extends Readonly<Record<string, AnyResourceDefinition<TCapabilities>>>,
+>(operator: OperatorDefinition<TCapabilities, TResources>, deployment: OperatorDefinition['deployment'], controllerNamespace: string): boolean {
+  if (deployment?.scope === 'Cluster') return true;
+  if (Object.values(operator.resources).some((resource) => resource.scope === 'Cluster')) return true;
+  return Object.values(operator.reads ?? {}).some((resource) => {
+    if (resource.scope === 'Cluster' || resource.namespaces === 'all') return true;
+    if (!resource.namespaces || resource.namespaces.length === 0) return false;
+    return resource.namespaces.some((namespace) => namespace !== controllerNamespace);
+  });
 }
 
 function operatorGeneratedCrdPrerequisites(
@@ -1357,11 +1374,12 @@ function serviceAccountDocument(name: string, namespace: string, manifest: Opera
 }
 
 function rbacRoleDocument(operatorName: string, permissions: readonly PermissionRule[], namespace: string, clusterRbac: boolean, manifest: OperatorManifest): KubernetesManifestResource {
+  const name = clusterRbac ? clusterRbacName(operatorName, namespace) : `${operatorName}-controller`;
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: clusterRbac ? 'ClusterRole' : 'Role',
     id: clusterRbac ? 'operatorClusterRole' : 'operatorRole',
-    metadata: metadata(`${operatorName}-controller`, clusterRbac ? undefined : namespace, manifest),
+    metadata: metadata(name, clusterRbac ? undefined : namespace, manifest),
     rules: permissions.map((permission) => compactObject({
       apiGroups: [...permission.apiGroups],
       resources: [...permission.resources],
@@ -1372,15 +1390,16 @@ function rbacRoleDocument(operatorName: string, permissions: readonly Permission
 }
 
 function rbacBindingDocument(operatorName: string, serviceAccountName: string, namespace: string, clusterRbac: boolean, manifest: OperatorManifest): KubernetesManifestResource {
+  const name = clusterRbac ? clusterRbacName(operatorName, namespace) : `${operatorName}-controller`;
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: clusterRbac ? 'ClusterRoleBinding' : 'RoleBinding',
     id: clusterRbac ? 'operatorClusterRoleBinding' : 'operatorRoleBinding',
-    metadata: metadata(`${operatorName}-controller`, clusterRbac ? undefined : namespace, manifest),
+    metadata: metadata(name, clusterRbac ? undefined : namespace, manifest),
     roleRef: {
       apiGroup: 'rbac.authorization.k8s.io',
       kind: clusterRbac ? 'ClusterRole' : 'Role',
-      name: `${operatorName}-controller`,
+      name,
     },
     subjects: [compactObject({
       kind: 'ServiceAccount',
@@ -1388,6 +1407,10 @@ function rbacBindingDocument(operatorName: string, serviceAccountName: string, n
       namespace,
     })],
   };
+}
+
+function clusterRbacName(operatorName: string, namespace: string): string {
+  return `${namespace}-${operatorName}-controller`;
 }
 
 function deploymentDocument(manifest: OperatorManifest, serviceAccountName: string, image: string, namespace: string, replicas: number): KubernetesManifestResource {

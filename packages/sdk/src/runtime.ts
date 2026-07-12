@@ -64,6 +64,13 @@ export const sdk: Applik8sSdk = {
   secretRef,
   withPermissions,
   permissions: builtInPermissions(),
+  kubernetes: {
+    resource: kubernetesReadResource,
+    Deployment: kubernetesReadResource({ apiVersion: 'apps/v1', kind: 'Deployment', plural: 'deployments' }),
+    Service: kubernetesReadResource({ apiVersion: 'v1', kind: 'Service', plural: 'services' }),
+    Namespace: kubernetesReadResource({ apiVersion: 'v1', kind: 'Namespace', plural: 'namespaces', scope: 'Cluster' }),
+    PersistentVolume: kubernetesReadResource({ apiVersion: 'v1', kind: 'PersistentVolume', plural: 'persistentvolumes', scope: 'Cluster' }),
+  },
   schema: {
     fromArkType: (source) => ok(toRuntimeSchema(source)),
     fromJsonSchema: (source) => ok(toRuntimeSchema(source)),
@@ -150,6 +157,18 @@ export function crd<TSpec extends object, TStatus extends object>(options: CrdOp
   return definition;
 }
 
+function kubernetesReadResource<TSpec extends object = object, TStatus extends object = object>(options: import('./interfaces.js').KubernetesReadResourceOptions): import('@applik8s/core').KubernetesReadResourceDefinition<TSpec, TStatus> {
+  const plural = options.plural ?? pluralize(options.kind);
+  return {
+    apiVersion: options.apiVersion,
+    kind: options.kind,
+    plural,
+    scope: options.scope ?? 'Namespaced',
+    ...(options.namespaces ? { namespaces: options.namespaces } : {}),
+    permissions: { read: () => permissionFactory(options.apiVersion, plural).read() },
+  };
+}
+
 function createResourceIndex<TSpec extends object, TStatus extends object>(resource: ResourceDefinition<TSpec, TStatus>, name: string, options: import('@applik8s/core').ResourceIndexOptions): import('@applik8s/core').ResourceIndex<TSpec, TStatus> {
   return {
     name,
@@ -178,6 +197,7 @@ export function operator<TCapabilities extends CapabilityClientSet = CapabilityC
   const definition: OperatorDefinition<TCapabilities, TResources> = {
     name: options.name,
     resources: options.resources,
+    ...(options.reads ? { reads: options.reads } : {}),
     handlers: options.handlers,
     trustLevel: options.trustLevel ?? 'trustedApplication',
     effects: options.effects ?? { mode: 'planned', replayable: true },

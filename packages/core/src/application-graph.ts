@@ -21,6 +21,10 @@ export type ApplicationGraphNodeKind =
   | 'index'
   | 'aggregate'
   | 'counter'
+  | 'command'
+  | 'event'
+  | 'commandHandler'
+  | 'processor'
   | 'job'
   | 'config'
   | 'secret'
@@ -38,6 +42,10 @@ export const applicationGraphNodeKinds = [
   'index',
   'aggregate',
   'counter',
+  'command',
+  'event',
+  'commandHandler',
+  'processor',
   'job',
   'config',
   'secret',
@@ -47,19 +55,41 @@ export const applicationGraphNodeKinds = [
   'typeKroResource',
 ] as const satisfies readonly ApplicationGraphNodeKind[];
 
-export type ApplicationProviderInterfaceKind =
+export type ApplicationBuiltInProviderInterfaceKind =
   | 'ModelStore'
   | 'IndexStore'
   | 'CounterStore'
   | 'EventSource'
+  | 'EventLog'
   | 'Secret'
   | 'Queue'
   | 'ObjectStorage'
   | 'HttpExposure'
+  | 'Certificate'
+  | 'DnsPublication'
   | 'CredentialStore';
+
+/** Built-ins remain strongly named while versioned provider packages may add interfaces without editing core. */
+export type ApplicationProviderInterfaceKind = ApplicationBuiltInProviderInterfaceKind | (string & {});
 
 // typecast: the runtime provider-interface registry is intentionally kept as a literal tuple while checked against the public union.
 export const applicationProviderInterfaceKinds = [
+  'ModelStore',
+  'IndexStore',
+  'CounterStore',
+  'EventSource',
+  'EventLog',
+  'Secret',
+  'Queue',
+  'ObjectStorage',
+  'HttpExposure',
+  'Certificate',
+  'DnsPublication',
+  'CredentialStore',
+] as const satisfies readonly ApplicationProviderInterfaceKind[];
+
+// typecast: v0.3 predates the experimental EventLog surface introduced for v0.4 durable behavior.
+export const applicationV03ProviderInterfaceKinds = [
   'ModelStore',
   'IndexStore',
   'CounterStore',
@@ -113,6 +143,10 @@ export type ApplicationGraphNode =
   | ApplicationIndexNode
   | ApplicationAggregateNode
   | ApplicationCounterNode
+  | ApplicationCommandNode
+  | ApplicationEventNode
+  | ApplicationCommandHandlerNode
+  | ApplicationProcessorNode
   | ApplicationJobNode
   | ApplicationConfigNode
   | ApplicationSecretNode
@@ -141,6 +175,7 @@ export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> 
   readonly store: ApplicationProviderRef<'ModelStore'>;
   readonly schema: ApplicationModelSchemaContract;
   readonly materialization: ApplicationModelMaterializationContract;
+  readonly runtime?: ApplicationModelRuntimeContract;
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
 }
 
@@ -182,6 +217,97 @@ export interface ApplicationCounterNode extends ApplicationGraphNodeBase<'counte
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
 }
 
+export interface ApplicationMessageContractSchema {
+  readonly kind: 'declared';
+  readonly runtime: 'arktype';
+  readonly jsonSchema: JsonObject;
+}
+
+export interface ApplicationCommandNode extends ApplicationGraphNodeBase<'command'> {
+  readonly contract: {
+    readonly name: string;
+    readonly version: string;
+    readonly input: ApplicationMessageContractSchema;
+    readonly output: ApplicationMessageContractSchema;
+    readonly errors: readonly { readonly name: string; readonly schema: ApplicationMessageContractSchema }[];
+  };
+}
+
+export interface ApplicationEventNode extends ApplicationGraphNodeBase<'event'> {
+  readonly contract: {
+    readonly name: string;
+    readonly version: string;
+    readonly payload: ApplicationMessageContractSchema;
+  };
+}
+
+export interface ApplicationCommandHandlerNode extends ApplicationGraphNodeBase<'commandHandler'> {
+  readonly model: ApplicationGraphNodeRef;
+  readonly command: ApplicationGraphNodeRef;
+  readonly key: ApplicationExpressionContract;
+  readonly ordering: 'serial' | 'concurrent';
+  readonly idempotencyKey?: ApplicationExpressionContract;
+  readonly missing: 'reject' | 'initialize' | 'route';
+  readonly missingRoute?: string;
+  readonly transaction: {
+    readonly models: readonly ApplicationGraphNodeRef[];
+    readonly history: readonly ApplicationGraphNodeRef[];
+    readonly outbox: readonly ApplicationGraphNodeRef[];
+    readonly commands?: readonly ApplicationGraphNodeRef[];
+  };
+  readonly retry: ApplicationRetryPolicy;
+  readonly retention: ApplicationCommandRetentionContract;
+  readonly effectBoundary: 'transactionSafeOnly';
+  readonly handlerSource: string;
+  readonly initializeSource?: string;
+  readonly eventBindings?: readonly { readonly identifier: string; readonly event: ApplicationGraphNodeRef }[];
+  readonly commandBindings?: readonly { readonly identifier: string; readonly command: ApplicationGraphNodeRef }[];
+  readonly projectionReadiness: ApplicationCommandProjectionReadinessContract;
+}
+
+export interface ApplicationCommandProjectionReadinessContract {
+  readonly submissionAcknowledgement: 'transportOnly';
+  readonly durableResultAuthority: 'postgresCommandResults';
+  readonly duplicateRecovery: 'idempotentRedelivery';
+  readonly correlation: 'commandCorrelationCausation';
+  readonly resultRevisionAuthority: 'postgresCommandResults';
+  readonly stateRevisionAuthority: 'modelRevision';
+  readonly reconciliationLink: 'modelRevisionWhenPresent';
+}
+
+export interface ApplicationCommandRetentionContract {
+  readonly replayWindowSeconds: number;
+  readonly auditWindowSeconds: number;
+  readonly publishedOutboxWindowSeconds: number;
+  readonly cleanupIntervalSeconds: number;
+  readonly cleanupBatchSize: number;
+}
+
+export interface ApplicationProcessorNode extends ApplicationGraphNodeBase<'processor'> {
+  readonly handlers: readonly ApplicationGraphNodeRef[];
+  readonly runtime: 'node';
+  readonly runtimeImage?: string;
+  readonly inference: 'generated';
+  readonly lifecycle: 'longLived';
+  readonly eventLog?: ApplicationProviderRef<'EventLog'>;
+  readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
+}
+
+export interface ApplicationModelRuntimeContract {
+  readonly name: string;
+  readonly tableName: string;
+  readonly provider: 'postgres';
+  readonly database: string;
+  readonly clusterName: string;
+  readonly secretName: string;
+  readonly secretKey: string;
+  readonly secretNamespace?: string;
+  readonly connectionEnvName: string;
+  readonly constraints: readonly ApplicationModelConstraint[];
+  readonly indexes: readonly ApplicationModelIndex[];
+  readonly retention: ApplicationRetentionPolicy;
+}
+
 export interface ApplicationJobNode extends ApplicationGraphNodeBase<'job'> {
   readonly task: ApplicationJobTaskContract;
   readonly schedule?: ApplicationScheduleContract;
@@ -213,10 +339,33 @@ export interface ApplicationSecretNode extends ApplicationGraphNodeBase<'secret'
 
 export interface ApplicationExposureNode extends ApplicationGraphNodeBase<'exposure'> {
   readonly provider: ApplicationProviderRef<'HttpExposure'>;
+  readonly certificate?: ApplicationProviderRef<'Certificate'>;
+  readonly dnsPublication?: ApplicationProviderRef<'DnsPublication'>;
   readonly service: string;
   readonly hostnames: readonly string[];
   readonly tls: 'required' | 'optional' | 'disabled';
+  readonly tlsIntent?: ApplicationTlsIntentContract;
+  readonly dnsIntent?: ApplicationDnsIntentContract;
+  readonly publicUrl: string;
+  readonly readiness: ApplicationExposureReadinessContract;
   readonly generatedResources: readonly ApplicationGeneratedResourceContract[];
+}
+
+export type ApplicationTlsIntentContract =
+  | { readonly mode: 'disabled' }
+  | { readonly mode: 'external'; readonly secretName: string }
+  | { readonly mode: 'managed'; readonly secretName: string; readonly issuerRef: { readonly name: string; readonly kind: 'Issuer' | 'ClusterIssuer' } };
+
+export type ApplicationDnsIntentContract =
+  | { readonly mode: 'disabled' }
+  | { readonly mode: 'managed'; readonly ttlSeconds?: number };
+
+export interface ApplicationExposureReadinessContract {
+  readonly ingress: 'resourceApplied';
+  readonly loadBalancer: 'statusObserved';
+  readonly certificate: 'notRequested' | 'external' | 'readyCondition';
+  readonly dns: 'notRequested' | 'intentApplied' | 'propagationUnverified';
+  readonly publicUrl: 'derived';
 }
 
 export interface GeneratedJobContract extends ApplicationJobNode {
@@ -325,7 +474,12 @@ export interface ApplicationProviderNode<TInterface extends ApplicationProviderI
 }
 
 export interface ApplicationProviderInterfaceContract<TInterface extends ApplicationProviderInterfaceKind = ApplicationProviderInterfaceKind> {
+  readonly apiVersion?: 'applik8s.provider/v1alpha1';
   readonly interface: TInterface;
+  readonly version?: string;
+  readonly requirements?: readonly string[];
+  readonly guarantees?: readonly string[];
+  readonly implementation?: { readonly name: string; readonly version?: string };
   readonly surface: ApplicationCompatibilitySurface;
   readonly support: 'implemented' | 'failClosedReserved' | 'externalAuthority';
   readonly diagnostics: readonly ApplicationDiagnosticContract[];
@@ -343,7 +497,7 @@ export interface ApplicationProviderRequirement<TInterface extends ApplicationPr
   readonly consumer: ApplicationGraphNodeRef;
   readonly provider?: ApplicationProviderRef<TInterface>;
   readonly required: true;
-  readonly purpose: 'modelStore' | 'indexStore' | 'counterStore' | 'eventSource' | 'secret' | 'queue' | 'objectStorage' | 'httpExposure' | 'credentialStore';
+  readonly purpose: 'modelStore' | 'indexStore' | 'counterStore' | 'eventSource' | 'eventLog' | 'secret' | 'queue' | 'objectStorage' | 'httpExposure' | 'certificate' | 'dnsPublication' | 'credentialStore' | (string & {});
   readonly diagnostics: ApplicationProviderRequirementDiagnostics;
 }
 
@@ -455,6 +609,7 @@ export type ApplicationGeneratedResourceRole =
   | 'workload'
   | 'service'
   | 'rbac'
+  | 'policy'
   | 'config'
   | 'secret'
   | 'runtimeBundle'
@@ -827,7 +982,7 @@ export interface ApplicationFlushPolicy {
 }
 
 export interface ApplicationExpressionContract {
-  readonly kind: 'field' | 'label' | 'literal' | 'ordering' | 'predicate';
+  readonly kind: 'field' | 'label' | 'literal' | 'ordering' | 'predicate' | 'function';
   readonly source: string;
 }
 
@@ -1767,6 +1922,12 @@ export function validateApplicationRuntimeModuleManifestContract(contract: Appli
 
 export function validateApplicationProviderInterfaceContract(contract: ApplicationProviderInterfaceContract): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
+  if (contract.apiVersion && contract.apiVersion !== 'applik8s.provider/v1alpha1') {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application provider interface ${contract.interface} uses unsupported contract apiVersion ${contract.apiVersion}.`));
+  }
+  if (contract.apiVersion && !contract.version?.match(/^v[1-9][0-9]*(?:(?:alpha|beta)[1-9][0-9]*)?$/)) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application provider interface ${contract.interface} must declare an explicit version.`));
+  }
   if (contract.surface === 'stablePublicApi' && contract.support === 'failClosedReserved' && contract.diagnostics.length === 0) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application provider interface ${contract.interface} is stable but fail-closed reserved without diagnostics.`));
   }
@@ -1799,7 +1960,7 @@ export function validateApplicationProviderCompatibilityMatrixContract(contract:
       diagnostics.push(applicationGraphStructureDiagnostic(`Application provider compatibility matrix marks ${provider} required for v0.3 but does not declare support.`));
     }
   }
-  for (const provider of applicationProviderInterfaceKinds) {
+  for (const provider of applicationV03ProviderInterfaceKinds) {
     if (!contract.requiredForV03.includes(provider)) {
       diagnostics.push(applicationGraphStructureDiagnostic(`Application provider compatibility matrix must mark ${provider} required for v0.3.`));
     }
@@ -1862,7 +2023,7 @@ export function validateApplicationV03PressureTestContract(contract: Application
   // typecast: these literal checklists are intentionally kept as narrow tuples while checked against the public contract unions.
   const requiredNodeKinds = ['model', 'server', 'job', 'provider'] as const satisfies readonly ApplicationGraphNodeKind[];
   // typecast: these literal checklists are intentionally kept as narrow tuples while checked against the public contract unions.
-  const requiredProviders = applicationProviderInterfaceKinds;
+  const requiredProviders = applicationV03ProviderInterfaceKinds;
   // typecast: these literal checklists are intentionally kept as narrow tuples while checked against the public contract unions.
   const requiredRuntimeModules = ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'] as const satisfies readonly ApplicationRuntimeModuleKind[];
   for (const nodeKind of requiredNodeKinds) {
@@ -2159,9 +2320,131 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
       return applicationProviderNodeStructureDiagnostics(node);
     case 'server':
       return [...applicationObservabilityStructureDiagnostics(`Application server node ${node.id}`, node.observability, 'routeDiagnostics'), ...applicationServerRouteStructureDiagnostics(node)];
+    case 'command':
+      return applicationCommandNodeStructureDiagnostics(node);
+    case 'event':
+      return applicationEventNodeStructureDiagnostics(node);
+    case 'commandHandler':
+      return applicationCommandHandlerNodeStructureDiagnostics(node, graph);
+    case 'processor':
+      return applicationProcessorNodeStructureDiagnostics(node, graph);
     default:
       return [];
   }
+}
+
+function applicationCommandNodeStructureDiagnostics(node: ApplicationCommandNode): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  if (!node.contract.name || !node.contract.version) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command node ${node.id} must declare a non-empty contract name and version.`));
+  }
+  const errorNames = new Set<string>();
+  for (const error of node.contract.errors) {
+    if (errorNames.has(error.name)) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application command node ${node.id} declares duplicate durable error ${error.name}.`));
+    }
+    errorNames.add(error.name);
+  }
+  return diagnostics;
+}
+
+function applicationEventNodeStructureDiagnostics(node: ApplicationEventNode): readonly Diagnostic[] {
+  return node.contract.name && node.contract.version
+    ? []
+    : [applicationGraphStructureDiagnostic(`Application event node ${node.id} must declare a non-empty contract name and version.`)];
+}
+
+function applicationCommandHandlerNodeStructureDiagnostics(node: ApplicationCommandHandlerNode, graph: ApplicationGraph): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  const nodeById = new Map(graph.nodes.map((candidate) => [candidate.id, candidate]));
+  const targetModel = nodeById.get(node.model.nodeId);
+  if (targetModel?.kind !== 'model') {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} must target a model node.`));
+  } else if (!targetModel.runtime) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} target model ${targetModel.id} must retain its generated runtime contract.`));
+  }
+  if (nodeById.get(node.command.nodeId)?.kind !== 'command') {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} must reference a command node.`));
+  }
+  for (const model of [...node.transaction.models, ...node.transaction.history]) {
+    if (nodeById.get(model.nodeId)?.kind !== 'model') {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} transaction reference ${model.nodeId} must be a model node.`));
+    }
+  }
+  for (const event of node.transaction.outbox) {
+    if (nodeById.get(event.nodeId)?.kind !== 'event') {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} outbox reference ${event.nodeId} must be an event node.`));
+    }
+  }
+  for (const command of node.transaction.commands ?? []) {
+    if (nodeById.get(command.nodeId)?.kind !== 'command') {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} command outbox reference ${command.nodeId} must be a command node.`));
+    }
+  }
+  for (const binding of node.eventBindings ?? []) {
+    if (nodeById.get(binding.event.nodeId)?.kind !== 'event') {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} event binding ${binding.identifier} must reference an event node.`));
+    }
+  }
+  for (const binding of node.commandBindings ?? []) {
+    if (nodeById.get(binding.command.nodeId)?.kind !== 'command') {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} command binding ${binding.identifier} must reference a command node.`));
+    }
+  }
+  if (node.missing === 'route' && !node.missingRoute?.trim()) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} with routed missing-target behavior must declare a non-empty alternate target key.`));
+  }
+  if (node.missing !== 'route' && node.missingRoute) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} may declare missingRoute only when missing is route.`));
+  }
+  if (!node.key.source.trim()) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} must declare a deterministic key expression.`));
+  }
+  if (!node.handlerSource.trim()) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} must retain handler source for generated processor lowering.`));
+  }
+  if (node.effectBoundary !== 'transactionSafeOnly') {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} must enforce the transactionSafeOnly effect boundary.`));
+  }
+  if (node.projectionReadiness?.submissionAcknowledgement !== 'transportOnly'
+    || node.projectionReadiness.durableResultAuthority !== 'postgresCommandResults'
+    || node.projectionReadiness.duplicateRecovery !== 'idempotentRedelivery'
+    || node.projectionReadiness.correlation !== 'commandCorrelationCausation'
+    || node.projectionReadiness.resultRevisionAuthority !== 'postgresCommandResults'
+    || node.projectionReadiness.stateRevisionAuthority !== 'modelRevision'
+    || node.projectionReadiness.reconciliationLink !== 'modelRevisionWhenPresent') {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} must retain the v0.4 projection-readiness authority contract.`));
+  }
+  if (!Number.isInteger(node.retention.replayWindowSeconds) || node.retention.replayWindowSeconds < 60) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} replayWindowSeconds must be an integer >= 60.`));
+  }
+  if (!Number.isInteger(node.retention.auditWindowSeconds) || node.retention.auditWindowSeconds < node.retention.replayWindowSeconds) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} auditWindowSeconds must be an integer >= replayWindowSeconds.`));
+  }
+  if (!Number.isInteger(node.retention.publishedOutboxWindowSeconds) || node.retention.publishedOutboxWindowSeconds < 60) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} publishedOutboxWindowSeconds must be an integer >= 60.`));
+  }
+  if (!Number.isInteger(node.retention.cleanupIntervalSeconds) || node.retention.cleanupIntervalSeconds < 10) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} cleanupIntervalSeconds must be an integer >= 10.`));
+  }
+  if (!Number.isInteger(node.retention.cleanupBatchSize) || node.retention.cleanupBatchSize < 1 || node.retention.cleanupBatchSize > 10_000) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} cleanupBatchSize must be an integer between 1 and 10000.`));
+  }
+  return diagnostics;
+}
+
+function applicationProcessorNodeStructureDiagnostics(node: ApplicationProcessorNode, graph: ApplicationGraph): readonly Diagnostic[] {
+  const handlerIds = new Set(graph.nodes.filter((candidate) => candidate.kind === 'commandHandler').map((candidate) => candidate.id));
+  const diagnostics: Diagnostic[] = [];
+  if (node.handlers.length === 0) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application processor node ${node.id} must include at least one command handler.`));
+  }
+  for (const handler of node.handlers) {
+    if (!handlerIds.has(handler.nodeId)) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application processor node ${node.id} references missing command handler ${handler.nodeId}.`));
+    }
+  }
+  return diagnostics;
 }
 
 function applicationServerRouteStructureDiagnostics(node: ApplicationServerNode): readonly Diagnostic[] {
@@ -2349,6 +2632,8 @@ function applicationProviderRefsForNode(node: ApplicationGraphNode): readonly Ap
       return [node.provider];
     case 'counter':
       return node.provider ? [node.provider] : [];
+    case 'processor':
+      return node.eventLog ? [node.eventLog] : [];
     default:
       return [];
   }

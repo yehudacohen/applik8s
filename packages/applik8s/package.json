@@ -1,11 +1,11 @@
 {
   "name": "@applik8s/applik8s",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "TypeScript framework for programming Kubernetes-native applications and operators.",
   "license": "Apache-2.0",
   "type": "module",
   "files": [
-    "src"
+    "dist"
   ],
   "publishConfig": {
     "access": "public"
@@ -16,27 +16,29 @@
     "directory": "packages/applik8s"
   },
   "bin": {
-    "applik8s": "src/cli.ts"
+    "applik8s": "dist/cli.js"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./dsl": "./src/dsl.ts",
-    "./typekro": "./src/typekro.ts",
-    "./factories": "./src/factories.ts",
-    "./factories/*": "./src/factories/*.ts",
-    "./cli": "./src/cli.ts"
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./dsl": { "types": "./dist/dsl.d.ts", "import": "./dist/dsl.js" },
+    "./typekro": { "types": "./dist/typekro.d.ts", "import": "./dist/typekro.js" },
+    "./factories": { "types": "./dist/factories.d.ts", "import": "./dist/factories.js" },
+    "./factories/*": { "types": "./dist/factories/*.d.ts", "import": "./dist/factories/*.js" },
+    "./processor-runtime": { "types": "./dist/processor-runtime.d.ts", "import": "./dist/processor-runtime.js" },
+    "./cli": { "types": "./dist/cli.d.ts", "import": "./dist/cli.js" }
   },
   "dependencies": {
-    "@applik8s/compiler": "0.3.0",
-    "@applik8s/core": "0.3.0",
-    "@applik8s/sdk": "0.3.0",
-    "@applik8s/typekro-adapter": "0.3.0",
-    "@applik8s/typetainer": "0.3.0",
+    "@applik8s/compiler": "0.4.0",
+    "@applik8s/core": "0.4.0",
+    "@applik8s/sdk": "0.4.0",
+    "@applik8s/typekro-adapter": "0.4.0",
+    "@applik8s/typetainer": "0.4.0",
     "commander": "^15.0.0",
     "drizzle-orm": "^0.45.1",
     "esbuild": "^0.28.1",
     "hono": "^4.10.7",
+    "nats": "^2.29.3",
     "postgres": "^3.4.7",
-    "typekro": "^0.25.0"
+    "typekro": "^0.26.0"
   }
 }

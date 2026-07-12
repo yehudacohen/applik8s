@@ -1,11 +1,17 @@
 import { createHash } from 'node:crypto';
-import type { ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelStoreGuaranteesContract, ApplicationModelStoreSemanticsContract, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy } from '@applik8s/core';
+import type { ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelStoreGuaranteesContract, ApplicationModelStoreSemanticsContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, JsonValue } from '@applik8s/core';
+import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
 import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement, type ApplicationGraphState } from './application-graph-state.js';
-import { applicationModelStoreImplementation, applicationProviderImplementationName, applicationProviderInterface } from './application-providers.js';
-import type { ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderState } from './application-providers.js';
-import type { EntityDefinition } from './dsl.js';
+import { applicationEventLogImplementation, applicationModelStoreImplementation, applicationProviderImplementationName, applicationProviderInterface } from './application-providers.js';
+import type { ApplicationEventLogProvider, ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderState } from './application-providers.js';
+import type { CommandDefinition, EntityDefinition, EventDefinition } from './dsl.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
 import { createPostgresModelClient } from './model-store-postgres-runtime.js';
+import { canonicalApplicationCommandKey, executePostgresModelCommand } from './model-command-postgres-runtime.js';
+import type { PostgresModelCommandResult } from './model-command-postgres-runtime.js';
+import { createJetStreamEventLog } from './event-log-jetstream-runtime.js';
+import type { EventLogPublishAcknowledgement } from './event-log-jetstream-runtime.js';
+import { analyzeApplicationServerRouteSource, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 
 export interface ApplicationModelOptions<TSpec extends object = object, TStatus extends object = Record<string, never>> {
   readonly name?: string;
@@ -45,6 +51,114 @@ export interface ApplicationModelBinding<TSpec extends object, TStatus extends o
   index(name: string, options?: ApplicationModelIndexOptions<TSpec, TStatus>): ApplicationModelIndexBinding<TSpec, TStatus>;
   transaction<TResult>(handler: (model: ApplicationModelTransactionClient<TSpec, TStatus>) => TResult | Promise<TResult>): Promise<TResult>;
   readonly on: ApplicationModelEventRegistrar<TSpec, TStatus>;
+}
+
+export type ApplicationCommandKey = string | number | boolean | Readonly<Record<string, string | number | boolean>>;
+
+export interface ApplicationModelCommandOptions<
+  TInput extends object,
+  TSpec extends object,
+> {
+  readonly key: (input: TInput) => ApplicationCommandKey;
+  readonly ordering?: 'serial' | 'concurrent';
+  readonly idempotencyKey?: (input: TInput) => string;
+  /** Route a missing submitted key to this alternate key in the same model. */
+  readonly missing?: 'reject' | { readonly initialize: (input: TInput) => TSpec } | { readonly route: string };
+  readonly transaction?: {
+    readonly models?: readonly ApplicationModelBinding<object, object>[];
+    readonly history?: readonly ApplicationModelBinding<object, object>[];
+    readonly outbox?: readonly EventDefinition<object>[];
+    readonly commands?: readonly CommandDefinition<object, object, Readonly<Record<string, object>>>[];
+  };
+  readonly retry?: ApplicationRetryPolicy;
+  readonly retention?: Partial<ApplicationCommandRetentionContract>;
+  /** Override the digest-pinned Node runtime image used by the inferred processor. */
+  readonly processor?: { readonly image?: string };
+}
+
+export const defaultApplicationCommandRetention: ApplicationCommandRetentionContract = {
+  replayWindowSeconds: 7 * 24 * 60 * 60,
+  auditWindowSeconds: 30 * 24 * 60 * 60,
+  publishedOutboxWindowSeconds: 24 * 60 * 60,
+  cleanupIntervalSeconds: 5 * 60,
+  cleanupBatchSize: 1_000,
+};
+
+export type ApplicationCommandDomainError<TErrors extends Readonly<Record<string, object>>> = {
+  readonly [TName in keyof TErrors & string]: { readonly name: TName; readonly payload: TErrors[TName] };
+}[keyof TErrors & string];
+
+export interface ApplicationModelCommandParticipantClient {
+  get(ref: ApplicationModelRef): Promise<ApplicationModelObject<object, object> | undefined>;
+  create(input: ApplicationModelCreateInput<object>): Promise<ApplicationModelObject<object, object>>;
+  patch(ref: ApplicationModelRef, patch: ApplicationModelPatch<object, object>): Promise<ApplicationModelObject<object, object>>;
+  delete(ref: ApplicationModelRef): Promise<void>;
+}
+
+export interface ApplicationModelCommandContext<TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>> {
+  readonly commandId: string;
+  readonly correlationId?: string;
+  readonly causationId?: string;
+  readonly attempt: number;
+  readonly now: string;
+  readonly models: Readonly<Record<string, ApplicationModelCommandParticipantClient>>;
+  id(scope?: string): string;
+  emit<TPayload extends object>(event: EventDefinition<TPayload>, payload: TPayload): void;
+  send<TInput extends object>(command: CommandDefinition<TInput, object, Readonly<Record<string, object>>>, input: TInput, options: { readonly targetKey: ApplicationCommandKey; readonly idempotencyKey?: string }): void;
+  reject<TName extends keyof TErrors & string>(name: TName, payload: TErrors[TName]): never;
+}
+
+export interface ApplicationModelCommandTarget<TSpec extends object, TStatus extends object> {
+  readonly id: string;
+  readonly spec: TSpec;
+  readonly status: TStatus | undefined;
+  readonly revision?: string;
+  patch(patch: ApplicationModelPatch<TSpec, TStatus>): void;
+}
+
+export type ApplicationModelCommandHandler<
+  TSpec extends object,
+  TStatus extends object,
+  TInput extends object,
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+> = (
+  model: ApplicationModelCommandTarget<TSpec, TStatus>,
+  input: TInput,
+  context: ApplicationModelCommandContext<TErrors>,
+) => TOutput | Promise<TOutput>;
+
+export interface ApplicationModelCommandDeliveryOptions {
+  readonly id: string;
+  readonly tenant?: string;
+  readonly correlationId?: string;
+  readonly causationId?: string;
+  readonly traceparent?: string;
+  readonly attempt?: number;
+  readonly recordedAt?: string;
+  readonly expectedRevision?: string;
+  readonly databaseUrl?: string;
+  /** Internal durable-envelope override used by declared command outboxes. */
+  readonly targetKey?: string;
+  /** Internal durable-envelope override used by declared command outboxes. */
+  readonly idempotencyKey?: string;
+}
+
+export interface ApplicationCommandSubmissionAcknowledgement extends EventLogPublishAcknowledgement {
+  readonly phase: 'transportAcknowledged';
+  readonly commandId: string;
+  readonly correlationId: string;
+}
+
+export interface ApplicationModelCommandBinding<TInput extends object = object, TOutput extends object = object, TSpec extends object = object, TStatus extends object = object> {
+  readonly kind: 'applicationModelCommand';
+  readonly name: string;
+  readonly model: string;
+  readonly command: string;
+  readonly processor: string;
+  send(input: TInput, delivery: Omit<ApplicationModelCommandDeliveryOptions, 'databaseUrl' | 'targetKey' | 'idempotencyKey'>): Promise<ApplicationCommandSubmissionAcknowledgement>;
+  execute(input: TInput, delivery: ApplicationModelCommandDeliveryOptions): Promise<PostgresModelCommandResult<TSpec, TStatus, TOutput>>;
+  drain(): Promise<void>;
 }
 
 export interface ApplicationModelTransactionClient<TSpec extends object, TStatus extends object = Record<string, never>> {
@@ -133,6 +247,11 @@ export interface ApplicationModelEventRegistrar<TSpec extends object, TStatus ex
   created(handler: ApplicationModelEventHandler<TSpec, TStatus>): ApplicationModelEventBinding;
   updated(handler: ApplicationModelEventHandler<TSpec, TStatus>): ApplicationModelEventBinding;
   deleted(handler: ApplicationModelEventHandler<TSpec, TStatus>): ApplicationModelEventBinding;
+  command<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+    command: CommandDefinition<TInput, TOutput, TErrors>,
+    options: ApplicationModelCommandOptions<TInput, TSpec>,
+    handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
+  ): ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus>;
 }
 
 export type ApplicationModelEventHandler<TSpec extends object, TStatus extends object = Record<string, never>> = (model: ApplicationModelObject<TSpec, TStatus>) => unknown | Promise<unknown>;
@@ -154,7 +273,7 @@ export function resolveApplicationModelStore(state: ApplicationModelGraphState, 
   return implementation;
 }
 
-export function recordApplicationModelGraph<TSpec extends object, TStatus extends object>(state: ApplicationModelGraphState, entity: EntityDefinition<TSpec, TStatus>, provider: ApplicationModelStoreProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined): void {
+export function recordApplicationModelGraph<TSpec extends object, TStatus extends object>(state: ApplicationModelGraphState, entity: EntityDefinition<TSpec, TStatus>, provider: ApplicationModelStoreProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined, runtime: ApplicationRuntimeModelContract): void {
   const modelName = options?.name ?? entity.name;
   const nodeId = applicationGraphNodeId('model', modelName);
   const providerNodeId = applicationProviderNodeId('ModelStore');
@@ -186,6 +305,7 @@ export function recordApplicationModelGraph<TSpec extends object, TStatus extend
       runtimeBoundary: applicationModelRuntimeBoundary(),
       reconciliation: { ownership: provider.provision === false ? 'external' : 'application', schemaDrift: migration.strategy === 'generatedJob' ? 'generatedMigrationJob' : 'failClosed', deletionPolicy: 'retain' },
     },
+    runtime,
     generatedResources: providerResources.map((resource) => ({
       role: 'providerDependency',
       graphNode: { nodeId },
@@ -217,6 +337,458 @@ export function recordApplicationModelGraph<TSpec extends object, TStatus extend
   });
   if (migration.strategy === 'generatedJob') {
     recordApplicationModelMigrationJobGraph(state, modelName, nodeId, provider, providerResources);
+  }
+}
+
+export function recordApplicationModelCommandGraph<
+  TSpec extends object,
+  TStatus extends object,
+  TInput extends object,
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>>,
+>(
+  state: ApplicationModelGraphState,
+  model: ApplicationModelBinding<TSpec, TStatus>,
+  command: CommandDefinition<TInput, TOutput, TErrors>,
+  options: ApplicationModelCommandOptions<TInput, TSpec>,
+  handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
+): ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus> {
+  const modelNodeId = applicationGraphNodeId('model', model.name);
+  const commandNodeId = applicationGraphNodeId('command', command.id);
+  const handlerName = `${model.name}-${command.id}`;
+  const handlerNodeId = applicationGraphNodeId('command-handler', handlerName);
+  const processorName = `${model.name}-commands`;
+  const processorNodeId = applicationGraphNodeId('processor', processorName);
+  if (state.graphNodes.some((node) => node.id === handlerNodeId)) {
+    throw new Error(`Model ${model.name} already has a handler for command ${command.id}. Command handlers must be unambiguous within an application graph.`);
+  }
+  if (state.graphNodes.some((node) => node.kind === 'commandHandler' && node.command.nodeId === commandNodeId)) {
+    throw new Error(`Command ${command.id} already has a handler in this application graph. Durable command routing requires exactly one owning handler per versioned command contract.`);
+  }
+
+  const key = applicationCommandFunctionExpression('key', model.name, command.id, options.key);
+  const idempotencyKey = options.idempotencyKey
+    ? applicationCommandFunctionExpression('idempotencyKey', model.name, command.id, options.idempotencyKey)
+    : undefined;
+  const transactionModels = uniqueApplicationModelBindings([model, ...(options.transaction?.models ?? [])]);
+  const historyModels = uniqueApplicationModelBindings(options.transaction?.history ?? []);
+  const transactionModelIds = new Set(transactionModels.map((participant) => applicationGraphNodeId('model', participant.name)));
+  for (const historyModel of historyModels) {
+    if (!transactionModelIds.has(applicationGraphNodeId('model', historyModel.name))) {
+      throw new Error(`Model ${model.name} command ${command.id} declares history for ${historyModel.name}, but that model is not a transaction participant.`);
+    }
+  }
+  validateApplicationCommandTransactionDomain(model.name, command.id, transactionModels);
+
+  const outboxEvents = options.transaction?.outbox ?? [];
+  const outboxCommands = options.transaction?.commands ?? [];
+  const handlerSource = applicationCommandFunctionSource('handler', model.name, command.id, handler);
+  const eventBindings = outboxEvents.length > 0 ? applicationCommandEventBindings(handlerSource, outboxEvents, model.name, command.id) : [];
+  const commandBindings = outboxCommands.length > 0 ? applicationCommandOutboxBindings(handlerSource, outboxCommands, model.name, command.id) : [];
+  const retention = applicationCommandRetention(options.retention, model.name, command.id);
+  validateApplicationCommandHandlerClosure(handlerSource, [...eventBindings, ...commandBindings], model.name, command.id);
+  addApplicationGraphNode(state, {
+    id: commandNodeId,
+    kind: 'command',
+    name: command.id,
+    stability: 'experimental',
+    contract: {
+      name: command.name,
+      version: command.version,
+      input: declaredMessageSchema(command.input, `${command.id}.input`),
+      output: declaredMessageSchema(command.output, `${command.id}.output`),
+      // typecast: Object.keys erases the mapped error-schema value type; every value still originates from command.errors.
+      errors: Object.keys(command.errors).sort().map((name) => ({ name, schema: declaredMessageSchema(command.errors[name] as SchemaInput<object>, `${command.id}.errors.${name}`) })),
+    },
+  });
+
+  const eventLog = applicationEventLogImplementation(state.providers.eventLogs) ?? applicationEventLogImplementation(state.defaults.eventLogs);
+  if (!eventLog) {
+    throw new Error(`Model ${model.name} command ${command.id} requires an EventLog provider. Bind EventLog to a nats-jetstream provider.`);
+  }
+  recordApplicationProviderGraph(state, 'EventLog', 'commandTransport', eventLog);
+  for (const event of outboxEvents) {
+    const eventNodeId = applicationGraphNodeId('event', event.id);
+    addApplicationGraphNode(state, {
+      id: eventNodeId,
+      kind: 'event',
+      name: event.id,
+      stability: 'experimental',
+      contract: { name: event.name, version: event.version, payload: declaredMessageSchema(event.payload, `${event.id}.payload`) },
+    });
+  }
+  for (const emittedCommand of outboxCommands) {
+    addApplicationGraphNode(state, {
+      id: applicationGraphNodeId('command', emittedCommand.id),
+      kind: 'command',
+      name: emittedCommand.id,
+      stability: 'experimental',
+      contract: {
+        name: emittedCommand.name,
+        version: emittedCommand.version,
+        input: declaredMessageSchema(emittedCommand.input, `${emittedCommand.id}.input`),
+        output: declaredMessageSchema(emittedCommand.output, `${emittedCommand.id}.output`),
+        // typecast: Object.keys erases the mapped durable-error schema key while every value still originates from this command definition.
+        errors: Object.keys(emittedCommand.errors).sort().map((name) => ({ name, schema: declaredMessageSchema(emittedCommand.errors[name] as SchemaInput<object>, `${emittedCommand.id}.errors.${name}`) })),
+      },
+    });
+  }
+
+  addApplicationGraphNode(state, {
+    id: handlerNodeId,
+    kind: 'commandHandler',
+    name: handlerName,
+    stability: 'experimental',
+    model: { nodeId: modelNodeId },
+    command: { nodeId: commandNodeId },
+    key,
+    ordering: options.ordering ?? 'serial',
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+    missing: applicationCommandMissingPolicy(options.missing),
+    ...(options.missing && options.missing !== 'reject' && 'route' in options.missing ? { missingRoute: options.missing.route } : {}),
+    transaction: {
+      models: transactionModels.map((participant) => ({ nodeId: applicationGraphNodeId('model', participant.name) })),
+      history: historyModels.map((participant) => ({ nodeId: applicationGraphNodeId('model', participant.name) })),
+      outbox: outboxEvents.map((event) => ({ nodeId: applicationGraphNodeId('event', event.id) })),
+      commands: outboxCommands.map((item) => ({ nodeId: applicationGraphNodeId('command', item.id) })),
+    },
+    retry: options.retry ?? { mode: 'boundedExponentialBackoff', maxAttempts: 5, initialDelayMs: 100, maxDelayMs: 30_000 },
+    retention,
+    effectBoundary: 'transactionSafeOnly',
+    projectionReadiness: {
+      submissionAcknowledgement: 'transportOnly',
+      durableResultAuthority: 'postgresCommandResults',
+      duplicateRecovery: 'idempotentRedelivery',
+      correlation: 'commandCorrelationCausation',
+      resultRevisionAuthority: 'postgresCommandResults',
+      stateRevisionAuthority: 'modelRevision',
+      reconciliationLink: 'modelRevisionWhenPresent',
+    },
+    handlerSource,
+    ...(options.missing && options.missing !== 'reject' && 'initialize' in options.missing
+      ? { initializeSource: applicationCommandFunctionSource('initialize', model.name, command.id, options.missing.initialize) }
+      : {}),
+    ...(eventBindings.length > 0 ? { eventBindings } : {}),
+    ...(commandBindings.length > 0 ? { commandBindings } : {}),
+  });
+
+  const currentProcessor = state.graphNodes.find((node): node is ApplicationProcessorNode => node.id === processorNodeId && node.kind === 'processor');
+  const currentHandlers = currentProcessor?.kind === 'processor' ? currentProcessor.handlers : [];
+  const requestedProcessorImage = options.processor?.image?.trim();
+  if (options.processor?.image !== undefined && !requestedProcessorImage) {
+    throw new Error(`Model ${model.name} command ${command.id} processor.image must be a non-empty OCI image reference.`);
+  }
+  if (requestedProcessorImage && currentProcessor?.runtimeImage && requestedProcessorImage !== currentProcessor.runtimeImage) {
+    throw new Error(`Model ${model.name} command ${command.id} requests processor image ${requestedProcessorImage}, but shared processor ${processorName} already uses ${currentProcessor.runtimeImage}.`);
+  }
+  const runtimeImage = requestedProcessorImage ?? currentProcessor?.runtimeImage;
+  addApplicationGraphNode(state, {
+    id: processorNodeId,
+    kind: 'processor',
+    name: processorName,
+    stability: 'experimental',
+    handlers: [...currentHandlers, { nodeId: handlerNodeId }],
+    runtime: 'node',
+    ...(runtimeImage ? { runtimeImage } : {}),
+    inference: 'generated',
+    lifecycle: 'longLived',
+    eventLog: { interface: 'EventLog', nodeId: applicationProviderNodeId('EventLog') },
+    generatedResources: applicationCommandProcessorGeneratedResources(processorName, model.runtime, eventLog),
+  });
+
+  addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: { nodeId: modelNodeId }, relationship: 'dependsOn' });
+  addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: { nodeId: commandNodeId }, relationship: 'dependsOn' });
+  for (const event of outboxEvents) {
+    addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: { nodeId: applicationGraphNodeId('event', event.id) }, relationship: 'emits' });
+  }
+  for (const emittedCommand of outboxCommands) {
+    addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: { nodeId: applicationGraphNodeId('command', emittedCommand.id) }, relationship: 'emits' });
+  }
+  addApplicationGraphEdge(state, { from: { nodeId: processorNodeId }, to: { nodeId: handlerNodeId }, relationship: 'owns' });
+  {
+    const providerNodeId = applicationProviderNodeId('EventLog');
+    const requirementId = `requirement.${handlerNodeId}.event-log`;
+    addApplicationGraphEdge(state, { from: { nodeId: providerNodeId }, to: { nodeId: processorNodeId }, relationship: 'provides' });
+    addApplicationProviderRequirement(state, {
+      id: requirementId,
+      interface: 'EventLog',
+      consumer: { nodeId: processorNodeId },
+      provider: { interface: 'EventLog', nodeId: providerNodeId },
+      required: true,
+      purpose: 'eventLog',
+      diagnostics: {
+        missing: `Command processor ${processorName} requires an EventLog provider for committed outbox delivery.`,
+        ambiguous: `Command processor ${processorName} has multiple EventLog providers. Bind exactly one provider explicitly.`,
+      },
+    });
+    addApplicationProviderBinding(state, {
+      requirement: requirementId,
+      provider: { interface: 'EventLog', nodeId: providerNodeId },
+      generatedResources: [],
+      runtime: applicationEventLogRuntime(eventLog),
+    });
+  }
+  const subjectPrefix = eventLog.subjectPrefix ?? 'applik8s';
+  const servers = eventLog.servers ?? [`nats://${eventLog.name ?? 'applik8s-events'}${eventLog.namespace ? `.${eventLog.namespace}` : ''}.svc:4222`];
+  const publisher = createJetStreamEventLog({
+    servers,
+    stream: eventLog.stream ?? 'APPLIK8S_EVENTS',
+    subjectPrefix,
+    connectionName: `${processorName}-binding`,
+  });
+  const initialize = options.missing && options.missing !== 'reject' && 'initialize' in options.missing
+    ? options.missing.initialize
+    : undefined;
+  const targetKey = (input: TInput) => canonicalApplicationCommandKey(options.key(input));
+  const commandIdempotencyKey = (input: TInput, messageId: string) => options.idempotencyKey?.(input) ?? messageId;
+  return {
+    kind: 'applicationModelCommand',
+    name: handlerName,
+    model: model.name,
+    command: command.id,
+    processor: processorName,
+    async send(input, delivery) {
+      validateApplicationMessage(command.input, input, `${command.id}.input`);
+      const key = targetKey(input);
+      const acknowledgement = await publisher.publish({
+        id: delivery.id,
+        contract: { name: command.name, version: command.version },
+        payload: input,
+        recordedAt: delivery.recordedAt ?? new Date().toISOString(),
+        partitionKey: key,
+        routing: { binding: handlerName, targetKey: key, idempotencyKey: commandIdempotencyKey(input, delivery.id) },
+        ...(delivery.tenant ? { tenant: delivery.tenant } : {}),
+        ...(delivery.correlationId ? { correlationId: delivery.correlationId } : {}),
+        ...(delivery.causationId ? { causationId: delivery.causationId } : {}),
+        ...(delivery.traceparent ? { traceparent: delivery.traceparent } : {}),
+        ...(delivery.attempt ? { attempt: delivery.attempt } : {}),
+        ...(delivery.expectedRevision ? { expectedRevision: delivery.expectedRevision } : {}),
+      }, 'commands');
+      return {
+        ...acknowledgement,
+        phase: 'transportAcknowledged',
+        commandId: delivery.id,
+        correlationId: delivery.correlationId ?? delivery.id,
+      };
+    },
+    execute(input, delivery) {
+      return executePostgresModelCommand({
+        bindingId: handlerName,
+        command: { name: command.name, version: command.version },
+        errors: Object.keys(command.errors),
+        schemas: {
+          input: declaredMessageSchema(command.input, `${command.id}.input`).jsonSchema,
+          output: declaredMessageSchema(command.output, `${command.id}.output`).jsonSchema,
+          // typecast: Object.entries erases the mapped error-schema value type before durable JSON Schema emission.
+          errors: Object.fromEntries(Object.entries(command.errors).map(([name, schema]) => [name, declaredMessageSchema(schema as SchemaInput<object>, `${command.id}.errors.${name}`).jsonSchema])),
+          events: Object.fromEntries(outboxEvents.map((event) => [event.id, declaredMessageSchema(event.payload, `${event.id}.payload`).jsonSchema])),
+          commands: Object.fromEntries(outboxCommands.map((item) => [item.id, declaredMessageSchema(item.input, `${item.id}.input`).jsonSchema])),
+        },
+        model: model.runtime,
+        models: transactionModels.map((participant) => participant.runtime),
+        historyModels: historyModels.map((participant) => participant.name),
+        ...(options.retry ? { retry: options.retry } : {}),
+        message: {
+          id: delivery.id,
+          input,
+          targetKey: delivery.targetKey ?? targetKey(input),
+          idempotencyKey: delivery.idempotencyKey ?? commandIdempotencyKey(input, delivery.id),
+          ...(delivery.tenant ? { tenant: delivery.tenant } : {}),
+          ...(delivery.correlationId ? { correlationId: delivery.correlationId } : {}),
+          ...(delivery.causationId ? { causationId: delivery.causationId } : {}),
+          ...(delivery.traceparent ? { traceparent: delivery.traceparent } : {}),
+          ...(delivery.attempt ? { attempt: delivery.attempt } : {}),
+          ...(delivery.recordedAt ? { recordedAt: delivery.recordedAt } : {}),
+          ...(delivery.expectedRevision ? { expectedRevision: delivery.expectedRevision } : {}),
+        },
+        history: historyModels.some((participant) => participant.name === model.name),
+        // typecast: command transaction declarations erase payload specifics after their schemas have been validated and recorded in the graph.
+        outbox: outboxEvents as readonly EventDefinition<object>[],
+        commands: outboxCommands,
+        ordering: options.ordering ?? 'serial',
+        ...(options.missing && options.missing !== 'reject' && 'route' in options.missing ? { missingRoute: options.missing.route } : {}),
+        ...(initialize ? { initialize } : {}),
+        handler,
+        ...(delivery.databaseUrl ? { databaseUrl: delivery.databaseUrl } : {}),
+      });
+    },
+    drain: () => publisher.drain(),
+  };
+}
+
+function applicationCommandRetention(input: Partial<ApplicationCommandRetentionContract> | undefined, model: string, command: string): ApplicationCommandRetentionContract {
+  const retention = { ...defaultApplicationCommandRetention, ...input };
+  if (!Number.isInteger(retention.replayWindowSeconds) || retention.replayWindowSeconds < 60) throw new Error(`Model ${model} command ${command} retention.replayWindowSeconds must be an integer >= 60.`);
+  if (!Number.isInteger(retention.auditWindowSeconds) || retention.auditWindowSeconds < retention.replayWindowSeconds) throw new Error(`Model ${model} command ${command} retention.auditWindowSeconds must be an integer >= replayWindowSeconds.`);
+  if (!Number.isInteger(retention.publishedOutboxWindowSeconds) || retention.publishedOutboxWindowSeconds < 60) throw new Error(`Model ${model} command ${command} retention.publishedOutboxWindowSeconds must be an integer >= 60.`);
+  if (!Number.isInteger(retention.cleanupIntervalSeconds) || retention.cleanupIntervalSeconds < 10) throw new Error(`Model ${model} command ${command} retention.cleanupIntervalSeconds must be an integer >= 10.`);
+  if (!Number.isInteger(retention.cleanupBatchSize) || retention.cleanupBatchSize < 1 || retention.cleanupBatchSize > 10_000) throw new Error(`Model ${model} command ${command} retention.cleanupBatchSize must be an integer between 1 and 10000.`);
+  return retention;
+}
+
+function applicationEventLogRuntime(provider: ApplicationEventLogProvider): ApplicationProviderRuntimeContract {
+  const serviceName = provider.name ?? 'applik8s-events';
+  const servers = provider.servers ?? [`nats://${serviceName}${provider.namespace ? `.${provider.namespace}` : ''}.svc:4222`];
+  return {
+    env: {
+      APPLIK8S_EVENT_LOG_PROVIDER: provider.kind,
+      APPLIK8S_NATS_SERVERS: servers.join(','),
+      APPLIK8S_NATS_STREAM: provider.stream ?? 'APPLIK8S_EVENTS',
+      APPLIK8S_NATS_SUBJECT_PREFIX: provider.subjectPrefix ?? 'applik8s',
+    },
+    ...(provider.connectionSecret ? { secretRefs: [provider.connectionSecret] } : {}),
+    readiness: {
+      dependencies: provider.provision === false ? [] : [{ apiVersion: 'v1', kind: 'Service', name: serviceName, ...(provider.namespace ? { namespace: provider.namespace } : {}) }],
+      condition: 'JetStream stream exists with the declared subject prefix',
+      timeoutSeconds: 120,
+    },
+  };
+}
+
+function applicationCommandEventBindings(
+  handlerSource: string,
+  events: readonly EventDefinition<object>[],
+  modelName: string,
+  commandId: string,
+): readonly { readonly identifier: string; readonly event: { readonly nodeId: string } }[] {
+  const identifiers = [...handlerSource.matchAll(/\.\s*emit\s*\(\s*([A-Za-z_$][\w$]*)\s*,/g)]
+    .map((match) => match[1])
+    .filter((identifier): identifier is string => Boolean(identifier));
+  const unique = [...new Set(identifiers)];
+  if (unique.length !== events.length) {
+    throw new Error(`Model ${modelName} command ${commandId} must emit each declared outbox event through a stable identifier so the generated processor can serialize its closure. Found ${unique.length} event identifiers for ${events.length} declared events.`);
+  }
+  return unique.map((identifier, index) => ({
+    identifier,
+    event: { nodeId: applicationGraphNodeId('event', events[index]?.id ?? '') },
+  }));
+}
+
+function applicationCommandOutboxBindings(
+  handlerSource: string,
+  commands: readonly CommandDefinition<object, object, Readonly<Record<string, object>>>[],
+  modelName: string,
+  commandId: string,
+): readonly { readonly identifier: string; readonly command: { readonly nodeId: string } }[] {
+  const identifiers = [...handlerSource.matchAll(/\.\s*send\s*\(\s*([A-Za-z_$][\w$]*)\s*,/g)]
+    .map((match) => match[1])
+    .filter((identifier): identifier is string => Boolean(identifier));
+  const unique = [...new Set(identifiers)];
+  if (unique.length !== commands.length) {
+    throw new Error(`Model ${modelName} command ${commandId} must send each declared outbox command through a stable identifier so the generated processor can serialize its closure. Found ${unique.length} command identifiers for ${commands.length} declared commands.`);
+  }
+  return unique.map((identifier, index) => ({
+    identifier,
+    command: { nodeId: applicationGraphNodeId('command', commands[index]?.id ?? '') },
+  }));
+}
+
+function validateApplicationCommandHandlerClosure(
+  handlerSource: string,
+  eventBindings: readonly { readonly identifier: string }[],
+  modelName: string,
+  commandId: string,
+): void {
+  const analysis = analyzeApplicationServerRouteSource(handlerSource);
+  const unsupported = unsupportedRouteFreeIdentifiers(analysis, new Set(eventBindings.map((binding) => binding.identifier)));
+  if (unsupported.length > 0) {
+    throw new Error(serializedCallbackClosureMessage({
+      label: `Model ${modelName} command ${commandId} handler`,
+      identifiers: unsupported,
+      guidance: 'Keep deterministic helpers inside the handler, emit only declared event identifiers, or wait for explicit command-handler capture support.',
+    }));
+  }
+}
+
+function applicationCommandProcessorGeneratedResources(
+  processorName: string,
+  model: ApplicationRuntimeModelContract,
+  eventLog: ApplicationEventLogProvider,
+): readonly ApplicationGeneratedResourceContract[] {
+  const name = kubernetesNameSegment(processorName);
+  const namespace = model.secretNamespace ?? eventLog.namespace;
+  const nodeId = applicationGraphNodeId('processor', processorName);
+  const resource = (apiVersion: string, kind: string, resourceName: string): ApplicationResourceRef => ({
+    apiVersion,
+    kind,
+    name: resourceName,
+    ...(namespace ? { namespace } : {}),
+  });
+  return [
+    { role: 'workload', graphNode: { nodeId }, resource: resource('apps/v1', 'Deployment', name), artifact: { kind: 'kubernetesManifest', name: `${name}.yaml` } },
+    { role: 'policy', graphNode: { nodeId }, resource: resource('networking.k8s.io/v1', 'NetworkPolicy', name), artifact: { kind: 'kubernetesManifest', name: `${name}-network-policy.yaml` } },
+    { role: 'runtimeBundle', graphNode: { nodeId }, resource: resource('v1', 'ConfigMap', `${name}-source`), artifact: { kind: 'runtimeBundle', name: `${name}-source` } },
+    // typecast: preserve discriminants while conditionally adding the TypeKro-owned Stream.
+    ...(eventLog.provision === false ? [] : [{ role: 'providerDependency' as const, graphNode: { nodeId }, resource: resource('jetstream.nats.io/v1beta2', 'Stream', kubernetesNameSegment(eventLog.name ?? 'applik8s-events')), artifact: { kind: 'typeKroResource' as const, name: kubernetesNameSegment(eventLog.name ?? 'applik8s-events') } }]),
+    { role: 'providerDependency', graphNode: { nodeId }, resource: resource('jetstream.nats.io/v1beta2', 'Consumer', name), artifact: { kind: 'typeKroResource', name } },
+  ];
+}
+
+function declaredMessageSchema<T extends object>(input: SchemaInput<T>, name: string): ApplicationMessageContractSchema {
+  const emitted = normalizeSchema(input, name).emitJsonSchema();
+  if (!emitted.ok) {
+    throw new Error(`applik8s-message-schema-unsupported: ${name}: ${emitted.error.message}`);
+  }
+  return { kind: 'declared', runtime: 'arktype', jsonSchema: emitted.value.schema };
+}
+
+function validateApplicationMessage<T extends object>(schema: SchemaInput<T>, value: unknown, name: string): T {
+  // typecast: command inputs cross a JSON envelope boundary and the runtime schema validates their concrete JSON shape next.
+  const result = normalizeSchema(schema, name).validate(value as JsonValue);
+  if (!result.ok) {
+    throw new Error(`applik8s-message-schema-invalid: ${name}: ${result.error.message}`);
+  }
+  return result.value;
+}
+
+function applicationCommandMissingPolicy<TInput extends object, TSpec extends object>(missing: ApplicationModelCommandOptions<TInput, TSpec>['missing']): 'reject' | 'initialize' | 'route' {
+  if (!missing || missing === 'reject') {
+    return 'reject';
+  }
+  return 'initialize' in missing ? 'initialize' : 'route';
+}
+
+function applicationCommandFunctionExpression(kind: string, modelName: string, commandId: string, fn: (...args: never[]) => unknown): ApplicationExpressionContract {
+  return { kind: 'function', source: applicationCommandFunctionSource(kind, modelName, commandId, fn) };
+}
+
+function applicationCommandFunctionSource(kind: string, modelName: string, commandId: string, fn: (...args: never[]) => unknown): string {
+  const source = Function.prototype.toString.call(fn).trim();
+  if (!source || source.includes('[native code]')) {
+    throw new Error(`Model ${modelName} command ${commandId} ${kind} must be a serializable JavaScript function.`);
+  }
+  if (kind === 'key' || kind === 'idempotencyKey') {
+    const nondeterministic = /\b(Date|fetch|crypto\.randomUUID|Math\.random|performance\.now)\b/.exec(source);
+    if (nondeterministic) {
+      throw new Error(`Model ${modelName} command ${commandId} ${kind} must be deterministic; ${nondeterministic[1]} is not allowed.`);
+    }
+  }
+  if (kind === 'handler') {
+    const externalEffect = /\b(fetch|XMLHttpRequest|WebSocket|setTimeout|setInterval|Date\.now|Math\.random|crypto\.randomUUID)\b/.exec(source);
+    if (externalEffect) {
+      throw new Error(`Model ${modelName} command ${commandId} handler uses ${externalEffect[1]}, which is forbidden while model locks are held. Move external effects to an outbox or durable task and use context.now/context.id for deterministic values.`);
+    }
+  }
+  return source;
+}
+
+function uniqueApplicationModelBindings(bindings: readonly ApplicationModelBinding<object, object>[]): readonly ApplicationModelBinding<object, object>[] {
+  const byName = new Map<string, ApplicationModelBinding<object, object>>();
+  for (const binding of bindings) {
+    byName.set(binding.name, binding);
+  }
+  return [...byName.values()];
+}
+
+function validateApplicationCommandTransactionDomain(modelName: string, commandId: string, models: readonly ApplicationModelBinding<object, object>[]): void {
+  const domains = new Set(models.map((model) => `${model.runtime.provider}:${model.runtime.clusterName}:${model.runtime.database}`));
+  if (domains.size > 1) {
+    throw new Error(`Model ${modelName} command ${commandId} spans multiple physical transaction domains (${[...domains].join(', ')}). Cross-provider or cross-database atomic transactions fail closed.`);
+  }
+  for (const model of models) {
+    if (model.backend.transactions === 'unsupported') {
+      throw new Error(`Model ${modelName} command ${commandId} includes ${model.name}, which declares transactions as unsupported.`);
+    }
   }
 }
 
@@ -257,7 +829,13 @@ export interface ApplicationModelRuntimeBinding {
   readonly runtime: ApplicationRuntimeModelContract;
 }
 
-export function applicationModelBinding<TSpec extends object, TStatus extends object>(entity: EntityDefinition<TSpec, TStatus>, _provider: ApplicationModelStoreProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined, runtime: ApplicationRuntimeModelContract): ApplicationModelBinding<TSpec, TStatus> {
+export type ApplicationModelCommandRegistrar<TSpec extends object, TStatus extends object> = <TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+  command: CommandDefinition<TInput, TOutput, TErrors>,
+  options: ApplicationModelCommandOptions<TInput, TSpec>,
+  handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput>,
+) => ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus>;
+
+export function applicationModelBinding<TSpec extends object, TStatus extends object>(entity: EntityDefinition<TSpec, TStatus>, _provider: ApplicationModelStoreProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined, runtime: ApplicationRuntimeModelContract, commandRegistrar?: ApplicationModelCommandRegistrar<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus> {
   const name = options?.name ?? entity.name;
   const transactionSemantics = options?.schema?.transactions ?? 'supported';
   const scriptClient = () => createPostgresModelClient<TSpec, TStatus>(runtime);
@@ -302,6 +880,12 @@ export function applicationModelBinding<TSpec extends object, TStatus extends ob
       created: () => applicationModelUnsupportedEvent(name, 'created'),
       updated: () => applicationModelUnsupportedEvent(name, 'updated'),
       deleted: () => applicationModelUnsupportedEvent(name, 'deleted'),
+      command(command, commandOptions, handler) {
+        if (!commandRegistrar) {
+          throw new Error(`Model ${name}.on.command(...) has no application graph registration context and fails closed.`);
+        }
+        return commandRegistrar(command, commandOptions, handler);
+      },
     },
   };
 }
@@ -337,6 +921,17 @@ export function applicationModelMigrationSql(model: ApplicationRuntimeModelContr
   const migrationPlan = applicationModelMigrationPlan(model);
   const statements = [
     `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_model_migrations')} (\n  id text PRIMARY KEY,\n  model text NOT NULL,\n  revision text NOT NULL,\n  plan jsonb NOT NULL,\n  applied_at timestamptz NOT NULL DEFAULT now()\n);`,
+    `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_inbox')} (\n  scope text PRIMARY KEY,\n  binding_id text NOT NULL,\n  model text NOT NULL,\n  target_key text NOT NULL,\n  idempotency_key text NOT NULL,\n  message_id text NOT NULL,\n  input jsonb NOT NULL,\n  received_at timestamptz NOT NULL DEFAULT now()\n);`,
+    `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_results')} (\n  scope text PRIMARY KEY REFERENCES ${quoteSqlIdentifier('applik8s_command_inbox')}(scope) ON DELETE CASCADE,\n  output jsonb,\n  error jsonb,\n  model_revision text NOT NULL,\n  completed_at timestamptz NOT NULL DEFAULT now(),\n  CHECK ((output IS NULL) <> (error IS NULL))\n);`,
+    `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_model_transitions')} (\n  id text PRIMARY KEY,\n  scope text NOT NULL REFERENCES ${quoteSqlIdentifier('applik8s_command_inbox')}(scope) ON DELETE CASCADE,\n  model text NOT NULL,\n  target_key text NOT NULL,\n  before_state jsonb NOT NULL,\n  after_state jsonb NOT NULL,\n  model_revision text NOT NULL,\n  committed_at timestamptz NOT NULL DEFAULT now()\n);`,
+    `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_model_history')} (\n  id text PRIMARY KEY,\n  scope text NOT NULL REFERENCES ${quoteSqlIdentifier('applik8s_command_inbox')}(scope) ON DELETE CASCADE,\n  model text NOT NULL,\n  target_key text NOT NULL,\n  before_state jsonb NOT NULL,\n  after_state jsonb NOT NULL,\n  model_revision text NOT NULL,\n  recorded_at timestamptz NOT NULL DEFAULT now()\n);`,
+    `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_event_outbox')} (\n  id text PRIMARY KEY,\n  scope text NOT NULL REFERENCES ${quoteSqlIdentifier('applik8s_command_inbox')}(scope) ON DELETE CASCADE,\n  contract_name text NOT NULL,\n  contract_version text NOT NULL,\n  partition_key text NOT NULL,\n  envelope jsonb NOT NULL,\n  payload jsonb NOT NULL,\n  published_at timestamptz,\n  created_at timestamptz NOT NULL DEFAULT now()\n);`,
+    `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_event_outbox_pending')} ON ${quoteSqlIdentifier('applik8s_event_outbox')} (created_at) WHERE published_at IS NULL;`,
+    `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_event_outbox_cleanup')} ON ${quoteSqlIdentifier('applik8s_event_outbox')} (published_at) WHERE published_at IS NOT NULL;`,
+    `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_outbox')} (\n  id text PRIMARY KEY,\n  scope text NOT NULL REFERENCES ${quoteSqlIdentifier('applik8s_command_inbox')}(scope) ON DELETE CASCADE,\n  contract_name text NOT NULL,\n  contract_version text NOT NULL,\n  partition_key text NOT NULL,\n  envelope jsonb NOT NULL,\n  payload jsonb NOT NULL,\n  published_at timestamptz,\n  created_at timestamptz NOT NULL DEFAULT now()\n);`,
+    `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_outbox_pending')} ON ${quoteSqlIdentifier('applik8s_command_outbox')} (created_at) WHERE published_at IS NULL;`,
+    `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_outbox_cleanup')} ON ${quoteSqlIdentifier('applik8s_command_outbox')} (published_at) WHERE published_at IS NOT NULL;`,
+    `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_inbox_cleanup')} ON ${quoteSqlIdentifier('applik8s_command_inbox')} (binding_id, received_at);`,
     `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier(model.tableName)} (\n  id text PRIMARY KEY,\n  spec jsonb NOT NULL,\n  status jsonb,\n  revision text NOT NULL,\n  created_at timestamptz NOT NULL DEFAULT now(),\n  updated_at timestamptz NOT NULL DEFAULT now()\n);`,
     ...model.constraints.filter((constraint) => constraint.kind === 'unique').map((constraint) => `CREATE UNIQUE INDEX IF NOT EXISTS ${quoteSqlIdentifier(constraint.name)} ON ${quoteSqlIdentifier(model.tableName)} (${constraint.fields.map(modelSqlIndexExpression).join(', ')});`),
     ...model.indexes.map((index) => `CREATE ${index.unique ? 'UNIQUE ' : ''}INDEX IF NOT EXISTS ${quoteSqlIdentifier(index.name)} ON ${quoteSqlIdentifier(model.tableName)} (${index.fields.map(modelSqlIndexExpression).join(', ')});`),
@@ -658,6 +1253,7 @@ function recordApplicationProviderGraph(state: ApplicationGraphState, tokenName:
     return;
   }
   const nodeId = applicationProviderNodeId(providerInterface);
+  const eventLog = providerInterface === 'EventLog' ? applicationEventLogImplementation(implementation) : undefined;
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'provider',
@@ -666,15 +1262,39 @@ function recordApplicationProviderGraph(state: ApplicationGraphState, tokenName:
     interface: providerInterface,
     implementation: applicationProviderImplementationName(implementation),
     contract: applicationProviderInterfaceContract(providerInterface, implementation),
-    config: { bindingKind, provider: applicationProviderImplementationName(implementation) },
+    config: {
+      bindingKind,
+      provider: applicationProviderImplementationName(implementation),
+      ...(eventLog ? {
+        name: eventLog.name ?? 'applik8s-events',
+        namespace: eventLog.namespace ?? '',
+        servers: [...(eventLog.servers ?? [])],
+        stream: eventLog.stream ?? 'APPLIK8S_EVENTS',
+        subjectPrefix: eventLog.subjectPrefix ?? 'applik8s',
+        provision: eventLog.provision ?? true,
+        tokenKey: eventLog.tokenKey ?? 'token',
+        userKey: eventLog.userKey ?? 'user',
+        passwordKey: eventLog.passwordKey ?? 'password',
+      } : {}),
+    },
   });
 }
 
 function applicationProviderInterfaceContract(providerInterface: ApplicationProviderInterfaceKind, implementation: unknown): ApplicationProviderInterfaceContract {
-  const implemented = providerInterface === 'ModelStore' && applicationProviderImplementationName(implementation) === 'postgres';
+  const implemented = (providerInterface === 'ModelStore' && applicationProviderImplementationName(implementation) === 'postgres')
+    || (providerInterface === 'EventLog' && applicationProviderImplementationName(implementation) === 'nats-jetstream');
   return {
+    apiVersion: 'applik8s.provider/v1alpha1',
     interface: providerInterface,
-    surface: 'stablePublicApi',
+    version: 'v1alpha1',
+    requirements: providerInterface === 'EventLog' ? ['durableTransport'] : ['applicationRuntimeBinding'],
+    guarantees: providerInterface === 'ModelStore'
+      ? ['sameDomainTransactions', 'durableResults', 'transactionalOutbox']
+      : providerInterface === 'EventLog'
+        ? ['atLeastOnce', 'stableMessageIds', 'replay']
+        : [],
+    implementation: { name: applicationProviderImplementationName(implementation) },
+    surface: providerInterface === 'EventLog' ? 'experimentalSurface' : 'stablePublicApi',
     support: implemented ? 'implemented' : 'failClosedReserved',
     diagnostics: implemented ? [] : [{ event: 'applik8s-provider-requirement-missing', severity: 'error', subject: { nodeId: applicationProviderNodeId(providerInterface) }, reason: 'ProviderInterfaceReserved', message: `${providerInterface} is reserved as a stable v0.3 provider interface but no generated provider adapter is enabled for this binding.`, retryable: false }],
   };

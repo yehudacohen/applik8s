@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { serializeApplicationGraph, type ApplicationDurableStatusOwnershipContract, type ApplicationProviderCompatibilityMatrixContract, type ApplicationProviderInterfaceContract } from '@applik8s/core';
-import { app, applicationGraphFor, type ApplicationModelBinding, type ApplicationV03PressureTestContract, type KubernetesApplicationBuilder } from '@applik8s/applik8s';
-import { entity, type } from '@applik8s/applik8s/dsl';
+import { app, applicationGraphFor, type ApplicationModelBinding, type ApplicationModelCommandBinding, type ApplicationV03PressureTestContract, type KubernetesApplicationBuilder } from '@applik8s/applik8s';
+import { command, entity, event, type } from '@applik8s/applik8s/dsl';
+import * as k8s from '@kubernetes/client-node';
 
 export interface TenantPlatformExampleOptions {
   readonly apiGroup?: string;
@@ -11,6 +12,7 @@ export interface TenantPlatformExampleOptions {
   readonly databaseName?: string;
   readonly databaseClusterName?: string;
   readonly adminServerName?: string;
+  readonly durableBehavior?: boolean;
 }
 
 const defaultOptions: Required<TenantPlatformExampleOptions> = {
@@ -21,6 +23,7 @@ const defaultOptions: Required<TenantPlatformExampleOptions> = {
   databaseName: process.env.APPLIK8S_TENANT_PLATFORM_DATABASE ?? 'tenant_platform',
   databaseClusterName: process.env.APPLIK8S_TENANT_PLATFORM_DATABASE_CLUSTER ?? 'tenant-platform-db',
   adminServerName: process.env.APPLIK8S_TENANT_PLATFORM_ADMIN_SERVER ?? 'tenant-admin',
+  durableBehavior: false,
 };
 
 export const TenantEntity = entity('Tenant', {
@@ -102,6 +105,19 @@ export const AccountEntity = entity('Account', {
 export type AccountSpec = typeof AccountEntity.spec.infer;
 export type AccountStatus = NonNullable<typeof AccountEntity.status>['infer'];
 
+export const RenameTenantAccount = command('tenant-account.rename.v1', {
+  input: type({ tenant: 'string', accountId: 'string', displayName: 'string', requestId: 'string' }),
+  output: type({ changed: 'boolean', displayName: 'string' }),
+  errors: { accountNotFound: type({ accountId: 'string' }) },
+});
+
+export const TenantAccountChanged = event('tenant-account.changed.v1', {
+  payload: type({ tenant: 'string', accountId: 'string', displayName: 'string' }),
+});
+
+export type RenameTenantAccountInput = typeof RenameTenantAccount.input.infer;
+export type RenameTenantAccountOutput = typeof RenameTenantAccount.output.infer;
+
 export const AuditRecordEntity = entity('AuditRecord', {
   spec: type({
     tenant: 'string',
@@ -152,6 +168,9 @@ export interface TenantPlatformExample {
     readonly AuditRecord: ApplicationModelBinding<AuditRecordSpec, AuditRecordStatus>;
     readonly Invitation: ApplicationModelBinding<InvitationSpec, InvitationStatus>;
     readonly UsageSample: ApplicationModelBinding<UsageSampleSpec, UsageSampleStatus>;
+  };
+  readonly commands?: {
+    readonly renameAccount: ApplicationModelCommandBinding<RenameTenantAccountInput, RenameTenantAccountOutput, AccountSpec, AccountStatus>;
   };
 }
 
@@ -227,6 +246,18 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
       retention: { mode: 'ttl', ttlSeconds: 60 * 60 * 24 * 14 },
     },
   });
+  const renameAccount = config.durableBehavior ? Account.on.command(RenameTenantAccount, {
+    key: ({ accountId }) => accountId,
+    ordering: 'serial',
+    idempotencyKey: ({ requestId }) => requestId,
+    missing: 'reject',
+    transaction: { history: [Account], outbox: [TenantAccountChanged] },
+  }, async (account, input, context) => {
+    const changed = account.spec.displayName !== input.displayName;
+    account.patch({ spec: { displayName: input.displayName } });
+    context.emit(TenantAccountChanged, { tenant: input.tenant, accountId: input.accountId, displayName: input.displayName });
+    return { changed, displayName: input.displayName };
+  }) : undefined;
   tenantPlatform.http(config.adminServerName, {
     service: { port: 80 },
     env: { TENANT_PLATFORM_NAMESPACE: config.namespace },
@@ -251,16 +282,36 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
     http.get('/tenants/:tenant/usage', async ({ params, query }) => UsageSample.index('usage-by-tenant-metric', { partitionBy: 'tenant', orderBy: ['sampledAt'] }).query(params.tenant ?? 'default', { limit: 100, cursor: query.cursor }));
   });
 
-  tenantPlatform.reconcile(Tenant, async (tenant) => {
+  tenantPlatform.reconcile(Tenant, config.durableBehavior ? async (tenant) => {
+    const kubeConfig = new k8s.KubeConfig();
+    kubeConfig.loadFromOptions({
+      clusters: [{ name: 'cluster', server: 'https://kubernetes.default.svc' }],
+      users: [{ name: 'runtime' }],
+      contexts: [{ name: 'runtime', cluster: 'cluster', user: 'runtime' }],
+      currentContext: 'runtime',
+    });
+    const namespaces = await kubeConfig.makeApiClient(k8s.CoreV1Api).listNamespace({ limit: 1 });
     tenant.status.phase = 'Ready';
     tenant.status.observedGeneration = tenant.metadata.generation ?? 0;
     tenant.status.url = `https://${tenant.metadata.name}.${tenant.spec.namespace}.example.test`;
-  });
+    tenant.status.message = `Kubernetes SDK observed ${namespaces.items.length} namespace`;
+  } : async (tenant) => {
+    tenant.status.phase = 'Ready';
+    tenant.status.observedGeneration = tenant.metadata.generation ?? 0;
+    tenant.status.url = `https://${tenant.metadata.name}.${tenant.spec.namespace}.example.test`;
+  }, config.durableBehavior ? {
+    scope: 'Cluster',
+    permissions: [{ apiGroups: [''], resources: ['namespaces'], verbs: ['get', 'list'] }],
+  } : {});
 
   tenantPlatform.job('tenant-platform-repair', { taskKind: 'repair', image: 'postgres:16-alpine', command: ['sh', '-c'], args: ['echo repair tenant platform status'] });
   tenantPlatform.schedule('tenant-platform-cleanup', { taskKind: 'cleanup', cron: '*/15 * * * *', image: 'postgres:16-alpine', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
 
-  return { composition: tenantPlatform.composition, models: { Account, AuditRecord, Invitation, UsageSample } };
+  return { composition: tenantPlatform.composition, models: { Account, AuditRecord, Invitation, UsageSample }, ...(renameAccount ? { commands: { renameAccount } } : {}) };
+}
+
+export function createTenantPlatformV04Example(options: TenantPlatformExampleOptions = {}): TenantPlatformExample {
+  return createTenantPlatformExample({ ...options, durableBehavior: true });
 }
 
 export function createTenantPlatformPressureTestContract(example = createTenantPlatformExample()): ApplicationV03PressureTestContract {
@@ -306,6 +357,9 @@ function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfa
       { interface: 'Queue', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'ObjectStorage', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'EventSource', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'EventLog', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
+      { interface: 'Certificate', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
+      { interface: 'DnsPublication', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
     ];
 }
 
@@ -367,3 +421,4 @@ function tenantPlatformGeneratedStatusObservabilityContract(): NonNullable<Appli
 }
 
 export const tenantPlatform = createTenantPlatformExample().composition;
+export const tenantPlatformV04 = createTenantPlatformV04Example().composition;

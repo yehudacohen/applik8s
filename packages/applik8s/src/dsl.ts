@@ -32,6 +32,64 @@ export interface EntityDefinition<TSpec extends object, TStatus extends object =
   readonly status?: SchemaInput<TStatus>;
 }
 
+export interface CommandDefinition<
+  TInput extends object,
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+> {
+  readonly kind: 'applik8sCommand';
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly input: SchemaInput<TInput>;
+  readonly output: SchemaInput<TOutput>;
+  readonly errors: { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> };
+}
+
+export interface EventDefinition<TPayload extends object> {
+  readonly kind: 'applik8sEvent';
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly payload: SchemaInput<TPayload>;
+}
+
+export interface ApplicationMessageEnvelope<TPayload extends object> {
+  readonly id: string;
+  readonly contract: { readonly name: string; readonly version: string };
+  readonly payload: TPayload;
+  readonly recordedAt: string;
+  readonly tenant?: string;
+  readonly correlationId?: string;
+  readonly causationId?: string;
+  readonly traceparent?: string;
+  readonly attempt?: number;
+  readonly partitionKey?: string;
+  readonly routing?: Readonly<Record<string, string>>;
+  readonly expectedRevision?: string;
+  readonly stateRevision?: ApplicationStateRevisionRef;
+}
+
+export interface ApplicationStateRevisionRef {
+  readonly authority: 'model';
+  readonly model: string;
+  readonly target: string;
+  readonly revision: string;
+}
+
+export interface ApplicationCommandObservation {
+  readonly commandId: string;
+  readonly correlationId: string;
+  readonly causationId?: string;
+  readonly target: { readonly model: string; readonly key: string };
+  readonly phase: 'completed' | 'rejected';
+  readonly replayed: boolean;
+  /** Opaque revision of the durable command result, including durable rejections. */
+  readonly resultRevision: string;
+  /** Present only when the outcome can be linked truthfully to an existing model state. */
+  readonly stateRevision?: ApplicationStateRevisionRef;
+}
+
 export function field(path: string): DslExpression {
   return expression('field', path);
 }
@@ -50,6 +108,38 @@ export function entity<TSpec extends object, TStatus extends object = Record<str
     spec: options.spec,
     ...(options.status ? { status: options.status } : {}),
   };
+}
+
+export function command<
+  TInput extends object,
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+>(
+  id: string,
+  options: {
+    readonly input: SchemaInput<TInput>;
+    readonly output: SchemaInput<TOutput>;
+    readonly errors?: { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> };
+  }
+): CommandDefinition<TInput, TOutput, TErrors> {
+  const identity = applicationContractIdentity('command', id);
+  return {
+    kind: 'applik8sCommand',
+    id,
+    ...identity,
+    input: options.input,
+    output: options.output,
+    // typecast: omitted errors are the empty mapped error contract represented by TErrors's default.
+    errors: (options.errors ?? {}) as { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> },
+  };
+}
+
+export function event<TPayload extends object>(
+  id: string,
+  options: { readonly payload: SchemaInput<TPayload> }
+): EventDefinition<TPayload> {
+  const identity = applicationContractIdentity('event', id);
+  return { kind: 'applik8sEvent', id, ...identity, payload: options.payload };
 }
 
 export const metadata = {
@@ -80,4 +170,12 @@ function expression(expressionKind: string, value: string): DslExpression {
     },
   };
   return current;
+}
+
+function applicationContractIdentity(kind: 'command' | 'event', id: string): { readonly name: string; readonly version: string } {
+  const match = /^(.*)\.(v[1-9][0-9]*)$/.exec(id.trim());
+  if (!match?.[1] || !match[2]) {
+    throw new Error(`applik8s ${kind} contract ${JSON.stringify(id)} must end with an explicit version such as ".v1".`);
+  }
+  return { name: match[1], version: match[2] };
 }

@@ -67,6 +67,10 @@ describe('application graph substrate contract', () => {
       'index',
       'aggregate',
       'counter',
+      'command',
+      'event',
+      'commandHandler',
+      'processor',
       'job',
       'config',
       'secret',
@@ -80,10 +84,13 @@ describe('application graph substrate contract', () => {
       'IndexStore',
       'CounterStore',
       'EventSource',
+      'EventLog',
       'Secret',
       'Queue',
       'ObjectStorage',
       'HttpExposure',
+      'Certificate',
+      'DnsPublication',
       'CredentialStore',
     ]);
     expect(isApplicationGraphNodeKind('job')).toBe(true);
@@ -445,10 +452,13 @@ describe('application graph substrate contract', () => {
       'IndexStore:failClosedReserved',
       'CounterStore:failClosedReserved',
       'EventSource:failClosedReserved',
+      'EventLog:failClosedReserved',
       'Secret:failClosedReserved',
       'Queue:failClosedReserved',
       'ObjectStorage:failClosedReserved',
       'HttpExposure:failClosedReserved',
+      'Certificate:failClosedReserved',
+      'DnsPublication:failClosedReserved',
       'CredentialStore:failClosedReserved',
     ]);
     expect(contracts.flatMap(validateApplicationProviderInterfaceContract)).toEqual([]);
@@ -485,10 +495,13 @@ describe('application graph substrate contract', () => {
       IndexStore: 'indexStore',
       CounterStore: 'counterStore',
       EventSource: 'eventSource',
+      EventLog: 'eventLog',
       Secret: 'secret',
       Queue: 'queue',
       ObjectStorage: 'objectStorage',
       HttpExposure: 'httpExposure',
+      Certificate: 'certificate',
+      DnsPublication: 'dnsPublication',
       CredentialStore: 'credentialStore',
     };
     const requirements = applicationProviderInterfaceKinds.map((providerInterface) => ({
@@ -503,7 +516,7 @@ describe('application graph substrate contract', () => {
       },
     }) satisfies ApplicationProviderRequirement);
 
-    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['modelStore', 'indexStore', 'counterStore', 'eventSource', 'secret', 'queue', 'objectStorage', 'httpExposure', 'credentialStore']);
+    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['modelStore', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore']);
     for (const requirement of requirements) {
       expect(requirement.diagnostics.missing).toContain(requirement.interface);
     }
@@ -1457,21 +1470,10 @@ function diagnostic(event: ApplicationDiagnosticContract['event'], nodeId: strin
   };
 }
 
-function providerReservedDiagnostic(provider: ApplicationProviderInterfaceKind): ApplicationDiagnosticContract {
-  return {
-    event: 'applik8s-provider-requirement-missing',
-    severity: 'error',
-    subject: { nodeId: `provider.${provider}` },
-    reason: 'ProviderInterfaceReserved',
-    message: `${provider} is stable but fail-closed until a generated provider adapter is implemented for the v0.3 slice.`,
-    retryable: false,
-  };
-}
-
 function providerCompatibilityMatrix(): ApplicationProviderCompatibilityMatrixContract {
   return {
     apiVersion: 'applik8s.providerCompatibility/v1alpha1',
-    requiredForV03: [...applicationProviderInterfaceKinds],
+    requiredForV03: applicationProviderInterfaceKinds.filter((provider) => provider !== 'EventLog'),
     providers: applicationProviderInterfaceKinds.map((provider) => ({ interface: provider, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] })),
   };
 }
