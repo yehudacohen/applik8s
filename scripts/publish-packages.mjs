@@ -88,7 +88,9 @@ for (const item of publicationPlan) {
   } else {
     // Dependency order is the packageDirs order above. Sequential publication
     // makes failures resumable and never exposes dependents before prerequisites.
-    results.push(await publishPackage(item.packageDir));
+    const result = await publishPackage(item.packageDir);
+    results.push(result);
+    if (result.status === 'failed') break;
   }
 }
 
