@@ -43,6 +43,9 @@ jobs:
       - name: Run package release checks
         run: bun run check:packages
 
+      - name: Review published consumer dependency audit
+        run: bun run check:package-audit
+
       - name: Build ImageJob artifacts
         run: bun run build:imagejob
 

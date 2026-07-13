@@ -15,6 +15,7 @@ import { imageRefString } from '@applik8s/typetainer';
 
 import type { AnyResourceDefinition, AnyResourceVersionDefinition, ConcurrencyConfig, Diagnostic, JsonObject, OperatorDefinition, OperatorManifest, PermissionRule, Result, StatusConvention } from '@applik8s/core';
 import { toKubernetesStructuralOpenApiSchema, validateStructuralOpenApiSchema } from '../kubernetes-schema/index.js';
+import { DEFAULT_OPERATOR_HOST_IMAGE_REFERENCE } from '../operator-host-image.js';
 
 export interface KubernetesYamlRequest {
   readonly manifest: OperatorManifest;
@@ -35,7 +36,7 @@ export async function emitOperatorKubernetesYaml(request: KubernetesYamlRequest)
   try {
     const namespace = request.operator.deployment?.namespace;
     const serviceAccountName = request.operator.deployment?.serviceAccountName ?? `${request.operator.name}-controller`;
-    const image = request.manifest.spec.container ? imageRefString(request.manifest.spec.container.image) : 'ghcr.io/applik8s/applik8s-operator-host:dev';
+    const image = request.manifest.spec.container ? imageRefString(request.manifest.spec.container.image) : DEFAULT_OPERATOR_HOST_IMAGE_REFERENCE;
     const resources = Object.values(request.operator.resources);
     const ownedResources = resources.filter(isOwnedResource);
     const clusterRbac = requiresClusterRbac(request.operator, namespace);
@@ -391,11 +392,23 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
         metadata: { labels: appLabels(manifest.metadata.name), annotations: auditAnnotations(manifest) },
         spec: {
           serviceAccountName,
+          securityContext: {
+            runAsNonRoot: true,
+            runAsUser: 65532,
+            runAsGroup: 65532,
+            seccompProfile: { type: 'RuntimeDefault' },
+          },
           containers: [
             {
               name: 'operator-host',
               image,
               imagePullPolicy: 'IfNotPresent',
+              securityContext: {
+                allowPrivilegeEscalation: false,
+                readOnlyRootFilesystem: true,
+                capabilities: { drop: ['ALL'] },
+              },
+              volumeMounts: [{ name: 'tmp', mountPath: '/tmp' }],
               ports: [{ name: 'health', containerPort: 8080 }],
               env: operatorHostEnv(manifest),
               startupProbe: {
@@ -420,6 +433,7 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
               },
             },
           ],
+          volumes: [{ name: 'tmp', emptyDir: {} }],
         },
       },
     },

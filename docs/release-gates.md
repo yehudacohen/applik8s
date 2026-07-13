@@ -41,7 +41,7 @@ bun run check:release
 The checker verifies:
 
 - publishable package metadata
-- version `0.4.1` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
+- version `0.4.2` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
 - Apache-2.0 license metadata
 - public publish config
 - no `file:` dependency ranges in publishable packages
@@ -181,16 +181,25 @@ Before announcing v0.3, capture:
 
 - `.github/workflows/ci.yml` runs local gates, package publish dry-run, and a clean packed-consumer import smoke test for normal repository changes.
 - `.github/workflows/release-evidence.yml` is a manual release-candidate workflow that builds `dist/applik8s`, uploads generated artifacts, and can run live prerelease gates when a base64 kubeconfig secret and `APPLIK8S_E2E_CONTEXT` variable are configured.
-- `.github/workflows/deploy.yml` follows the TypeKro release pattern: tag pushes run release gates, build and upload evidence artifacts, publish npm packages through OIDC trusted publishing, and create a GitHub release from `RELEASE_NOTES.md`.
+- `.github/workflows/deploy.yml` runs the expiring reviewed npm audit baseline in addition to the local and package gates. Tag pushes publish the multi-architecture host image, publish npm packages through OIDC trusted publishing, verify released artifacts, and only then create the GitHub release.
+
+The dependency gate is:
+
+```sh
+bun run check:package-audit
+```
+
+It fails on new, changed, stale, or expired advisories. The current reviewed findings and containment boundary are documented in `docs/build-supply-chain.md`.
 
 ## Publishing
 
-Publishing is tag-driven. Push tag `v0.4.1` only after the complete v0.4.1 gate passes. The deploy workflow requires npm trusted publishing to be configured for each `@applik8s/*` package and this repository workflow.
+Publishing is tag-driven. Push tag `v0.4.2` only after the complete v0.4.2 gate passes. The deploy workflow uses npm trusted publishing for every `@applik8s/*` package and `packages: write` for the public GHCR operator host.
 
 Validate package contents and imports from unpacked tarballs before tagging:
 
 ```sh
 bun run check:packages
+bun run check:package-audit
 ```
 
 Local publish command, for maintainers only:

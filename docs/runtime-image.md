@@ -1,47 +1,72 @@
 # Runtime Image
 
-Generated operators run a Rust host image plus the compiled handler artifacts.
+Generated operators run a compiled WASM handler inside the published Rust operator host.
 
-## v0.3 Support Boundary
+## Published Host Contract
 
-v0.3 generated server bundles are deterministic build-time artifacts. They include bundled runtime dependencies, source maps, route manifests, and runtime bundle manifests. Generated server pods must not install packages at startup.
+Starting with v0.4.2, the compiler defaults to a public, immutable operator-host reference under:
 
-The v0.3 release does not claim signed runtime images, generated SBOMs, provenance attestations, or admission-policy verification. Generated manifests and bundle metadata keep that posture explicit as metadata-only evidence until real verification artifacts exist.
+```text
+ghcr.io/yehudacohen/applik8s-operator-host
+```
 
-## v0.1 Support Boundary
+The reference contains both a human-readable release tag and a `sha256` manifest digest. Generated Dockerfiles declare that reference as the default `APPLIK8S_BASE_IMAGE` build argument; builds may deliberately override the argument without changing the recorded manifest default.
 
-v0.1 supports local tutorial builds from `Dockerfile.applik8s-runtime`.
+The release image is published for:
 
-Generated YAML does not imply a floating production-grade image policy. Users should pin image tags or digests in GitOps workflows.
+- `linux/amd64`
+- `linux/arm64`
 
-## Local Tutorial Image
+The image workflow publishes OCI source/version/revision labels, a BuildKit provenance attestation, and an SBOM attestation. Applik8s does not yet claim signature or admission-policy enforcement.
+
+## Runtime Hardening
+
+Generated operator images and Deployments run as numeric uid/gid `65532`. The v0.4.2 host build recipe also selects that identity when the shared host is run directly. The v0.4.1 compatibility host pinned by this compiler is made non-root by the generated Dockerfile's final `USER` and the Deployment's explicit `runAsUser`/`runAsGroup`. Generated Deployments set:
+
+- `runAsNonRoot`, an explicit uid/gid, and `RuntimeDefault` seccomp
+- no privilege escalation
+- a read-only root filesystem
+- all Linux capabilities dropped
+- a writable `emptyDir` mounted only at `/tmp` for replay artifacts and runtime scratch data
+
+The v0.4.2 host build's Rust and Debian base indexes are digest-pinned. The generated handler image copies artifacts with uid/gid `65532` ownership and restores the non-root user after its build steps.
+
+## Generated Build
 
 After compiling:
 
 ```sh
-bun run build:imagejob
-docker build -f dist/applik8s/Dockerfile.applik8s-runtime -t applik8s/image-pipeline-operator:dev dist/applik8s
-APPLIK8S_IMAGE=applik8s/image-pipeline-operator:dev dist/applik8s/apply.sh
+docker build \
+  -f dist/applik8s/Dockerfile.applik8s-runtime \
+  -t applik8s/image-pipeline-operator:dev \
+  dist/applik8s
 ```
 
-## Published Image Decision
+To test a locally built host while preserving the compiler's release default:
 
-The v0.3 release path does not require a published shared runtime image. Generated artifacts include explicit image or generated-image recipe metadata so users can build and reference runtime images deliberately.
+```sh
+docker build -f Dockerfile.operator-host -t applik8s-operator-host:dev .
+docker build \
+  --build-arg APPLIK8S_BASE_IMAGE=applik8s-operator-host:dev \
+  -f dist/applik8s/Dockerfile.applik8s-runtime \
+  -t applik8s/image-pipeline-operator:dev \
+  dist/applik8s
+```
 
-The v0.1 public tutorial path did not require a published runtime image. Generated artifacts include an image recipe and apply script so users can build and reference a local image explicitly.
+`APPLIK8S_BASE_IMAGE` provides the same explicit override when using the generated `apply.sh`.
 
-Publishing `ghcr.io/applik8s/applik8s-operator-host:0.1.0` is allowed only if the release process builds, tests, documents, and pins it. Until then, published runtime images are not part of the v0.1 support promise.
+## Release Verification
 
-## Digest Expectations
+The tag-driven workflow publishes the host before npm packages. It then installs the released npm package into an empty directory, compiles an operator, anonymously pulls the public host by digest, and builds the generated operator image before creating the GitHub release.
 
-Generated manifests record bundle, source, compiler, runtime requirement, handler ABI, host-import metadata, and v0.3 supply-chain posture. Image digest/signature verification is metadata-only unless a future release publishes signed artifacts and a verification policy.
+Run the same released-artifact proof against OrbStack with:
 
-## Not Promised
+```sh
+APPLIK8S_PUBLISHED_VERSION=0.4.2 bun run check:published-release:orbstack
+```
 
-v0.1 does not promise:
+The live script refuses to mutate a cluster unless the current kubectl context exactly matches `orbstack`. It deploys the generated CRD/controller, observes a real reconciliation status write, and cleans up its namespace and CRD.
 
-- automatic runtime image upgrades
-- rollback safety across runtime or handler ABI changes
-- SBOM/provenance enforcement
-- image signature admission policy
-- multi-architecture image availability unless explicitly published and tested
+## Remaining Boundary
+
+Generated manifests record bundle, source, compiler, runtime, handler ABI, host-import, and image identity metadata. SBOM/provenance are now emitted for the shared host, but signature verification and cluster admission enforcement remain future work. The npm compiler dependency boundary is documented separately in `docs/build-supply-chain.md`.

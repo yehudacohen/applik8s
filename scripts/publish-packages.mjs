@@ -1,8 +1,11 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+const npmCache = resolve('node_modules/.cache/applik8s-npm-publish');
+await mkdir(npmCache, { recursive: true });
 
 const packageDirs = [
   'packages/core',
@@ -25,7 +28,7 @@ async function publishPackage(packageDir) {
   }
 
   try {
-    const { stdout, stderr } = await execFileAsync('npm', args, { cwd: packageDir, maxBuffer: 10 * 1024 * 1024 });
+    const { stdout, stderr } = await execFileAsync('npm', args, { cwd: packageDir, env: { ...process.env, npm_config_cache: npmCache }, maxBuffer: 10 * 1024 * 1024 });
     return { packageDir, status: 'passed', stdout, stderr };
   } catch (error) {
     return {
@@ -39,7 +42,7 @@ async function publishPackage(packageDir) {
 
 async function packageIdentity(packageDir) {
   const manifest = JSON.parse(await readFile(`${packageDir}/package.json`, 'utf8'));
-  const { stdout } = await execFileAsync('npm', ['pack', '--dry-run', '--json', '.'], { cwd: packageDir, maxBuffer: 10 * 1024 * 1024 });
+  const { stdout } = await execFileAsync('npm', ['pack', '--dry-run', '--json', '.'], { cwd: packageDir, env: { ...process.env, npm_config_cache: npmCache }, maxBuffer: 10 * 1024 * 1024 });
   const [pack] = JSON.parse(stdout);
   if (typeof manifest.name !== 'string' || typeof manifest.version !== 'string' || typeof pack?.integrity !== 'string') {
     throw new Error(`${packageDir}: package identity or packed integrity is missing.`);
@@ -49,7 +52,7 @@ async function packageIdentity(packageDir) {
 
 async function publishedIntegrity(identity) {
   try {
-    const { stdout } = await execFileAsync('npm', ['view', `${identity.name}@${identity.version}`, 'dist.integrity', '--json'], { maxBuffer: 10 * 1024 * 1024 });
+    const { stdout } = await execFileAsync('npm', ['view', `${identity.name}@${identity.version}`, 'dist.integrity', '--json'], { env: { ...process.env, npm_config_cache: npmCache }, maxBuffer: 10 * 1024 * 1024 });
     const integrity = JSON.parse(stdout);
     if (typeof integrity !== 'string' || integrity.length === 0) throw new Error(`${identity.name}@${identity.version}: registry response has no dist.integrity.`);
     return integrity;

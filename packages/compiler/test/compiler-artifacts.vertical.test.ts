@@ -1514,7 +1514,12 @@ export const imagePipeline = sdk.operator({
 
       expect(result.value.manifest.metadata.name).toBe('image-pipeline');
       expect(result.value.manifest.spec.container?.image).toMatchObject({ repository: 'applik8s/image-pipeline-operator' });
-      expect(result.value.manifest.spec.container?.baseImage).toMatchObject({ registry: 'ghcr.io', repository: 'applik8s/applik8s-operator-host', tag: 'dev' });
+      expect(result.value.manifest.spec.container?.baseImage).toMatchObject({
+        registry: 'ghcr.io',
+        repository: 'yehudacohen/applik8s-operator-host',
+        tag: 'v0.4.1',
+        digest: 'sha256:467f3e36eab0509c738025f9ea3e117320d9af3843eba9e5d3ac451c625b7869',
+      });
       expect(result.value.manifest.spec.container?.files).toEqual([
         { source: 'operator-manifest.json', destination: '/etc/applik8s/operator-manifest.json' },
         { source: 'wasm/handler.wasm', destination: '/handler/handler.wasm' },
@@ -1594,7 +1599,20 @@ export const imagePipeline = sdk.operator({
         'applik8s.dev/bundle-digest': result.value.manifest.spec.bundle.digest,
         'applik8s.dev/handler-abi': 'applik8s.handler/v1alpha1',
       });
+      expect(deployment.spec.template.spec.securityContext).toEqual({
+        runAsNonRoot: true,
+        runAsUser: 65532,
+        runAsGroup: 65532,
+        seccompProfile: { type: 'RuntimeDefault' },
+      });
+      expect(deployment.spec.template.spec.volumes).toEqual([{ name: 'tmp', emptyDir: {} }]);
       expect(container.image).toMatch(/^applik8s\/image-pipeline-operator:[a-f0-9]{12}$/);
+      expect(container.securityContext).toEqual({
+        allowPrivilegeEscalation: false,
+        readOnlyRootFilesystem: true,
+        capabilities: { drop: ['ALL'] },
+      });
+      expect(container.volumeMounts).toEqual([{ name: 'tmp', mountPath: '/tmp' }]);
       expect(container.ports).toContainEqual({ name: 'health', containerPort: 8080 });
       expect(container.env).toContainEqual({ name: 'APPLIK8S_HEALTH_ADDR', value: '0.0.0.0:8080' });
       expect(container.env).toContainEqual({ name: 'APPLIK8S_HANDLER_TIMEOUT_SECONDS', value: '30' });
@@ -1619,15 +1637,20 @@ export const imagePipeline = sdk.operator({
       expect(result.value.manifest.spec.bundle.artifacts).toContainEqual(expect.objectContaining({ kind: 'javascript-source-map', path: result.value.artifacts.sourceMapPath }));
       expect(result.value.manifest.spec.bundle.artifacts).toContainEqual(expect.objectContaining({ kind: 'esbuild-metafile' }));
       const dockerfile = await readFile(result.value.artifacts.generatedImageDockerfilePath ?? '', 'utf8');
-      expect(dockerfile).toContain('FROM ghcr.io/applik8s/applik8s-operator-host:dev');
-      expect(dockerfile).toContain('COPY operator-manifest.json /etc/applik8s/operator-manifest.json');
-      expect(dockerfile).toContain('COPY wasm/handler.wasm /handler/handler.wasm');
-      expect(dockerfile).toContain('COPY bundle/handler.js /handler/handler.js');
-      expect(dockerfile).toContain('COPY bundle/handler.js.map /handler/handler.js.map');
+      expect(dockerfile).toContain(
+        'ARG APPLIK8S_BASE_IMAGE=ghcr.io/yehudacohen/applik8s-operator-host:v0.4.1@sha256:467f3e36eab0509c738025f9ea3e117320d9af3843eba9e5d3ac451c625b7869',
+      );
+      expect(dockerfile).toContain(['FROM $', '{APPLIK8S_BASE_IMAGE}'].join(''));
+      expect(dockerfile).toContain('COPY --chown=65532:65532 operator-manifest.json /etc/applik8s/operator-manifest.json');
+      expect(dockerfile).toContain('COPY --chown=65532:65532 wasm/handler.wasm /handler/handler.wasm');
+      expect(dockerfile).toContain('COPY --chown=65532:65532 bundle/handler.js /handler/handler.js');
+      expect(dockerfile).toContain('COPY --chown=65532:65532 bundle/handler.js.map /handler/handler.js.map');
+      expect(dockerfile.trimEnd().endsWith('USER 65532:65532')).toBe(true);
       const applyScript = await readFile(result.value.artifacts.generatedApplyScriptPath ?? '', 'utf8');
       expect(applyScript).toContain('docker}');
       expect(applyScript).toContain('kubectl}');
       expect(applyScript).toContain('Dockerfile.applik8s-runtime');
+      expect(applyScript).toContain('--build-arg "APPLIK8S_BASE_IMAGE=$BASE_IMAGE"');
       expect(applyScript).toContain('kubernetes/*.yaml');
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -2319,8 +2342,8 @@ export function handle(input: string): string {
         expect(deployment?.spec.template.spec.containers[0].image).toMatch(/^applik8s\/image-pipeline-operator:[a-f0-9]{12}$/);
         expect(deployment?.spec.template.spec.initContainers).toBeUndefined();
         expect(deployment?.spec.template.spec.containers[0].env).toContainEqual({ name: 'APPLIK8S_HANDLER_PATH', value: '/handler/handler.wasm' });
-        expect(deployment?.spec.template.spec.containers[0].volumeMounts).toBeUndefined();
-        expect(deployment?.spec.template.spec.volumes).toBeUndefined();
+        expect(deployment?.spec.template.spec.containers[0].volumeMounts).toEqual([{ name: 'tmp', mountPath: '/tmp' }]);
+        expect(deployment?.spec.template.spec.volumes).toEqual([{ name: 'tmp', emptyDir: {} }]);
       }
     } finally {
       await rm(dir, { recursive: true, force: true });

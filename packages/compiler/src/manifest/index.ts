@@ -4,6 +4,7 @@ import type { AnyHandlerRegistration, AnyResourceDefinition, BundleArtifact, Cap
 import { canonicalRuntimeContract } from '@applik8s/runtime-contract';
 import type { ContainerRecipe } from '@applik8s/typetainer';
 import { canonicalBundleArtifacts, computeBundleDigest } from './bundle-digest.js';
+import { DEFAULT_OPERATOR_HOST_IMAGE } from '../operator-host-image.js';
 import { validateOperatorManifest } from './validation.js';
 
 export { validateOperatorManifest } from './validation.js';
@@ -205,7 +206,7 @@ function implicitRuntimeContainer(operatorName: string, bundleDigest: string, co
       repository: `applik8s/${operatorName}-operator`,
       tag,
     },
-    baseImage: { registry: 'ghcr.io', repository: 'applik8s/applik8s-operator-host', tag: 'dev' },
+    baseImage: DEFAULT_OPERATOR_HOST_IMAGE,
     files: [
       { source: 'operator-manifest.json', destination: '/etc/applik8s/operator-manifest.json' },
       { source: 'wasm/handler.wasm', destination: '/handler/handler.wasm' },

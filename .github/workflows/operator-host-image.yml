@@ -111,7 +111,6 @@ jobs:
     steps:
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
       - name: Login to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -128,19 +127,29 @@ jobs:
             "$IMAGE:$IMAGE_TAG-amd64" \
             "$IMAGE:$IMAGE_TAG-arm64"
 
-      - name: Make package public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh api --method PATCH /user/packages/container/applik8s-operator-host -f visibility=public
-
-      - name: Verify published platforms and record digest
+      - name: Verify anonymous access, platforms, and record digest
         id: inspect
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
+          # A package first published by this public repository inherits public
+          # visibility. Prove that contract without relying on runner credentials.
+          docker logout ghcr.io
+          TOKEN="$(curl --fail --silent --show-error --get \
+            --data-urlencode "scope=repository:yehudacohen/applik8s-operator-host:pull" \
+            https://ghcr.io/token | jq -er '.token')"
+          PUBLIC_DIGEST="$(curl --fail --silent --show-error --head \
+            --header "Authorization: Bearer $TOKEN" \
+            --header 'Accept: application/vnd.oci.image.index.v1+json' \
+            "https://ghcr.io/v2/yehudacohen/applik8s-operator-host/manifests/$IMAGE_TAG" \
+            | tr -d '\r' | awk -F': ' 'tolower($1) == "docker-content-digest" { print $2 }')"
           DIGEST="$(docker buildx imagetools inspect "$IMAGE:$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
           if [[ ! "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
             echo "published manifest did not produce a sha256 digest: $DIGEST" >&2
+            exit 1
+          fi
+          if [[ "$PUBLIC_DIGEST" != "$DIGEST" ]]; then
+            echo "anonymous manifest digest $PUBLIC_DIGEST did not match $DIGEST" >&2
             exit 1
           fi
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"

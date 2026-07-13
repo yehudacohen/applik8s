@@ -1,8 +1,11 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
+const npmCache = resolve('node_modules/.cache/applik8s-npm-pack');
+await mkdir(npmCache, { recursive: true });
 
 await execFileAsync(process.execPath, ['scripts/build-publishable-packages.mjs']);
 
@@ -23,7 +26,7 @@ const failures = [];
 for (const packageDir of publishablePackages) {
   const manifestPath = `${packageDir}/package.json`;
   const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  const { stdout } = await execFileAsync('npm', ['pack', '--dry-run', '--json', '.'], { cwd: packageDir, maxBuffer: 10 * 1024 * 1024 });
+  const { stdout } = await execFileAsync('npm', ['pack', '--dry-run', '--json', '.'], { cwd: packageDir, env: { ...process.env, npm_config_cache: npmCache }, maxBuffer: 10 * 1024 * 1024 });
   const [packResult] = JSON.parse(stdout);
   const files = new Set((packResult?.files ?? []).map((file) => file.path));
 

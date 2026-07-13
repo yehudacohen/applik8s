@@ -233,6 +233,9 @@ async function waitForCrdDeleted(name: string): Promise<void> {
 async function installMinistack(): Promise<void> {
   await docker(['pull', 'ministackorg/ministack'], process.cwd());
   await kubectl(['create', 'deployment', 'ministack', '--namespace', namespace, '--image=ministackorg/ministack', '--port=4566']);
+  await kubectl(['patch', 'deployment/ministack', '--namespace', namespace, '--type=strategic', '--patch', JSON.stringify({
+    spec: { template: { spec: { containers: [{ name: 'ministack', readinessProbe: { tcpSocket: { port: 4566 }, periodSeconds: 1, failureThreshold: 60 } }] } } },
+  })]);
   await kubectl(['expose', 'deployment/ministack', '--namespace', namespace, '--port=4566', '--target-port=4566']);
   await kubectl(['rollout', 'status', 'deployment/ministack', '--namespace', namespace, '--timeout=180s']);
 }
@@ -266,7 +269,26 @@ async function startPortForward(args: readonly string[]): Promise<PortForward> {
       reject(new Error(`kubectl port-forward exited with code ${code}.\n${output}`));
     });
   });
+  await waitForPortForwardReady(endpoint, child, () => output);
   return { endpoint, close: () => closePortForward(child) };
+}
+
+async function waitForPortForwardReady(endpoint: string, child: ChildProcessWithoutNullStreams, output: () => string): Promise<void> {
+  const started = Date.now();
+  let lastError = '';
+  while (Date.now() - started < 30_000) {
+    if (child.exitCode !== null) {
+      throw new Error(`kubectl port-forward exited before accepting connections.\n${output()}`);
+    }
+    try {
+      await fetch(endpoint, { signal: AbortSignal.timeout(2_000) });
+      return;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      await sleep(250);
+    }
+  }
+  throw new Error(`kubectl port-forward announced readiness but never accepted a connection: ${lastError}\n${output()}`);
 }
 
 async function closePortForward(child: ChildProcessWithoutNullStreams): Promise<void> {
