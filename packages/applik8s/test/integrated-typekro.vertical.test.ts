@@ -2155,6 +2155,7 @@ describe('integrated TypeKro package surface', () => {
       'provider.model-store:provides:model.account',
     ]);
     expect(graph?.compatibility.stablePublicApis).toEqual([
+      'Model.on.command',
       'Resource.increment',
       'Resource.index',
       'app.aggregate',
@@ -2172,8 +2173,13 @@ describe('integrated TypeKro package surface', () => {
       'app.secret',
       'app.server',
       'app.storage.postgres',
+      'command',
+      'event',
+      'provider.Certificate',
       'provider.CounterStore',
       'provider.CredentialStore',
+      'provider.DnsPublication',
+      'provider.EventLog',
       'provider.EventSource',
       'provider.HttpExposure',
       'provider.IndexStore',
