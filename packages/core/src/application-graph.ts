@@ -258,11 +258,18 @@ export interface ApplicationCommandHandlerNode extends ApplicationGraphNodeBase<
   readonly retry: ApplicationRetryPolicy;
   readonly retention: ApplicationCommandRetentionContract;
   readonly effectBoundary: 'transactionSafeOnly';
+  readonly effectEnforcement: ApplicationCommandEffectEnforcementContract;
   readonly handlerSource: string;
   readonly initializeSource?: string;
   readonly eventBindings?: readonly { readonly identifier: string; readonly event: ApplicationGraphNodeRef }[];
   readonly commandBindings?: readonly { readonly identifier: string; readonly command: ApplicationGraphNodeRef }[];
   readonly projectionReadiness: ApplicationCommandProjectionReadinessContract;
+}
+
+export interface ApplicationCommandEffectEnforcementContract {
+  readonly sourceAnalysis: 'closedStructuralAllowlist';
+  readonly runtimeMembrane: 'asyncContextAmbientIo';
+  readonly externalEffects: 'outboxOrTaskOnly';
 }
 
 export interface ApplicationCommandProjectionReadinessContract {
@@ -1445,6 +1452,10 @@ function stablePublicApiForApplicationGraphNode(node: ApplicationGraphNode): str
     config: 'app.config',
     secret: 'app.secret',
     exposure: 'app.expose',
+    command: 'command',
+    event: 'event',
+    commandHandler: 'Model.on.command',
+    processor: 'Model.on.command',
   };
   return apiByNodeKind[node.kind];
 }
@@ -2421,6 +2432,11 @@ function applicationCommandHandlerNodeStructureDiagnostics(node: ApplicationComm
   }
   if (node.effectBoundary !== 'transactionSafeOnly') {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} must enforce the transactionSafeOnly effect boundary.`));
+  }
+  if (node.effectEnforcement?.sourceAnalysis !== 'closedStructuralAllowlist'
+    || node.effectEnforcement.runtimeMembrane !== 'asyncContextAmbientIo'
+    || node.effectEnforcement.externalEffects !== 'outboxOrTaskOnly') {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} must retain structural source enforcement, the async-context ambient-I/O membrane, and outbox-or-task-only external effects.`));
   }
   if (node.projectionReadiness?.submissionAcknowledgement !== 'transportOnly'
     || node.projectionReadiness.durableResultAuthority !== 'postgresCommandResults'

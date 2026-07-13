@@ -5,6 +5,8 @@ const gates = [
   ['bun', ['run', 'lint']],
   ['bun', ['run', 'test:implemented']],
   ['bun', ['run', 'test:character']],
+  ['cargo', ['fmt', '--all', '--', '--check']],
+  ['cargo', ['clippy', '--workspace', '--all-targets', '--', '-D', 'warnings']],
   ['cargo', ['test', '--workspace']],
 ];
 

@@ -1,18 +1,18 @@
 import { createHash } from 'node:crypto';
 import type { ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelStoreGuaranteesContract, ApplicationModelStoreSemanticsContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, JsonValue } from '@applik8s/core';
 import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
-import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement, type ApplicationGraphState } from './application-graph-state.js';
-import { applicationEventLogImplementation, applicationModelStoreImplementation, applicationProviderImplementationName, applicationProviderInterface } from './application-providers.js';
-import type { ApplicationEventLogProvider, ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderState } from './application-providers.js';
-import type { CommandDefinition, EntityDefinition, EventDefinition } from './dsl.js';
+import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
-import { createPostgresModelClient } from './model-store-postgres-runtime.js';
-import { canonicalApplicationCommandKey, executePostgresModelCommand } from './model-command-postgres-runtime.js';
-import type { PostgresModelCommandResult } from './model-command-postgres-runtime.js';
-import { createJetStreamEventLog } from './event-log-jetstream-runtime.js';
+import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions, sameApplicationProcessorDeployment } from './application-processor-policy.js';
+import type { ApplicationEventLogProvider, ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderState } from './application-providers.js';
+import { applicationEventLogImplementation, applicationModelStoreImplementation, applicationProviderImplementationName, applicationProviderInterface } from './application-providers.js';
+import { analyzeApplicationServerRouteSource, applicationCommandSourceViolations, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
+import type { CommandDefinition, EntityDefinition, EventDefinition } from './dsl.js';
 import type { EventLogPublishAcknowledgement } from './event-log-jetstream-runtime.js';
-import { analyzeApplicationServerRouteSource, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
-import { normalizeApplicationProcessorOptions, sameApplicationProcessorDeployment, type ApplicationProcessorOptions } from './application-processor-policy.js';
+import { createJetStreamEventLog } from './event-log-jetstream-runtime.js';
+import type { PostgresModelCommandResult } from './model-command-postgres-runtime.js';
+import { canonicalApplicationCommandKey, executePostgresModelCommand } from './model-command-postgres-runtime.js';
+import { createPostgresModelClient } from './model-store-postgres-runtime.js';
 
 export interface ApplicationModelOptions<TSpec extends object = object, TStatus extends object = Record<string, never>> {
   readonly name?: string;
@@ -391,7 +391,7 @@ export function recordApplicationModelCommandGraph<
     id: commandNodeId,
     kind: 'command',
     name: command.id,
-    stability: 'experimental',
+    stability: 'stable',
     contract: {
       name: command.name,
       version: command.version,
@@ -413,7 +413,7 @@ export function recordApplicationModelCommandGraph<
       id: eventNodeId,
       kind: 'event',
       name: event.id,
-      stability: 'experimental',
+      stability: 'stable',
       contract: { name: event.name, version: event.version, payload: declaredMessageSchema(event.payload, `${event.id}.payload`) },
     });
   }
@@ -422,7 +422,7 @@ export function recordApplicationModelCommandGraph<
       id: applicationGraphNodeId('command', emittedCommand.id),
       kind: 'command',
       name: emittedCommand.id,
-      stability: 'experimental',
+      stability: 'stable',
       contract: {
         name: emittedCommand.name,
         version: emittedCommand.version,
@@ -438,7 +438,7 @@ export function recordApplicationModelCommandGraph<
     id: handlerNodeId,
     kind: 'commandHandler',
     name: handlerName,
-    stability: 'experimental',
+    stability: 'stable',
     model: { nodeId: modelNodeId },
     command: { nodeId: commandNodeId },
     key,
@@ -455,6 +455,11 @@ export function recordApplicationModelCommandGraph<
     retry: options.retry ?? { mode: 'boundedExponentialBackoff', maxAttempts: 5, initialDelayMs: 100, maxDelayMs: 30_000 },
     retention,
     effectBoundary: 'transactionSafeOnly',
+    effectEnforcement: {
+      sourceAnalysis: 'closedStructuralAllowlist',
+      runtimeMembrane: 'asyncContextAmbientIo',
+      externalEffects: 'outboxOrTaskOnly',
+    },
     projectionReadiness: {
       submissionAcknowledgement: 'transportOnly',
       durableResultAuthority: 'postgresCommandResults',
@@ -487,7 +492,7 @@ export function recordApplicationModelCommandGraph<
     id: processorNodeId,
     kind: 'processor',
     name: processorName,
-    stability: 'experimental',
+    stability: 'stable',
     handlers: [...currentHandlers, { nodeId: handlerNodeId }],
     runtime: 'node',
     ...(runtimeImage ? { runtimeImage } : {}),
@@ -762,17 +767,14 @@ function applicationCommandFunctionSource(kind: string, modelName: string, comma
   if (!source || source.includes('[native code]')) {
     throw new Error(`Model ${modelName} command ${commandId} ${kind} must be a serializable JavaScript function.`);
   }
-  if (kind === 'key' || kind === 'idempotencyKey') {
-    const nondeterministic = /\b(Date|fetch|crypto\.randomUUID|Math\.random|performance\.now)\b/.exec(source);
-    if (nondeterministic) {
-      throw new Error(`Model ${modelName} command ${commandId} ${kind} must be deterministic; ${nondeterministic[1]} is not allowed.`);
+  const sourceKind = kind === 'key' || kind === 'idempotencyKey' || kind === 'initialize' ? kind : 'handler';
+  const violations = applicationCommandSourceViolations(source, sourceKind);
+  if (violations.length > 0) {
+    const names = violations.map((violation) => violation.name).join(', ');
+    if (sourceKind === 'key' || sourceKind === 'idempotencyKey') {
+      throw new Error(`Model ${modelName} command ${commandId} ${kind} must be deterministic; ${names} is not allowed.`);
     }
-  }
-  if (kind === 'handler') {
-    const externalEffect = /\b(fetch|XMLHttpRequest|WebSocket|setTimeout|setInterval|Date\.now|Math\.random|crypto\.randomUUID)\b/.exec(source);
-    if (externalEffect) {
-      throw new Error(`Model ${modelName} command ${commandId} handler uses ${externalEffect[1]}, which is forbidden while model locks are held. Move external effects to an outbox or durable task and use context.now/context.id for deterministic values.`);
-    }
+    throw new Error(`Model ${modelName} command ${commandId} ${kind} uses ${names}, which is forbidden while model locks are held. Transaction handlers are closed structural closures: use context.now/context.id and move external effects to a declared outbox or durable task.`);
   }
   return source;
 }
@@ -1299,7 +1301,7 @@ function applicationProviderInterfaceContract(providerInterface: ApplicationProv
         ? ['atLeastOnce', 'stableMessageIds', 'replay']
         : [],
     implementation: { name: applicationProviderImplementationName(implementation) },
-    surface: providerInterface === 'EventLog' ? 'experimentalSurface' : 'stablePublicApi',
+    surface: 'stablePublicApi',
     support: implemented ? 'implemented' : 'failClosedReserved',
     diagnostics: implemented ? [] : [{ event: 'applik8s-provider-requirement-missing', severity: 'error', subject: { nodeId: applicationProviderNodeId(providerInterface) }, reason: 'ProviderInterfaceReserved', message: `${providerInterface} is reserved as a stable v0.3 provider interface but no generated provider adapter is enabled for this binding.`, retryable: false }],
   };

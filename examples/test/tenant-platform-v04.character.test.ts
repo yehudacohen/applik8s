@@ -1,5 +1,5 @@
-import { validateApplicationGraphStructure } from '@applik8s/core';
 import { applicationGraphFor } from '@applik8s/applik8s';
+import { validateApplicationGraphStructure } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { createTenantPlatformExample, createTenantPlatformV04Example } from '../tenant-platform.js';
 
@@ -24,6 +24,11 @@ describe('Tenant Platform v0.4 longitudinal benchmark', () => {
         ordering: 'serial',
         missing: 'reject',
         effectBoundary: 'transactionSafeOnly',
+        effectEnforcement: {
+          sourceAnalysis: 'closedStructuralAllowlist',
+          runtimeMembrane: 'asyncContextAmbientIo',
+          externalEffects: 'outboxOrTaskOnly',
+        },
         projectionReadiness: {
           submissionAcknowledgement: 'transportOnly',
           durableResultAuthority: 'postgresCommandResults',

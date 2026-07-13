@@ -58,7 +58,7 @@ The selected image is recorded in the application graph, generated processor man
 
 ## Transaction effect boundary
 
-Transactional handlers may use their target, declared transaction-scoped model participants, deterministic computation, `context.now`, `context.id`, and declared outboxes. Source analysis rejects direct external effects, while the Node runtime independently denies `fetch` reached through dynamic global access during handler execution. External work belongs in durable tasks or follow-up commands outside the transaction.
+Transactional handlers may use their target, declared transaction-scoped model participants, deterministic computation, `context.now`, `context.id`, and declared outboxes. A closed structural source contract rejects ambient I/O, wall-clock/random globals, dynamic code, and routes to the Node global object before generation. The Node runtime independently installs an async-context membrane over ambient network and process escape points while the handler executes. This is a supported transaction-callback contract rather than a security sandbox for hostile code. External work belongs in durable tasks or follow-up commands outside the transaction.
 
 ## Versioned providers
 

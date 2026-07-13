@@ -1,3 +1,9 @@
+// RuntimeBridgeError is intentionally descriptive and carries complete
+// fail-closed diagnostics. It is constructed only on error paths; boxing every
+// public Result would make the bridge API noisier without improving hot-path
+// behavior.
+#![allow(clippy::result_large_err)]
+
 pub mod applier;
 pub mod engine;
 pub mod error;

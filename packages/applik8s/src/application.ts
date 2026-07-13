@@ -1614,7 +1614,7 @@ function recordApplicationProviderGraph(state: ApplicationScopeState, tokenName:
     ...(resolvedContract ? {
       contract: {
         ...resolvedContract,
-        surface: providerInterface === 'EventLog' || providerInterface === 'Certificate' || providerInterface === 'DnsPublication' || !applicationProviderInterface(providerInterface) ? 'experimentalSurface' : 'stablePublicApi',
+        surface: !applicationProviderInterface(providerInterface) ? 'experimentalSurface' : 'stablePublicApi',
         support: 'implemented',
         implementation: { name: applicationProviderImplementationName(implementation) },
         diagnostics: [],

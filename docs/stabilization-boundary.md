@@ -1,6 +1,6 @@
 # Stabilization Boundary
 
-This document records the compatibility boundaries for released framework generations. The v0.1 sections remain as historical context; v0.4 is the current release boundary.
+This document records the compatibility boundaries for released framework generations. The v0.1 sections remain as historical context; v0.4.3 is the final v0.4 release boundary.
 
 ## Public v0.4 Surfaces
 
@@ -11,6 +11,8 @@ This document records the compatibility boundaries for released framework genera
 - Generated command processor graph nodes, runtime bundles, Deployments, Stream/Consumer resources, NetworkPolicies, security posture, health checks, and graceful lifecycle.
 - Tree-shakeable `@kubernetes/client-node` execution through the credential-safe Kubernetes WASM host boundary.
 - Versioned typed provider contracts that permit later `WorkflowEngine` and `ProjectionStore` interfaces without extending a closed built-in union.
+- Managed `Certificate` and `DnsPublication` intent, with issuer lifecycle and DNS propagation authority kept explicit.
+- A closed structural transaction-callback contract plus an independent runtime ambient-I/O membrane; external effects are admitted only through declared outboxes or later durable tasks.
 
 ## Reserved Or Bounded In v0.4
 
@@ -19,6 +21,7 @@ This document records the compatibility boundaries for released framework genera
 - Generated processors use fixed bounded concurrency. KEDA, public processor placement/grouping overrides, and broad workload tuning are not v0.4 guarantees.
 - Kubernetes SDK compatibility is limited to the tree-shaken, tested fetch/WASI-compatible paths and declared RBAC/origin boundary; unsupported Node transports fail closed.
 - Public APIs may evolve before v1.0, but v0.4 authority, idempotency, revision, and failure-honesty semantics may not silently weaken.
+- `app.graph` introspection remains experimental; the serialized and validated `ApplicationGraph` is the documented compiler contract.
 
 ## Public v0.3 Surfaces
 

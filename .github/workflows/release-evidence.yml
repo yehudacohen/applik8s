@@ -73,6 +73,22 @@ jobs:
         env:
           APPLIK8S_E2E_CONTEXT: ${{ vars.APPLIK8S_E2E_CONTEXT }}
 
+      - name: Record exact-commit live evidence
+        if: ${{ inputs.run_live_e2e == 'true' }}
+        run: |
+          node -e 'const fs=require("node:fs"); fs.mkdirSync("dist",{recursive:true}); fs.writeFileSync("dist/applik8s-v0.4-live-evidence.json", JSON.stringify({schemaVersion:1,releaseLine:"v0.4",commit:process.env.GITHUB_SHA,workflowRun:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,context:process.env.APPLIK8S_E2E_CONTEXT,suite:"check:v04:prerelease",generatedAt:new Date().toISOString()},null,2)+"\n")'
+        env:
+          APPLIK8S_E2E_CONTEXT: ${{ vars.APPLIK8S_E2E_CONTEXT }}
+
+      - name: Upload exact-commit live attestation
+        if: ${{ inputs.run_live_e2e == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: applik8s-v0.4-live-${{ github.sha }}
+          path: dist/applik8s-v0.4-live-evidence.json
+          retention-days: 14
+          if-no-files-found: error
+
       - name: Upload release evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

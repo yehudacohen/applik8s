@@ -232,10 +232,10 @@ async fn send_request_with_kubernetes_roots_async(
     let worker = wasmtime_wasi::runtime::spawn(async move {
         let _ = connection.await;
     });
-    if !request.headers().contains_key(http::header::HOST) {
-        if let Ok(host) = http::HeaderValue::from_str(authority.as_str()) {
-            request.headers_mut().insert(http::header::HOST, host);
-        }
+    if !request.headers().contains_key(http::header::HOST)
+        && let Ok(host) = http::HeaderValue::from_str(authority.as_str())
+    {
+        request.headers_mut().insert(http::header::HOST, host);
     }
     *request.uri_mut() = http::Uri::builder()
         .path_and_query(
@@ -390,6 +390,10 @@ pub async fn invoke_handler_component_bytes_with_timeout_and_host_imports_async(
     .await
 }
 
+// This explicit host-boundary entrypoint keeps independent capability handlers
+// visible to callers; collapsing them into an opaque options bag would weaken
+// the security review surface.
+#[allow(clippy::too_many_arguments)]
 pub async fn invoke_handler_component_bytes_with_timeout_host_imports_and_kubernetes_http_async(
     engine: &Engine,
     component_bytes: &[u8],
@@ -434,6 +438,7 @@ pub async fn invoke_handler_component_bytes_with_timeout_and_kubernetes_http_asy
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn invoke_handler_component_bytes_with_policy(
     engine: &Engine,
     component_bytes: &[u8],

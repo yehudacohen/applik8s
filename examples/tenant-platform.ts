@@ -358,9 +358,9 @@ function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfa
       { interface: 'Queue', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'ObjectStorage', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'EventSource', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
-      { interface: 'EventLog', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
-      { interface: 'Certificate', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
-      { interface: 'DnsPublication', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
+      { interface: 'EventLog', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'Certificate', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     ];
 }
 

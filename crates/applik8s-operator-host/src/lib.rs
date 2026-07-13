@@ -1,3 +1,8 @@
+// OperatorHostError intentionally retains complete runtime diagnostics on rare
+// failure paths, and the host/reporting entrypoints keep their security context
+// explicit for review instead of hiding it in loosely typed option bags.
+#![allow(clippy::result_large_err, clippy::too_many_arguments)]
+
 use applik8s_runtime_bridge::{
     AppliedOperationSummary, KubeOperationPlanApplier, KubeRuntimeBridge, KubernetesHttpTransport,
     OperationProgress, RuntimeBridgeError, component_model_engine,
@@ -3014,16 +3019,16 @@ impl LoadedOperatorBundle {
         {
             return false;
         }
-        if let Some(event) = generation_event(&self.manifest, api_version, kind, object) {
-            if manifest_watch_matches_object_for_event(
+        if let Some(event) = generation_event(&self.manifest, api_version, kind, object)
+            && manifest_watch_matches_object_for_event(
                 &self.manifest,
                 api_version,
                 kind,
                 event,
                 object,
-            ) {
-                return false;
-            }
+            )
+        {
+            return false;
         }
         !manifest_watch_matches_object_for_event(
             &self.manifest,
@@ -3506,23 +3511,22 @@ impl LoadedOperatorBundle {
             }
             return self.reconcile_route(api_version, kind, object);
         }
-        if status_changed_candidate(&self.manifest, api_version, kind, object) {
-            if let Some(handler_id) =
+        if status_changed_candidate(&self.manifest, api_version, kind, object)
+            && let Some(handler_id) =
                 self.handler_id_for_event(api_version, kind, "statusChanged", object)?
-            {
-                return Ok(HandlerRoute {
-                    handler_id,
-                    event: "statusChanged".to_string(),
-                });
-            }
+        {
+            return Ok(HandlerRoute {
+                handler_id,
+                event: "statusChanged".to_string(),
+            });
         }
-        if let Some(event) = generation_event(&self.manifest, api_version, kind, object) {
-            if let Some(handler_id) = self.handler_id_for_event(api_version, kind, event, object)? {
-                return Ok(HandlerRoute {
-                    handler_id,
-                    event: event.to_string(),
-                });
-            }
+        if let Some(event) = generation_event(&self.manifest, api_version, kind, object)
+            && let Some(handler_id) = self.handler_id_for_event(api_version, kind, event, object)?
+        {
+            return Ok(HandlerRoute {
+                handler_id,
+                event: event.to_string(),
+            });
         }
         self.reconcile_route(api_version, kind, object)
     }
@@ -3774,14 +3778,13 @@ fn watch_scope_matches_object(watch: &Value, object: &Value) -> bool {
     {
         return false;
     }
-    if let Some(names) = watch.get("names").and_then(Value::as_array) {
-        if !names
+    if let Some(names) = watch.get("names").and_then(Value::as_array)
+        && !names
             .iter()
             .filter_map(Value::as_str)
             .any(|name| object_name == Some(name))
-        {
-            return false;
-        }
+    {
+        return false;
     }
     if watch
         .get("labelSelector")
@@ -3959,9 +3962,9 @@ fn status_changed_candidate(
     kind: &str,
     object: &Value,
 ) -> bool {
-    if !object
+    if object
         .get("status")
-        .is_some_and(|status| status.as_object().is_some_and(|status| !status.is_empty()))
+        .is_none_or(|status| status.as_object().is_none_or(|status| status.is_empty()))
     {
         return false;
     }
@@ -4524,7 +4527,7 @@ async fn execute_capability_request_value(
         .and_then(Value::as_object)
         .and_then(|capabilities| capabilities.get(capability_name))
         .ok_or_else(|| format!("Capability {capability_name} is not declared by this operator."))?;
-    validate_live_http_capability(capability_name, descriptor, &method, &path, request)?;
+    validate_live_http_capability(capability_name, descriptor, method, path, request)?;
     let url = capability_request_url(descriptor, path)?;
     let timeout = capability_timeout(descriptor, request)?;
     event!(
@@ -4734,13 +4737,12 @@ fn kubernetes_secret_resolver(
             if let (Some(namespace), Some(default_namespace)) = (
                 secret_ref.namespace.as_deref(),
                 default_namespace.as_deref(),
-            ) {
-                if namespace != default_namespace {
-                    return Err(format!(
-                        "Capability secretRef {}/{} references namespace {namespace}; cross-namespace Secret auth is not supported.",
-                        secret_ref.name, secret_ref.key
-                    ));
-                }
+            ) && namespace != default_namespace
+            {
+                return Err(format!(
+                    "Capability secretRef {}/{} references namespace {namespace}; cross-namespace Secret auth is not supported.",
+                    secret_ref.name, secret_ref.key
+                ));
             }
             let namespace = secret_ref
                 .namespace
@@ -5769,10 +5771,10 @@ fn object_ref_from_value(value: &Value) -> Result<ObjectRef, OperatorHostError> 
 
 fn action_for_plan(plan: &applik8s_runtime_contract::NormalizedOperationPlan) -> Action {
     for operation in &plan.operations {
-        if let Operation::Requeue { policy } = operation {
-            if let Some(after_seconds) = policy.after_seconds {
-                return Action::requeue(Duration::from_secs_f64(after_seconds));
-            }
+        if let Operation::Requeue { policy } = operation
+            && let Some(after_seconds) = policy.after_seconds
+        {
+            return Action::requeue(Duration::from_secs_f64(after_seconds));
         }
     }
     Action::await_change()

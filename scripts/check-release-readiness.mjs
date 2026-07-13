@@ -12,7 +12,7 @@ const publishablePackages = [
   'packages/typetainer/package.json',
 ];
 
-const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.4.2';
+const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.4.3';
 const releaseLabel = `v${expectedVersion}`;
 const publishablePackageNames = new Set();
 
@@ -48,7 +48,10 @@ const requiredDocs = [
   'docs/release-evidence-v0.4.md',
   'docs/release-evidence-v0.4.1.md',
   'docs/release-evidence-v0.4.2.md',
+  'docs/release-evidence-v0.4.3.md',
   'docs/commands.md',
+  'docs/npm-first-run.md',
+  'docs/v0.4-scorecard.md',
   'docs/guestbook-show-hn.md',
   'docs/kubernetes-compatibility.md',
 ];
@@ -68,6 +71,8 @@ const publicReleaseFiles = [
   'scripts/package-consumer-smoke.mjs',
   'scripts/check-package-audit.mjs',
   'scripts/published-release-orbstack-smoke.mjs',
+  'scripts/check-v04-scorecard.ts',
+  'scripts/verify-v04-live-evidence.mjs',
   'scripts/publish-packages.mjs',
   'security/npm-audit-baseline.json',
   '.github/workflows/ci.yml',
@@ -81,10 +86,13 @@ const publicReleaseFiles = [
   'docs/replay-debugging.md',
   'docs/runtime-diagnostics.md',
   'docs/commands.md',
+  'docs/npm-first-run.md',
+  'docs/v0.4-scorecard.md',
   'docs/guestbook-show-hn.md',
   'docs/release-evidence-v0.4.md',
   'docs/release-evidence-v0.4.1.md',
   'docs/release-evidence-v0.4.2.md',
+  'docs/release-evidence-v0.4.3.md',
   'docs/security-model.md',
   'docs/build-supply-chain.md',
   'docs/leader-election.md',

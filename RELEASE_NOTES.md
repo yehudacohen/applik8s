@@ -1,5 +1,15 @@
 # Release Notes
 
+## v0.4.3
+
+v0.4.3 is the final v0.4 correctness and release-discipline release. It closes the remaining gap between the durable-behavior implementation and its executable public contract without broadening into v0.5 workflow orchestration.
+
+Transactional command callbacks now have two independent enforcement layers. The compiler applies a closed structural allowlist that rejects ambient I/O, wall-clock and random globals, dynamic code, and routes to the Node global object. The runtime separately installs an async-context membrane over `fetch`, browser network constructors, and Node process escape hatches while a model transaction is open. The serialized ApplicationGraph records both mechanisms and requires external effects to leave the transaction through declared outboxes or future durable tasks.
+
+The release also makes the v0.4 command, event, handler, processor, Certificate, and DnsPublication surfaces consistently stable; adds a versioned executable scorecard over the longitudinal Tenant Platform graph; adds a clean npm first-run path; and enforces warning-free Rust formatting and Clippy gates across all targets. The scorecard's `10/10` values represent complete evidence coverage for declared v0.4 criteria, not a claim of perfect product maturity.
+
+Release publication is now gated by a successful, unexpired live prerelease attestation for the exact commit being tagged. The OrbStack Tenant Platform and Kubernetes-WASM suites pass with TypeKro-owned installation deletion, bounded namespace cleanup, and no manual deletion of KRO-owned resources.
+
 ## v0.4.2
 
 v0.4.2 closes the operator-image distribution gap in v0.4.1. The release publishes the Rust operator host to public GHCR for `linux/amd64` and `linux/arm64`, pins the compiler default to an immutable tagged manifest digest, and verifies a clean npm consumer can compile and build an operator from the public host before the GitHub release is created.

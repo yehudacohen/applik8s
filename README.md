@@ -28,6 +28,8 @@ bun run build:tenant-platform-v04
 
 See [`docs/commands.md`](docs/commands.md) for the durable-command contract and [`docs/release-evidence-v0.4.md`](docs/release-evidence-v0.4.md) for captured evidence and maturity boundaries.
 
+For a clean consumer install outside this workspace, start with [`docs/npm-first-run.md`](docs/npm-first-run.md). The executable scorecard is documented in [`docs/v0.4-scorecard.md`](docs/v0.4-scorecard.md).
+
 v0.4.1 adds a measured manual scaling contract for inferred processors: replicas, per-pod concurrency, aggregate acknowledgement windows, resources, topology spreading, node selection, and disruption budgets. Run `bun run benchmark:v041:live` for the reproducible PostgreSQL/JetStream benchmark or `bun run check:v041:performance` for the fast regression gate. See [`docs/release-evidence-v0.4.1.md`](docs/release-evidence-v0.4.1.md).
 
 ## v0.3 Flagship: Tenant Platform App
@@ -354,9 +356,11 @@ bun run check:v04:prerelease:orbstack
 
 - `docs/imagejob-golden-path.md`
 - `docs/first-run.md`
+- `docs/npm-first-run.md`
 - `docs/typekro-golden-path.md`
 - `docs/generated-artifacts.md`
 - `docs/commands.md`
+- `docs/v0.4-scorecard.md`
 - `docs/release-evidence-v0.4.md`
 - `docs/release-evidence-v0.4.1.md`
 - `docs/release-evidence-v0.3.md`

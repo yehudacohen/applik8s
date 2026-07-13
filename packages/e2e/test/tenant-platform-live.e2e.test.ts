@@ -2,10 +2,9 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
+import { canonicalApplicationCommandKey, eventLogSubject } from '@applik8s/applik8s/processor-runtime';
 import { buildImplicitRuntimeImage } from '@applik8s/compiler';
 import type { OperatorManifest } from '@applik8s/core';
-import { canonicalApplicationCommandKey, eventLogSubject } from '@applik8s/applik8s/processor-runtime';
 import { connect, StringCodec } from 'nats';
 import postgres from 'postgres';
 import { typeKroRuntimeBootstrap } from 'typekro';
@@ -76,7 +75,7 @@ describeLive('live Tenant Platform pressure test', () => {
       await kubectl(['delete', 'resourcegraphdefinition', stackName, '--ignore-not-found=true', '--timeout=180s']);
       await deleteApplicationCrds();
       if (v04) await deleteJetStreamInfrastructureWithTypeKro();
-      await kubectl(['delete', 'namespace', namespace, '--ignore-not-found=true', '--timeout=300s']);
+      await deleteDisposableNamespace();
     }
     if (tempDir && process.env.APPLIK8S_KEEP_TMP !== '1') {
       await rm(tempDir, { recursive: true, force: true });
@@ -607,6 +606,13 @@ function requiredOutDir(): string {
   return outDir;
 }
 
+function requiredTempDir(): string {
+  if (!tempDir) {
+    throw new Error('Temporary directory was not initialized.');
+  }
+  return tempDir;
+}
+
 function kubernetesNameSegment(value: string): string {
   return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '') || 'app';
 }
@@ -647,7 +653,7 @@ async function ensureJetStreamInfrastructureInstalled(): Promise<void> {
     await factory.deploy({
       name: eventLogServiceName,
       namespace,
-      namespaceOwnership: 'external',
+      namespaceOwnership: 'owned',
       replicas: 1,
       storageSize: '1Gi',
       pvcRetentionPolicy: 'delete',
@@ -710,6 +716,44 @@ async function deleteApplicationInstancesWithTypeKro(): Promise<void> {
 async function deleteJetStreamInfrastructureWithTypeKro(): Promise<void> {
   if (!deleteJetStreamInfrastructure) throw new Error('TypeKro JetStream infrastructure deletion was not initialized.');
   await deleteJetStreamInfrastructure();
+}
+
+async function deleteDisposableNamespace(): Promise<void> {
+  if (!namespace.startsWith('applik8s-tenant-platform-')) {
+    throw new Error(`Refusing bounded namespace cleanup for non-disposable namespace ${namespace}.`);
+  }
+  await kubectl(['delete', 'namespace', namespace, '--ignore-not-found=true', '--wait=false']);
+  const started = Date.now();
+  while (Date.now() - started < 360_000) {
+    try {
+      await kubectl(['get', 'namespace', namespace]);
+    } catch {
+      return;
+    }
+    await sleep(1_000);
+  }
+
+  // OrbStack's K3s namespace controller can retain its built-in finalizer after
+  // every namespaced object has disappeared. Prove the disposable namespace is
+  // empty across every discoverable resource type before using the finalize
+  // subresource; TypeKro instance/infrastructure deletion always runs first.
+  const resourceTypes = (await kubectl(['api-resources', '--verbs=list', '--namespaced', '--output=name'])).stdout
+    .split('\n')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const remaining = resourceTypes.length > 0
+    ? (await kubectl(['get', resourceTypes.join(','), '--namespace', namespace, '--ignore-not-found=true', '--output=name'])).stdout.trim()
+    : '';
+  if (remaining) {
+    throw new Error(`Refusing to finalize namespace/${namespace}; resources remain:\n${remaining}`);
+  }
+
+  const namespaceState = JSON.parse((await kubectl(['get', 'namespace', namespace, '--output=json'])).stdout);
+  namespaceState.spec = { ...(namespaceState.spec ?? {}), finalizers: [] };
+  const finalizePath = join(requiredTempDir(), 'namespace-finalize.json');
+  await writeFile(finalizePath, JSON.stringify(namespaceState));
+  await kubectl(['replace', '--raw', `/api/v1/namespaces/${namespace}/finalize`, '--filename', finalizePath]);
+  await kubectl(['wait', '--for=delete', `namespace/${namespace}`, '--timeout=60s']);
 }
 
 async function assertJetStreamInfrastructureAbsent(originalError: unknown): Promise<void> {

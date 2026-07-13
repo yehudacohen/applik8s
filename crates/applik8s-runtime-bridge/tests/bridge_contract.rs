@@ -408,16 +408,14 @@ export async function unreachableNodeOnlyBranch() {
     .expect("transformation helper writes");
     fs::write(
         &entry_path,
-        format!(
-            r#"
-import {{ transformFromEndpoint }} from './transformation.js';
+        r#"
+import { transformFromEndpoint } from './transformation.js';
 
-export async function handle(_inputJson) {{
+export async function handle(_inputJson) {
   const result = await transformFromEndpoint('http://kubernetes.default.svc/desired');
-  return JSON.stringify({{ operations: [{{ kind: 'status', status: {{ phase: result.replicas === 3 ? 'Ready' : 'NotReady', writes: result.writes }} }}] }});
-}}
-"#
-        ),
+  return JSON.stringify({ operations: [{ kind: 'status', status: { phase: result.replicas === 3 ? 'Ready' : 'NotReady', writes: result.writes } }] });
+}
+"#,
     )
     .expect("handler entry source writes");
     fs::write(

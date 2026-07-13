@@ -175,6 +175,11 @@ pub struct NormalizedOperationPlan {
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "kind")]
+// Operation is the serde wire contract shared with generated handlers. Keeping
+// resource payloads inline preserves the public construction API and avoids a
+// Rust-only heap-shape distinction that has no representation in JSON. Plans
+// are validated and executed in bounded batches by the host.
+#[allow(clippy::large_enum_variant)]
 pub enum Operation {
     #[serde(rename = "apply")]
     Apply {

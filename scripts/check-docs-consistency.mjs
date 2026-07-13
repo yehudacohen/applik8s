@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 const failures = [];
 
 const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
-for (const script of ['applik8s', 'build:imagejob', 'build:tenant-platform-v04', 'test:imagejob', 'test:readme-live', 'check:v04:local', 'check:v04:prerelease:orbstack', 'benchmark:v041:record', 'benchmark:v041:live', 'check:v041:performance']) {
+for (const script of ['applik8s', 'build:imagejob', 'build:tenant-platform-v04', 'test:imagejob', 'test:readme-live', 'check:v04:local', 'check:v04:scorecard', 'check:v04:prerelease:orbstack', 'benchmark:v041:record', 'benchmark:v041:live', 'check:v041:performance']) {
   if (!packageJson.scripts?.[script]) {
     failures.push(`package.json: missing ${script} script used by public docs.`);
   }
@@ -30,6 +30,7 @@ for (const snippet of requiredSnippets) {
 const publicDocs = [
   'README.md',
   'docs/first-run.md',
+  'docs/npm-first-run.md',
   'docs/imagejob-golden-path.md',
   'docs/generated-artifacts.md',
   'docs/api-reference.md',
@@ -38,6 +39,7 @@ const publicDocs = [
   'docs/replay-debugging.md',
   'docs/runtime-image.md',
   'docs/commands.md',
+  'docs/v0.4-scorecard.md',
   'docs/release-evidence-v0.4.md',
   'docs/release-evidence-v0.4.1.md',
   'docs/stabilization-boundary.md',

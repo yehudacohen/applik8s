@@ -1,11 +1,10 @@
-import { createHash } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash } from 'node:crypto';
 import type { ApplicationRetryPolicy, JsonObject, JsonValue } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk';
 import postgres from 'postgres';
+import type { ApplicationCommandKey, ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationRuntimeModelContract } from './application-models.js';
 import type { ApplicationCommandObservation, ApplicationMessageEnvelope, ApplicationStateRevisionRef, CommandDefinition, EventDefinition } from './dsl.js';
-import type { ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationRuntimeModelContract } from './application-models.js';
-import type { ApplicationCommandKey } from './application-models.js';
 
 export interface PostgresModelCommandMessage<TInput extends object> {
   readonly id: string;
@@ -384,6 +383,39 @@ function installCommandEffectGuards(): void {
     assertCommandEffectAllowed('fetch');
     return originalFetch(...args);
   }) as typeof fetch;
+  // typecast: the guard installer intentionally reflects optional Node process escape hatches without widening the public runtime type.
+  const processGlobals = process as unknown as Record<string, unknown>;
+  // typecast: browser-compatible ambient constructors are optional globals, so reflection preserves runtimes where they are absent.
+  const ambientGlobals = globalThis as unknown as Record<string, unknown>;
+  installGuardedAmbientFunction(processGlobals, 'getBuiltinModule', 'process.getBuiltinModule');
+  installGuardedAmbientFunction(processGlobals, 'binding', 'process.binding');
+  installGuardedAmbientFunction(processGlobals, '_linkedBinding', 'process._linkedBinding');
+  installGuardedAmbientConstructor(ambientGlobals, 'WebSocket', 'WebSocket');
+  installGuardedAmbientConstructor(ambientGlobals, 'EventSource', 'EventSource');
+}
+
+function installGuardedAmbientFunction(target: Record<string, unknown>, property: string, effect: string): void {
+  const original = target[property];
+  if (typeof original !== 'function') return;
+  target[property] = function guardedAmbientFunction(this: unknown, ...args: readonly unknown[]) {
+    assertCommandEffectAllowed(effect);
+    return Reflect.apply(original, this, args);
+  };
+}
+
+function installGuardedAmbientConstructor(target: Record<string, unknown>, property: string, effect: string): void {
+  const original = target[property];
+  if (typeof original !== 'function') return;
+  target[property] = new Proxy(original, {
+    apply(callable, thisArgument, argumentsList) {
+      assertCommandEffectAllowed(effect);
+      return Reflect.apply(callable, thisArgument, argumentsList);
+    },
+    construct(callable, argumentsList, newTarget) {
+      assertCommandEffectAllowed(effect);
+      return Reflect.construct(callable, argumentsList, newTarget);
+    },
+  });
 }
 
 export function assertCommandEffectAllowed(effect: string): void {

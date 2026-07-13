@@ -53,12 +53,12 @@ The live proof uses a hard context guard and refuses to mutate a cluster unless 
 
 These are build-control-plane findings rooted in TypeKro/CEL dependencies and ComponentizeJS/weval archive extraction; they are not installed in the generated runtime image. The gate fails on a new advisory, severity/dependency drift, stale entries, or expiry. Containment and upstream remediation are documented in `build-supply-chain.md`.
 
-## Release Completion Gates
+## Released Artifact Evidence
 
-The tag workflow must still complete the irreversible release operations:
+The [v0.4.2 deploy run](https://github.com/yehudacohen/applik8s/actions/runs/29249224962) completed the coordinated npm publication, multi-platform host publication, clean registry-consumer build, and GitHub release. The released host index is:
 
-1. publish the v0.4.2 multi-platform host and verify anonymous access;
-2. publish all npm packages through OIDC trusted publishing;
-3. clean-install the registry artifacts and build a generated image from the public host;
-4. create the GitHub release only after those checks pass;
-5. rerun `APPLIK8S_PUBLISHED_VERSION=0.4.2 bun run check:published-release:orbstack` against the exact registry artifacts.
+```text
+ghcr.io/yehudacohen/applik8s-operator-host:v0.4.2@sha256:be9fee0c214770d9def355083f039d311a6f95d01b6cc3de06da64a34f01e044
+```
+
+The exact published packages and host then passed `APPLIK8S_PUBLISHED_VERSION=0.4.2 bun run check:published-release:orbstack`, including a real reconcile and bounded lifecycle cleanup. Future v0.4 releases additionally require an unexpired successful live Release Evidence artifact for the exact commit before the tag workflow can publish.

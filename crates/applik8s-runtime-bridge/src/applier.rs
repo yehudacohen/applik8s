@@ -723,7 +723,7 @@ fn validate_event_regarding(
     } else {
         owner
     };
-    if target.namespace.as_deref().map_or(true, str::is_empty) {
+    if target.namespace.as_deref().is_none_or(str::is_empty) {
         return invalid_plan(
             index,
             "event.regarding must be namespaced; provide an explicit namespaced regarding object or reconcile a namespaced owner",

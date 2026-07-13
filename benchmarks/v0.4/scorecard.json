@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "releaseLine": "v0.4",
+  "description": "Executable release-evidence coverage inventory. Scores measure checks with current evidence, not subjective maturity.",
+  "checkIds": [
+    "Architecture and scope:bounded-scope",
+    "Architecture and scope:graph-valid",
+    "Documentation and adoption:command-boundary-doc",
+    "Documentation and adoption:npm-first-run",
+    "Durability and recovery:declared-outbox",
+    "Durability and recovery:event-log-required",
+    "Effect isolation:closed-source-contract",
+    "Effect isolation:runtime-membrane",
+    "Generated runtime safety:bounded-processor",
+    "Generated runtime safety:generated-resources",
+    "Longitudinal example:behavior-inferred",
+    "Longitudinal example:graph-growth",
+    "Performance budgets:artifact-budget",
+    "Performance budgets:cold-start-budget",
+    "Performance budgets:scheduler-budget",
+    "Public API stability:durable-apis-stable",
+    "Public API stability:managed-networking-stable",
+    "Release evidence:live-attestation-verifier",
+    "Release evidence:release-workflow-gate",
+    "Rust host quality:clippy-gate",
+    "Rust host quality:format-gate",
+    "Transaction semantics:postgres-authority",
+    "Transaction semantics:projection-readiness"
+  ]
+}

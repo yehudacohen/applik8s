@@ -3501,11 +3501,8 @@ async fn kubernetes_read_error(
 fn mock_kube_client() -> kube::Client {
     let service = tower::service_fn(|_request: http::Request<kube::client::Body>| async move {
         Err::<http::Response<kube::client::Body>, tower::BoxError>(
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "mock kube client should not be called by validation-only tests",
-            )
-            .into(),
+            std::io::Error::other("mock kube client should not be called by validation-only tests")
+                .into(),
         )
     });
     kube::Client::new(service, "default")

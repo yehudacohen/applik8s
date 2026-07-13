@@ -48,6 +48,51 @@ export interface ApplicationRouteSourceDependencies {
   readonly resolveDir: string;
 }
 
+export interface ApplicationCommandSourceViolation {
+  readonly name: string;
+  readonly reason: 'ambientIo' | 'nondeterminism' | 'dynamicCode';
+}
+
+/**
+ * Command handlers execute while the authoritative model transaction is open.
+ * Keep their supported closure deliberately smaller than normal server/operator
+ * callbacks: no ambient I/O, wall clock, random source, dynamic code, or route
+ * to the Node global object is admitted. Strings and comments have already been
+ * removed by the shared lexical scanner, so diagnostics are based on executable
+ * source rather than keyword text.
+ */
+export function applicationCommandSourceViolations(source: string, kind: 'key' | 'idempotencyKey' | 'initialize' | 'handler'): readonly ApplicationCommandSourceViolation[] {
+  const analysis = analyzeApplicationServerRouteSource(source);
+  const violations = new Map<string, ApplicationCommandSourceViolation>();
+  const add = (name: string, reason: ApplicationCommandSourceViolation['reason']) => violations.set(`${reason}:${name}`, { name, reason });
+  const free = new Set(analysis.freeIdentifiers);
+
+  const nondeterministicGlobals = ['Date', 'performance', 'crypto'];
+  for (const name of nondeterministicGlobals) {
+    if (free.has(name)) add(name, 'nondeterminism');
+  }
+  if (analysis.memberCalls.some((call) => call.objectName === 'Math' && call.methodName === 'random')) add('Math.random', 'nondeterminism');
+
+  if (kind === 'handler' || kind === 'initialize') {
+    const ambientGlobals = ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'navigator', 'process', 'require', 'module', 'global', 'globalThis', 'Bun', 'Deno'];
+    for (const name of ambientGlobals) {
+      if (free.has(name)) add(name, 'ambientIo');
+    }
+    for (const name of ['setTimeout', 'setInterval', 'setImmediate', 'queueMicrotask']) {
+      if (free.has(name)) add(name, 'ambientIo');
+    }
+  }
+
+  for (const name of ['eval', 'Function', 'AsyncFunction', 'WebAssembly']) {
+    if (free.has(name)) add(name, 'dynamicCode');
+  }
+  if (/\bimport\s*\(/.test(analysis.strippedSource)) add('import()', 'dynamicCode');
+  if (/\bthis\b/.test(analysis.strippedSource)) add('this', 'dynamicCode');
+  if (/\.\s*(?:constructor|__proto__|prototype)\b/.test(analysis.strippedSource)) add('.constructor/prototype', 'dynamicCode');
+
+  return [...violations.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
 interface ApplicationRouteTopLevelBinding {
   readonly name: string;
   readonly source: string;

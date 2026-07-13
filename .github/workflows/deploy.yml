@@ -9,7 +9,7 @@ on:
       release_version:
         description: Existing immutable release version to recover (X.Y.Z)
         required: true
-        default: '0.4.2'
+        default: '0.4.3'
         type: string
       publish_npm:
         description: Publish packages to npm using trusted publishing
@@ -21,6 +21,7 @@ on:
           - 'true'
 
 permissions:
+  actions: read
   contents: write
   id-token: write
 
@@ -45,6 +46,12 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Verify exact-commit v0.4 live evidence
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_npm == 'true')
+        run: node scripts/verify-v04-live-evidence.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify release tag matches package versions
         if: startsWith(github.ref, 'refs/tags/v')

@@ -278,8 +278,8 @@ const v03ProviderInterfaces = [
   { interface: 'Queue', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'ObjectStorage', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'HttpExposure', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
-  { interface: 'Certificate', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
-  { interface: 'DnsPublication', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
+  { interface: 'Certificate', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
 ] satisfies ApplicationV03PressureTestContract['requiredProviderInterfaces'];
 
