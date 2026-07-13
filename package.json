@@ -69,6 +69,7 @@
     "check:v041:local": "bun run check:v04:local && bun run check:v041:performance",
     "check:v04:prerelease": "bun run check:v04:local && bun run test:v04:live",
     "check:v04:prerelease:orbstack": "APPLIK8S_E2E_CONTEXT=orbstack bun run check:v04:prerelease",
+    "attest:v04:orbstack": "node scripts/attest-v04-live.mjs",
     "check:v03:local": "bun run typecheck && bun run lint && bun run test:v03:local && bun run test:character",
     "check:v03:prerelease": "bun run check:v03:local && bun run test:v03:live",
     "check:v03:prerelease:orbstack": "bun run check:v03:local && bun run test:v03:live:orbstack",

@@ -190,7 +190,7 @@ Before announcing v0.3, capture:
 ## CI Evidence
 
 - `.github/workflows/ci.yml` runs local gates, package publish dry-run, and a clean packed-consumer import smoke test for normal repository changes.
-- `.github/workflows/release-evidence.yml` is a manual release-candidate workflow that builds `dist/applik8s`, uploads generated artifacts, and can run live prerelease gates when a base64 kubeconfig secret and `APPLIK8S_E2E_CONTEXT` variable are configured.
+- `.github/workflows/release-evidence.yml` is a manual release-candidate workflow that builds `dist/applik8s` and uploads generated artifacts. It can run live prerelease gates against a cluster reachable from GitHub, or validate a non-secret base64 JSON attestation produced by an authorized maintainer on a loopback-only local cluster such as OrbStack.
 - A successful live Release Evidence run uploads an expiring artifact named for its exact commit. `.github/workflows/deploy.yml` refuses tag publication or npm recovery publication unless that exact commit has a successful, unexpired manual live attestation.
 - `.github/workflows/deploy.yml` runs the expiring reviewed npm audit baseline in addition to the local and package gates. After the live-evidence check, tag pushes publish the multi-architecture host image, publish npm packages through OIDC trusted publishing, verify released artifacts, and only then create the GitHub release.
 
@@ -204,7 +204,7 @@ It fails on new, changed, stale, or expired advisories. The current reviewed fin
 
 ## Publishing
 
-Publishing is tag-driven. On the final release commit, first run **Release Evidence** with `run_live_e2e=true`. Do not change the commit after it succeeds. Push the release tag only after that exact-commit gate passes. The deploy workflow uses npm trusted publishing for every `@applik8s/*` package and `packages: write` for the public GHCR operator host.
+Publishing is tag-driven. On the final release commit, first run **Release Evidence** with `run_live_e2e=true`. For a loopback-only cluster, run `bun run attest:v04:orbstack -- --out /tmp/applik8s-v0.4-live-evidence.json`, base64 that non-secret JSON into `live_attestation_b64`, and never upload a local kubeconfig merely to satisfy the workflow. Do not change the commit after the evidence workflow succeeds. Push the release tag only after that exact-commit gate passes. The deploy workflow uses npm trusted publishing for every `@applik8s/*` package and `packages: write` for the public GHCR operator host.
 
 Validate package contents and imports from unpacked tarballs before tagging:
 

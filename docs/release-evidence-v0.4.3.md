@@ -49,9 +49,9 @@ The latest pre-version run passed the unified Tenant Platform durable-behavior s
 
 ## Exact-Commit Release Gate
 
-The manual Release Evidence workflow writes an attestation containing the commit, workflow run, cluster context, suite, and generation time after the complete live suite succeeds. It uploads an artifact named `applik8s-v0.4-live-<commit>` with fourteen-day retention.
+The manual Release Evidence workflow writes an attestation containing the commit, execution identity, cluster context, suite, and generation time after a directly reachable live suite succeeds. For loopback-only OrbStack, an authorized maintainer runs the same exact-commit suite locally and submits only the non-secret base64 JSON evidence; the workflow validates its shape, commit, suite, context, and age before uploading the same `applik8s-v0.4-live-<commit>` artifact with fourteen-day retention. Local kubeconfigs are never uploaded for this purpose.
 
-The tag/publish workflow resolves the successful Release Evidence run through the GitHub Actions API, downloads the artifact, validates its schema and exact commit, and refuses npm/GHCR/GitHub publication when the attestation is missing, stale, malformed, or refers to another commit.
+The tag/publish workflow resolves the successful Release Evidence run through the GitHub Actions API, downloads and opens the artifact, validates its schema, suite, age, and exact commit, and refuses npm/GHCR/GitHub publication when the attestation is missing, stale, malformed, or refers to another commit.
 
 ## Publication Completion
 
@@ -61,4 +61,3 @@ After the candidate commit is pushed:
 2. Push tag `v0.4.3` without changing the commit.
 3. Wait for coordinated npm packages, the multi-architecture operator host, clean published-consumer verification, and the GitHub release.
 4. Run `APPLIK8S_PUBLISHED_VERSION=0.4.3 bun run check:published-release:orbstack` and record the final workflow and image digest here.
-

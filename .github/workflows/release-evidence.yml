@@ -11,6 +11,11 @@ on:
         options:
           - 'false'
           - 'true'
+      live_attestation_b64:
+        description: Optional base64 exact-commit attestation from a maintainer-run local live suite
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -56,7 +61,7 @@ jobs:
         run: find dist/applik8s dist/examples/tenant-platform-v04 -maxdepth 4 -type f | sort > dist/applik8s-artifact-list.txt
 
       - name: Configure live kubeconfig
-        if: ${{ inputs.run_live_e2e == 'true' }}
+        if: ${{ inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
         run: |
           if [ -z "${KUBECONFIG_B64}" ]; then
             echo "KUBECONFIG_B64 secret is required when run_live_e2e=true" >&2
@@ -68,17 +73,26 @@ jobs:
           KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
 
       - name: Run live prerelease gates
-        if: ${{ inputs.run_live_e2e == 'true' }}
+        if: ${{ inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
         run: APPLIK8S_E2E_CONTEXT=${APPLIK8S_E2E_CONTEXT} bun run check:v04:prerelease
         env:
           APPLIK8S_E2E_CONTEXT: ${{ vars.APPLIK8S_E2E_CONTEXT }}
 
       - name: Record exact-commit live evidence
-        if: ${{ inputs.run_live_e2e == 'true' }}
+        if: ${{ inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
         run: |
-          node -e 'const fs=require("node:fs"); fs.mkdirSync("dist",{recursive:true}); fs.writeFileSync("dist/applik8s-v0.4-live-evidence.json", JSON.stringify({schemaVersion:1,releaseLine:"v0.4",commit:process.env.GITHUB_SHA,workflowRun:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,context:process.env.APPLIK8S_E2E_CONTEXT,suite:"check:v04:prerelease",generatedAt:new Date().toISOString()},null,2)+"\n")'
+          node -e 'const fs=require("node:fs"); fs.mkdirSync("dist",{recursive:true}); fs.writeFileSync("dist/applik8s-v0.4-live-evidence.json", JSON.stringify({schemaVersion:1,releaseLine:"v0.4",commit:process.env.GITHUB_SHA,execution:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,context:process.env.APPLIK8S_E2E_CONTEXT,suite:"check:v04:prerelease",generatedAt:new Date().toISOString()},null,2)+"\n")'
         env:
           APPLIK8S_E2E_CONTEXT: ${{ vars.APPLIK8S_E2E_CONTEXT }}
+
+      - name: Validate maintainer-run exact-commit live evidence
+        if: ${{ inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 != '' }}
+        env:
+          LIVE_ATTESTATION_B64: ${{ inputs.live_attestation_b64 }}
+        run: |
+          mkdir -p dist
+          printf '%s' "${LIVE_ATTESTATION_B64}" | base64 -d > dist/applik8s-v0.4-live-evidence.json
+          node scripts/verify-v04-live-evidence.mjs --file dist/applik8s-v0.4-live-evidence.json --commit "${GITHUB_SHA}"
 
       - name: Upload exact-commit live attestation
         if: ${{ inputs.run_live_e2e == 'true' }}
