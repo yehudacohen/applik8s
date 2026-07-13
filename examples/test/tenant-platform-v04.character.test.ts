@@ -54,6 +54,9 @@ describe('Tenant Platform v0.4 longitudinal benchmark', () => {
     expect(graph?.providerRequirements).toEqual(expect.arrayContaining([
       expect.objectContaining({ interface: 'EventLog', purpose: 'eventLog', consumer: { nodeId: 'processor.account-commands' } }),
     ]));
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'processor', name: 'Account-commands', deployment: expect.objectContaining({ replicas: 2, concurrency: 4, maxAckPending: 8, disruption: { maxUnavailable: 1 } }) }),
+    ]));
     expect(graph ? validateApplicationGraphStructure(graph) : []).toEqual([]);
   });
 

@@ -59,6 +59,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     ...inferRuntimeResourcePermissions(resources, resourceHandlers),
     ...readDefinitions.map((resource) => resource.permissions.read()),
     ...handlerDeclaredPermissions(resourceHandlers),
+    ...secondaryWatchPermissions(request.operator.secondaryWatches ?? []),
     ...(request.operator.permissions ?? []),
   ]));
   const capabilities = normalizedCapabilities(request.operator.capabilities ?? {});
@@ -126,6 +127,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
       ownedCrds,
       readResources,
       watches: watchRegistrations(resources, resourceHandlers),
+      ...(request.operator.secondaryWatches?.length ? { secondaryWatches: request.operator.secondaryWatches } : {}),
       permissions,
       ...(Object.keys(capabilities).length > 0 ? { capabilities } : {}),
       security: securityContract(request.operator, permissions, capabilities, request.portability),
@@ -164,6 +166,18 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
   }
 
   return { ok: true, value: manifest };
+}
+
+function secondaryWatchPermissions(watches: NonNullable<OperatorDefinition['secondaryWatches']>): PermissionRule[] {
+  return watches.flatMap((watch) => [
+    { apiGroups: [apiGroupFor(watch.source.apiVersion)], resources: [watch.source.plural], verbs: ['get', 'list', 'watch'] },
+    { apiGroups: [apiGroupFor(watch.target.apiVersion)], resources: [watch.target.plural], verbs: ['get', 'list', 'watch'] },
+  ]);
+}
+
+function apiGroupFor(apiVersion: string): string {
+  const slash = apiVersion.indexOf('/');
+  return slash < 0 ? '' : apiVersion.slice(0, slash);
 }
 
 function canonicalHostImports(): readonly string[] {
@@ -518,6 +532,38 @@ function validateManifestBuildRequest(request: ManifestBuildRequest, resourceHan
   const crdVersionValidation = validateCrdVersioning(request.operator);
   if (crdVersionValidation) {
     return crdVersionValidation;
+  }
+
+  const ownedIdentities = new Set(Object.values(request.operator.resources).filter(isOwnedResource).map((resource) => `${resource.apiVersion}|${resource.kind}`));
+  const declaredReadIdentities = new Set([
+    ...Object.values(request.operator.resources),
+    ...Object.values(request.operator.reads ?? {}),
+  ].map((resource) => `${resource.apiVersion}|${resource.kind}`));
+  for (const watch of request.operator.secondaryWatches ?? []) {
+    if (!declaredReadIdentities.has(`${watch.source.apiVersion}|${watch.source.kind}`)) {
+      return {
+        ok: false,
+        error: {
+          code: 'BUNDLE_INVALID',
+          message: `Secondary watch source ${watch.source.apiVersion}/${watch.source.kind} must be declared under operator resources or reads.`,
+          severity: 'error',
+          context: { operatorName: request.operator.name },
+          recovery: { summary: 'Declare the watched source under operator reads or resources before registering the secondary watch.' },
+        },
+      };
+    }
+    if (!ownedIdentities.has(`${watch.target.apiVersion}|${watch.target.kind}`)) {
+      return {
+        ok: false,
+        error: {
+          code: 'BUNDLE_INVALID',
+          message: `Secondary watch target ${watch.target.apiVersion}/${watch.target.kind} must be an operator-owned CRD.`,
+          severity: 'error',
+          context: { operatorName: request.operator.name },
+          recovery: { summary: 'Enqueue an owned resource and declare the source under operator reads or resources.' },
+        },
+      };
+    }
   }
 
   return undefined;

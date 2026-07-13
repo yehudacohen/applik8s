@@ -28,6 +28,8 @@ bun run build:tenant-platform-v04
 
 See [`docs/commands.md`](docs/commands.md) for the durable-command contract and [`docs/release-evidence-v0.4.md`](docs/release-evidence-v0.4.md) for captured evidence and maturity boundaries.
 
+v0.4.1 adds a measured manual scaling contract for inferred processors: replicas, per-pod concurrency, aggregate acknowledgement windows, resources, topology spreading, node selection, and disruption budgets. Run `bun run benchmark:v041:live` for the reproducible PostgreSQL/JetStream benchmark or `bun run check:v041:performance` for the fast regression gate. See [`docs/release-evidence-v0.4.1.md`](docs/release-evidence-v0.4.1.md).
+
 ## v0.3 Flagship: Tenant Platform App
 
 v0.3 is the developer-experience and substrate-freeze release. `examples/tenant-platform.ts` is the flagship proof: one TypeScript app declares resources, storage-backed models, HTTP routes, reconciliation, repair/cleanup jobs, and generated Kubernetes artifacts without starting from provider wiring or graph terminology.
@@ -225,6 +227,7 @@ The listener reads like application code, but it is control-plane code:
 - `job.k8s.ConfigMap(...)` builds a typed Kubernetes child object and `job.apply(...)` declares it for server-side apply.
 - `job.events.normal(...)` records a Kubernetes Event.
 - `ImageJob.on.finalize(...)` handles deletion by removing owned resources before the finalizer is removed.
+- Declaring `{ finalizer: '...' }` is operational: the host installs a missing finalizer before normal reconciliation and requeues the object. After a successful terminal finalize plan, it removes the declared finalizer automatically; a finalize plan that requeues retains it. An explicit `job.finalizers.remove(...)` remains supported and idempotent at the plan level.
 
 Handlers can be `async`. The compiler tree-shakes the TypeScript dependency graph, including the AWS SDK code reached by the handler closure, into the WASM component. The Rust host provides WASI HTTP, so SDK requests run through the component's `fetch` path. Kubernetes mutations still return through the operation plan, so the host can validate RBAC, ownership, status, finalizers, and ordering before effects are applied.
 
@@ -355,6 +358,7 @@ bun run check:v04:prerelease:orbstack
 - `docs/generated-artifacts.md`
 - `docs/commands.md`
 - `docs/release-evidence-v0.4.md`
+- `docs/release-evidence-v0.4.1.md`
 - `docs/release-evidence-v0.3.md`
 - `docs/release-evidence-v0.2.md`
 - `docs/runtime-diagnostics.md`

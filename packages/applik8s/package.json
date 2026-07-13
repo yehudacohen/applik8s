@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/applik8s",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "TypeScript framework for programming Kubernetes-native applications and operators.",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,10 +16,11 @@
     "directory": "packages/applik8s"
   },
   "bin": {
-    "applik8s": "dist/cli.js"
+    "applik8s": "dist/bin.js"
   },
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./operator": { "types": "./dist/operator.d.ts", "import": "./dist/operator.js" },
     "./dsl": { "types": "./dist/dsl.d.ts", "import": "./dist/dsl.js" },
     "./typekro": { "types": "./dist/typekro.d.ts", "import": "./dist/typekro.js" },
     "./factories": { "types": "./dist/factories.d.ts", "import": "./dist/factories.js" },
@@ -28,11 +29,12 @@
     "./cli": { "types": "./dist/cli.d.ts", "import": "./dist/cli.js" }
   },
   "dependencies": {
-    "@applik8s/compiler": "0.4.0",
-    "@applik8s/core": "0.4.0",
-    "@applik8s/sdk": "0.4.0",
-    "@applik8s/typekro-adapter": "0.4.0",
-    "@applik8s/typetainer": "0.4.0",
+    "@applik8s/compiler": "0.4.1",
+    "@applik8s/core": "0.4.1",
+    "@applik8s/sdk": "0.4.1",
+    "@applik8s/typekro-adapter": "0.4.1",
+    "@applik8s/typetainer": "0.4.1",
+    "arktype": "^2.1.20",
     "commander": "^15.0.0",
     "drizzle-orm": "^0.45.1",
     "esbuild": "^0.28.1",

@@ -1,58 +1,56 @@
-# Scale Boundaries
+# Scale and Performance Boundaries
 
-v0.1 is an evaluation release for serious operator authoring, not a high-scale production benchmark release.
+Applik8s v0.4.1 makes capacity explicit and establishes repeatable evidence; it does not claim unlimited or automatic scaling.
 
-## Expected v0.1 Shape
+## Control-plane reconciliation
 
-The public golden path is expected to work well for:
+Operator-host reconciliation remains intentionally single-worker and single-in-flight per resource. Reconcile plans are bounded, deadlines are mandatory, and queue depth is controlled by the host. Multi-replica operator deployments still require the supported leader-election contract. This conservative control-plane policy is separate from generated command processors.
 
-- one operator bundle
-- one to a few owned CRDs
-- small to moderate CR instances
-- local-cluster development and evaluation
-- bounded handler execution
-- explicit requeue instead of long-running handler work
-- generated YAML reviewed before apply
+## Generated command processors
 
-## Boundaries
+Each model processor has one normalized deployment policy in the application graph:
 
-Treat these as v0.1 assumptions, not hard product limits:
+- `replicas`: `1..32`
+- `concurrency`: `1..64` per replica
+- `maxAckPending`: at least `replicas * concurrency`, at most `65,536`
+- explicit CPU/memory requests and limits
+- optional node selection
+- a PodDisruptionBudget and soft hostname topology spreading by default when replicas are greater than one
 
-- keep handler bundles small enough to inspect and debug
-- avoid large object payloads in replay unless full-payload debugging is explicitly needed
-- keep watched resource cardinality modest
-- keep per-reconcile operation plans bounded
-- use one worker unless future concurrency policy is explicitly supported
-- use multi-replica deployments only with supported leader election configuration
+The effective execution ceiling is `replicas * concurrency`. Every replica shares the durable JetStream consumer, while PostgreSQL inbox, idempotency, revision, and advisory-lock contracts remain authoritative. Conflicting processor policies on commands sharing a model fail during graph construction.
 
-## Baseline Measurements
+This is a manual, bounded scaling story. Lag-driven KEDA scaling is deliberately deferred until lag metrics, scale-down draining, database saturation, and minimum/maximum replica semantics can be specified together.
 
-Observed on 2026-06-22 on a local macOS development machine using the documented command:
+## Performance evidence
 
-```sh
-bun run applik8s build examples/imagejob.ts --out-dir dist/v0.1-metrics
-```
+`bun run benchmark:v041:record` records:
 
-Results:
+- local bounded-scheduler throughput, latency, maximum concurrency, RSS, and heap growth
+- cold processor-runtime import latency
+- ImageJob and Tenant Platform build latency and artifact sizes
+- declared CPU/memory capacity and cost units for one, two, and four replicas
+- PostgreSQL same-key versus distinct-key contention when `APPLIK8S_BENCH_DATABASE_URL` is set
+- real JetStream consumer scaling at one, two, and four replicas when `APPLIK8S_BENCH_NATS_URL` is set
 
-- compile time: `real 5.13s`, `user 9.63s`, `sys 2.38s`
-- `wasm/handler.wasm`: `12,775,349` bytes
-- `bundle/handler.js`: `50,553` bytes
-- `operator-manifest.json`: `9,609` bytes
+The latest observation is [the v0.4.1 baseline](../benchmarks/v0.4.1/baseline.json). Timestamped reports in `benchmarks/v0.4.1/history/` are append-only evidence. Reports include runtime, architecture, CPU, memory, Git revision, and dirty state so unlike environments are not silently compared.
 
-Not yet claimed for v0.1 without a pinned live pre-release run:
+`bun run check:v041:performance` is the fast regression gate. It verifies hard concurrency and memory bounds plus generous pathology ceilings. Timing observations are history, not portable guarantees.
 
-- generated runtime image size, if locally built
-- cold handler invocation latency from live logs or traces
-- reconcile latency for a small sample object
-- memory usage of the runtime pod in the selected local cluster
+Two bundle profiles are intentionally distinct:
 
-These measurements are observations, not guarantees.
+- normalized structural dispatch is kept below 250 KB JavaScript and 20 MB WASM by compiler tests;
+- capability-rich import-entrypoint bundles, including libraries such as the AWS SDK or Kubernetes client, are bounded at 4 MiB JavaScript and 40 MiB WASM.
 
-## Performance Smoke Test Goal
+The import-entrypoint profile remains the largest optimization opportunity. When a handler captures arbitrary module-scope libraries, reconstructing the authored module retains authoring-time initialization that normalized structural dispatch avoids.
 
-v0.1 should include at least one smoke test or release note proving the dispatcher, manifest lookup, and status writing do not show obvious pathological behavior on multiple sample objects.
+## Cost interpretation
 
-## Post-v0.1
+Applik8s records requested and limited CPU millicores and memory MiB per replica count. These are portable capacity/cost units, not dollar estimates. Dollar cost depends on cluster bin-packing, node prices, reservations, and provider billing and should be applied outside the framework.
 
-Broader queue depth, controller concurrency, watch cardinality, cache behavior, and sustained soak testing are post-v0.1 work.
+## Remaining boundaries
+
+- no automatic consumer autoscaling
+- no published sustained soak or maximum-throughput claim
+- database contention depends on command key distribution and handler transaction duration
+- capability-rich bundle size depends on the libraries captured by the handler
+- Kubernetes pod memory requires a cluster metrics source and is not inferred from local Node RSS

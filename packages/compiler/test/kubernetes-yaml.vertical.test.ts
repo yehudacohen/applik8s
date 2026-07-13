@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -62,6 +62,28 @@ const imageStatusSchema: JsonSchemaSource<ImageStatus> = {
 };
 
 describe('Kubernetes YAML generation', () => {
+  it('atomically replaces prior output so obsolete RBAC files cannot survive recompilation', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-atomic-yaml-'));
+    const outDir = join(dir, 'kubernetes');
+    try {
+      const Work = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'Work', spec: imageSpecSchema, status: imageStatusSchema });
+      const namespaced = sdk.operator({ name: 'atomic-output', deployment: { namespace: 'media' }, resources: { Work }, handlers: [] });
+      const first = await emitOperatorKubernetesYaml({ manifest: await buildTestManifest(dir, namespaced.definition), operator: namespaced.definition, outDir });
+      expect(first.ok).toBe(true);
+      expect(await readdir(outDir)).toEqual(expect.arrayContaining(['role-atomic-output-controller.yaml', 'rolebinding-atomic-output-controller.yaml']));
+
+      const clusterRead = sdk.kubernetes.Namespace;
+      const cluster = sdk.operator({ name: 'atomic-output', deployment: { namespace: 'media' }, resources: { Work }, reads: { Namespace: clusterRead }, handlers: [], permissions: [clusterRead.permissions.read()] });
+      const second = await emitOperatorKubernetesYaml({ manifest: await buildTestManifest(dir, cluster.definition), operator: cluster.definition, outDir });
+      expect(second.ok).toBe(true);
+      const files = await readdir(outDir);
+      expect(files).toEqual(expect.arrayContaining(['clusterrole-media-atomic-output-controller.yaml', 'clusterrolebinding-media-atomic-output-controller.yaml']));
+      expect(files).not.toEqual(expect.arrayContaining(['role-atomic-output-controller.yaml', 'rolebinding-atomic-output-controller.yaml']));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('emits cluster-scoped RBAC when an owned CRD is cluster scoped', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-cluster-rbac-'));
 

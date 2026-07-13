@@ -1,5 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 
 import type { V1CustomResourceColumnDefinition } from '@kubernetes/client-node/dist/gen/models/V1CustomResourceColumnDefinition.js';
 import type { V1CustomResourceDefinition } from '@kubernetes/client-node/dist/gen/models/V1CustomResourceDefinition.js';
@@ -31,9 +31,8 @@ export interface KubernetesYamlEmitter {
 }
 
 export async function emitOperatorKubernetesYaml(request: KubernetesYamlRequest): Promise<Result<KubernetesYamlResult>> {
+  let stagingDirectory: string | undefined;
   try {
-    await mkdir(request.outDir, { recursive: true });
-
     const namespace = request.operator.deployment?.namespace;
     const serviceAccountName = request.operator.deployment?.serviceAccountName ?? `${request.operator.name}-controller`;
     const image = request.manifest.spec.container ? imageRefString(request.manifest.spec.container.image) : 'ghcr.io/applik8s/applik8s-operator-host:dev';
@@ -55,15 +54,21 @@ export async function emitOperatorKubernetesYaml(request: KubernetesYamlRequest)
     if (!validation.ok) {
       return validation;
     }
-    const paths: string[] = [];
+    const parent = dirname(request.outDir);
+    await mkdir(parent, { recursive: true });
+    stagingDirectory = await mkdtemp(join(parent, `.${basename(request.outDir)}.staging-`));
+    const fileNames: string[] = [];
 
     for (const document of documents) {
-      const path = join(request.outDir, `${documentFileName(document)}.yaml`);
+      const fileName = `${documentFileName(document)}.yaml`;
+      const path = join(stagingDirectory, fileName);
       await writeFile(path, stringify(document));
-      paths.push(path);
+      fileNames.push(fileName);
     }
 
-    return { ok: true, value: { paths } };
+    await replaceDirectory(stagingDirectory, request.outDir);
+    stagingDirectory = undefined;
+    return { ok: true, value: { paths: fileNames.map((fileName) => join(request.outDir, fileName)) } };
   } catch (cause) {
     return {
       ok: false,
@@ -74,7 +79,28 @@ export async function emitOperatorKubernetesYaml(request: KubernetesYamlRequest)
         context: {},
       },
     };
+  } finally {
+    if (stagingDirectory) await rm(stagingDirectory, { recursive: true, force: true });
   }
+}
+
+async function replaceDirectory(stagingDirectory: string, destination: string): Promise<void> {
+  const backup = `${destination}.previous-${process.pid}-${Date.now()}`;
+  let backedUp = false;
+  try {
+    await rename(destination, backup);
+    backedUp = true;
+  } catch (cause) {
+    const code = cause && typeof cause === 'object' ? Reflect.get(cause, 'code') : undefined;
+    if (code !== 'ENOENT') throw cause;
+  }
+  try {
+    await rename(stagingDirectory, destination);
+  } catch (cause) {
+    if (backedUp) await rename(backup, destination);
+    throw cause;
+  }
+  if (backedUp) await rm(backup, { recursive: true, force: true });
 }
 
 export type V1ClusterRole = Omit<V1Role, 'kind' | 'metadata'> & { readonly kind: 'ClusterRole'; readonly metadata: V1ObjectMeta };

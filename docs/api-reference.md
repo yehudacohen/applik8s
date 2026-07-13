@@ -166,6 +166,8 @@ Every `sdk.crd(...)` resource exposes typed permission bundles for common Kubern
 - `Resource.permissions.finalize()` for finalizer subresource writes
 - `Resource.permissions.manage()` for the full object/status/finalizer rule family
 
+`sdk.watch(source).enqueue(target, options)` declares a bounded secondary watch. The source may be an owned CRD or a declared Kubernetes read resource; the target must be an owned CRD. In v0.4.1 the explicit mapper is `mode: 'all'`, with `source`, `operator`, or `all` namespace fan-out. The host watches the source and reconciles the bounded set of target instances without placing application-specific graph traversal in the framework.
+
 Built-in bundles are available under `sdk.permissions.k8s.*`, and Events use `sdk.permissions.events.write()`. These helpers return plain Kubernetes RBAC rules that can be passed directly to `sdk.operator({ permissions })` or `app.server({ permissions })`.
 
 ## TypeKro Adapter

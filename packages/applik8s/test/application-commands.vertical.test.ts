@@ -44,7 +44,13 @@ describe('v0.4 application behavior contracts', () => {
     const binding = Account.on.command(RenameAccount, {
       key: ({ tenant, accountId }) => ({ tenant, accountId }),
       ordering: 'serial',
-      processor: { image: 'registry.example.test/applik8s-processor@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+      processor: {
+        image: 'registry.example.test/applik8s-processor@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        replicas: 3,
+        concurrency: 4,
+        resources: { requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } },
+        nodeSelector: { 'kubernetes.io/os': 'linux' },
+      },
       idempotencyKey: ({ requestId }) => requestId,
       missing: 'reject',
       transaction: { models: [Audit], history: [Account], outbox: [AccountChanged] },
@@ -54,6 +60,10 @@ describe('v0.4 application behavior contracts', () => {
       context.emit(AccountChanged, { tenant: input.tenant, accountId: input.accountId, displayName: input.displayName });
       return { changed: account.spec.displayName !== input.displayName, displayName: input.displayName };
     });
+    Account.on.command(ReindexAccount, {
+      key: ({ accountId }) => accountId,
+      processor: { image: 'registry.example.test/applik8s-processor@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
+    }, async () => ({ accepted: true }));
 
     expect(binding).toMatchObject({ kind: 'applicationModelCommand', model: 'Account', command: 'account.rename.v1', processor: 'Account-commands' });
     const graph = applicationGraphFor(platform.composition);
@@ -62,7 +72,7 @@ describe('v0.4 application behavior contracts', () => {
       expect.objectContaining({ kind: 'command', name: 'account.rename.v1', contract: expect.objectContaining({ name: 'account.rename', version: 'v1', input: expect.objectContaining({ jsonSchema: expect.objectContaining({ type: 'object', required: expect.arrayContaining(['accountId', 'displayName']) }) }), output: expect.objectContaining({ jsonSchema: expect.objectContaining({ type: 'object' }) }), errors: [expect.objectContaining({ name: 'accountNotFound', schema: expect.objectContaining({ jsonSchema: expect.objectContaining({ type: 'object' }) }) })] }) }),
       expect.objectContaining({ kind: 'event', name: 'account.changed.v1', contract: expect.objectContaining({ name: 'account.changed', version: 'v1', payload: expect.objectContaining({ jsonSchema: expect.objectContaining({ type: 'object' }) }) }) }),
       expect.objectContaining({ kind: 'commandHandler', ordering: 'serial', missing: 'reject', effectBoundary: 'transactionSafeOnly', retention: { replayWindowSeconds: 604_800, auditWindowSeconds: 2_592_000, publishedOutboxWindowSeconds: 86_400, cleanupIntervalSeconds: 300, cleanupBatchSize: 1_000 }, projectionReadiness: { submissionAcknowledgement: 'transportOnly', durableResultAuthority: 'postgresCommandResults', duplicateRecovery: 'idempotentRedelivery', correlation: 'commandCorrelationCausation', resultRevisionAuthority: 'postgresCommandResults', stateRevisionAuthority: 'modelRevision', reconciliationLink: 'modelRevisionWhenPresent' }, transaction: expect.objectContaining({ models: expect.arrayContaining([{ nodeId: 'model.account' }, { nodeId: 'model.audit' }]), history: [{ nodeId: 'model.account' }], outbox: [{ nodeId: 'event.account.changed.v1' }] }) }),
-      expect.objectContaining({ kind: 'processor', runtime: 'node', runtimeImage: 'registry.example.test/applik8s-processor@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', inference: 'generated', handlers: [expect.objectContaining({ nodeId: expect.stringContaining('command-handler.') })] }),
+      expect.objectContaining({ kind: 'processor', runtime: 'node', runtimeImage: 'registry.example.test/applik8s-processor@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', deployment: { replicas: 3, concurrency: 4, maxAckPending: 12, resources: { requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } }, disruption: { maxUnavailable: 1 }, nodeSelector: { 'kubernetes.io/os': 'linux' } }, inference: 'generated', handlers: expect.arrayContaining([expect.objectContaining({ nodeId: expect.stringContaining('command-handler.') })]) }),
       expect.objectContaining({ kind: 'provider', interface: 'EventLog', implementation: 'nats-jetstream', contract: expect.objectContaining({ support: 'implemented', surface: 'experimentalSurface' }) }),
     ]));
     expect(graph?.providerRequirements).toEqual(expect.arrayContaining([expect.objectContaining({ interface: 'EventLog', purpose: 'eventLog', consumer: { nodeId: 'processor.account-commands' } })]));
@@ -192,6 +202,10 @@ describe('v0.4 application behavior contracts', () => {
     const platformWithInvalidProcessorImage = app('invalid-processor-image-platform');
     const InvalidProcessorAccount = platformWithInvalidProcessorImage.model(AccountEntity, { schema: { transactions: 'required' } });
     expect(() => InvalidProcessorAccount.on.command(RenameAccount, { key: ({ accountId }) => accountId, processor: { image: '   ' } }, handler)).toThrow(/processor.image must be a non-empty OCI image reference/);
+
+    const platformWithInvalidCapacity = app('invalid-processor-capacity-platform');
+    const InvalidCapacityAccount = platformWithInvalidCapacity.model(AccountEntity, { schema: { transactions: 'required' } });
+    expect(() => InvalidCapacityAccount.on.command(RenameAccount, { key: ({ accountId }) => accountId, processor: { replicas: 2, concurrency: 8, maxAckPending: 8 } }, handler)).toThrow(/maxAckPending must be an integer between 16 and 65536/);
 
     const platformWithExternalEffect = app('external-effect-platform');
     const EffectAccount = platformWithExternalEffect.model(AccountEntity, { schema: { transactions: 'required' } });

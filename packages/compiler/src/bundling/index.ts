@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,6 +54,10 @@ export async function bundleHandlerEntrypoint(request: HandlerBundleRequest): Pr
       conditions: ['browser'],
       mainFields: ['browser', 'module', 'main'],
       target: 'es2022',
+      nodePaths: [join(sourceWorkspaceRoot, 'node_modules')],
+      minify: true,
+      keepNames: true,
+      legalComments: 'none',
       external: ['applik8s:handler/capabilities', 'applik8s:handler/kubernetes'],
       outfile: javascriptBundlePath,
       metafile: true,
@@ -224,6 +229,23 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
           return { path: alias };
         }
         return undefined;
+      });
+
+      build.onResolve({ filter: /^(?:@[^/]+\/)?[^./][^:]*$/ }, (args) => {
+        if (!args.importer.endsWith('handler-dispatcher.generated.ts') || args.path.startsWith('@applik8s/') || args.path === '@kubernetes/client-node') return undefined;
+        try {
+          const segments = args.path.split('/');
+          const packageName = args.path.startsWith('@') ? segments.slice(0, 2).join('/') : segments[0] ?? args.path;
+          const packageRoot = join(workspaceRoot, 'node_modules', ...packageName.split('/'));
+          // typecast: package.json module/browser/main fields are validated by the string checks below before choosing an esbuild entrypoint.
+          const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as { readonly module?: string; readonly browser?: string; readonly main?: string };
+          const moduleEntry = typeof manifest.module === 'string' ? manifest.module : undefined;
+          const browserEntry = typeof manifest.browser === 'string' ? manifest.browser : undefined;
+          const mainEntry = typeof manifest.main === 'string' ? manifest.main : undefined;
+          return { path: resolve(packageRoot, moduleEntry ?? browserEntry ?? mainEntry ?? 'index.js') };
+        } catch {
+          return undefined;
+        }
       });
 
       build.onResolve({ filter: /^\/.*\.[cm]?[tj]s$/ }, async (args) => {

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "scheduler": {
+    "minimumThroughputPerSecond": 250,
+    "maximumRssGrowthBytes": 67108864
+  },
+  "coldStart": {
+    "maximumP95Ms": 3000
+  },
+  "build": {
+    "maximumDurationMs": 120000
+  },
+  "artifacts": {
+    "maximumJavaScriptBytes": 4194304,
+    "maximumWasmBytes": 41943040
+  }
+}

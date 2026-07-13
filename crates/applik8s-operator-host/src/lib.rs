@@ -5,7 +5,9 @@ use applik8s_runtime_bridge::{
     invoke_handler_component_bytes_with_timeout_host_imports_and_kubernetes_http_async,
     validate_component_host_imports,
 };
-use applik8s_runtime_contract::{ApplyOwnership, NormalizedOperationPlan, ObjectRef, Operation};
+use applik8s_runtime_contract::{
+    ApplyOwnership, FinalizerOperation, NormalizedOperationPlan, ObjectRef, Operation,
+};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -126,6 +128,7 @@ impl Default for StatusConvention {
 pub struct RuntimeController {
     pub watch: OwnedResourceWatch,
     pub controller: Controller<DynamicObject>,
+    pub secondary: Option<Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -705,6 +708,29 @@ impl OperatorHost {
             );
             return Ok(Action::await_change());
         }
+        let mut applier = KubeOperationPlanApplier::new(self.bridge.client().clone(), "applik8s");
+        for watch in bundle.owned_resource_watches()? {
+            applier = applier.with_resource_plural(watch.api_version, watch.kind, watch.plural);
+        }
+        let missing_finalizers =
+            bundle.missing_declared_finalizers(api_version, kind, &object_json)?;
+        if !missing_finalizers.is_empty() {
+            let plan = NormalizedOperationPlan {
+                operations: missing_finalizers
+                    .into_iter()
+                    .map(|finalizer| Operation::Finalizer {
+                        operation: FinalizerOperation::Add,
+                        finalizer,
+                    })
+                    .collect(),
+                diagnostics: None,
+            };
+            applier
+                .apply_plan(&owner, &plan)
+                .await
+                .map_err(OperatorHostError::from)?;
+            return Ok(Action::requeue(Duration::from_millis(1)));
+        }
         let handler_route = bundle.handler_route_for_object(api_version, kind, &object_json)?;
         let status_convention = bundle.status_convention_for_object(api_version, kind)?;
         let bundle_digest = bundle
@@ -731,10 +757,6 @@ impl OperatorHost {
         );
         let mut reconcile_span = start_reconcile_otel_span(&start_event);
         emit_log_event(start_event);
-        let mut applier = KubeOperationPlanApplier::new(self.bridge.client().clone(), "applik8s");
-        for watch in bundle.owned_resource_watches()? {
-            applier = applier.with_resource_plural(watch.api_version, watch.kind, watch.plural);
-        }
         let status_applier = applier
             .with_field_manager("applik8s-status-lifecycle")
             .with_force_status(true);
@@ -823,7 +845,7 @@ impl OperatorHost {
             )
             .await
         };
-        let plan = match invocation {
+        let mut plan = match invocation {
             Ok(plan) => {
                 record_reconcile_otel_phase(&mut reconcile_span, "handler.succeeded");
                 plan
@@ -887,6 +909,14 @@ impl OperatorHost {
                 return Err(error);
             }
         };
+        if handler_route.event == "finalize"
+            && !plan
+                .operations
+                .iter()
+                .any(|operation| matches!(operation, Operation::Requeue { .. }))
+        {
+            append_automatic_finalizer_removals(bundle, &handler_route, &object_json, &mut plan);
+        }
         record_reconcile_otel_phase(&mut reconcile_span, "plan.validate");
         if let Err(error) = validate_plan_status_subresources(bundle, &owner, &plan)
             .and_then(|_| validate_plan_finalizer_ownership(bundle, &handler_route, &plan))
@@ -1059,6 +1089,110 @@ impl OperatorHost {
         self.clear_retry_state(&owner);
 
         Ok(action_for_plan(&plan))
+    }
+
+    async fn reconcile_secondary_object(
+        &self,
+        bundle: &LoadedOperatorBundle,
+        source: DynamicObject,
+        registration: &Value,
+    ) -> Result<Action, OperatorHostError> {
+        let source_registration = registration.get("source").ok_or_else(|| {
+            OperatorHostError::InvalidOwnedCrd("secondary watch is missing source".into())
+        })?;
+        let source_watch = secondary_owned_watch(
+            source_registration,
+            registration.get("watch"),
+            default_watch_namespace(&bundle.manifest),
+        )?;
+        let source_json = serde_json::to_value(&source)?;
+        let source_api_version = source_json
+            .get("apiVersion")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let source_kind = source_json
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        // Kubernetes cannot express every finite scope (notably multiple names)
+        // in a watcher selector, so enforce the complete declaration before fan-out.
+        if !runtime_watch_matches_object(
+            &source_watch,
+            source_api_version,
+            source_kind,
+            &source_json,
+        ) {
+            return Ok(Action::await_change());
+        }
+        let target = registration.get("target").ok_or_else(|| {
+            OperatorHostError::InvalidOwnedCrd("secondary watch is missing target".into())
+        })?;
+        let target_watch = secondary_owned_watch(target, None, None)?;
+        let api_resource = api_resource_for_watch(&target_watch)?;
+        let namespace_mode = registration
+            .pointer("/mapper/namespace")
+            .and_then(Value::as_str)
+            .unwrap_or("source");
+        let source_namespace = source_json
+            .pointer("/metadata/namespace")
+            .and_then(Value::as_str);
+        let namespace = if target_watch.scope == "Cluster" || namespace_mode == "all" {
+            None
+        } else if namespace_mode == "operator" {
+            default_watch_namespace(&bundle.manifest)
+        } else {
+            source_namespace
+                .map(str::to_string)
+                .or_else(|| default_watch_namespace(&bundle.manifest))
+        };
+        if target_watch.scope == "Namespaced" && namespace.is_none() && namespace_mode != "all" {
+            return Err(OperatorHostError::InvalidOwnedCrd(
+                "secondary watch target namespace could not be resolved".into(),
+            ));
+        }
+        let api = match namespace.as_deref() {
+            Some(namespace) => Api::<DynamicObject>::namespaced_with(
+                self.bridge.client().clone(),
+                namespace,
+                &api_resource,
+            ),
+            None => Api::<DynamicObject>::all_with(self.bridge.client().clone(), &api_resource),
+        };
+        let mut continue_token: Option<String> = None;
+        let mut target_count = 0usize;
+        let mut target_requested_requeue = false;
+        loop {
+            let mut params = ListParams::default().limit(500);
+            if let Some(token) = continue_token.as_deref() {
+                params = params.continue_token(token);
+            }
+            let page = api.list(&params).await?;
+            target_count += page.items.len();
+            if target_count > 10_000 {
+                return Err(OperatorHostError::InvalidOwnedCrd(
+                    "secondary watch fan-out exceeds the 10,000 target safety bound".into(),
+                ));
+            }
+            for target in page.items {
+                let action = self.reconcile_dynamic_object(bundle, target).await?;
+                target_requested_requeue |= action != Action::await_change();
+            }
+            continue_token = page.metadata.continue_.filter(|token| !token.is_empty());
+            if continue_token.is_none() {
+                break;
+            }
+        }
+        tracing::debug!(
+            source_kind,
+            target_kind = %target_watch.kind,
+            target_count,
+            "secondary watch enqueued owned reconciliations"
+        );
+        Ok(if target_requested_requeue {
+            Action::requeue(Duration::from_secs(5))
+        } else {
+            Action::await_change()
+        })
     }
 }
 
@@ -2018,6 +2152,37 @@ fn handler_declared_finalizers(
         .iter()
         .find(|handler| handler.get("handlerId").and_then(Value::as_str) == Some(handler_id))
         .and_then(handler_finalizers)
+}
+
+fn append_automatic_finalizer_removals(
+    bundle: &LoadedOperatorBundle,
+    handler_route: &HandlerRoute,
+    object: &Value,
+    plan: &mut NormalizedOperationPlan,
+) {
+    let Some(declared) = handler_declared_finalizers(bundle, &handler_route.handler_id) else {
+        return;
+    };
+    let present: HashSet<String> = object_finalizers(object).into_iter().collect();
+    let already_removed: HashSet<String> = plan
+        .operations
+        .iter()
+        .filter_map(|operation| match operation {
+            Operation::Finalizer {
+                operation: FinalizerOperation::Remove,
+                finalizer,
+            } => Some(finalizer.clone()),
+            _ => None,
+        })
+        .collect();
+    for finalizer in declared {
+        if present.contains(&finalizer) && !already_removed.contains(&finalizer) {
+            plan.operations.push(Operation::Finalizer {
+                operation: FinalizerOperation::Remove,
+                finalizer,
+            });
+        }
+    }
 }
 
 fn required_permissions(
@@ -3263,7 +3428,8 @@ impl LoadedOperatorBundle {
     }
 
     pub fn controllers(&self, client: Client) -> Result<Vec<RuntimeController>, OperatorHostError> {
-        self.runtime_resource_watches()?
+        let mut controllers: Vec<RuntimeController> = self
+            .runtime_resource_watches()?
             .into_iter()
             .map(|watch| {
                 let api_resource = api_resource_for_watch(&watch)?;
@@ -3277,9 +3443,44 @@ impl LoadedOperatorBundle {
                 };
                 let controller =
                     Controller::new_with(api, watcher_config_for_watch(&watch), api_resource);
-                Ok(RuntimeController { watch, controller })
+                Ok::<RuntimeController, OperatorHostError>(RuntimeController {
+                    watch,
+                    controller,
+                    secondary: None,
+                })
             })
-            .collect()
+            .collect::<Result<_, _>>()?;
+        for registration in self
+            .manifest
+            .pointer("/spec/secondaryWatches")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let source = registration.get("source").ok_or_else(|| {
+                OperatorHostError::InvalidOwnedCrd("secondary watch is missing source".into())
+            })?;
+            let watch = secondary_owned_watch(
+                source,
+                registration.get("watch"),
+                default_watch_namespace(&self.manifest),
+            )?;
+            let api_resource = api_resource_for_watch(&watch)?;
+            let api = match watch.namespace.as_deref() {
+                Some(namespace) => {
+                    Api::<DynamicObject>::namespaced_with(client.clone(), namespace, &api_resource)
+                }
+                None => Api::<DynamicObject>::all_with(client.clone(), &api_resource),
+            };
+            let controller =
+                Controller::new_with(api, watcher_config_for_watch(&watch), api_resource);
+            controllers.push(RuntimeController {
+                watch,
+                controller,
+                secondary: Some(registration.clone()),
+            });
+        }
+        Ok(controllers)
     }
 
     pub fn handler_route_for_object(
@@ -3386,6 +3587,29 @@ impl LoadedOperatorBundle {
         }
 
         Ok(None)
+    }
+
+    pub fn missing_declared_finalizers(
+        &self,
+        api_version: &str,
+        kind: &str,
+        object: &Value,
+    ) -> Result<Vec<String>, OperatorHostError> {
+        if object.pointer("/metadata/deletionTimestamp").is_some()
+            || !resource_is_owned_crd(&self.manifest, api_version, kind)
+        {
+            return Ok(Vec::new());
+        }
+        let existing: HashSet<String> = object_finalizers(object).into_iter().collect();
+        let mut missing = self
+            .handlers_for_event(api_version, kind, "finalize", object)?
+            .into_iter()
+            .flat_map(|handler| handler_finalizers(handler).unwrap_or_default())
+            .filter(|finalizer| !existing.contains(finalizer))
+            .collect::<Vec<_>>();
+        missing.sort();
+        missing.dedup();
+        Ok(missing)
     }
 
     fn handler_id_for_event(
@@ -3979,9 +4203,22 @@ pub async fn execute_kubernetes_read_request(
     match execute_kubernetes_read_value(manifest, client, &request).await {
         Ok(value) => Ok(serde_json::json!({ "ok": true, "value": value }).to_string()),
         Err(message) => Ok(kubernetes_read_error_response(
-            "KUBERNETES_READ_DENIED",
+            kubernetes_read_error_code(&message),
             &message,
         )),
+    }
+}
+
+fn kubernetes_read_error_code(message: &str) -> &'static str {
+    if message.contains("undeclared RBAC")
+        || message.contains("not declared by this operator")
+        || message.contains("does not allow namespace")
+    {
+        "KUBERNETES_READ_DENIED"
+    } else if message.contains("failed:") {
+        "KUBERNETES_READ_FAILED"
+    } else {
+        "KUBERNETES_READ_INVALID"
     }
 }
 
@@ -4063,6 +4300,14 @@ async fn execute_kubernetes_read_value(
         .list(&params)
         .await
         .map_err(|error| format!("Kubernetes list read failed: {error}"))?;
+    tracing::debug!(
+        api_version = %api_version,
+        kind = %kind,
+        namespace = namespace.unwrap_or("<cluster>"),
+        item_count = list.items.len(),
+        continue_token = list.metadata.continue_.as_deref().unwrap_or(""),
+        "Kubernetes list read returned objects"
+    );
     let mut items: Vec<Value> = list
         .items
         .into_iter()
@@ -4893,14 +5138,35 @@ fn start_controller_supervisor(
     tokio::spawn(async move {
         let tasks = controllers.into_iter().map(|runtime_controller| {
             let context = Arc::clone(&context);
+            let secondary = runtime_controller.secondary.clone();
             runtime_controller
                 .controller
                 .run(
-                    |object, context| async move {
-                        context
-                            .host
-                            .reconcile_dynamic_object(&context.bundle, (*object).clone())
-                            .await
+                    move |object, context| {
+                        let secondary = secondary.clone();
+                        async move {
+                            match secondary {
+                                Some(registration) => {
+                                    context
+                                        .host
+                                        .reconcile_secondary_object(
+                                            &context.bundle,
+                                            (*object).clone(),
+                                            &registration,
+                                        )
+                                        .await
+                                }
+                                None => {
+                                    context
+                                        .host
+                                        .reconcile_dynamic_object(
+                                            &context.bundle,
+                                            (*object).clone(),
+                                        )
+                                        .await
+                                }
+                            }
+                        }
                     },
                     |object, error, context| {
                         context
@@ -5326,6 +5592,55 @@ fn api_resource_for_watch(watch: &OwnedResourceWatch) -> Result<ApiResource, Ope
     let mut api_resource = ApiResource::from_gvk(&gvk);
     api_resource.plural = watch.plural.clone();
     Ok(api_resource)
+}
+
+fn secondary_owned_watch(
+    source: &Value,
+    address: Option<&Value>,
+    default_namespace: Option<String>,
+) -> Result<OwnedResourceWatch, OperatorHostError> {
+    let scope = source
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("Namespaced")
+        .to_string();
+    Ok(OwnedResourceWatch {
+        api_version: required_string(source, "apiVersion")?,
+        kind: required_string(source, "kind")?,
+        plural: required_string(source, "plural")?,
+        scope: scope.clone(),
+        namespace: if scope == "Cluster" {
+            None
+        } else {
+            address
+                .and_then(|value| value.get("namespace"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or(default_namespace)
+        },
+        name: address
+            .and_then(|value| value.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        names: address
+            .and_then(|value| value.get("names"))
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        label_selector: address
+            .and_then(|value| value.get("labelSelector"))
+            .cloned(),
+        field_selector: address
+            .and_then(|value| value.get("fieldSelector"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
 }
 
 fn watcher_config_for_watch(watch: &OwnedResourceWatch) -> watcher::Config {

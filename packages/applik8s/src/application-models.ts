@@ -12,6 +12,7 @@ import type { PostgresModelCommandResult } from './model-command-postgres-runtim
 import { createJetStreamEventLog } from './event-log-jetstream-runtime.js';
 import type { EventLogPublishAcknowledgement } from './event-log-jetstream-runtime.js';
 import { analyzeApplicationServerRouteSource, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
+import { normalizeApplicationProcessorOptions, sameApplicationProcessorDeployment, type ApplicationProcessorOptions } from './application-processor-policy.js';
 
 export interface ApplicationModelOptions<TSpec extends object = object, TStatus extends object = Record<string, never>> {
   readonly name?: string;
@@ -72,8 +73,7 @@ export interface ApplicationModelCommandOptions<
   };
   readonly retry?: ApplicationRetryPolicy;
   readonly retention?: Partial<ApplicationCommandRetentionContract>;
-  /** Override the digest-pinned Node runtime image used by the inferred processor. */
-  readonly processor?: { readonly image?: string };
+  readonly processor?: ApplicationProcessorOptions;
 }
 
 export const defaultApplicationCommandRetention: ApplicationCommandRetentionContract = {
@@ -474,14 +474,15 @@ export function recordApplicationModelCommandGraph<
 
   const currentProcessor = state.graphNodes.find((node): node is ApplicationProcessorNode => node.id === processorNodeId && node.kind === 'processor');
   const currentHandlers = currentProcessor?.kind === 'processor' ? currentProcessor.handlers : [];
-  const requestedProcessorImage = options.processor?.image?.trim();
-  if (options.processor?.image !== undefined && !requestedProcessorImage) {
-    throw new Error(`Model ${model.name} command ${command.id} processor.image must be a non-empty OCI image reference.`);
-  }
+  const requestedProcessor = normalizeApplicationProcessorOptions(`Model ${model.name} command ${command.id}`, options.processor, currentProcessor?.deployment);
+  const requestedProcessorImage = requestedProcessor.image;
   if (requestedProcessorImage && currentProcessor?.runtimeImage && requestedProcessorImage !== currentProcessor.runtimeImage) {
     throw new Error(`Model ${model.name} command ${command.id} requests processor image ${requestedProcessorImage}, but shared processor ${processorName} already uses ${currentProcessor.runtimeImage}.`);
   }
   const runtimeImage = requestedProcessorImage ?? currentProcessor?.runtimeImage;
+  if (currentProcessor && !sameApplicationProcessorDeployment(requestedProcessor.deployment, currentProcessor.deployment)) {
+    throw new Error(`Model ${model.name} command ${command.id} requests a processor deployment policy that conflicts with shared processor ${processorName}. Configure every command on the model with the same processor policy.`);
+  }
   addApplicationGraphNode(state, {
     id: processorNodeId,
     kind: 'processor',
@@ -490,10 +491,11 @@ export function recordApplicationModelCommandGraph<
     handlers: [...currentHandlers, { nodeId: handlerNodeId }],
     runtime: 'node',
     ...(runtimeImage ? { runtimeImage } : {}),
+    deployment: currentProcessor?.deployment ?? requestedProcessor.deployment,
     inference: 'generated',
     lifecycle: 'longLived',
     eventLog: { interface: 'EventLog', nodeId: applicationProviderNodeId('EventLog') },
-    generatedResources: applicationCommandProcessorGeneratedResources(processorName, model.runtime, eventLog),
+    generatedResources: applicationCommandProcessorGeneratedResources(processorName, model.runtime, eventLog, currentProcessor?.deployment ?? requestedProcessor.deployment),
   });
 
   addApplicationGraphEdge(state, { from: { nodeId: handlerNodeId }, to: { nodeId: modelNodeId }, relationship: 'dependsOn' });
@@ -704,6 +706,7 @@ function applicationCommandProcessorGeneratedResources(
   processorName: string,
   model: ApplicationRuntimeModelContract,
   eventLog: ApplicationEventLogProvider,
+  deployment: ApplicationProcessorNode['deployment'],
 ): readonly ApplicationGeneratedResourceContract[] {
   const name = kubernetesNameSegment(processorName);
   const namespace = model.secretNamespace ?? eventLog.namespace;
@@ -717,6 +720,8 @@ function applicationCommandProcessorGeneratedResources(
   return [
     { role: 'workload', graphNode: { nodeId }, resource: resource('apps/v1', 'Deployment', name), artifact: { kind: 'kubernetesManifest', name: `${name}.yaml` } },
     { role: 'policy', graphNode: { nodeId }, resource: resource('networking.k8s.io/v1', 'NetworkPolicy', name), artifact: { kind: 'kubernetesManifest', name: `${name}-network-policy.yaml` } },
+    // typecast: preserve generated-resource discriminants through the conditional PDB collection.
+    ...('disabled' in deployment.disruption ? [] : [{ role: 'policy' as const, graphNode: { nodeId }, resource: resource('policy/v1', 'PodDisruptionBudget', name), artifact: { kind: 'kubernetesManifest' as const, name: `${name}-pod-disruption-budget.yaml` } }]),
     { role: 'runtimeBundle', graphNode: { nodeId }, resource: resource('v1', 'ConfigMap', `${name}-source`), artifact: { kind: 'runtimeBundle', name: `${name}-source` } },
     // typecast: preserve discriminants while conditionally adding the TypeKro-owned Stream.
     ...(eventLog.provision === false ? [] : [{ role: 'providerDependency' as const, graphNode: { nodeId }, resource: resource('jetstream.nats.io/v1beta2', 'Stream', kubernetesNameSegment(eventLog.name ?? 'applik8s-events')), artifact: { kind: 'typeKroResource' as const, name: kubernetesNameSegment(eventLog.name ?? 'applik8s-events') } }]),

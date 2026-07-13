@@ -1,0 +1,230 @@
+{
+  "schemaVersion": 1,
+  "release": "v0.4.1",
+  "generatedAt": "2026-07-13T01:09:50.804Z",
+  "git": {
+    "commit": "171da4d79e8863921d12c07352a929e9839a60da",
+    "dirty": true,
+    "workingTreeDigest": "sha256:0b9c111066728b4b10117271a1f4760e94166c4296065db9f1239014c802e763"
+  },
+  "environment": {
+    "platform": "darwin",
+    "release": "25.3.0",
+    "architecture": "arm64",
+    "cpuModel": "Apple M5 Max",
+    "cpuCount": 18,
+    "totalMemoryBytes": 137438953472,
+    "freeMemoryBytes": 44589268992,
+    "runtime": "bun-1.3.13",
+    "homeRedacted": true
+  },
+  "scheduler": {
+    "operations": 1000,
+    "concurrency": 8,
+    "durationMs": 146.04,
+    "throughputPerSecond": 6847.28,
+    "taskLatencyMs": {
+      "p50": 1.15,
+      "p95": 1.38,
+      "p99": 1.63,
+      "maximum": 1.93
+    },
+    "maximumActive": 8,
+    "rssGrowthBytes": 3342336,
+    "heapGrowthBytes": 984694
+  },
+  "coldStart": {
+    "samples": 5,
+    "importLatencyMs": {
+      "p50": 71.78,
+      "p95": 72.93,
+      "p99": 72.93,
+      "maximum": 72.93
+    }
+  },
+  "databaseContention": {
+    "sameKey": {
+      "name": "same-key",
+      "operations": 200,
+      "concurrency": 8,
+      "durationMs": 567.9,
+      "throughputPerSecond": 352.18,
+      "latencyMs": {
+        "p50": 21.98,
+        "p95": 26.69,
+        "p99": 37.42,
+        "maximum": 43.45
+      }
+    },
+    "distinctKeys": {
+      "name": "distinct-keys",
+      "operations": 200,
+      "concurrency": 8,
+      "durationMs": 150.54,
+      "throughputPerSecond": 1328.53,
+      "latencyMs": {
+        "p50": 5.93,
+        "p95": 7.83,
+        "p99": 9.51,
+        "maximum": 9.58
+      }
+    }
+  },
+  "consumerScaling": {
+    "server": "<redacted>",
+    "scenarios": [
+      {
+        "replicas": 1,
+        "concurrencyPerReplica": 4,
+        "operations": 500,
+        "durationMs": 86.49,
+        "throughputPerSecond": 5781.14
+      },
+      {
+        "replicas": 2,
+        "concurrencyPerReplica": 4,
+        "operations": 500,
+        "durationMs": 57.37,
+        "throughputPerSecond": 8715.08
+      },
+      {
+        "replicas": 4,
+        "concurrencyPerReplica": 4,
+        "operations": 500,
+        "durationMs": 42.27,
+        "throughputPerSecond": 11828.84
+      }
+    ]
+  },
+  "builds": {
+    "imagejob": {
+      "durationMs": 7163.13,
+      "fileCount": 15,
+      "totalBytes": 39144793,
+      "maximumFileBytes": 36882458,
+      "maximumJavaScriptBytes": 489841,
+      "maximumWasmBytes": 36882458,
+      "largestFiles": [
+        {
+          "path": "wasm/handler.wasm",
+          "extension": ".wasm",
+          "sizeBytes": 36882458
+        },
+        {
+          "path": "bundle/handler.esbuild-meta.json",
+          "extension": ".json",
+          "sizeBytes": 850847
+        },
+        {
+          "path": "bundle/handler.js.map",
+          "extension": ".map",
+          "sizeBytes": 850796
+        },
+        {
+          "path": "bundle/handler.js",
+          "extension": ".js",
+          "sizeBytes": 489841
+        },
+        {
+          "path": "contract/runtime-contract.json",
+          "extension": ".json",
+          "sizeBytes": 37199
+        },
+        {
+          "path": "operator-manifest.json",
+          "extension": ".json",
+          "sizeBytes": 12483
+        },
+        {
+          "path": "kubernetes/deployment-image-pipeline.yaml",
+          "extension": ".yaml",
+          "sizeBytes": 6582
+        },
+        {
+          "path": "kubernetes/customresourcedefinition-imagejobs.media.applik8s.dev.yaml",
+          "extension": ".yaml",
+          "sizeBytes": 3910
+        }
+      ]
+    },
+    "tenant": {
+      "durationMs": 8615.51,
+      "fileCount": 74,
+      "totalBytes": 38863776,
+      "maximumFileBytes": 25568996,
+      "maximumJavaScriptBytes": 1081981,
+      "maximumWasmBytes": 25568996,
+      "largestFiles": [
+        {
+          "path": "operators/tenant-controller/wasm/handler.wasm",
+          "extension": ".wasm",
+          "sizeBytes": 25568996
+        },
+        {
+          "path": "typekro/resources.yaml",
+          "extension": ".yaml",
+          "sizeBytes": 2940651
+        },
+        {
+          "path": "typekro/resources.json",
+          "extension": ".json",
+          "sizeBytes": 2862623
+        },
+        {
+          "path": "typekro/resources/02-resourcegraphdefinition-tenant-platform.yaml",
+          "extension": ".yaml",
+          "sizeBytes": 1526402
+        },
+        {
+          "path": "operators/tenant-controller/bundle/handler.js.map",
+          "extension": ".map",
+          "sizeBytes": 1201191
+        },
+        {
+          "path": "operators/tenant-controller/bundle/handler.js",
+          "extension": ".js",
+          "sizeBytes": 1081981
+        },
+        {
+          "path": "operators/tenant-controller/bundle/handler.esbuild-meta.json",
+          "extension": ".json",
+          "sizeBytes": 862083
+        },
+        {
+          "path": "typekro/processors/account-commands/processor.mjs.map",
+          "extension": ".map",
+          "sizeBytes": 758021
+        }
+      ]
+    }
+  },
+  "capacityScenarios": [
+    {
+      "replicas": 1,
+      "concurrencyPerReplica": 8,
+      "maximumInFlight": 8,
+      "requestedCpuMillicores": 50,
+      "requestedMemoryMiB": 128,
+      "limitedCpuMillicores": 1000,
+      "limitedMemoryMiB": 512
+    },
+    {
+      "replicas": 2,
+      "concurrencyPerReplica": 8,
+      "maximumInFlight": 16,
+      "requestedCpuMillicores": 100,
+      "requestedMemoryMiB": 256,
+      "limitedCpuMillicores": 2000,
+      "limitedMemoryMiB": 1024
+    },
+    {
+      "replicas": 4,
+      "concurrencyPerReplica": 8,
+      "maximumInFlight": 32,
+      "requestedCpuMillicores": 200,
+      "requestedMemoryMiB": 512,
+      "limitedCpuMillicores": 4000,
+      "limitedMemoryMiB": 2048
+    }
+  ]
+}

@@ -15,6 +15,13 @@ export interface ResourceEventSources<TSpec extends object, TStatus extends obje
 export interface ContextResourceEventSources<TSpec extends object, TStatus extends object, TCapabilities extends CapabilityClientSet = CapabilityClientSet> { reconcile(handler: Handler<TSpec, TStatus, TCapabilities>): HandlerRegistration<TSpec, TStatus, TCapabilities>; created(handler: Handler<TSpec, TStatus, TCapabilities>): HandlerRegistration<TSpec, TStatus, TCapabilities>; updated(handler: Handler<TSpec, TStatus, TCapabilities>): HandlerRegistration<TSpec, TStatus, TCapabilities>; deleted(handler: Handler<TSpec, TStatus, TCapabilities>): HandlerRegistration<TSpec, TStatus, TCapabilities>; finalize(handler: Handler<TSpec, TStatus, TCapabilities>, options?: FinalizeHandlerOptions): HandlerRegistration<TSpec, TStatus, TCapabilities>; statusChanged(handler: Handler<TSpec, TStatus, TCapabilities>): HandlerRegistration<TSpec, TStatus, TCapabilities>; }
 export interface FinalizeHandlerOptions { readonly finalizer?: string; readonly finalizers?: readonly string[]; }
 export interface ResourceWatchAddress { readonly namespace?: NamespaceName; readonly name?: KubernetesName; readonly names?: readonly KubernetesName[]; readonly labelSelector?: LabelSelector; readonly fieldSelector?: string; }
+export interface SecondaryWatchRegistration {
+  readonly source: Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>;
+  readonly target: Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>;
+  readonly watch?: ResourceWatchAddress;
+  /** Explicit bounded fan-out. Target instances are listed and reconciled when the source changes. */
+  readonly mapper: { readonly mode: 'all'; readonly namespace?: 'source' | 'operator' | 'all' };
+}
 export interface HandlerRegistration<TSpec extends object, TStatus extends object, TCapabilities extends CapabilityClientSet = CapabilityClientSet> { readonly id: HandlerId; readonly event: HandlerEventType; readonly resource: ResourceDefinition<TSpec, TStatus, TCapabilities>; readonly handlerStyle?: HandlerApiStyle; readonly sourceLocation?: SourceLocation; readonly finalizers?: readonly string[]; readonly watch?: ResourceWatchAddress; readonly permissions?: readonly PermissionRule[]; }
 export interface HandlerRegistrationSummary { readonly id: HandlerId; readonly event: HandlerEventType; readonly handlerStyle?: HandlerApiStyle; readonly sourceLocation?: SourceLocation; readonly finalizers?: readonly string[]; readonly watch?: ResourceWatchAddress; readonly permissions?: readonly PermissionRule[]; }
 export type AnyHandlerRegistration = HandlerRegistrationSummary;

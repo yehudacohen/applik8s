@@ -23,4 +23,4 @@ for (const packageName of packages) {
 }
 
 await cp(join(root, 'packages/applik8s/src/node-build-runner.mjs'), join(root, 'packages/applik8s/dist/node-build-runner.mjs'));
-await chmod(join(root, 'packages/applik8s/dist/cli.js'), 0o755);
+await chmod(join(root, 'packages/applik8s/dist/bin.js'), 0o755);

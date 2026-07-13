@@ -12,7 +12,7 @@ const publishablePackages = [
   'packages/typetainer/package.json',
 ];
 
-const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.4.0';
+const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.4.1';
 const releaseLabel = `v${expectedVersion}`;
 const publishablePackageNames = new Set();
 
@@ -45,6 +45,7 @@ const requiredDocs = [
   'docs/release-evidence-v0.2.md',
   'docs/release-evidence-v0.3.md',
   'docs/release-evidence-v0.4.md',
+  'docs/release-evidence-v0.4.1.md',
   'docs/commands.md',
   'docs/guestbook-show-hn.md',
   'docs/kubernetes-compatibility.md',
@@ -76,6 +77,7 @@ const publicReleaseFiles = [
   'docs/commands.md',
   'docs/guestbook-show-hn.md',
   'docs/release-evidence-v0.4.md',
+  'docs/release-evidence-v0.4.1.md',
   'docs/security-model.md',
   'docs/leader-election.md',
   'docs/schema-evolution.md',
