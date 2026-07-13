@@ -14,7 +14,7 @@ on:
     outputs:
       digest:
         description: Published multi-platform manifest digest
-        value: ${{ jobs.publish.outputs.digest }}
+        value: ${{ jobs.assemble.outputs.digest }}
   workflow_dispatch:
     inputs:
       source_ref:
@@ -34,11 +34,9 @@ env:
   IMAGE: ghcr.io/yehudacohen/applik8s-operator-host
 
 jobs:
-  publish:
-    name: Build and publish linux/amd64 + linux/arm64
+  validate:
+    name: Validate immutable release inputs
     runs-on: ubuntu-latest
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Validate immutable release inputs
         env:
@@ -54,14 +52,26 @@ jobs:
             exit 1
           fi
 
+  build:
+    name: Build ${{ matrix.platform }} natively
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            suffix: amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            suffix: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
       - name: Checkout released source
         uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           ref: ${{ inputs.source_ref }}
           persist-credentials: false
-
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
       - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -73,21 +83,50 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish immutable release image
-        id: build
+      - name: Build and publish native platform image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: Dockerfile.operator-host
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ env.IMAGE }}:${{ inputs.image_tag }}
+          tags: ${{ env.IMAGE }}:${{ inputs.image_tag }}-${{ matrix.suffix }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ inputs.source_ref }}
             org.opencontainers.image.version=${{ inputs.image_tag }}
+          cache-from: type=gha,scope=operator-host-${{ matrix.suffix }}
+          cache-to: type=gha,mode=max,scope=operator-host-${{ matrix.suffix }}
           provenance: mode=max
           sbom: true
+
+  assemble:
+    name: Assemble and verify multi-platform image
+    needs:
+      - validate
+      - build
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.inspect.outputs.digest }}
+    steps:
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assemble immutable release manifest
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          docker buildx imagetools create \
+            --tag "$IMAGE:$IMAGE_TAG" \
+            "$IMAGE:$IMAGE_TAG-amd64" \
+            "$IMAGE:$IMAGE_TAG-arm64"
 
       - name: Make package public
         env:
@@ -95,10 +134,16 @@ jobs:
         run: gh api --method PATCH /user/packages/container/applik8s-operator-host -f visibility=public
 
       - name: Verify published platforms and record digest
+        id: inspect
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
           IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
+          DIGEST="$(docker buildx imagetools inspect "$IMAGE:$IMAGE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          if [[ ! "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "published manifest did not produce a sha256 digest: $DIGEST" >&2
+            exit 1
+          fi
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           docker buildx imagetools inspect "$IMAGE@$DIGEST" | tee /tmp/operator-host-manifest.txt
           grep -q 'Platform:.*linux/amd64' /tmp/operator-host-manifest.txt
           grep -q 'Platform:.*linux/arm64' /tmp/operator-host-manifest.txt
