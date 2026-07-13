@@ -1,6 +1,10 @@
 import { fileURLToPath, URL } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
+// Live source-tree tests intentionally exercise the just-built Rust host.
+// Published consumers use the compiler's immutable default instead.
+process.env.APPLIK8S_BASE_IMAGE ??= 'ghcr.io/applik8s/applik8s-operator-host:dev';
+
 export default defineConfig({
   resolve: {
     alias: workspaceAliases(),

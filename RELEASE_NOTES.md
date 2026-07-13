@@ -1,5 +1,13 @@
 # Release Notes
 
+## v0.4.2
+
+v0.4.2 closes the operator-image distribution gap in v0.4.1. The release publishes the Rust operator host to public GHCR for `linux/amd64` and `linux/arm64`, pins the compiler default to an immutable tagged manifest digest, and verifies a clean npm consumer can compile and build an operator from the public host before the GitHub release is created.
+
+Generated operators now run as uid/gid `65532` with `RuntimeDefault` seccomp, a read-only root filesystem, dropped capabilities, disabled privilege escalation, and a bounded writable `/tmp`. The v0.4.2 host build recipe pins its Rust and Debian bases and selects the same non-root identity when run directly. Local source-tree tests and generated `apply.sh` retain an explicit base-image build-argument override without weakening the release default.
+
+The release process also adds an expiring npm audit baseline over the complete candidate dependency graph. It distinguishes seven source advisories from npm's propagated parent-package count, documents the TypeKro and ComponentizeJS roots, fails on new or changed advisories, and treats the remaining build-tool findings as explicit remediation/containment work rather than runtime-image findings.
+
 ## v0.4.1
 
 v0.4.1 is an optimization and capacity-hardening release. It preserves v0.4 command semantics while adding validated manual processor replicas/concurrency/resources/placement/disruption policy, multi-replica JetStream consumer lowering, bounded runtime scheduling modules, minified WASM handler bundles, and environment-tagged benchmark history for build size/time, cold start, memory, PostgreSQL contention, JetStream scaling, and capacity cost units.

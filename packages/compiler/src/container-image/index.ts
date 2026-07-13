@@ -2,13 +2,15 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import type { OperatorManifest, Result } from '@applik8s/core';
-import { imageRefString } from '@applik8s/typetainer';
+import { imageRefString, type ImageRefInput } from '@applik8s/typetainer';
 
 const execFileAsync = promisify(execFile);
 
 export interface RuntimeImageBuildRequest {
   readonly manifest: OperatorManifest;
   readonly docker?: string;
+  /** Explicit local/test base image override. Release artifacts remain pinned in the manifest and Dockerfile default. */
+  readonly baseImage?: ImageRefInput;
 }
 
 export interface RuntimeImageBuildResult {
@@ -24,9 +26,11 @@ export async function buildImplicitRuntimeImage(request: RuntimeImageBuildReques
   }
 
   const image = imageRefString(recipe.image);
+  const baseImage = request.baseImage ?? process.env.APPLIK8S_BASE_IMAGE;
   try {
     const { stdout, stderr } = await execFileAsync(request.docker ?? 'docker', [
       'build',
+      ...(baseImage ? ['--build-arg', `APPLIK8S_BASE_IMAGE=${imageRefString(baseImage)}`] : []),
       '--file',
       recipe.build.dockerfile,
       '--tag',

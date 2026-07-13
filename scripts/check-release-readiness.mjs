@@ -12,7 +12,7 @@ const publishablePackages = [
   'packages/typetainer/package.json',
 ];
 
-const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.4.1';
+const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.4.2';
 const releaseLabel = `v${expectedVersion}`;
 const publishablePackageNames = new Set();
 
@@ -37,6 +37,7 @@ const requiredDocs = [
   'docs/troubleshooting.md',
   'docs/release-gates.md',
   'docs/runtime-image.md',
+  'docs/build-supply-chain.md',
   'docs/scale-boundaries.md',
   'docs/positioning.md',
   'docs/future-surface.md',
@@ -46,6 +47,7 @@ const requiredDocs = [
   'docs/release-evidence-v0.3.md',
   'docs/release-evidence-v0.4.md',
   'docs/release-evidence-v0.4.1.md',
+  'docs/release-evidence-v0.4.2.md',
   'docs/commands.md',
   'docs/guestbook-show-hn.md',
   'docs/kubernetes-compatibility.md',
@@ -64,9 +66,13 @@ const publicReleaseFiles = [
   'scripts/build-publishable-packages.mjs',
   'scripts/package-publish-dry-run.mjs',
   'scripts/package-consumer-smoke.mjs',
+  'scripts/check-package-audit.mjs',
+  'scripts/published-release-orbstack-smoke.mjs',
   'scripts/publish-packages.mjs',
+  'security/npm-audit-baseline.json',
   '.github/workflows/ci.yml',
   '.github/workflows/deploy.yml',
+  '.github/workflows/operator-host-image.yml',
   '.github/workflows/release-evidence.yml',
   ...publishablePackages,
   ...requiredDocs,
@@ -78,7 +84,9 @@ const publicReleaseFiles = [
   'docs/guestbook-show-hn.md',
   'docs/release-evidence-v0.4.md',
   'docs/release-evidence-v0.4.1.md',
+  'docs/release-evidence-v0.4.2.md',
   'docs/security-model.md',
+  'docs/build-supply-chain.md',
   'docs/leader-election.md',
   'docs/schema-evolution.md',
   'docs/contract-evolution.md',

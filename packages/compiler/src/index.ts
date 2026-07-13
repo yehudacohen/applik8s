@@ -7,6 +7,7 @@ export * from './discovery/index.js';
 export * from './kubernetes-yaml/index.js';
 export * from './kubernetes-schema/index.js';
 export * from './manifest/index.js';
+export * from './operator-host-image.js';
 export * from './pipeline/index.js';
 export * from './runtime-contract/index.js';
 export * from './wasm-component/index.js';

@@ -35,6 +35,7 @@ import type {
 } from '../interfaces.js';
 import { emitOperatorKubernetesYaml } from '../kubernetes-yaml/index.js';
 import { buildOperatorManifest } from '../manifest/index.js';
+import { DEFAULT_OPERATOR_HOST_IMAGE_REFERENCE } from '../operator-host-image.js';
 import { emitHandlerWitArtifact, emitRuntimeContractArtifact } from '../runtime-contract/index.js';
 import { emitWasmComponentArtifact } from '../wasm-component/index.js';
 
@@ -1569,15 +1570,19 @@ function emitRuntimeImageDockerfile(manifest: OperatorManifest): string {
   }
   const labels = container.build?.labels ?? {};
   const labelLines = Object.entries(labels).map(([key, value]) => `${JSON.stringify(key)}=${JSON.stringify(value)}`);
+  const baseImageArgument = ['$', '{APPLIK8S_BASE_IMAGE}'].join('');
   return [
-    `FROM ${imageRefString(container.baseImage)}`,
+    `ARG APPLIK8S_BASE_IMAGE=${imageRefString(container.baseImage)}`,
+    `FROM ${baseImageArgument}`,
     '',
     ...(labelLines.length > 0 ? [`LABEL ${labelLines.join(' ')}`, ''] : []),
+    'USER 0:0',
     'RUN mkdir -p /etc/applik8s /handler',
-    ...container.files.flatMap((file) => [`COPY ${file.source} ${file.destination}`, ...(file.mode ? [`RUN chmod ${file.mode} ${file.destination}`] : [])]),
+    ...container.files.flatMap((file) => [`COPY --chown=65532:65532 ${file.source} ${file.destination}`, ...(file.mode ? [`RUN chmod ${file.mode} ${file.destination}`] : [])]),
     '',
     'ENV APPLIK8S_MANIFEST_PATH=/etc/applik8s/operator-manifest.json',
     'ENV APPLIK8S_HANDLER_PATH=/handler/handler.wasm',
+    'USER 65532:65532',
     '',
   ].join('\n');
 }
@@ -1588,7 +1593,7 @@ function emitStandaloneApplyScript(manifest: OperatorManifest): string {
     throw new Error('Operator manifest is missing the implicit runtime image build recipe.');
   }
   const image = imageRefString(container.image);
-  const baseImage = container.baseImage ? imageRefString(container.baseImage) : 'ghcr.io/applik8s/applik8s-operator-host:dev';
+  const baseImage = container.baseImage ? imageRefString(container.baseImage) : DEFAULT_OPERATOR_HOST_IMAGE_REFERENCE;
   const namespace = manifest.metadata.annotations?.['applik8s.dev/namespace'] ?? '';
   const shDefault = (name: string, fallback: string) => ['$', `{${name}:-${fallback}}`].join('');
   return [
@@ -1611,7 +1616,7 @@ function emitStandaloneApplyScript(manifest: OperatorManifest): string {
     '  "$DOCKER" build --file "$BASE_DOCKERFILE" --tag "$BASE_IMAGE" "$BASE_CONTEXT"',
     'fi',
     '',
-    `"$DOCKER" build --file "$SCRIPT_DIR/${container.build.dockerfile}" --tag "$IMAGE" "$SCRIPT_DIR"`,
+    `"$DOCKER" build --build-arg "APPLIK8S_BASE_IMAGE=$BASE_IMAGE" --file "$SCRIPT_DIR/${container.build.dockerfile}" --tag "$IMAGE" "$SCRIPT_DIR"`,
     `if [ "${shDefault('APPLIK8S_PUSH_IMAGE', '0')}" = "1" ]; then`,
     '  "$DOCKER" push "$IMAGE"',
     'fi',

@@ -26,4 +26,6 @@ The WASM boundary does not prove handler logic is correct or idempotent. Handler
 
 Replay artifacts, source maps, logs, status messages, and generated bundles can contain sensitive metadata. Full-payload replay capture must be treated as sensitive.
 
-See `docs/security-model.md` for the full current security model.
+The npm compiler/TypeKro tree is a build-control-plane boundary even though it is absent from generated runtime images. See `docs/build-supply-chain.md` for the audited dependency graph, expiring reviewed baseline, and containment requirements.
+
+See `docs/security-model.md` for the full current runtime security model.
