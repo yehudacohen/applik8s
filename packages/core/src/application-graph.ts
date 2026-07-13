@@ -287,10 +287,26 @@ export interface ApplicationProcessorNode extends ApplicationGraphNodeBase<'proc
   readonly handlers: readonly ApplicationGraphNodeRef[];
   readonly runtime: 'node';
   readonly runtimeImage?: string;
+  readonly deployment: ApplicationProcessorDeploymentContract;
   readonly inference: 'generated';
   readonly lifecycle: 'longLived';
   readonly eventLog?: ApplicationProviderRef<'EventLog'>;
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
+}
+
+export interface ApplicationProcessorDeploymentContract {
+  /** Manually selected processor replicas. Automatic lag-based scaling remains outside v0.4.1. */
+  readonly replicas: number;
+  /** Maximum concurrently executing messages in each processor pod. */
+  readonly concurrency: number;
+  /** Durable-consumer delivery window shared by all replicas. */
+  readonly maxAckPending: number;
+  readonly resources: {
+    readonly requests: { readonly cpu: string; readonly memory: string };
+    readonly limits: { readonly cpu: string; readonly memory: string };
+  };
+  readonly disruption: { readonly maxUnavailable: number } | { readonly minAvailable: number } | { readonly disabled: true };
+  readonly nodeSelector?: Readonly<Record<string, string>>;
 }
 
 export interface ApplicationModelRuntimeContract {
@@ -2443,6 +2459,15 @@ function applicationProcessorNodeStructureDiagnostics(node: ApplicationProcessor
     if (!handlerIds.has(handler.nodeId)) {
       diagnostics.push(applicationGraphStructureDiagnostic(`Application processor node ${node.id} references missing command handler ${handler.nodeId}.`));
     }
+  }
+  if (!node.deployment || !Number.isInteger(node.deployment.replicas) || node.deployment.replicas < 1 || node.deployment.replicas > 32) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application processor node ${node.id} deployment.replicas must be an integer between 1 and 32.`));
+  }
+  if (!node.deployment || !Number.isInteger(node.deployment.concurrency) || node.deployment.concurrency < 1 || node.deployment.concurrency > 64) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application processor node ${node.id} deployment.concurrency must be an integer between 1 and 64.`));
+  }
+  if (node.deployment && (!Number.isInteger(node.deployment.maxAckPending) || node.deployment.maxAckPending < node.deployment.replicas * node.deployment.concurrency || node.deployment.maxAckPending > 65_536)) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application processor node ${node.id} deployment.maxAckPending must be an integer between replicas * concurrency and 65536.`));
   }
   return diagnostics;
 }

@@ -2,6 +2,8 @@ import { connect, type ConsumerMessages, type JsMsg, type NatsConnection, type J
 import type { ApplicationMessageEnvelope } from './dsl.js';
 import type { ApplicationModelCommandDeliveryOptions } from './application-models.js';
 import { isDurableCommandRejectedError } from './model-command-postgres-runtime.js';
+import { consumeWithBoundedConcurrency } from './bounded-concurrency.js';
+import { commandProcessorBindingFor } from './model-command-binding-index.js';
 
 export interface ApplicationCommandProcessorBinding {
   readonly bindingId: string;
@@ -74,7 +76,7 @@ export async function handleJetStreamCommandMessage(
     return 'terminated';
   }
 
-  const binding = options.bindings.find((candidate) => candidate.contract.name === envelope.contract.name && candidate.contract.version === envelope.contract.version);
+  const binding = commandProcessorBindingFor(options.bindings, envelope.contract);
   if (!binding || (envelope.routing?.binding && envelope.routing.binding !== binding.bindingId)) {
     message.term('unknown applik8s command binding');
     processorLog(options, 'applik8s-command-binding-missing', { messageId: envelope.id, contract: envelope.contract, requestedBinding: envelope.routing?.binding });
@@ -136,16 +138,10 @@ export async function consumeJetStreamCommandMessages(
   jetStream: JetStreamClient,
   options: JetStreamCommandProcessorOptions,
 ): Promise<void> {
-  const concurrency = Math.max(1, options.concurrency ?? 1);
-  const active = new Set<Promise<void>>();
   try {
-    for await (const message of messages) {
-      const task = handleJetStreamCommandMessage(message, jetStream, options).then(() => undefined);
-      active.add(task);
-      void task.then(() => active.delete(task), () => active.delete(task));
-      if (active.size >= concurrency) await Promise.race(active);
-    }
-    await Promise.all(active);
+    await consumeWithBoundedConcurrency(messages, options.concurrency ?? 1, async (message) => {
+      await handleJetStreamCommandMessage(message, jetStream, options);
+    });
   } finally {
     if (!connection.isClosed()) await connection.flush();
   }

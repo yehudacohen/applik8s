@@ -1481,7 +1481,7 @@ describe('TypeKro adapter operation targets', () => {
     }
   }, 120_000);
 
-  it('fails early when statically serialized TypeKro handlers reference module-scope helpers', async () => {
+  it('serializes reachable top-level TypeKro handler constants without importing the authoring module', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-typekro-static-handler-diagnostic-'));
     try {
       const entrypoint = join(dir, 'media-stack.mjs');
@@ -1547,12 +1547,10 @@ describe('TypeKro adapter operation targets', () => {
         },
       });
 
-      expect(compiled.ok).toBe(false);
-      if (!compiled.ok) {
-        expect(compiled.error.message).toContain('cannot be statically bundled');
-        expect(compiled.error.message).toContain('phaseFromModuleScope');
-        expect(compiled.error.message).toContain('app-level reconcile callback references module-scope identifier(s)');
-        expect(compiled.error.message).toContain('Keep plain constants and helper functions inside the reconcile handler');
+      expect(compiled.ok).toBe(true);
+      if (compiled.ok) {
+        const handlerBundle = await readFile(join(dir, 'dist', 'operators', 'static-diagnostic-image-pipeline', 'bundle', 'handler.js'), 'utf8');
+        expect(handlerBundle).toContain('Processing');
       }
     } finally {
       await rm(dir, { recursive: true, force: true });

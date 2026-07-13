@@ -41,7 +41,7 @@ bun run check:release
 The checker verifies:
 
 - publishable package metadata
-- version `0.4.0` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
+- version `0.4.1` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
 - Apache-2.0 license metadata
 - public publish config
 - no `file:` dependency ranges in publishable packages
@@ -185,7 +185,7 @@ Before announcing v0.3, capture:
 
 ## Publishing
 
-Publishing is tag-driven. Push tag `v0.4.0` only after the complete v0.4 gate passes. The deploy workflow requires npm trusted publishing to be configured for each `@applik8s/*` package and this repository workflow.
+Publishing is tag-driven. Push tag `v0.4.1` only after the complete v0.4.1 gate passes. The deploy workflow requires npm trusted publishing to be configured for each `@applik8s/*` package and this repository workflow.
 
 Validate package contents and imports from unpacked tarballs before tagging:
 

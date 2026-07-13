@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
 import type {
@@ -761,7 +761,9 @@ class MinimalCompileOperatorPipeline implements CompileOperatorPipeline {
     const layout = compilerArtifactLayout({ outDir: outputDirectory(request) });
     await mkdir(layout.bundleDir, { recursive: true });
     const hasCapabilities = Boolean(selected.value.capabilities && Object.keys(selected.value.capabilities).length > 0);
-    const dispatcher = generatedDispatcherEntrypoint(request.entrypoint, selected.value, hasCapabilities, true, request.dispatcherMode ?? 'importEntrypoint');
+    // Runtime dispatch is metadata-first: authored ArkType graphs and the user
+    // entrypoint must never be reconstructed inside each WASM invocation.
+    const dispatcher = generatedDispatcherEntrypoint(request.entrypoint, selected.value, hasCapabilities, true, request.dispatcherMode ?? 'staticSerializable');
     if (!dispatcher.ok) {
       return dispatcher;
     }
@@ -932,35 +934,12 @@ function deferTemporaryDirectoryCleanup(directory: string): void {
   });
 }
 
-function generatedDispatcherEntrypoint(userEntrypoint: string, operator: OperatorDefinition, hasCapabilities: boolean, hasKubernetesRead: boolean, mode: CompileOperatorRequest['dispatcherMode']): Result<string> {
-  const staticOperator = staticSerializableOperatorSource(operator);
+function generatedDispatcherEntrypoint(userEntrypoint: string, operator: OperatorDefinition, hasCapabilities: boolean, hasKubernetesRead: boolean, _mode: CompileOperatorRequest['dispatcherMode']): Result<string> {
+  const staticOperator = staticSerializableOperatorSource(operator, userEntrypoint);
   if (staticOperator.ok) {
     return { ok: true, value: dispatcherProgram(staticOperator.value.source, hasCapabilities, hasKubernetesRead, staticOperator.value.imports) };
   }
-  if (mode === 'staticSerializable' || operator.handlers.length === 0) {
-    return staticOperator;
-  }
-
-  const operatorName = operator.name;
-  return { ok: true, value: `${hasCapabilities ? "import { capabilityRequest } from 'applik8s:handler/capabilities';\n" : ''}${hasKubernetesRead ? "import { kubernetesRead } from 'applik8s:handler/kubernetes';\n" : ''}
-import { dispatchOperatorHandler } from '@applik8s/sdk';
-import * as userModule from ${JSON.stringify(userEntrypoint)};
-
-const selectedExport = Object.values(userModule).find((value) => Boolean(value && typeof value === 'function' && value.definition?.name === ${JSON.stringify(operatorName)}));
-if (!selectedExport) {
-  throw new Error(${JSON.stringify(`Entrypoint does not export an applik8s operator named ${operatorName}.`)});
-}
-
-export async function handle(inputJson: string): Promise<string> {
-  try {
-    return await dispatchOperatorHandler(selectedExport.definition, inputJson${hasCapabilities || hasKubernetesRead ? `, {${hasCapabilities ? ' capabilityRequest,' : ''}${hasKubernetesRead ? ' kubernetesRead' : ''} }` : ''});
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : 'Handler threw an unknown error.';
-    const stack = cause instanceof Error ? cause.stack : undefined;
-    throw (stack && !stack.includes(message) ? message + '\\n' + stack : (stack ?? message));
-  }
-}
-` };
+  return staticOperator;
 }
 
 function dispatcherProgram(operatorSource: string, hasCapabilities: boolean, hasKubernetesRead: boolean, capturedImports: readonly string[] = []): string {
@@ -981,9 +960,10 @@ export async function handle(inputJson: string): Promise<string> {
 `;
 }
 
-function staticSerializableOperatorSource(operator: OperatorDefinition): Result<{ readonly source: string; readonly imports: readonly string[] }> {
+function staticSerializableOperatorSource(operator: OperatorDefinition, userEntrypoint: string): Result<{ readonly source: string; readonly imports: readonly string[] }> {
   const handlerRegistrations: string[] = [];
   const capturedImports = new Set<string>();
+  const entrypointCaptures = staticEntrypointCaptures(userEntrypoint);
   const resourceIdentifiers = staticResourceIdentifiers(operator.resources);
   const allowedFreeIdentifiers = new Set(resourceIdentifiers.map((resource) => resource.identifier));
   for (const registration of operator.handlers) {
@@ -991,7 +971,7 @@ function staticSerializableOperatorSource(operator: OperatorDefinition): Result<
     if (typeof handler !== 'function') {
       return error('BUNDLE_INVALID', `Handler ${registration.id} cannot be statically bundled because it does not carry a runnable handler function.`);
     }
-    const handlerSource = staticHandlerSource(handler, registration.id, allowedFreeIdentifiers);
+    const handlerSource = staticHandlerSource(handler, registration.id, allowedFreeIdentifiers, entrypointCaptures);
     if (!handlerSource.ok) {
       return handlerSource;
     }
@@ -1022,19 +1002,29 @@ return Object.assign(__operator, { handlers: [${handlerRegistrations.join(', ')}
   };
 }
 
-function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: string, allowedFreeIdentifiers: ReadonlySet<string>): Result<{ readonly source: string; readonly imports: readonly string[] }> {
+interface StaticEntrypointCaptures {
+  readonly declarations: ReadonlyMap<string, readonly string[]>;
+  readonly factoryObjectParameters: ReadonlyMap<string, ReadonlyMap<string, string>>;
+}
+
+function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: string, allowedFreeIdentifiers: ReadonlySet<string>, entrypointCaptures: StaticEntrypointCaptures): Result<{ readonly source: string; readonly imports: readonly string[] }> {
   const source = handler.toString();
   if (source.includes('[native code]')) {
     return error('BUNDLE_INVALID', `Handler ${handlerId} cannot be statically bundled because it is native code.`);
   }
-  const capturedImports = likelyFreeIdentifiers(source)
-    .filter((identifier) => !allowedFreeIdentifiers.has(identifier))
-    .flatMap((identifier) => staticHandlerCapturedImports.get(identifier) ?? []);
-  const freeIdentifiers = likelyFreeIdentifiers(source).filter((identifier) => !allowedFreeIdentifiers.has(identifier) && !staticHandlerCapturedImports.has(identifier));
+  const captures = new Map<string, readonly string[]>();
+  for (const identifier of likelyFreeIdentifiers(source).filter((candidate) => !allowedFreeIdentifiers.has(candidate))) {
+    const capture = staticHandlerCapturedImports.get(identifier)
+      ?? entrypointCaptures.declarations.get(identifier)
+      ?? factoryObjectParameterCapture(identifier, source, entrypointCaptures);
+    if (capture) captures.set(identifier, capture);
+  }
+  const capturedImports = [...captures.values()].flat();
+  const freeIdentifiers = likelyFreeIdentifiers(source).filter((identifier) => !allowedFreeIdentifiers.has(identifier) && !captures.has(identifier));
   if (freeIdentifiers.length > 0) {
     return error(
       'BUNDLE_INVALID',
-      `Handler ${handlerId} cannot be statically bundled. The app-level reconcile callback references module-scope identifier(s) that are not available inside the generated runtime: ${freeIdentifiers.join(', ')}. Keep plain constants and helper functions inside the reconcile handler, or pass literal data through the reconciled resource spec/status so the generated handler is self-contained. Substrate detail: static handler serialization cannot capture JavaScript module scope into the WASM dispatcher.`
+      `Handler ${handlerId} cannot be statically bundled. The reconcile callback references closure-local identifier(s) that cannot be recovered from the module: ${freeIdentifiers.join(', ')}. Move captured values and helper functions to top-level declarations, keep them inside the handler, or pass literal data through the reconciled resource spec/status. Top-level reachable helpers and imports are serialized into the WASM dispatcher; factory-local lexical state fails closed.`
     );
   }
   try {
@@ -1043,6 +1033,197 @@ function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: 
     return error('BUNDLE_INVALID', `Handler ${handlerId} cannot be statically bundled from its function source: ${cause instanceof Error ? cause.message : 'invalid function source'}.`);
   }
   return { ok: true, value: { source, imports: [...new Set(capturedImports)].sort() } };
+}
+
+function factoryObjectParameterCapture(identifier: string, handlerSource: string, captures: StaticEntrypointCaptures): readonly string[] | undefined {
+  const properties = captures.factoryObjectParameters.get(identifier);
+  if (!properties) return undefined;
+  const accessed = directlyAccessedProperties(handlerSource, identifier);
+  if (accessed.length === 0 || accessed.some((property) => !properties.has(property))) return undefined;
+  const selected: Array<readonly [string, string]> = [];
+  for (const property of accessed) {
+    const expression = properties.get(property);
+    if (expression === undefined) return undefined;
+    selected.push([property, expression]);
+  }
+  const dependencies = selected.flatMap(([, expression]) => likelyFreeIdentifiersInStatements(expression)
+    .filter((dependency) => dependency !== identifier)
+    .flatMap((dependency) => captures.declarations.get(dependency) ?? []));
+  const objectSource = selected.map(([property, expression]) => `${JSON.stringify(property)}: (${expression})`).join(', ');
+  return [...new Set([...dependencies, `const ${identifier} = { ${objectSource} };`])];
+}
+
+function directlyAccessedProperties(handlerSource: string, identifier: string): readonly string[] {
+  const file = ts.createSourceFile('applik8s-static-handler-properties.ts', `const __handler = (${handlerSource});`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const properties = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === identifier) {
+      properties.add(node.name.text);
+    } else if (ts.isElementAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === identifier && ts.isStringLiteral(node.argumentExpression)) {
+      properties.add(node.argumentExpression.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return [...properties].sort();
+}
+
+interface StaticModuleRecord {
+  readonly path: string;
+  readonly file: ts.SourceFile;
+}
+
+function staticEntrypointCaptures(entrypoint: string): StaticEntrypointCaptures {
+  const declarations = new Map<string, string>();
+  const packageImports = new Map<string, string>();
+  const localAliases = new Map<string, string>();
+  const modules: StaticModuleRecord[] = [];
+  const visited = new Set<string>();
+
+  const visitModule = (modulePath: string): void => {
+    const absolutePath = resolve(modulePath);
+    if (visited.has(absolutePath)) return;
+    visited.add(absolutePath);
+    let source: string;
+    try {
+      source = readFileSync(absolutePath, 'utf8');
+    } catch {
+      return;
+    }
+    const file = ts.createSourceFile(absolutePath, source, ts.ScriptTarget.Latest, true, scriptKindForPath(absolutePath));
+    modules.push({ path: absolutePath, file });
+    for (const statement of file.statements) {
+      if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+        const specifier = statement.moduleSpecifier.text;
+        const clause = statement.importClause;
+        const localTarget = resolveStaticLocalImport(absolutePath, specifier);
+        if (!localTarget) {
+          const text = statement.getText(file);
+          if (clause?.name && !clause.isTypeOnly) packageImports.set(clause.name.text, text);
+          if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings) && !clause.isTypeOnly) packageImports.set(clause.namedBindings.name.text, text);
+          if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings) && !clause.isTypeOnly) {
+            for (const element of clause.namedBindings.elements) {
+              if (!element.isTypeOnly) packageImports.set(element.name.text, text);
+            }
+          }
+          continue;
+        }
+        visitModule(localTarget);
+        if (clause?.name && !clause.isTypeOnly) localAliases.set(clause.name.text, 'default');
+        if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings) && !clause.isTypeOnly) {
+          for (const element of clause.namedBindings.elements) {
+            if (!element.isTypeOnly) localAliases.set(element.name.text, element.propertyName?.text ?? element.name.text);
+          }
+        }
+        continue;
+      }
+      const declaredNames = runtimeDeclarationNames(statement);
+      if (declaredNames.length === 0) continue;
+      const text = statement.getText(file);
+      for (const name of declaredNames) if (!declarations.has(name)) declarations.set(name, text);
+    }
+  };
+
+  visitModule(resolve(entrypoint));
+
+  const statements = new Map<string, string>();
+  for (const [name, statement] of declarations) statements.set(name, statement);
+
+  const resolved = new Map<string, readonly string[]>();
+  const resolving = new Set<string>();
+  const resolveCapture = (identifier: string): readonly string[] | undefined => {
+    const cached = resolved.get(identifier);
+    if (cached) return cached;
+    const imported = packageImports.get(identifier);
+    if (imported) {
+      const result = [imported];
+      resolved.set(identifier, result);
+      return result;
+    }
+    const aliased = localAliases.get(identifier);
+    const statement = statements.get(identifier) ?? (aliased ? statements.get(aliased) : undefined);
+    if (!statement || resolving.has(identifier)) return undefined;
+    resolving.add(identifier);
+    const dependencies = likelyFreeIdentifiersInStatements(statement)
+      .filter((dependency) => dependency !== identifier)
+      .flatMap((dependency) => resolveCapture(dependency) ?? []);
+    resolving.delete(identifier);
+    const aliasStatement = aliased && aliased !== identifier && aliased !== 'default' ? `const ${identifier} = ${aliased};` : undefined;
+    const result = [...new Set([...dependencies, statement, ...(aliasStatement ? [aliasStatement] : [])])];
+    resolved.set(identifier, result);
+    return result;
+  };
+  for (const identifier of statements.keys()) resolveCapture(identifier);
+  for (const identifier of localAliases.keys()) resolveCapture(identifier);
+
+  const factoryObjectParameters = new Map<string, ReadonlyMap<string, string>>();
+  for (const module of modules) {
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && isTopLevelExpression(node)) {
+        const factoryName = localAliases.get(node.expression.text) ?? node.expression.text;
+        const declarationSource = declarations.get(factoryName);
+        const argument = node.arguments[0];
+        if (declarationSource && argument && ts.isObjectLiteralExpression(argument)) {
+          const declarationFile = ts.createSourceFile('applik8s-static-factory.ts', declarationSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+          const factory = declarationFile.statements.find(ts.isFunctionDeclaration);
+          const parameter = factory?.parameters[0];
+          if (parameter && ts.isIdentifier(parameter.name)) {
+            const properties = new Map<string, string>();
+            for (const property of argument.properties) {
+              if (ts.isPropertyAssignment(property) && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))) {
+                properties.set(property.name.text, property.initializer.getText(module.file));
+              } else if (ts.isShorthandPropertyAssignment(property)) {
+                properties.set(property.name.text, property.name.text);
+              }
+            }
+            if (properties.size > 0 && !factoryObjectParameters.has(parameter.name.text)) factoryObjectParameters.set(parameter.name.text, properties);
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(module.file);
+  }
+  if (process.env.APPLIK8S_DEBUG_STATIC_CAPTURES === '1') {
+    console.error(JSON.stringify({
+      component: 'static-entrypoint-capture-analysis',
+      modules: modules.map((module) => module.path),
+      declarations: [...resolved.keys()].sort(),
+      factoryObjectParameters: [...factoryObjectParameters.entries()].map(([parameter, properties]) => ({ parameter, properties: [...properties.keys()] })),
+    }));
+  }
+  return { declarations: resolved, factoryObjectParameters };
+}
+
+function resolveStaticLocalImport(importer: string, specifier: string): string | undefined {
+  if (!specifier.startsWith('.') && !specifier.startsWith('/')) return undefined;
+  const base = resolve(dirname(importer), specifier);
+  const extension = extname(base);
+  const candidates = [
+    base,
+    ...(extension === '.js' || extension === '.mjs' || extension === '.cjs' ? [base.slice(0, -extension.length) + '.ts', base.slice(0, -extension.length) + '.tsx'] : []),
+    ...(!extension ? [`${base}.ts`, `${base}.tsx`, `${base}.js`, join(base, 'index.ts'), join(base, 'index.tsx'), join(base, 'index.js')] : []),
+  ];
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
+function scriptKindForPath(path: string): ts.ScriptKind {
+  if (path.endsWith('.tsx')) return ts.ScriptKind.TSX;
+  if (path.endsWith('.jsx')) return ts.ScriptKind.JSX;
+  if (path.endsWith('.js') || path.endsWith('.mjs') || path.endsWith('.cjs')) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+function runtimeDeclarationNames(statement: ts.Statement): readonly string[] {
+  if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement) || ts.isEnumDeclaration(statement)) && statement.name) return [statement.name.text];
+  if (!ts.isVariableStatement(statement)) return [];
+  return statement.declarationList.declarations.flatMap((declaration) => ts.isIdentifier(declaration.name) ? [declaration.name.text] : []);
+}
+
+function isTopLevelExpression(node: ts.Node): boolean {
+  let current: ts.Node = node;
+  while (current.parent && !ts.isSourceFile(current.parent)) current = current.parent;
+  return Boolean(current.parent && ts.isSourceFile(current.parent));
 }
 
 const staticHandlerCapturedImports = new Map<string, readonly string[]>([
@@ -1136,8 +1317,16 @@ const staticHandlerKeywords = new Set([
 ]);
 
 function likelyFreeIdentifiers(source: string): readonly string[] {
-  const declared = new Set<string>();
   const file = ts.createSourceFile('applik8s-static-handler.ts', `const __applik8sHandler = (${source});`, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  return likelyFreeIdentifiersInFile(file);
+}
+
+function likelyFreeIdentifiersInStatements(source: string): readonly string[] {
+  return likelyFreeIdentifiersInFile(ts.createSourceFile('applik8s-static-capture.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS));
+}
+
+function likelyFreeIdentifiersInFile(file: ts.SourceFile): readonly string[] {
+  const declared = new Set<string>();
   const collectBindingName = (name: ts.BindingName): void => {
     if (ts.isIdentifier(name)) {
       declared.add(name.text);

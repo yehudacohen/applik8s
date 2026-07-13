@@ -65,6 +65,28 @@ const unsupportedLeaderElectionRuntime: RuntimeConfig = {
 };
 
 describe('compiler artifact vertical slice', () => {
+  it('keeps the public operator entrypoint free of Node-oriented application dependencies', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-operator-entrypoint-'));
+    try {
+      const entrypoint = join(dir, 'handler.ts');
+      await writeFile(entrypoint, `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/applik8s/src/operator.ts'))};
+export function handle(input: string) { return JSON.stringify({ input, recognized: sdk.isApplik8sError({ code: 'X', message: 'x', severity: 'error', context: {} }) }); }
+`);
+      const bundle = await bundleHandlerEntrypoint({ entrypoint, outDir: join(dir, 'bundle') });
+      expect(bundle.ok).toBe(true);
+      if (!bundle.ok) return;
+      const source = await readFile(bundle.value.javascriptBundlePath, 'utf8');
+      // typecast: esbuild owns this JSON artifact and the test reads only its documented input map.
+      const metafile = JSON.parse(await readFile(bundle.value.metafilePath, 'utf8')) as { readonly inputs: Readonly<Record<string, unknown>> };
+      const inputs = Object.keys(metafile.inputs).join('\n');
+      expect(source).not.toMatch(/from\s*["']node:|require\(["']node:/);
+      expect(inputs).not.toMatch(/application-|typekro|postgres|nats|drizzle|commander/);
+      expect(Buffer.byteLength(source)).toBeLessThan(250_000);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects unsupported compile options instead of silently ignoring them', () => {
     const pipeline = createCompilerPipeline();
     const request = {
@@ -454,6 +476,51 @@ describe('compiler artifact vertical slice', () => {
         handlers: ['ImageJob.statusChanged.0'],
       }));
     }
+  });
+
+  it('lowers bounded secondary watches with source-watch and target-list RBAC', () => {
+    const Replica = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'Replica', spec: imageSpecSchema, status: imageStatusSchema });
+    const Deployment = sdk.kubernetes.Deployment;
+    const operator = sdk.operator({
+      name: 'secondary-watch-pipeline',
+      deployment: { namespace: 'media' },
+      resources: { Replica },
+      reads: { Deployment },
+      handlers: [Replica.on.reconcile(() => {})],
+      secondaryWatches: [sdk.watch(Deployment).enqueue(Replica, { namespace: 'operator', watch: { labelSelector: { matchLabels: { app: 'source' } } } })],
+    });
+    const manifest = buildOperatorManifest({ operator: operator.definition, handlerArtifactPath: 'wasm/handler.wasm', handlerArtifactDigest: `sha256:${'a'.repeat(64)}`, runtimeContractPath: 'runtime-contract.json', runtimeContractDigest: `sha256:${'b'.repeat(64)}` });
+    expect(manifest.ok).toBe(true);
+    if (!manifest.ok) return;
+    expect(manifest.value.spec.secondaryWatches).toEqual([expect.objectContaining({
+      source: expect.objectContaining({ apiVersion: 'apps/v1', kind: 'Deployment' }),
+      target: expect.objectContaining({ kind: 'Replica' }),
+      mapper: { mode: 'all', namespace: 'operator' },
+    })]);
+    expect(manifest.value.spec.permissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiGroups: ['apps'], resources: ['deployments'], verbs: expect.arrayContaining(['watch']) }),
+      expect.objectContaining({ apiGroups: ['media.applik8s.dev'], resources: ['replicas'], verbs: expect.arrayContaining(['list', 'watch']) }),
+    ]));
+  });
+
+  it('rejects secondary watch sources that are not declared as resources or reads', () => {
+    const Replica = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'Replica', spec: imageSpecSchema, status: imageStatusSchema });
+    const Deployment = sdk.kubernetes.Deployment;
+    const operator = sdk.operator({
+      name: 'undeclared-secondary-watch-source',
+      resources: { Replica },
+      handlers: [Replica.on.reconcile(() => {})],
+      secondaryWatches: [sdk.watch(Deployment).enqueue(Replica)],
+    });
+    const manifest = buildOperatorManifest({ operator: operator.definition, handlerArtifactPath: 'wasm/handler.wasm', handlerArtifactDigest: `sha256:${'a'.repeat(64)}`, runtimeContractPath: 'runtime-contract.json', runtimeContractDigest: `sha256:${'b'.repeat(64)}` });
+
+    expect(manifest).toEqual(expect.objectContaining({
+      ok: false,
+      error: expect.objectContaining({
+        code: 'BUNDLE_INVALID',
+        message: expect.stringContaining('must be declared under operator resources or reads'),
+      }),
+    }));
   });
 
   it('emits enforceable watch scopes for exact, finite, label, and field routed handlers', () => {
@@ -857,6 +924,7 @@ const Account = platform.model(AccountEntity, { schema: { transactions: 'require
 const Audit = platform.model(AuditEntity, { schema: { transactions: 'required' } });
 Account.on.command(RenameAccount, {
   key: ({ accountId }) => accountId,
+  processor: { replicas: 2, concurrency: 4, maxAckPending: 12, resources: { requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } }, nodeSelector: { 'kubernetes.io/os': 'linux' } },
   idempotencyKey: ({ requestId }) => requestId,
   ordering: 'concurrent',
   missing: { route: 'fallback-account' },
@@ -927,6 +995,7 @@ export const commandStack = platform.composition;
         kind: 'GeneratedCommandProcessor',
         spec: {
           guarantees: { delivery: 'atLeastOnce', authority: 'postgresInboxAndDeclaredOrdering', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
+          capacity: { replicas: 2, concurrencyPerReplica: 4, maximumInFlight: 8, maxAckPending: 12, requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } },
           runtime: { packageManagerAtStartup: false, image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2' },
         },
       });
@@ -940,6 +1009,7 @@ export const commandStack = platform.composition;
               expect.objectContaining({ template: expect.objectContaining({ apiVersion: 'jetstream.nats.io/v1beta2', kind: 'Stream', metadata: expect.objectContaining({ name: 'applik8s-events' }) }) }),
               expect.objectContaining({ template: expect.objectContaining({ apiVersion: 'jetstream.nats.io/v1beta2', kind: 'Consumer', metadata: expect.objectContaining({ name: 'account-commands' }) }) }),
               expect.objectContaining({ template: expect.objectContaining({ apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: expect.objectContaining({ name: 'account-commands' }) }) }),
+              expect.objectContaining({ template: expect.objectContaining({ apiVersion: 'policy/v1', kind: 'PodDisruptionBudget', metadata: expect.objectContaining({ name: 'account-commands' }) }) }),
               expect.objectContaining({ template: expect.objectContaining({ apiVersion: 'apps/v1', kind: 'Deployment', metadata: expect.objectContaining({ name: 'account-commands' }) }) }),
             ]),
           }),
@@ -957,22 +1027,26 @@ export const commandStack = platform.composition;
           kind: 'Deployment',
           metadata: expect.objectContaining({ name: 'account-commands', namespace: 'commands' }),
           spec: expect.objectContaining({
+            replicas: 2,
             strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } },
             template: expect.objectContaining({ spec: expect.objectContaining({
               automountServiceAccountToken: false,
+              nodeSelector: { 'kubernetes.io/os': 'linux' },
+              topologySpreadConstraints: [expect.objectContaining({ maxSkew: 1, topologyKey: 'kubernetes.io/hostname', whenUnsatisfiable: 'ScheduleAnyway' })],
               securityContext: expect.objectContaining({ runAsNonRoot: true, seccompProfile: { type: 'RuntimeDefault' } }),
               containers: [expect.objectContaining({
                 name: 'processor',
                 image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2',
                 imagePullPolicy: 'IfNotPresent',
                 securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
-                resources: { requests: { cpu: '50m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } },
+                resources: { requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } },
                 env: expect.arrayContaining([{ name: 'APPLIK8S_NATS_TOKEN', valueFrom: { secretKeyRef: { name: 'nats-auth', key: 'token', optional: false } } }]),
               })],
             }) }),
           }),
         }),
-        expect.objectContaining({ apiVersion: 'jetstream.nats.io/v1beta2', kind: 'Consumer', metadata: expect.objectContaining({ name: 'account-commands', namespace: 'commands' }), spec: expect.objectContaining({ streamName: 'APPLIK8S_EVENTS', filterSubjects: ['applik8s.commands.account-rename.v1.>'], maxAckPending: 8 }) }),
+        expect.objectContaining({ apiVersion: 'jetstream.nats.io/v1beta2', kind: 'Consumer', metadata: expect.objectContaining({ name: 'account-commands', namespace: 'commands' }), spec: expect.objectContaining({ streamName: 'APPLIK8S_EVENTS', filterSubjects: ['applik8s.commands.account-rename.v1.>'], maxAckPending: 12 }) }),
+        expect.objectContaining({ apiVersion: 'policy/v1', kind: 'PodDisruptionBudget', metadata: expect.objectContaining({ name: 'account-commands', namespace: 'commands' }), spec: expect.objectContaining({ maxUnavailable: 1 }) }),
       ]));
       const applicationRgd = result.value.artifacts.resources.find((resource) => resource.apiVersion === 'kro.run/v1alpha1' && resource.kind === 'ResourceGraphDefinition' && resource.metadata.name === 'command-artifact-platform');
       expect(JSON.stringify(applicationRgd)).not.toContain('"kind":"CustomResourceDefinition"');
@@ -1140,7 +1214,8 @@ export const guestBook = sdk.operator({
       if (result.ok) {
         expect(result.value.manifest.spec.ownedCrds[0]?.kind).toBe('GuestBook');
         const dispatcher = await readFile(join(dir, 'dist', 'bundle', 'handler.js'), 'utf8');
-        expect(dispatcher).toContain('const GuestBookEntry = __operator.resources["GuestBookEntry"]');
+        const generatedDispatcher = await readFile(join(dir, 'dist', 'bundle', 'handler-dispatcher.generated.ts'), 'utf8');
+        expect(generatedDispatcher).toContain('const GuestBookEntry = __operator.resources["GuestBookEntry"]');
         // typecast: esbuild owns this emitted metadata and the test inspects only its documented input path map.
         const metafile = JSON.parse(await readFile(join(dir, 'dist', 'bundle', 'handler.esbuild-meta.json'), 'utf8')) as { readonly inputs: Readonly<Record<string, unknown>> };
         expect(Object.keys(metafile.inputs).some((input) => input.includes('/arktype/'))).toBe(false);
@@ -1212,6 +1287,50 @@ export const guestBook = sdk.operator({
     }
   }, 120_000);
 
+  it('captures handlers from a transitively imported operator factory without retaining unused authoring dependencies', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-imported-operator-factory-'));
+    try {
+      const helper = join(dir, 'helper.ts');
+      const factory = join(dir, 'factory.ts');
+      const entrypoint = join(dir, 'operator-entry.ts');
+      await writeFile(helper, `export function resolveMessage(message: string, prefix: string): string { return prefix + message.toUpperCase(); }\n`);
+      await writeFile(factory, `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/sdk/src/index.ts'))};
+import { resolveMessage } from './helper.js';
+const spec = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'WorkSpec' }, schema: { type: 'object', required: ['message'], properties: { message: { type: 'string' } } } };
+const status = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'WorkStatus' }, schema: { type: 'object', properties: { result: { type: 'string' } } } };
+export function createOperator(deps: { prefix: string; authoringGraph: string }) {
+  const Work = sdk.crd({ apiVersion: 'factory.applik8s.dev/v1alpha1', kind: 'Work', spec, status });
+  return sdk.operator({ name: 'imported-factory', resources: { Work }, handlers: [
+    Work.on.reconcile((work) => { work.status.result = resolveMessage(work.spec.message, deps.prefix); }),
+  ] });
+}
+`);
+      await writeFile(entrypoint, `import { createOperator } from './factory.js';
+export const operator = createOperator({ prefix: 'ready:', authoringGraph: 'UNUSED_AUTHORING_GRAPH_SENTINEL' });
+`);
+
+      const result = await createCompilerPipeline().run({
+        entrypoint,
+        operatorName: 'imported-factory',
+        dispatcherMode: 'staticSerializable',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const generatedDispatcher = await readFile(join(dir, 'dist', 'bundle', 'handler-dispatcher.generated.ts'), 'utf8');
+      expect(generatedDispatcher).toContain('function resolveMessage');
+      expect(generatedDispatcher).toContain('const deps = { "prefix":');
+      expect(generatedDispatcher).not.toContain('UNUSED_AUTHORING_GRAPH_SENTINEL');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('reports genuine unsupported static handler captures with actionable diagnostics', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-static-handler-capture-'));
     try {
@@ -1220,11 +1339,14 @@ export const guestBook = sdk.operator({
 import { type } from 'arktype';
 const spec = type({ message: 'string' });
 const status = type({ message: 'string?' });
-const prefix = 'external:';
+function makeHandler(prefix: string) {
+  return (entry: { spec: { message: string }; status: { message?: string } }) => { entry.status.message = prefix + entry.spec.message; };
+}
+const capturedHandler = makeHandler('external:');
 export const Entry = sdk.crd({ apiVersion: 'demo.applik8s.dev/v1alpha1', kind: 'Entry', spec, status });
 export const captured = sdk.operator({
   name: 'captured', resources: { Entry },
-  handlers: [Entry.on.reconcile((entry) => { entry.status.message = prefix + entry.spec.message; })],
+  handlers: [Entry.on.reconcile(capturedHandler)],
 });
 `);
       const result = await createCompilerPipeline().run({
@@ -1239,9 +1361,9 @@ export const captured = sdk.operator({
       });
       expect(result.ok).toBe(false);
       if (!result.ok) {
-        expect(result.error.message).toContain('module-scope identifier(s)');
+        expect(result.error.message).toContain('closure-local identifier(s)');
         expect(result.error.message).toContain('prefix');
-        expect(result.error.message).toContain('Keep plain constants and helper functions inside the reconcile handler');
+        expect(result.error.message).toContain('Move captured values and helper functions to top-level declarations');
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -1558,7 +1680,7 @@ export const capabilityOperator = sdk.operator({
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
+  }, 120_000);
 
   it('emits fail-closed capability execution posture into manifests and Kubernetes annotations', async () => {
     const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
@@ -1897,7 +2019,8 @@ export function handle(input: string): string {
       }
 
       expect(bundle.value.wasmBackend).toBe('componentize-js');
-      expect(await readFile(bundle.value.javascriptBundlePath, 'utf8')).toContain('suffix');
+      const bundledExecution = await execFileAsync(process.execPath, ['--input-type=module', '--eval', `const module = await import(${JSON.stringify(pathToFileURL(bundle.value.javascriptBundlePath).href)}); process.stdout.write(module.handle('ready'));`]);
+      expect(bundledExecution.stdout).toBe('ready!');
       expect(wit.value.witSource).toContain('export handle');
 
       const wasm = await emitWasmComponentArtifact({

@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/typekro-adapter",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "TypeKro integration adapter for applik8s operators.",
   "license": "Apache-2.0",
   "type": "module",
@@ -20,10 +20,10 @@
     "./targets": { "types": "./dist/operation-targets.d.ts", "import": "./dist/operation-targets.js" }
   },
   "dependencies": {
-    "@applik8s/compiler": "0.4.0",
-    "@applik8s/core": "0.4.0",
-    "@applik8s/sdk": "0.4.0",
-    "@applik8s/typetainer": "0.4.0",
+    "@applik8s/compiler": "0.4.1",
+    "@applik8s/core": "0.4.1",
+    "@applik8s/sdk": "0.4.1",
+    "@applik8s/typetainer": "0.4.1",
     "arktype": "^2.1.20",
     "typekro": "^0.26.0"
   }

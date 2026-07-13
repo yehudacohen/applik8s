@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import ts from 'typescript';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(process.cwd());
@@ -20,6 +21,7 @@ const packageDirs = [
 ];
 const publicEntrypoints = [
   '@applik8s/applik8s',
+  '@applik8s/applik8s/operator',
   '@applik8s/applik8s/dsl',
   '@applik8s/applik8s/typekro',
   '@applik8s/applik8s/factories',
@@ -41,11 +43,48 @@ const packDir = join(workDir, 'packs');
 const consumerModules = join(workDir, 'consumer', 'node_modules');
 const externalPackages = new Map();
 
+async function assertDirectRuntimeDependencies(packageDir, manifest) {
+  const distDir = join(packageDir, 'dist');
+  const pending = [distDir];
+  const declared = new Set(Object.keys(manifest.dependencies ?? {}));
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(path);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith('.js')) continue;
+      const source = await readFile(path, 'utf8');
+      const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+      const specifiers = [];
+      const visit = (node) => {
+        if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) {
+          specifiers.push(node.moduleSpecifier.text);
+        } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) {
+          specifiers.push(node.arguments[0].text);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sourceFile);
+      for (const specifier of specifiers) {
+        if (!specifier || specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:') || specifier.startsWith('applik8s:')) continue;
+        const packageName = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
+        if (!declared.has(packageName)) {
+          throw new Error(`${manifest.name}: ${path.slice(packageDir.length + 1)} imports undeclared runtime dependency ${packageName}.`);
+        }
+      }
+    }
+  }
+}
+
 try {
   await mkdir(packDir, { recursive: true });
   for (const packageDir of packageDirs) {
     const absolutePackageDir = join(root, packageDir);
     const manifest = JSON.parse(await readFile(join(absolutePackageDir, 'package.json'), 'utf8'));
+    await assertDirectRuntimeDependencies(absolutePackageDir, manifest);
     for (const dependency of Object.keys(manifest.dependencies ?? {})) {
       if (!dependency.startsWith('@applik8s/')) {
         externalPackages.set(dependency, join(absolutePackageDir, 'node_modules', ...dependency.split('/')));
@@ -89,7 +128,13 @@ try {
 const Work = sdk.crd({ apiVersion: 'smoke.applik8s.dev/v1alpha1', kind: 'Work', spec: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: 'WorkSpec' }, schema: { type: 'object', properties: {} } }, status: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: 'WorkStatus' }, schema: { type: 'object', properties: { phase: { type: 'string' } } } } });
 export const smoke = sdk.operator({ name: 'packed-smoke', deployment: { namespace: 'smoke' }, resources: { Work }, handlers: [Work.on.reconcile((work) => { work.status.phase = 'Ready'; })] });
 `);
-  await execFileAsync(process.execPath, [join(consumerModules, '@applik8s/applik8s/dist/cli.js'), 'build', operatorPath, '--out-dir', outDir, '--operator-name', 'packed-smoke'], { cwd: consumerDir, maxBuffer: 20 * 1024 * 1024 });
+  const binDir = join(consumerModules, '.bin');
+  await mkdir(binDir, { recursive: true });
+  const executable = join(binDir, 'applik8s');
+  await symlink(join(consumerModules, '@applik8s/applik8s/dist/bin.js'), executable);
+  const help = await execFileAsync(executable, ['--help'], { cwd: consumerDir });
+  if (!help.stdout.includes('Usage: applik8s')) throw new Error('Packed applik8s executable did not render help.');
+  await execFileAsync(executable, ['build', operatorPath, '--out-dir', outDir, '--operator-name', 'packed-smoke'], { cwd: consumerDir, maxBuffer: 20 * 1024 * 1024 });
   await readFile(join(outDir, 'operator-manifest.json'));
 
   const v04Path = join(consumerDir, 'v04.mjs');
@@ -111,7 +156,7 @@ if (!graph?.nodes.some((node) => node.kind === 'processor') || !graph.providerRe
 `);
   await execFileAsync(process.execPath, [v04Path], { cwd: consumerDir });
 
-  console.log(`Package consumer smoke passed under Node for ${packageDirs.length} packed packages, ${publicEntrypoints.length} public entrypoints, a v0.4 command/EventLog graph, and a clean-directory CLI build.`);
+  console.log(`Package consumer smoke passed under Node for ${packageDirs.length} packed packages, ${publicEntrypoints.length} public entrypoints, the packed executable, a v0.4 command/EventLog graph, and a clean-directory CLI build.`);
 } finally {
   await rm(workDir, { recursive: true, force: true });
 }

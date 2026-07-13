@@ -201,7 +201,3 @@ function trimTrailingNewline(message: string): string {
 function isBunRuntime(): boolean {
   return 'bun' in process.versions;
 }
-
-if (/\/cli\.(?:ts|js)$/.test(process.argv[1] ?? '')) {
-  process.exitCode = await runCli(process.argv.slice(2));
-}

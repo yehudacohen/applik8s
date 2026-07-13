@@ -40,6 +40,97 @@ fn documents_operator_host_responsibility() {
     );
 }
 
+#[tokio::test]
+async fn live_kubernetes_list_reads_preserve_objects_selectors_and_pagination() {
+    if std::env::var("APPLIK8S_E2E_LIVE").as_deref() != Ok("1") {
+        return;
+    }
+    use k8s_openapi::api::apps::v1::Deployment;
+    use k8s_openapi::api::core::v1::Namespace;
+    use kube::api::{Api, DeleteParams, PostParams};
+    use kube::config::{KubeConfigOptions, Kubeconfig};
+    use kube::{Client, Config};
+
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let context = std::env::var("APPLIK8S_E2E_CONTEXT").unwrap_or_else(|_| "orbstack".into());
+    let config = Config::from_custom_kubeconfig(
+        Kubeconfig::read().expect("read kubeconfig"),
+        &KubeConfigOptions {
+            context: Some(context),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("load selected Kubernetes context");
+    let client = Client::try_from(config).expect("create Kubernetes client");
+    let namespace = format!("applik8s-list-read-{}", std::process::id());
+    let namespaces: Api<Namespace> = Api::all(client.clone());
+    let namespace_object: Namespace = serde_json::from_value(serde_json::json!({
+        "apiVersion": "v1", "kind": "Namespace", "metadata": { "name": namespace }
+    }))
+    .expect("namespace object");
+    namespaces
+        .create(&PostParams::default(), &namespace_object)
+        .await
+        .expect("create test namespace");
+
+    let deployments: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
+    for name in ["worker-a", "worker-b"] {
+        let deployment: Deployment = serde_json::from_value(serde_json::json!({
+            "apiVersion": "apps/v1", "kind": "Deployment",
+            "metadata": { "name": name, "namespace": namespace, "labels": { "app": "list-proof" } },
+            "spec": { "replicas": 0, "selector": { "matchLabels": { "app": name } }, "template": { "metadata": { "labels": { "app": name } }, "spec": { "containers": [{ "name": "pause", "image": "registry.k8s.io/pause:3.10" }] } } }
+        })).expect("deployment object");
+        deployments
+            .create(&PostParams::default(), &deployment)
+            .await
+            .expect("create deployment");
+    }
+
+    let manifest = serde_json::json!({ "spec": {
+        "readResources": [{ "apiVersion": "apps/v1", "kind": "Deployment", "plural": "deployments", "scope": "Namespaced", "namespaces": [namespace] }],
+        "permissions": [{ "apiGroups": ["apps"], "resources": ["deployments"], "verbs": ["get", "list"] }]
+    }});
+    let request = |query: serde_json::Value| {
+        serde_json::json!({
+        "operation": "list", "apiVersion": "apps/v1", "kind": "Deployment", "plural": "deployments", "scope": "Namespaced", "query": query
+    }).to_string()
+    };
+
+    let first: serde_json::Value = serde_json::from_str(&execute_kubernetes_read_request(&manifest, client.clone(), &request(serde_json::json!({
+        "namespace": namespace, "labels": { "app": "list-proof" }, "limit": 1, "orderBy": "metadata.name"
+    }))).await.expect("execute first page")).expect("decode first page response");
+    assert_eq!(first["value"]["items"].as_array().map(Vec::len), Some(1));
+    let token = first["value"]["continueToken"]
+        .as_str()
+        .expect("continuation token");
+    assert!(!token.is_empty());
+
+    let second: serde_json::Value = serde_json::from_str(&execute_kubernetes_read_request(&manifest, client.clone(), &request(serde_json::json!({
+        "namespace": namespace, "labelSelector": { "matchLabels": { "app": "list-proof" } }, "limit": 1, "continueToken": token
+    }))).await.expect("execute second page")).expect("decode second page response");
+    assert_eq!(second["value"]["items"].as_array().map(Vec::len), Some(1));
+
+    let by_name: serde_json::Value = serde_json::from_str(
+        &execute_kubernetes_read_request(
+            &manifest,
+            client.clone(),
+            &request(serde_json::json!({
+                "namespace": namespace, "fieldSelector": "metadata.name=worker-b"
+            })),
+        )
+        .await
+        .expect("execute field selector"),
+    )
+    .expect("decode field selector response");
+    assert_eq!(by_name["value"]["items"][0]["metadata"]["name"], "worker-b");
+
+    namespaces
+        .delete(&namespace, &DeleteParams::default())
+        .await
+        .expect("delete test namespace");
+}
+
 #[test]
 fn delegates_reconcile_scheduling_to_kube_runtime_controller_primitives() {
     let strategy = KubeRuntimeControllerStrategy::default();
@@ -1373,6 +1464,32 @@ fn accepts_declared_finalizer_mutations_before_effects() {
 }
 
 #[test]
+fn declared_finalize_handlers_register_missing_finalizers_before_reconcile() {
+    let bundle = declared_finalizer_routing_bundle();
+    let object = serde_json::json!({
+        "apiVersion": "media.applik8s.dev/v1alpha1", "kind": "ImageJob",
+        "metadata": { "name": "hero", "namespace": "media" }, "spec": {}
+    });
+    assert_eq!(
+        bundle
+            .missing_declared_finalizers("media.applik8s.dev/v1alpha1", "ImageJob", &object)
+            .expect("discover finalizers"),
+        vec!["media.applik8s.dev/imagejob"]
+    );
+
+    let present = serde_json::json!({
+        "apiVersion": "media.applik8s.dev/v1alpha1", "kind": "ImageJob",
+        "metadata": { "name": "hero", "namespace": "media", "finalizers": ["media.applik8s.dev/imagejob"] }, "spec": {}
+    });
+    assert!(
+        bundle
+            .missing_declared_finalizers("media.applik8s.dev/v1alpha1", "ImageJob", &present)
+            .expect("discover finalizers")
+            .is_empty()
+    );
+}
+
+#[test]
 fn rejects_undeclared_finalizer_mutations_before_effects() {
     let bundle = declared_finalizer_routing_bundle();
     let route = HandlerRoute {
@@ -2397,6 +2514,37 @@ fn loads_scoped_manifest_watches_for_external_resources() {
     );
 }
 
+#[tokio::test]
+async fn constructs_secondary_source_controllers_with_explicit_target_mapping() {
+    let bundle = LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1", "kind": "OperatorBundle",
+            "metadata": { "name": "replica-controller", "annotations": { "applik8s.dev/namespace": "replicas" } },
+            "spec": {
+                "ownedCrds": [{ "apiVersion": "sync.applik8s.dev/v1alpha1", "kind": "Replica", "plural": "replicas", "scope": "Namespaced" }],
+                "watches": [{ "apiVersion": "sync.applik8s.dev/v1alpha1", "kind": "Replica", "plural": "replicas", "scope": "Namespaced", "events": ["reconcile"], "handlers": ["Replica.reconcile.0"] }],
+                "secondaryWatches": [{
+                    "source": { "apiVersion": "apps/v1", "kind": "Deployment", "plural": "deployments", "scope": "Namespaced" },
+                    "target": { "apiVersion": "sync.applik8s.dev/v1alpha1", "kind": "Replica", "plural": "replicas", "scope": "Namespaced" },
+                    "watch": { "namespace": "sources", "labelSelector": { "matchLabels": { "sync": "enabled" } } },
+                    "mapper": { "mode": "all", "namespace": "operator" }
+                }]
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    };
+    let controllers = bundle
+        .controllers(mock_kube_client())
+        .expect("construct controllers");
+    assert_eq!(controllers.len(), 2);
+    let secondary = controllers
+        .iter()
+        .find(|controller| controller.secondary.is_some())
+        .expect("secondary controller");
+    assert_eq!(secondary.watch.kind, "Deployment");
+    assert_eq!(secondary.watch.namespace.as_deref(), Some("sources"));
+}
+
 #[test]
 fn defaults_namespaced_manifest_watches_to_operator_namespace() {
     let bundle = LoadedOperatorBundle {
@@ -3398,6 +3546,7 @@ fn routing_bundle() -> LoadedOperatorBundle {
             "kind": "OperatorBundle",
             "metadata": { "name": "image-pipeline" },
             "spec": {
+                "ownedCrds": [{ "apiVersion": "media.applik8s.dev/v1alpha1", "kind": "ImageJob", "plural": "imagejobs", "scope": "Namespaced" }],
                 "handlerExports": [
                     { "handlerId": "ImageJob.reconcile.0", "event": "reconcile", "resource": { "apiVersion": "media.applik8s.dev/v1alpha1", "kind": "ImageJob" } },
                     { "handlerId": "ImageJob.finalize.1", "event": "finalize", "resource": { "apiVersion": "media.applik8s.dev/v1alpha1", "kind": "ImageJob" } },
@@ -3420,6 +3569,7 @@ fn declared_finalizer_routing_bundle() -> LoadedOperatorBundle {
             "kind": "OperatorBundle",
             "metadata": { "name": "image-pipeline" },
             "spec": {
+                "ownedCrds": [{ "apiVersion": "media.applik8s.dev/v1alpha1", "kind": "ImageJob", "plural": "imagejobs", "scope": "Namespaced" }],
                 "handlerExports": [
                     { "handlerId": "ImageJob.reconcile.0", "event": "reconcile", "resource": { "apiVersion": "media.applik8s.dev/v1alpha1", "kind": "ImageJob" } },
                     { "handlerId": "ImageJob.finalize.owned", "event": "finalize", "resource": { "apiVersion": "media.applik8s.dev/v1alpha1", "kind": "ImageJob" }, "finalizers": ["media.applik8s.dev/imagejob"] },

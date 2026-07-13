@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import type { ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationEventNode, ApplicationGraph, ApplicationModelNode, ApplicationProcessorNode, ApplicationProviderNode } from '@applik8s/core';
 import { build } from 'esbuild';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
+import { generatedProcessorCapacity, generatedProcessorDisruptionResource, generatedProcessorPodScheduling } from './capacity.js';
 
 const DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
 
@@ -90,6 +91,7 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
       runtime: { entrypoint: sourcePath, sourceMap: sourceMapPath, digest, sizeBytes, packageManagerAtStartup: false, image: processor.runtimeImage ?? DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE },
       resources: resources.map((resource) => ({ apiVersion: resource.apiVersion, kind: resource.kind, metadata: resource.metadata })),
       guarantees: { delivery: 'atLeastOnce', authority: 'postgresInboxAndDeclaredOrdering', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
+      capacity: generatedProcessorCapacity(processor),
     },
   };
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -210,7 +212,7 @@ const processor = await startJetStreamCommandProcessor({
   consumer: ${JSON.stringify(contract.consumer)},
   subjectPrefix: ${JSON.stringify(contract.subjectPrefix)},
   bindings,
-  concurrency: 8,
+  concurrency: ${contract.processor.deployment.concurrency},
   databaseUrl: process.env.DATABASE_URL,
   token: process.env.APPLIK8S_NATS_TOKEN,
   user: process.env.APPLIK8S_NATS_USER,
@@ -338,6 +340,7 @@ function processorResources(contract: ProcessorContract, source: string, digest:
     }
   }
   const filterSubjects = contract.handlers.map((handler) => `${contract.subjectPrefix}.commands.${subjectToken(handler.command.name)}.${subjectToken(handler.command.version)}.>`);
+  const disruptionResource = generatedProcessorDisruptionResource(contract.processor, metadata, labels);
   return [
     { apiVersion: 'v1', kind: 'ConfigMap', metadata: { ...metadata, name: `${contract.consumer}-source`, annotations: { 'applik8s.dev/runtime-digest': digest } }, data: { 'processor.mjs': source } },
     ...(contract.provisionStream ? [{
@@ -364,11 +367,12 @@ function processorResources(contract: ProcessorContract, source: string, digest:
         ackPolicy: 'explicit',
         ackWait: '30s',
         maxDeliver: 5,
-        maxAckPending: 8,
+        maxAckPending: contract.processor.deployment.maxAckPending,
         filterSubjects,
         servers: contract.servers,
       },
     },
+    ...(disruptionResource ? [disruptionResource] : []),
     {
       apiVersion: 'networking.k8s.io/v1',
       kind: 'NetworkPolicy',
@@ -391,7 +395,7 @@ function processorResources(contract: ProcessorContract, source: string, digest:
       kind: 'Deployment',
       metadata,
       spec: {
-        replicas: 1,
+        replicas: contract.processor.deployment.replicas,
         progressDeadlineSeconds: 600,
         revisionHistoryLimit: 3,
         strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } },
@@ -401,6 +405,7 @@ function processorResources(contract: ProcessorContract, source: string, digest:
           spec: {
             automountServiceAccountToken: false,
             terminationGracePeriodSeconds: 60,
+            ...generatedProcessorPodScheduling(contract.processor, labels),
             securityContext: {
               runAsNonRoot: true,
               runAsUser: 1000,
@@ -416,7 +421,7 @@ function processorResources(contract: ProcessorContract, source: string, digest:
               command: ['node', '/app/processor.mjs'],
               env,
               securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
-              resources: { requests: { cpu: '50m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } },
+              resources: contract.processor.deployment.resources,
               readinessProbe: { exec: { command: ['test', '-f', '/tmp/applik8s-processor-ready'] }, periodSeconds: 5, timeoutSeconds: 2, failureThreshold: 3 },
               livenessProbe: { exec: { command: ['node', '-e', "const { mtimeMs } = require('node:fs').statSync('/tmp/applik8s-processor-heartbeat'); process.exit(Date.now() - mtimeMs < 60000 ? 0 : 1)"] }, periodSeconds: 20, timeoutSeconds: 2, failureThreshold: 3 },
               volumeMounts: [{ name: 'source', mountPath: '/app', readOnly: true }, { name: 'tmp', mountPath: '/tmp' }],

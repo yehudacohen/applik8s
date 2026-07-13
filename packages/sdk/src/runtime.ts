@@ -61,6 +61,14 @@ type ResourceHandlers<TSpec extends object, TStatus extends object, TCapabilitie
 export const sdk: Applik8sSdk = {
   crd,
   operator,
+  watch: (source) => ({
+    enqueue: (target, options) => ({
+      source,
+      target,
+      ...(options?.watch ? { watch: options.watch } : {}),
+      mapper: { mode: 'all', ...(options?.namespace ? { namespace: options.namespace } : {}) },
+    }),
+  }),
   secretRef,
   withPermissions,
   permissions: builtInPermissions(),
@@ -199,6 +207,7 @@ export function operator<TCapabilities extends CapabilityClientSet = CapabilityC
     resources: options.resources,
     ...(options.reads ? { reads: options.reads } : {}),
     handlers: options.handlers,
+    ...(options.secondaryWatches ? { secondaryWatches: options.secondaryWatches } : {}),
     trustLevel: options.trustLevel ?? 'trustedApplication',
     effects: options.effects ?? { mode: 'planned', replayable: true },
     ...(options.capabilities ? { capabilities: options.capabilities } : {}),

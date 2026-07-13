@@ -249,6 +249,7 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
   const renameAccount = config.durableBehavior ? Account.on.command(RenameTenantAccount, {
     key: ({ accountId }) => accountId,
     ordering: 'serial',
+    processor: { replicas: 2, concurrency: 4 },
     idempotencyKey: ({ requestId }) => requestId,
     missing: 'reject',
     transaction: { history: [Account], outbox: [TenantAccountChanged] },

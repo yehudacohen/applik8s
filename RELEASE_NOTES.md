@@ -1,5 +1,13 @@
 # Release Notes
 
+## v0.4.1
+
+v0.4.1 is an optimization and capacity-hardening release. It preserves v0.4 command semantics while adding validated manual processor replicas/concurrency/resources/placement/disruption policy, multi-replica JetStream consumer lowering, bounded runtime scheduling modules, minified WASM handler bundles, and environment-tagged benchmark history for build size/time, cold start, memory, PostgreSQL contention, JetStream scaling, and capacity cost units.
+
+Automatic lag-driven scaling remains deferred; PostgreSQL remains the serialization authority across all replicas.
+
+Framework hardening in this bugfix also fixes the packed CLI executable and direct ArkType runtime dependencies; adds the WASM-safe `@applik8s/applik8s/operator` entrypoint; replaces authored-schema/entrypoint runtime loading with normalized metadata and statically extracted handler dependencies across local modules and ordinary operator factories; makes declared finalizers operational; adds fail-closed bounded secondary watches with generated RBAC; proves positive paginated Kubernetes list reads; and atomically replaces generated Kubernetes output.
+
 ## v0.4.0
 
 v0.4.0 is the durable application-behavior release. It adds versioned command and event contracts, keyed PostgreSQL model transactions, inferred command processors, NATS JetStream transport, and ordinary Kubernetes SDK execution inside WASM closures without changing the v0.3 reconciliation substrate.

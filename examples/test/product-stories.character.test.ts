@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage } from 'node:http';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AddressInfo } from 'node:net';
@@ -166,6 +166,10 @@ describe('ImageJob golden path product story', () => {
       expect(bundledHandler).toContain('GetObjectCommand');
       expect(bundledHandler).toContain('PutObjectCommand');
       expect(bundledHandler).toContain('FetchHttpHandler');
+      // typecast: esbuild owns the metadata schema and this assertion reads only its documented input map.
+      const metafile = JSON.parse(await readFile(join(dir, 'dist/bundle/handler.esbuild-meta.json'), 'utf8')) as { readonly inputs: Readonly<Record<string, unknown>> };
+      expect(Object.keys(metafile.inputs).some((input) => input.includes('/arktype/'))).toBe(false);
+      expect((await stat(compiled.value.artifacts.handlerWasmPath)).size).toBeLessThan(20_000_000);
 
       const applyScript = await readFile(compiled.value.artifacts.generatedApplyScriptPath ?? '', 'utf8');
       expect(applyScript).toContain('APPLIK8S_IMAGE');

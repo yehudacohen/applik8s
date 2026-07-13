@@ -232,7 +232,7 @@ spec:
     expect((await kubectl(['get', 'configmap/rbac-denied-image-output', '--namespace', namespace, '--ignore-not-found=true', '--output=name'])).stdout.trim()).toBe('');
     expect((await kubectl(['get', 'secret/rbac-denied-image-secret', '--namespace', namespace, '--ignore-not-found=true', '--output=name'])).stdout.trim()).toBe('');
     expect((await kubectl(['get', `imagejobs.${group}/rbac-denied-image`, '--namespace', namespace, '--output=jsonpath={.status.phase}'])).stdout.trim()).toBe('');
-    expect((await kubectl(['get', `imagejobs.${group}/rbac-denied-image`, '--namespace', namespace, '--output=jsonpath={.metadata.finalizers}'])).stdout.trim()).toBe('');
+    expect((await kubectl(['get', `imagejobs.${group}/rbac-denied-image`, '--namespace', namespace, '--output=jsonpath={.metadata.finalizers[0]}'])).stdout.trim()).toBe('media.applik8s.dev/imagejob');
     expect((await kubectl(['get', 'events', '--namespace', namespace, '--field-selector', 'involvedObject.name=rbac-denied-image,reason=ImageJobAccepted', '--output=jsonpath={.items[*].reason}'])).stdout.trim()).toBe('');
   }, 300_000);
 
@@ -246,7 +246,7 @@ spec:
     await waitForReadyCondition('malformed-output-image', 'False', 'InvalidRuntimePayload');
 
     expect((await kubectl(['get', 'configmap/malformed-output-image-output', '--namespace', namespace, '--ignore-not-found=true', '--output=name'])).stdout.trim()).toBe('');
-    expect((await kubectl(['get', `imagejobs.${group}/malformed-output-image`, '--namespace', namespace, '--output=jsonpath={.metadata.finalizers}'])).stdout.trim()).toBe('');
+    expect((await kubectl(['get', `imagejobs.${group}/malformed-output-image`, '--namespace', namespace, '--output=jsonpath={.metadata.finalizers[0]}'])).stdout.trim()).toBe('media.applik8s.dev/imagejob');
     expect((await kubectl(['get', 'events', '--namespace', namespace, '--field-selector', 'involvedObject.name=malformed-output-image,reason=ImageJobAccepted', '--output=jsonpath={.items[*].reason}'])).stdout.trim()).toBe('');
   }, 300_000);
 
@@ -491,7 +491,6 @@ export const imagePipeline = sdk.operator({
       job.apply({ apiVersion: 'v1', kind: 'Secret', metadata: { name: 'rbac-denied-image-secret', namespace: job.metadata.namespace }, data: { sourceUrl: 'czM6Ly9idWNrZXQvcmJhYy1kZW5pZWQucG5n' } });
       job.status.phase = 'Processing';
       job.events.normal('ImageJobAccepted', 'Image job accepted for processing');
-      job.finalizers.add('media.applik8s.dev/imagejob');
       return;
     }
     if (job.metadata.name === 'malformed-output-image') {
@@ -499,13 +498,11 @@ export const imagePipeline = sdk.operator({
         apply: [{ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: childName, namespace: job.metadata.namespace }, data: { sourceUrl: job.spec.sourceUrl } }],
         status: 'not-a-json-object',
         events: [{ kind: 'event', type: 'Normal', reason: 'ImageJobAccepted', message: 'Image job accepted for processing' }],
-        finalizers: [{ kind: 'finalizer', operation: 'add', finalizer: 'media.applik8s.dev/imagejob' }],
       } as never;
     }
     if (job.metadata.name === 'timeout-image') {
       while (true) {}
     }
-    job.finalizers.add('media.applik8s.dev/imagejob');
     job.status.phase = 'Processing';
     job.status.outputUrls = [];
     job.status.requeueAfterSeconds = 30;
@@ -529,8 +526,7 @@ export const imagePipeline = sdk.operator({
     const childRef = { apiVersion: 'v1', kind: 'ConfigMap', name: childName, ...(job.metadata.namespace ? { namespace: job.metadata.namespace } : {}) };
     job.delete(childRef, { propagationPolicy: 'Foreground' });
     job.events.normal('ImageJobFinalized', 'Image job cleanup completed');
-    job.finalizers.remove('media.applik8s.dev/imagejob');
-  })],
+  }, { finalizer: 'media.applik8s.dev/imagejob' })],
 });
 `;
 }

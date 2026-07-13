@@ -61,7 +61,7 @@ The canonical `examples/imagejob.ts` handler is intentionally small, but every l
 | `job.apply(output)` | The WASM handler returns an `apply` operation. The Rust host validates RBAC, scope, server-populated metadata, ownership policy, and field-manager behavior before server-side apply. |
 | `job.events.normal(...)` | Generated RBAC includes core `events` create/patch/update. Runtime diagnostics and live E2E prove the Event is emitted for the reconciled object. |
 | `job.delete(job.k8s.ConfigMap(...))` | The proxy converts the factory-built object to an object reference. The finalize route deletes the child before removing the owned finalizer. |
-| `ImageJob.on.finalize(..., { finalizer })` | `operator-manifest.json` records handler event/finalizer metadata. The Rust host routes deletion-timestamp objects to the matching finalize handler and rejects foreign finalizer ownership. |
+| `ImageJob.on.finalize(..., { finalizer })` | `operator-manifest.json` records handler event/finalizer metadata. The Rust host installs the declared finalizer before normal reconciliation, routes deletion-timestamp objects to the matching finalize handler, automatically removes it after successful terminal cleanup (but retains it when cleanup requeues), and rejects foreign finalizer ownership. |
 
 This is the core operator contract: tiny TypeScript syntax, explicit operation plans, ordinary Kubernetes YAML, and fail-closed runtime validation.
 
