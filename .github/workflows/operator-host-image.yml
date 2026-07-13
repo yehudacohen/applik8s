@@ -1,0 +1,111 @@
+name: Publish Operator Host Image
+
+on:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Git ref containing the operator-host source
+        required: true
+        type: string
+      image_tag:
+        description: Image tag to publish
+        required: true
+        type: string
+    outputs:
+      digest:
+        description: Published multi-platform manifest digest
+        value: ${{ jobs.publish.outputs.digest }}
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Immutable source ref to build (for example, v0.4.1)
+        required: true
+        type: string
+      image_tag:
+        description: Image tag to publish (for example, v0.4.1)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/yehudacohen/applik8s-operator-host
+
+jobs:
+  publish:
+    name: Build and publish linux/amd64 + linux/arm64
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Validate immutable release inputs
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          if [[ ! "$SOURCE_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "source_ref must be an immutable semver release tag (vX.Y.Z)" >&2
+            exit 1
+          fi
+          if [[ "$IMAGE_TAG" != "$SOURCE_REF" ]]; then
+            echo "image_tag must exactly match source_ref" >&2
+            exit 1
+          fi
+
+      - name: Checkout released source
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish immutable release image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.operator-host
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ inputs.image_tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ inputs.source_ref }}
+            org.opencontainers.image.version=${{ inputs.image_tag }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Make package public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh api --method PATCH /user/packages/container/applik8s-operator-host -f visibility=public
+
+      - name: Verify published platforms and record digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" | tee /tmp/operator-host-manifest.txt
+          grep -q 'Platform:.*linux/amd64' /tmp/operator-host-manifest.txt
+          grep -q 'Platform:.*linux/arm64' /tmp/operator-host-manifest.txt
+          {
+            echo '### Operator host image'
+            echo
+            echo "- Tag: \`$IMAGE:$IMAGE_TAG\`"
+            echo "- Digest: \`$DIGEST\`"
+            echo '- Platforms: `linux/amd64`, `linux/arm64`'
+          } >> "$GITHUB_STEP_SUMMARY"
