@@ -1417,8 +1417,9 @@ export function isApplicationGraphNodeKind(value: string): value is ApplicationG
 }
 
 export function isApplicationProviderInterfaceKind(value: string): value is ApplicationProviderInterfaceKind {
-  // typecast: Array.includes needs an erased string array to test arbitrary input while preserving the type predicate result.
-  return (applicationProviderInterfaceKinds as readonly string[]).includes(value);
+  // Provider packages intentionally register new interfaces without a core release.
+  // The built-in tuple is the framework compatibility baseline, not a closed registry.
+  return /^[A-Z][A-Za-z0-9]*$/.test(value);
 }
 
 export function normalizeApplicationGraph(graph: ApplicationGraph): ApplicationGraph {

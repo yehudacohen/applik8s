@@ -5,14 +5,17 @@ import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGrap
 import { type ApplicationProviderState, type ApplicationWorkflowEngineProvider, applicationProviderImplementationName, applicationWorkflowEngineImplementation } from './application-providers.js';
 import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationCallArgumentSource, normalizeSerializableFunctionSource, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 import type { TaskDefinition, WorkflowDefinition } from './dsl.js';
-import { type ApplicationWorkflowInvocationMetadata, type ApplicationWorkflowRun, applicationWorkflowRuntime } from './workflow-runtime.js';
+import { type ApplicationWorkflowInvocationMetadata, type ApplicationWorkflowResultOptions, type ApplicationWorkflowRun, applicationWorkflowRuntime } from './workflow-runtime.js';
+
+export { ApplicationDurableError, isApplicationDurableError } from './workflow-runtime.js';
+export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationWorkflowResultOptions } from './workflow-runtime.js';
 
 export interface ApplicationWorkflowState extends ApplicationGraphState, ApplicationProviderState {
   readonly workflowHandlers: Map<string, ApplicationWorkflowHandlerRegistration>;
   readonly workflowHandlerGroups: Map<string, string>;
 }
 
-export interface ApplicationTaskContext {
+export interface ApplicationTaskContext<TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>> {
   readonly invocationId: string;
   readonly idempotencyKey: string;
   readonly attempt: number;
@@ -20,13 +23,19 @@ export interface ApplicationTaskContext {
   readonly causationId?: string;
   readonly traceparent?: string;
   readonly signal: AbortSignal;
+  fail<TName extends keyof TErrors & string>(name: TName, payload: TErrors[TName]): never;
 }
 
-export interface ApplicationWorkflowContext {
-  task<TInput extends object, TOutput extends object>(alias: string, input: TInput, options?: ApplicationWorkflowInvocationMetadata): Promise<TOutput>;
-  child<TInput extends object, TOutput extends object>(alias: string, input: TInput, options?: ApplicationWorkflowInvocationMetadata): Promise<TOutput>;
+export interface ApplicationWorkflowContext<
+  TTasks extends Readonly<Record<string, ApplicationTaskReference>> = Readonly<Record<string, ApplicationTaskReference>>,
+  TWorkflows extends Readonly<Record<string, ApplicationWorkflowReference>> = Readonly<Record<string, ApplicationWorkflowReference>>,
+  TSignals extends Readonly<Record<string, object>> = Readonly<Record<string, object>>,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+> {
+  task<TAlias extends keyof TTasks & string>(alias: TAlias, input: ApplicationTaskReferenceInput<TTasks[TAlias]>, options?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationTaskReferenceOutput<TTasks[TAlias]>>;
+  child<TAlias extends keyof TWorkflows & string>(alias: TAlias, input: ApplicationWorkflowReferenceInput<TWorkflows[TAlias]>, options?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowReferenceOutput<TWorkflows[TAlias]>>;
   sleep(duration: string): Promise<void>;
-  waitFor<TPayload extends object>(signal: string, options?: { readonly expression?: string; readonly scope?: string; readonly lookback?: string }): Promise<TPayload>;
+  waitFor<TName extends keyof TSignals & string>(signal: TName, options?: { readonly expression?: string; readonly scope?: string; readonly lookback?: string }): Promise<TSignals[TName]>;
   now(): Promise<Date>;
   cancelled(): boolean;
   rethrowIfCancelled(error: unknown): void;
@@ -34,10 +43,18 @@ export interface ApplicationWorkflowContext {
   readonly correlationId?: string;
   readonly causationId?: string;
   readonly traceparent?: string;
+  fail<TName extends keyof TErrors & string>(name: TName, payload: TErrors[TName]): never;
 }
 
-export type ApplicationTaskHandler<TInput extends object, TOutput extends object> = (input: TInput, context: ApplicationTaskContext) => TOutput | Promise<TOutput>;
-export type ApplicationWorkflowHandler<TInput extends object, TOutput extends object> = (input: TInput, context: ApplicationWorkflowContext) => TOutput | Promise<TOutput>;
+export type ApplicationTaskHandler<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>> = (input: TInput, context: ApplicationTaskContext<TErrors>) => TOutput | Promise<TOutput>;
+export type ApplicationWorkflowHandler<
+  TInput extends object,
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+  TSignals extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+  TTasks extends Readonly<Record<string, ApplicationTaskReference>> = Readonly<Record<string, ApplicationTaskReference>>,
+  TWorkflows extends Readonly<Record<string, ApplicationWorkflowReference>> = Readonly<Record<string, ApplicationWorkflowReference>>,
+> = (input: TInput, context: ApplicationWorkflowContext<TTasks, TWorkflows, TSignals, TErrors>) => TOutput | Promise<TOutput>;
 
 export interface ApplicationTaskOptions<TInput extends object> {
   readonly retries?: number;
@@ -60,9 +77,12 @@ export interface ApplicationWorkflowWorkerOptions {
   readonly scaling?: { readonly mode: 'fixed' } | { readonly mode: 'kedaHatchetSlots'; readonly minReplicas?: number; readonly maxReplicas: number; readonly pollingIntervalSeconds?: number };
 }
 
-export interface ApplicationWorkflowOptions {
-  readonly tasks?: Readonly<Record<string, ApplicationTaskReference>>;
-  readonly workflows?: Readonly<Record<string, ApplicationWorkflowReference>>;
+export interface ApplicationWorkflowOptions<
+  TTasks extends Readonly<Record<string, ApplicationTaskReference>> = Readonly<Record<string, ApplicationTaskReference>>,
+  TWorkflows extends Readonly<Record<string, ApplicationWorkflowReference>> = Readonly<Record<string, ApplicationWorkflowReference>>,
+> {
+  readonly tasks?: TTasks;
+  readonly workflows?: TWorkflows;
   readonly crons?: readonly { readonly name?: string; readonly expression: string; readonly input: object }[];
   readonly worker?: ApplicationWorkflowWorkerOptions;
 }
@@ -70,33 +90,70 @@ export interface ApplicationWorkflowOptions {
 export type ApplicationTaskReference = { readonly kind: 'applik8sTask'; readonly id: string } | { readonly kind: 'applicationTask'; readonly definition: { readonly id: string } };
 export type ApplicationWorkflowReference = { readonly kind: 'applik8sWorkflow'; readonly id: string } | { readonly kind: 'applicationWorkflow'; readonly definition: { readonly id: string } };
 
-export interface ApplicationTaskBinding<TInput extends object, TOutput extends object> {
+export type ApplicationTaskReferenceInput<TReference> = TReference extends TaskDefinition<infer TInput, infer _TOutput, infer _TErrors>
+  ? TInput
+  : TReference extends ApplicationTaskBinding<infer TInput, infer _TOutput, infer _TErrors>
+    ? TInput
+    : never;
+
+export type ApplicationTaskReferenceOutput<TReference> = TReference extends TaskDefinition<infer _TInput, infer TOutput, infer _TErrors>
+  ? TOutput
+  : TReference extends ApplicationTaskBinding<infer _TInput, infer TOutput, infer _TErrors>
+    ? TOutput
+    : never;
+
+export type ApplicationWorkflowReferenceInput<TReference> = TReference extends WorkflowDefinition<infer TInput, infer _TOutput, infer _TErrors, infer _TSignals>
+  ? TInput
+  : TReference extends ApplicationWorkflowBinding<infer TInput, infer _TOutput, infer _TErrors, infer _TSignals>
+    ? TInput
+    : never;
+
+export type ApplicationWorkflowReferenceOutput<TReference> = TReference extends WorkflowDefinition<infer _TInput, infer TOutput, infer _TErrors, infer _TSignals>
+  ? TOutput
+  : TReference extends ApplicationWorkflowBinding<infer _TInput, infer TOutput, infer _TErrors, infer _TSignals>
+    ? TOutput
+    : never;
+
+export interface ApplicationTaskBinding<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>> {
   readonly kind: 'applicationTask';
-  readonly definition: TaskDefinition<TInput, TOutput>;
-  run(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<TOutput>;
-  start(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput>>;
+  readonly definition: TaskDefinition<TInput, TOutput, TErrors>;
+  readonly __errors?: TErrors;
+  run(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
+  start(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput, TErrors>>;
   schedule(input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata): Promise<{ readonly id: string }>;
 }
 
-export interface ApplicationWorkflowBinding<TInput extends object, TOutput extends object> {
+export interface ApplicationWorkflowBinding<
+  TInput extends object,
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+  TSignals extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+> {
   readonly kind: 'applicationWorkflow';
-  readonly definition: WorkflowDefinition<TInput, TOutput>;
-  run(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<TOutput>;
-  start(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput>>;
+  readonly definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>;
+  readonly __errors?: TErrors;
+  readonly __signals?: TSignals;
+  run(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
+  start(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput, TErrors>>;
   schedule(input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata): Promise<{ readonly id: string }>;
-  signal<TPayload extends object>(runId: string, name: string, payload: TPayload, metadata?: ApplicationWorkflowInvocationMetadata): Promise<void>;
+  signal<TName extends [keyof TSignals] extends [never] ? string : keyof TSignals & string>(
+    runId: string,
+    name: TName,
+    payload: [keyof TSignals] extends [never] ? object : TSignals[TName & keyof TSignals],
+    metadata?: ApplicationWorkflowInvocationMetadata,
+  ): Promise<void>;
 }
 
 export type ApplicationWorkflowHandlerRegistration =
   | { readonly kind: 'task'; readonly id: string; readonly source: string }
   | { readonly kind: 'workflow'; readonly id: string; readonly source: string; readonly tasks: Readonly<Record<string, string>>; readonly workflows: Readonly<Record<string, string>> };
 
-export function registerApplicationTask<TInput extends object, TOutput extends object>(
+export function registerApplicationTask<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
   state: ApplicationWorkflowState,
-  definition: TaskDefinition<TInput, TOutput>,
+  definition: TaskDefinition<TInput, TOutput, TErrors>,
   options: ApplicationTaskOptions<TInput>,
-  handler: ApplicationTaskHandler<TInput, TOutput>,
-): ApplicationTaskBinding<TInput, TOutput> {
+  handler: ApplicationTaskHandler<TInput, TOutput, TErrors>,
+): ApplicationTaskBinding<TInput, TOutput, TErrors> {
   const taskNodeId = graphNodeId('task', definition.id);
   const handlerNodeId = graphNodeId('task-handler', definition.id);
   const serialized = workflowHandlerSerialization('task', definition.id, handler, false);
@@ -144,12 +201,19 @@ export function registerApplicationTask<TInput extends object, TOutput extends o
   return taskBinding(definition, options, () => applicationWorkflowEngineImplementation(state));
 }
 
-export function registerApplicationWorkflow<TInput extends object, TOutput extends object>(
+export function registerApplicationWorkflow<
+  TInput extends object,
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>>,
+  TSignals extends Readonly<Record<string, object>>,
+  TTasks extends Readonly<Record<string, ApplicationTaskReference>>,
+  TWorkflows extends Readonly<Record<string, ApplicationWorkflowReference>>,
+>(
   state: ApplicationWorkflowState,
-  definition: WorkflowDefinition<TInput, TOutput>,
-  options: ApplicationWorkflowOptions,
-  handler: ApplicationWorkflowHandler<TInput, TOutput>,
-): ApplicationWorkflowBinding<TInput, TOutput> {
+  definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>,
+  options: ApplicationWorkflowOptions<TTasks, TWorkflows>,
+  handler: ApplicationWorkflowHandler<TInput, TOutput, TErrors, TSignals, TTasks, TWorkflows>,
+): ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals> {
   const workflowNodeId = graphNodeId('workflow', definition.id);
   const handlerNodeId = graphNodeId('workflow-handler', definition.id);
   const serialized = workflowHandlerSerialization('workflow', definition.id, handler, true);
@@ -299,7 +363,7 @@ function workflowEngineResources(engine: ApplicationWorkflowEngineProvider): App
   ];
 }
 
-function taskBinding<TInput extends object, TOutput extends object>(definition: TaskDefinition<TInput, TOutput>, options: ApplicationTaskOptions<TInput>, engine: () => ApplicationWorkflowEngineProvider): ApplicationTaskBinding<TInput, TOutput> {
+function taskBinding<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(definition: TaskDefinition<TInput, TOutput, TErrors>, options: ApplicationTaskOptions<TInput>, engine: () => ApplicationWorkflowEngineProvider): ApplicationTaskBinding<TInput, TOutput, TErrors> {
   const invocationMetadata = (input: TInput, metadata: ApplicationWorkflowInvocationMetadata | undefined): ApplicationWorkflowInvocationMetadata | undefined => {
     if (metadata?.idempotencyKey || !options.idempotencyKey) return metadata;
     return { ...metadata, idempotencyKey: options.idempotencyKey(input) };
@@ -307,8 +371,8 @@ function taskBinding<TInput extends object, TOutput extends object>(definition: 
   return {
     kind: 'applicationTask',
     definition,
-    async run(input, metadata) {
-      return (await applicationWorkflowRuntime(engine())).run(definition.id, validateMessage(definition.input, input, `${definition.id}.input`), invocationMetadata(input, metadata));
+    async run(input, metadata, result) {
+      return (await applicationWorkflowRuntime(engine())).run(definition.id, validateMessage(definition.input, input, `${definition.id}.input`), invocationMetadata(input, metadata), result);
     },
     async start(input, metadata) {
       return (await applicationWorkflowRuntime(engine())).start(definition.id, validateMessage(definition.input, input, `${definition.id}.input`), invocationMetadata(input, metadata));
@@ -319,12 +383,12 @@ function taskBinding<TInput extends object, TOutput extends object>(definition: 
   };
 }
 
-function workflowBinding<TInput extends object, TOutput extends object>(definition: WorkflowDefinition<TInput, TOutput>, engine: () => ApplicationWorkflowEngineProvider): ApplicationWorkflowBinding<TInput, TOutput> {
+function workflowBinding<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>, TSignals extends Readonly<Record<string, object>>>(definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>, engine: () => ApplicationWorkflowEngineProvider): ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals> {
   return {
     kind: 'applicationWorkflow',
     definition,
-    async run(input, metadata) {
-      return (await applicationWorkflowRuntime(engine())).run(definition.id, validateMessage(definition.input, input, `${definition.id}.input`), metadata);
+    async run(input, metadata, result) {
+      return (await applicationWorkflowRuntime(engine())).run(definition.id, validateMessage(definition.input, input, `${definition.id}.input`), metadata, result);
     },
     async start(input, metadata) {
       return (await applicationWorkflowRuntime(engine())).start(definition.id, validateMessage(definition.input, input, `${definition.id}.input`), metadata);

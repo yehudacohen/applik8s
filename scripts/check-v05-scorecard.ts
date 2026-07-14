@@ -26,6 +26,11 @@ const workflows = graph.nodes.filter((node) => node.kind === 'workflow');
 const workflowHandlers = graph.nodes.filter((node) => node.kind === 'workflowHandler');
 const workers = graph.nodes.filter((node) => node.kind === 'workflowWorker');
 const engine = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'WorkflowEngine');
+// typecast: both files are tracked scorecard inputs whose consumed fields are checked defensively below.
+const baseline = JSON.parse(await readFile('benchmarks/v0.5/baseline.json', 'utf8')) as { readonly release?: string; readonly observation?: { readonly throughputPerSecond?: number }; readonly build?: { readonly maximumWorkflowJavaScriptBytes?: number; readonly maximumWorkflowGzipBytes?: number }; readonly capacityScenarios?: readonly unknown[] };
+// typecast: repository-owned maintainability budgets are a simple path-to-line-ceiling JSON map.
+const maintainabilityBudgets = JSON.parse(await readFile('benchmarks/v0.5/maintainability-budgets.json', 'utf8')) as Readonly<Record<string, number>>;
+const maintainability = await Promise.all(Object.entries(maintainabilityBudgets).map(async ([path, maximumLines]) => ({ path, maximumLines, lines: (await readFile(path, 'utf8')).split('\n').length })));
 
 const dimensions: readonly Dimension[] = [
   dimension('Architecture and graph',
@@ -36,6 +41,9 @@ const dimensions: readonly Dimension[] = [
     check('workflow-boundary', workflowHandlers.length >= 2 && workflowHandlers.every((node) => node.orchestrationBoundary === 'durableEffectsThroughTasks'), `${workflowHandlers.length} workflow handlers isolate effects through tasks.`),
     // typecast: these literals are the required subset of the graph's closed deterministic-operation union.
     check('durable-operations', workflowHandlers.every((node) => ['task', 'sleep', 'externalEvent', 'cancellation'].every((operation) => node.deterministicOperations.includes(operation as never))), 'Workflow handlers declare durable task, wait, sleep, and cancellation operations.'),
+    check('typed-contracts', await contains('packages/type-tests/src/public-api-inference.ts', "context.task('provisionAccount'") && await contains('packages/type-tests/src/public-api-inference.ts', "context.waitFor('approval')"), 'Task aliases, outputs, signal names, and signal payloads are inferred from declarations.'),
+    check('durable-errors', await contains('packages/compiler/src/application-workflows/index.ts', 'applik8s-durable-error:') && await contains('packages/applik8s/src/workflow-runtime-hatchet.ts', 'ApplicationDurableError'), 'Declared errors are validated in workers and decoded as structured runtime errors.'),
+    check('bounded-observation', await contains('packages/applik8s/test/workflow-runtime-hatchet.vertical.test.ts', 'honors abort signals') && await contains('packages/applik8s/test/workflow-runtime-hatchet.vertical.test.ts', 'bounds repeated provider read failures'), 'Result observation has abort, deadline, and bounded provider-failure behavior.'),
   ),
   dimension('Task safety and idempotency',
     check('task-effect-boundary', taskHandlers.length >= 3 && taskHandlers.every((node) => node.effectBoundary === 'externalEffectsAllowed'), `${taskHandlers.length} task handlers are the explicit external-effect boundary.`),
@@ -44,10 +52,12 @@ const dimensions: readonly Dimension[] = [
   dimension('Provider implementation',
     check('hatchet-postgres', engine?.kind === 'provider' && engine.implementation === 'hatchet' && engine.config?.serverVersion === 'v0.90.13', 'Pinned Hatchet implementation is represented in the graph.'),
     check('provider-resources', graph.providerBindings.some((binding) => binding.provider.nodeId === engine?.id && ['HelmRepository', 'HelmRelease', 'Cluster'].every((kind) => binding.generatedResources.some((resource) => resource.kind === kind))), 'WorkflowEngine binding declares Hatchet, Flux, and CNPG resources.'),
+    check('external-provider-registration', await contains('packages/core/test/application-graph.vertical.test.ts', 'ProjectionStore') && await contains('packages/core/src/application-graph.ts', 'without a core release'), 'Versioned provider packages can add interfaces without changing the built-in core registry.'),
   ),
   dimension('Worker operations',
     check('bounded-workers', workers.length >= 2 && workers.every((node) => node.deployment.taskSlots > 0 && node.deployment.durableSlots > 0 && node.deployment.gracefulShutdownSeconds > 0), `${workers.length} inferred workers have bounded slots and graceful drain.`),
     check('effect-egress', workers.every((node) => node.deployment.egress === 'allowAll' || node.deployment.egress === 'sameNamespace'), 'Every worker records an explicit task egress posture.'),
+    check('advanced-scaling-honesty', await contains('docs/workflows.md', 'experimental manifest-lowering surface'), 'KEDA and HA are explicitly bounded until live scaling/failover evidence exists.'),
   ),
   dimension('Longitudinal product proof',
     check('onboarding-decommissioning', workflows.some((node) => node.name === 'tenant.onboard.v1') && workflows.some((node) => node.name === 'tenant.decommission.v1'), 'Tenant Platform defines onboarding and decommissioning workflows.'),
@@ -60,6 +70,13 @@ const dimensions: readonly Dimension[] = [
   dimension('Documentation and adoption',
     check('workflow-guide', await contains('docs/workflows.md', 'External effects belong in tasks'), 'Workflow guide documents the central effect boundary.'),
     check('release-gate', await contains('package.json', 'check:v05:prerelease:orbstack'), 'One command joins local, packaging, scorecard, and OrbStack workflow evidence.'),
+    check('release-evidence', await contains('.github/workflows/release-evidence.yml', "default: 'v0.5'") && await contains('.github/workflows/deploy.yml', 'Resolve release line'), 'CI evidence and tagged release gates select the v0.5 lane explicitly.'),
+  ),
+  dimension('Performance and maintainability',
+    check('performance-history', baseline.release === 'v0.5' && (baseline.observation?.throughputPerSecond ?? 0) > 0 && (baseline.build?.maximumWorkflowJavaScriptBytes ?? 0) > 0, `Tracked v0.5 baseline records observation throughput and workflow bundle size.`),
+    check('bundle-budget', (baseline.build?.maximumWorkflowGzipBytes ?? Number.POSITIVE_INFINITY) <= 700_000, `Largest recorded compressed workflow bundle is ${baseline.build?.maximumWorkflowGzipBytes ?? 'missing'} bytes.`),
+    check('capacity-envelope', baseline.capacityScenarios?.length === 3, 'Tracked capacity envelope records 1, 2, and 4 replica resource/concurrency/cost scenarios.'),
+    check('module-ceilings', maintainability.every((entry) => entry.lines <= entry.maximumLines), maintainability.map((entry) => `${entry.path} ${entry.lines}/${entry.maximumLines}`).join('; ')),
   ),
 ];
 

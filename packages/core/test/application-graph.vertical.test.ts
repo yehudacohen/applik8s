@@ -102,7 +102,8 @@ describe('application graph substrate contract', () => {
     expect(isApplicationGraphNodeKind('job')).toBe(true);
     expect(isApplicationGraphNodeKind('workflow')).toBe(true);
     expect(isApplicationProviderInterfaceKind('ModelStore')).toBe(true);
-    expect(isApplicationProviderInterfaceKind('Database')).toBe(false);
+    expect(isApplicationProviderInterfaceKind('ProjectionStore')).toBe(true);
+    expect(isApplicationProviderInterfaceKind('projection-store')).toBe(false);
   });
 
   it('represents an app as graph nodes before Kubernetes or TypeKro emission', () => {
@@ -494,6 +495,23 @@ describe('application graph substrate contract', () => {
       expect.objectContaining({ message: 'Application provider compatibility matrix must mark CredentialStore required for v0.3.' }),
       expect.objectContaining({ message: 'Application provider compatibility matrix must mark HttpExposure required for v0.3.' }),
     ]));
+  });
+
+  it('accepts versioned provider-package interfaces without extending the core built-in registry', () => {
+    const matrix = providerCompatibilityMatrix();
+    const projectionStore: ApplicationProviderInterfaceContract = {
+      apiVersion: 'applik8s.provider/v1alpha1',
+      interface: 'ProjectionStore',
+      version: 'v1alpha1',
+      requirements: ['atomicProjectionCheckpoint'],
+      guarantees: ['replaySafeProjectionWrites'],
+      implementation: { name: 'external-projection-package' },
+      surface: 'experimentalSurface',
+      support: 'implemented',
+      diagnostics: [],
+    };
+    expect(applicationProviderInterfaceKinds).not.toContain('ProjectionStore');
+    expect(validateApplicationProviderCompatibilityMatrixContract({ ...matrix, providers: [...matrix.providers, projectionStore] })).toEqual([]);
   });
 
   it('defines provider requirement contracts for every v0.3 capability interface', () => {

@@ -120,11 +120,13 @@ const AccountChanged = event('account.changed.v1', {
 const ProvisionAccount = task('account.provision.v1', {
   input: appSchemaType({ accountId: 'string', requestId: 'string' }),
   output: appSchemaType({ endpoint: 'string' }),
+  errors: { providerUnavailable: appSchemaType({ retryAfterSeconds: 'number' }) },
 });
 
 const OnboardAccount = workflow('account.onboard.v1', {
   input: appSchemaType({ accountId: 'string', requestId: 'string' }),
   output: appSchemaType({ endpoint: 'string' }),
+  errors: { rejected: appSchemaType({ reason: 'string' }) },
   signals: { approval: appSchemaType({ approved: 'boolean' }) },
 });
 
@@ -424,11 +426,27 @@ appSdk.kubernetesComposition({
     },
   });
   const accountModelBinding: ApplicationModelBinding<AccountSpec, AccountStatus> = Account;
-  const provisionAccount: ApplicationTaskBinding<{ accountId: string; requestId: string }, { endpoint: string }> = app.task(ProvisionAccount, { idempotencyKey: (input) => input.requestId }, async (input) => ({ endpoint: `https://${input.accountId}.example.test` }));
+  const provisionAccount: ApplicationTaskBinding<{ accountId: string; requestId: string }, { endpoint: string }> = app.task(ProvisionAccount, { idempotencyKey: (input) => input.requestId }, async (input, context) => {
+    if (input.accountId === 'unavailable') context.fail('providerUnavailable', { retryAfterSeconds: 5 });
+    if (input.accountId === 'type-test-only') {
+      // @ts-expect-error durable error names come from the task definition.
+      context.fail('missingError', {});
+      // @ts-expect-error durable error payloads are schema-directed.
+      context.fail('providerUnavailable', { retryAfterSeconds: 'later' });
+    }
+    return { endpoint: `https://${input.accountId}.example.test` };
+  });
   const onboardAccount: ApplicationWorkflowBinding<{ accountId: string; requestId: string }, { endpoint: string }> = app.workflow(OnboardAccount, { tasks: { provisionAccount } }, async (input, context) => {
-    const result = await context.task<{ accountId: string; requestId: string }, { endpoint: string }>('provisionAccount', input, { idempotencyKey: input.requestId });
-    const approval = await context.waitFor<{ approved: boolean }>('approval');
-    if (!approval.approved) throw new Error('account onboarding rejected');
+    const result = await context.task('provisionAccount', input, { idempotencyKey: input.requestId });
+    const endpoint: string = result.endpoint;
+    const approval = await context.waitFor('approval');
+    const approved: boolean = approval.approved;
+    // @ts-expect-error aliases must come from the workflow's declared task map.
+    void context.task('missingTask', input);
+    // @ts-expect-error signal names must come from the workflow contract.
+    void context.waitFor('missingSignal');
+    if (!approval.approved) context.fail('rejected', { reason: 'account onboarding rejected' });
+    expectTypeUsage(endpoint, approved);
     return result;
   });
   void onboardAccount.start({ accountId: 'account-1', requestId: 'request-1' }).then(async (run) => {

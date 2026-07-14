@@ -19,6 +19,7 @@ const Provision = task('tenant.provision.v1', {
 const Onboard = workflow('tenant.onboard.v1', {
   input: type({ tenantId: 'string', requestId: 'string' }),
   output: type({ phase: "'Ready' | 'Compensated' | 'NeedsIntervention'" }),
+  errors: { rejected: type({ reason: 'string' }) },
   signals: { approval: type({ approved: 'boolean' }) },
 });
 
@@ -39,10 +40,17 @@ const provision = platform.task(Provision, {
 
 const onboard = platform.workflow(Onboard, { tasks: { provision } }, async (input, context) => {
   await context.task('provision', input, { idempotencyKey: input.requestId });
-  const approval = await context.waitFor<{ approved: boolean }>('approval', { lookback: '24h' });
-  return { phase: approval.approved ? 'Ready' : 'Compensated' };
+  const approval = await context.waitFor('approval', { lookback: '24h' });
+  if (!approval.approved) context.fail('rejected', { reason: 'approval denied' });
+  return { phase: 'Ready' };
 });
+
+const run = await onboard.start({ tenantId: 'tenant-a', requestId: 'request-1' });
+const controller = new AbortController();
+const result = await run.result({ signal: controller.signal, timeoutMs: 30_000 });
 ```
+
+Task aliases, child-workflow aliases, signal names, signal payloads, and named durable errors are inferred from the declarations supplied to `app.workflow`. Generated workers validate named error payloads before recording them; callers receive an `ApplicationDurableError` with a typed `{ name, payload }` descriptor. Result observation is always abortable and deadline-bounded, and repeated provider read failures terminate with a structured observation error.
 
 ## Generated runtime and infrastructure
 
@@ -60,7 +68,9 @@ Provisioned Hatchet uses the chart-owned `<name>-client-config` worker token. Us
 - child task and child workflow calls
 - cancellation and graceful worker drain
 - correlation, causation, and trace metadata propagation
-- fixed replicas and optional KEDA Hatchet task-stat scaling
+- fixed replicas
 - compensation in declared tasks and explicit `NeedsIntervention` outcomes
 
 The release does not promise exactly-once effects, cross-provider transactions, or canonical state stored only in Hatchet. The OrbStack gate is `bun run check:v05:prerelease:orbstack`.
+
+KEDA Hatchet task-stat scaling and multi-replica Hatchet/CNPG topology are an experimental manifest-lowering surface in v0.5. Their generated contracts have local coverage, but automatic scaling behavior and control-plane/database failover are not production claims until dedicated live evidence is added. Manual worker replicas and bounded per-replica slots are the supported v0.5 scaling path.

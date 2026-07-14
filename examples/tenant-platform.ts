@@ -338,7 +338,7 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
       let provisioned: { namespace: string; endpoint: string } | undefined;
       try {
         provisioned = await context.task('provisionInfrastructure', input, { idempotencyKey: `${input.requestId}:provision` });
-        const approval = await context.waitFor<{ approved: boolean; reviewer: string }>('approval', { lookback: '24h' });
+        const approval = await context.waitFor('approval', { lookback: '24h' });
         if (!approval.approved) {
           await context.task('removeInfrastructure', input, { idempotencyKey: `${input.requestId}:compensate` });
           // typecast: preserve the declared workflow output phase discriminant.
@@ -363,7 +363,7 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
     });
     // typecast: the decommissioning branches retain the declared literal workflow phase union.
     tenantPlatform.workflow(DecommissionTenant, { tasks: { removeInfrastructure, commitTransition }, worker: { group: `${config.stackName}-decommissioning`, replicas: 1, taskSlots: 8, durableSlots: 32 } }, async (input, context) => {
-      const confirmation = await context.waitFor<{ approved: boolean; reviewer: string }>('confirm', { lookback: '7d' });
+      const confirmation = await context.waitFor('confirm', { lookback: '7d' });
       // typecast: preserve the declared workflow output phase discriminant.
       if (!confirmation.approved) return { phase: 'NeedsIntervention' as const };
       await context.task('removeInfrastructure', input, { idempotencyKey: `${input.requestId}:remove` });

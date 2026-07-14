@@ -47,11 +47,21 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Verify exact-commit v0.4 live evidence
+      - name: Resolve release line
+        id: release
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then VERSION="${{ inputs.release_version }}"; fi
+          LINE="v$(printf '%s' "${VERSION}" | cut -d. -f1,2)"
+          printf 'line=%s\n' "${LINE}" >> "${GITHUB_OUTPUT}"
+          printf 'lane=%s\n' "${LINE//./}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify exact-commit live evidence
         if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_npm == 'true')
         run: node scripts/verify-v04-live-evidence.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLIK8S_RELEASE_LINE: ${{ steps.release.outputs.line }}
 
       - name: Verify release tag matches package versions
         if: startsWith(github.ref, 'refs/tags/v')
@@ -61,7 +71,12 @@ jobs:
         run: bun run check:local
 
       - name: Run v0.4 durable-behavior gates
+        if: ${{ steps.release.outputs.line == 'v0.4' }}
         run: bun run test:v04:local
+
+      - name: Run v0.5 durable-workflow gates and scorecard
+        if: ${{ steps.release.outputs.line == 'v0.5' }}
+        run: bun run check:v05:local
 
       - name: Run package release checks
         run: bun run check:packages
@@ -73,10 +88,15 @@ jobs:
         run: bun run build:imagejob
 
       - name: Build Tenant Platform v0.4 artifacts
+        if: ${{ steps.release.outputs.line == 'v0.4' }}
         run: bun run build:tenant-platform-v04
 
+      - name: Build Tenant Platform v0.5 artifacts
+        if: ${{ steps.release.outputs.line == 'v0.5' }}
+        run: bun run build:tenant-platform-v05
+
       - name: Capture artifact listing
-        run: find dist/applik8s dist/examples/tenant-platform-v04 -maxdepth 4 -type f | sort > dist/applik8s-artifact-list.txt
+        run: find dist/applik8s dist/examples/tenant-platform-* -maxdepth 4 -type f | sort > dist/applik8s-artifact-list.txt
 
       - name: Upload release evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -84,7 +104,7 @@ jobs:
           name: applik8s-release-evidence
           path: |
             dist/applik8s
-            dist/examples/tenant-platform-v04
+            dist/examples/tenant-platform-*
             dist/applik8s-artifact-list.txt
 
   publish-npm:

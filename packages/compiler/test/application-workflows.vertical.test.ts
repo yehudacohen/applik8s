@@ -13,8 +13,8 @@ describe('v0.5 generated workflow lowering', () => {
       await writeFile(entrypoint, `
 import { app, task, workflow, WorkflowEngine } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
-const SendWelcome = task('tenant.send-welcome.v1', { input: type({ tenantId: 'string', requestId: 'string' }), output: type({ sent: 'boolean' }) });
-const OnboardTenant = workflow('tenant.onboard.v1', { input: type({ tenantId: 'string', requestId: 'string' }), output: type({ sent: 'boolean' }), signals: { approved: type({ approved: 'boolean' }) } });
+const SendWelcome = task('tenant.send-welcome.v1', { input: type({ tenantId: 'string', requestId: 'string' }), output: type({ sent: 'boolean' }), errors: { providerUnavailable: type({ retryAfterSeconds: 'number' }) } });
+const OnboardTenant = workflow('tenant.onboard.v1', { input: type({ tenantId: 'string', requestId: 'string' }), output: type({ sent: 'boolean' }), errors: { rejected: type({ reason: 'string' }) }, signals: { approved: type({ approved: 'boolean' }) } });
 const minimumTenantIdLength = 2;
 function shouldSendWelcome(tenantId: string): boolean { return tenantId.length >= minimumTenantIdLength; }
 const platform = app('workflow-proof', { namespace: 'workflow-proof' });
@@ -44,6 +44,9 @@ export const workflowProof = platform.composition;
       expect(artifact).toMatchObject({ sizeBytes: expect.any(Number), digest: expect.stringMatching(/^sha256:/) });
       const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
       expect(source).toContain('HatchetClient');
+      expect(source).toContain('applik8s-durable-error:');
+      expect(source).toContain('providerUnavailable');
+      expect(source).toContain('rejected');
       expect(source).not.toContain('runThreaded');
       const resources = result.value.artifacts.resources;
       expect(resources).toEqual(expect.arrayContaining([
@@ -121,6 +124,46 @@ export const invalidScaling = platform.composition;
       });
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.error.message).toContain('has no tenantId');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 240_000);
+
+  it('binds an externally managed Hatchet runtime without generating provider infrastructure', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-workflow-external-'));
+    try {
+      const entrypoint = join(dir, 'application.ts');
+      await writeFile(entrypoint, `
+import { app, task, WorkflowEngine } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+const Run = task('external.run.v1', { input: type({ id: 'string' }), output: type({ done: 'boolean' }) });
+const platform = app('external-runtime', { namespace: 'external-runtime' });
+platform.provide(WorkflowEngine, WorkflowEngine.hatchet({ provision: false, namespace: 'external-runtime', hostPort: 'hatchet.example.test:7070', apiUrl: 'https://hatchet.example.test', workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'external-hatchet-token', namespace: 'external-runtime' } }));
+platform.task(Run, {}, async () => ({ done: true }));
+export const externalRuntime = platform.composition;
+`);
+      const result = await compileTypeKroComposition({
+        entrypoint,
+        compositionName: 'externalRuntime',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.5.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: true, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.artifacts.resources).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'HelmRelease' }),
+        expect.objectContaining({ kind: 'HelmRepository' }),
+        expect.objectContaining({ kind: 'Cluster' }),
+      ]));
+      const deployment = result.value.artifacts.resources.find((resource) => resource.kind === 'Deployment');
+      expect(deployment?.spec).toMatchObject({ template: { spec: { containers: [expect.objectContaining({ env: expect.arrayContaining([
+        { name: 'HATCHET_CLIENT_TOKEN', valueFrom: { secretKeyRef: { name: 'external-hatchet-token', key: 'HATCHET_CLIENT_TOKEN' } } },
+        { name: 'HATCHET_CLIENT_HOST_PORT', value: 'hatchet.example.test:7070' },
+        { name: 'HATCHET_CLIENT_API_URL', value: 'https://hatchet.example.test' },
+      ]) })] } } });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

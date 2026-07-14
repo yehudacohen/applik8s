@@ -183,7 +183,9 @@ function generatedWorkerSource(contract: WorkflowContract): string {
   const handlerImports = [...contract.tasks.map((entry) => entry.handler), ...contract.workflows.map((entry) => entry.handler)]
     .map((handler) => `import { handler as ${handlerVariable(handler.id)} } from ${JSON.stringify(`./${handlerModuleFile(handler.id)}`)};`)
     .join('\n');
-  const taskDeclarations = contract.tasks.map(({ handler, task }) => `
+  const taskDeclarations = contract.tasks.map(({ handler, task }) => {
+    const errors = Object.fromEntries(task.contract.errors.map((error) => [error.name, error.schema.jsonSchema]));
+    return `
 const ${jsName(task.id)} = hatchet.task({
   name: ${JSON.stringify(task.name)},
   retries: ${Math.max(0, (handler.retry.maxAttempts ?? 1) - 1)},
@@ -192,20 +194,22 @@ const ${jsName(task.id)} = hatchet.task({
   scheduleTimeout: ${JSON.stringify(`${handler.scheduleTimeoutSeconds}s`)},
   fn: async (input, context) => {
     const validInput = validate(${JSON.stringify(task.contract.input.jsonSchema)}, input, ${JSON.stringify(`${task.name}.input`)});
-    const output = await ${handlerVariable(handler.id)}(validInput, taskContext(context));
+    const output = await ${handlerVariable(handler.id)}(validInput, taskContext(context, ${JSON.stringify(task.name)}, ${JSON.stringify(errors)}));
     return validate(${JSON.stringify(task.contract.output.jsonSchema)}, output, ${JSON.stringify(`${task.name}.output`)});
   },
-});`).join('\n');
+});`;
+  }).join('\n');
   const workflowDeclarations = contract.workflows.map(({ handler, workflow }) => {
     const taskBindings = Object.fromEntries(handler.taskBindings.map((binding) => [binding.alias, contract.contractNames[binding.task.nodeId]]));
     const childBindings = Object.fromEntries(handler.childWorkflowBindings.map((binding) => [binding.alias, contract.contractNames[binding.workflow.nodeId]]));
+    const errors = Object.fromEntries(workflow.contract.errors.map((error) => [error.name, error.schema.jsonSchema]));
     if (Object.values(taskBindings).some((value) => !value) || Object.values(childBindings).some((value) => !value)) throw new Error(`Workflow handler ${handler.id} contains an unresolved task or child-workflow binding.`);
     return `
 const ${jsName(workflow.id)} = hatchet.durableTask({
   name: ${JSON.stringify(workflow.name)},
   fn: async (input, context) => {
     const validInput = validate(${JSON.stringify(workflow.contract.input.jsonSchema)}, input, ${JSON.stringify(`${workflow.name}.input`)});
-    const output = await ${handlerVariable(handler.id)}(validInput, workflowContext(context, ${JSON.stringify(workflow.name)}, ${JSON.stringify(taskBindings)}, ${JSON.stringify(childBindings)}, declarations));
+    const output = await ${handlerVariable(handler.id)}(validInput, workflowContext(context, ${JSON.stringify(workflow.name)}, ${JSON.stringify(taskBindings)}, ${JSON.stringify(childBindings)}, ${JSON.stringify(errors)}, declarations));
     return validate(${JSON.stringify(workflow.contract.output.jsonSchema)}, output, ${JSON.stringify(`${workflow.name}.output`)});
   },
 });`;
@@ -234,11 +238,19 @@ function metadata(context) {
   const data = typeof context.additionalMetadata === 'function' ? context.additionalMetadata() : {};
   return { invocationId, idempotencyKey: invocationId, attempt: Number(context.retryCount?.() ?? 0) + 1, correlationId: data?.['applik8s.correlation-id'], causationId: data?.['applik8s.causation-id'], traceparent: data?.traceparent, signal: context.abortController?.signal ?? new AbortController().signal };
 }
-function taskContext(context) { return metadata(context); }
+function declaredFailure(contractName, errorSchemas, name, payload) {
+  const schema = errorSchemas[name];
+  if (!schema) throw new Error('Unknown declared durable error ' + JSON.stringify(name) + ' for ' + contractName);
+  const validPayload = validate(schema, payload, contractName + '.errors.' + name);
+  throw new Error('applik8s-durable-error:' + JSON.stringify({ name, payload: validPayload }));
+}
+function taskContext(context, contractName, errorSchemas) {
+  return { ...metadata(context), fail: (name, payload) => declaredFailure(contractName, errorSchemas, name, payload) };
+}
 function childOptions(options) {
   return { ...(options?.idempotencyKey ? { childKey: options.idempotencyKey } : {}), ...(options ? { additionalMetadata: Object.fromEntries(Object.entries({ 'applik8s.idempotency-key': options.idempotencyKey, 'applik8s.tenant': options.tenant, 'applik8s.correlation-id': options.correlationId, 'applik8s.causation-id': options.causationId, traceparent: options.traceparent }).filter(([, value]) => typeof value === 'string')) } : {}) };
 }
-function workflowContext(context, workflowName, taskBindings, childBindings, registry) {
+function workflowContext(context, workflowName, taskBindings, childBindings, errorSchemas, registry) {
   const base = metadata(context);
   return {
     ...base,
@@ -249,6 +261,7 @@ function workflowContext(context, workflowName, taskBindings, childBindings, reg
     now: () => context.now(),
     cancelled: () => context.cancelled,
     rethrowIfCancelled: (error) => context.rethrowIfCancelled(error),
+    fail: (name, payload) => declaredFailure(workflowName, errorSchemas, name, payload),
   };
 }
 function resolveDeclaration(registry, bindings, kind, alias) { const name = bindings[alias]; if (!name) return missing(kind, alias); return registry[name] ?? name; }

@@ -12,6 +12,7 @@ const ProvisionTenant = task('tenant.provision.v1', {
 const TenantOnboarding = workflow('tenant.onboarding.v1', {
   input: type({ tenantId: 'string', requestId: 'string' }),
   output: type({ endpoint: 'string', approved: 'boolean' }),
+  errors: { rejected: type({ reason: 'string' }) },
   signals: { approval: type({ approved: 'boolean' }) },
 });
 
@@ -34,8 +35,9 @@ describe('v0.5 durable task and workflow contracts', () => {
       crons: [{ name: 'daily-onboarding', expression: '0 4 * * *', input: { tenantId: 'scheduled', requestId: 'daily' } }],
       worker: { replicas: 2, taskSlots: 8, durableSlots: 32, gracefulShutdownSeconds: 45, healthPort: 8081 },
     }, async (input, context) => {
-      const provisioned = await context.task<{ tenantId: string; requestId: string }, { endpoint: string }>('provision', input, { idempotencyKey: input.requestId });
-      const approval = await context.waitFor<{ approved: boolean }>('approval', { scope: context.invocationId });
+      const provisioned = await context.task('provision', input, { idempotencyKey: input.requestId });
+      const approval = await context.waitFor('approval', { scope: context.invocationId });
+      if (!approval.approved) context.fail('rejected', { reason: 'approval denied' });
       return { endpoint: provisioned.endpoint, approved: approval.approved };
     });
 
@@ -63,8 +65,8 @@ describe('v0.5 durable task and workflow contracts', () => {
     const calls: unknown[] = [];
     // typecast: the fake runtime returns the generic caller-selected output without coupling the fixture to one contract.
     const restore = setApplicationWorkflowRuntimeFactory(async () => ({
-      async run(contract, input, metadata) {
-        calls.push({ operation: 'run', contract, input, metadata });
+      async run(contract, input, metadata, result) {
+        calls.push({ operation: 'run', contract, input, metadata, result });
         // typecast: the generic fake returns the caller-selected test output.
         return { endpoint: 'https://tenant-a.example.test' } as never;
       },
@@ -80,8 +82,8 @@ describe('v0.5 durable task and workflow contracts', () => {
     try {
       const platform = app('runtime-platform');
       const provision = platform.task(ProvisionTenant, { idempotencyKey: (input) => input.requestId }, async () => ({ endpoint: 'unused' }));
-      await provision.run({ tenantId: 'tenant-a', requestId: 'request-1' }, { correlationId: 'correlation-1' });
-      expect(calls).toEqual([expect.objectContaining({ operation: 'run', contract: 'tenant.provision.v1', metadata: expect.objectContaining({ idempotencyKey: 'request-1', correlationId: 'correlation-1' }) })]);
+      await provision.run({ tenantId: 'tenant-a', requestId: 'request-1' }, { correlationId: 'correlation-1' }, { timeoutMs: 12_000 });
+      expect(calls).toEqual([expect.objectContaining({ operation: 'run', contract: 'tenant.provision.v1', metadata: expect.objectContaining({ idempotencyKey: 'request-1', correlationId: 'correlation-1' }), result: { timeoutMs: 12_000 } })]);
     } finally {
       restore();
     }

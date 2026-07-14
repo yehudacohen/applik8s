@@ -9,15 +9,62 @@ export interface ApplicationWorkflowInvocationMetadata {
   readonly priority?: 'low' | 'medium' | 'high';
 }
 
-export interface ApplicationWorkflowRun<TOutput extends object> {
+export interface ApplicationDurableErrorDescriptor<TName extends string = string, TPayload extends object = object> {
+  readonly name: TName;
+  readonly payload: TPayload;
+}
+
+export type ApplicationDurableErrorUnion<TErrors extends Readonly<Record<string, object>>> = {
+  readonly [TName in keyof TErrors & string]: ApplicationDurableErrorDescriptor<TName, TErrors[TName]>;
+}[keyof TErrors & string];
+
+export class ApplicationDurableError<TName extends string = string, TPayload extends object = object> extends Error {
+  readonly durable: ApplicationDurableErrorDescriptor<TName, TPayload>;
+
+  constructor(name: TName, payload: TPayload, message = `Durable application error ${name}`) {
+    super(message);
+    this.name = 'ApplicationDurableError';
+    this.durable = { name, payload };
+  }
+}
+
+export function isApplicationDurableError(value: unknown): value is ApplicationDurableError {
+  return value instanceof ApplicationDurableError;
+}
+
+export interface ApplicationWorkflowResultOptions {
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+  readonly pollIntervalMs?: number;
+}
+
+export type ApplicationWorkflowObservationFailure = 'aborted' | 'timeout' | 'providerUnavailable' | 'cancelled' | 'failed';
+
+export class ApplicationWorkflowObservationError extends Error {
+  constructor(
+    readonly failure: ApplicationWorkflowObservationFailure,
+    readonly runId: string,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'ApplicationWorkflowObservationError';
+  }
+}
+
+export interface ApplicationWorkflowRun<
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+> {
   readonly id: string;
-  result(): Promise<TOutput>;
-  cancel(): Promise<void>;
+  readonly __errors?: TErrors;
+  result(options?: ApplicationWorkflowResultOptions): Promise<TOutput>;
+  cancel(options?: Omit<ApplicationWorkflowResultOptions, 'pollIntervalMs'>): Promise<void>;
 }
 
 export interface ApplicationWorkflowRuntime {
-  run<TInput extends object, TOutput extends object>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<TOutput>;
-  start<TInput extends object, TOutput extends object>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput>>;
+  run<TInput extends object, TOutput extends object>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
+  start<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput, TErrors>>;
   schedule<TInput extends object>(contract: string, input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata): Promise<{ readonly id: string }>;
   signal<TPayload extends object>(contract: string, runId: string, signal: string, payload: TPayload, metadata?: ApplicationWorkflowInvocationMetadata): Promise<void>;
 }

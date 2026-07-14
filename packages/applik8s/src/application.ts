@@ -31,7 +31,7 @@ import { generatedApplicationServerRuntimeSource, runtimeIndexTable } from './ap
 import { generatedServerRuntimeBundleContract } from './application-server-runtime-bundle.js';
 import type { ApplicationGeneratedJobStatusProjectionStore, ApplicationGeneratedJobStatusTarget, ApplicationStatusReconcilerAppResourceTarget } from './application-status-reconciler.js';
 import { applicationStatusReconcilerName, emitApplicationGeneratedJobStatusReconcilers } from './application-status-reconciler.js';
-import type { ApplicationTaskBinding, ApplicationTaskHandler, ApplicationTaskOptions, ApplicationWorkflowBinding, ApplicationWorkflowHandler, ApplicationWorkflowOptions } from './application-workflows.js';
+import type { ApplicationTaskBinding, ApplicationTaskHandler, ApplicationTaskOptions, ApplicationTaskReference, ApplicationWorkflowBinding, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference } from './application-workflows.js';
 import { type ApplicationWorkflowState, registerApplicationTask, registerApplicationWorkflow } from './application-workflows.js';
 import type { EntityDefinition, TaskDefinition, WorkflowDefinition } from './dsl.js';
 
@@ -39,7 +39,8 @@ export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationC
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
 export type { ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalDnsPublicationProvider, ApplicationGeneratedModelStoreMigrationJobOptions, ApplicationHatchetWorkflowEngineProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationObjectStorageProvider, ApplicationPostgresModelStoreOptions, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationQueueProvider, ApplicationSecretProvider, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
 export { Certificate, CounterStore, CredentialStore, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, providers, Queue, Secret, WorkflowEngine } from './application-providers.js';
-export type { ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskOptions, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
+export { ApplicationDurableError, isApplicationDurableError } from './application-workflows.js';
+export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskOptions, ApplicationTaskReference, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference, ApplicationWorkflowResultOptions, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
 
 export interface KubernetesApplicationScope {
   readonly api: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
@@ -61,8 +62,15 @@ export interface KubernetesApplicationScope {
   defaults(defaults: ApplicationDefaults): ApplicationDefaultsBinding;
   provide<TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): ApplicationProviderBinding<TImplementation>;
   aggregate<TStats extends object, TEvent extends object>(name: string, options: ApplicationAggregateOptions<TStats, TEvent>): ApplicationAggregateBinding<TStats, TEvent>;
-  task<TInput extends object, TOutput extends object>(definition: TaskDefinition<TInput, TOutput>, options: ApplicationTaskOptions<TInput>, handler: ApplicationTaskHandler<TInput, TOutput>): ApplicationTaskBinding<TInput, TOutput>;
-  workflow<TInput extends object, TOutput extends object>(definition: WorkflowDefinition<TInput, TOutput>, options: ApplicationWorkflowOptions, handler: ApplicationWorkflowHandler<TInput, TOutput>): ApplicationWorkflowBinding<TInput, TOutput>;
+  task<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(definition: TaskDefinition<TInput, TOutput, TErrors>, options: ApplicationTaskOptions<TInput>, handler: ApplicationTaskHandler<TInput, TOutput, TErrors>): ApplicationTaskBinding<TInput, TOutput, TErrors>;
+  workflow<
+    TInput extends object,
+    TOutput extends object,
+    TErrors extends Readonly<Record<string, object>>,
+    TSignals extends Readonly<Record<string, object>>,
+    TTasks extends Readonly<Record<string, ApplicationTaskReference>>,
+    TWorkflows extends Readonly<Record<string, ApplicationWorkflowReference>>,
+  >(definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>, options: ApplicationWorkflowOptions<TTasks, TWorkflows>, handler: ApplicationWorkflowHandler<TInput, TOutput, TErrors, TSignals, TTasks, TWorkflows>): ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals>;
 }
 
 export interface ApplicationServerRegistrar {
@@ -794,7 +802,7 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
       invalidate();
       return binding;
     },
-    task<TInput extends object, TOutput extends object>(definition: TaskDefinition<TInput, TOutput>, taskOptions: ApplicationTaskOptions<TInput>, handler: ApplicationTaskHandler<TInput, TOutput>): ApplicationTaskBinding<TInput, TOutput> {
+    task<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(definition: TaskDefinition<TInput, TOutput, TErrors>, taskOptions: ApplicationTaskOptions<TInput>, handler: ApplicationTaskHandler<TInput, TOutput, TErrors>): ApplicationTaskBinding<TInput, TOutput, TErrors> {
       const binding = preview.task(definition, taskOptions, handler);
       replays.push((scope) => {
         scope.task(definition, taskOptions, handler);
@@ -802,7 +810,14 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
       invalidate();
       return binding;
     },
-    workflow<TInput extends object, TOutput extends object>(definition: WorkflowDefinition<TInput, TOutput>, workflowOptions: ApplicationWorkflowOptions, handler: ApplicationWorkflowHandler<TInput, TOutput>): ApplicationWorkflowBinding<TInput, TOutput> {
+    workflow<
+      TInput extends object,
+      TOutput extends object,
+      TErrors extends Readonly<Record<string, object>>,
+      TSignals extends Readonly<Record<string, object>>,
+      TTasks extends Readonly<Record<string, ApplicationTaskReference>>,
+      TWorkflows extends Readonly<Record<string, ApplicationWorkflowReference>>,
+    >(definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>, workflowOptions: ApplicationWorkflowOptions<TTasks, TWorkflows>, handler: ApplicationWorkflowHandler<TInput, TOutput, TErrors, TSignals, TTasks, TWorkflows>): ApplicationWorkflowBinding<TInput, TOutput, TErrors, TSignals> {
       const binding = preview.workflow(definition, workflowOptions, handler);
       replays.push((scope) => {
         scope.workflow(definition, workflowOptions, handler);

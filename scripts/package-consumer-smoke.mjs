@@ -8,6 +8,7 @@ import ts from 'typescript';
 const execFileAsync = promisify(execFile);
 const root = resolve(process.cwd());
 await execFileAsync(process.execPath, [join(root, 'scripts/build-publishable-packages.mjs')], { cwd: root });
+console.log('Package consumer smoke: built publishable packages.');
 const packageDirs = [
   'packages/applik8s',
   'packages/core',
@@ -105,6 +106,7 @@ try {
     await mkdir(packageInstallDir, { recursive: true });
     await execFileAsync('tar', ['-xzf', join(packDir, packResult.filename), '-C', packageInstallDir, '--strip-components=1']);
   }
+  console.log(`Package consumer smoke: packed and unpacked ${packageDirs.length} packages.`);
 
   const consumerDir = join(workDir, 'consumer');
   for (const [dependency, packageTarget] of externalPackages) {
@@ -121,6 +123,25 @@ try {
     publicEntrypoints.map((specifier, index) => `import * as package${index} from ${JSON.stringify(specifier)};\nvoid package${index};`).join('\n'),
   );
   await execFileAsync(process.execPath, [entryPath], { cwd: consumerDir });
+  console.log(`Package consumer smoke: imported ${publicEntrypoints.length} public entrypoints under Node.`);
+
+  const v05Path = join(consumerDir, 'v05.mjs');
+  await writeFile(v05Path, `import { app, applicationGraphFor, task, workflow } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+const Provision = task('packed.provision.v1', { input: type({ id: 'string' }), output: type({ endpoint: 'string' }), errors: { unavailable: type({ retryAfterSeconds: 'number' }) } });
+const Onboard = workflow('packed.onboard.v1', { input: type({ id: 'string' }), output: type({ endpoint: 'string' }), errors: { rejected: type({ reason: 'string' }) }, signals: { approval: type({ approved: 'boolean' }) } });
+const platform = app('packed-v05', { namespace: 'packed-v05' });
+const provision = platform.task(Provision, {}, async (input) => ({ endpoint: 'https://' + input.id + '.example.test' }));
+platform.workflow(Onboard, { tasks: { provision } }, async (input, context) => {
+  const approval = await context.waitFor('approval');
+  if (!approval.approved) context.fail('rejected', { reason: 'approval denied' });
+  return context.task('provision', input);
+});
+const graph = applicationGraphFor(platform.composition);
+if (!graph?.nodes.some((node) => node.kind === 'workflowWorker') || !graph.providerRequirements.some((requirement) => requirement.interface === 'WorkflowEngine')) throw new Error('Packed v0.5 task/workflow graph did not materialize.');
+`);
+  await execFileAsync(process.execPath, [v05Path], { cwd: consumerDir });
+  console.log('Package consumer smoke: packed v0.5 task/workflow graph passed.');
 
   const operatorPath = join(consumerDir, 'operator.ts');
   const outDir = join(consumerDir, 'dist');
@@ -136,6 +157,7 @@ export const smoke = sdk.operator({ name: 'packed-smoke', deployment: { namespac
   if (!help.stdout.includes('Usage: applik8s')) throw new Error('Packed applik8s executable did not render help.');
   await execFileAsync(executable, ['build', operatorPath, '--out-dir', outDir, '--operator-name', 'packed-smoke'], { cwd: consumerDir, maxBuffer: 20 * 1024 * 1024 });
   await readFile(join(outDir, 'operator-manifest.json'));
+  console.log('Package consumer smoke: clean-directory CLI build passed.');
 
   const v04Path = join(consumerDir, 'v04.mjs');
   await writeFile(v04Path, `import { app, applicationGraphFor, command, event } from '@applik8s/applik8s';
@@ -155,8 +177,9 @@ const graph = applicationGraphFor(platform.composition);
 if (!graph?.nodes.some((node) => node.kind === 'processor') || !graph.providerRequirements.some((requirement) => requirement.interface === 'EventLog')) throw new Error('Packed v0.4 command/EventLog graph did not materialize.');
 `);
   await execFileAsync(process.execPath, [v04Path], { cwd: consumerDir });
+  console.log('Package consumer smoke: packed v0.4 graph passed.');
 
-  console.log(`Package consumer smoke passed under Node for ${packageDirs.length} packed packages, ${publicEntrypoints.length} public entrypoints, the packed executable, a v0.4 command/EventLog graph, and a clean-directory CLI build.`);
+  console.log(`Package consumer smoke passed under Node for ${packageDirs.length} packed packages, ${publicEntrypoints.length} public entrypoints, the packed executable, v0.4 command/EventLog and v0.5 task/workflow graphs, and a clean-directory CLI build.`);
 } finally {
   await rm(workDir, { recursive: true, force: true });
 }

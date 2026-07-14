@@ -1,0 +1,9 @@
+{
+  "packages/applik8s/src/application.ts": 3850,
+  "packages/core/src/application-graph.ts": 2950,
+  "packages/compiler/src/pipeline/index.ts": 1250,
+  "packages/applik8s/src/application-route-source.ts": 1200,
+  "packages/applik8s/src/application-workflows.ts": 600,
+  "packages/compiler/src/application-workflows/index.ts": 550,
+  "packages/applik8s/src/workflow-runtime-hatchet.ts": 250
+}

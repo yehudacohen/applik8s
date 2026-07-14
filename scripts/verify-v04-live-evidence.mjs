@@ -3,6 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const releaseLine = process.env.APPLIK8S_RELEASE_LINE ?? 'v0.4';
+const releaseLane = releaseLine.replace('.', '');
+
 if (process.argv.includes('--self-test')) {
   runSelfTest();
   process.exit(0);
@@ -14,7 +17,7 @@ const maximumAgeDays = Number(process.env.APPLIK8S_LIVE_EVIDENCE_MAX_AGE_DAYS ??
 if (fileArgument) {
   const evidence = JSON.parse(readFileSync(fileArgument, 'utf8'));
   validateEvidence(evidence, requestedCommit ?? execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim());
-  console.log(`Validated maintainer-run exact-commit v0.4 live evidence for ${evidence.commit}.`);
+  console.log(`Validated maintainer-run exact-commit ${releaseLine} live evidence for ${evidence.commit}.`);
   process.exit(0);
 }
 
@@ -26,7 +29,7 @@ if (!repository || !token) {
   throw new Error('Exact-commit live-evidence verification requires GITHUB_REPOSITORY and GITHUB_TOKEN. Run it in the release workflow.');
 }
 
-const artifactName = `applik8s-v0.4-live-${sha}`;
+const artifactName = `applik8s-${releaseLine}-live-${sha}`;
 const artifacts = await github(`/repos/${repository}/actions/artifacts?name=${encodeURIComponent(artifactName)}&per_page=100`);
 const artifact = matchingArtifact(artifacts.artifacts, artifactName, sha);
 if (!artifact) {
@@ -45,14 +48,14 @@ if (!Number.isFinite(ageMs) || ageMs < 0 || ageMs > maximumAgeDays * 86_400_000)
 const evidence = await downloadEvidence(artifact);
 validateEvidence(evidence, sha);
 
-console.log(`Verified exact-commit v0.4 live evidence: artifact ${artifact.id}, run ${run.html_url}, sha ${sha}.`);
+console.log(`Verified exact-commit ${releaseLine} live evidence: artifact ${artifact.id}, run ${run.html_url}, sha ${sha}.`);
 
 export function validateEvidence(evidence, sha, now = Date.now(), maximumAge = maximumAgeDays) {
   if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) throw new Error('Live evidence must be a JSON object.');
   if (evidence.schemaVersion !== 1) throw new Error('Live evidence schemaVersion must be 1.');
-  if (evidence.releaseLine !== 'v0.4') throw new Error('Live evidence releaseLine must be v0.4.');
+  if (evidence.releaseLine !== releaseLine) throw new Error(`Live evidence releaseLine must be ${releaseLine}.`);
   if (evidence.commit !== sha) throw new Error(`Live evidence commit ${evidence.commit ?? '<missing>'} does not match ${sha}.`);
-  if (evidence.suite !== 'check:v04:prerelease') throw new Error('Live evidence suite must be check:v04:prerelease.');
+  if (evidence.suite !== `check:${releaseLane}:prerelease`) throw new Error(`Live evidence suite must be check:${releaseLane}:prerelease.`);
   if (typeof evidence.context !== 'string' || evidence.context.trim().length === 0) throw new Error('Live evidence must name the tested Kubernetes context.');
   if (typeof evidence.execution !== 'string' || evidence.execution.trim().length === 0) throw new Error('Live evidence must identify the execution that produced it.');
   const generatedAt = new Date(evidence.generatedAt).getTime();
@@ -96,7 +99,7 @@ async function downloadEvidence(artifact) {
   const archive = join(directory, 'evidence.zip');
   try {
     writeFileSync(archive, Buffer.from(await response.arrayBuffer()));
-    const json = execFileSync('unzip', ['-p', archive, 'applik8s-v0.4-live-evidence.json'], { encoding: 'utf8' });
+    const json = execFileSync('unzip', ['-p', archive, `applik8s-${releaseLine}-live-evidence.json`], { encoding: 'utf8' });
     return JSON.parse(json);
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -113,11 +116,11 @@ function argumentValue(name) {
 
 function runSelfTest() {
   const sha = 'a'.repeat(40);
-  const name = `applik8s-v0.4-live-${sha}`;
+  const name = `applik8s-${releaseLine}-live-${sha}`;
   const valid = { id: 1, name, expired: false, workflow_run: { id: 2, head_sha: sha } };
   const invalid = [
     { ...valid, expired: true },
-    { ...valid, name: 'applik8s-v0.4-live-other' },
+    { ...valid, name: `applik8s-${releaseLine}-live-other` },
     { ...valid, workflow_run: { id: 2, head_sha: 'b'.repeat(40) } },
   ];
   if (matchingArtifact([...invalid, valid], name, sha) !== valid) throw new Error('Artifact selection self-test failed.');
@@ -127,7 +130,7 @@ function runSelfTest() {
     if (successfulEvidenceRun({ ...run, [field]: 'invalid' }, sha)) throw new Error(`Run rejection self-test failed for ${field}.`);
   }
   const now = Date.now();
-  const evidence = { schemaVersion: 1, releaseLine: 'v0.4', commit: sha, context: 'orbstack', suite: 'check:v04:prerelease', execution: 'local://orbstack/test', generatedAt: new Date(now).toISOString() };
+  const evidence = { schemaVersion: 1, releaseLine, commit: sha, context: 'orbstack', suite: `check:${releaseLane}:prerelease`, execution: 'local://orbstack/test', generatedAt: new Date(now).toISOString() };
   validateEvidence(evidence, sha, now, 14);
   for (const invalidEvidence of [
     { ...evidence, commit: 'b'.repeat(40) },
@@ -141,5 +144,5 @@ function runSelfTest() {
       if (error instanceof Error && error.message === 'Evidence rejection self-test failed.') throw error;
     }
   }
-  console.log('Exact-commit v0.4 live-evidence verifier self-test passed.');
+  console.log(`Exact-commit ${releaseLine} live-evidence verifier self-test passed.`);
 }

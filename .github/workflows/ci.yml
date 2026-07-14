@@ -35,5 +35,11 @@ jobs:
       - name: Run v0.4 durable-behavior gates
         run: bun run test:v04:local
 
+      - name: Run v0.5 durable-workflow gates
+        run: bun run test:v05:contracts
+
+      - name: Run v0.5 executable scorecard
+        run: bun run check:v05:scorecard
+
       - name: Run package release checks
         run: bun run check:packages
