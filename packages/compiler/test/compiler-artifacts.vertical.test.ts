@@ -9,6 +9,7 @@ import { sdk } from '@applik8s/sdk';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import {
+  bindKubernetesConnections,
   buildOperatorManifest,
   bundleHandlerEntrypoint,
   compileTypeKroComposition,
@@ -171,6 +172,68 @@ export function handle(input: string) { return JSON.stringify({ input, recognize
       expect(manifest.value.spec.adapterRequirements?.hostImports).toContain('kubernetes-read');
       expect(manifest.value.spec.permissions).toContainEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['get', 'list', 'watch'] });
     }
+  });
+
+  it('emits portable named Kubernetes connection requirements without installation secrets', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', spec: imageSpecSchema, status: imageStatusSchema,
+    });
+    const operator = sdk.operator({
+      name: 'remote-workload-pipeline',
+      deployment: { namespace: 'media' },
+      resources: { ImageJob },
+      reads: {
+        Deployment: sdk.kubernetes.resource({ apiVersion: 'apps/v1', kind: 'Deployment', namespaces: ['payments'], access: 'connection' }),
+      },
+      capabilities: {
+        destination: sdk.kubernetes.connection.required({
+          endpointPolicy: 'workload-cluster-apis',
+          permissions: [{ apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list', 'create', 'patch'], namespaces: ['payments'] }],
+        }),
+      },
+      handlers: [],
+    });
+    const manifest = buildOperatorManifest({
+      operator: operator.definition,
+      handlerArtifactPath: 'wasm/handler.wasm',
+      handlerArtifactDigest: `sha256:${'a'.repeat(64)}`,
+      runtimeContractPath: 'runtime-contract.json',
+      runtimeContractDigest: `sha256:${'b'.repeat(64)}`,
+      runtimeVersionRange: '^0.4.0',
+    });
+
+    expect(manifest.ok).toBe(true);
+    if (!manifest.ok) return;
+    expect(manifest.value.spec.requiresRuntime).toBe('>=0.1.1, <0.2.0');
+    expect(manifest.value.spec.capabilities?.destination).toMatchObject({
+      name: 'destination', kind: 'kubernetes',
+      kubernetesConnection: { endpointPolicy: 'workload-cluster-apis' },
+      execution: { protocol: 'applik8s.kubernetes-connection/v1alpha1' },
+    });
+    expect(manifest.value.spec.capabilities?.destination).not.toHaveProperty('auth');
+    expect(manifest.value.spec.capabilities?.destination).not.toHaveProperty('endpoint');
+    expect(manifest.value.spec.kubernetesConnectionBindings).toBeUndefined();
+    expect(manifest.value.spec.readResources).toContainEqual({ apiVersion: 'apps/v1', kind: 'Deployment', plural: 'deployments', scope: 'Namespaced', namespaces: ['payments'], access: 'connection' });
+    expect(manifest.value.spec.permissions).not.toContainEqual(expect.objectContaining({ apiGroups: ['apps'], resources: ['deployments'] }));
+    expect(manifest.value.spec.security.secrets.secretRefs).toEqual([]);
+    const installed = bindKubernetesConnections(manifest.value, {
+      destination: {
+        kubeconfigSecretRef: { name: 'destination-kubeconfig', namespace: 'media', key: 'kubeconfig' },
+        context: 'destination',
+        endpointPolicy: {
+          name: 'workload-cluster-apis', version: '1', scheme: 'https',
+          hosts: ['destination.example.test'], ports: [6443], redirects: 'deny',
+        },
+      },
+    });
+    expect(installed.spec.permissions).toContainEqual({ apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: ['destination-kubeconfig'] });
+    expect(installed.spec.kubernetesConnectionBindings?.destination?.context).toBe('destination');
+    expect(() => bindKubernetesConnections(manifest.value, {})).toThrow(/exactly match declared aliases/);
+    // typecast: deliberately constructs an invalid extra-alias binding to prove the runtime installation boundary rejects it.
+    expect(() => bindKubernetesConnections(manifest.value, {
+      ...installed.spec.kubernetesConnectionBindings,
+      undeclared: installed.spec.kubernetesConnectionBindings?.destination,
+    } as NonNullable<typeof installed.spec.kubernetesConnectionBindings>)).toThrow(/exactly match declared aliases/);
   });
 
   it('emits declared typed permission bundles into the operator manifest', () => {
@@ -1517,8 +1580,7 @@ export const imagePipeline = sdk.operator({
       expect(result.value.manifest.spec.container?.baseImage).toMatchObject({
         registry: 'ghcr.io',
         repository: 'yehudacohen/applik8s-operator-host',
-        tag: 'v0.4.1',
-        digest: 'sha256:467f3e36eab0509c738025f9ea3e117320d9af3843eba9e5d3ac451c625b7869',
+        tag: 'v0.5.0',
       });
       expect(result.value.manifest.spec.container?.files).toEqual([
         { source: 'operator-manifest.json', destination: '/etc/applik8s/operator-manifest.json' },
@@ -1638,7 +1700,7 @@ export const imagePipeline = sdk.operator({
       expect(result.value.manifest.spec.bundle.artifacts).toContainEqual(expect.objectContaining({ kind: 'esbuild-metafile' }));
       const dockerfile = await readFile(result.value.artifacts.generatedImageDockerfilePath ?? '', 'utf8');
       expect(dockerfile).toContain(
-        'ARG APPLIK8S_BASE_IMAGE=ghcr.io/yehudacohen/applik8s-operator-host:v0.4.1@sha256:467f3e36eab0509c738025f9ea3e117320d9af3843eba9e5d3ac451c625b7869',
+        'ARG APPLIK8S_BASE_IMAGE=ghcr.io/yehudacohen/applik8s-operator-host:v0.5.0',
       );
       expect(dockerfile).toContain(['FROM $', '{APPLIK8S_BASE_IMAGE}'].join(''));
       expect(dockerfile).toContain('COPY --chown=65532:65532 operator-manifest.json /etc/applik8s/operator-manifest.json');

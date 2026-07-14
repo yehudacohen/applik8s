@@ -8,6 +8,8 @@ Durable orchestration is deliberately effect-free: external work belongs in retr
 
 The longitudinal Tenant Platform adds onboarding and decommissioning workflows with compensation and explicit intervention. A fresh OrbStack Hatchet/CNPG proof exercises retry, idempotency, worker replacement during a durable wait, signal/resume, metadata propagation, compensation failure, cancellation, and TypeKro-first teardown.
 
+v0.5 also introduces bounded connection-scoped Kubernetes execution for operators that coordinate a separately authorized cluster. Portable bundles declare named permission and endpoint-policy requirements; installation artifacts bind those aliases to namespace-local kubeconfig Secrets without exposing credentials to WASM. Remote reads are typed and paginated, remote mutations require owner-bound managed identity or UID/resourceVersion evidence, and the host pins one credential revision per invocation. Connection permissions never become management-cluster RBAC, remote owner references and cross-cluster atomicity remain unsupported, and a v1 mutation plan may address only one remote connection.
+
 ## v0.4.3
 
 v0.4.3 is the final v0.4 correctness and release-discipline release. It closes the remaining gap between the durable-behavior implementation and its executable public contract without broadening into v0.5 workflow orchestration.

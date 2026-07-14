@@ -301,8 +301,7 @@ world handler {
     )
     .expect("handler WIT writes");
 
-    let output = Command::new("bunx")
-        .arg("componentize-js")
+    let output = Command::new(workspace_root.join("node_modules/.bin/componentize-js"))
         .arg(&js_path)
         .arg("--wit")
         .arg(&wit_path)
@@ -429,8 +428,7 @@ world handler {
     )
     .expect("handler WIT writes");
 
-    let bundle_output = Command::new("bunx")
-        .arg("esbuild")
+    let bundle_output = Command::new(workspace_root.join("node_modules/.bin/esbuild"))
         .arg(&entry_path)
         .arg("--bundle")
         .arg("--format=esm")
@@ -453,8 +451,7 @@ world handler {
         "unreachable Node-only dependency branch must be tree-shaken"
     );
 
-    let output = Command::new("bunx")
-        .arg("componentize-js")
+    let output = Command::new(workspace_root.join("node_modules/.bin/componentize-js"))
         .arg(&js_path)
         .arg("--wit")
         .arg(&wit_path)
@@ -917,6 +914,8 @@ fn rejects_invalid_delete_ref_before_apply() {
                 resource_version: None,
             },
             options: None,
+            connection: None,
+            authority: None,
         }],
         diagnostics: None,
     };

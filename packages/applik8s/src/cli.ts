@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-
+import type { KubernetesConnectionBinding } from '@applik8s/core';
 import { Command, CommanderError } from 'commander';
 
 interface CliIo {
@@ -15,6 +17,7 @@ interface BuildCommandOptions {
   readonly operatorName?: string;
   readonly typekro?: boolean;
   readonly compositionName?: string;
+  readonly connectionBindings?: string;
 }
 
 interface ChildProcessOptions {
@@ -57,6 +60,7 @@ function createProgram(io: CliIo): Command {
     .option('--operator-name <name>', 'operator export name when the entrypoint exports more than one operator')
     .option('--typekro', 'compile an exported applik8s TypeKro composition instead of a single operator')
     .option('--composition-name <name>', 'TypeKro composition export name when the entrypoint exports more than one composition')
+    .option('--connection-bindings <path>', 'JSON connection bindings (alias map, or operator-to-alias map with --typekro)')
     .action(async (entrypoint: string, options: BuildCommandOptions) => {
       const code = await runBuild(entrypoint, options, io);
       if (code !== 0) {
@@ -117,6 +121,10 @@ async function runBuild(entrypoint: string, options: BuildCommandOptions, io: Cl
 
   // static-import-exception: Bun CLI must not eagerly load the compiler because ComponentizeJS requires Node APIs before build delegation can run.
   const { compileTypeKroComposition, createCompilerPipeline } = await import('@applik8s/compiler');
+  const connectionBindings = options.connectionBindings
+    // typecast: the compiler validates the complete installation binding contract before emitting artifacts.
+    ? JSON.parse(await readFile(resolve(io.cwd, options.connectionBindings), 'utf8')) as Readonly<Record<string, KubernetesConnectionBinding | Readonly<Record<string, KubernetesConnectionBinding>>>>
+    : undefined;
   // typecast: preserve literal compiler option types across the lazy compiler import without importing runtime compiler types into the CLI entrypoint.
   const request = {
     entrypoint,
@@ -126,6 +134,13 @@ async function runBuild(entrypoint: string, options: BuildCommandOptions, io: Cl
     runtimeVersionRange: '^0.1.0',
     handlerAbiVersion: 'applik8s.handler/v1alpha1',
     adapter: 'wasmComponent',
+    ...(connectionBindings
+      ? options.typekro
+        // typecast: --typekro binding files are operator-name maps; each nested alias map is validated by the compiler.
+        ? { operatorKubernetesConnectionBindings: connectionBindings as Readonly<Record<string, Readonly<Record<string, KubernetesConnectionBinding>>>> }
+        // typecast: single-operator binding files are alias maps validated by the compiler.
+        : { kubernetesConnectionBindings: connectionBindings as Readonly<Record<string, KubernetesConnectionBinding>> }
+      : {}),
     portability: {
       deterministicBuild: true,
       allowEnvironmentAccess: false,

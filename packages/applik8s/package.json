@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/applik8s",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "TypeScript framework for programming Kubernetes-native applications and operators.",
   "license": "Apache-2.0",
   "type": "module",
@@ -29,11 +29,11 @@
     "./cli": { "types": "./dist/cli.d.ts", "import": "./dist/cli.js" }
   },
   "dependencies": {
-    "@applik8s/compiler": "0.4.3",
-    "@applik8s/core": "0.4.3",
-    "@applik8s/sdk": "0.4.3",
-    "@applik8s/typekro-adapter": "0.4.3",
-    "@applik8s/typetainer": "0.4.3",
+    "@applik8s/compiler": "0.5.0",
+    "@applik8s/core": "0.5.0",
+    "@applik8s/sdk": "0.5.0",
+    "@applik8s/typekro-adapter": "0.5.0",
+    "@applik8s/typetainer": "0.5.0",
     "@hatchet-dev/typescript-sdk": "1.24.3",
     "arktype": "^2.1.20",
     "commander": "^15.0.0",

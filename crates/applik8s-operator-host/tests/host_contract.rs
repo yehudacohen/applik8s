@@ -1069,6 +1069,8 @@ fn builds_redacted_replay_artifacts_by_default() {
                 field_manager: Some("applik8s".to_string()),
                 force: Some(false),
                 ownership: None,
+                connection: None,
+                authority: None,
             },
             Operation::Status {
                 status: serde_json::json!({ "message": "contains s3cr3t" }),
@@ -1233,6 +1235,8 @@ fn accepts_operation_plans_with_declared_rbac_permissions() {
                 field_manager: None,
                 force: None,
                 ownership: None,
+                connection: None,
+                authority: None,
             },
             Operation::Status {
                 status: serde_json::json!({ "phase": "Ready" }),
@@ -1254,6 +1258,38 @@ fn accepts_operation_plans_with_declared_rbac_permissions() {
 
     applik8s_operator_host::validate_plan_rbac(&bundle, &owner, &plan)
         .expect("declared permissions allow plan");
+}
+
+#[test]
+fn remote_mutations_do_not_require_management_cluster_resource_rbac() {
+    let bundle = rbac_bundle(vec![]);
+    let owner = ObjectRef {
+        api_version: "media.applik8s.dev/v1alpha1".to_string(),
+        kind: "ImageJob".to_string(),
+        name: "hero".to_string(),
+        namespace: Some("media".to_string()),
+        uid: Some("source-uid".to_string()),
+        resource_version: Some("10".to_string()),
+    };
+    let plan = NormalizedOperationPlan {
+        operations: vec![Operation::Apply {
+            resource: k8s_object("v1", "ConfigMap", "hero-child", Some("destination")),
+            field_manager: None,
+            force: None,
+            ownership: Some(applik8s_runtime_contract::ApplyOwnership::None),
+            connection: Some("destination".to_string()),
+            authority: Some(
+                applik8s_runtime_contract::RemoteMutationAuthority::Managed {
+                    identity: "imagejob/hero/config".to_string(),
+                    source_uid: "source-uid".to_string(),
+                },
+            ),
+        }],
+        diagnostics: None,
+    };
+
+    applik8s_operator_host::validate_plan_rbac(&bundle, &owner, &plan)
+        .expect("remote permission envelopes must not become management-cluster RBAC");
 }
 
 #[tokio::test]
@@ -1552,6 +1588,8 @@ fn rejects_operation_plans_with_undeclared_rbac_permissions_before_effects() {
             field_manager: None,
             force: None,
             ownership: None,
+            connection: None,
+            authority: None,
         }],
         diagnostics: None,
     };
@@ -2318,6 +2356,51 @@ fn rejects_unsupported_runtime_concurrency_until_controller_policy_exists() {
         Err(OperatorHostError::InvalidRuntimeConfig(message))
             if message.contains("concurrency.workerCount")
     ));
+}
+
+#[test]
+fn rejects_connection_capable_bundle_on_older_host_before_invocation() {
+    let bundle = LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1",
+            "kind": "OperatorBundle",
+            "metadata": { "name": "image-pipeline", "annotations": { "applik8s.dev/namespace": "media" } },
+            "spec": {
+                "handlerAbi": "applik8s.handler/v1alpha1",
+                "requiresRuntime": ">=0.1.1, <0.2.0",
+                "permissions": [{ "apiGroups": [""], "resources": ["secrets"], "verbs": ["get"], "resourceNames": ["destination-kubeconfig"] }],
+                "capabilities": { "destination": {
+                    "name": "destination", "kind": "kubernetes",
+                    "permissions": [{ "apiGroups": ["apps"], "resources": ["deployments"], "verbs": ["get"], "namespaces": ["payments"] }],
+                    "kubernetesConnection": { "endpointPolicy": "workload-cluster-apis" },
+                    "execution": { "protocol": "applik8s.kubernetes-connection/v1alpha1" }
+                }},
+                "kubernetesConnectionBindings": { "destination": {
+                    "kubeconfigSecretRef": { "name": "destination-kubeconfig", "namespace": "media", "key": "kubeconfig" },
+                    "context": "destination",
+                    "endpointPolicy": { "name": "workload-cluster-apis", "version": "1", "scheme": "https", "hosts": ["destination.example.test"], "ports": [6443], "redirects": "deny" }
+                }}
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    };
+
+    let error = bundle
+        .validate_runtime_compatibility("0.4.3")
+        .expect_err("older host must reject");
+    assert!(
+        matches!(error, OperatorHostError::IncompatibleRuntime { .. }),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn accepts_connection_capable_bundle_on_the_built_host_protocol_version() {
+    let bundle = compatibility_bundle(">=0.1.1, <0.2.0");
+
+    bundle
+        .validate_runtime_compatibility(env!("CARGO_PKG_VERSION"))
+        .expect("the built host accepts the connection protocol it ships");
 }
 
 #[test]

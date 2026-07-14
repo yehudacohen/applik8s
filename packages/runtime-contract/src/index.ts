@@ -48,6 +48,40 @@ const objectRefSchema: JsonSchema = objectSchema(
   ['apiVersion', 'kind', 'name']
 );
 
+const kubernetesConnectionNameSchema: JsonSchema = { type: 'string', pattern: '^[a-z][a-z0-9-]{0,62}$' };
+const kubernetesConnectionBindingSchema: JsonSchema = objectSchema(
+  {
+    kubeconfigSecretRef: objectSchema(
+      {
+        name: { type: 'string', minLength: 1 },
+        namespace: { type: 'string', minLength: 1 },
+        key: { type: 'string', minLength: 1 },
+      },
+      ['name', 'namespace', 'key']
+    ),
+    context: { type: 'string', minLength: 1 },
+    endpointPolicy: objectSchema(
+      {
+        name: { type: 'string', minLength: 1 },
+        version: { type: 'string', minLength: 1 },
+        scheme: constSchema('https'),
+        hosts: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } },
+        ports: { type: 'array', minItems: 1, items: { type: 'integer', minimum: 1, maximum: 65535 } },
+        allowedCidrs: { type: 'array', items: { type: 'string', minLength: 1 } },
+        tlsServerNames: { type: 'array', items: { type: 'string', minLength: 1 } },
+        redirects: constSchema('deny'),
+      },
+      ['name', 'version', 'scheme', 'hosts', 'ports', 'redirects']
+    ),
+  },
+  ['kubeconfigSecretRef', 'context', 'endpointPolicy']
+);
+const kubernetesConnectionBindingsSchema: JsonSchema = {
+  type: 'object',
+  propertyNames: kubernetesConnectionNameSchema,
+  additionalProperties: kubernetesConnectionBindingSchema,
+};
+
 const objectMetaSchema: JsonSchema = {
   type: 'object',
   properties: {
@@ -124,11 +158,18 @@ const applyOwnershipSchema: JsonSchema = {
   ],
 };
 
+const remoteMutationAuthoritySchema: JsonSchema = {
+  oneOf: [
+    objectSchema({ mode: constSchema('managed'), identity: { type: 'string' }, sourceUid: { type: 'string' } }, ['mode', 'identity', 'sourceUid']),
+    objectSchema({ mode: constSchema('existing'), precondition: objectSchema({ uid: { type: 'string' }, resourceVersion: { type: 'string' } }, ['uid', 'resourceVersion']) }, ['mode', 'precondition']),
+  ],
+};
+
 const operationSchema: JsonSchema = {
   oneOf: [
-    objectSchema({ kind: constSchema('apply'), resource: kubernetesObjectSchema, fieldManager: { type: 'string' }, force: { type: 'boolean' }, ownership: applyOwnershipSchema }, ['kind', 'resource']),
-    objectSchema({ kind: constSchema('patch'), ref: objectRefSchema, patch: { type: 'array', items: jsonPatchEntrySchema } }, ['kind', 'ref', 'patch']),
-    objectSchema({ kind: constSchema('delete'), ref: objectRefSchema, options: deleteOptionsSchema }, ['kind', 'ref']),
+    objectSchema({ kind: constSchema('apply'), resource: kubernetesObjectSchema, fieldManager: { type: 'string' }, force: { type: 'boolean' }, ownership: applyOwnershipSchema, connection: kubernetesConnectionNameSchema, authority: remoteMutationAuthoritySchema }, ['kind', 'resource']),
+    objectSchema({ kind: constSchema('patch'), ref: objectRefSchema, patch: { type: 'array', items: jsonPatchEntrySchema }, connection: kubernetesConnectionNameSchema, authority: remoteMutationAuthoritySchema }, ['kind', 'ref', 'patch']),
+    objectSchema({ kind: constSchema('delete'), ref: objectRefSchema, options: deleteOptionsSchema, connection: kubernetesConnectionNameSchema, authority: remoteMutationAuthoritySchema }, ['kind', 'ref']),
     objectSchema({ kind: constSchema('status'), status: jsonValueSchema, ref: objectRefSchema }, ['kind', 'status']),
     objectSchema({ kind: constSchema('event'), type: enumSchema(['Normal', 'Warning']), reason: { type: 'string' }, message: { type: 'string' }, regarding: objectRefSchema }, ['kind', 'type', 'reason', 'message']),
     objectSchema({ kind: constSchema('finalizer'), operation: enumSchema(['add', 'remove']), finalizer: { type: 'string' } }, ['kind', 'operation', 'finalizer']),
@@ -180,9 +221,18 @@ export const runtimePayloadSchemas: Readonly<Record<string, JsonSchema>> = {
         adapterRequirements: { type: 'object' },
         handlerExports: { type: 'array', items: objectSchema({ handlerId: { type: 'string' }, exportName: { type: 'string' }, event: { type: 'string' }, finalizers: { type: 'array', items: { type: 'string' } } }, ['handlerId', 'exportName', 'event']) },
         ownedCrds: { type: 'array' },
+        readResources: { type: 'array', items: objectSchema({
+          apiVersion: { type: 'string' },
+          kind: { type: 'string' },
+          plural: { type: 'string' },
+          scope: enumSchema(['Namespaced', 'Cluster']),
+          namespaces: { oneOf: [{ const: 'all' }, { type: 'array', items: { type: 'string' } }] },
+          access: enumSchema(['local', 'connection', 'both']),
+        }, ['apiVersion', 'kind', 'plural', 'scope', 'access']) },
         watches: { type: 'array' },
         permissions: { type: 'array' },
         capabilities: { type: 'object' },
+        kubernetesConnectionBindings: kubernetesConnectionBindingsSchema,
         security: { type: 'object' },
         lifecycle: { type: 'object' },
         runtime: { type: 'object' },
@@ -347,14 +397,22 @@ function capabilityDescriptorSchema(): JsonSchema {
     kind: { type: 'string' },
     endpoint: { type: 'string' },
     auth: objectSchema({ type: { type: 'string' }, secretRef: objectSchema({ name: { type: 'string' }, namespace: { type: 'string' }, key: { type: 'string' } }) }),
+    permissions: { type: 'array', items: objectSchema({
+      apiGroups: { type: 'array', items: { type: 'string' } },
+      resources: { type: 'array', items: { type: 'string' } },
+      verbs: { type: 'array', items: { type: 'string' } },
+      resourceNames: { type: 'array', items: { type: 'string' } },
+      namespaces: { oneOf: [{ const: 'all' }, { type: 'array', items: { type: 'string' } }] },
+    }, ['apiGroups', 'resources', 'verbs']) },
     policy: objectSchema({ timeoutMs: { type: 'number' }, idempotencyKeyRequired: { type: 'boolean' }, failureMode: { type: 'string' } }),
     execution: objectSchema({
       liveExecution: enumSchema(['disabled', 'hostProtocol']),
-      protocol: enumSchema(['notImplemented', 'applik8s.capability/v1alpha1']),
+      protocol: enumSchema(['notImplemented', 'applik8s.capability/v1alpha1', 'applik8s.kubernetes-connection/v1alpha1']),
       audit: objectSchema({ recordRequests: { type: 'boolean' }, recordResponses: { type: 'boolean' }, includePayloads: constSchema(false) }),
       redaction: objectSchema({ requestBody: constSchema('redacted'), responseBody: constSchema('redacted'), headers: constSchema('redacted'), errors: constSchema('publicMessageOnly') }),
       idempotency: objectSchema({ requiredForMutations: { type: 'boolean' }, keySource: enumSchema(['handlerProvided', 'notApplicable']) }),
     }),
     sensitive: { type: 'boolean' },
+    kubernetesConnection: objectSchema({ endpointPolicy: { type: 'string' } }, ['endpointPolicy']),
   }, ['name', 'kind']);
 }

@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 
-import type { AnyHandlerRegistration, AnyResourceDefinition, BundleArtifact, CapabilityDescriptor, CapabilityExecutionPolicy, CapabilityKind, ConcurrencyConfig, HandlerEventType, HandlerId, OperatorDefinition, OperatorManifest, PermissionRule, ResourceWatchAddress, Result, RetryPolicy, RuntimePayloadSchemaDigests, SecretRef } from '@applik8s/core';
+import type { AnyHandlerRegistration, AnyResourceDefinition, BundleArtifact, CapabilityDescriptor, CapabilityExecutionPolicy, CapabilityKind, ConcurrencyConfig, HandlerEventType, HandlerId, KubernetesConnectionBinding, OperatorDefinition, OperatorManifest, PermissionRule, ResourceWatchAddress, Result, RetryPolicy, RuntimePayloadSchemaDigests, SecretRef } from '@applik8s/core';
 import { canonicalRuntimeContract } from '@applik8s/runtime-contract';
 import type { ContainerRecipe } from '@applik8s/typetainer';
-import { canonicalBundleArtifacts, computeBundleDigest } from './bundle-digest.js';
 import { DEFAULT_OPERATOR_HOST_IMAGE } from '../operator-host-image.js';
+import { canonicalBundleArtifacts, computeBundleDigest } from './bundle-digest.js';
 import { validateOperatorManifest } from './validation.js';
 
 export { validateOperatorManifest } from './validation.js';
@@ -20,6 +20,7 @@ export interface ManifestBuildRequest {
   readonly compilerVersion?: string;
   readonly containerBuildContext?: string;
   readonly portability?: ManifestPortabilityPolicy;
+  readonly kubernetesConnectionBindings?: Readonly<Record<string, KubernetesConnectionBinding>>;
 }
 
 export interface ManifestPortabilityPolicy {
@@ -32,6 +33,45 @@ export interface ManifestPortabilityPolicy {
 
 export interface ManifestBuilder {
   build(request: ManifestBuildRequest): Result<OperatorManifest>;
+}
+
+/** Applies environment-specific bindings after portable bundle compilation. */
+export function bindKubernetesConnections(
+  manifest: OperatorManifest,
+  bindings: Readonly<Record<string, KubernetesConnectionBinding>>,
+): OperatorManifest {
+  const namespace = manifest.metadata.annotations?.['applik8s.dev/namespace'];
+  const requiredAliases = Object.entries(manifest.spec.capabilities ?? {})
+    .filter(([, descriptor]) => descriptor.kind === 'kubernetes')
+    .map(([alias]) => alias)
+    .sort();
+  const boundAliases = Object.keys(bindings).sort();
+  if (JSON.stringify(requiredAliases) !== JSON.stringify(boundAliases)) {
+    throw new Error(`Kubernetes connection bindings must exactly match declared aliases. Required: ${requiredAliases.join(', ') || '<none>'}; received: ${boundAliases.join(', ') || '<none>'}.`);
+  }
+  for (const [alias, binding] of Object.entries(bindings)) {
+    const descriptor = manifest.spec.capabilities?.[alias];
+    if (descriptor?.kind !== 'kubernetes') {
+      throw new Error(`Cannot bind undeclared Kubernetes connection ${alias}.`);
+    }
+    if (!binding.kubeconfigSecretRef.namespace || binding.kubeconfigSecretRef.namespace !== namespace) {
+      throw new Error(`Kubernetes connection ${alias} Secret must be in operator namespace ${namespace ?? '<missing>'}.`);
+    }
+    if (binding.endpointPolicy.name !== descriptor.kubernetesConnection?.endpointPolicy) {
+      throw new Error(`Kubernetes connection ${alias} endpoint policy does not match its portable requirement.`);
+    }
+  }
+  const secretPermissions: PermissionRule[] = Object.values(bindings).map((binding) => ({
+    apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: [binding.kubeconfigSecretRef.name],
+  }));
+  return {
+    ...manifest,
+    spec: {
+      ...manifest.spec,
+      permissions: mergePermissionRules([...manifest.spec.permissions, ...secretPermissions]),
+      kubernetesConnectionBindings: bindings,
+    },
+  };
 }
 
 export function buildOperatorManifest(request: ManifestBuildRequest): Result<OperatorManifest> {
@@ -58,12 +98,13 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
   const ownedResources = resources.filter(isOwnedResource);
   const permissions = runtimePermissions(request.operator, mergePermissionRules([
     ...inferRuntimeResourcePermissions(resources, resourceHandlers),
-    ...readDefinitions.map((resource) => resource.permissions.read()),
+    ...readDefinitions.filter((resource) => resource.access !== 'connection').map((resource) => resource.permissions.read()),
     ...handlerDeclaredPermissions(resourceHandlers),
     ...secondaryWatchPermissions(request.operator.secondaryWatches ?? []),
     ...(request.operator.permissions ?? []),
   ]));
   const capabilities = normalizedCapabilities(request.operator.capabilities ?? {});
+  const hasKubernetesConnections = Object.values(capabilities).some((descriptor) => descriptor.kind === 'kubernetes');
   const schemaDigests = payloadSchemaDigests(contract.payloadSchemas);
   const ownedCrds = ownedResources.map(ownedCrdManifestEntry);
   const readResources = readDefinitions.map((resource) => ({
@@ -71,6 +112,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     kind: resource.kind,
     plural: resource.plural,
     scope: resource.scope,
+    access: resource.access,
     ...(resource.namespaces ? { namespaces: resource.namespaces } : {}),
   }));
   const artifactInventory = canonicalBundleArtifacts([
@@ -94,7 +136,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
   });
   const container = implicitRuntimeContainer(request.operator.name, bundleDigest, request.containerBuildContext ?? '.');
   const hostImports = canonicalHostImports();
-  const manifest: OperatorManifest = {
+  const portableManifest: OperatorManifest = {
     apiVersion: 'applik8s.operator/v1alpha1',
     kind: 'OperatorBundle',
     metadata: {
@@ -112,7 +154,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     spec: {
       handlerAbi: contract.abiVersion,
       payloadSchemaDigests: schemaDigests,
-      requiresRuntime: request.runtimeVersionRange ?? '^0.1.0',
+      requiresRuntime: hasKubernetesConnections ? '>=0.1.1, <0.2.0' : request.runtimeVersionRange ?? '^0.1.0',
       handlerArtifact: {
         kind: 'wasm-component',
         path: request.handlerArtifactPath,
@@ -161,6 +203,9 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     },
   };
 
+  const manifest = request.kubernetesConnectionBindings
+    ? bindKubernetesConnections(portableManifest, request.kubernetesConnectionBindings)
+    : portableManifest;
   const manifestValidation = validateOperatorManifest(manifest);
   if (!manifestValidation.ok) {
     return manifestValidation;
@@ -614,6 +659,17 @@ function validateCapabilityDescriptors(operator: OperatorDefinition): Result<nev
     if (descriptor.kind !== 'kubernetes' && !descriptor.endpoint) {
       return capabilityError(operator, name, `Capability ${name} of kind ${descriptor.kind} must declare endpoint metadata.`);
     }
+    if (descriptor.kind === 'kubernetes') {
+      if (descriptor.auth || descriptor.endpoint) {
+        return capabilityError(operator, name, `Kubernetes connection ${name} must not embed auth or endpoint configuration in the portable bundle.`);
+      }
+      if (!descriptor.permissions?.length) {
+        return capabilityError(operator, name, `Kubernetes connection ${name} must declare a non-empty permission envelope.`);
+      }
+      if (!descriptor.kubernetesConnection?.endpointPolicy?.trim()) {
+        return capabilityError(operator, name, `Kubernetes connection ${name} must declare endpointPolicy metadata.`);
+      }
+    }
     if (descriptor.endpoint && descriptor.kind === 'http' && !isHttpEndpoint(descriptor.endpoint)) {
       return capabilityError(operator, name, `HTTP capability ${name} endpoint must be an http or https URL.`);
     }
@@ -637,7 +693,7 @@ function validateCapabilityDescriptors(operator: OperatorDefinition): Result<nev
     }
     if (descriptor.execution && descriptor.execution.liveExecution !== 'disabled') {
       if (!isSupportedLiveCapabilityDescriptor(descriptor)) {
-        return capabilityError(operator, name, `Capability ${name} liveExecution is supported only for auth:none or auth:secretRef HTTP capabilities using applik8s.capability/v1alpha1.`);
+        return capabilityError(operator, name, `Capability ${name} has an unsupported live host protocol or security posture.`);
       }
       if (descriptor.auth?.type === 'secretRef') {
         if (!operator.deployment?.namespace) {
@@ -686,6 +742,16 @@ function validateCapabilityRetryPolicy(name: string, retry: RetryPolicy | undefi
 }
 
 function isSupportedLiveCapabilityDescriptor(descriptor: CapabilityDescriptor): boolean {
+  if (descriptor.kind === 'kubernetes') {
+    return descriptor.execution?.liveExecution === 'hostProtocol'
+      && descriptor.execution.protocol === 'applik8s.kubernetes-connection/v1alpha1'
+      && descriptor.execution.audit.includePayloads === false
+      && descriptor.execution.redaction.requestBody === 'redacted'
+      && descriptor.execution.redaction.responseBody === 'redacted'
+      && descriptor.execution.redaction.headers === 'redacted'
+      && descriptor.execution.redaction.errors === 'publicMessageOnly'
+      && descriptor.execution.idempotency.keySource === 'notApplicable';
+  }
   return descriptor.kind === 'http'
     && (descriptor.auth?.type === 'none' || descriptor.auth?.type === 'secretRef')
     && descriptor.execution?.liveExecution === 'hostProtocol'
@@ -706,7 +772,7 @@ function capabilityError(operator: OperatorDefinition, capabilityName: string, m
       message,
       severity: 'error',
       context: { operatorName: operator.name, capabilityName },
-      recovery: { summary: 'Use declared capability metadata that can be safely represented in the operator manifest; live external effects remain disabled for now.' },
+      recovery: { summary: 'Use a supported, portable capability declaration and keep environment-specific credentials and endpoints in installation bindings.' },
     },
   };
 }

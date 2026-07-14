@@ -3,14 +3,17 @@ import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-// typecast: readonly literal entries keep file-specific ceiling and exclusion contracts intact for the table-driven test.
-const modules = [
-  { path: 'packages/applik8s/src/application.ts', ceiling: 3_800, excluded: ['function generatedApplicationAggregateSource', 'function generatedValkeyIndexerSource'] },
-  { path: 'packages/applik8s/src/application-generated-runtime-sources.ts', ceiling: 750, excluded: ['createApplicationContext', 'recordApplicationServerGraph'] },
-  { path: 'packages/compiler/src/pipeline/index.ts', ceiling: 1_200, excluded: ['function staticEntrypointCaptures', 'function discoverEntrypointExports'] },
-  { path: 'packages/compiler/src/pipeline/static-dispatcher.ts', ceiling: 600, excluded: ['emitTypeKroCompositionArtifacts', 'emitOperatorKubernetesYaml'] },
-  { path: 'packages/compiler/src/pipeline/entrypoint-discovery.ts', ceiling: 140, excluded: ['staticEntrypointCaptures', 'emitTypeKroCompositionArtifacts'] },
-] as const;
+const exclusions: Readonly<Record<string, readonly string[]>> = {
+  'packages/applik8s/src/application.ts': ['function generatedApplicationAggregateSource', 'function generatedValkeyIndexerSource'],
+  'packages/applik8s/src/application-generated-runtime-sources.ts': ['createApplicationContext', 'recordApplicationServerGraph'],
+  'packages/compiler/src/pipeline/index.ts': ['function staticEntrypointCaptures', 'function discoverEntrypointExports'],
+  'packages/compiler/src/pipeline/static-dispatcher.ts': ['emitTypeKroCompositionArtifacts', 'emitOperatorKubernetesYaml'],
+  'packages/compiler/src/pipeline/entrypoint-discovery.ts': ['staticEntrypointCaptures', 'emitTypeKroCompositionArtifacts'],
+};
+
+// typecast: the tracked JSON file is the single release budget authority and is validated table-by-table below.
+const budgets = JSON.parse(await readFile(resolve('benchmarks/v0.5/maintainability-budgets.json'), 'utf8')) as Readonly<Record<string, number>>;
+const modules = Object.entries(budgets).map(([path, ceiling]) => ({ path, ceiling, excluded: exclusions[path] ?? [] }));
 
 describe('v0.5 maintainability boundary', () => {
   it.each(modules)('$path remains a focused orchestration module', async ({ path, ceiling, excluded }) => {

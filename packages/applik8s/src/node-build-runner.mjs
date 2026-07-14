@@ -41,7 +41,10 @@ function runnerProgram(compilerImport, request) {
   const options = request.options ?? {};
   const typeKro = Boolean(options.typekro);
   return `
+import { readFile } from 'node:fs/promises';
 import { compileTypeKroComposition, createCompilerPipeline } from ${JSON.stringify(compilerImport)};
+
+const connectionBindings = ${options.connectionBindings ? `JSON.parse(await readFile(${JSON.stringify(resolve(request.cwd ?? '.', options.connectionBindings))}, 'utf8'))` : 'undefined'};
 
 const request = {
   entrypoint: ${JSON.stringify(request.entrypoint)},
@@ -51,6 +54,9 @@ const request = {
   runtimeVersionRange: '^0.1.0',
   handlerAbiVersion: 'applik8s.handler/v1alpha1',
   adapter: 'wasmComponent',
+  ...(connectionBindings
+    ? ${typeKro ? '{ operatorKubernetesConnectionBindings: connectionBindings }' : '{ kubernetesConnectionBindings: connectionBindings }'}
+    : {}),
   portability: {
     deterministicBuild: true,
     allowEnvironmentAccess: false,

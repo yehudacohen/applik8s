@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-
+import type { AnyResourceDefinition, AnyResourceVersionDefinition, ConcurrencyConfig, Diagnostic, JsonObject, OperatorDefinition, OperatorManifest, PermissionRule, Result, StatusConvention } from '@applik8s/core';
+import { imageRefString } from '@applik8s/typetainer';
 import type { V1CustomResourceColumnDefinition } from '@kubernetes/client-node/dist/gen/models/V1CustomResourceColumnDefinition.js';
 import type { V1CustomResourceDefinition } from '@kubernetes/client-node/dist/gen/models/V1CustomResourceDefinition.js';
 import type { V1Deployment } from '@kubernetes/client-node/dist/gen/models/V1Deployment.js';
@@ -11,9 +12,6 @@ import type { V1Role } from '@kubernetes/client-node/dist/gen/models/V1Role.js';
 import type { V1RoleBinding } from '@kubernetes/client-node/dist/gen/models/V1RoleBinding.js';
 import type { V1ServiceAccount } from '@kubernetes/client-node/dist/gen/models/V1ServiceAccount.js';
 import { stringify } from 'yaml';
-import { imageRefString } from '@applik8s/typetainer';
-
-import type { AnyResourceDefinition, AnyResourceVersionDefinition, ConcurrencyConfig, Diagnostic, JsonObject, OperatorDefinition, OperatorManifest, PermissionRule, Result, StatusConvention } from '@applik8s/core';
 import { toKubernetesStructuralOpenApiSchema, validateStructuralOpenApiSchema } from '../kubernetes-schema/index.js';
 import { DEFAULT_OPERATOR_HOST_IMAGE_REFERENCE } from '../operator-host-image.js';
 
@@ -44,11 +42,22 @@ export async function emitOperatorKubernetesYaml(request: KubernetesYamlRequest)
       throw new Error('Operators requiring cluster or cross-namespace RBAC must set deployment.namespace so ClusterRoleBinding can reference the ServiceAccount namespace.');
     }
     validateDeploymentOperationalSafety(request.operator, request.manifest);
+    const connectionSecretPermissions = connectionSecretPermissionRules(request.manifest);
+    const clusterPermissions = clusterRbac
+      ? request.manifest.spec.permissions.filter((permission) => !connectionSecretPermissions.includes(permission))
+      : [];
+    const namespacedPermissions = clusterRbac ? connectionSecretPermissions : request.manifest.spec.permissions;
     const documents = [
       ...ownedResources.map((resource) => crdDocument(resource, request.manifest)),
       serviceAccountDocument(serviceAccountName, namespace, request.manifest),
-      rbacRoleDocument(request.operator.name, request.manifest.spec.permissions, namespace, clusterRbac, request.manifest),
-      rbacBindingDocument(request.operator.name, serviceAccountName, namespace, clusterRbac, request.manifest),
+      ...(clusterPermissions.length > 0 ? [
+        rbacRoleDocument(request.operator.name, clusterPermissions, namespace, true, request.manifest),
+        rbacBindingDocument(request.operator.name, serviceAccountName, namespace, true, request.manifest),
+      ] : []),
+      ...(namespacedPermissions.length > 0 ? [
+        roleDocument(request.operator.name, namespacedPermissions, namespace, request.manifest, clusterRbac ? 'connection-secrets' : 'controller'),
+        roleBindingDocument(request.operator.name, serviceAccountName, namespace, request.manifest, clusterRbac ? 'connection-secrets' : 'controller'),
+      ] : []),
       deploymentDocument(request.manifest, serviceAccountName, image, namespace, request.operator.deployment?.replicas),
     ];
     const validation = validateGeneratedKubernetesDocuments(documents);
@@ -296,11 +305,11 @@ function serviceAccountDocument(name: string, namespace: string | undefined, man
   };
 }
 
-function roleDocument(operatorName: string, permissions: readonly PermissionRule[], namespace: string | undefined, manifest: OperatorManifest): V1Role {
+function roleDocument(operatorName: string, permissions: readonly PermissionRule[], namespace: string | undefined, manifest: OperatorManifest, suffix = 'controller'): V1Role {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'Role',
-    metadata: metadata(`${operatorName}-controller`, namespace, manifest),
+    metadata: metadata(`${operatorName}-${suffix}`, namespace, manifest),
     rules: permissions.map((permission): V1PolicyRule => ({
       apiGroups: [...permission.apiGroups],
       resources: [...permission.resources],
@@ -328,15 +337,15 @@ function rbacRoleDocument(operatorName: string, permissions: readonly Permission
   return clusterRbac ? clusterRoleDocument(operatorName, permissions, namespace ?? 'default', manifest) : roleDocument(operatorName, permissions, namespace, manifest);
 }
 
-function roleBindingDocument(operatorName: string, serviceAccountName: string, namespace: string | undefined, manifest: OperatorManifest): V1RoleBinding {
+function roleBindingDocument(operatorName: string, serviceAccountName: string, namespace: string | undefined, manifest: OperatorManifest, suffix = 'controller'): V1RoleBinding {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'RoleBinding',
-    metadata: metadata(`${operatorName}-controller`, namespace, manifest),
+    metadata: metadata(`${operatorName}-${suffix}`, namespace, manifest),
     roleRef: {
       apiGroup: 'rbac.authorization.k8s.io',
       kind: 'Role',
-      name: `${operatorName}-controller`,
+      name: `${operatorName}-${suffix}`,
     },
     subjects: [
       {
@@ -346,6 +355,20 @@ function roleBindingDocument(operatorName: string, serviceAccountName: string, n
       },
     ],
   };
+}
+
+function connectionSecretPermissionRules(manifest: OperatorManifest): readonly PermissionRule[] {
+  const secretNames = new Set(Object.values(manifest.spec.kubernetesConnectionBindings ?? {})
+    .map((binding) => binding.kubeconfigSecretRef.name));
+  return manifest.spec.permissions.filter((permission) =>
+    permission.apiGroups.length === 1
+    && permission.apiGroups[0] === ''
+    && permission.resources.length === 1
+    && permission.resources[0] === 'secrets'
+    && permission.verbs.length === 1
+    && permission.verbs[0] === 'get'
+    && permission.resourceNames?.length === 1
+    && secretNames.has(permission.resourceNames[0] ?? ''));
 }
 
 function clusterRoleBindingDocument(operatorName: string, serviceAccountName: string, namespace: string, manifest: OperatorManifest): V1ClusterRoleBinding {
@@ -554,6 +577,7 @@ function requiresClusterRbac(operator: OperatorDefinition, controllerNamespace: 
   if (operator.deployment?.scope === 'Cluster') return true;
   if (Object.values(operator.resources).some((resource) => resource.scope === 'Cluster')) return true;
   return Object.values(operator.reads ?? {}).some((resource) => {
+    if (resource.access === 'connection') return false;
     if (resource.scope === 'Cluster' || resource.namespaces === 'all') return true;
     if (!resource.namespaces || resource.namespaces.length === 0) return false;
     return !controllerNamespace || resource.namespaces.some((namespace) => namespace !== controllerNamespace);

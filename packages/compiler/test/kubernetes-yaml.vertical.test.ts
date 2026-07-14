@@ -169,8 +169,8 @@ describe('Kubernetes YAML generation', () => {
       if (!manifest.ok) return;
       expect(manifest.value.spec.ownedCrds.map((resource) => resource.kind)).toEqual(['ImageJob']);
       expect(manifest.value.spec.readResources).toEqual([
-        { apiVersion: 'v1', kind: 'Namespace', plural: 'namespaces', scope: 'Cluster' },
-        { apiVersion: 'apps/v1', kind: 'Deployment', plural: 'deployments', scope: 'Namespaced', namespaces: ['destination'] },
+        { apiVersion: 'v1', kind: 'Namespace', plural: 'namespaces', scope: 'Cluster', access: 'local' },
+        { apiVersion: 'apps/v1', kind: 'Deployment', plural: 'deployments', scope: 'Namespaced', namespaces: ['destination'], access: 'local' },
       ]);
       expect(manifest.value.spec.permissions).toEqual(expect.arrayContaining([
         { apiGroups: [''], resources: ['namespaces'], verbs: ['get', 'list'] },
@@ -183,6 +183,56 @@ describe('Kubernetes YAML generation', () => {
       expect(documents.some((document) => document.kind === 'ClusterRole')).toBe(true);
       expect(documents.some((document) => document.kind === 'ClusterRoleBinding')).toBe(true);
       expect(documents.filter((document) => document.kind === 'CustomResourceDefinition')).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('emits connection Secret RBAC without granting remote resource access in the management cluster', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-connection-rbac-'));
+    try {
+      const ImageJob = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', spec: imageSpecSchema, status: imageStatusSchema });
+      const externalOperator = sdk.operator({
+        name: 'connection-read-operator',
+        deployment: { namespace: 'operators' },
+        resources: { ImageJob },
+        reads: {
+          Deployment: sdk.kubernetes.resource({ apiVersion: 'apps/v1', kind: 'Deployment', namespaces: ['destination'], access: 'connection' }),
+        },
+        capabilities: {
+          destination: sdk.kubernetes.connection.required({
+            endpointPolicy: 'workload-cluster-apis',
+            permissions: [{ apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list'], namespaces: ['destination'] }],
+          }),
+        },
+        handlers: [],
+      });
+      const digest = 'sha256:0000000000000000000000000000000000000000000000000000000000000000';
+      const manifest = buildOperatorManifest({
+        operator: externalOperator.definition,
+        handlerArtifactPath: join(dir, 'handler.wasm'),
+        handlerArtifactDigest: digest,
+        runtimeContractPath: 'runtime-contract.json',
+        runtimeContractDigest: digest,
+        kubernetesConnectionBindings: {
+          destination: {
+            kubeconfigSecretRef: { name: 'destination-kubeconfig', namespace: 'operators', key: 'kubeconfig' },
+            context: 'destination',
+            endpointPolicy: { name: 'workload-cluster-apis', version: '1', scheme: 'https', hosts: ['api.destination.test'], ports: [6443], redirects: 'deny' },
+          },
+        },
+      });
+      expect(manifest.ok).toBe(true);
+      if (!manifest.ok) return;
+      const yaml = await emitOperatorKubernetesYaml({ manifest: manifest.value, operator: externalOperator.definition, outDir: join(dir, 'kubernetes') });
+      expect(yaml.ok).toBe(true);
+      if (!yaml.ok) return;
+      const documents = await Promise.all(yaml.value.paths.map(async (path) => parse(await readFile(path, 'utf8'))));
+      const role = documents.find((document) => document.kind === 'Role');
+      expect(role?.rules).toContainEqual({ apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: ['destination-kubeconfig'] });
+      expect(role?.rules).not.toContainEqual(expect.objectContaining({ apiGroups: ['apps'], resources: ['deployments'] }));
+      expect(documents.some((document) => document.kind === 'ClusterRole')).toBe(false);
+      expect(manifest.value.spec.kubernetesConnectionBindings?.destination?.context).toBe('destination');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

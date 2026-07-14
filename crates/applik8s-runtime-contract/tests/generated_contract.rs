@@ -46,6 +46,34 @@ fn generated_contract_matches_rust_constants() {
 }
 
 #[test]
+fn generated_manifest_schema_strictly_describes_connection_bindings() {
+    let contract = runtime_contract().expect("generated runtime contract parses");
+    let schema = contract
+        .payload_schemas
+        .get("operatorManifest")
+        .expect("operator manifest schema exists");
+
+    assert_eq!(
+        schema.pointer("/properties/spec/properties/kubernetesConnectionBindings/type"),
+        Some(&serde_json::json!("object"))
+    );
+    assert_eq!(
+        schema.pointer(
+            "/properties/spec/properties/kubernetesConnectionBindings/propertyNames/pattern"
+        ),
+        Some(&serde_json::json!("^[a-z][a-z0-9-]{0,62}$"))
+    );
+    assert_eq!(
+        schema.pointer("/properties/spec/properties/kubernetesConnectionBindings/additionalProperties/additionalProperties"),
+        Some(&serde_json::json!(false))
+    );
+    assert_eq!(
+        schema.pointer("/properties/spec/properties/kubernetesConnectionBindings/additionalProperties/properties/endpointPolicy/additionalProperties"),
+        Some(&serde_json::json!(false))
+    );
+}
+
+#[test]
 fn generated_handler_input_schema_validates_payload_shape() {
     let payload = serde_json::json!({
         "abiVersion": ABI_VERSION,
@@ -162,6 +190,41 @@ fn generated_operation_plan_schema_validates_operation_variants() {
     });
 
     assert!(validate_payload_schema("normalizedOperationPlan", &extra_operation_field).is_err());
+}
+
+#[test]
+fn generated_operation_plan_schema_carries_declared_connection_aliases_only() {
+    let payload = serde_json::json!({
+        "operations": [{
+            "kind": "apply",
+            "resource": {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": { "name": "remote-config", "namespace": "media" }
+            },
+            "ownership": { "mode": "none" },
+            "connection": "destination",
+            "authority": {
+                "mode": "managed",
+                "identity": "imagejob/hero/config",
+                "sourceUid": "source-uid"
+            }
+        }]
+    });
+
+    validate_payload_schema("normalizedOperationPlan", &payload)
+        .expect("connection-scoped plan validates");
+    let decoded =
+        decode_normalized_operation_plan(payload).expect("connection-scoped plan decodes");
+
+    assert!(matches!(
+        &decoded.operations[0],
+        Operation::Apply {
+            connection: Some(connection),
+            ownership: Some(applik8s_runtime_contract::ApplyOwnership::None),
+            ..
+        } if connection == "destination"
+    ));
 }
 
 #[test]

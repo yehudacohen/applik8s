@@ -86,7 +86,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
 name = "applik8s-operator-host"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "applik8s-runtime-bridge",
  "applik8s-runtime-contract",
@@ -104,7 +104,9 @@ dependencies = [
  "opentelemetry_sdk",
  "reqwest 0.12.28",
  "rustls",
+ "secrecy",
  "semver",
+ "serde",
  "serde_json",
  "sourcemap",
  "thiserror",

@@ -30,8 +30,12 @@ import type {
   Operation,
   OperationPlanInput,
   OperationTarget,
-  PlanTargetOptions,
   OperatorDefinition,
+  PatchTargetOptions,
+  PlanTargetOptions,
+  RemoteApplyTargetOptions,
+  RemoteDeleteTargetOptions,
+  RemotePatchTargetOptions,
   RequeuePolicy,
   ResourceDefinition,
   ResourceGetQuery,
@@ -64,7 +68,8 @@ export async function dispatchOperatorHandler(operator: OperatorDefinition, inpu
   }
 
   const reconcileId = input.runtime?.reconcileId ?? 'runtime-reconcile';
-  const invocation = await invokeRunnableHandler(registration, input.object, input.event, reconcileId, capabilityClients(input.capabilities ?? {}, reconcileId, hostImports), { ...operator.resources, ...(operator.reads ?? {}) }, hostImports.kubernetesRead);
+  const descriptors = input.capabilities ?? operator.capabilities ?? {};
+  const invocation = await invokeRunnableHandler(registration, input.object, input.event, reconcileId, capabilityClients(descriptors, reconcileId, hostImports), descriptors, { ...operator.resources, ...(operator.reads ?? {}) }, hostImports.kubernetesRead);
   if (!invocation.ok) {
     throw new Error(invocation.error.message);
   }
@@ -83,7 +88,8 @@ export function dispatchOperatorHandlerSync(operator: OperatorDefinition, inputJ
   }
 
   const reconcileId = input.runtime?.reconcileId ?? 'runtime-reconcile';
-  const invocation = invokeRunnableHandlerSync(registration, input.object, input.event, reconcileId, capabilityClients(input.capabilities ?? {}, reconcileId, hostImports), { ...operator.resources, ...(operator.reads ?? {}) }, hostImports.kubernetesRead);
+  const descriptors = input.capabilities ?? operator.capabilities ?? {};
+  const invocation = invokeRunnableHandlerSync(registration, input.object, input.event, reconcileId, capabilityClients(descriptors, reconcileId, hostImports), descriptors, { ...operator.resources, ...(operator.reads ?? {}) }, hostImports.kubernetesRead);
   if (!invocation.ok) {
     throw new Error(invocation.error.message);
   }
@@ -103,8 +109,8 @@ interface InvocationResult {
   readonly plan: NormalizedOperationPlan;
 }
 
-async function invokeRunnableHandler(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport): Promise<Result<InvocationResult>> {
-  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
+async function invokeRunnableHandler(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport): Promise<Result<InvocationResult>> {
+  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, capabilityDescriptors, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
   try {
     if (registration.handlerStyle === 'context') {
       const returned = await registration.handler(toResourceObject(object), createContext(recorder, object));
@@ -128,8 +134,8 @@ async function invokeRunnableHandler(registration: RunnableHandlerRegistration, 
   }
 }
 
-function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport): Result<InvocationResult> {
-  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
+function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport): Result<InvocationResult> {
+  const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, capabilityDescriptors, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
   try {
     if (registration.handlerStyle === 'context') {
       const returned = registration.handler(toResourceObject(object), createContext(recorder, object));
@@ -265,9 +271,9 @@ function compactCapabilityRequest(request: Readonly<Record<string, unknown>>): C
   return Object.fromEntries(Object.entries(request).filter(([, value]) => value !== undefined)) as unknown as CapabilityRequestPayload;
 }
 
-function createReadClients(resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, reconcileId: string, kubernetesRead: KubernetesReadImport | undefined) {
+function createReadClients(resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, reconcileId: string, kubernetesRead: KubernetesReadImport | undefined, connection?: string) {
   const clients: Record<string, unknown> = {};
-  const readFor = <TSpec extends object, TStatus extends object>(resource: Pick<ResourceDefinition<TSpec, TStatus>, 'apiVersion' | 'kind' | 'plural' | 'scope'>) => readClient(resource, reconcileId, kubernetesRead);
+  const readFor = <TSpec extends object, TStatus extends object>(resource: Pick<ResourceDefinition<TSpec, TStatus>, 'apiVersion' | 'kind' | 'plural' | 'scope'>) => readClient(resource, reconcileId, kubernetesRead, connection);
   Object.defineProperty(clients, 'resource', {
     value: readFor,
     enumerable: false,
@@ -292,12 +298,19 @@ function createReadClients(resources: Readonly<Record<string, Pick<AnyResourceDe
   return clients;
 }
 
-function readClient<TSpec extends object, TStatus extends object>(resource: Pick<ResourceDefinition<TSpec, TStatus>, 'apiVersion' | 'kind' | 'plural' | 'scope'>, reconcileId: string, kubernetesRead: KubernetesReadImport | undefined) {
+function readClient<TSpec extends object, TStatus extends object>(resource: Pick<ResourceDefinition<TSpec, TStatus>, 'apiVersion' | 'kind' | 'plural' | 'scope'>, reconcileId: string, kubernetesRead: KubernetesReadImport | undefined, connection?: string) {
   const request = async (operation: 'get' | 'list', query: ResourceGetQuery | ResourceReadQuery | undefined) => {
     if (!kubernetesRead) {
       throw new Error('Typed Kubernetes reads require the kubernetes-read host import, but this runtime did not provide it.');
     }
+    if (connection && operation === 'list') {
+      const limit = query && 'limit' in query ? query.limit : undefined;
+      if (!Number.isInteger(limit) || (limit ?? 0) < 1 || (limit ?? 0) > 500) {
+        throw new Error('Connection-scoped Kubernetes list requires limit between 1 and 500 for bounded pagination.');
+      }
+    }
     const response = decodeCapabilityImportResult(kubernetesRead(JSON.stringify({
+      ...(connection ? { protocol: 'applik8s.kubernetes-connection/v1alpha1', connection } : {}),
       operation,
       apiVersion: resource.apiVersion,
       kind: resource.kind,
@@ -346,6 +359,7 @@ interface RecorderOptions {
   readonly event: HandlerEventType;
   readonly reconcileId: string;
   readonly capabilities: CapabilityClientSet;
+  readonly capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>;
   readonly resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>;
   readonly kubernetesRead?: KubernetesReadImport;
 }
@@ -369,6 +383,27 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
     StatefulSet: (config: KubernetesFactoryConfig) => kubernetesFactory('apps/v1', 'StatefulSet', config),
   };
   const read = createReadClients(options.resources, options.reconcileId, options.kubernetesRead);
+  const connection = (name: string) => {
+    const descriptor = options.capabilityDescriptors[name];
+    if (descriptor?.kind !== 'kubernetes' || descriptor.execution?.protocol !== 'applik8s.kubernetes-connection/v1alpha1') {
+      throw new Error(`Kubernetes connection ${name} is not declared by this operator.`);
+    }
+    return {
+      name,
+      read: createReadClients(options.resources, options.reconcileId, options.kubernetesRead, name),
+      resources: {
+        apply(resource: AnyKubernetesObject, connectionOptions: RemoteApplyTargetOptions) {
+          apply.push(remoteApplyInput(resource, name, connectionOptions));
+        },
+        patch(ref: ObjectRef, jsonPatch: JsonPatch, connectionOptions: RemotePatchTargetOptions) {
+          patch.push({ kind: 'patch', ref, patch: jsonPatch, connection: name, authority: connectionOptions.authority });
+        },
+        delete(ref: ObjectRef, connectionOptions: RemoteDeleteTargetOptions) {
+          deletes.push(remoteDeleteInput(ref, name, connectionOptions));
+        },
+      },
+    };
+  };
 
   // typecast: the literal object implements the overloaded HandlerProxyScope surface used by generated dispatcher calls.
   const scope = {
@@ -379,6 +414,7 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
     reconcileId: options.reconcileId,
     capabilities: options.capabilities,
     read,
+    kubernetes: { connection },
     names: {
       dnsSafe(input: string, nameOptions?: { readonly maxLength?: number }) {
         return input.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, nameOptions?.maxLength ?? 63);
@@ -397,13 +433,13 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
       applyTarget(target: OperationTarget<TStatus> | ApplyTargetInput<TStatus>) {
         renderApplyTarget('target' in target ? target.target : target, 'options' in target ? target.options : undefined);
       },
-      delete(ref: ObjectRef) {
-        deletes.push(ref);
+      delete(ref: ObjectRef, options?: DeleteTargetOptions) {
+        deletes.push(deleteInput(ref, options));
       },
       deleteTarget(target: OperationTarget<TStatus> | DeleteTargetInput<TStatus>) {
         renderDeleteTarget('target' in target ? target.target : target, 'options' in target ? target.options : undefined);
       },
-      patch(ref: ObjectRef, jsonPatch: JsonPatch) {
+      patch(ref: ObjectRef, jsonPatch: JsonPatch, _options?: PatchTargetOptions) {
         patch.push({ kind: 'patch', ref, patch: jsonPatch });
       },
     },
@@ -469,12 +505,12 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
       }
       if (isKubernetesObject(value)) {
         const ref = objectRef(value.apiVersion, value.kind, value.metadata.name, value.metadata.namespace);
-        deletes.push(isDeleteOptions(targetOptions) ? { kind: 'delete', ref, options: targetOptions } : ref);
+        deletes.push(deleteInput(ref, isDeleteTargetOptions(targetOptions) ? targetOptions : undefined));
         return;
       }
-      deletes.push(isDeleteOptions(targetOptions) ? { kind: 'delete', ref: value, options: targetOptions } : value);
+      deletes.push(deleteInput(value, isDeleteTargetOptions(targetOptions) ? targetOptions : undefined));
     },
-    patch(ref: ObjectRef, jsonPatch: JsonPatch) {
+    patch(ref: ObjectRef, jsonPatch: JsonPatch, _options?: PatchTargetOptions) {
       patch.push({ kind: 'patch', ref, patch: jsonPatch });
     },
     setStatus(resource: ResourceDefinition<object, object>, name: string, nextStatus: object, namespace?: string) {
@@ -630,6 +666,7 @@ function createContext(recorder: Recorder, object: AnyKubernetesObject): Handler
     reconcileId: recorder.scope.reconcileId,
     capabilities: recorder.scope.capabilities,
     read: recorder.scope.read,
+    kubernetes: recorder.scope.kubernetes,
     names: recorder.scope.names,
     k8s: recorder.scope.k8s,
     batch: recorder.scope.batch,
@@ -666,7 +703,7 @@ function createContext(recorder: Recorder, object: AnyKubernetesObject): Handler
     status(status: object) {
       return { kind: 'status', status };
     },
-    patch(ref: ObjectRef, jsonPatch: JsonPatch) {
+    patch(ref: ObjectRef, jsonPatch: JsonPatch, _options?: PatchTargetOptions) {
       return { kind: 'patch', ref, patch: jsonPatch };
     },
     delete(value: ObjectRef | OperationTarget<object> | readonly OperationTarget<object>[] | AnyKubernetesObject, options?: DeleteOptions | DeleteTargetOptions | OperationPlanInput<object>) {
@@ -684,13 +721,15 @@ function createContext(recorder: Recorder, object: AnyKubernetesObject): Handler
       }
       if (isKubernetesObject(value)) {
         const ref = objectRef(value.apiVersion, value.kind, value.metadata.name, value.metadata.namespace);
-        recorder.scope.delete(ref, isDeleteOptions(options) ? options : undefined);
-        return { kind: 'delete', ref, ...(isDeleteOptions(options) ? { options } : {}) };
+        const operation = deleteInput(ref, isDeleteTargetOptions(options) ? options : undefined);
+        recorder.scope.delete(ref, isDeleteTargetOptions(options) ? options : undefined);
+        return operation;
       }
       // typecast: operation targets and target arrays have returned above, so the remaining overload branch is an ObjectRef delete.
       const ref = value as ObjectRef;
-      recorder.scope.delete(ref, isDeleteOptions(options) ? options : undefined);
-      return { kind: 'delete', ref, ...(isDeleteOptions(options) ? { options } : {}) };
+      const operation = deleteInput(ref, isDeleteTargetOptions(options) ? options : undefined);
+      recorder.scope.delete(ref, isDeleteTargetOptions(options) ? options : undefined);
+      return operation;
     },
     recordEvent(event: EventOperation) {
       return event;
@@ -699,7 +738,7 @@ function createContext(recorder: Recorder, object: AnyKubernetesObject): Handler
       return { kind: 'requeue', policy };
     },
     noop() {
-      return ok({});
+      return ok(recorder.result());
     },
   };
   // typecast: the dispatcher context implements the runtime-compatible subset of HandlerContext overloads.
@@ -786,6 +825,40 @@ function applyInput(resource: AnyKubernetesObject, options: ApplyTargetOptions |
     ...(options.force === undefined ? {} : { force: options.force }),
     ...(options.ownership ? { ownership: options.ownership } : options.owner ? { ownership: { mode: 'reference', ref: options.owner } } : {}),
   };
+}
+
+function remoteApplyInput(resource: AnyKubernetesObject, connection: string, options: RemoteApplyTargetOptions): ApplyOperation {
+  return {
+    kind: 'apply',
+    resource,
+    connection,
+    authority: options.authority,
+    ...(options.fieldManager ? { fieldManager: options.fieldManager } : {}),
+    ...(options.force === undefined ? {} : { force: options.force }),
+    ...(options.ownership ? { ownership: options.ownership } : {}),
+  };
+}
+
+function deleteInput(ref: ObjectRef, options: DeleteTargetOptions | undefined): Extract<Operation, { kind: 'delete' }> {
+  const deleteOptions = options?.propagationPolicy || options?.gracePeriodSeconds !== undefined
+    ? {
+      ...(options?.propagationPolicy ? { propagationPolicy: options.propagationPolicy } : {}),
+      ...(options?.gracePeriodSeconds !== undefined ? { gracePeriodSeconds: options.gracePeriodSeconds } : {}),
+    }
+    : undefined;
+  return {
+    kind: 'delete',
+    ref,
+    ...(deleteOptions ? { options: deleteOptions } : {}),
+  };
+}
+
+function remoteDeleteInput(ref: ObjectRef, connection: string, options: RemoteDeleteTargetOptions): Extract<Operation, { kind: 'delete' }> {
+  const localOptions: DeleteTargetOptions = {
+    ...(options.propagationPolicy ? { propagationPolicy: options.propagationPolicy } : {}),
+    ...(options.gracePeriodSeconds !== undefined ? { gracePeriodSeconds: options.gracePeriodSeconds } : {}),
+  };
+  return { ...deleteInput(ref, localOptions), connection, authority: options.authority };
 }
 
 function mergeHandlerResults<TStatus extends object>(recorded: HandlerResult<TStatus>, explicit: HandlerResult<TStatus> | undefined): HandlerResult<TStatus> {
@@ -895,15 +968,17 @@ function precomputedDeleteOperations<TStatus extends object>(target: OperationTa
     if (operation.kind !== 'delete') {
       return operation;
     }
-    const next: { kind: 'delete'; ref: ObjectRef; options?: DeleteOptions } = { kind: 'delete', ref: operation.ref };
-    if (options?.propagationPolicy || options?.gracePeriodSeconds !== undefined) {
-      next.options = {
+    const deleteOptions = options?.propagationPolicy || options?.gracePeriodSeconds !== undefined
+      ? {
         ...(options.propagationPolicy ? { propagationPolicy: options.propagationPolicy } : {}),
         ...(options.gracePeriodSeconds !== undefined ? { gracePeriodSeconds: options.gracePeriodSeconds } : {}),
-      };
-    } else if (operation.options) {
-      next.options = operation.options;
-    }
+      }
+      : operation.options;
+    const next: Extract<Operation, { kind: 'delete' }> = {
+      kind: 'delete', ref: operation.ref,
+      ...(deleteOptions ? { options: deleteOptions } : {}),
+      ...(operation.authority ? { authority: operation.authority } : {}),
+    };
     // typecast: artifact delete operations are valid normalized operations for any handler status type.
     return next as Operation<TStatus>;
   });
@@ -934,10 +1009,6 @@ function isOperationPlan<TStatus extends object>(value: unknown): value is Opera
 
 function isApplyTargetOptions<TStatus extends object>(value: ApplyTargetOptions | OperationPlanInput<TStatus> | undefined): value is ApplyTargetOptions {
   return Boolean(value && typeof value === 'object' && ('fieldManager' in value || 'force' in value || 'owner' in value || 'ownership' in value));
-}
-
-function isDeleteOptions(value: DeleteOptions | DeleteTargetOptions | OperationPlanInput<object> | undefined): value is DeleteOptions {
-  return Boolean(value && typeof value === 'object' && !isOperationPlan(value) && ('propagationPolicy' in value || 'gracePeriodSeconds' in value));
 }
 
 function isDeleteTargetOptions<TStatus extends object>(value: DeleteOptions | DeleteTargetOptions | OperationPlanInput<TStatus> | undefined): value is DeleteTargetOptions {

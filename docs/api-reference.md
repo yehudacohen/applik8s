@@ -1,6 +1,6 @@
 # API Reference
 
-This is the supported public surface for `applik8s` v0.5. The v0.3 application substrate and v0.4 durable command semantics remain supported; v0.5 adds provider-neutral durable tasks and workflows without broadening into v0.6 projection/UI APIs.
+This is the supported public surface for `applik8s` v0.5. The v0.3 application substrate and v0.4 durable command semantics remain supported; v0.5 adds provider-neutral durable tasks and workflows plus bounded named Kubernetes connections without broadening into v0.6 projection/UI APIs.
 
 ## Packages
 
@@ -35,6 +35,23 @@ Use `sdk.operator()` to define:
 - declared external capabilities
 
 Handlers may use proxy-first mutation syntax. The SDK records mutations as operation plans; handlers do not receive an ambient Kubernetes client.
+
+For capability-aware handlers, use the operator-scoped registration form. It infers declared Kubernetes connection aliases and rejects undeclared or non-Kubernetes aliases at typecheck time:
+
+```ts
+sdk.operator({
+  resources: { Work },
+  capabilities: { destination },
+  handlers: ({ resources }) => [
+    resources.Work.on.context.reconcile((_work, ctx) => {
+      const cluster = ctx.kubernetes.connection('destination');
+      return ctx.noop();
+    }),
+  ],
+});
+```
+
+Declare remote-readable kinds with `sdk.kubernetes.resource({ ..., access: 'connection' })`. Connection lists require an explicit `limit` from 1 through 500. Remote mutations require either owner-bound managed authority or an exact UID/resourceVersion precondition. Installation bindings are supplied through the compiler or CLI and never enter handler input. See [Kubernetes connections](kubernetes-connections.md).
 
 Proxy handlers include small Kubernetes object factories for common built-ins used in examples. For example, `job.k8s.ConfigMap({ name, namespace, data })` returns a real ConfigMap object with top-level `data`, `job.apply(object)` records a server-side apply operation for it, and `job.delete(object)` records a delete by object reference. The older `job.batch.*` alias remains available for existing examples, but `job.k8s.*` is the golden-path spelling.
 
@@ -113,7 +130,9 @@ Unsupported compiler options fail closed or are documented as unsupported. appli
 The `applik8s` CLI is intentionally thin:
 
 - `applik8s build <entrypoint>` compiles generated operator artifacts.
+- `applik8s build <entrypoint> --connection-bindings <file>` applies the exact alias-to-Secret/context/endpoint-policy installation overlay before emitting artifacts.
 - `applik8s build <entrypoint> --typekro [--composition-name <export>]` compiles an exported applik8s TypeKro composition and emits inspectable composition resources.
+- With `--typekro`, the connection-binding file is an operator-name-to-alias-map so each nested operator receives its own exact installation overlay.
 - `applik8s explain <reason>` explains known diagnostics.
 - `applik8s replay inspect <artifact>` inspects or executes replay artifacts.
 - `applik8s test [...args]` forwards to Vitest.

@@ -8,6 +8,7 @@ import type {
   FinalizeHandlerOptions,
   HandlerEventType,
   HandlerRegistration,
+  KubernetesConnectionCapabilityDescriptor,
   KubernetesObject,
   ObjectRef,
   OperatorDefinition,
@@ -26,6 +27,7 @@ import type {
   CrdInstanceInput,
   CrdOptions,
   OperatorOptions,
+  ScopedOperatorOptions,
 } from './interfaces.js';
 import { normalizeSchema, toRuntimeSchema } from './schema-runtime.js';
 
@@ -74,6 +76,9 @@ export const sdk: Applik8sSdk = {
   permissions: builtInPermissions(),
   kubernetes: {
     resource: kubernetesReadResource,
+    connection: {
+      required: (options) => kubernetesConnectionDescriptor(options),
+    },
     Deployment: kubernetesReadResource({ apiVersion: 'apps/v1', kind: 'Deployment', plural: 'deployments' }),
     Service: kubernetesReadResource({ apiVersion: 'v1', kind: 'Service', plural: 'services' }),
     Namespace: kubernetesReadResource({ apiVersion: 'v1', kind: 'Namespace', plural: 'namespaces', scope: 'Cluster' }),
@@ -94,6 +99,23 @@ export const sdk: Applik8sSdk = {
   },
   isApplik8sError,
 };
+
+function kubernetesConnectionDescriptor(options: import('./interfaces.js').KubernetesConnectionRequirementOptions): KubernetesConnectionCapabilityDescriptor {
+  return {
+    name: '',
+    kind: 'kubernetes',
+    permissions: options.permissions,
+    kubernetesConnection: { endpointPolicy: options.endpointPolicy },
+    execution: {
+      liveExecution: 'hostProtocol',
+      protocol: 'applik8s.kubernetes-connection/v1alpha1',
+      audit: { recordRequests: true, recordResponses: false, includePayloads: false },
+      redaction: { requestBody: 'redacted', responseBody: 'redacted', headers: 'redacted', errors: 'publicMessageOnly' },
+      idempotency: { requiredForMutations: true, keySource: 'notApplicable' },
+    },
+    sensitive: true,
+  };
+}
 
 export function crd<TSpec extends object, TStatus extends object>(options: CrdOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus> {
   const scope = options.scope ?? 'Namespaced';
@@ -172,6 +194,7 @@ function kubernetesReadResource<TSpec extends object = object, TStatus extends o
     kind: options.kind,
     plural,
     scope: options.scope ?? 'Namespaced',
+    access: options.access ?? 'local',
     ...(options.namespaces ? { namespaces: options.namespaces } : {}),
     permissions: { read: () => permissionFactory(options.apiVersion, plural).read() },
   };
@@ -199,14 +222,21 @@ function unavailableResourceAction(kind: string, action: string) {
   };
 }
 
-export function operator<TCapabilities extends CapabilityClientSet = CapabilityClientSet, TResources extends Readonly<Record<string, AnyResourceDefinition<TCapabilities>>> = Readonly<Record<string, AnyResourceDefinition<TCapabilities>>>>(
-  options: OperatorOptions<TCapabilities, TResources>
-): CallableOperator<TCapabilities, TResources> {
-  const definition: OperatorDefinition<TCapabilities, TResources> = {
+export function operator<TDescriptors extends Readonly<Record<string, CapabilityDescriptor>>, TResources extends import('./interfaces.js').ResourceDefinitionMap>(options: ScopedOperatorOptions<TDescriptors, TResources>): import('./interfaces.js').CallableOperator<import('./interfaces.js').CapabilityClientsFor<TDescriptors>, import('./interfaces.js').OperatorScopedResources<TResources, import('./interfaces.js').CapabilityClientsFor<TDescriptors>>>;
+export function operator<TCapabilities extends CapabilityClientSet = CapabilityClientSet, TResources extends Readonly<Record<string, AnyResourceDefinition<TCapabilities>>> = Readonly<Record<string, AnyResourceDefinition<TCapabilities>>>>(options: OperatorOptions<TCapabilities, TResources>): CallableOperator<TCapabilities, TResources>;
+// biome-ignore lint/suspicious/noExplicitAny: TypeScript overload implementations require an erased return compatible with both invariant callable-operator instantiations.
+export function operator(optionsInput: unknown): any {
+  // typecast: overloads validate either the legacy registration array or the capability-scoped registration callback before this erased runtime implementation.
+  const options = optionsInput as OperatorOptions | ScopedOperatorOptions<Readonly<Record<string, CapabilityDescriptor>>, import('./interfaces.js').ResourceDefinitionMap>;
+  const handlers = typeof options.handlers === 'function'
+    // typecast: operator-scoped resources are the same runtime definitions with capability-aware event types supplied only at the TypeScript boundary.
+    ? options.handlers({ resources: options.resources as unknown as import('./interfaces.js').OperatorScopedResources<import('./interfaces.js').ResourceDefinitionMap, import('./interfaces.js').CapabilityClientsFor<Readonly<Record<string, CapabilityDescriptor>>>> })
+    : options.handlers;
+  const definition: OperatorDefinition = {
     name: options.name,
     resources: options.resources,
     ...(options.reads ? { reads: options.reads } : {}),
-    handlers: options.handlers,
+    handlers,
     ...(options.secondaryWatches ? { secondaryWatches: options.secondaryWatches } : {}),
     trustLevel: options.trustLevel ?? 'trustedApplication',
     effects: options.effects ?? { mode: 'planned', replayable: true },
@@ -218,12 +248,11 @@ export function operator<TCapabilities extends CapabilityClientSet = CapabilityC
 
   const deploy = (deployment: OperatorDeploymentOptions) => {
     const defaultDeploy = () => {
-    const mergedDefinition: OperatorDefinition<TCapabilities, TResources> = {
+    const mergedDefinition: OperatorDefinition = {
       ...definition,
       deployment: { ...definition.deployment, ...deployment },
     };
-    // typecast: deployed local factories erase capability-specific resource maps while preserving runtime resource identity.
-    const factories = deployedFactories(options.resources as unknown as Readonly<Record<string, AnyResourceDefinition>>, deployment.namespace);
+    const factories = deployedFactories(options.resources, deployment.namespace);
 
       const deployed = Object.assign(
       {
@@ -251,18 +280,18 @@ export function operator<TCapabilities extends CapabilityClientSet = CapabilityC
       factories
     );
     // typecast: deployed callable operators attach erased local factories at runtime while the public return type preserves the exact resource map.
-    return deployed as ReturnType<CallableOperator<TCapabilities, TResources>>;
+    return deployed;
     };
     const intercepted = operatorDeploymentInterceptor?.(definition, deployment, defaultDeploy);
     if (intercepted !== undefined) {
       // typecast: extension interceptors can provide an alternate deployment binding while preserving the callable operator public surface.
-      return intercepted as ReturnType<CallableOperator<TCapabilities, TResources>>;
+      return intercepted as ReturnType<CallableOperator>;
     }
     return defaultDeploy();
   };
 
   // typecast: the concrete local operator carries the exact definition and erased runtime factories; public generics are compile-time API guarantees.
-  return Object.assign(deploy, { definition }) as unknown as CallableOperator<TCapabilities, TResources>;
+  return Object.assign(deploy, { definition }) as unknown as CallableOperator;
 }
 
 export function secretRef(name: string, key: string, namespace?: string): SecretRef {

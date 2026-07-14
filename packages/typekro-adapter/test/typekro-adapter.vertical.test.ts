@@ -297,6 +297,42 @@ describe('TypeKro adapter operation targets', () => {
     expect(source).toContain('return withInstallReadiness(resource, createResource(');
   });
 
+  it('carries compiled Kubernetes connection bindings and exact Secret RBAC through TypeKro installation', () => {
+    const { operator, manifest } = imageOperatorFixture();
+    const connectedManifest: OperatorManifest = {
+      ...manifest,
+      spec: {
+        ...manifest.spec,
+        permissions: [
+          ...manifest.spec.permissions,
+          { apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: ['destination-kubeconfig'] },
+        ],
+        capabilities: {
+          ...(manifest.spec.capabilities ?? {}),
+          destination: sdk.kubernetes.connection.required({
+            endpointPolicy: 'workload-cluster-apis',
+            permissions: [{ apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list'], namespaces: ['payments'] }],
+          }),
+        },
+        kubernetesConnectionBindings: {
+          destination: {
+            kubeconfigSecretRef: { name: 'destination-kubeconfig', namespace: 'media-system', key: 'kubeconfig' },
+            context: 'destination',
+            endpointPolicy: { name: 'workload-cluster-apis', version: '1', scheme: 'https', hosts: ['api.destination.test'], ports: [6443], redirects: 'deny' },
+          },
+        },
+      },
+    };
+    const result = asComposition(operator, connectedManifest, { compositionName: 'image-pipeline', defaultNamespace: 'media-system' });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const role = result.value.resources.find((resource) => resource.kind === 'Role');
+    expect(role?.rules).toContainEqual({ apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: ['destination-kubeconfig'] });
+    expect(role?.rules).not.toContainEqual(expect.objectContaining({ apiGroups: ['apps'], resources: ['deployments'] }));
+    expect(connectedManifest.spec.kubernetesConnectionBindings?.destination?.context).toBe('destination');
+  });
+
   it('fails closed when TypeKro install specs request multiple operator replicas', () => {
     const { operator, manifest } = imageOperatorFixture();
     const result = asComposition(operator, manifest, { compositionName: 'image-pipeline', defaultNamespace: 'media-system' });

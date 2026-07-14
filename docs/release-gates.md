@@ -1,6 +1,6 @@
 # Release Gates
 
-Release readiness has two layers: local gates and pre-release live gates. v0.4 retains the v0.3 substrate gates and adds durable-command, JetStream, Kubernetes-WASM, processor-recovery, and clean TypeKro lifecycle evidence.
+Release readiness has two layers: local gates and pre-release live gates. v0.5 retains the earlier substrate and command gates and adds durable-workflow, connection-scoped Kubernetes, performance-history, and clean TypeKro lifecycle evidence.
 
 ## Local Gates
 
@@ -43,7 +43,7 @@ bun run check:release
 The checker verifies:
 
 - publishable package metadata
-- version `0.4.3` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
+- version `0.5.0` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
 - Apache-2.0 license metadata
 - public publish config
 - no `file:` dependency ranges in publishable packages

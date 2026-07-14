@@ -8,14 +8,14 @@ Reconciliation TypeScript becomes WASM component logic evaluated by Kubernetes e
 
 ## v0.5 Flagship: Durable Tenant Orchestration
 
-v0.5 adds provider-neutral durable tasks and workflows with a pinned PostgreSQL-only Hatchet implementation. The Tenant Platform now models tenant onboarding and decommissioning with retry-safe external-effect tasks, durable approval waits, cancellation, compensation, explicit operator intervention, and canonical transitions committed through the v0.4 model transaction boundary.
+v0.5 adds provider-neutral durable tasks and workflows with a pinned PostgreSQL-only Hatchet implementation. It also adds bounded, named Kubernetes connections: handlers can read and mutate an installation-authorized cluster without receiving kubeconfig material or ambient client authority. The Tenant Platform models tenant onboarding and decommissioning with retry-safe external-effect tasks, durable approval waits, cancellation, compensation, explicit operator intervention, and canonical transitions committed through the v0.4 model transaction boundary.
 
 ```sh
 bun run build:tenant-platform-v05
 bun run check:v05:prerelease:orbstack
 ```
 
-See [`docs/workflows.md`](docs/workflows.md) for semantics and [`docs/v0.5-scorecard.md`](docs/v0.5-scorecard.md) for the executable release criteria.
+See [`docs/workflows.md`](docs/workflows.md) for workflow semantics, [`docs/kubernetes-connections.md`](docs/kubernetes-connections.md) for the connection authority model, and [`docs/v0.5-scorecard.md`](docs/v0.5-scorecard.md) for the executable release criteria.
 
 ## v0.4 Flagship: Durable Tenant Behavior
 

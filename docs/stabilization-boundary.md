@@ -1,6 +1,20 @@
 # Stabilization Boundary
 
-This document records the compatibility boundaries for released framework generations. The v0.1 sections remain as historical context; v0.4.3 is the final v0.4 release boundary.
+This document records the compatibility boundaries for released framework generations. The v0.1 sections remain as historical context; v0.4.3 is the final v0.4 release boundary and v0.5 adds the boundaries below.
+
+## Public v0.5 Surfaces
+
+- Provider-neutral durable task/workflow contracts and the pinned PostgreSQL-only Hatchet provider described in `workflows.md`.
+- Named Kubernetes connection declarations, exact installation bindings, capability-scoped handler typing, bounded reads, and guarded apply/patch/delete plans.
+- Host-owned kubeconfig parsing, endpoint policy, credential-revision pinning, connection permission envelopes, and owner-bound remote management identities.
+- Plain Kubernetes YAML and TypeKro installation paths with the same connection schema and exact namespaced Secret RBAC.
+
+## Reserved Or Bounded In v0.5
+
+- A mutation plan may use at most one remote connection; status, events, finalizers, and reconciliation ownership remain local.
+- Remote lists require bounded pagination. Remote watches, remote owner references, cluster registries, credential plugins, cross-cluster transactions, and multi-cluster workflow orchestration are not v0.5 surfaces.
+- Public streams, distributed projections, authenticated subscriptions, reactive UI delivery, and projection-driven browser APIs remain v0.6 work.
+- Connection-capable bundles require host protocol `>=0.1.1, <0.2.0`; the host protocol version is independent from the npm release version.
 
 ## Public v0.4 Surfaces
 

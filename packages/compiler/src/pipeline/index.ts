@@ -90,6 +90,7 @@ export interface CompileOperatorPipeline {
 
 export interface CompileTypeKroCompositionRequest extends CompileOperatorRequest {
   readonly compositionName?: string;
+  readonly operatorKubernetesConnectionBindings?: Readonly<Record<string, NonNullable<CompileOptions['kubernetesConnectionBindings']>>>;
 }
 
 export interface CompileTypeKroCompositionResult {
@@ -241,7 +242,7 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
     return error('BUNDLE_INVALID', `TypeKro composition captures operator ${missingOperator}, but the captured install does not include an applik8s operator definition and the entrypoint does not export one with that name.`);
   }
 
-  const { compositionName: _compositionName, outDir: _outDir, operatorName: _operatorName, ...operatorRequest } = request;
+  const { compositionName: _compositionName, outDir: _outDir, operatorName: _operatorName, operatorKubernetesConnectionBindings, ...operatorRequest } = request;
   const operatorCompiles: CompileResult[] = [];
   for (const operatorName of installNames) {
     const operatorDefinition = capturedOperators.get(operatorName) ?? exportedOperators.get(operatorName);
@@ -252,6 +253,9 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
       ...operatorRequest,
       operatorName,
       operatorDefinition,
+      ...(operatorKubernetesConnectionBindings?.[operatorName]
+        ? { kubernetesConnectionBindings: operatorKubernetesConnectionBindings[operatorName] }
+        : {}),
       dispatcherMode: 'staticSerializable',
       outDir: join(outputDirectory(request), 'operators', safePathSegment(operatorName)),
     };
@@ -838,6 +842,7 @@ class MinimalCompileOperatorPipeline implements CompileOperatorPipeline {
       runtimeVersionRange: request.runtimeVersionRange,
       containerBuildContext: layout.rootDir,
       portability: request.portability,
+      ...(request.kubernetesConnectionBindings ? { kubernetesConnectionBindings: request.kubernetesConnectionBindings } : {}),
     });
     if (!manifest.ok) {
       return manifest;

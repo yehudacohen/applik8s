@@ -10,7 +10,7 @@ Starting with v0.4.2, the compiler defaults to a public, immutable operator-host
 ghcr.io/yehudacohen/applik8s-operator-host
 ```
 
-The reference contains both a human-readable release tag and a `sha256` manifest digest. Generated Dockerfiles declare that reference as the default `APPLIK8S_BASE_IMAGE` build argument; builds may deliberately override the argument without changing the recorded manifest default.
+For v0.5.0 the compiler records the matching immutable semver tag. The release workflow publishes and anonymously verifies its multi-platform manifest before publishing npm packages, then records the resolved `sha256` digest in release evidence. This ordering avoids requiring the compiler package to predict the digest of a host image built from the same release tag. Generated Dockerfiles declare the tag as the default `APPLIK8S_BASE_IMAGE` build argument; builds may deliberately override it.
 
 The release image is published for:
 
@@ -21,7 +21,7 @@ The image workflow publishes OCI source/version/revision labels, a BuildKit prov
 
 ## Runtime Hardening
 
-Generated operator images and Deployments run as numeric uid/gid `65532`. The v0.4.2 host build recipe also selects that identity when the shared host is run directly. The v0.4.1 compatibility host pinned by this compiler is made non-root by the generated Dockerfile's final `USER` and the Deployment's explicit `runAsUser`/`runAsGroup`. Generated Deployments set:
+Generated operator images and Deployments run as numeric uid/gid `65532`. The shared host build selects that identity when run directly, and generated Dockerfiles and Deployments retain the same identity. Generated Deployments set:
 
 - `runAsNonRoot`, an explicit uid/gid, and `RuntimeDefault` seccomp
 - no privilege escalation
@@ -57,12 +57,12 @@ docker build \
 
 ## Release Verification
 
-The tag-driven workflow publishes the host before npm packages. It then installs the released npm package into an empty directory, compiles an operator, anonymously pulls the public host by digest, and builds the generated operator image before creating the GitHub release.
+The tag-driven workflow publishes the host before npm packages. It then installs the released npm package into an empty directory, compiles an operator, anonymously resolves the public host tag to its digest, and builds the generated operator image before creating the GitHub release.
 
 Run the same released-artifact proof against OrbStack with:
 
 ```sh
-APPLIK8S_PUBLISHED_VERSION=0.4.2 bun run check:published-release:orbstack
+APPLIK8S_PUBLISHED_VERSION=0.5.0 bun run check:published-release:orbstack
 ```
 
 The live script refuses to mutate a cluster unless the current kubectl context exactly matches `orbstack`. It deploys the generated CRD/controller, observes a real reconciliation status write, and cleans up its namespace and CRD.

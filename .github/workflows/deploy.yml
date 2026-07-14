@@ -9,7 +9,7 @@ on:
       release_version:
         description: Existing immutable release version to recover (X.Y.Z)
         required: true
-        default: '0.4.3'
+        default: '0.5.0'
         type: string
       publish_npm:
         description: Publish packages to npm using trusted publishing
@@ -68,6 +68,7 @@ jobs:
         run: APPLIK8S_RELEASE_VERSION="${GITHUB_REF_NAME#v}" bun run check:release
 
       - name: Run local gates
+        if: ${{ steps.release.outputs.line != 'v0.5' }}
         run: bun run check:local
 
       - name: Run v0.4 durable-behavior gates

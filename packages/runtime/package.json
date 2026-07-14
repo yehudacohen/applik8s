@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/runtime",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "Runtime interfaces for applik8s operators.",
   "license": "Apache-2.0",
   "type": "module",
@@ -19,6 +19,6 @@
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
   },
   "dependencies": {
-    "@applik8s/core": "0.4.3"
+    "@applik8s/core": "0.5.0"
   }
 }

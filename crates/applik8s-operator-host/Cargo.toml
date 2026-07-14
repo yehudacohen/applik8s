@@ -1,6 +1,6 @@
 [package]
 name = "applik8s-operator-host"
-version = "0.1.0"
+version = "0.1.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -22,6 +22,8 @@ opentelemetry_sdk = { version = "0.32", features = ["metrics", "trace"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 semver = "1"
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sourcemap = "9"
 thiserror = "2"

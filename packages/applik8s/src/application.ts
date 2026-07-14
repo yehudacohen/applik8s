@@ -19,6 +19,7 @@ import { valkey as typeKroValkey } from 'typekro/valkey';
 import type { ApplicationServerRuntimeIndex, ApplicationServerRuntimeResource } from './application-generated-runtime-sources.js';
 import { generatedApplicationAggregateSource, generatedValkeyIndexerSource } from './application-generated-runtime-sources.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, applicationGraphFromState, isApplicationGraph } from './application-graph-state.js';
+import { apiGroupForApiVersion, graphResourceId, unique } from './application-identifiers.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobPhaseStatusContract, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
 import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationRuntimeModelContract } from './application-models.js';
 import { applicationModelBinding, applicationModelMigrationPlan, applicationModelMigrationPreflightSql, applicationModelMigrationSql, applicationRuntimeModelContract, recordApplicationModelCommandGraph, recordApplicationModelGraph, resolveApplicationModelStore } from './application-models.js';
@@ -2909,20 +2910,6 @@ function mergeApplicationPermissionRules(permissions: readonly ApplicationPermis
     });
   }
   return [...merged.values()];
-}
-
-function apiGroupForApiVersion(apiVersion: string): string {
-  return apiVersion.includes('/') ? apiVersion.split('/')[0] ?? '' : '';
-}
-
-function unique<T>(values: readonly T[]): T[] {
-  return [...new Set(values)];
-}
-
-function graphResourceId(name: string, suffix: string): string {
-  const parts = `${name}-${suffix}`.split(/[^A-Za-z0-9]+/).filter(Boolean);
-  const [first = 'resource', ...rest] = parts;
-  return `${first.slice(0, 1).toLowerCase()}${first.slice(1)}${rest.map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`).join('')}`;
 }
 
 function runtimeIndexBackendConfig(backend: ApplicationIndexBackend | undefined, namespace: string | undefined, resourceName: string): ApplicationRuntimeIndexBackend | undefined {

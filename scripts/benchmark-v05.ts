@@ -54,10 +54,23 @@ process.stdout.write(`${JSON.stringify({ ...report, budgetViolations: violations
 if (violations.length > 0) throw new Error(`v0.5 benchmark budgets exceeded:\n${violations.map((violation) => `- ${violation}`).join('\n')}`);
 
 async function observationBenchmark() {
-  const operations = quick ? 100 : 1_000;
+  // Keep the steady-state sample large even in the quick gate. With only 100
+  // sub-millisecond in-memory observations, one ordinary scheduler pause can
+  // dominate the aggregate and turn the threshold into a load detector. Cold
+  // start remains explicit rather than being hidden by the warm sample.
+  const operations = 1_000;
+  const warmupOperations = 25;
   const latencies: number[] = [];
-  const memoryBefore = process.memoryUsage().rss;
   const client = { runs: { get: async () => ({ run: { status: 'COMPLETED', output: { completed: true } } }) } };
+  const coldStartStarted = performance.now();
+  // typecast: the synthetic client intentionally implements only the runs.get observation boundary measured by this benchmark.
+  await waitForHatchetResult<{ completed: boolean }>(client as never, 'benchmark-cold-start', { timeoutMs: 1_000 });
+  const coldStartMs = performance.now() - coldStartStarted;
+  for (let index = 0; index < warmupOperations; index += 1) {
+    // typecast: warmup uses the same deliberately partial observation client as the measured loop below.
+    await waitForHatchetResult<{ completed: boolean }>(client as never, `benchmark-warmup-${index}`, { timeoutMs: 1_000 });
+  }
+  const memoryBefore = process.memoryUsage().rss;
   const started = performance.now();
   for (let index = 0; index < operations; index += 1) {
     const operationStarted = performance.now();
@@ -66,7 +79,15 @@ async function observationBenchmark() {
     latencies.push(performance.now() - operationStarted);
   }
   const durationMs = performance.now() - started;
-  return { operations, durationMs: round(durationMs), throughputPerSecond: round(operations / (durationMs / 1_000)), latencyMs: quantiles(latencies), rssGrowthBytes: Math.max(0, process.memoryUsage().rss - memoryBefore) };
+  return {
+    operations,
+    warmupOperations,
+    coldStartMs: round(coldStartMs),
+    durationMs: round(durationMs),
+    throughputPerSecond: round(operations / (durationMs / 1_000)),
+    latencyMs: quantiles(latencies),
+    rssGrowthBytes: Math.max(0, process.memoryUsage().rss - memoryBefore),
+  };
 }
 
 async function graphBenchmark() {

@@ -129,7 +129,7 @@ pub struct ObjectMeta {
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectRef {
     pub api_version: String,
@@ -138,6 +138,36 @@ pub struct ObjectRef {
     pub namespace: Option<String>,
     pub uid: Option<String>,
     pub resource_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesSecretRef {
+    pub name: String,
+    pub namespace: String,
+    pub key: String,
+}
+
+pub type KubernetesConnectionName = String;
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteMutationPrecondition {
+    pub uid: String,
+    pub resource_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "camelCase")]
+pub enum RemoteMutationAuthority {
+    Managed {
+        identity: String,
+        #[serde(rename = "sourceUid")]
+        source_uid: String,
+    },
+    Existing {
+        precondition: RemoteMutationPrecondition,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
@@ -188,18 +218,24 @@ pub enum Operation {
         field_manager: Option<String>,
         force: Option<bool>,
         ownership: Option<ApplyOwnership>,
+        connection: Option<KubernetesConnectionName>,
+        authority: Option<RemoteMutationAuthority>,
     },
     #[serde(rename = "patch")]
     Patch {
         #[serde(rename = "ref")]
         ref_: ObjectRef,
         patch: Vec<JsonPatchEntry>,
+        connection: Option<KubernetesConnectionName>,
+        authority: Option<RemoteMutationAuthority>,
     },
     #[serde(rename = "delete")]
     Delete {
         #[serde(rename = "ref")]
         ref_: ObjectRef,
         options: Option<DeleteOptions>,
+        connection: Option<KubernetesConnectionName>,
+        authority: Option<RemoteMutationAuthority>,
     },
     #[serde(rename = "status")]
     Status {
@@ -246,7 +282,7 @@ pub enum KubernetesEventType {
     Warning,
 }
 
-#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct JsonPatchEntry {
     pub op: JsonPatchOperation,
@@ -255,7 +291,7 @@ pub struct JsonPatchEntry {
     pub from: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum JsonPatchOperation {
     Add,

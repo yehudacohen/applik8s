@@ -10,6 +10,7 @@ pub mod error;
 pub mod invocation;
 pub mod kube;
 pub mod payload;
+mod remote_authority;
 
 pub use applier::{AppliedOperationSummary, KubeOperationPlanApplier, validate_operation_plan};
 pub use engine::{KubeRuntimeBridge, component_model_engine};

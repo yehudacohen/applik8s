@@ -3,6 +3,8 @@
 // explicit for review instead of hiding it in loosely typed option bags.
 #![allow(clippy::result_large_err, clippy::too_many_arguments)]
 
+mod kubernetes_connection;
+
 use applik8s_runtime_bridge::{
     AppliedOperationSummary, KubeOperationPlanApplier, KubeRuntimeBridge, KubernetesHttpTransport,
     OperationProgress, RuntimeBridgeError, component_model_engine,
@@ -12,6 +14,7 @@ use applik8s_runtime_bridge::{
 };
 use applik8s_runtime_contract::{
     ApplyOwnership, FinalizerOperation, NormalizedOperationPlan, ObjectRef, Operation,
+    RemoteMutationAuthority,
 };
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -23,19 +26,25 @@ use chrono::{SecondsFormat, Utc};
 use flate2::read::GzDecoder;
 use futures::{FutureExt, StreamExt, future::join_all};
 use k8s_openapi::api::core::v1::Secret;
-use kube::Client;
 use kube::api::{Api, DynamicObject, ListParams};
+use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::core::dynamic::ApiResource;
 use kube::core::gvk::GroupVersionKind;
 use kube::runtime::controller::{Action, Controller};
 use kube::runtime::watcher;
+use kube::{Client, Config};
 use kube_lease_manager::{LeaseManagerBuilder, LeaseManagerError};
+use kubernetes_connection::{
+    ConnectionLeaseStore, KubernetesConnectionBinding, ResolvedConnectionLease,
+    same_connection_revision, valid_connection_alias, validate_endpoint_policy,
+};
 use opentelemetry::global::BoxedSpan;
 use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::trace::{Span as OtelSpan, Status as OtelStatus, Tracer};
 use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
+use secrecy::ExposeSecret;
 use semver::{Version, VersionReq};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -51,13 +60,14 @@ use std::time::Duration;
 use std::time::Instant;
 use thiserror::Error;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{Level, event};
 use tracing_subscriber::EnvFilter;
 
 const SUPPORTED_HANDLER_ABI: &str = "applik8s.handler/v1alpha1";
 const SUPPORTED_OPERATOR_MANIFEST_VERSION: &str = "applik8s.operator/v1alpha1";
+const KUBERNETES_CONNECTION_PROTOCOL: &str = "applik8s.kubernetes-connection/v1alpha1";
 static RECONCILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -425,6 +435,10 @@ pub enum OperatorHostError {
     Kubernetes(#[from] kube::Error),
     #[error("kubernetes configuration failed: {0}")]
     KubernetesConfiguration(String),
+    #[error(
+        "CONNECTION_BINDING_CHANGED: Kubernetes connection {alias} changed after handler observation"
+    )]
+    ConnectionBindingChanged { alias: String },
     #[error("leader election failed: {0}")]
     LeaderElection(#[from] LeaseManagerError),
     #[error("controller stopped while leadership was held")]
@@ -818,11 +832,21 @@ impl OperatorHost {
         });
         let kubernetes_read_manifest = bundle.manifest.clone();
         let kubernetes_read_client = self.bridge.client().clone();
+        let connection_leases: ConnectionLeaseStore =
+            Arc::new(AsyncMutex::new(std::collections::BTreeMap::new()));
+        let kubernetes_read_leases = Arc::clone(&connection_leases);
         let kubernetes_read_handler = Arc::new(move |request_json: String| {
             let manifest = kubernetes_read_manifest.clone();
             let client = kubernetes_read_client.clone();
+            let leases = Arc::clone(&kubernetes_read_leases);
             Box::pin(async move {
-                execute_kubernetes_read_request(&manifest, client, &request_json).await
+                execute_kubernetes_read_request_with_leases(
+                    &manifest,
+                    client,
+                    &request_json,
+                    leases,
+                )
+                .await
             }) as applik8s_runtime_bridge::KubernetesReadFuture
         });
         record_reconcile_otel_phase(&mut reconcile_span, "handler.invoke");
@@ -922,6 +946,7 @@ impl OperatorHost {
         {
             append_automatic_finalizer_removals(bundle, &handler_route, &object_json, &mut plan);
         }
+        scope_remote_management_identities(&mut plan, operator_name);
         record_reconcile_otel_phase(&mut reconcile_span, "plan.validate");
         if let Err(error) = validate_plan_status_subresources(bundle, &owner, &plan)
             .and_then(|_| validate_plan_finalizer_ownership(bundle, &handler_route, &plan))
@@ -984,6 +1009,14 @@ impl OperatorHost {
             return Err(error);
         }
         record_reconcile_otel_phase(&mut reconcile_span, "plan.validated");
+        applier = resolve_plan_connections(
+            applier,
+            &plan,
+            self.bridge.client().clone(),
+            bundle,
+            connection_leases,
+        )
+        .await?;
         record_reconcile_otel_phase(&mut reconcile_span, "operations.apply");
         let summary = match applier.apply_plan(&owner, &plan).await {
             Ok(summary) => {
@@ -1692,6 +1725,7 @@ fn redacted_operation(index: usize, operation: &Operation, owner: &ObjectRef) ->
             field_manager,
             force,
             ownership,
+            ..
         } => {
             let mut entry = serde_json::json!({
                 "index": index,
@@ -1717,14 +1751,14 @@ fn redacted_operation(index: usize, operation: &Operation, owner: &ObjectRef) ->
             }
             entry
         }
-        Operation::Patch { ref_, patch } => serde_json::json!({
+        Operation::Patch { ref_, patch, .. } => serde_json::json!({
             "index": index,
             "kind": "patch",
             "target": ref_,
             "patchCount": patch.len(),
             "patch": redacted_marker(),
         }),
-        Operation::Delete { ref_, options } => serde_json::json!({
+        Operation::Delete { ref_, options, .. } => serde_json::json!({
             "index": index,
             "kind": "delete",
             "target": ref_,
@@ -2190,6 +2224,34 @@ fn append_automatic_finalizer_removals(
     }
 }
 
+fn scope_remote_management_identities(plan: &mut NormalizedOperationPlan, operator_name: &str) {
+    for operation in &mut plan.operations {
+        let (connection, authority) = match operation {
+            Operation::Apply {
+                connection,
+                authority,
+                ..
+            }
+            | Operation::Patch {
+                connection,
+                authority,
+                ..
+            }
+            | Operation::Delete {
+                connection,
+                authority,
+                ..
+            } => (connection.as_deref(), authority.as_mut()),
+            _ => continue,
+        };
+        if let (Some(connection), Some(RemoteMutationAuthority::Managed { identity, .. })) =
+            (connection, authority)
+        {
+            *identity = format!("{operator_name}/{connection}/{identity}");
+        }
+    }
+}
+
 fn required_permissions(
     bundle: &LoadedOperatorBundle,
     owner: &ObjectRef,
@@ -2198,7 +2260,14 @@ fn required_permissions(
     let mut permissions = Vec::new();
     for operation in &plan.operations {
         match operation {
-            Operation::Apply { resource, .. } => {
+            Operation::Apply {
+                resource,
+                connection,
+                ..
+            } => {
+                if connection.is_some() {
+                    continue;
+                }
                 permissions.push(required_permission_for_resource(
                     bundle,
                     &resource.api_version,
@@ -2207,20 +2276,32 @@ fn required_permissions(
                     "patch",
                 )?)
             }
-            Operation::Patch { ref_, .. } => permissions.push(required_permission_for_resource(
-                bundle,
-                &ref_.api_version,
-                &ref_.kind,
-                None,
-                "patch",
-            )?),
-            Operation::Delete { ref_, .. } => permissions.push(required_permission_for_resource(
-                bundle,
-                &ref_.api_version,
-                &ref_.kind,
-                None,
-                "delete",
-            )?),
+            Operation::Patch {
+                ref_, connection, ..
+            } => {
+                if connection.is_none() {
+                    permissions.push(required_permission_for_resource(
+                        bundle,
+                        &ref_.api_version,
+                        &ref_.kind,
+                        None,
+                        "patch",
+                    )?);
+                }
+            }
+            Operation::Delete {
+                ref_, connection, ..
+            } => {
+                if connection.is_none() {
+                    permissions.push(required_permission_for_resource(
+                        bundle,
+                        &ref_.api_version,
+                        &ref_.kind,
+                        None,
+                        "delete",
+                    )?);
+                }
+            }
             Operation::Status { ref_, .. } => {
                 let target = ref_.as_ref().unwrap_or(owner);
                 permissions.push(required_permission_for_resource(
@@ -3200,6 +3281,7 @@ impl LoadedOperatorBundle {
         self.validate_manifest_version()?;
         self.validate_handler_abi()?;
         self.validate_unsupported_runtime_config()?;
+        self.validate_kubernetes_connection_contract()?;
         let required = self
             .manifest
             .pointer("/spec/requiresRuntime")
@@ -3228,6 +3310,44 @@ impl LoadedOperatorBundle {
                 actual: runtime_version.to_string(),
             })
         }
+    }
+
+    fn validate_kubernetes_connection_contract(&self) -> Result<(), OperatorHostError> {
+        let capabilities = self
+            .manifest
+            .pointer("/spec/capabilities")
+            .and_then(Value::as_object);
+        if let Some(capabilities) = capabilities {
+            for (alias, descriptor) in capabilities {
+                if descriptor.get("kind").and_then(Value::as_str) != Some("kubernetes") {
+                    continue;
+                }
+                let binding = connection_binding(&self.manifest, alias)?;
+                require_exact_connection_secret_permission(
+                    &self.manifest,
+                    &binding.kubeconfig_secret_ref.name,
+                )?;
+            }
+        }
+        if let Some(bindings) = self
+            .manifest
+            .pointer("/spec/kubernetesConnectionBindings")
+            .and_then(Value::as_object)
+        {
+            for alias in bindings.keys() {
+                if capabilities
+                    .and_then(|values| values.get(alias))
+                    .and_then(|value| value.get("kind"))
+                    .and_then(Value::as_str)
+                    != Some("kubernetes")
+                {
+                    return Err(OperatorHostError::KubernetesConfiguration(format!(
+                        "installation binding {alias} has no declared Kubernetes connection capability"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate_unsupported_runtime_config(&self) -> Result<(), OperatorHostError> {
@@ -4194,6 +4314,21 @@ pub async fn execute_kubernetes_read_request(
     client: Client,
     request_json: &str,
 ) -> Result<String, String> {
+    execute_kubernetes_read_request_with_leases(
+        manifest,
+        client,
+        request_json,
+        Arc::new(AsyncMutex::new(std::collections::BTreeMap::new())),
+    )
+    .await
+}
+
+async fn execute_kubernetes_read_request_with_leases(
+    manifest: &Value,
+    client: Client,
+    request_json: &str,
+    leases: ConnectionLeaseStore,
+) -> Result<String, String> {
     let request: Value = match serde_json::from_str(request_json) {
         Ok(request) => request,
         Err(error) => {
@@ -4203,7 +4338,7 @@ pub async fn execute_kubernetes_read_request(
             ));
         }
     };
-    match execute_kubernetes_read_value(manifest, client, &request).await {
+    match execute_kubernetes_read_value(manifest, client, &request, leases).await {
         Ok(value) => Ok(serde_json::json!({ "ok": true, "value": value }).to_string()),
         Err(message) => Ok(kubernetes_read_error_response(
             kubernetes_read_error_code(&message),
@@ -4213,7 +4348,21 @@ pub async fn execute_kubernetes_read_request(
 }
 
 fn kubernetes_read_error_code(message: &str) -> &'static str {
-    if message.contains("undeclared RBAC")
+    if message.contains("Kubernetes connection alias")
+        || message.contains("undeclared Kubernetes connection")
+    {
+        "KUBERNETES_CONNECTION_UNDECLARED"
+    } else if message.contains("missing installation binding") {
+        "KUBERNETES_CONNECTION_BINDING_MISSING"
+    } else if message.contains("permission envelope denies") {
+        "KUBERNETES_CONNECTION_PERMISSION_DENIED"
+    } else if message.contains("endpoint policy") || message.contains("TLS identity") {
+        "KUBERNETES_CONNECTION_ENDPOINT_REJECTED"
+    } else if message.contains("kubeconfig") {
+        "KUBERNETES_CONNECTION_KUBECONFIG_INVALID"
+    } else if message.contains("connection Secret") {
+        "KUBERNETES_CONNECTION_SECRET_INVALID"
+    } else if message.contains("undeclared RBAC")
         || message.contains("not declared by this operator")
         || message.contains("does not allow namespace")
     {
@@ -4229,6 +4378,7 @@ async fn execute_kubernetes_read_value(
     manifest: &Value,
     client: Client,
     request: &Value,
+    leases: ConnectionLeaseStore,
 ) -> Result<Value, String> {
     let operation = required_read_request_string(request, "operation")?;
     let api_version = required_read_request_string(request, "apiVersion")?;
@@ -4250,12 +4400,6 @@ async fn execute_kubernetes_read_value(
         resource: plural.clone(),
         verb: verb.to_string(),
     };
-    if !manifest_allows_permission(manifest, &required) {
-        return Err(format!(
-            "Kubernetes read requires undeclared RBAC permission: {}/{}/{}.",
-            required.api_group, required.resource, required.verb
-        ));
-    }
     let namespace = query.get("namespace").and_then(Value::as_str);
     if scope == "Namespaced" && namespace.is_none() {
         return Err(format!(
@@ -4267,8 +4411,56 @@ async fn execute_kubernetes_read_value(
             "Kubernetes read for cluster-scoped resource {api_version}/{kind} must not set query.namespace."
         ));
     }
-    validate_manifest_read_resource(manifest, &api_version, &kind, &plural, &scope, namespace)?;
-
+    let connection_alias = request.get("connection").and_then(Value::as_str);
+    validate_manifest_read_resource(
+        manifest,
+        &api_version,
+        &kind,
+        &plural,
+        &scope,
+        namespace,
+        connection_alias.is_some(),
+    )?;
+    let requested_name = query.get("name").and_then(Value::as_str);
+    let client = match request.get("connection") {
+        Some(Value::String(alias)) => {
+            if request.get("protocol").and_then(Value::as_str)
+                != Some(KUBERNETES_CONNECTION_PROTOCOL)
+            {
+                return Err(
+                    "Connection-scoped Kubernetes read requires the versioned connection protocol."
+                        .to_string(),
+                );
+            }
+            if operation == "list"
+                && query
+                    .get("limit")
+                    .and_then(Value::as_u64)
+                    .is_none_or(|limit| limit == 0 || limit > 500)
+            {
+                return Err("Connection-scoped Kubernetes list requires query.limit between 1 and 500 for bounded pagination.".to_string());
+            }
+            require_connection_permission(manifest, alias, &required, namespace, requested_name)?;
+            resolve_invocation_connection_lease(manifest, client, alias, leases)
+                .await
+                .map_err(|error| {
+                    format!("Kubernetes connection resolution failed for alias {alias}: {error}")
+                })?
+                .client
+        }
+        Some(value) if !value.is_null() => {
+            return Err("Kubernetes connection must be a declared logical alias.".to_string());
+        }
+        _ => {
+            if !manifest_allows_permission(manifest, &required) {
+                return Err(format!(
+                    "Kubernetes read requires undeclared RBAC permission: {}/{}/{}.",
+                    required.api_group, required.resource, required.verb
+                ));
+            }
+            client
+        }
+    };
     let api_resource = api_resource_for_read(&api_version, &kind, &plural)?;
     let api = match namespace {
         Some(namespace) => Api::<DynamicObject>::namespaced_with(client, namespace, &api_resource),
@@ -4340,6 +4532,484 @@ async fn execute_kubernetes_read_value(
     }))
 }
 
+async fn resolve_plan_connections(
+    mut applier: KubeOperationPlanApplier,
+    plan: &NormalizedOperationPlan,
+    local_client: Client,
+    bundle: &LoadedOperatorBundle,
+    leases: ConnectionLeaseStore,
+) -> Result<KubeOperationPlanApplier, OperatorHostError> {
+    let connections = validate_connection_plan_permissions(bundle, plan)?;
+    if connections.is_empty() {
+        return Ok(applier);
+    }
+    if connections.len() > 1 {
+        return Err(OperatorHostError::KubernetesConfiguration(
+            "a v1 mutation plan may address at most one non-local Kubernetes connection"
+                .to_string(),
+        ));
+    }
+    for alias in connections {
+        let current = load_connection_lease(&bundle.manifest, local_client.clone(), &alias).await?;
+        let mut pinned = leases.lock().await;
+        let lease = if let Some(lease) = pinned.get(&alias) {
+            if !same_connection_revision(lease, &current) {
+                return Err(OperatorHostError::ConnectionBindingChanged { alias });
+            }
+            lease.clone()
+        } else {
+            pinned.insert(alias.clone(), current.clone());
+            current
+        };
+        applier = applier.with_connection_client(alias, lease.client);
+    }
+    Ok(applier)
+}
+
+fn validate_connection_plan_permissions(
+    bundle: &LoadedOperatorBundle,
+    plan: &NormalizedOperationPlan,
+) -> Result<std::collections::BTreeSet<String>, OperatorHostError> {
+    let mut connections = std::collections::BTreeSet::new();
+    for operation in &plan.operations {
+        let (connection, api_version, kind, namespace, name, verbs): (_, _, _, _, _, &[&str]) =
+            match operation {
+                Operation::Apply {
+                    resource,
+                    connection,
+                    ..
+                } => (
+                    connection.as_ref(),
+                    resource.api_version.as_str(),
+                    resource.kind.as_str(),
+                    resource.metadata.namespace.as_deref(),
+                    Some(resource.metadata.name.as_str()),
+                    &["get", "create", "patch"],
+                ),
+                Operation::Patch {
+                    ref_, connection, ..
+                } => (
+                    connection.as_ref(),
+                    ref_.api_version.as_str(),
+                    ref_.kind.as_str(),
+                    ref_.namespace.as_deref(),
+                    Some(ref_.name.as_str()),
+                    &["get", "patch"],
+                ),
+                Operation::Delete {
+                    ref_, connection, ..
+                } => (
+                    connection.as_ref(),
+                    ref_.api_version.as_str(),
+                    ref_.kind.as_str(),
+                    ref_.namespace.as_deref(),
+                    Some(ref_.name.as_str()),
+                    &["get", "delete"],
+                ),
+                _ => continue,
+            };
+        if let Some(alias) = connection {
+            for verb in verbs {
+                let required =
+                    required_permission_for_resource(bundle, api_version, kind, None, verb)?;
+                require_connection_permission(&bundle.manifest, alias, &required, namespace, name)
+                    .map_err(OperatorHostError::KubernetesConfiguration)?;
+            }
+            connections.insert(alias.clone());
+        }
+    }
+    if connections.len() > 1 {
+        return Err(OperatorHostError::KubernetesConfiguration(
+            "a v1 mutation plan may address at most one non-local Kubernetes connection"
+                .to_string(),
+        ));
+    }
+    Ok(connections)
+}
+
+async fn resolve_invocation_connection_lease(
+    manifest: &Value,
+    local_client: Client,
+    alias: &str,
+    leases: ConnectionLeaseStore,
+) -> Result<ResolvedConnectionLease, OperatorHostError> {
+    let mut pinned = leases.lock().await;
+    if let Some(lease) = pinned.get(alias).cloned() {
+        return Ok(lease);
+    }
+    let lease = load_connection_lease(manifest, local_client, alias).await?;
+    pinned.insert(alias.to_string(), lease.clone());
+    Ok(lease)
+}
+
+async fn load_connection_lease(
+    manifest: &Value,
+    local_client: Client,
+    alias: &str,
+) -> Result<ResolvedConnectionLease, OperatorHostError> {
+    let binding = connection_binding(manifest, alias)?;
+    let binding_revision = serde_json::to_string(&binding).map_err(OperatorHostError::Json)?;
+    let secret_ref = &binding.kubeconfig_secret_ref;
+    if secret_ref.name.trim().is_empty()
+        || secret_ref.namespace.trim().is_empty()
+        || secret_ref.key.trim().is_empty()
+    {
+        return Err(OperatorHostError::KubernetesConfiguration(
+            "connection kubeconfig Secret name, namespace, and key must be non-empty".to_string(),
+        ));
+    }
+    if default_watch_namespace(manifest).as_deref() != Some(secret_ref.namespace.as_str()) {
+        return Err(OperatorHostError::KubernetesConfiguration(format!(
+            "connection Secret for alias {alias} must be in the operator namespace"
+        )));
+    }
+    require_exact_connection_secret_permission(manifest, &secret_ref.name)?;
+    let secrets = Api::<Secret>::namespaced(local_client, &secret_ref.namespace);
+    let secret = secrets.get(&secret_ref.name).await?;
+    if secret.type_.as_deref() != Some("applik8s.dev/kubeconfig") {
+        return Err(OperatorHostError::KubernetesConfiguration(format!(
+            "connection Secret {}/{} must have type applik8s.dev/kubeconfig",
+            secret_ref.namespace, secret_ref.name,
+        )));
+    }
+    let kubeconfig_bytes = secret
+        .data
+        .as_ref()
+        .and_then(|data| data.get(&secret_ref.key))
+        .ok_or_else(|| {
+            OperatorHostError::KubernetesConfiguration(format!(
+                "connection Secret {}/{} does not contain key {}",
+                secret_ref.namespace, secret_ref.name, secret_ref.key,
+            ))
+        })?;
+    let kubeconfig_text = std::str::from_utf8(&kubeconfig_bytes.0).map_err(|_| {
+        OperatorHostError::KubernetesConfiguration(
+            "connection kubeconfig is not valid UTF-8".to_string(),
+        )
+    })?;
+    let kubeconfig = Kubeconfig::from_yaml(kubeconfig_text).map_err(|error| {
+        OperatorHostError::KubernetesConfiguration(format!(
+            "connection kubeconfig is invalid: {error}"
+        ))
+    })?;
+    validate_embedded_kubeconfig(&kubeconfig, &binding.context)?;
+    let options = KubeConfigOptions {
+        context: Some(binding.context.clone()),
+        ..KubeConfigOptions::default()
+    };
+    let mut config = Config::from_custom_kubeconfig(kubeconfig, &options)
+        .await
+        .map_err(|error| {
+            OperatorHostError::KubernetesConfiguration(format!(
+                "connection kubeconfig could not be loaded: {error}"
+            ))
+        })?;
+    if config.cluster_url.scheme_str() != Some("https") {
+        return Err(OperatorHostError::KubernetesConfiguration(
+            "connection Kubernetes API endpoint must use HTTPS".to_string(),
+        ));
+    }
+    validate_endpoint_policy(&config, &binding.endpoint_policy)?;
+    config.connect_timeout = Some(Duration::from_secs(10));
+    config.read_timeout = Some(Duration::from_secs(30));
+    config.write_timeout = Some(Duration::from_secs(30));
+    let secret_uid = secret.metadata.uid.clone().ok_or_else(|| {
+        OperatorHostError::KubernetesConfiguration(
+            "connection Secret is missing metadata.uid".to_string(),
+        )
+    })?;
+    let secret_resource_version = secret.metadata.resource_version.clone().ok_or_else(|| {
+        OperatorHostError::KubernetesConfiguration(
+            "connection Secret is missing metadata.resourceVersion".to_string(),
+        )
+    })?;
+    let client = Client::try_from(config).map_err(OperatorHostError::from)?;
+    Ok(ResolvedConnectionLease {
+        alias: alias.to_string(),
+        client,
+        connection_identity: format!("{alias}:{secret_uid}"),
+        secret_uid,
+        secret_resource_version,
+        context: binding.context,
+        endpoint_policy_version: binding.endpoint_policy.version,
+        binding_revision,
+    })
+}
+
+fn validate_embedded_kubeconfig(
+    kubeconfig: &Kubeconfig,
+    selected_context: &str,
+) -> Result<(), OperatorHostError> {
+    if kubeconfig.contexts.len() != 1
+        || kubeconfig.clusters.len() != 1
+        || kubeconfig.auth_infos.len() != 1
+    {
+        return Err(OperatorHostError::KubernetesConfiguration(
+            "connection kubeconfig must contain exactly one context, cluster, and user".to_string(),
+        ));
+    }
+    if kubeconfig.contexts[0].name != selected_context
+        || kubeconfig
+            .current_context
+            .as_deref()
+            .is_some_and(|current| current != selected_context)
+        || !kubeconfig.other.is_empty()
+        || kubeconfig
+            .extensions
+            .as_ref()
+            .is_some_and(|values| !values.is_empty())
+    {
+        return Err(OperatorHostError::KubernetesConfiguration(
+            "connection kubeconfig contains an unsupported context or top-level field".to_string(),
+        ));
+    }
+    let context_value = kubeconfig.contexts[0].context.as_ref().ok_or_else(|| {
+        OperatorHostError::KubernetesConfiguration(
+            "connection kubeconfig selected context is empty".to_string(),
+        )
+    })?;
+    if context_value.cluster != kubeconfig.clusters[0].name
+        || context_value.user.as_deref() != Some(kubeconfig.auth_infos[0].name.as_str())
+    {
+        return Err(OperatorHostError::KubernetesConfiguration(
+            "connection kubeconfig selected context must reference its sole cluster and user"
+                .to_string(),
+        ));
+    }
+    for cluster in &kubeconfig.clusters {
+        if cluster.cluster.as_ref().is_none_or(|cluster| {
+            cluster.server.as_deref().is_none_or(str::is_empty)
+                || cluster
+                    .certificate_authority_data
+                    .as_deref()
+                    .is_none_or(str::is_empty)
+        }) {
+            return Err(OperatorHostError::KubernetesConfiguration(
+                "connection kubeconfig cluster must embed server and certificate-authority-data"
+                    .to_string(),
+            ));
+        }
+        if !cluster.other.is_empty()
+            || cluster.cluster.as_ref().is_some_and(|cluster| {
+                cluster.certificate_authority.is_some()
+                    || cluster.proxy_url.is_some()
+                    || cluster.insecure_skip_tls_verify.unwrap_or(false)
+                    || cluster.tls_server_name.is_some()
+                    || !cluster.other.is_empty()
+                    || cluster
+                        .extensions
+                        .as_ref()
+                        .is_some_and(|values| !values.is_empty())
+            })
+        {
+            return Err(OperatorHostError::KubernetesConfiguration(
+                "connection kubeconfig cluster uses a forbidden file, proxy, TLS override, extension, or unknown field".to_string(),
+            ));
+        }
+    }
+    for auth in &kubeconfig.auth_infos {
+        if auth.auth_info.as_ref().is_none_or(|auth_info| {
+            let token = auth_info
+                .token
+                .as_ref()
+                .is_some_and(|value| !value.expose_secret().trim().is_empty());
+            let certificate = auth_info
+                .client_certificate_data
+                .as_deref()
+                .is_some_and(|value| !value.is_empty());
+            let key = auth_info
+                .client_key_data
+                .as_ref()
+                .is_some_and(|value| !value.expose_secret().trim().is_empty());
+            let supported = (token && !certificate && !key) || (!token && certificate && key);
+            !supported
+        }) {
+            return Err(OperatorHostError::KubernetesConfiguration(
+                "connection kubeconfig user must use exactly one inline bearer token or client certificate/key pair".to_string(),
+            ));
+        }
+        if !auth.other.is_empty()
+            || auth.auth_info.as_ref().is_some_and(|auth_info| {
+                auth_info.client_certificate.is_some()
+                    || auth_info.client_key.is_some()
+                    || auth_info.token_file.is_some()
+                    || auth_info.exec.is_some()
+                    || auth_info.auth_provider.is_some()
+                    || auth_info.username.is_some()
+                    || auth_info.password.is_some()
+                    || auth_info.impersonate.is_some()
+                    || auth_info.impersonate_uid.is_some()
+                    || auth_info
+                        .impersonate_groups
+                        .as_ref()
+                        .is_some_and(|values| !values.is_empty())
+                    || auth_info
+                        .impersonate_user_extra
+                        .as_ref()
+                        .is_some_and(|values| !values.is_empty())
+                    || auth_info
+                        .extensions
+                        .as_ref()
+                        .is_some_and(|values| !values.is_empty())
+                    || !auth_info.other.is_empty()
+            })
+        {
+            return Err(OperatorHostError::KubernetesConfiguration(
+                "connection kubeconfig user uses a forbidden file, plugin, basic-auth, impersonation, extension, or unknown field".to_string(),
+            ));
+        }
+    }
+    for context in &kubeconfig.contexts {
+        if !context.other.is_empty()
+            || context.context.as_ref().is_some_and(|value| {
+                !value.other.is_empty()
+                    || value
+                        .extensions
+                        .as_ref()
+                        .is_some_and(|values| !values.is_empty())
+            })
+        {
+            return Err(OperatorHostError::KubernetesConfiguration(
+                "connection kubeconfig context uses an extension or unknown field".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn connection_binding(
+    manifest: &Value,
+    alias: &str,
+) -> Result<KubernetesConnectionBinding, OperatorHostError> {
+    if !valid_connection_alias(alias) {
+        return Err(OperatorHostError::KubernetesConfiguration(
+            "Kubernetes connection alias must be DNS-label-like".to_string(),
+        ));
+    }
+    let descriptor = manifest
+        .pointer(&format!("/spec/capabilities/{alias}"))
+        .ok_or_else(|| {
+            OperatorHostError::KubernetesConfiguration(format!(
+                "undeclared Kubernetes connection alias {alias}"
+            ))
+        })?;
+    if descriptor.get("kind").and_then(Value::as_str) != Some("kubernetes")
+        || descriptor
+            .pointer("/execution/protocol")
+            .and_then(Value::as_str)
+            != Some(KUBERNETES_CONNECTION_PROTOCOL)
+    {
+        return Err(OperatorHostError::KubernetesConfiguration(format!(
+            "capability {alias} is not a versioned Kubernetes connection"
+        )));
+    }
+    let binding_value = manifest
+        .pointer(&format!("/spec/kubernetesConnectionBindings/{alias}"))
+        .ok_or_else(|| {
+            OperatorHostError::KubernetesConfiguration(format!(
+                "missing installation binding for Kubernetes connection {alias}"
+            ))
+        })?;
+    let binding: KubernetesConnectionBinding = serde_json::from_value(binding_value.clone())
+        .map_err(|error| {
+            OperatorHostError::KubernetesConfiguration(format!(
+                "invalid installation binding for Kubernetes connection {alias}: {error}"
+            ))
+        })?;
+    let required_policy = descriptor
+        .pointer("/kubernetesConnection/endpointPolicy")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if required_policy.is_empty() || binding.endpoint_policy.name != required_policy {
+        return Err(OperatorHostError::KubernetesConfiguration(format!(
+            "Kubernetes connection {alias} binding does not satisfy its declared endpoint policy"
+        )));
+    }
+    Ok(binding)
+}
+
+fn require_exact_connection_secret_permission(
+    manifest: &Value,
+    secret_name: &str,
+) -> Result<(), OperatorHostError> {
+    let required = RequiredPermission {
+        api_group: String::new(),
+        resource: "secrets".to_string(),
+        verb: "get".to_string(),
+    };
+    let allowed = manifest
+        .pointer("/spec/permissions")
+        .and_then(Value::as_array)
+        .is_some_and(|rules| {
+            rules.iter().any(|rule| {
+                rule_allows_permission(rule, &required)
+                    && string_array_contains(rule.get("resourceNames"), secret_name)
+            })
+        });
+    if allowed {
+        Ok(())
+    } else {
+        Err(OperatorHostError::KubernetesConfiguration(format!(
+            "connection Secret {secret_name} requires exact /secrets/get RBAC through resourceNames"
+        )))
+    }
+}
+
+fn require_connection_permission(
+    manifest: &Value,
+    alias: &str,
+    required: &RequiredPermission,
+    namespace: Option<&str>,
+    resource_name: Option<&str>,
+) -> Result<(), String> {
+    if !valid_connection_alias(alias) {
+        return Err("Kubernetes connection alias must be DNS-label-like".to_string());
+    }
+    let descriptor = manifest
+        .pointer(&format!("/spec/capabilities/{alias}"))
+        .ok_or_else(|| {
+            format!("Kubernetes connection alias {alias} is not declared by this operator")
+        })?;
+    if descriptor.get("kind").and_then(Value::as_str) != Some("kubernetes") {
+        return Err(format!("Capability {alias} is not a Kubernetes connection"));
+    }
+    let allowed = descriptor
+        .get("permissions")
+        .and_then(Value::as_array)
+        .is_some_and(|rules| {
+            rules.iter().any(|rule| {
+                if !rule_allows_permission(rule, required) {
+                    return false;
+                }
+                let namespace_allowed = match namespace {
+                    Some(namespace) => {
+                        rule.get("namespaces").and_then(Value::as_str) == Some("all")
+                            || string_array_contains(rule.get("namespaces"), namespace)
+                    }
+                    None => rule.get("namespaces").is_none(),
+                };
+                let resource_name_allowed = match rule.get("resourceNames") {
+                    None => true,
+                    Some(_) => resource_name
+                        .is_some_and(|name| string_array_contains(rule.get("resourceNames"), name)),
+                };
+                namespace_allowed && resource_name_allowed
+            })
+        });
+    if allowed {
+        Ok(())
+    } else {
+        Err(format!(
+            "Kubernetes connection {alias} permission envelope denies {}/{}/{} namespace={} name={}",
+            required.api_group,
+            required.resource,
+            required.verb,
+            namespace.unwrap_or("<cluster>"),
+            resource_name.unwrap_or("<list>"),
+        ))
+    }
+}
+
 fn validate_manifest_read_resource(
     manifest: &Value,
     api_version: &str,
@@ -4347,6 +5017,7 @@ fn validate_manifest_read_resource(
     plural: &str,
     scope: &str,
     namespace: Option<&str>,
+    connection_scoped: bool,
 ) -> Result<(), String> {
     let matches_identity = |resource: &Value| {
         resource.get("apiVersion").and_then(Value::as_str) == Some(api_version)
@@ -4367,6 +5038,25 @@ fn validate_manifest_read_resource(
         .ok_or_else(|| {
             format!("Kubernetes read for {api_version}/{kind} is not declared by this operator.")
         })?;
+    let access = resource
+        .get("access")
+        .and_then(Value::as_str)
+        .unwrap_or("local");
+    let access_allowed = if connection_scoped {
+        access == "connection" || access == "both"
+    } else {
+        access == "local" || access == "both"
+    };
+    if !access_allowed {
+        let requested = if connection_scoped {
+            "connection"
+        } else {
+            "local"
+        };
+        return Err(format!(
+            "Kubernetes read for {api_version}/{kind} is not declared for {requested} access."
+        ));
+    }
     if resource.get("scope").and_then(Value::as_str) != Some(scope) {
         return Err(format!(
             "Kubernetes read for {api_version}/{kind} requested scope {scope}, which does not match its declaration."
@@ -5778,4 +6468,273 @@ fn action_for_plan(plan: &applik8s_runtime_contract::NormalizedOperationPlan) ->
         }
     }
     Action::await_change()
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+    use crate::kubernetes_connection::KubernetesEndpointPolicy;
+
+    #[test]
+    fn connection_access_requires_exact_secret_get_permission() {
+        let denied = serde_json::json!({ "spec": { "permissions": [] } });
+        assert!(require_exact_connection_secret_permission(&denied, "remote-cluster").is_err());
+
+        let allowed = serde_json::json!({
+            "spec": {
+                "permissions": [{
+                    "apiGroups": [""],
+                    "resources": ["secrets"],
+                    "verbs": ["get"],
+                    "resourceNames": ["remote-cluster"]
+                }]
+            }
+        });
+        require_exact_connection_secret_permission(&allowed, "remote-cluster")
+            .expect("exact Secret get permission permits connection resolution");
+    }
+
+    #[test]
+    fn connection_kubeconfig_accepts_embedded_material_and_rejects_host_credentials() {
+        let embedded = Kubeconfig::from_yaml(
+            r#"
+apiVersion: v1
+kind: Config
+clusters:
+- name: destination
+  cluster:
+    server: https://destination.example.test
+    certificate-authority-data: Y2E=
+users:
+- name: operator
+  user:
+    token: embedded-token
+contexts:
+- name: destination
+  context:
+    cluster: destination
+    user: operator
+current-context: destination
+"#,
+        )
+        .expect("embedded kubeconfig parses");
+        validate_embedded_kubeconfig(&embedded, "destination")
+            .expect("embedded material is accepted");
+
+        let file_backed = Kubeconfig::from_yaml(
+            r#"
+apiVersion: v1
+kind: Config
+clusters:
+- name: destination
+  cluster:
+    server: https://destination.example.test
+    certificate-authority: /var/run/foreign-ca.crt
+users:
+- name: operator
+  user:
+    exec:
+      apiVersion: client.authentication.k8s.io/v1
+      command: foreign-credential-helper
+contexts:
+- name: destination
+  context:
+    cluster: destination
+    user: operator
+current-context: destination
+"#,
+        )
+        .expect("file-backed kubeconfig parses");
+        let error = validate_embedded_kubeconfig(&file_backed, "destination")
+            .expect_err("host file and exec credentials must be rejected");
+        assert!(
+            error.to_string().contains("certificate-authority-data")
+                || error.to_string().contains("forbidden file")
+        );
+
+        let empty_token = Kubeconfig::from_yaml(
+            r#"
+apiVersion: v1
+kind: Config
+clusters:
+- name: destination
+  cluster: { server: https://destination.example.test, certificate-authority-data: Y2E= }
+users:
+- name: operator
+  user: { token: "" }
+contexts:
+- name: destination
+  context: { cluster: destination, user: operator }
+current-context: destination
+"#,
+        )
+        .expect("empty-token kubeconfig parses");
+        assert!(validate_embedded_kubeconfig(&empty_token, "destination").is_err());
+
+        let empty_key = Kubeconfig::from_yaml(
+            r#"
+apiVersion: v1
+kind: Config
+clusters:
+- name: destination
+  cluster: { server: https://destination.example.test, certificate-authority-data: Y2E= }
+users:
+- name: operator
+  user: { client-certificate-data: Y2VydA==, client-key-data: "" }
+contexts:
+- name: destination
+  context: { cluster: destination, user: operator }
+current-context: destination
+"#,
+        )
+        .expect("empty-key kubeconfig parses");
+        assert!(validate_embedded_kubeconfig(&empty_key, "destination").is_err());
+    }
+
+    #[test]
+    fn connection_permission_envelope_constrains_namespace_and_resource_name() {
+        let manifest = serde_json::json!({
+            "spec": { "capabilities": { "destination": {
+                "kind": "kubernetes",
+                "permissions": [{
+                    "apiGroups": ["apps"], "resources": ["deployments"], "verbs": ["patch"],
+                    "namespaces": ["payments"], "resourceNames": ["api"]
+                }]
+            }}}
+        });
+        let required = RequiredPermission {
+            api_group: "apps".to_string(),
+            resource: "deployments".to_string(),
+            verb: "patch".to_string(),
+        };
+        require_connection_permission(
+            &manifest,
+            "destination",
+            &required,
+            Some("payments"),
+            Some("api"),
+        )
+        .expect("declared namespace and resource name are allowed");
+        assert!(
+            require_connection_permission(
+                &manifest,
+                "destination",
+                &required,
+                Some("other"),
+                Some("api")
+            )
+            .is_err()
+        );
+        assert!(
+            require_connection_permission(
+                &manifest,
+                "destination",
+                &required,
+                Some("payments"),
+                Some("replacement")
+            )
+            .is_err()
+        );
+        assert!(
+            require_connection_permission(
+                &manifest,
+                "undeclared",
+                &required,
+                Some("payments"),
+                Some("api")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn connection_plan_permission_envelope_covers_implicit_apply_verbs() {
+        let bundle_with_verbs = |verbs: Vec<&str>| LoadedOperatorBundle {
+            manifest: serde_json::json!({
+                "spec": {
+                    "readResources": [{
+                        "apiVersion": "apps/v1", "kind": "Deployment", "plural": "deployments",
+                        "scope": "Namespaced", "namespaces": ["payments"], "access": "connection"
+                    }],
+                    "capabilities": { "destination": {
+                        "kind": "kubernetes",
+                        "permissions": [{
+                            "apiGroups": ["apps"], "resources": ["deployments"], "verbs": verbs,
+                            "namespaces": ["payments"]
+                        }]
+                    }}
+                }
+            }),
+            handler_wasm: vec![],
+        };
+        let plan = NormalizedOperationPlan {
+            operations: vec![Operation::Apply {
+                resource: applik8s_runtime_contract::KubernetesObject {
+                    api_version: "apps/v1".to_string(),
+                    kind: "Deployment".to_string(),
+                    metadata: applik8s_runtime_contract::ObjectMeta {
+                        name: "api".to_string(),
+                        namespace: Some("payments".to_string()),
+                        uid: None,
+                        resource_version: None,
+                        generation: None,
+                        labels: None,
+                        annotations: None,
+                        finalizers: None,
+                        deletion_timestamp: None,
+                        creation_timestamp: None,
+                        extra: Default::default(),
+                    },
+                    spec: None,
+                    status: None,
+                    extra: Default::default(),
+                },
+                field_manager: None,
+                force: None,
+                ownership: Some(ApplyOwnership::None),
+                connection: Some("destination".to_string()),
+                authority: Some(RemoteMutationAuthority::Managed {
+                    identity: "imagejob/hero/deployment".to_string(),
+                    source_uid: "source-uid".to_string(),
+                }),
+            }],
+            diagnostics: None,
+        };
+
+        let denied =
+            validate_connection_plan_permissions(&bundle_with_verbs(vec!["get", "patch"]), &plan)
+                .expect_err(
+                    "managed apply must declare create even when the object may already exist",
+                );
+        assert!(denied.to_string().contains("create"));
+
+        validate_connection_plan_permissions(
+            &bundle_with_verbs(vec!["get", "create", "patch"]),
+            &plan,
+        )
+        .expect("all implementation verbs are declared");
+    }
+
+    #[test]
+    fn endpoint_policy_fails_closed_for_host_port_and_tls_identity() {
+        let config = Config::new(
+            "https://destination.example.test:6443"
+                .parse()
+                .expect("URI parses"),
+        );
+        let policy = KubernetesEndpointPolicy {
+            name: "workload-cluster-apis".to_string(),
+            version: "1".to_string(),
+            scheme: "https".to_string(),
+            hosts: vec!["destination.example.test".to_string()],
+            ports: vec![6443],
+            allowed_cidrs: vec![],
+            tls_server_names: vec!["destination.example.test".to_string()],
+            redirects: "deny".to_string(),
+        };
+        validate_endpoint_policy(&config, &policy).expect("matching endpoint policy is accepted");
+        let mut denied = policy.clone();
+        denied.hosts = vec!["other.example.test".to_string()];
+        assert!(validate_endpoint_policy(&config, &denied).is_err());
+    }
 }

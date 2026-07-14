@@ -71,21 +71,39 @@ export const publishedHostSmoke = sdk.operator({
 
   const manifest = JSON.parse(await readFile(join(outDir, 'operator-manifest.json'), 'utf8'));
   const baseImage = imageRefString(manifest.spec?.container?.baseImage);
-  if (!/^ghcr\.io\/yehudacohen\/applik8s-operator-host:v\d+\.\d+\.\d+@sha256:[a-f0-9]{64}$/.test(baseImage)) {
-    throw new Error(`Published compiler ${version} emitted an unpinned or unexpected operator-host image: ${baseImage || '<missing>'}.`);
+  if (baseImage !== `ghcr.io/yehudacohen/applik8s-operator-host:v${version}`) {
+    throw new Error(`Published compiler ${version} emitted an unexpected operator-host image: ${baseImage || '<missing>'}.`);
   }
   const dockerfile = await readFile(join(outDir, 'Dockerfile.applik8s-runtime'), 'utf8');
   if (!dockerfile.startsWith(`ARG APPLIK8S_BASE_IMAGE=${baseImage}\nFROM \${APPLIK8S_BASE_IMAGE}\n`)) {
     throw new Error(`Generated Dockerfile does not default to manifest base image ${baseImage}.`);
   }
-  await run('docker', ['pull', baseImage], { cwd: workDir, timeout: 300_000 });
+  const buildBaseImage = candidate
+    ? process.env.APPLIK8S_CANDIDATE_HOST_IMAGE ?? 'ghcr.io/applik8s/applik8s-operator-host:dev'
+    : baseImage;
+  let resolvedHost;
+  if (candidate && !process.env.APPLIK8S_CANDIDATE_HOST_IMAGE) {
+    await run('docker', ['build', '--file', join(root, 'Dockerfile.operator-host'), '--tag', buildBaseImage, root], { cwd: root, timeout: 600_000 });
+    resolvedHost = (await run('docker', ['image', 'inspect', buildBaseImage, '--format', '{{.Id}}'], { cwd: workDir })).stdout.trim();
+  } else {
+    await run('docker', ['pull', buildBaseImage], { cwd: workDir, timeout: 300_000 });
+    const inspected = await run('docker', ['image', 'inspect', buildBaseImage, '--format', '{{json .RepoDigests}}'], { cwd: workDir });
+    const repoDigests = JSON.parse(inspected.stdout);
+    const expectedDigest = candidate
+      ? /@sha256:[a-f0-9]{64}$/
+      : /^ghcr\.io\/yehudacohen\/applik8s-operator-host@sha256:[a-f0-9]{64}$/;
+    resolvedHost = Array.isArray(repoDigests)
+      ? repoDigests.find((value) => expectedDigest.test(value))
+      : undefined;
+    if (!resolvedHost) throw new Error(`Published host ${buildBaseImage} did not resolve to an immutable public digest.`);
+  }
 
   const operatorImage = imageRefString(manifest.spec?.container?.image);
   if (!operatorImage) throw new Error('Published compiler did not emit an operator image reference.');
-  await run('docker', ['build', '--file', join(outDir, 'Dockerfile.applik8s-runtime'), '--tag', operatorImage, outDir], { cwd: workDir, timeout: 300_000 });
+  await run('docker', ['build', '--build-arg', `APPLIK8S_BASE_IMAGE=${buildBaseImage}`, '--file', join(outDir, 'Dockerfile.applik8s-runtime'), '--tag', operatorImage, outDir], { cwd: workDir, timeout: 300_000 });
 
   if (buildOnly) {
-    console.log(`${candidate ? 'Packed candidate' : 'Published'} Applik8s ${version} clean-install build smoke passed with ${baseImage}.`);
+    console.log(`${candidate ? 'Packed candidate' : 'Published'} Applik8s ${version} clean-install build smoke passed with declared ${baseImage} and tested ${buildBaseImage} (${resolvedHost}).`);
     process.exitCode = 0;
   } else {
     await cleanCluster();
@@ -107,7 +125,7 @@ spec: {}
     await run('kubectl', ['apply', '--server-side', '--field-manager=applik8s-release-smoke', '--filename', instancePath]);
     await run('kubectl', ['wait', 'work/proof', '--namespace', namespace, '--for=jsonpath={.status.phase}=Ready', '--timeout=180s']);
 
-    console.log(`${candidate ? 'Packed candidate' : 'Published'} Applik8s ${version} clean-install smoke passed on ${context} with ${baseImage}.`);
+    console.log(`${candidate ? 'Packed candidate' : 'Published'} Applik8s ${version} clean-install smoke passed on ${context} with declared ${baseImage} and tested ${buildBaseImage} (${resolvedHost}).`);
   }
 } catch (error) {
   const diagnostics = contextValidated ? await Promise.allSettled([
