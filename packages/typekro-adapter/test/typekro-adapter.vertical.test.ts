@@ -363,6 +363,7 @@ describe('TypeKro adapter operation targets', () => {
 
       expect(instance.crdFactories.imageJob).toBeTypeOf('function');
       expect(String(deploymentSpec?.replicas)).toMatch(/schema.*spec\.replicas/);
+      expect(deploymentSpec?.template?.spec?.containers?.[0]?.readinessProbe?.httpGet).toEqual({ path: '/healthz', port: 'health' });
       expect(deploymentSpec?.template?.spec?.containers?.[0]?.env).toContainEqual({ name: 'APPLIK8S_LEADER_ELECTION_IDENTITY', valueFrom: { fieldRef: { fieldPath: 'metadata.name' } } });
       expect(role?.rules).toContainEqual({ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['get', 'update', 'patch'], resourceNames: ['image-pipeline'] });
       expect(role?.rules).toContainEqual({ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['create'] });

@@ -19,9 +19,13 @@ export interface SecondaryWatchRegistration {
   readonly source: Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>;
   readonly target: Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>;
   readonly watch?: ResourceWatchAddress;
-  /** Explicit bounded fan-out. Target instances are listed and reconciled when the source changes. */
-  readonly mapper: { readonly mode: 'all'; readonly namespace?: 'source' | 'operator' | 'all' };
+  readonly mapper: SecondaryWatchMapper;
 }
+export type SecondaryWatchMapper =
+  /** Explicit bounded fan-out. Target instances are listed and reconciled when the source changes. */
+  | { readonly mode: 'all'; readonly namespace?: 'source' | 'operator' | 'all' }
+  /** Exact fan-out. One source metadata value names the one owned target to reconcile. */
+  | { readonly mode: 'targetNameFromSourceField'; readonly source: { readonly kind: 'label' | 'annotation'; readonly key: string }; readonly namespace?: 'source' | 'operator' };
 export interface HandlerRegistration<TSpec extends object, TStatus extends object, TCapabilities extends CapabilityClientSet = CapabilityClientSet> { readonly id: HandlerId; readonly event: HandlerEventType; readonly resource: ResourceDefinition<TSpec, TStatus, TCapabilities>; readonly handlerStyle?: HandlerApiStyle; readonly sourceLocation?: SourceLocation; readonly finalizers?: readonly string[]; readonly watch?: ResourceWatchAddress; readonly permissions?: readonly PermissionRule[]; }
 export interface HandlerRegistrationSummary { readonly id: HandlerId; readonly event: HandlerEventType; readonly handlerStyle?: HandlerApiStyle; readonly sourceLocation?: SourceLocation; readonly finalizers?: readonly string[]; readonly watch?: ResourceWatchAddress; readonly permissions?: readonly PermissionRule[]; }
 export type AnyHandlerRegistration = HandlerRegistrationSummary;

@@ -74,6 +74,7 @@ return Object.assign(__operator, { handlers: [${handlerRegistrations.join(', ')}
 
 interface StaticEntrypointCaptures {
   readonly declarations: ReadonlyMap<string, readonly string[]>;
+  readonly ambiguousCaptures: ReadonlyMap<string, readonly string[]>;
   readonly factoryObjectParameters: ReadonlyMap<string, ReadonlyMap<string, string>>;
 }
 
@@ -83,14 +84,22 @@ function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: 
     return error('BUNDLE_INVALID', `Handler ${handlerId} cannot be statically bundled because it is native code.`);
   }
   const captures = new Map<string, readonly string[]>();
-  for (const identifier of likelyFreeIdentifiers(source).filter((candidate) => !allowedFreeIdentifiers.has(candidate))) {
+  const freeCandidates = likelyFreeIdentifiers(source).filter((candidate) => !allowedFreeIdentifiers.has(candidate));
+  for (const identifier of freeCandidates) {
+    const ambiguousCapture = entrypointCaptures.ambiguousCaptures.get(identifier);
+    if (ambiguousCapture) {
+      return error(
+        'BUNDLE_INVALID',
+        `Handler ${handlerId} cannot be statically bundled because capture ${identifier} reaches ambiguous module-local declarations: ${ambiguousCapture.join('; ')}. Rename the colliding top-level declarations to globally unique names so the generated dispatcher cannot silently bind the handler to a different module's implementation.`
+      );
+    }
     const capture = staticHandlerCapturedImports.get(identifier)
       ?? entrypointCaptures.declarations.get(identifier)
       ?? factoryObjectParameterCapture(identifier, source, entrypointCaptures);
     if (capture) captures.set(identifier, capture);
   }
   const capturedImports = [...captures.values()].flat();
-  const freeIdentifiers = likelyFreeIdentifiers(source).filter((identifier) => !allowedFreeIdentifiers.has(identifier) && !captures.has(identifier));
+  const freeIdentifiers = freeCandidates.filter((identifier) => !captures.has(identifier));
   if (freeIdentifiers.length > 0) {
     return error(
       'BUNDLE_INVALID',
@@ -145,6 +154,7 @@ interface StaticModuleRecord {
 
 function staticEntrypointCaptures(entrypoint: string): StaticEntrypointCaptures {
   const declarations = new Map<string, string>();
+  const declarationOrigins = new Map<string, Set<string>>();
   const packageImports = new Map<string, string>();
   const localAliases = new Map<string, string>();
   const modules: StaticModuleRecord[] = [];
@@ -190,16 +200,27 @@ function staticEntrypointCaptures(entrypoint: string): StaticEntrypointCaptures 
       const declaredNames = runtimeDeclarationNames(statement);
       if (declaredNames.length === 0) continue;
       const text = statement.getText(file);
-      for (const name of declaredNames) if (!declarations.has(name)) declarations.set(name, text);
+      for (const name of declaredNames) {
+        if (!declarations.has(name)) declarations.set(name, text);
+        const origins = declarationOrigins.get(name) ?? new Set<string>();
+        origins.add(absolutePath);
+        declarationOrigins.set(name, origins);
+      }
     }
   };
 
   visitModule(resolve(entrypoint));
 
+  const ambiguousDeclarationOrigins = new Map<string, readonly string[]>();
+  for (const [name, origins] of declarationOrigins) {
+    if (origins.size > 1) ambiguousDeclarationOrigins.set(name, [...origins].sort());
+  }
+
   const statements = new Map<string, string>();
   for (const [name, statement] of declarations) statements.set(name, statement);
 
   const resolved = new Map<string, readonly string[]>();
+  const captureAmbiguities = new Map<string, readonly string[]>();
   const resolving = new Set<string>();
   const resolveCapture = (identifier: string): readonly string[] | undefined => {
     const cached = resolved.get(identifier);
@@ -213,11 +234,24 @@ function staticEntrypointCaptures(entrypoint: string): StaticEntrypointCaptures 
     const aliased = localAliases.get(identifier);
     const statement = statements.get(identifier) ?? (aliased ? statements.get(aliased) : undefined);
     if (!statement || resolving.has(identifier)) return undefined;
+    const ambiguityTarget = ambiguousDeclarationOrigins.has(identifier)
+      ? identifier
+      : aliased && ambiguousDeclarationOrigins.has(aliased)
+        ? aliased
+        : undefined;
+    if (ambiguityTarget) {
+      captureAmbiguities.set(identifier, [`${ambiguityTarget} (${ambiguousDeclarationOrigins.get(ambiguityTarget)?.join(', ')})`]);
+      return undefined;
+    }
     resolving.add(identifier);
-    const dependencies = likelyFreeIdentifiersInStatements(statement)
-      .filter((dependency) => dependency !== identifier)
-      .flatMap((dependency) => resolveCapture(dependency) ?? []);
+    const dependencies: string[] = [];
+    const ambiguities = new Set<string>();
+    for (const dependency of likelyFreeIdentifiersInStatements(statement).filter((candidate) => candidate !== identifier)) {
+      dependencies.push(...(resolveCapture(dependency) ?? []));
+      for (const ambiguity of captureAmbiguities.get(dependency) ?? []) ambiguities.add(ambiguity);
+    }
     resolving.delete(identifier);
+    if (ambiguities.size > 0) captureAmbiguities.set(identifier, [...ambiguities].sort());
     const aliasStatement = aliased && aliased !== identifier && aliased !== 'default' ? `const ${identifier} = ${aliased};` : undefined;
     const result = [...new Set([...dependencies, statement, ...(aliasStatement ? [aliasStatement] : [])])];
     resolved.set(identifier, result);
@@ -262,7 +296,7 @@ function staticEntrypointCaptures(entrypoint: string): StaticEntrypointCaptures 
       factoryObjectParameters: [...factoryObjectParameters.entries()].map(([parameter, properties]) => ({ parameter, properties: [...properties.keys()] })),
     }));
   }
-  return { declarations: resolved, factoryObjectParameters };
+  return { declarations: resolved, ambiguousCaptures: captureAmbiguities, factoryObjectParameters };
 }
 
 function resolveStaticLocalImport(importer: string, specifier: string): string | undefined {

@@ -20,6 +20,7 @@
       "@applik8s/core": ["packages/core/src/index.ts"],
       "@applik8s/applik8s": ["packages/applik8s/src/index.ts"],
       "@applik8s/applik8s/dsl": ["packages/applik8s/src/dsl.ts"],
+      "@applik8s/applik8s/dns": ["packages/applik8s/src/dns.ts"],
       "@applik8s/applik8s/typekro": ["packages/applik8s/src/typekro.ts"],
       "@applik8s/applik8s/factories": ["packages/applik8s/src/factories.ts"],
       "@applik8s/applik8s/factories/*": ["packages/applik8s/src/factories/*.ts"],

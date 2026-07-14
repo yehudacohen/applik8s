@@ -21,6 +21,7 @@
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./operator": { "types": "./dist/operator.d.ts", "import": "./dist/operator.js" },
+    "./dns": { "types": "./dist/dns.d.ts", "import": "./dist/dns.js" },
     "./dsl": { "types": "./dist/dsl.d.ts", "import": "./dist/dsl.js" },
     "./typekro": { "types": "./dist/typekro.d.ts", "import": "./dist/typekro.js" },
     "./factories": { "types": "./dist/factories.d.ts", "import": "./dist/factories.js" },

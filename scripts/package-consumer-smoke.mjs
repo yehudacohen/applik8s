@@ -27,6 +27,7 @@ const publicEntrypoints = [
   '@applik8s/applik8s/typekro',
   '@applik8s/applik8s/factories',
   '@applik8s/applik8s/processor-runtime',
+  '@applik8s/applik8s/dns',
   '@applik8s/core',
   '@applik8s/sdk',
   '@applik8s/compiler',

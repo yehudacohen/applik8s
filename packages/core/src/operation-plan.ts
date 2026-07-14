@@ -20,7 +20,7 @@ export type JsonPatch = readonly JsonPatchEntry[];
 export interface JsonPatchEntry { readonly op: JsonPatchOperationKind; readonly path: string; readonly value?: JsonValue; readonly from?: string; }
 export interface DeleteOperation { readonly kind: 'delete'; readonly ref: ObjectRef; readonly options?: DeleteOptions; readonly connection?: KubernetesConnectionName; readonly authority?: RemoteMutationAuthority; }
 export type DeleteOperationInput = ObjectRef | DeleteOperation;
-export interface DeleteOptions { readonly propagationPolicy?: 'Foreground' | 'Background' | 'Orphan'; readonly gracePeriodSeconds?: number; }
+export interface DeleteOptions { readonly propagationPolicy?: 'Foreground' | 'Background' | 'Orphan'; readonly gracePeriodSeconds?: number; readonly preconditions?: { readonly uid: string; readonly resourceVersion?: string }; }
 export interface StatusOperation<TStatus extends object = import('./common.js').JsonObject> { readonly kind: 'status'; readonly status: PartialStatus<TStatus>; readonly ref?: ObjectRef; }
 export interface EventOperation { readonly kind: 'event'; readonly type: KubernetesEventType; readonly reason: string; readonly message: string; readonly regarding?: ObjectRef; }
 export interface FinalizerOperationSpec { readonly kind: 'finalizer'; readonly operation: FinalizerAction; readonly finalizer: string; }

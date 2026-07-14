@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { type ApplicationModelBinding, type ApplicationModelCommandBinding, type ApplicationV03PressureTestContract, app, applicationGraphFor, type KubernetesApplicationBuilder, WorkflowEngine } from '@applik8s/applik8s';
+import { type ApplicationModelBinding, type ApplicationModelCommandBinding, type ApplicationV03PressureTestContract, app, applicationGraphFor, DnsPublication, type KubernetesApplicationBuilder, sdk, WorkflowEngine } from '@applik8s/applik8s';
+import { dns, externalDnsPublicationMetadata, externalDnsPublicationName } from '@applik8s/applik8s/dns';
 import { command, entity, event, task, type, workflow } from '@applik8s/applik8s/dsl';
 import { type ApplicationDurableStatusOwnershipContract, type ApplicationProviderCompatibilityMatrixContract, type ApplicationProviderInterfaceContract, serializeApplicationGraph } from '@applik8s/core';
 import * as k8s from '@kubernetes/client-node';
@@ -156,6 +157,32 @@ export const DecommissionTenant = workflow('tenant.decommission.v1', {
   signals: { confirm: type({ approved: 'boolean', reviewer: 'string' }) },
 });
 
+function tenantDnsEndpointResource(namespaces?: readonly string[]) {
+  return dns.externalDns.resource({ access: 'local', ...(namespaces ? { namespaces } : {}) });
+}
+
+function tenantDnsRuntimeCapabilities(namespace: string) {
+  return dns.externalDns.capabilities({
+    crdSource: 'enabled',
+    configuredRecordTypes: ['A', 'AAAA', 'CNAME'],
+    managedDomainPatterns: ['example.test'],
+    watchedNamespaces: [namespace],
+    controllerObservation: 'supported',
+    mutationPolicy: 'sync',
+    registry: 'txt',
+    providerRecordOwnership: 'configured',
+    targetUpdates: 'supported',
+    recordDeletion: 'supported',
+    dryRun: false,
+    propagationVerification: 'unavailable',
+    configurationEvidenceRefs: [{ apiVersion: 'apps/v1', kind: 'Deployment', name: 'external-dns', namespace }],
+  });
+}
+
+function tenantDnsRuntimeControllerId(apiVersion: string): string {
+  return `${apiVersion.split('/')[0] ?? apiVersion}/tenant-dns/v1`;
+}
+
 export type RenameTenantAccountInput = typeof RenameTenantAccount.input.infer;
 export type RenameTenantAccountOutput = typeof RenameTenantAccount.output.infer;
 
@@ -310,6 +337,7 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
   }) : undefined;
 
   if (config.durableWorkflows) {
+    tenantPlatform.provide(DnsPublication, DnsPublication.externalDns());
     tenantPlatform.provide(WorkflowEngine, WorkflowEngine.hatchet({
       name: `${config.stackName}-workflows`,
       namespace: config.namespace,
@@ -371,6 +399,85 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
       // typecast: preserve the declared workflow output phase discriminant.
       return { phase: 'Decommissioned' as const };
     });
+
+    const TenantDnsEndpoint = tenantDnsEndpointResource([config.namespace]);
+    const tenantDnsController = sdk.operator({
+      name: `${config.stackName}-tenant-dns`,
+      deployment: { namespace: config.namespace },
+      resources: { Tenant },
+      reads: { TenantDnsEndpoint },
+      permissions: [{ apiGroups: ['externaldns.k8s.io'], resources: ['dnsendpoints'], verbs: ['create', 'patch', 'delete'] }],
+      secondaryWatches: [sdk.watch(TenantDnsEndpoint).enqueue(Tenant, {
+        namespace: 'source',
+        map: { mode: 'targetNameFromSourceField', source: { kind: 'annotation', key: externalDnsPublicationMetadata.sourceNameAnnotation } },
+      })],
+      handlers: ({ resources }) => [
+        resources.Tenant.on.reconcile(async (tenant) => {
+          const endpointResource = tenantDnsEndpointResource();
+          const namespace = tenant.metadata.namespace;
+          const capabilities = tenantDnsRuntimeCapabilities(namespace);
+          const intent = dns.normalize({
+            publicationId: tenant.metadata.name,
+            dnsName: `${tenant.metadata.name}.example.test`,
+            record: { type: 'CNAME', target: `gateway.${tenant.spec.namespace}.example.test` },
+            ttlSeconds: 60,
+          });
+          if (!intent.ok) throw new Error(intent.error.message);
+          const ownership = {
+            controllerId: tenantDnsRuntimeControllerId(tenant.object.apiVersion),
+            publicationId: intent.value.publicationId,
+            source: {
+              apiVersion: tenant.object.apiVersion,
+              kind: tenant.object.kind,
+              namespace: tenant.metadata.namespace,
+              name: tenant.metadata.name,
+              uid: tenant.metadata.uid,
+            },
+          };
+          // typecast: keep the placement discriminant literal while deriving only its namespace at runtime.
+          const placement = { mode: 'local' as const, namespace };
+          const endpointName = externalDnsPublicationName(ownership.controllerId, ownership.publicationId);
+          const current = await tenant.read.resource(endpointResource).get({ name: endpointName, namespace });
+          const decision = dns.externalDns.decide({ intent: intent.value, ownership, placement, capabilities, ...(current ? { current } : {}) });
+          if (decision.kind === 'apply') {
+            tenant.resources.apply(decision.resource, { ownership: { mode: 'none' } });
+            tenant.requeue({ afterSeconds: 5, reason: 'Tenant DNS object applied' });
+          } else if (decision.kind === 'patch') {
+            tenant.resources.patch(decision.ref, decision.patch);
+            tenant.requeue({ afterSeconds: 5, reason: 'Tenant DNS object updated' });
+          } else if (decision.kind === 'noop' && decision.observation.controller.state !== 'observed') {
+            tenant.requeue({ afterSeconds: 5, reason: 'ExternalDNS observation pending' });
+          } else if (decision.kind === 'conflict' || decision.kind === 'unsupported') {
+            throw new Error(decision.diagnostic.message);
+          }
+        }),
+        resources.Tenant.on.finalize(async (tenant) => {
+          const endpointResource = tenantDnsEndpointResource();
+          const namespace = tenant.metadata.namespace;
+          const capabilities = tenantDnsRuntimeCapabilities(namespace);
+          const publicationId = tenant.metadata.name;
+          const ownership = {
+            controllerId: tenantDnsRuntimeControllerId(tenant.object.apiVersion),
+            publicationId,
+            source: {
+              apiVersion: tenant.object.apiVersion,
+              kind: tenant.object.kind,
+              namespace: tenant.metadata.namespace,
+              name: tenant.metadata.name,
+              uid: tenant.metadata.uid,
+            },
+          };
+          // typecast: keep the placement discriminant literal while deriving only its namespace at runtime.
+          const placement = { mode: 'local' as const, namespace };
+          const endpointName = externalDnsPublicationName(ownership.controllerId, publicationId);
+          const current = await tenant.read.resource(endpointResource).get({ name: endpointName, namespace });
+          const decision = dns.externalDns.decideDelete({ ownership, placement, capabilities, ...(current ? { current } : {}) });
+          if (decision.kind === 'delete') tenant.resources.delete(decision.ref, { preconditions: decision.precondition });
+          else if (decision.kind === 'conflict' || decision.kind === 'unsupported') throw new Error(decision.diagnostic.message);
+        }, { finalizer: `${config.apiGroup}/tenant-dns-cleanup` }),
+      ],
+    });
+    tenantPlatform.operator(tenantDnsController, { namespace: config.namespace });
   }
   tenantPlatform.http(config.adminServerName, {
     service: { port: 80 },

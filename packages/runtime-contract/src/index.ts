@@ -143,6 +143,7 @@ const jsonPatchEntrySchema: JsonSchema = objectSchema(
 const deleteOptionsSchema: JsonSchema = objectSchema({
   propagationPolicy: enumSchema(['Foreground', 'Background', 'Orphan']),
   gracePeriodSeconds: { type: 'number' },
+  preconditions: objectSchema({ uid: { type: 'string' }, resourceVersion: { type: 'string' } }, ['uid']),
 });
 
 const requeuePolicySchema: JsonSchema = objectSchema({

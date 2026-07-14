@@ -7,3 +7,5 @@
  */
 export type * from '@applik8s/core';
 export * from '@applik8s/sdk';
+export { dns, decideExternalDnsPublication, decideExternalDnsPublicationDelete, externalDnsCapabilities, externalDnsEndpointResource, externalDnsPublicationMetadata, externalDnsPublicationName, normalizeDnsPublicationIntent } from './dns.js';
+export type * from './dns.js';

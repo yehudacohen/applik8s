@@ -307,6 +307,14 @@ pub enum JsonPatchOperation {
 pub struct DeleteOptions {
     pub propagation_policy: Option<PropagationPolicy>,
     pub grace_period_seconds: Option<f64>,
+    pub preconditions: Option<DeletePreconditions>,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletePreconditions {
+    pub uid: String,
+    pub resource_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq)]

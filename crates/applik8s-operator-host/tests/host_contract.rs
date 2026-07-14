@@ -2628,6 +2628,44 @@ async fn constructs_secondary_source_controllers_with_explicit_target_mapping() 
     assert_eq!(secondary.watch.namespace.as_deref(), Some("sources"));
 }
 
+#[tokio::test]
+async fn constructs_exact_secondary_source_controller_from_annotation_mapping() {
+    let bundle = LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1", "kind": "OperatorBundle",
+            "metadata": { "name": "dns-controller", "annotations": { "applik8s.dev/namespace": "dns-system" } },
+            "spec": {
+                "ownedCrds": [{ "apiVersion": "platform.applik8s.dev/v1alpha1", "kind": "PublicationOwner", "plural": "publicationowners", "scope": "Namespaced" }],
+                "watches": [{ "apiVersion": "platform.applik8s.dev/v1alpha1", "kind": "PublicationOwner", "plural": "publicationowners", "scope": "Namespaced", "events": ["reconcile"], "handlers": ["PublicationOwner.reconcile.0"] }],
+                "secondaryWatches": [{
+                    "source": { "apiVersion": "externaldns.k8s.io/v1alpha1", "kind": "DNSEndpoint", "plural": "dnsendpoints", "scope": "Namespaced" },
+                    "target": { "apiVersion": "platform.applik8s.dev/v1alpha1", "kind": "PublicationOwner", "plural": "publicationowners", "scope": "Namespaced" },
+                    "watch": { "namespace": "dns-system" },
+                    "mapper": { "mode": "targetNameFromSourceField", "source": { "kind": "annotation", "key": "dns.applik8s.dev/source-name" }, "namespace": "source" }
+                }]
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    };
+    let controllers = bundle
+        .controllers(mock_kube_client())
+        .expect("construct exact secondary controller");
+    let secondary = controllers
+        .iter()
+        .find(|controller| controller.secondary.is_some())
+        .expect("exact secondary controller");
+    assert_eq!(secondary.watch.kind, "DNSEndpoint");
+    assert_eq!(secondary.watch.namespace.as_deref(), Some("dns-system"));
+    assert_eq!(
+        secondary
+            .secondary
+            .as_ref()
+            .and_then(|value| value.pointer("/mapper/mode"))
+            .and_then(serde_json::Value::as_str),
+        Some("targetNameFromSourceField")
+    );
+}
+
 #[test]
 fn defaults_namespaced_manifest_watches_to_operator_namespace() {
     let bundle = LoadedOperatorBundle {

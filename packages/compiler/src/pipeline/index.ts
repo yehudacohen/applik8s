@@ -37,6 +37,7 @@ import { emitWasmComponentArtifact } from '../wasm-component/index.js';
 import type { TypeKroCompositionExport } from './entrypoint-discovery.js';
 import { discoverEntrypointExports, discoverExportedOperators } from './entrypoint-discovery.js';
 import { generatedDispatcherEntrypoint } from './static-dispatcher.js';
+import { planTypeKroEmission, typeKroResourceFingerprint } from './typekro-emission-plan.js';
 
 const DEFAULT_OUT_DIR = 'dist/applik8s';
 
@@ -320,12 +321,13 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const factoryArtifacts = request.applicationGraph
       ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, generatedResources, request.applicationGraph.metadata.name)
       : baseFactoryArtifacts;
-    const resources = uniqueCompositionResources([
-      ...factoryArtifacts.resources,
-      ...compositionResources(request.composition),
-      ...processorResources,
-      ...workflowResources,
-    ]);
+    const emissionPlan = planTypeKroEmission({
+      factory: factoryArtifacts.resources,
+      composition: compositionResources(request.composition),
+      processors: processorResources,
+      workflows: workflowResources,
+    });
+    const resources = emissionPlan.resources;
     const resourcesDir = join(request.outDir, 'resources');
     const instancesDir = join(request.outDir, 'instances');
     await rm(resourcesDir, { recursive: true, force: true });
@@ -545,20 +547,6 @@ function parseTypeKroYamlResources(source: unknown): readonly TypeKroComposition
     .map((resource, index) => serializeCompositionResource(resource, index));
 }
 
-function uniqueCompositionResources(resources: readonly TypeKroCompositionResource[]): readonly TypeKroCompositionResource[] {
-  const seen = new Set<string>();
-  const uniqueResources: TypeKroCompositionResource[] = [];
-  for (const [index, resource] of resources.entries()) {
-    const key = kubernetesResourceFingerprint(resource) ?? `${index}\u0000${resource.apiVersion}\u0000${resource.kind}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    uniqueResources.push(resource);
-  }
-  return uniqueResources;
-}
-
 function serializeCompositionResource(resource: unknown, index: number): TypeKroCompositionResource {
   if (!resource || typeof resource !== 'object') {
     throw new Error(`Resolved TypeKro resource ${index + 1} is not an object.`);
@@ -658,7 +646,7 @@ function typeKroTemplateResourceFingerprints(resources: readonly TypeKroComposit
   const fingerprints = new Set<string>();
   for (const rgd of typeKroResourceGraphDefinitions(resources)) {
     for (const template of typeKroResourceGraphTemplates(rgd)) {
-      const fingerprint = kubernetesResourceFingerprint(template);
+      const fingerprint = typeKroResourceFingerprint(template);
       if (fingerprint) {
         fingerprints.add(fingerprint);
       }
@@ -710,7 +698,7 @@ function typeKroSchemaApiResources(resources: readonly TypeKroCompositionResourc
 }
 
 function isTypeKroTemplateResource(resource: TypeKroCompositionResource, templateFingerprints: ReadonlySet<string>): boolean {
-  const fingerprint = kubernetesResourceFingerprint(resource);
+  const fingerprint = typeKroResourceFingerprint(resource);
   return Boolean(fingerprint && templateFingerprints.has(fingerprint));
 }
 
@@ -739,14 +727,6 @@ function typeKroResourceGraphTemplates(rgd: TypeKroCompositionResource): TypeKro
     const template = entry.template;
     return isTypeKroCompositionResource(template) ? [template] : [];
   });
-}
-
-function kubernetesResourceFingerprint(resource: Pick<TypeKroCompositionResource, 'apiVersion' | 'kind' | 'metadata'>): string | undefined {
-  if (typeof resource.apiVersion !== 'string' || typeof resource.kind !== 'string' || !isJsonObject(resource.metadata) || typeof resource.metadata.name !== 'string') {
-    return undefined;
-  }
-  const namespace = typeof resource.metadata.namespace === 'string' ? resource.metadata.namespace : '';
-  return `${resource.apiVersion}\u0000${resource.kind}\u0000${namespace}\u0000${resource.metadata.name}`;
 }
 
 function isJsonObject(value: unknown): value is JsonObject {

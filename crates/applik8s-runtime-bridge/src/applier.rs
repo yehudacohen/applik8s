@@ -267,6 +267,12 @@ impl KubeOperationPlanApplier {
                                 PropagationPolicy::Orphan => kube::api::PropagationPolicy::Orphan,
                             });
                         }
+                        if let Some(preconditions) = &options.preconditions {
+                            params.preconditions = Some(Preconditions {
+                                uid: Some(preconditions.uid.clone()),
+                                resource_version: preconditions.resource_version.clone(),
+                            });
+                        }
                     }
                     if let Some(authority) = authority.as_ref() {
                         let precondition = self
@@ -282,10 +288,28 @@ impl KubeOperationPlanApplier {
                                     error,
                                 )
                             })?;
-                        params.preconditions = Some(Preconditions {
+                        let authority_preconditions = Preconditions {
                             uid: Some(precondition.uid),
                             resource_version: Some(precondition.resource_version),
-                        });
+                        };
+                        if let Some(declared) = params.preconditions.as_ref()
+                            && (declared.uid != authority_preconditions.uid
+                                || declared.resource_version
+                                    != authority_preconditions.resource_version)
+                        {
+                            return Err(operation_failed(
+                                index,
+                                operation,
+                                owner,
+                                &self.field_manager,
+                                &summary,
+                                RuntimeBridgeError::UnsupportedOperation(
+                                    "delete options preconditions do not match verified remote mutation authority"
+                                        .to_string(),
+                                ),
+                            ));
+                        }
+                        params.preconditions = Some(authority_preconditions);
                     }
                     match api.delete(&ref_.name, &params).await {
                         Ok(_) => {}
@@ -1027,6 +1051,21 @@ fn validate_delete_options(
             return invalid_plan(
                 index,
                 "delete.options.gracePeriodSeconds must be an integer number of seconds",
+            );
+        }
+    }
+    if let Some(preconditions) = &options.preconditions {
+        if preconditions.uid.trim().is_empty() {
+            return invalid_plan(index, "delete.options.preconditions.uid must not be empty");
+        }
+        if preconditions
+            .resource_version
+            .as_deref()
+            .is_some_and(str::is_empty)
+        {
+            return invalid_plan(
+                index,
+                "delete.options.preconditions.resourceVersion must not be empty",
             );
         }
     }

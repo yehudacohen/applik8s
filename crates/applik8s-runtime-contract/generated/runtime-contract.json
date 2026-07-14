@@ -937,6 +937,21 @@
                       },
                       "gracePeriodSeconds": {
                         "type": "number"
+                      },
+                      "preconditions": {
+                        "type": "object",
+                        "properties": {
+                          "uid": {
+                            "type": "string"
+                          },
+                          "resourceVersion": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "uid"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [],

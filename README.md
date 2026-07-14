@@ -8,14 +8,14 @@ Reconciliation TypeScript becomes WASM component logic evaluated by Kubernetes e
 
 ## v0.5 Flagship: Durable Tenant Orchestration
 
-v0.5 adds provider-neutral durable tasks and workflows with a pinned PostgreSQL-only Hatchet implementation. It also adds bounded, named Kubernetes connections: handlers can read and mutate an installation-authorized cluster without receiving kubeconfig material or ambient client authority. The Tenant Platform models tenant onboarding and decommissioning with retry-safe external-effect tasks, durable approval waits, cancellation, compensation, explicit operator intervention, and canonical transitions committed through the v0.4 model transaction boundary.
+v0.5 adds provider-neutral durable tasks and workflows with a pinned PostgreSQL-only Hatchet implementation. It also adds bounded, named Kubernetes connections: handlers can read and mutate an installation-authorized cluster without receiving kubeconfig material or ambient client authority. The Tenant Platform models tenant onboarding and decommissioning with retry-safe external-effect tasks, durable approval waits, cancellation, compensation, explicit operator intervention, canonical transitions committed through the v0.4 model transaction boundary, and stable-identity ExternalDNS publication through the operator runtime.
 
 ```sh
 bun run build:tenant-platform-v05
 bun run check:v05:prerelease:orbstack
 ```
 
-See [`docs/workflows.md`](docs/workflows.md) for workflow semantics, [`docs/kubernetes-connections.md`](docs/kubernetes-connections.md) for the connection authority model, and [`docs/v0.5-scorecard.md`](docs/v0.5-scorecard.md) for the executable release criteria.
+See [`docs/workflows.md`](docs/workflows.md) for workflow semantics, [`docs/kubernetes-connections.md`](docs/kubernetes-connections.md) for the connection authority model, [`docs/dns-publication.md`](docs/dns-publication.md) for DNS ownership and observation semantics, and [`docs/v0.5-scorecard.md`](docs/v0.5-scorecard.md) for the executable release criteria.
 
 ## v0.4 Flagship: Durable Tenant Behavior
 
@@ -371,6 +371,10 @@ bun run check:v04:prerelease:orbstack
 - `docs/typekro-golden-path.md`
 - `docs/generated-artifacts.md`
 - `docs/commands.md`
+- `docs/dns-publication.md`
+- `docs/kubernetes-connections.md`
+- `docs/workflows.md`
+- `docs/v0.5-scorecard.md`
 - `docs/v0.4-scorecard.md`
 - `docs/release-evidence-v0.4.md`
 - `docs/release-evidence-v0.4.1.md`

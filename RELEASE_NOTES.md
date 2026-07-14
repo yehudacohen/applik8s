@@ -10,6 +10,17 @@ The longitudinal Tenant Platform adds onboarding and decommissioning workflows w
 
 v0.5 also introduces bounded connection-scoped Kubernetes execution for operators that coordinate a separately authorized cluster. Portable bundles declare named permission and endpoint-policy requirements; installation artifacts bind those aliases to namespace-local kubeconfig Secrets without exposing credentials to WASM. Remote reads are typed and paginated, remote mutations require owner-bound managed identity or UID/resourceVersion evidence, and the host pins one credential revision per invocation. Connection permissions never become management-cluster RBAC, remote owner references and cross-cluster atomicity remain unsupported, and a v1 mutation plan may address only one remote connection.
 
+Operator-runtime DNS publication is now a first-class handler-safe primitive. The dedicated
+`@applik8s/applik8s/dns` entrypoint normalizes and digests A, AAAA, and CNAME intent, exposes a canonical
+typed ExternalDNS `DNSEndpoint`, validates explicit installation capabilities, and returns pure
+create/guarded-update/guarded-delete/observation decisions. Stable publication identity survives record
+changes; complete ownership metadata and durable UID evidence prevent accidental adoption or deletion.
+Exact metadata-mapped secondary watches reconcile one local owner without namespace fan-out, while
+connection-scoped publication uses bounded polling. ExternalDNS generation observation is deliberately
+not reported as provider success or DNS propagation.
+
+The Tenant Platform v0.5 artifact now uses that same local adapter to publish and revise tenant DNS with stable identity, exact owner wakeup, and guarded finalization. The pre-v0.6 maintainability pass also separates generated HTTP bundle construction, exposure normalization, graph serialization, compatibility policy, and deterministic TypeKro emission planning; ratcheted module ceilings and dependency-direction checks keep those boundaries enforceable. External provider packages can run the new registration-conformance harness before adding provider-specific semantic and live suites.
+
 ## v0.4.3
 
 v0.4.3 is the final v0.4 correctness and release-discipline release. It closes the remaining gap between the durable-behavior implementation and its executable public contract without broadening into v0.5 workflow orchestration.

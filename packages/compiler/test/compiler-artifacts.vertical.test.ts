@@ -566,6 +566,44 @@ export function handle(input: string) { return JSON.stringify({ input, recognize
     ]));
   });
 
+  it('lowers an exact source-metadata mapping without adding target-list fan-out', () => {
+    const PublicationOwner = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'PublicationOwner', spec: imageSpecSchema, status: imageStatusSchema });
+    const DnsEndpoint = sdk.kubernetes.resource({ apiVersion: 'externaldns.k8s.io/v1alpha1', kind: 'DNSEndpoint', plural: 'dnsendpoints', namespaces: ['media'] });
+    const operator = sdk.operator({
+      name: 'exact-secondary-watch-pipeline',
+      deployment: { namespace: 'media' },
+      resources: { PublicationOwner },
+      reads: { DnsEndpoint },
+      handlers: [PublicationOwner.on.reconcile(() => {})],
+      secondaryWatches: [sdk.watch(DnsEndpoint).enqueue(PublicationOwner, {
+        namespace: 'source',
+        map: { mode: 'targetNameFromSourceField', source: { kind: 'annotation', key: 'dns.applik8s.dev/source-name' } },
+      })],
+    });
+    const manifest = buildOperatorManifest({ operator: operator.definition, handlerArtifactPath: 'wasm/handler.wasm', handlerArtifactDigest: `sha256:${'a'.repeat(64)}`, runtimeContractPath: 'runtime-contract.json', runtimeContractDigest: `sha256:${'b'.repeat(64)}` });
+    expect(manifest.ok).toBe(true);
+    if (!manifest.ok) return;
+    expect(manifest.value.spec.secondaryWatches).toEqual([expect.objectContaining({
+      source: expect.objectContaining({ apiVersion: 'externaldns.k8s.io/v1alpha1', kind: 'DNSEndpoint' }),
+      target: expect.objectContaining({ kind: 'PublicationOwner' }),
+      mapper: { mode: 'targetNameFromSourceField', source: { kind: 'annotation', key: 'dns.applik8s.dev/source-name' }, namespace: 'source' },
+    })]);
+    expect(manifest.value.spec.permissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiGroups: ['externaldns.k8s.io'], resources: ['dnsendpoints'], verbs: expect.arrayContaining(['get', 'list', 'watch']) }),
+    ]));
+  });
+
+  it('rejects invalid exact secondary-watch metadata keys and all-namespace mappings', () => {
+    const PublicationOwner = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'PublicationOwner', spec: imageSpecSchema, status: imageStatusSchema });
+    const DnsEndpoint = sdk.kubernetes.resource({ apiVersion: 'externaldns.k8s.io/v1alpha1', kind: 'DNSEndpoint', plural: 'dnsendpoints' });
+    const invalidKey = sdk.operator({
+      name: 'invalid-exact-secondary-watch', resources: { PublicationOwner }, reads: { DnsEndpoint }, handlers: [],
+      secondaryWatches: [sdk.watch(DnsEndpoint).enqueue(PublicationOwner, { map: { mode: 'targetNameFromSourceField', source: { kind: 'annotation', key: 'not valid' } } })],
+    });
+    expect(buildOperatorManifest({ operator: invalidKey.definition, handlerArtifactPath: 'wasm/handler.wasm', handlerArtifactDigest: `sha256:${'a'.repeat(64)}`, runtimeContractPath: 'runtime-contract.json', runtimeContractDigest: `sha256:${'b'.repeat(64)}` })).toMatchObject({ ok: false, error: { code: 'BUNDLE_INVALID', message: expect.stringContaining('metadata key') } });
+    expect(() => sdk.watch(DnsEndpoint).enqueue(PublicationOwner, { namespace: 'all', map: { mode: 'targetNameFromSourceField', source: { kind: 'label', key: 'owner' } } })).toThrow(/cannot use namespace: "all"/);
+  });
+
   it('rejects secondary watch sources that are not declared as resources or reads', () => {
     const Replica = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'Replica', spec: imageSpecSchema, status: imageStatusSchema });
     const Deployment = sdk.kubernetes.Deployment;
@@ -1394,6 +1432,48 @@ export const operator = createOperator({ prefix: 'ready:', authoringGraph: 'UNUS
     }
   }, 120_000);
 
+  it('fails closed when reachable module-local helper names are ambiguous', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-static-helper-collision-'));
+    try {
+      const helperA = join(dir, 'helper-a.ts');
+      const helperB = join(dir, 'helper-b.ts');
+      const entrypoint = join(dir, 'operator-entry.ts');
+      await writeFile(helperA, `export function ownedMetadata(name: string): string { return 'a:' + name; }\n`);
+      await writeFile(helperB, `export function ownedMetadata(name: string): string { return 'b:' + name; }\n`);
+      await writeFile(entrypoint, `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/sdk/src/index.ts'))};
+import { ownedMetadata } from './helper-a.js';
+import './helper-b.js';
+const spec = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'WorkSpec' }, schema: { type: 'object', properties: {} } };
+const status = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'WorkStatus' }, schema: { type: 'object', properties: { result: { type: 'string' } } } };
+export const Work = sdk.crd({ apiVersion: 'collision.applik8s.dev/v1alpha1', kind: 'Work', spec, status });
+export const operator = sdk.operator({ name: 'helper-collision', resources: { Work }, handlers: [
+  Work.on.reconcile((work) => { work.status.result = ownedMetadata(work.metadata.name); }),
+] });
+`);
+
+      const result = await createCompilerPipeline().run({
+        entrypoint,
+        operatorName: 'helper-collision',
+        dispatcherMode: 'staticSerializable',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.message).toContain('capture ownedMetadata reaches ambiguous module-local declarations');
+        expect(result.error.message).toContain('helper-a.ts');
+        expect(result.error.message).toContain('helper-b.ts');
+        expect(result.error.message).toContain('Rename the colliding top-level declarations');
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('reports genuine unsupported static handler captures with actionable diagnostics', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-static-handler-capture-'));
     try {
@@ -1506,6 +1586,60 @@ export const imagePipeline = sdk.operator({
         },
         runtime: { reconcileId: 'ImageJob-hero-image' },
       }))).rejects.toMatch(/synthetic handler failure/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('preserves nested status object fields by name through generated dispatch', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-nested-status-dispatch-'));
+    try {
+      const entrypoint = join(dir, 'operator-entry.ts');
+      await writeFile(entrypoint, `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/sdk/src/index.ts'))};
+
+interface VolumeSpec { source: string }
+interface VolumeStatus { volumes?: Array<{ conditions?: Array<{ type: string; status: string; observedGeneration?: number; lastTransitionTime?: string }> }> }
+const spec = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'VolumeSpec' }, schema: { type: 'object', required: ['source'], properties: { source: { type: 'string' } } } };
+const status = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'VolumeStatus' }, schema: { type: 'object', properties: { volumes: { type: 'array', items: { type: 'object', properties: { conditions: { type: 'array', items: { type: 'object', properties: { type: { type: 'string' }, status: { type: 'string' }, observedGeneration: { type: 'integer' }, lastTransitionTime: { type: 'string' } } } } } } } } } };
+export const VolumeJob = sdk.crd<VolumeSpec, VolumeStatus>({ apiVersion: 'storage.applik8s.dev/v1alpha1', kind: 'VolumeJob', spec, status });
+export const operator = sdk.operator({ name: 'nested-status', resources: { VolumeJob }, handlers: [
+  VolumeJob.on.reconcile((job) => { job.status.volumes = [{ conditions: [{ type: 'Ready', status: 'True', observedGeneration: 17, lastTransitionTime: '2026-07-14T12:34:56Z' }] }]; }),
+] });
+`);
+
+      const result = await createCompilerPipeline().run({
+        entrypoint,
+        operatorName: 'nested-status',
+        dispatcherMode: 'staticSerializable',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const dispatcherPath = join(dir, 'dist/bundle/handler-dispatcher.generated.ts');
+      const dispatcherTestPath = join(dir, 'dist/bundle/handler-dispatcher.node-test.ts');
+      const dispatcherSource = await readFile(dispatcherPath, 'utf8');
+      await writeFile(dispatcherTestPath, dispatcherSource.replace("import { kubernetesRead } from 'applik8s:handler/kubernetes';\n", "const kubernetesRead = () => { throw new Error('unexpected kubernetes-read'); };\n"));
+      // static-import-exception: this test loads a compiler-generated dispatcher from a temporary output directory.
+      const dispatcher = await import(`${pathToFileURL(dispatcherTestPath).href}?case=nested-status`);
+      const output = JSON.parse(await dispatcher.handle(JSON.stringify({
+        abiVersion: 'applik8s.handler/v1alpha1',
+        handlerId: 'VolumeJob.reconcile.0',
+        event: 'reconcile',
+        object: { apiVersion: 'storage.applik8s.dev/v1alpha1', kind: 'VolumeJob', metadata: { name: 'volume-a', namespace: 'storage' }, spec: { source: 'source-a' } },
+        runtime: { reconcileId: 'VolumeJob-volume-a' },
+      })));
+      const statusOperation = output.operations.find((operation: { readonly kind?: string }) => operation.kind === 'status');
+      expect(statusOperation?.status?.volumes?.[0]?.conditions?.[0]).toEqual({
+        type: 'Ready',
+        status: 'True',
+        observedGeneration: 17,
+        lastTransitionTime: '2026-07-14T12:34:56Z',
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

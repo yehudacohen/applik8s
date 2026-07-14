@@ -64,12 +64,18 @@ export const sdk: Applik8sSdk = {
   crd,
   operator,
   watch: (source) => ({
-    enqueue: (target, options) => ({
-      source,
-      target,
-      ...(options?.watch ? { watch: options.watch } : {}),
-      mapper: { mode: 'all', ...(options?.namespace ? { namespace: options.namespace } : {}) },
-    }),
+    enqueue: (target, options) => {
+      const exactNamespace = options?.map ? options.namespace : undefined;
+      if (exactNamespace === 'all') throw new Error('Exact secondary-watch mappings cannot use namespace: "all"; select the source or operator namespace.');
+      return {
+        source,
+        target,
+        ...(options?.watch ? { watch: options.watch } : {}),
+        mapper: options?.map
+          ? { ...options.map, ...(exactNamespace ? { namespace: exactNamespace } : {}) }
+          : { mode: 'all', ...(options?.namespace ? { namespace: options.namespace } : {}) },
+      };
+    },
   }),
   secretRef,
   withPermissions,

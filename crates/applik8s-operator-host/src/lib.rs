@@ -1196,6 +1196,77 @@ impl OperatorHost {
             ),
             None => Api::<DynamicObject>::all_with(self.bridge.client().clone(), &api_resource),
         };
+        let mapper_mode = registration
+            .pointer("/mapper/mode")
+            .and_then(Value::as_str)
+            .unwrap_or("all");
+        if mapper_mode == "targetNameFromSourceField" {
+            if target_watch.scope == "Namespaced" && namespace_mode == "all" {
+                return Err(OperatorHostError::InvalidOwnedCrd(
+                    "exact secondary watch cannot address a namespaced target through namespace all"
+                        .into(),
+                ));
+            }
+            let source_field_kind = registration
+                .pointer("/mapper/source/kind")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    OperatorHostError::InvalidOwnedCrd(
+                        "exact secondary watch is missing mapper.source.kind".into(),
+                    )
+                })?;
+            let source_field_key = registration
+                .pointer("/mapper/source/key")
+                .and_then(Value::as_str)
+                .filter(|key| !key.is_empty())
+                .ok_or_else(|| {
+                    OperatorHostError::InvalidOwnedCrd(
+                        "exact secondary watch is missing mapper.source.key".into(),
+                    )
+                })?;
+            let metadata_container = match source_field_kind {
+                "label" => "labels",
+                "annotation" => "annotations",
+                other => {
+                    return Err(OperatorHostError::InvalidOwnedCrd(format!(
+                        "exact secondary watch source field kind {other} is unsupported"
+                    )));
+                }
+            };
+            let target_name = source_json
+                .pointer("/metadata")
+                .and_then(|metadata| metadata.get(metadata_container))
+                .and_then(|values| values.get(source_field_key))
+                .and_then(Value::as_str)
+                .filter(|name| valid_kubernetes_object_name(name))
+                .ok_or_else(|| {
+                    OperatorHostError::InvalidOwnedCrd(format!(
+                        "exact secondary watch source {source_field_kind} {source_field_key} is missing or does not contain a valid Kubernetes target name"
+                    ))
+                })?;
+            let Some(target) = api.get_opt(target_name).await? else {
+                tracing::debug!(
+                    source_kind,
+                    target_kind = %target_watch.kind,
+                    target_name,
+                    "exact secondary watch target does not exist"
+                );
+                return Ok(Action::await_change());
+            };
+            let action = self.reconcile_dynamic_object(bundle, target).await?;
+            tracing::debug!(
+                source_kind,
+                target_kind = %target_watch.kind,
+                target_name,
+                "exact secondary watch enqueued owned reconciliation"
+            );
+            return Ok(action);
+        }
+        if mapper_mode != "all" {
+            return Err(OperatorHostError::InvalidOwnedCrd(format!(
+                "secondary watch mapper mode {mapper_mode} is unsupported"
+            )));
+        }
         let mut continue_token: Option<String> = None;
         let mut target_count = 0usize;
         let mut target_requested_requeue = false;
@@ -1232,6 +1303,21 @@ impl OperatorHost {
             Action::await_change()
         })
     }
+}
+
+fn valid_kubernetes_object_name(value: &str) -> bool {
+    if value.is_empty() || value.len() > 253 {
+        return false;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label.bytes().enumerate().all(|(index, byte)| match byte {
+                b'a'..=b'z' | b'0'..=b'9' => true,
+                b'-' => index > 0 && index + 1 < label.len(),
+                _ => false,
+            })
+    })
 }
 
 pub fn reconcile_log_event(
@@ -5031,23 +5117,37 @@ fn validate_manifest_read_resource(
     {
         return Ok(());
     }
-    let resource = manifest
+    let resources = manifest
         .pointer("/spec/readResources")
         .and_then(Value::as_array)
-        .and_then(|resources| resources.iter().find(|resource| matches_identity(resource)))
         .ok_or_else(|| {
             format!("Kubernetes read for {api_version}/{kind} is not declared by this operator.")
         })?;
-    let access = resource
-        .get("access")
-        .and_then(Value::as_str)
-        .unwrap_or("local");
-    let access_allowed = if connection_scoped {
-        access == "connection" || access == "both"
-    } else {
-        access == "local" || access == "both"
-    };
-    if !access_allowed {
+    let matching_identity = resources
+        .iter()
+        .filter(|resource| matches_identity(resource))
+        .collect::<Vec<_>>();
+    if matching_identity.is_empty() {
+        return Err(format!(
+            "Kubernetes read for {api_version}/{kind} is not declared by this operator."
+        ));
+    }
+    let matching_access = matching_identity
+        .iter()
+        .copied()
+        .filter(|resource| {
+            let access = resource
+                .get("access")
+                .and_then(Value::as_str)
+                .unwrap_or("local");
+            if connection_scoped {
+                access == "connection" || access == "both"
+            } else {
+                access == "local" || access == "both"
+            }
+        })
+        .collect::<Vec<_>>();
+    if matching_access.is_empty() {
         let requested = if connection_scoped {
             "connection"
         } else {
@@ -5057,7 +5157,12 @@ fn validate_manifest_read_resource(
             "Kubernetes read for {api_version}/{kind} is not declared for {requested} access."
         ));
     }
-    if resource.get("scope").and_then(Value::as_str) != Some(scope) {
+    let matching_scope = matching_access
+        .iter()
+        .copied()
+        .filter(|resource| resource.get("scope").and_then(Value::as_str) == Some(scope))
+        .collect::<Vec<_>>();
+    if matching_scope.is_empty() {
         return Err(format!(
             "Kubernetes read for {api_version}/{kind} requested scope {scope}, which does not match its declaration."
         ));
@@ -5070,33 +5175,24 @@ fn validate_manifest_read_resource(
             "Kubernetes read for namespaced resource {api_version}/{kind} requires query.namespace."
         )
     })?;
-    match resource.get("namespaces") {
-        Some(Value::String(value)) if value == "all" => Ok(()),
-        Some(Value::Array(namespaces))
-            if namespaces
-                .iter()
-                .any(|value| value.as_str() == Some(namespace)) =>
-        {
-            Ok(())
-        }
-        Some(Value::Array(_)) => Err(format!(
+    let controller_namespace = default_watch_namespace(manifest);
+    let namespace_allowed =
+        matching_scope
+            .iter()
+            .any(|resource| match resource.get("namespaces") {
+                Some(Value::String(value)) => value == "all",
+                Some(Value::Array(namespaces)) => namespaces
+                    .iter()
+                    .any(|value| value.as_str() == Some(namespace)),
+                None => controller_namespace.as_deref() == Some(namespace),
+                Some(_) => false,
+            });
+    if namespace_allowed {
+        Ok(())
+    } else {
+        Err(format!(
             "Kubernetes read for {api_version}/{kind} is not declared for namespace {namespace}."
-        )),
-        Some(_) => Err(format!(
-            "Kubernetes read declaration for {api_version}/{kind} has invalid namespaces."
-        )),
-        None => {
-            let controller_namespace = default_watch_namespace(manifest).ok_or_else(|| {
-                format!("Kubernetes read for {api_version}/{kind} must declare namespaces because the operator has no controller namespace.")
-            })?;
-            if controller_namespace == namespace {
-                Ok(())
-            } else {
-                Err(format!(
-                    "Kubernetes read for {api_version}/{kind} defaults to controller namespace {controller_namespace}, not {namespace}."
-                ))
-            }
-        }
+        ))
     }
 }
 
@@ -6172,7 +6268,31 @@ async fn run_leader_elected_controllers(
     };
     drop(leadership);
     if !lease_task_finished {
-        let _ = tokio::time::timeout(Duration::from_secs(2), lease_task).await;
+        match tokio::time::timeout(Duration::from_secs(10), &mut lease_task).await {
+            Ok(Ok(Ok(_manager))) => {}
+            Ok(Ok(Err(error))) => event!(
+                Level::WARN,
+                error = %error,
+                handler_abi = SUPPORTED_HANDLER_ABI,
+                "leader-election lease release failed during graceful shutdown; expiry remains the crash-safe fallback"
+            ),
+            Ok(Err(error)) => event!(
+                Level::WARN,
+                error = %error,
+                handler_abi = SUPPORTED_HANDLER_ABI,
+                "leader-election task failed while releasing the lease during graceful shutdown"
+            ),
+            Err(_) => {
+                lease_task.abort();
+                let _ = lease_task.await;
+                event!(
+                    Level::WARN,
+                    timeout_seconds = 10,
+                    handler_abi = SUPPORTED_HANDLER_ABI,
+                    "leader-election lease release exceeded the graceful shutdown budget; expiry remains the crash-safe fallback"
+                );
+            }
+        }
     }
     result
 }
@@ -6474,6 +6594,74 @@ fn action_for_plan(plan: &applik8s_runtime_contract::NormalizedOperationPlan) ->
 mod connection_tests {
     use super::*;
     use crate::kubernetes_connection::KubernetesEndpointPolicy;
+
+    #[test]
+    fn exact_secondary_watch_target_names_use_kubernetes_dns_subdomains() {
+        assert!(valid_kubernetes_object_name("tenant-a"));
+        assert!(valid_kubernetes_object_name("tenant-a.region-1"));
+        assert!(!valid_kubernetes_object_name("Tenant_A"));
+        assert!(!valid_kubernetes_object_name("-tenant"));
+        assert!(!valid_kubernetes_object_name("tenant-"));
+    }
+
+    #[test]
+    fn duplicate_gvk_read_declarations_select_the_requested_access_and_namespace() {
+        let manifest = serde_json::json!({ "spec": {
+            "deployment": { "namespace": "management" },
+            "readResources": [
+                { "apiVersion": "externaldns.k8s.io/v1alpha1", "kind": "DNSEndpoint", "plural": "dnsendpoints", "scope": "Namespaced", "namespaces": ["management"], "access": "local" },
+                { "apiVersion": "externaldns.k8s.io/v1alpha1", "kind": "DNSEndpoint", "plural": "dnsendpoints", "scope": "Namespaced", "namespaces": ["destination"], "access": "connection" }
+            ]
+        }});
+        assert!(
+            validate_manifest_read_resource(
+                &manifest,
+                "externaldns.k8s.io/v1alpha1",
+                "DNSEndpoint",
+                "dnsendpoints",
+                "Namespaced",
+                Some("management"),
+                false
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_manifest_read_resource(
+                &manifest,
+                "externaldns.k8s.io/v1alpha1",
+                "DNSEndpoint",
+                "dnsendpoints",
+                "Namespaced",
+                Some("destination"),
+                true
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_manifest_read_resource(
+                &manifest,
+                "externaldns.k8s.io/v1alpha1",
+                "DNSEndpoint",
+                "dnsendpoints",
+                "Namespaced",
+                Some("destination"),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            validate_manifest_read_resource(
+                &manifest,
+                "externaldns.k8s.io/v1alpha1",
+                "DNSEndpoint",
+                "dnsendpoints",
+                "Namespaced",
+                Some("management"),
+                true
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn connection_access_requires_exact_secret_get_permission() {

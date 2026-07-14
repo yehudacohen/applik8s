@@ -342,6 +342,7 @@ describe('Kubernetes YAML generation', () => {
       const env = deployment?.spec.template.spec.containers[0].env;
 
       expect(deployment?.spec.replicas).toBe(2);
+      expect(deployment?.spec.template.spec.containers[0].readinessProbe.httpGet).toEqual({ path: '/healthz', port: 'health' });
       expect(env).toContainEqual({ name: 'APPLIK8S_LEADER_ELECTION_IDENTITY', valueFrom: { fieldRef: { fieldPath: 'metadata.name' } } });
       expect(role?.rules).toContainEqual({ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['get', 'update', 'patch'], resourceNames: ['leader-elected-operator'] });
       expect(role?.rules).toContainEqual({ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['create'] });

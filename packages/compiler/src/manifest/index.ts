@@ -215,10 +215,13 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
 }
 
 function secondaryWatchPermissions(watches: NonNullable<OperatorDefinition['secondaryWatches']>): PermissionRule[] {
-  return watches.flatMap((watch) => [
-    { apiGroups: [apiGroupFor(watch.source.apiVersion)], resources: [watch.source.plural], verbs: ['get', 'list', 'watch'] },
-    { apiGroups: [apiGroupFor(watch.target.apiVersion)], resources: [watch.target.plural], verbs: ['get', 'list', 'watch'] },
-  ]);
+  return watches.flatMap((watch) => {
+    const targetVerbs = watch.mapper.mode === 'targetNameFromSourceField' ? ['get'] : ['get', 'list', 'watch'];
+    return [
+      { apiGroups: [apiGroupFor(watch.source.apiVersion)], resources: [watch.source.plural], verbs: ['get', 'list', 'watch'] },
+      { apiGroups: [apiGroupFor(watch.target.apiVersion)], resources: [watch.target.plural], verbs: targetVerbs },
+    ];
+  });
 }
 
 function apiGroupFor(apiVersion: string): string {
@@ -610,9 +613,34 @@ function validateManifestBuildRequest(request: ManifestBuildRequest, resourceHan
         },
       };
     }
+    if (watch.mapper.mode === 'targetNameFromSourceField') {
+      if (!isKubernetesMetadataKey(watch.mapper.source.key)) {
+        return {
+          ok: false,
+          error: {
+            code: 'BUNDLE_INVALID',
+            message: `Exact secondary watch source ${watch.mapper.source.kind} key ${JSON.stringify(watch.mapper.source.key)} is not a valid Kubernetes metadata key.`,
+            severity: 'error',
+            context: { operatorName: request.operator.name },
+            recovery: { summary: 'Use a valid qualified label or annotation key for exact secondary-watch routing.' },
+          },
+        };
+      }
+    }
   }
 
   return undefined;
+}
+
+function isKubernetesMetadataKey(value: string): boolean {
+  if (!value || value.length > 317) return false;
+  const pieces = value.split('/');
+  if (pieces.length > 2) return false;
+  const name = pieces.at(-1) ?? '';
+  if (name.length < 1 || name.length > 63 || !/^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$/.test(name)) return false;
+  if (pieces.length === 1) return true;
+  const prefix = pieces[0] ?? '';
+  return prefix.length <= 253 && prefix.split('.').every((label) => label.length >= 1 && label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label));
 }
 
 function validateCrdVersioning(operator: OperatorDefinition): Result<never> | undefined {

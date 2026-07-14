@@ -219,6 +219,76 @@ fn bridge_invokes_handler_component_and_decodes_output_plan() {
 }
 
 #[test]
+fn componentized_handler_preserves_nested_status_fields_by_name() {
+    let workspace_root = workspace_root();
+    let temp_dir = test_temp_dir("componentize-js-nested-status");
+    fs::create_dir_all(&temp_dir).expect("test temp directory creates");
+    let js_path = temp_dir.join("handler.js");
+    let wit_path = temp_dir.join("handler.wit");
+    let wasm_path = temp_dir.join("handler.wasm");
+    fs::write(
+        &js_path,
+        r#"
+export function handle() {
+  return JSON.stringify({ operations: [{ kind: 'status', status: { volumes: [{ conditions: [{ type: 'Ready', status: 'True', observedGeneration: 17, lastTransitionTime: '2026-07-14T12:34:56Z' }] }] } }] });
+}
+"#,
+    )
+    .expect("nested status handler source writes");
+    fs::write(
+        &wit_path,
+        r#"package applik8s:handler;
+
+world handler {
+  import log: func(event-json: string);
+  import cancel: func(reason-json: string);
+  export handle: func(input-json: string) -> result<string, string>;
+}
+"#,
+    )
+    .expect("nested status handler WIT writes");
+
+    let output = Command::new(workspace_root.join("node_modules/.bin/componentize-js"))
+        .arg(&js_path)
+        .arg("--wit")
+        .arg(&wit_path)
+        .arg("--world-name")
+        .arg("handler")
+        .arg("--out")
+        .arg(&wasm_path)
+        .current_dir(workspace_root)
+        .output()
+        .expect("componentize-js command starts");
+    assert!(
+        output.status.success(),
+        "componentize-js failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let engine = component_model_engine().expect("component model engine configures");
+    let component_bytes = fs::read(&wasm_path).expect("emitted component reads");
+    let plan = invoke_handler_component_bytes_with_timeout(
+        &engine,
+        &component_bytes,
+        valid_handler_input_payload(),
+        &applik8s_runtime_bridge::canonical_host_imports(),
+        Duration::from_secs(30),
+    )
+    .expect("bridge invokes ComponentizeJS-emitted nested status handler");
+    let operation = serde_json::to_value(&plan.operations[0]).expect("status operation serializes");
+    let condition = operation
+        .pointer("/status/volumes/0/conditions/0")
+        .expect("nested condition is present");
+    assert_eq!(condition["type"], "Ready");
+    assert_eq!(condition["status"], "True");
+    assert_eq!(condition["observedGeneration"], 17);
+    assert_eq!(condition["lastTransitionTime"], "2026-07-14T12:34:56Z");
+
+    fs::remove_dir_all(&temp_dir).expect("test temp directory removes");
+}
+
+#[test]
 fn bridge_times_out_non_terminating_handler_component() {
     let engine = component_model_engine().expect("component model engine configures");
     let component_bytes = non_terminating_handler_component_bytes();
@@ -958,6 +1028,53 @@ fn rejects_invalid_delete_options_before_apply() {
             "expected {expected:?}, got {error}"
         );
     }
+
+    for (preconditions, expected) in [
+        (
+            serde_json::json!({ "uid": "" }),
+            "preconditions.uid must not be empty",
+        ),
+        (
+            serde_json::json!({ "uid": "endpoint-uid", "resourceVersion": "" }),
+            "preconditions.resourceVersion must not be empty",
+        ),
+    ] {
+        let plan = decode_handler_output_plan_payload(serde_json::json!({
+            "operations": [{
+                "kind": "delete",
+                "ref": { "apiVersion": "externaldns.k8s.io/v1alpha1", "kind": "DNSEndpoint", "name": "publication", "namespace": "dns-system" },
+                "options": { "preconditions": preconditions }
+            }]
+        }))
+        .expect("guarded delete plan decodes");
+
+        let error =
+            validate_operation_plan(&owner, &plan).expect_err("invalid delete preconditions fail");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+    }
+}
+
+#[test]
+fn accepts_uid_and_resource_version_delete_preconditions() {
+    let owner = owner_ref();
+    let plan = decode_handler_output_plan_payload(serde_json::json!({
+        "operations": [{
+            "kind": "delete",
+            "ref": { "apiVersion": "externaldns.k8s.io/v1alpha1", "kind": "DNSEndpoint", "name": "publication", "namespace": "dns-system" },
+            "options": { "preconditions": { "uid": "endpoint-uid", "resourceVersion": "42" } }
+        }]
+    }))
+    .expect("guarded delete plan decodes");
+
+    validate_operation_plan(&owner, &plan).expect("guarded delete plan validates");
+    let serialized = serde_json::to_value(&plan).expect("guarded delete plan serializes");
+    assert_eq!(
+        serialized.pointer("/operations/0/options/preconditions"),
+        Some(&serde_json::json!({ "uid": "endpoint-uid", "resourceVersion": "42" }))
+    );
 }
 
 #[test]

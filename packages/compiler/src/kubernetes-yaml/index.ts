@@ -448,7 +448,7 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
                 timeoutSeconds: 5,
               },
               readinessProbe: {
-                httpGet: { path: '/readyz', port: 'health' },
+                httpGet: { path: manifest.spec.runtime?.leaderElection?.enabled ? '/healthz' : '/readyz', port: 'health' },
                 initialDelaySeconds: 1,
                 failureThreshold: 12,
                 periodSeconds: 5,

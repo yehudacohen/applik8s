@@ -5,6 +5,7 @@ This is the supported public surface for `applik8s` v0.5. The v0.3 application s
 ## Packages
 
 - `@applik8s/applik8s`: umbrella package for normal users. Re-exports SDK, TypeKro adapter, and typed container helpers.
+- `@applik8s/applik8s/dns`: handler-safe DNS normalization, observation, capability, ownership, and ExternalDNS `DNSEndpoint` decisions.
 - `@applik8s/sdk`: CRD authoring, operator definitions, handler dispatch, runtime schema helpers, and status helpers.
 - `@applik8s/compiler`: build pipeline, manifest generation, Kubernetes YAML generation, diagnostics, runtime contract helpers, and WASM component generation.
 - `@applik8s/testing`: local operator test harness and proxy recorder utilities.
@@ -13,6 +14,10 @@ This is the supported public surface for `applik8s` v0.5. The v0.3 application s
 - `@applik8s/runtime-contract`: generated runtime/handler ABI schema constants.
 - `@applik8s/runtime`: runtime package placeholder for TypeScript-facing runtime exports.
 - `@applik8s/typetainer`: typed container image reference utilities.
+
+The umbrella package is the normal application-authoring and integration surface. Code that must be captured inside a minimal WASM reconciliation closure should import focused handler-safe APIs from `@applik8s/sdk` or an explicitly documented handler-safe subpath. The compiler follows the reachable closure and fails closed on unsupported Node or integration dependencies; it does not promise that importing the umbrella entrypoint from inside a handler is minimal or portable.
+
+Static dispatcher capture currently requires reachable top-level runtime declaration names to be unique across local modules. A collision fails closed even when JavaScript module scope would disambiguate it; rename the declarations rather than relying on an import alias. Module-provenance-aware capture is deferred until the dispatcher can preserve source-module identity end to end.
 
 ## SDK Authoring
 
@@ -88,6 +93,24 @@ Operation kinds are:
 - `requeue`
 
 The Rust host validates the normalized plan before effects. Invalid operation order, invalid refs, undeclared RBAC, undeclared finalizer ownership, malformed patches, invalid namespace/scope, and unsupported status writes fail closed.
+
+Delete options may include `{ preconditions: { uid, resourceVersion? } }`. The host forwards these as
+Kubernetes delete preconditions; connection-scoped deletes also require the same precondition to match
+verified remote mutation authority.
+
+## DNS Publication
+
+`@applik8s/applik8s/dns` exports provider-neutral A, AAAA, and CNAME normalization plus a first-party
+ExternalDNS adapter. `dns.externalDns.resource(...)` declares the structural `DNSEndpoint` read surface.
+`dns.externalDns.decide(...)` returns one create apply, guarded update patch, no-op, conflict, or
+unsupported decision; `decideDelete(...)` requires current UID evidence and an installation that proves
+sync deletion semantics.
+
+Local controller observation can use
+`targetNameFromSourceField` secondary-watch mapping to read one declared source label or annotation and
+enqueue exactly one target by name. Connection-scoped resources use bounded polling/requeue and never
+receive a local watch. See [DNS publication from operators](dns-publication.md) for the ownership,
+capability, observation, and propagation boundaries.
 
 ## Status Helpers
 

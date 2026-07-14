@@ -1,5 +1,7 @@
 import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, NamespaceName, ObjectRef, ResourceScope, SourceLocation } from './common.js';
 import type { PermissionRule } from './resource.js';
+import { normalizeApplicationGraphArtifact, serializeNormalizedApplicationGraph } from './application-graph-serialization.js';
+import { validateApplicationGraphCompatibility } from './application-graph-compatibility.js';
 
 export type ApplicationGraphVersion = 'applik8s.appGraph/v1alpha1';
 
@@ -1423,24 +1425,11 @@ export function isApplicationProviderInterfaceKind(value: string): value is Appl
 }
 
 export function normalizeApplicationGraph(graph: ApplicationGraph): ApplicationGraph {
-  return {
-    ...graph,
-    nodes: [...graph.nodes].sort(compareApplicationGraphNodes),
-    edges: [...graph.edges].sort(compareApplicationGraphEdges),
-    providerRequirements: [...(graph.providerRequirements ?? [])].sort(compareApplicationProviderRequirements),
-    providerBindings: [...(graph.providerBindings ?? [])].sort(compareApplicationProviderBindings),
-    compatibility: {
-      stablePublicApis: sortedStrings(graph.compatibility.stablePublicApis),
-      documentedInternalContracts: sortedStrings(graph.compatibility.documentedInternalContracts),
-      experimentalSurfaces: sortedStrings(graph.compatibility.experimentalSurfaces),
-      postV3Surfaces: sortedStrings(graph.compatibility.postV3Surfaces),
-      labels: [...(graph.compatibility.labels ?? [])].sort(compareApplicationCompatibilityLabels),
-    },
-  };
+  return normalizeApplicationGraphArtifact(graph);
 }
 
 export function serializeApplicationGraph(graph: ApplicationGraph): string {
-  return `${stableJsonStringify(normalizeApplicationGraph(graph))}\n`;
+  return serializeNormalizedApplicationGraph(graph);
 }
 
 export function validateApplicationGraph(graph: ApplicationGraph, requirements: readonly ApplicationProviderRequirement[] = []): readonly Diagnostic[] {
@@ -1484,108 +1473,7 @@ export function validateApplicationGraphStructure(graph: ApplicationGraph): read
 }
 
 export function validateApplicationGraphCompatibilityPolicy(graph: ApplicationGraph): readonly Diagnostic[] {
-  const diagnostics: Diagnostic[] = [];
-  const labelsByName = new Map(graph.compatibility.labels.map((label) => [label.name, label]));
-  const duplicateLabels = duplicateApplicationCompatibilityLabels(graph.compatibility.labels);
-  for (const duplicate of duplicateLabels) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application graph compatibility label ${duplicate} is declared more than once.`));
-  }
-  for (const api of graph.compatibility.stablePublicApis) {
-    const label = labelsByName.get(api);
-    if (label?.surface !== 'stablePublicApi') {
-      diagnostics.push(applicationGraphStructureDiagnostic(`Application graph stable public API ${api} must have a stablePublicApi compatibility label.`));
-      continue;
-    }
-    if (!label.rationale || label.rationale.trim().length === 0) {
-      diagnostics.push(applicationGraphStructureDiagnostic(`Application graph stable public API ${api} must document its implementation or fail-closed rationale.`));
-    }
-    if (!label.implementation) {
-      diagnostics.push(applicationGraphStructureDiagnostic(`Application graph stable public API ${api} must declare implementation support.`));
-    }
-    if (label.implementation === 'failClosedReserved' && (label.diagnostics?.length ?? 0) === 0) {
-      diagnostics.push(applicationGraphStructureDiagnostic(`Application graph stable public API ${api} is fail-closed reserved but has no release-facing diagnostics.`));
-    }
-    const rationale = label.rationale?.toLowerCase() ?? '';
-    if ((rationale.includes('not implemented') || rationale.includes('not enabled')) && !rationale.includes('fail-closed') && !rationale.includes('fail closed')) {
-      diagnostics.push(applicationGraphStructureDiagnostic(`Application graph stable public API ${api} describes missing implementation without documented fail-closed behavior.`));
-    }
-  }
-  for (const node of graph.nodes) {
-    const stableApi = stablePublicApiForApplicationGraphNode(node);
-    if (!stableApi) {
-      continue;
-    }
-    const label = labelsByName.get(stableApi);
-    if (label?.surface === 'stablePublicApi' && label.implementation === 'implemented' && node.stability !== 'stable') {
-      diagnostics.push(applicationGraphStructureDiagnostic(`Application graph node ${node.id} is emitted by stable public API ${stableApi} but has ${node.stability} stability.`));
-    }
-  }
-  diagnostics.push(...compatibilitySurfaceDiagnostics('documented internal contract', 'documentedInternalContract', graph.compatibility.documentedInternalContracts, labelsByName));
-  diagnostics.push(...compatibilitySurfaceDiagnostics('experimental surface', 'experimentalSurface', graph.compatibility.experimentalSurfaces, labelsByName));
-  diagnostics.push(...compatibilitySurfaceDiagnostics('post-v0.3 surface', 'postV3Surface', graph.compatibility.postV3Surfaces, labelsByName));
-  return diagnostics;
-}
-
-function stablePublicApiForApplicationGraphNode(node: ApplicationGraphNode): string | undefined {
-  if (node.kind === 'provider') {
-    return `provider.${node.interface}`;
-  }
-  if (node.kind === 'counter') {
-    return 'Resource.increment';
-  }
-  if (node.kind === 'index') {
-    return 'Resource.index';
-  }
-  if (node.kind === 'job') {
-    return node.schedule ? 'app.schedule' : 'app.job';
-  }
-  const apiByNodeKind: Partial<Record<ApplicationGraphNodeKind, string>> = {
-    crd: 'app.crd',
-    model: 'app.model',
-    server: 'app.server',
-    aggregate: 'app.aggregate',
-    config: 'app.config',
-    secret: 'app.secret',
-    exposure: 'app.expose',
-    command: 'command',
-    event: 'event',
-    commandHandler: 'Model.on.command',
-    processor: 'Model.on.command',
-    task: 'task',
-    taskHandler: 'app.task',
-    workflow: 'workflow',
-    workflowHandler: 'app.workflow',
-    workflowWorker: 'app.workflow',
-  };
-  return apiByNodeKind[node.kind];
-}
-
-function duplicateApplicationCompatibilityLabels(labels: readonly ApplicationCompatibilityLabel[]): readonly string[] {
-  const seen = new Set<string>();
-  const duplicates = new Set<string>();
-  for (const label of labels) {
-    if (seen.has(label.name)) {
-      duplicates.add(label.name);
-      continue;
-    }
-    seen.add(label.name);
-  }
-  return [...duplicates].sort(compareStrings);
-}
-
-function compatibilitySurfaceDiagnostics(kind: string, surface: ApplicationCompatibilitySurface, names: readonly string[], labelsByName: ReadonlyMap<string, ApplicationCompatibilityLabel>): readonly Diagnostic[] {
-  const diagnostics: Diagnostic[] = [];
-  for (const name of names) {
-    const label = labelsByName.get(name);
-    if (label?.surface !== surface) {
-      diagnostics.push(applicationGraphStructureDiagnostic(`Application graph ${kind} ${name} must have a ${surface} compatibility label.`));
-      continue;
-    }
-    if (!label.rationale || label.rationale.trim().length === 0) {
-      diagnostics.push(applicationGraphStructureDiagnostic(`Application graph ${kind} ${name} must document its compatibility rationale.`));
-    }
-  }
-  return diagnostics;
+  return validateApplicationGraphCompatibility(graph);
 }
 
 export function validateApplicationGraphProviderBindings(graph: ApplicationGraph, requirements: readonly ApplicationProviderRequirement[] = []): readonly Diagnostic[] {
@@ -2847,46 +2735,6 @@ function applicationProviderBindingDiagnostic(message: string): Diagnostic {
   };
 }
 
-function compareApplicationGraphNodes(left: ApplicationGraphNode, right: ApplicationGraphNode): number {
-  return compareStrings(left.id, right.id) || compareStrings(left.kind, right.kind) || compareStrings(left.name, right.name);
-}
-
-function compareApplicationGraphEdges(left: ApplicationGraphEdge, right: ApplicationGraphEdge): number {
-  return compareStrings(left.from.nodeId, right.from.nodeId) || compareStrings(left.relationship, right.relationship) || compareStrings(left.to.nodeId, right.to.nodeId);
-}
-
-function compareApplicationProviderRequirements(left: ApplicationProviderRequirement, right: ApplicationProviderRequirement): number {
-  return compareStrings(left.id, right.id) || compareStrings(left.interface, right.interface) || compareStrings(left.consumer.nodeId, right.consumer.nodeId);
-}
-
-function compareApplicationProviderBindings(left: ApplicationProviderBindingContract, right: ApplicationProviderBindingContract): number {
-  return compareStrings(left.requirement, right.requirement) || compareStrings(left.provider.interface, right.provider.interface) || compareStrings(left.provider.nodeId, right.provider.nodeId);
-}
-
-function compareApplicationCompatibilityLabels(left: ApplicationCompatibilityLabel, right: ApplicationCompatibilityLabel): number {
-  return compareStrings(left.surface, right.surface) || compareStrings(left.name, right.name);
-}
-
-function sortedStrings(values: readonly string[]): readonly string[] {
-  return [...values].sort(compareStrings);
-}
-
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function stableJsonStringify(value: unknown): string {
-  if (value === undefined) {
-    return 'null';
-  }
-  if (value === null || typeof value !== 'object') {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(stableJsonStringify).join(',')}]`;
-  }
-  const entries = Object.entries(value)
-    .filter(([, entryValue]) => entryValue !== undefined)
-    .sort(([leftKey], [rightKey]) => compareStrings(leftKey, rightKey));
-  return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJsonStringify(entryValue)}`).join(',')}}`;
 }

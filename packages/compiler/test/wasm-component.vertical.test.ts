@@ -125,4 +125,52 @@ export async function handle(inputJson: string): Promise<string> {
       await rm(dir, { recursive: true, force: true });
     }
   }, 240_000);
+
+  it('compiles the DNS publication adapter without Node or TypeKro runtime imports', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-dns-componentize-'));
+
+    try {
+      const entrypoint = join(dir, 'dns-handler.ts');
+      await writeFile(
+        entrypoint,
+        `import { dns } from '@applik8s/applik8s/dns';
+
+export function handle(inputJson: string): string {
+  const input = JSON.parse(inputJson);
+  const intent = dns.normalize({ publicationId: input.publicationId, dnsName: input.dnsName, record: { type: 'A', addresses: input.addresses } });
+  if (!intent.ok) throw new Error(intent.error.message);
+  return JSON.stringify({ operations: [{ kind: 'status', status: { digest: intent.value.normalization.intentDigest, dnsName: intent.value.dnsName } }] });
+}
+`,
+      );
+
+      const bundle = await bundleHandlerEntrypoint({ entrypoint, outDir: join(dir, 'bundle') });
+      const wit = await emitHandlerWitArtifact({ outDir: join(dir, 'contract') });
+      expect(bundle.ok).toBe(true);
+      expect(wit.ok).toBe(true);
+      if (!bundle.ok || !wit.ok) return;
+
+      const source = await readFile(bundle.value.javascriptBundlePath, 'utf8');
+      expect(source).not.toContain('node:');
+      expect(source).not.toContain('@typekro');
+      const imported: {
+        readonly handle: (input: string) => string;
+      } =
+        // static-import-exception: this test must load the newly generated, uniquely addressed handler artifact at runtime.
+        await import(`${pathToFileURL(bundle.value.javascriptBundlePath).href}?dns=${Date.now()}`);
+      expect(JSON.parse(imported.handle(JSON.stringify({ publicationId: 'primary', dnsName: 'App.Example.Test.', addresses: ['192.0.2.1'] })))).toMatchObject({
+        operations: [{ kind: 'status', status: { dnsName: 'app.example.test', digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) } }],
+      });
+
+      const component = await emitWasmComponentArtifact({
+        javascriptBundlePath: bundle.value.javascriptBundlePath,
+        witPath: wit.value.path,
+        outDir: join(dir, 'wasm'),
+      });
+      expect(component.ok).toBe(true);
+      if (component.ok) expect((await stat(component.value.path)).size).toBeGreaterThan(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

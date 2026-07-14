@@ -1,6 +1,6 @@
 # v0.5 Release Evidence
 
-v0.5 is the durable workflow and bounded connection-scoped Kubernetes release. Its supported path is the provider-neutral task/workflow graph with the pinned PostgreSQL-only Hatchet implementation, plus named Kubernetes connections whose credentials remain host-owned.
+v0.5 is the durable workflow, bounded connection-scoped Kubernetes, and operator-runtime DNS publication release. Its supported path is the provider-neutral task/workflow graph with the pinned PostgreSQL-only Hatchet implementation, named Kubernetes connections whose credentials remain host-owned, and the handler-safe provider-neutral DNS contract with its first-party ExternalDNS adapter.
 
 ## Local evidence
 
@@ -10,7 +10,7 @@ The release gate is:
 bun run check:v05:local
 ```
 
-It covers the coordinated package build, typecheck, lint and generated runtime-contract parity, workflow and connection contracts, character tests, package-consumer installation, the executable v0.5 scorecard, performance budgets, Rust formatting, Clippy, and the complete Rust suite. The maintainability test consumes `benchmarks/v0.5/maintainability-budgets.json` as its single line-budget authority.
+It covers the coordinated package build, typecheck, lint, module dependency directions and generated runtime-contract parity, workflow and connection contracts, character tests, package-consumer installation, the executable v0.5 scorecard, performance budgets, Rust formatting, Clippy, and the complete Rust suite. The maintainability test consumes `benchmarks/v0.5/maintainability-budgets.json` as its single line-budget authority.
 
 Connection-specific contract evidence includes:
 
@@ -23,6 +23,20 @@ Connection-specific contract evidence includes:
 - exact kubeconfig Secret RBAC and credential-profile rejection;
 - plain Kubernetes and TypeKro installation lowering.
 
+DNS-specific contract evidence includes:
+
+- deterministic IDNA, IPv4, IPv6, ordering, digest, and stable-publication-identity normalization;
+- explicit CRD-source, domain, namespace, record-type, observation, mutation-policy, registry, dry-run,
+  provider-ownership, update, and deletion capability matrices;
+- complete ownership metadata, durable same-name-replacement detection, UID/resource-version JSON Patch
+  tests, and UID/resource-version Kubernetes delete preconditions;
+- typed local and connection-scoped `DNSEndpoint` reads and mutations;
+- exact label/annotation-to-target-name compiler and host lowering without list fan-out;
+- a clean packed `@applik8s/applik8s/dns` import and ComponentizeJS compilation without Node or TypeKro
+  runtime dependencies.
+- the longitudinal Tenant Platform v0.5 artifact includes the local DNS controller, stable identity, guarded finalization, and exact label/annotation-to-owner wakeup contract instead of proving DNS only in an isolated fixture.
+- graph serialization, compatibility validation, generated HTTP bundling, exposure normalization, and TypeKro emission planning remain separate internal modules with ratcheted ceilings.
+
 ## Live evidence
 
 Run the exact candidate against OrbStack with:
@@ -31,7 +45,7 @@ Run the exact candidate against OrbStack with:
 bun run check:v05:prerelease:orbstack
 ```
 
-The workflow proof exercises durable retry, waits, worker replacement, resume, compensation, intervention, cancellation, and TypeKro-first teardown. The live connection proof binds a separate kubeconfig identity, proves bounded reads and guarded create/update/finalization delete, verifies both local and remote RBAC isolation, and cleans up the direct installation. Rust contract tests separately reject stale mutation authority and credential rotation within an invocation; TypeKro synthesis tests prove the same binding schema and exact Secret RBAC.
+The workflow proof exercises durable retry, waits, worker replacement, resume, compensation, intervention, cancellation, and TypeKro-first teardown. The live connection proof binds a separate kubeconfig identity, proves bounded reads and guarded create/update/finalization delete, verifies both local and remote RBAC isolation, and cleans up the direct installation. The DNS proof runs ExternalDNS v0.21.0 with its in-memory provider, publishes through both local and named-connection paths, waits for current-generation controller observation, restarts the parent operator, performs stable-identity A-to-CNAME-to-A changes, proves an exact local owner wakeup, and finalizes through UID/resource-version-preconditioned deletion. It reports propagation as not checked. Rust contract tests separately reject stale mutation authority and credential rotation within an invocation; TypeKro synthesis tests prove the same binding schema and exact Secret RBAC.
 
 The quick performance gate retains a 1,000-operation steady-state observation sample, records cold start separately, and warms the observation path before applying throughput and latency budgets. This prevents a single scheduler pause from dominating a 100-operation micro-sample while keeping cold-start evidence visible.
 
