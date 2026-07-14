@@ -16,6 +16,8 @@ import { imageRefString } from '@applik8s/typetainer';
 import { parseAllDocuments, stringify } from 'yaml';
 import type { GeneratedApplicationProcessorArtifact } from '../application-processors/index.js';
 import { emitGeneratedApplicationProcessors } from '../application-processors/index.js';
+import type { GeneratedApplicationWorkflowArtifact } from '../application-workflows/index.js';
+import { emitGeneratedApplicationWorkflows } from '../application-workflows/index.js';
 import { compilerArtifactLayout } from '../artifacts/index.js';
 import { bundleHandlerEntrypoint } from '../bundling/index.js';
 import type {
@@ -121,6 +123,7 @@ export interface TypeKroCompositionBundleManifest extends JsonObject {
     readonly operators: readonly TypeKroCompositionOperatorArtifactReference[];
     readonly applicationGraph?: ApplicationGraphArtifactReference;
     readonly processors?: readonly TypeKroCompositionProcessorArtifactReference[];
+    readonly workflows?: readonly TypeKroCompositionWorkflowArtifactReference[];
   };
 }
 
@@ -131,6 +134,14 @@ export interface TypeKroCompositionOperatorArtifactReference extends JsonObject 
 }
 
 export interface TypeKroCompositionProcessorArtifactReference extends JsonObject {
+  readonly name: string;
+  readonly manifest: string;
+  readonly source: string;
+  readonly digest: string;
+  readonly sizeBytes: number;
+}
+
+export interface TypeKroCompositionWorkflowArtifactReference extends JsonObject {
   readonly name: string;
   readonly manifest: string;
   readonly source: string;
@@ -149,6 +160,7 @@ export interface TypeKroCompositionArtifacts {
   readonly instanceYamlPaths: readonly string[];
   readonly applicationGraphJsonPath?: string;
   readonly processorArtifacts: readonly GeneratedApplicationProcessorArtifact[];
+  readonly workflowArtifacts: readonly GeneratedApplicationWorkflowArtifact[];
   readonly operatorArtifacts: readonly TypeKroCompositionOperatorArtifacts[];
 }
 
@@ -292,16 +304,23 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const processorArtifacts = request.applicationGraph
       ? await emitGeneratedApplicationProcessors({ graph: request.applicationGraph, outDir: join(request.outDir, 'processors'), entrypoint: request.entrypoint })
       : [];
+    const workflowArtifacts = request.applicationGraph
+      ? await emitGeneratedApplicationWorkflows({ graph: request.applicationGraph, outDir: join(request.outDir, 'workflows'), entrypoint: request.entrypoint })
+      : [];
     // typecast: generated processor resources are concrete Kubernetes JSON objects and are validated by the same serialization path as composition resources.
     const processorResources = processorArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
-    const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition);
+    // typecast: generated workflow resources are concrete Kubernetes JSON objects and pass through the shared TypeKro serialization path.
+    const workflowResources = workflowArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
+    const generatedResources = [...processorResources, ...workflowResources];
+    const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition, request.applicationGraph?.metadata);
     const factoryArtifacts = request.applicationGraph
-      ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, processorResources, request.applicationGraph.metadata.name)
+      ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, generatedResources, request.applicationGraph.metadata.name)
       : baseFactoryArtifacts;
     const resources = uniqueCompositionResources([
       ...factoryArtifacts.resources,
       ...compositionResources(request.composition),
       ...processorResources,
+      ...workflowResources,
     ]);
     const resourcesDir = join(request.outDir, 'resources');
     const instancesDir = join(request.outDir, 'instances');
@@ -348,6 +367,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           outDir: dirname(compiled.artifacts.manifestJsonPath),
         })),
         ...(processorArtifacts.length > 0 ? { processors: processorArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes })) } : {}),
+        ...(workflowArtifacts.length > 0 ? { workflows: workflowArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes })) } : {}),
       },
     };
 
@@ -388,6 +408,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         instanceYamlPaths,
         ...(applicationGraphJsonPath ? { applicationGraphJsonPath } : {}),
         processorArtifacts,
+        workflowArtifacts,
         operatorArtifacts: request.operatorCompiles.map((compiled) => ({
           operatorName: compiled.manifest.metadata.name,
           outDir: dirname(compiled.artifacts.manifestJsonPath),
@@ -471,13 +492,16 @@ interface TypeKroFactoryArtifactsProjection {
   readonly instances: readonly TypeKroCompositionResource[];
 }
 
-function typeKroFactoryArtifacts(composition: object | ((...args: never[]) => unknown)): TypeKroFactoryArtifactsProjection {
+function typeKroFactoryArtifacts(
+  composition: object | ((...args: never[]) => unknown),
+  applicationMetadata?: { readonly name: string; readonly namespace?: string },
+): TypeKroFactoryArtifactsProjection {
   const factory = Reflect.get(composition, 'factory');
   if (typeof factory !== 'function') {
     return { resources: [], instances: [] };
   }
 
-  const kroFactory = factory.call(composition, 'kro');
+  const kroFactory = factory.call(composition, 'kro', applicationMetadata?.namespace ? { namespace: applicationMetadata.namespace } : undefined);
   if (!kroFactory || (typeof kroFactory !== 'object' && typeof kroFactory !== 'function')) {
     return { resources: [], instances: [] };
   }
@@ -488,7 +512,20 @@ function typeKroFactoryArtifacts(composition: object | ((...args: never[]) => un
 
   const resources = parseTypeKroYamlResources(toYaml.call(kroFactory));
   try {
-    return { resources, instances: parseTypeKroYamlResources(toYaml.call(kroFactory, {})) };
+    const instances = parseTypeKroYamlResources(toYaml.call(kroFactory, {}));
+    if (!applicationMetadata || instances.length === 0) return { resources, instances };
+    const rootIndex = instances.length - 1;
+    return {
+      resources,
+      instances: instances.map((instance, index) => index === rootIndex ? {
+        ...instance,
+        metadata: {
+          ...instance.metadata,
+          name: applicationMetadata.name,
+          ...(applicationMetadata.namespace ? { namespace: applicationMetadata.namespace } : {}),
+        },
+      } : instance),
+    };
   } catch {
     return { resources, instances: [] };
   }

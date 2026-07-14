@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { serializeApplicationGraph, type ApplicationDurableStatusOwnershipContract, type ApplicationProviderCompatibilityMatrixContract, type ApplicationProviderInterfaceContract } from '@applik8s/core';
-import { app, applicationGraphFor, type ApplicationModelBinding, type ApplicationModelCommandBinding, type ApplicationV03PressureTestContract, type KubernetesApplicationBuilder } from '@applik8s/applik8s';
-import { command, entity, event, type } from '@applik8s/applik8s/dsl';
+import { type ApplicationModelBinding, type ApplicationModelCommandBinding, type ApplicationV03PressureTestContract, app, applicationGraphFor, type KubernetesApplicationBuilder, WorkflowEngine } from '@applik8s/applik8s';
+import { command, entity, event, task, type, workflow } from '@applik8s/applik8s/dsl';
+import { type ApplicationDurableStatusOwnershipContract, type ApplicationProviderCompatibilityMatrixContract, type ApplicationProviderInterfaceContract, serializeApplicationGraph } from '@applik8s/core';
 import * as k8s from '@kubernetes/client-node';
 
 export interface TenantPlatformExampleOptions {
@@ -13,6 +13,7 @@ export interface TenantPlatformExampleOptions {
   readonly databaseClusterName?: string;
   readonly adminServerName?: string;
   readonly durableBehavior?: boolean;
+  readonly durableWorkflows?: boolean;
 }
 
 const defaultOptions: Required<TenantPlatformExampleOptions> = {
@@ -24,6 +25,7 @@ const defaultOptions: Required<TenantPlatformExampleOptions> = {
   databaseClusterName: process.env.APPLIK8S_TENANT_PLATFORM_DATABASE_CLUSTER ?? 'tenant-platform-db',
   adminServerName: process.env.APPLIK8S_TENANT_PLATFORM_ADMIN_SERVER ?? 'tenant-admin',
   durableBehavior: false,
+  durableWorkflows: false,
 };
 
 export const TenantEntity = entity('Tenant', {
@@ -42,6 +44,17 @@ export const TenantEntity = entity('Tenant', {
 
 export type TenantSpec = typeof TenantEntity.spec.infer;
 export type TenantStatus = NonNullable<typeof TenantEntity.status>['infer'];
+
+export const TenantLifecycleEntity = entity('TenantLifecycle', {
+  spec: type({
+    phase: "'Ready' | 'Decommissioned' | 'NeedsIntervention'",
+    endpoint: 'string?',
+    lastRequestId: 'string',
+    updatedAt: 'string',
+  }),
+});
+
+export type TenantLifecycleSpec = typeof TenantLifecycleEntity.spec.infer;
 
 export const EnvironmentEntity = entity('Environment', {
   spec: type({
@@ -115,6 +128,34 @@ export const TenantAccountChanged = event('tenant-account.changed.v1', {
   payload: type({ tenant: 'string', accountId: 'string', displayName: 'string' }),
 });
 
+export const ProvisionTenantInfrastructure = task('tenant.infrastructure.provision.v1', {
+  input: type({ tenantId: 'string', namespace: 'string', requestId: 'string' }),
+  output: type({ namespace: 'string', endpoint: 'string' }),
+  errors: { provisioningFailed: type({ message: 'string', retryable: 'boolean' }) },
+});
+
+export const RemoveTenantInfrastructure = task('tenant.infrastructure.remove.v1', {
+  input: type({ tenantId: 'string', namespace: 'string', requestId: 'string' }),
+  output: type({ removed: 'boolean' }),
+});
+
+export const CommitTenantTransition = task('tenant.transition.commit.v1', {
+  input: type({ tenantId: 'string', requestId: 'string', adminEndpoint: 'string', phase: "'Ready' | 'Decommissioned' | 'NeedsIntervention'", endpoint: 'string?' }),
+  output: type({ committed: 'boolean' }),
+});
+
+export const OnboardTenant = workflow('tenant.onboard.v1', {
+  input: type({ tenantId: 'string', namespace: 'string', requestId: 'string', adminEndpoint: 'string' }),
+  output: type({ phase: "'Ready' | 'Compensated' | 'NeedsIntervention'", endpoint: 'string?' }),
+  signals: { approval: type({ approved: 'boolean', reviewer: 'string' }) },
+});
+
+export const DecommissionTenant = workflow('tenant.decommission.v1', {
+  input: type({ tenantId: 'string', namespace: 'string', requestId: 'string', adminEndpoint: 'string' }),
+  output: type({ phase: "'Decommissioned' | 'NeedsIntervention'" }),
+  signals: { confirm: type({ approved: 'boolean', reviewer: 'string' }) },
+});
+
 export type RenameTenantAccountInput = typeof RenameTenantAccount.input.infer;
 export type RenameTenantAccountOutput = typeof RenameTenantAccount.output.infer;
 
@@ -164,6 +205,7 @@ export type UsageSampleStatus = NonNullable<typeof UsageSampleEntity.status>['in
 export interface TenantPlatformExample {
   readonly composition: KubernetesApplicationBuilder['composition'];
   readonly models: {
+    readonly TenantLifecycle: ApplicationModelBinding<TenantLifecycleSpec>;
     readonly Account: ApplicationModelBinding<AccountSpec, AccountStatus>;
     readonly AuditRecord: ApplicationModelBinding<AuditRecordSpec, AuditRecordStatus>;
     readonly Invitation: ApplicationModelBinding<InvitationSpec, InvitationStatus>;
@@ -221,6 +263,13 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
       retention: { mode: 'retain' },
     },
   });
+  const TenantLifecycle = tenantPlatform.model(TenantLifecycleEntity, {
+    schema: {
+      identity: ['id'],
+      transactions: 'required',
+      retention: { mode: 'retain' },
+    },
+  });
   const AuditRecord = tenantPlatform.model(AuditRecordEntity, {
     schema: {
       identity: ['id'],
@@ -259,10 +308,86 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
     context.emit(TenantAccountChanged, { tenant: input.tenant, accountId: input.accountId, displayName: input.displayName });
     return { changed, displayName: input.displayName };
   }) : undefined;
+
+  if (config.durableWorkflows) {
+    tenantPlatform.provide(WorkflowEngine, WorkflowEngine.hatchet({
+      name: `${config.stackName}-workflows`,
+      namespace: config.namespace,
+      adminCredentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: `${config.stackName}-hatchet-admin`, namespace: config.namespace },
+      database: { clusterName: `${config.stackName}-hatchet-db`, database: 'hatchet', instances: 1, storageSize: '8Gi' },
+      worker: { replicas: 1, taskSlots: 8, durableSlots: 32, gracefulShutdownSeconds: 45, scaling: { mode: 'fixed' } },
+    }));
+    const provisionInfrastructure = tenantPlatform.task(ProvisionTenantInfrastructure, { retries: 5, retryBackoff: { factor: 2, maxSeconds: 120 }, executionTimeoutSeconds: 300, idempotencyKey: (input) => input.requestId }, async (input) => {
+      const response = await fetch(`http://tenant-infrastructure-api.platform.svc/tenants/${encodeURIComponent(input.tenantId)}`, { method: 'PUT', headers: { 'content-type': 'application/json', 'idempotency-key': input.requestId }, body: JSON.stringify({ namespace: input.namespace }) });
+      if (!response.ok) throw new Error(`Tenant infrastructure provisioning failed with HTTP ${response.status}.`);
+      return { namespace: input.namespace, endpoint: `https://${input.tenantId}.example.test` };
+    });
+    const removeInfrastructure = tenantPlatform.task(RemoveTenantInfrastructure, { retries: 5, executionTimeoutSeconds: 300, idempotencyKey: (input) => input.requestId }, async (input) => {
+      const response = await fetch(`http://tenant-infrastructure-api.platform.svc/tenants/${encodeURIComponent(input.tenantId)}`, { method: 'DELETE', headers: { 'idempotency-key': input.requestId } });
+      if (!response.ok && response.status !== 404) throw new Error(`Tenant infrastructure removal failed with HTTP ${response.status}.`);
+      return { removed: true };
+    });
+    const commitTransition = tenantPlatform.task(CommitTenantTransition, { retries: 8, executionTimeoutSeconds: 60, idempotencyKey: (input) => input.requestId }, async (input) => {
+      const body = new URLSearchParams({ requestId: input.requestId, phase: input.phase, ...(input.endpoint ? { endpoint: input.endpoint } : {}) });
+      const response = await fetch(`${input.adminEndpoint}/tenants/${encodeURIComponent(input.tenantId)}/transition`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'idempotency-key': input.requestId }, body });
+      if (!response.ok) throw new Error(`Canonical tenant transition failed with HTTP ${response.status}.`);
+      return { committed: true };
+    });
+    // typecast: literal phases retain the workflow output discriminant across compensation and intervention branches.
+    tenantPlatform.workflow(OnboardTenant, { tasks: { provisionInfrastructure, removeInfrastructure, commitTransition }, worker: { group: `${config.stackName}-onboarding`, replicas: 1, taskSlots: 8, durableSlots: 32 } }, async (input, context) => {
+      let provisioned: { namespace: string; endpoint: string } | undefined;
+      try {
+        provisioned = await context.task('provisionInfrastructure', input, { idempotencyKey: `${input.requestId}:provision` });
+        const approval = await context.waitFor<{ approved: boolean; reviewer: string }>('approval', { lookback: '24h' });
+        if (!approval.approved) {
+          await context.task('removeInfrastructure', input, { idempotencyKey: `${input.requestId}:compensate` });
+          // typecast: preserve the declared workflow output phase discriminant.
+          return { phase: 'Compensated' as const };
+        }
+        await context.task('commitTransition', { tenantId: input.tenantId, requestId: `${input.requestId}:ready`, adminEndpoint: input.adminEndpoint, phase: 'Ready', endpoint: provisioned.endpoint }, { idempotencyKey: `${input.requestId}:ready` });
+        // typecast: preserve the declared workflow output phase discriminant.
+        return { phase: 'Ready' as const, endpoint: provisioned.endpoint };
+      } catch (error) {
+        context.rethrowIfCancelled(error);
+        if (provisioned) {
+          try {
+            await context.task('removeInfrastructure', input, { idempotencyKey: `${input.requestId}:compensate` });
+          } catch {
+            await context.task('commitTransition', { tenantId: input.tenantId, requestId: `${input.requestId}:intervention`, adminEndpoint: input.adminEndpoint, phase: 'NeedsIntervention' }, { idempotencyKey: `${input.requestId}:intervention` });
+            // typecast: preserve the declared workflow output phase discriminant.
+            return { phase: 'NeedsIntervention' as const };
+          }
+        }
+        throw error;
+      }
+    });
+    // typecast: the decommissioning branches retain the declared literal workflow phase union.
+    tenantPlatform.workflow(DecommissionTenant, { tasks: { removeInfrastructure, commitTransition }, worker: { group: `${config.stackName}-decommissioning`, replicas: 1, taskSlots: 8, durableSlots: 32 } }, async (input, context) => {
+      const confirmation = await context.waitFor<{ approved: boolean; reviewer: string }>('confirm', { lookback: '7d' });
+      // typecast: preserve the declared workflow output phase discriminant.
+      if (!confirmation.approved) return { phase: 'NeedsIntervention' as const };
+      await context.task('removeInfrastructure', input, { idempotencyKey: `${input.requestId}:remove` });
+      await context.task('commitTransition', { tenantId: input.tenantId, requestId: `${input.requestId}:decommissioned`, adminEndpoint: input.adminEndpoint, phase: 'Decommissioned' }, { idempotencyKey: `${input.requestId}:decommissioned` });
+      // typecast: preserve the declared workflow output phase discriminant.
+      return { phase: 'Decommissioned' as const };
+    });
+  }
   tenantPlatform.http(config.adminServerName, {
     service: { port: 80 },
     env: { TENANT_PLATFORM_NAMESPACE: config.namespace },
   }, (http) => {
+    http.post('/tenants/:tenant/transition', async ({ params, form }) => {
+      const tenantId = params.tenant ?? 'default';
+      const requestId = form.string('requestId');
+      const phase = form.enum('phase', ['Ready', 'Decommissioned', 'NeedsIntervention']);
+      const endpoint = form.string('endpoint') || undefined;
+      return TenantLifecycle.transaction(async (models) => {
+        const existing = await models.get({ id: tenantId });
+        if (existing?.spec.lastRequestId === requestId) return existing;
+        const spec = { phase, ...(endpoint ? { endpoint } : {}), lastRequestId: requestId, updatedAt: new Date().toISOString() };
+        return existing ? models.patch({ id: tenantId }, { spec }) : models.create({ id: tenantId, spec });
+      });
+    });
     http.post('/tenants/:tenant/accounts', async ({ params, form }) => Account.create({
       tenant: params.tenant ?? 'default',
       email: form.string('email').trim().toLowerCase(),
@@ -308,11 +433,15 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
   tenantPlatform.job('tenant-platform-repair', { taskKind: 'repair', image: 'postgres:16-alpine', command: ['sh', '-c'], args: ['echo repair tenant platform status'] });
   tenantPlatform.schedule('tenant-platform-cleanup', { taskKind: 'cleanup', cron: '*/15 * * * *', image: 'postgres:16-alpine', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
 
-  return { composition: tenantPlatform.composition, models: { Account, AuditRecord, Invitation, UsageSample }, ...(renameAccount ? { commands: { renameAccount } } : {}) };
+  return { composition: tenantPlatform.composition, models: { TenantLifecycle, Account, AuditRecord, Invitation, UsageSample }, ...(renameAccount ? { commands: { renameAccount } } : {}) };
 }
 
 export function createTenantPlatformV04Example(options: TenantPlatformExampleOptions = {}): TenantPlatformExample {
   return createTenantPlatformExample({ ...options, durableBehavior: true });
+}
+
+export function createTenantPlatformV05Example(options: TenantPlatformExampleOptions = {}): TenantPlatformExample {
+  return createTenantPlatformExample({ ...options, durableBehavior: true, durableWorkflows: true });
 }
 
 export function createTenantPlatformPressureTestContract(example = createTenantPlatformExample()): ApplicationV03PressureTestContract {
@@ -361,6 +490,7 @@ function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfa
       { interface: 'EventLog', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'Certificate', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     ];
 }
 
@@ -423,3 +553,4 @@ function tenantPlatformGeneratedStatusObservabilityContract(): NonNullable<Appli
 
 export const tenantPlatform = createTenantPlatformExample().composition;
 export const tenantPlatformV04 = createTenantPlatformV04Example().composition;
+export const tenantPlatformV05 = createTenantPlatformV05Example().composition;

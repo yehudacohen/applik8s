@@ -25,6 +25,11 @@ export type ApplicationGraphNodeKind =
   | 'event'
   | 'commandHandler'
   | 'processor'
+  | 'task'
+  | 'taskHandler'
+  | 'workflow'
+  | 'workflowHandler'
+  | 'workflowWorker'
   | 'job'
   | 'config'
   | 'secret'
@@ -46,6 +51,11 @@ export const applicationGraphNodeKinds = [
   'event',
   'commandHandler',
   'processor',
+  'task',
+  'taskHandler',
+  'workflow',
+  'workflowHandler',
+  'workflowWorker',
   'job',
   'config',
   'secret',
@@ -67,7 +77,8 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'HttpExposure'
   | 'Certificate'
   | 'DnsPublication'
-  | 'CredentialStore';
+  | 'CredentialStore'
+  | 'WorkflowEngine';
 
 /** Built-ins remain strongly named while versioned provider packages may add interfaces without editing core. */
 export type ApplicationProviderInterfaceKind = ApplicationBuiltInProviderInterfaceKind | (string & {});
@@ -86,6 +97,7 @@ export const applicationProviderInterfaceKinds = [
   'Certificate',
   'DnsPublication',
   'CredentialStore',
+  'WorkflowEngine',
 ] as const satisfies readonly ApplicationProviderInterfaceKind[];
 
 // typecast: v0.3 predates the experimental EventLog surface introduced for v0.4 durable behavior.
@@ -147,6 +159,11 @@ export type ApplicationGraphNode =
   | ApplicationEventNode
   | ApplicationCommandHandlerNode
   | ApplicationProcessorNode
+  | ApplicationTaskNode
+  | ApplicationTaskHandlerNode
+  | ApplicationWorkflowNode
+  | ApplicationWorkflowHandlerNode
+  | ApplicationWorkflowWorkerNode
   | ApplicationJobNode
   | ApplicationConfigNode
   | ApplicationSecretNode
@@ -314,6 +331,81 @@ export interface ApplicationProcessorDeploymentContract {
   };
   readonly disruption: { readonly maxUnavailable: number } | { readonly minAvailable: number } | { readonly disabled: true };
   readonly nodeSelector?: Readonly<Record<string, string>>;
+}
+
+export interface ApplicationTaskNode extends ApplicationGraphNodeBase<'task'> {
+  readonly contract: {
+    readonly name: string;
+    readonly version: string;
+    readonly input: ApplicationMessageContractSchema;
+    readonly output: ApplicationMessageContractSchema;
+    readonly errors: readonly { readonly name: string; readonly schema: ApplicationMessageContractSchema }[];
+  };
+}
+
+export interface ApplicationTaskHandlerNode extends ApplicationGraphNodeBase<'taskHandler'> {
+  readonly task: ApplicationGraphNodeRef;
+  readonly workflowEngine: ApplicationProviderRef<'WorkflowEngine'>;
+  readonly retry: ApplicationRetryPolicy;
+  readonly executionTimeoutSeconds: number;
+  readonly scheduleTimeoutSeconds: number;
+  readonly idempotency: {
+    readonly required: true;
+    readonly keySource: 'invocation' | 'inputExpression';
+    readonly expression?: ApplicationExpressionContract;
+    readonly guarantee: 'atLeastOnceRetrySafe';
+  };
+  readonly effectBoundary: 'externalEffectsAllowed';
+  readonly handlerSource: string;
+  readonly handlerDependencies?: { readonly source: string; readonly resolveDir: string };
+  readonly sourceLocation?: SourceLocation;
+}
+
+export interface ApplicationWorkflowNode extends ApplicationGraphNodeBase<'workflow'> {
+  readonly contract: {
+    readonly name: string;
+    readonly version: string;
+    readonly input: ApplicationMessageContractSchema;
+    readonly output: ApplicationMessageContractSchema;
+    readonly errors: readonly { readonly name: string; readonly schema: ApplicationMessageContractSchema }[];
+    readonly signals: readonly { readonly name: string; readonly schema: ApplicationMessageContractSchema }[];
+  };
+  readonly triggers: {
+    readonly crons: readonly { readonly name: string; readonly expression: string; readonly input: JsonObject }[];
+  };
+}
+
+export interface ApplicationWorkflowHandlerNode extends ApplicationGraphNodeBase<'workflowHandler'> {
+  readonly workflow: ApplicationGraphNodeRef;
+  readonly workflowEngine: ApplicationProviderRef<'WorkflowEngine'>;
+  readonly tasks: readonly ApplicationGraphNodeRef[];
+  readonly childWorkflows: readonly ApplicationGraphNodeRef[];
+  readonly taskBindings: readonly { readonly alias: string; readonly task: ApplicationGraphNodeRef }[];
+  readonly childWorkflowBindings: readonly { readonly alias: string; readonly workflow: ApplicationGraphNodeRef }[];
+  readonly handlerSource: string;
+  readonly handlerDependencies?: { readonly source: string; readonly resolveDir: string };
+  readonly sourceLocation?: SourceLocation;
+  readonly orchestrationBoundary: 'durableEffectsThroughTasks';
+  readonly deterministicOperations: readonly ('task' | 'childWorkflow' | 'sleep' | 'externalEvent' | 'now' | 'cancellation')[];
+  readonly sourceAnalysis: 'closedWorkflowAllowlist';
+}
+
+export interface ApplicationWorkflowWorkerNode extends ApplicationGraphNodeBase<'workflowWorker'> {
+  readonly handlers: readonly ApplicationGraphNodeRef[];
+  readonly workflowEngine: ApplicationProviderRef<'WorkflowEngine'>;
+  readonly runtime: 'node';
+  readonly lifecycle: 'longLived';
+  readonly deployment: {
+    readonly replicas: number;
+    readonly taskSlots: number;
+    readonly durableSlots: number;
+    readonly gracefulShutdownSeconds: number;
+    readonly healthPort: number;
+    /** Network egress posture for external-effect tasks. */
+    readonly egress: 'allowAll' | 'sameNamespace';
+    readonly scaling: { readonly mode: 'fixed' } | { readonly mode: 'kedaHatchetSlots'; readonly minReplicas: number; readonly maxReplicas: number; readonly pollingIntervalSeconds: number };
+  };
+  readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
 }
 
 export interface ApplicationModelRuntimeContract {
@@ -1106,6 +1198,8 @@ export interface ApplicationRetryPolicy {
   readonly maxAttempts?: number;
   readonly initialDelayMs?: number;
   readonly maxDelayMs?: number;
+  /** Exponential multiplier when the backing runtime exposes one directly. */
+  readonly factor?: number;
 }
 
 export type ApplicationRuntimeModuleKind =
@@ -1456,6 +1550,11 @@ function stablePublicApiForApplicationGraphNode(node: ApplicationGraphNode): str
     event: 'event',
     commandHandler: 'Model.on.command',
     processor: 'Model.on.command',
+    task: 'task',
+    taskHandler: 'app.task',
+    workflow: 'workflow',
+    workflowHandler: 'app.workflow',
+    workflowWorker: 'app.workflow',
   };
   return apiByNodeKind[node.kind];
 }
@@ -2355,6 +2454,16 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
       return applicationCommandHandlerNodeStructureDiagnostics(node, graph);
     case 'processor':
       return applicationProcessorNodeStructureDiagnostics(node, graph);
+    case 'task':
+      return applicationDurableContractNodeStructureDiagnostics('task', node.id, node.contract);
+    case 'workflow':
+      return applicationDurableContractNodeStructureDiagnostics('workflow', node.id, node.contract);
+    case 'taskHandler':
+      return applicationTaskHandlerNodeStructureDiagnostics(node, graph);
+    case 'workflowHandler':
+      return applicationWorkflowHandlerNodeStructureDiagnostics(node, graph);
+    case 'workflowWorker':
+      return applicationWorkflowWorkerNodeStructureDiagnostics(node, graph);
     default:
       return [];
   }
@@ -2485,6 +2594,50 @@ function applicationProcessorNodeStructureDiagnostics(node: ApplicationProcessor
   if (node.deployment && (!Number.isInteger(node.deployment.maxAckPending) || node.deployment.maxAckPending < node.deployment.replicas * node.deployment.concurrency || node.deployment.maxAckPending > 65_536)) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application processor node ${node.id} deployment.maxAckPending must be an integer between replicas * concurrency and 65536.`));
   }
+  return diagnostics;
+}
+
+function applicationDurableContractNodeStructureDiagnostics(kind: 'task' | 'workflow', id: string, contract: { readonly name: string; readonly version: string; readonly errors: readonly { readonly name: string }[] }): readonly Diagnostic[] {
+  const diagnostics: Diagnostic[] = [];
+  if (!contract.name.trim() || !/^v[1-9][0-9]*$/.test(contract.version)) diagnostics.push(applicationGraphStructureDiagnostic(`Application ${kind} node ${id} must declare a non-empty name and explicit version.`));
+  const errors = new Set<string>();
+  for (const error of contract.errors) {
+    if (errors.has(error.name)) diagnostics.push(applicationGraphStructureDiagnostic(`Application ${kind} node ${id} declares duplicate durable error ${error.name}.`));
+    errors.add(error.name);
+  }
+  return diagnostics;
+}
+
+function applicationTaskHandlerNodeStructureDiagnostics(node: ApplicationTaskHandlerNode, graph: ApplicationGraph): readonly Diagnostic[] {
+  const nodes = new Map(graph.nodes.map((candidate) => [candidate.id, candidate]));
+  const diagnostics: Diagnostic[] = [];
+  if (nodes.get(node.task.nodeId)?.kind !== 'task') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} must reference a task node.`));
+  if (!node.handlerSource.trim()) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} must retain handler source for generated worker lowering.`));
+  if (node.effectBoundary !== 'externalEffectsAllowed' || node.idempotency.guarantee !== 'atLeastOnceRetrySafe') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} must retain the retry-safe external-effect boundary.`));
+  if (!Number.isInteger(node.executionTimeoutSeconds) || node.executionTimeoutSeconds < 1) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} execution timeout must be a positive integer.`));
+  if (node.retry.factor !== undefined && (!Number.isFinite(node.retry.factor) || node.retry.factor <= 0)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} retry factor must be greater than zero.`));
+  return diagnostics;
+}
+
+function applicationWorkflowHandlerNodeStructureDiagnostics(node: ApplicationWorkflowHandlerNode, graph: ApplicationGraph): readonly Diagnostic[] {
+  const nodes = new Map(graph.nodes.map((candidate) => [candidate.id, candidate]));
+  const diagnostics: Diagnostic[] = [];
+  if (nodes.get(node.workflow.nodeId)?.kind !== 'workflow') diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow handler ${node.id} must reference a workflow node.`));
+  for (const task of node.tasks) if (nodes.get(task.nodeId)?.kind !== 'task') diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow handler ${node.id} task reference ${task.nodeId} must be a task node.`));
+  for (const workflow of node.childWorkflows) if (nodes.get(workflow.nodeId)?.kind !== 'workflow') diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow handler ${node.id} child reference ${workflow.nodeId} must be a workflow node.`));
+  for (const binding of node.taskBindings) if (nodes.get(binding.task.nodeId)?.kind !== 'task') diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow handler ${node.id} task alias ${binding.alias} must reference a task node.`));
+  for (const binding of node.childWorkflowBindings) if (nodes.get(binding.workflow.nodeId)?.kind !== 'workflow') diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow handler ${node.id} child alias ${binding.alias} must reference a workflow node.`));
+  if (!node.handlerSource.trim() || node.orchestrationBoundary !== 'durableEffectsThroughTasks' || node.sourceAnalysis !== 'closedWorkflowAllowlist') diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow handler ${node.id} must retain closed provider-neutral durable orchestration source.`));
+  return diagnostics;
+}
+
+function applicationWorkflowWorkerNodeStructureDiagnostics(node: ApplicationWorkflowWorkerNode, graph: ApplicationGraph): readonly Diagnostic[] {
+  const handlerIds = new Set(graph.nodes.filter((candidate) => candidate.kind === 'taskHandler' || candidate.kind === 'workflowHandler').map((candidate) => candidate.id));
+  const diagnostics: Diagnostic[] = [];
+  if (node.handlers.length === 0) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} must include at least one task or workflow handler.`));
+  for (const handler of node.handlers) if (!handlerIds.has(handler.nodeId)) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} references missing handler ${handler.nodeId}.`));
+  if (!Number.isInteger(node.deployment.replicas) || node.deployment.replicas < 1 || !Number.isInteger(node.deployment.taskSlots) || node.deployment.taskSlots < 1 || !Number.isInteger(node.deployment.durableSlots) || node.deployment.durableSlots < 1) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} requires positive replica, task-slot, and durable-slot counts.`));
+  if (node.deployment.egress !== 'allowAll' && node.deployment.egress !== 'sameNamespace') diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} requires an explicit supported egress posture.`));
   return diagnostics;
 }
 
@@ -2675,6 +2828,10 @@ function applicationProviderRefsForNode(node: ApplicationGraphNode): readonly Ap
       return node.provider ? [node.provider] : [];
     case 'processor':
       return node.eventLog ? [node.eventLog] : [];
+    case 'taskHandler':
+    case 'workflowHandler':
+    case 'workflowWorker':
+      return [node.workflowEngine];
     default:
       return [];
   }

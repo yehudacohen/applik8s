@@ -1,35 +1,35 @@
+import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
+import { type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationModelStoreProvider, type ApplicationSecretBinding, type ApplicationTaskBinding, type ApplicationWorkflowBinding, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, DnsPublication, EventSource, event, HttpExposure, IndexStore, ModelStore, ObjectStorage, Queue, Secret, task, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import type {
-  CapabilityClient,
-  CapabilityClientSet,
-  GraphAdapter,
-  HandlerContext,
-  GeneratedJobContract,
-  GeneratedJobDurableStatusUpdaterContract,
-  GeneratedJobPhaseStatusContract,
-  ApplicationMigrationDriftCheckContract,
   ApplicationDurableStatusOwnershipContract,
+  ApplicationMigrationDriftCheckContract,
+  ApplicationModelStoreGuaranteesContract,
   ApplicationModelStoreSemanticsContract,
   ApplicationOperationTargetContract,
   ApplicationRuntimeModuleContract,
   ApplicationRuntimeModuleInterfaceContract,
   ApplicationV03PressureTestContract,
   ApplicationWatchScopeLoweringContract,
+  CapabilityClient,
+  CapabilityClientSet,
+  GeneratedJobContract,
+  GeneratedJobDurableStatusUpdaterContract,
+  GeneratedJobPhaseStatusContract,
+  GraphAdapter,
+  HandlerContext,
   OperationTarget,
   OperatorManifest,
-  ApplicationModelStoreGuaranteesContract,
 } from '@applik8s/core';
 import type {
-  Applik8sSdk,
   AnyCrdInstanceFactory,
+  Applik8sSdk,
   CrdInstanceInput,
   DeployedOperator,
   SchemaInput,
 } from '@applik8s/sdk';
 import type { Applik8sTestingApi } from '@applik8s/testing';
 import type { Applik8sTypeKroAdapterApi, TypeKroGraph } from '@applik8s/typekro-adapter';
-import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
-import { Certificate, command, CounterStore, CredentialStore, DnsPublication, event, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, Queue, Secret, sdk as appSdk, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationModelStoreProvider, type ApplicationSecretBinding } from '@applik8s/applik8s';
-import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import { operationTarget as handlerOperationTargetFactory, targetFactory as handlerTargetFactory } from '@applik8s/typekro-adapter/targets';
 
 interface ImageSpec {
@@ -115,6 +115,17 @@ const RenameAccount = command('account.rename.v1', {
 
 const AccountChanged = event('account.changed.v1', {
   payload: appSchemaType({ email: 'string', displayName: 'string' }),
+});
+
+const ProvisionAccount = task('account.provision.v1', {
+  input: appSchemaType({ accountId: 'string', requestId: 'string' }),
+  output: appSchemaType({ endpoint: 'string' }),
+});
+
+const OnboardAccount = workflow('account.onboard.v1', {
+  input: appSchemaType({ accountId: 'string', requestId: 'string' }),
+  output: appSchemaType({ endpoint: 'string' }),
+  signals: { approval: appSchemaType({ approved: 'boolean' }) },
 });
 
 const accountModelStore = ModelStore.postgres({
@@ -274,6 +285,7 @@ const v03ProviderInterfaces = [
   { interface: 'IndexStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'CounterStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'EventSource', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'EventLog', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'Secret', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'Queue', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'ObjectStorage', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
@@ -281,6 +293,7 @@ const v03ProviderInterfaces = [
   { interface: 'Certificate', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
 ] satisfies ApplicationV03PressureTestContract['requiredProviderInterfaces'];
 
 const v03ProviderCompatibility = {
@@ -392,6 +405,7 @@ appSdk.kubernetesComposition({
   status: appSchemaType({ ready: 'boolean' }),
 }, (spec, app) => {
   const store = app.provide(ModelStore, accountModelStore);
+  app.provide(WorkflowEngine, WorkflowEngine.hatchet({ namespace: spec.namespace, provision: false, workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: spec.namespace } }));
   const modelDefaults = app.defaults({ models: accountModelStore });
   const maintenanceJob: ApplicationJobBinding = app.job('compact-accounts', { taskKind: 'maintenance', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo compact'] });
   const maintenanceSchedule: ApplicationJobBinding = app.schedule('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
@@ -410,6 +424,18 @@ appSdk.kubernetesComposition({
     },
   });
   const accountModelBinding: ApplicationModelBinding<AccountSpec, AccountStatus> = Account;
+  const provisionAccount: ApplicationTaskBinding<{ accountId: string; requestId: string }, { endpoint: string }> = app.task(ProvisionAccount, { idempotencyKey: (input) => input.requestId }, async (input) => ({ endpoint: `https://${input.accountId}.example.test` }));
+  const onboardAccount: ApplicationWorkflowBinding<{ accountId: string; requestId: string }, { endpoint: string }> = app.workflow(OnboardAccount, { tasks: { provisionAccount } }, async (input, context) => {
+    const result = await context.task<{ accountId: string; requestId: string }, { endpoint: string }>('provisionAccount', input, { idempotencyKey: input.requestId });
+    const approval = await context.waitFor<{ approved: boolean }>('approval');
+    if (!approval.approved) throw new Error('account onboarding rejected');
+    return result;
+  });
+  void onboardAccount.start({ accountId: 'account-1', requestId: 'request-1' }).then(async (run) => {
+    await onboardAccount.signal(run.id, 'approval', { approved: true });
+    const result: { endpoint: string } = await run.result();
+    expectTypeUsage(result);
+  });
   const renameBinding = Account.on.command(RenameAccount, {
     key: ({ email }) => email,
     idempotencyKey: ({ requestId }) => requestId,
@@ -428,7 +454,7 @@ appSdk.kubernetesComposition({
     expectTypeUsage(phase, commandId, correlationId);
   });
   accountModelForScriptExecution = accountModelBinding;
-  expectTypeUsage(modelDefaults, maintenanceJob, maintenanceSchedule, maintenanceJobStatusPath, maintenanceScheduleDiagnostics, maintenanceJobDryRun, maintenanceSchedulePlan, renameBinding);
+  expectTypeUsage(modelDefaults, maintenanceJob, maintenanceSchedule, maintenanceJobStatusPath, maintenanceScheduleDiagnostics, maintenanceJobDryRun, maintenanceSchedulePlan, provisionAccount, onboardAccount, renameBinding);
 
   app.server('accounts-web', { namespace: spec.namespace }, (server) => {
     server.post('/accounts', async () => {

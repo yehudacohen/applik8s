@@ -124,7 +124,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['app.model', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'provider.ModelStore']));
     expect(graph?.compatibility.documentedInternalContracts).toEqual(expect.arrayContaining(['ApplicationGraph']));
     expect(graph?.compatibility.experimentalSurfaces).toEqual(expect.arrayContaining(['app.graph']));
-    expect(graph?.compatibility.postV3Surfaces).toEqual(expect.arrayContaining(['workload-movement-operator', 'generic-workflow-orchestration', 'additional-provider-adapters']));
+    expect(graph?.compatibility.postV3Surfaces).toEqual(expect.arrayContaining(['workload-movement-operator', 'additional-provider-adapters']));
     expect(graph?.compatibility.labels).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'app.model', surface: 'stablePublicApi' }),
       expect.objectContaining({ name: 'provider.ModelStore', surface: 'stablePublicApi' }),
@@ -420,6 +420,7 @@ function providerInterfaces(): readonly ApplicationProviderInterfaceContract[] {
     { interface: 'Certificate', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   ];
 }
 

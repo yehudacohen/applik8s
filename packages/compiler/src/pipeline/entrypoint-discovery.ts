@@ -47,8 +47,17 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
       plugins: [applik8sWorkspaceSourcePlugin()],
     });
     const discoverySpecifier = `${pathToFileURL(discoveryBundle).href}?applik8s=${Date.now()}`;
-    // static-import-exception: compiler discovery loads a generated local ESM bundle and narrows every exported value structurally.
-    const imported = (await import(/* @vite-ignore */ discoverySpecifier)) as Record<string, unknown>;
+    const discoveryEntrypointKey = Symbol.for('applik8s.discovery.entrypoint');
+    const previousDiscoveryEntrypoint = Reflect.get(globalThis, discoveryEntrypointKey);
+    Reflect.set(globalThis, discoveryEntrypointKey, entrypoint);
+    let imported: Record<string, unknown>;
+    try {
+      // static-import-exception: compiler discovery loads a generated local ESM bundle and narrows every exported value structurally. typecast: import() exposes unknown exports which the following structural filters validate.
+      imported = (await import(/* @vite-ignore */ discoverySpecifier)) as Record<string, unknown>;
+    } finally {
+      if (previousDiscoveryEntrypoint === undefined) Reflect.deleteProperty(globalThis, discoveryEntrypointKey);
+      else Reflect.set(globalThis, discoveryEntrypointKey, previousDiscoveryEntrypoint);
+    }
     const operators = Object.values(imported).filter(isExportedOperator).map((value) => value.definition);
     const duplicate = firstDuplicate(operators.map((operator) => operator.name));
     if (duplicate) return error('BUNDLE_INVALID', `Entrypoint exports multiple operators named ${duplicate}.`);

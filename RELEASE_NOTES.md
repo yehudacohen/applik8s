@@ -1,5 +1,13 @@
 # Release Notes
 
+## v0.5.0 (in development)
+
+v0.5 adds inert typed tasks and workflows, app-bound runtime handles, and a versioned `WorkflowEngine` provider contract. The first implementation pins Hatchet and its chart, runs it in PostgreSQL-only mode on external CNPG, disables RabbitMQ, and generates self-contained Node workers with health, graceful drain, retries, schedules, durable sleeps, child calls, event waits, cancellation, correlation propagation, fixed scaling, and optional KEDA task-stat scaling.
+
+Durable orchestration is deliberately effect-free: external work belongs in retry-safe tasks, and canonical state still commits through v0.4 model transactions. Compiler analysis follows captured module-scope helpers and rejects hidden network, database, Kubernetes, filesystem, wall-clock, randomness, and ambient-timer access from workflows.
+
+The longitudinal Tenant Platform adds onboarding and decommissioning workflows with compensation and explicit intervention. A fresh OrbStack Hatchet/CNPG proof exercises retry, idempotency, worker replacement during a durable wait, signal/resume, metadata propagation, compensation failure, cancellation, and TypeKro-first teardown.
+
 ## v0.4.3
 
 v0.4.3 is the final v0.4 correctness and release-discipline release. It closes the remaining gap between the durable-behavior implementation and its executable public contract without broadening into v0.5 workflow orchestration.

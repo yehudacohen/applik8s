@@ -34,6 +34,7 @@
     "@applik8s/sdk": "0.4.3",
     "@applik8s/typekro-adapter": "0.4.3",
     "@applik8s/typetainer": "0.4.3",
+    "@hatchet-dev/typescript-sdk": "1.24.3",
     "arktype": "^2.1.20",
     "commander": "^15.0.0",
     "drizzle-orm": "^0.45.1",

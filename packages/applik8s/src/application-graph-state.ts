@@ -1,5 +1,5 @@
-import { normalizeApplicationGraph } from '@applik8s/core';
 import type { ApplicationCompatibilityLabel, ApplicationDiagnosticContract, ApplicationGraph, ApplicationGraphEdge, ApplicationGraphNode, ApplicationProviderBindingContract, ApplicationProviderInterfaceKind, ApplicationProviderRequirement } from '@applik8s/core';
+import { normalizeApplicationGraph } from '@applik8s/core';
 
 export interface ApplicationGraphState {
   readonly graphNodes: ApplicationGraphNode[];
@@ -18,10 +18,10 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
     providerRequirements: dedupeApplicationProviderRequirements(state.providerRequirements),
     providerBindings: dedupeApplicationProviderBindings(state.providerBindings),
     compatibility: {
-      stablePublicApis: ['sdk.kubernetesComposition', 'app.server', 'app.http', 'app.crd', 'app.resource', 'app.model', 'app.reconcile', 'app.storage.postgres', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'app.aggregate', 'app.config', 'app.secret', 'app.expose', 'Resource.index', 'Resource.increment', 'command', 'event', 'Model.on.command', 'provider.ModelStore', 'provider.IndexStore', 'provider.CounterStore', 'provider.EventSource', 'provider.EventLog', 'provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.Certificate', 'provider.DnsPublication', 'provider.CredentialStore'],
+      stablePublicApis: ['sdk.kubernetesComposition', 'app.server', 'app.http', 'app.crd', 'app.resource', 'app.model', 'app.reconcile', 'app.storage.postgres', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'app.aggregate', 'app.config', 'app.secret', 'app.expose', 'Resource.index', 'Resource.increment', 'command', 'event', 'task', 'workflow', 'Model.on.command', 'app.task', 'app.workflow', 'provider.ModelStore', 'provider.IndexStore', 'provider.CounterStore', 'provider.EventSource', 'provider.EventLog', 'provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.Certificate', 'provider.DnsPublication', 'provider.CredentialStore', 'provider.WorkflowEngine'],
       documentedInternalContracts: ['ApplicationGraph'],
       experimentalSurfaces: ['app.graph'],
-      postV3Surfaces: ['workload-movement-operator', 'generic-workflow-orchestration', 'additional-provider-adapters'],
+      postV3Surfaces: ['workload-movement-operator', 'additional-provider-adapters'],
       labels: [
         stableApiLabel('sdk.kubernetesComposition', 'v0.2', 'Canonical TypeKro-backed app composition entrypoint.'),
         stableApiLabel('app.server', 'v0.2', 'Generated app-server workload entrypoint with inferred resources and RBAC.'),
@@ -58,8 +58,12 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
         stableApiLabel('provider.EventLog', 'v0.4', 'Durable at-least-once transport implemented by NATS JetStream while PostgreSQL remains authoritative.'),
         stableApiLabel('provider.Certificate', 'v0.4', 'Managed TLS intent materializes cert-manager Certificate resources while issuer lifecycle remains platform-owned.'),
         stableApiLabel('provider.DnsPublication', 'v0.4', 'Managed DNS intent materializes external-dns declarations without claiming propagation readiness.'),
+        stableApiLabel('task', 'v0.5', 'Inert provider-neutral durable task contract with schemas, versioned identity, durable results, and named errors.'),
+        stableApiLabel('workflow', 'v0.5', 'Inert provider-neutral durable workflow contract with schemas, versioned identity, signals, and named errors.'),
+        stableApiLabel('app.task', 'v0.5', 'App-bound idempotent external-effect task materialized by the selected WorkflowEngine provider.'),
+        stableApiLabel('app.workflow', 'v0.5', 'App-bound durable orchestration with declared tasks, child workflows, waits, schedules, signals, cancellation, and deterministic time.'),
+        stableApiLabel('provider.WorkflowEngine', 'v0.5', 'Durable task and workflow execution contract initially implemented by Hatchet with operational PostgreSQL authority.'),
         { name: 'workload-movement-operator', surface: 'postV3Surface', rationale: 'Pressure-test application after v0.3 substrate freeze.', implementation: 'postV3' },
-        { name: 'generic-workflow-orchestration', surface: 'postV3Surface', rationale: 'Generic workflow orchestration is intentionally deferred beyond Kubernetes-native generated jobs.', implementation: 'postV3' },
         { name: 'additional-provider-adapters', surface: 'postV3Surface', rationale: 'v0.3 ships bounded Kubernetes-native defaults; additional cloud and hosted-service adapters remain incremental.', implementation: 'postV3' },
       ],
     },

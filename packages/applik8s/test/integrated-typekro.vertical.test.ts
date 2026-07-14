@@ -2089,6 +2089,7 @@ describe('integrated TypeKro package surface', () => {
       ['provider.ObjectStorage', 'implemented'],
       ['provider.Queue', 'implemented'],
       ['provider.Secret', 'implemented'],
+      ['provider.WorkflowEngine', 'implemented'],
     ]));
     expect(graph?.compatibility.labels.filter((label) => label.name.startsWith('provider.')).every((label) => label.implementation === 'implemented')).toBe(true);
     const stableLabels = new Set(graph?.compatibility.labels.filter((label) => label.surface === 'stablePublicApi').map((label) => label.name));
@@ -2143,6 +2144,7 @@ describe('integrated TypeKro package surface', () => {
       'provider.object-storage',
       'provider.queue',
       'provider.secret',
+      'provider.workflow-engine',
       'server.admin',
     ]);
     expect(nodesById.get('job.cleanup-accounts')).toMatchObject({ id: 'job.cleanup-accounts', kind: 'job', schedule: expect.objectContaining({ cron: '0 3 * * *' }) });
@@ -2173,6 +2175,8 @@ describe('integrated TypeKro package surface', () => {
       'app.secret',
       'app.server',
       'app.storage.postgres',
+      'app.task',
+      'app.workflow',
       'command',
       'event',
       'provider.Certificate',
@@ -2187,7 +2191,10 @@ describe('integrated TypeKro package surface', () => {
       'provider.ObjectStorage',
       'provider.Queue',
       'provider.Secret',
+      'provider.WorkflowEngine',
       'sdk.kubernetesComposition',
+      'task',
+      'workflow',
     ]);
   });
 

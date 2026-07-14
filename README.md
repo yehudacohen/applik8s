@@ -6,6 +6,17 @@ You write typed Kubernetes APIs and event listeners. `applik8s` compiles them in
 
 Reconciliation TypeScript becomes WASM component logic evaluated by Kubernetes events through a Rust operator host. Application servers and durable command processors compile into separate, inspectable Node workloads when the application graph requires them.
 
+## v0.5 Flagship: Durable Tenant Orchestration
+
+v0.5 adds provider-neutral durable tasks and workflows with a pinned PostgreSQL-only Hatchet implementation. The Tenant Platform now models tenant onboarding and decommissioning with retry-safe external-effect tasks, durable approval waits, cancellation, compensation, explicit operator intervention, and canonical transitions committed through the v0.4 model transaction boundary.
+
+```sh
+bun run build:tenant-platform-v05
+bun run check:v05:prerelease:orbstack
+```
+
+See [`docs/workflows.md`](docs/workflows.md) for semantics and [`docs/v0.5-scorecard.md`](docs/v0.5-scorecard.md) for the executable release criteria.
+
 ## v0.4 Flagship: Durable Tenant Behavior
 
 v0.4 adds typed, durable application behavior to the v0.3 application substrate. `examples/tenant-platform.ts` now has an opt-in v0.4 slice where one `Model.on.command()` declaration infers PostgreSQL inbox/result/history/outbox semantics, a generated processor, NATS JetStream Stream and Consumer resources, retry/dead-letter behavior, and TypeKro-owned lifecycle.

@@ -1,6 +1,6 @@
 # API Reference
 
-This is the supported public surface for `applik8s` v0.4. The v0.3 application substrate remains supported and v0.4 adds durable typed behavior without broadening into workflow orchestration or projection/UI APIs.
+This is the supported public surface for `applik8s` v0.5. The v0.3 application substrate and v0.4 durable command semantics remain supported; v0.5 adds provider-neutral durable tasks and workflows without broadening into v0.6 projection/UI APIs.
 
 ## Packages
 
@@ -149,6 +149,12 @@ Applik8s consumes TypeKro 0.26 and re-exports its production Valkey, Rook/Ceph, 
 ## v0.4 Durable Behavior
 
 `command(...)`, `event(...)`, `Model.on.command(...)`, and the `EventLog` provider are stable v0.4 APIs. One model command declaration lowers into PostgreSQL command authority, declared transactional outboxes, a bounded generated processor, and JetStream transport resources. PostgreSQL owns idempotency and durable results; JetStream is at-least-once delivery. See `docs/commands.md` for ordering, missing-target, revision, recovery, and effect-boundary semantics.
+
+## v0.5 Durable Tasks and Workflows
+
+`task(...)`, `workflow(...)`, `app.task(...)`, `app.workflow(...)`, and `WorkflowEngine` are stable v0.5 APIs. App-bound task and workflow handles support run, start, schedule, result observation, cancellation, and declared signals. Workflow contexts expose declared task/child calls, durable sleep, event waits, a provider clock, and cancellation; direct external effects in orchestration fail compilation, including effects hidden in captured module-scope helpers.
+
+The initial provider is pinned Hatchet in PostgreSQL-only mode with CNPG and no RabbitMQ. Generated worker groups include a self-contained bundle, health, graceful drain, bounded slots, disruption policy, explicit egress, fixed replicas, and optional KEDA task-stat scaling. Hatchet is operational workflow authority; canonical application transitions still commit through the v0.4 PostgreSQL transaction boundary. See `docs/workflows.md`.
 
 There are two distinct status ownership cases:
 

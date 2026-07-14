@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { AnyResourceDefinition, ApplicationDiagnosticContract, ApplicationExposureReadinessContract, ApplicationGeneratedResourceContract, ApplicationGraph, ApplicationObservabilityContract, ApplicationProviderInterfaceKind, ApplicationWatchScope, ApplicationWatchScopeLoweringContract, HandlerRegistration, JsonValue, NormalizedOperationPlan, OperationTarget, OperatorDeploymentOptions, PermissionRule, PlanTargetOptions, ResourceDefinition, ResourceIndex, ResourceWatchAddress, Result } from '@applik8s/core';
-import { applicationGraphMetadataProperty } from '@applik8s/core';
+import { applicationGraphMetadataProperty, normalizeApplicationGraph } from '@applik8s/core';
 import type { CrdOptions, SchemaInput } from '@applik8s/sdk';
 import { sdk as baseSdk, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
 import type { TypeKroListenerComposition, TypeKroListenerCompositionDefinition } from '@applik8s/typekro-adapter';
@@ -31,12 +31,15 @@ import { generatedApplicationServerRuntimeSource, runtimeIndexTable } from './ap
 import { generatedServerRuntimeBundleContract } from './application-server-runtime-bundle.js';
 import type { ApplicationGeneratedJobStatusProjectionStore, ApplicationGeneratedJobStatusTarget, ApplicationStatusReconcilerAppResourceTarget } from './application-status-reconciler.js';
 import { applicationStatusReconcilerName, emitApplicationGeneratedJobStatusReconcilers } from './application-status-reconciler.js';
-import type { EntityDefinition } from './dsl.js';
+import type { ApplicationTaskBinding, ApplicationTaskHandler, ApplicationTaskOptions, ApplicationWorkflowBinding, ApplicationWorkflowHandler, ApplicationWorkflowOptions } from './application-workflows.js';
+import { type ApplicationWorkflowState, registerApplicationTask, registerApplicationWorkflow } from './application-workflows.js';
+import type { EntityDefinition, TaskDefinition, WorkflowDefinition } from './dsl.js';
 
 export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationCommandSubmissionAcknowledgement, ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandOptions, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
-export type { ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalDnsPublicationProvider, ApplicationGeneratedModelStoreMigrationJobOptions, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationObjectStorageProvider, ApplicationPostgresModelStoreOptions, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationQueueProvider, ApplicationSecretProvider, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend } from './application-providers.js';
-export { Certificate, CounterStore, CredentialStore, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, providers, Queue, Secret } from './application-providers.js';
+export type { ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalDnsPublicationProvider, ApplicationGeneratedModelStoreMigrationJobOptions, ApplicationHatchetWorkflowEngineProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationObjectStorageProvider, ApplicationPostgresModelStoreOptions, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationQueueProvider, ApplicationSecretProvider, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
+export { Certificate, CounterStore, CredentialStore, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, providers, Queue, Secret, WorkflowEngine } from './application-providers.js';
+export type { ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskOptions, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
 
 export interface KubernetesApplicationScope {
   readonly api: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
@@ -58,6 +61,8 @@ export interface KubernetesApplicationScope {
   defaults(defaults: ApplicationDefaults): ApplicationDefaultsBinding;
   provide<TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): ApplicationProviderBinding<TImplementation>;
   aggregate<TStats extends object, TEvent extends object>(name: string, options: ApplicationAggregateOptions<TStats, TEvent>): ApplicationAggregateBinding<TStats, TEvent>;
+  task<TInput extends object, TOutput extends object>(definition: TaskDefinition<TInput, TOutput>, options: ApplicationTaskOptions<TInput>, handler: ApplicationTaskHandler<TInput, TOutput>): ApplicationTaskBinding<TInput, TOutput>;
+  workflow<TInput extends object, TOutput extends object>(definition: WorkflowDefinition<TInput, TOutput>, options: ApplicationWorkflowOptions, handler: ApplicationWorkflowHandler<TInput, TOutput>): ApplicationWorkflowBinding<TInput, TOutput>;
 }
 
 export interface ApplicationServerRegistrar {
@@ -345,7 +350,7 @@ interface ApplicationServerPermissionInferenceRequest {
   readonly explicit: readonly ApplicationPermissionRule[];
 }
 
-interface ApplicationScopeState extends ApplicationGraphState, ApplicationProviderState {
+interface ApplicationScopeState extends ApplicationGraphState, ApplicationProviderState, ApplicationWorkflowState {
   readonly resources: Record<string, AnyResourceDefinition>;
   readonly indexes: Record<string, ResourceIndex<object, object>>;
   readonly models: Record<string, ApplicationRuntimeModelContract>;
@@ -456,6 +461,11 @@ export function applicationGraphFor(composition: object): ApplicationGraph | und
   return isApplicationGraph(attached) ? attached : applicationGraphByComposition.get(composition);
 }
 
+function attachApplicationGraph(composition: object, graph: ApplicationGraph): void {
+  applicationGraphByComposition.set(composition, graph);
+  Object.defineProperty(composition, applicationGraphMetadataProperty, { value: graph, enumerable: false, configurable: true });
+}
+
 function applicationCompositionWrapper<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(
   definition: TypeKroListenerCompositionDefinition<TSpec, TStatus>,
   compositionFn: (spec: TSpec, app: KubernetesApplicationScope) => MagicAssignableShape<TStatus>,
@@ -520,8 +530,7 @@ export const kubernetesComposition: KubernetesApplicationCompositionFunction = (
     options
   );
   if (lastApplicationGraph) {
-    applicationGraphByComposition.set(composition, lastApplicationGraph);
-    Object.defineProperty(composition, applicationGraphMetadataProperty, { value: lastApplicationGraph, enumerable: false, configurable: false });
+    attachApplicationGraph(composition, lastApplicationGraph);
   }
   return composition;
 };
@@ -568,6 +577,10 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
         // typecast: builder-style apps synthesize the minimal TypeKro status object required by the generated composition definition.
         return { ready: true } as MagicAssignableShape<KroCompatibleType>;
       });
+      const graph = applicationGraphFor(materialized);
+      if (graph && options.namespace) {
+        attachApplicationGraph(materialized, normalizeApplicationGraph({ ...graph, metadata: { ...graph.metadata, namespace: options.namespace } }));
+      }
     }
     return materialized;
   };
@@ -781,6 +794,22 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
       invalidate();
       return binding;
     },
+    task<TInput extends object, TOutput extends object>(definition: TaskDefinition<TInput, TOutput>, taskOptions: ApplicationTaskOptions<TInput>, handler: ApplicationTaskHandler<TInput, TOutput>): ApplicationTaskBinding<TInput, TOutput> {
+      const binding = preview.task(definition, taskOptions, handler);
+      replays.push((scope) => {
+        scope.task(definition, taskOptions, handler);
+      });
+      invalidate();
+      return binding;
+    },
+    workflow<TInput extends object, TOutput extends object>(definition: WorkflowDefinition<TInput, TOutput>, workflowOptions: ApplicationWorkflowOptions, handler: ApplicationWorkflowHandler<TInput, TOutput>): ApplicationWorkflowBinding<TInput, TOutput> {
+      const binding = preview.workflow(definition, workflowOptions, handler);
+      replays.push((scope) => {
+        scope.workflow(definition, workflowOptions, handler);
+      });
+      invalidate();
+      return binding;
+    },
   } satisfies KubernetesApplicationBuilder;
   Object.defineProperty(builder, applicationGraphMetadataProperty, { get: () => applicationGraphFor(materialize()), enumerable: false, configurable: false });
   return builder;
@@ -821,7 +850,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       expose: defaultApplicationProviders.HttpExposure,
       credentials: defaultApplicationProviders.CredentialStore,
     },
-    providers: {}, graphNodes: [], graphEdges: [], providerRequirements: [], providerBindings: [],
+    providers: {}, graphNodes: [], graphEdges: [], providerRequirements: [], providerBindings: [], workflowHandlers: new Map(), workflowHandlerGroups: new Map(),
   };
   for (const [providerInterface, implementation] of Object.entries(defaultApplicationProviders)) {
     recordApplicationProviderGraph(state, providerInterface, 'frameworkDefault', implementation);
@@ -1007,6 +1036,12 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       recordApplicationAggregateGraph(state, name, options);
       const workload = emitApplicationAggregateResources(name, options);
       return applicationAggregateBinding(name, options, workload);
+    },
+    task(definition, options, handler) {
+      return registerApplicationTask(state, definition, options, handler);
+    },
+    workflow(definition, options, handler) {
+      return registerApplicationWorkflow(state, definition, options, handler);
     },
   };
   return { scope, state };

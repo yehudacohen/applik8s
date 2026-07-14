@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+// typecast: readonly literal entries keep file-specific ceiling and exclusion contracts intact for the table-driven test.
 const modules = [
   { path: 'packages/applik8s/src/application.ts', ceiling: 3_800, excluded: ['function generatedApplicationAggregateSource', 'function generatedValkeyIndexerSource'] },
   { path: 'packages/applik8s/src/application-generated-runtime-sources.ts', ceiling: 750, excluded: ['createApplicationContext', 'recordApplicationServerGraph'] },

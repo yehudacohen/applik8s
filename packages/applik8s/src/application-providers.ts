@@ -31,6 +31,8 @@ export interface ApplicationNatsJetStreamEventLogProvider {
   readonly connectionSecret?: ApplicationResourceRef;
   readonly authMode?: 'token' | 'userPassword';
   readonly tokenKey?: string;
+  /** Hatchet tenant identifier required only when KEDA task-stat scaling is selected. */
+  readonly tenantId?: string;
   readonly userKey?: string;
   readonly passwordKey?: string;
 }
@@ -42,6 +44,50 @@ export type ApplicationQueueProvider = ApplicationKubernetesConfigMapQueueProvid
 export type ApplicationObjectStorageProvider = ApplicationKubernetesConfigMapObjectStorageProvider;
 export type ApplicationCredentialStoreProvider = ApplicationKubernetesCredentialStoreProvider;
 export type ApplicationEventLogProvider = ApplicationNatsJetStreamEventLogProvider;
+
+export interface ApplicationHatchetWorkflowEngineProvider {
+  readonly kind: 'hatchet';
+  readonly name?: string;
+  readonly namespace?: string;
+  readonly provision?: boolean;
+  readonly chartVersion?: string;
+  readonly serverVersion?: string;
+  readonly mode?: 'stack' | 'ha';
+  readonly database?: {
+    readonly provision?: boolean;
+    readonly clusterName?: string;
+    readonly database?: string;
+    readonly instances?: number;
+    readonly storageSize?: string;
+    readonly storageClass?: string;
+    readonly connectionSecret?: ApplicationResourceRef;
+    readonly connectionSecretKey?: string;
+  };
+  /** External bootstrap credentials containing adminEmail and adminPassword. */
+  readonly adminCredentialsSecret?: ApplicationResourceRef;
+  /** Hatchet client-token Secret. Defaults to the chart-generated <name>-client-config Secret when provisioned. */
+  readonly workerTokenSecret?: ApplicationResourceRef;
+  /** @deprecated Use adminCredentialsSecret and workerTokenSecret when they differ. */
+  readonly credentialsSecret?: ApplicationResourceRef;
+  readonly tokenKey?: string;
+  readonly hostPort?: string;
+  readonly apiUrl?: string;
+  readonly tls?: boolean;
+  readonly dashboard?: 'disabled' | 'internal';
+  readonly worker?: {
+    readonly image?: string;
+    readonly replicas?: number;
+    readonly taskSlots?: number;
+    readonly durableSlots?: number;
+    readonly gracefulShutdownSeconds?: number;
+    readonly healthPort?: number;
+    /** Defaults to allowAll; choose sameNamespace for fully internal task effects. */
+    readonly egress?: 'allowAll' | 'sameNamespace';
+    readonly scaling?: { readonly mode: 'fixed' } | { readonly mode: 'kedaHatchetSlots'; readonly minReplicas?: number; readonly maxReplicas: number; readonly pollingIntervalSeconds?: number };
+  };
+}
+
+export type ApplicationWorkflowEngineProvider = ApplicationHatchetWorkflowEngineProvider;
 
 export type ApplicationPostgresModelStoreOptions = Omit<ApplicationPostgresModelStoreProvider, 'kind'>;
 
@@ -173,6 +219,10 @@ export interface ApplicationDnsPublicationProviderToken extends ApplicationProvi
   externalDns(options?: Omit<ApplicationExternalDnsPublicationProvider, 'kind'>): ApplicationExternalDnsPublicationProvider;
 }
 
+export interface ApplicationWorkflowEngineProviderToken extends ApplicationProviderToken<ApplicationWorkflowEngineProvider> {
+  hatchet(options?: Omit<ApplicationHatchetWorkflowEngineProvider, 'kind'>): ApplicationHatchetWorkflowEngineProvider;
+}
+
 export interface ApplicationProviderBinding<TImplementation = unknown> {
   readonly kind: 'applicationProvider';
   readonly token: ApplicationProviderToken<TImplementation>;
@@ -275,12 +325,28 @@ export const CredentialStore: ApplicationProviderToken<ApplicationCredentialStor
   contract: builtInProviderContract('CredentialStore', ['credentialReferences']),
 };
 
+export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = {
+  name: 'WorkflowEngine',
+  description: 'Provider-neutral durable task and workflow execution engine.',
+  contract: {
+    apiVersion: 'applik8s.provider/v1alpha1',
+    interface: 'WorkflowEngine',
+    version: 'v1alpha1',
+    requirements: ['durableTaskExecution', 'durableWaits', 'cancellation', 'externalEvents', 'workerDrain'],
+    guarantees: ['atLeastOnceTasks', 'durableWorkflowHistory', 'correlationPropagation', 'postgresOperationalAuthority'],
+  },
+  accepts: isHatchetWorkflowEngineProvider,
+  hatchet(options = {}) {
+    return { kind: 'hatchet', ...options };
+  },
+};
+
 function builtInProviderContract(providerInterface: string, guarantees: readonly string[]): ApplicationTypedProviderContract {
   return { apiVersion: 'applik8s.provider/v1alpha1', interface: providerInterface, version: 'v1alpha1', requirements: [], guarantees };
 }
 
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, ModelStore, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore } as const;
+export const providers = { IndexStore, ModelStore, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine } as const;
 
 export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
   if (!name) return undefined;
@@ -297,6 +363,19 @@ export const defaultApplicationEventLogProvider: ApplicationEventLogProvider = {
   storageSize: '8Gi',
 };
 
+export const defaultApplicationWorkflowEngineProvider: ApplicationWorkflowEngineProvider = {
+  kind: 'hatchet',
+  name: 'applik8s-hatchet',
+  provision: true,
+  chartVersion: '0.12.4',
+  serverVersion: 'v0.90.13',
+  mode: 'stack',
+  tls: false,
+  database: { provision: true, database: 'hatchet', instances: 1, storageSize: '8Gi' },
+  dashboard: 'internal',
+  worker: { replicas: 1, taskSlots: 16, durableSlots: 16, gracefulShutdownSeconds: 30, healthPort: 8001, scaling: { mode: 'fixed' } },
+};
+
 export const defaultApplicationProviders: {
   readonly IndexStore: ApplicationValkeyIndexBackend;
   readonly ModelStore: ApplicationPostgresModelStoreProvider;
@@ -309,6 +388,7 @@ export const defaultApplicationProviders: {
   readonly Certificate: undefined;
   readonly DnsPublication: undefined;
   readonly CredentialStore: ApplicationCredentialStoreProvider;
+  readonly WorkflowEngine: ApplicationWorkflowEngineProvider;
 } = {
   IndexStore: { kind: 'valkey' },
   ModelStore: { kind: 'postgres' },
@@ -321,7 +401,30 @@ export const defaultApplicationProviders: {
   Certificate: undefined,
   DnsPublication: undefined,
   CredentialStore: { kind: 'kubernetes-secret-credentials', defaultOwnership: 'external' },
+  WorkflowEngine: defaultApplicationWorkflowEngineProvider,
 };
+
+export function isHatchetWorkflowEngineProvider(value: unknown): value is ApplicationHatchetWorkflowEngineProvider {
+  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'hatchet');
+}
+
+export function applicationWorkflowEngineImplementation(state: ApplicationProviderState): ApplicationWorkflowEngineProvider {
+  const selected = state.providers.extensions?.['WorkflowEngine@v1alpha1'];
+  if (isHatchetWorkflowEngineProvider(selected)) {
+    const scaling = selected.worker?.scaling ?? defaultApplicationWorkflowEngineProvider.worker?.scaling;
+    return {
+      ...defaultApplicationWorkflowEngineProvider,
+      ...selected,
+      database: { ...defaultApplicationWorkflowEngineProvider.database, ...selected.database },
+      worker: {
+        ...defaultApplicationWorkflowEngineProvider.worker,
+        ...selected.worker,
+        ...(scaling ? { scaling } : {}),
+      },
+    };
+  }
+  return defaultApplicationWorkflowEngineProvider;
+}
 
 export function defaultApplicationIndexBackend(state: ApplicationProviderState, options: ApplicationIndexBackendSelectionOptions, indexes: Readonly<Record<string, unknown>>): ApplicationIndexBackend | undefined {
   const provider = defaultApplicationIndexProvider(state);

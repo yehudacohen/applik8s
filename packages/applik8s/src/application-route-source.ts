@@ -136,9 +136,11 @@ export function unsupportedRouteFreeIdentifiers(analysis: ApplicationServerRoute
     ...bindingNames,
     ...analysis.declaredIdentifiers,
     'Array',
+    'AbortController',
     'Boolean',
     'Date',
     'Error',
+    'Headers',
     'JSON',
     'Math',
     'Number',
@@ -155,6 +157,8 @@ export function unsupportedRouteFreeIdentifiers(analysis: ApplicationServerRoute
     'console',
     'decodeURIComponent',
     'encodeURIComponent',
+    'fetch',
+    'crypto',
     'globalThis',
     'parseFloat',
     'parseInt',
@@ -188,7 +192,20 @@ export function applicationRouteSourceDependencies(route: ApplicationRouteSource
   if (!route.handlerSourceLocation || route.handlerSourceKind !== 'source') {
     return undefined;
   }
-  const fileSource = readFileSync(route.handlerSourceLocation.file, 'utf8');
+  const discoveryEntrypoint = Reflect.get(globalThis, Symbol.for('applik8s.discovery.entrypoint'));
+  const candidateFiles = unique([
+    route.handlerSourceLocation.file,
+    ...(typeof discoveryEntrypoint === 'string' && existsSync(discoveryEntrypoint) ? [discoveryEntrypoint] : []),
+  ]);
+  for (const candidateFile of candidateFiles) {
+    const resolved = resolveApplicationRouteSourceDependencies(candidateFile, unsupported, bindingNames);
+    if (resolved) return resolved;
+  }
+  throw new Error(serializedCallbackClosureMessage({ label: 'app.server', route, identifiers: unsupported, sourceLocation: route.handlerSourceLocation }));
+}
+
+function resolveApplicationRouteSourceDependencies(file: string, unsupported: readonly string[], bindingNames: ReadonlySet<string>): ApplicationRouteSourceDependencies | undefined {
+  const fileSource = readFileSync(file, 'utf8');
   const topLevelBindings = applicationRouteTopLevelBindings(fileSource, bindingNames);
   const included = new Map<string, ApplicationRouteTopLevelBinding>();
   const unresolved = new Set<string>();
@@ -213,18 +230,20 @@ export function applicationRouteSourceDependencies(route: ApplicationRouteSource
       }
     }
   }
-  if (unresolved.size > 0) {
-    throw new Error(serializedCallbackClosureMessage({ label: 'app.server', route, identifiers: [...unresolved].sort(), sourceLocation: route.handlerSourceLocation }));
-  }
+  if (unresolved.size > 0) return undefined;
   const imports = unique([...included.values()].filter((binding) => binding.kind === 'import').map((binding) => binding.source));
   const declarations = unique([...included.values()].filter((binding) => binding.kind === 'declaration').map((binding) => binding.source));
-  return { source: [...imports, ...declarations].join('\n\n'), resolveDir: dirname(route.handlerSourceLocation.file) };
+  return { source: [...imports, ...declarations].join('\n\n'), resolveDir: dirname(file) };
 }
 
 const applicationRouteSourceModulePath = fileURLToPath(import.meta.url);
 const applicationDslModulePath = applicationRouteSourceModulePath.replace(/application-route-source(\.[cm]?[jt]sx?)$/, 'application$1');
 
 export function extractApplicationRouteHandlerSource(method: ApplicationRouteSourceRoute['method']): { readonly source: string; readonly location: ApplicationRouteSourceLocation } | undefined {
+  return extractApplicationCallArgumentSource(method.toLowerCase(), 1, true);
+}
+
+export function extractApplicationCallArgumentSource(methodName: string, argumentIndex: number, requireLiteralFirstArgument = false): { readonly source: string; readonly location: ApplicationRouteSourceLocation } | undefined {
   const previousStackTraceLimit = Error.stackTraceLimit;
   Error.stackTraceLimit = Math.max(previousStackTraceLimit, 50);
   const stack = new Error().stack;
@@ -237,7 +256,7 @@ export function extractApplicationRouteHandlerSource(method: ApplicationRouteSou
   for (const location of locations) {
     try {
       const fileSource = readFileSync(location.file, 'utf8');
-      const expression = routeHandlerExpressionAtLocation(fileSource, location, method);
+      const expression = callArgumentExpressionAtLocation(fileSource, location, methodName, argumentIndex, requireLiteralFirstArgument);
       if (!expression) {
         debugRouteSourceExtraction(`no route expression at ${location.file}:${location.line}:${location.column}`);
         continue;
@@ -759,8 +778,10 @@ function declaredRouteIdentifiers(source: string): ReadonlySet<string> {
   for (const match of source.matchAll(/\b([A-Za-z_$][\w$]*)\s*=>/g)) {
     declared.add(match[1] ?? '');
   }
-  for (const match of source.matchAll(/\b(?:const|let|var)\s+([^=;]+)/g)) {
-    addBindingPatternIdentifiers(declared, match[1] ?? '');
+  for (const match of source.matchAll(/\b(?:const|let|var)\s+/g)) {
+    const start = match.index ?? 0;
+    const end = statementSourceEnd(source, start);
+    for (const name of variableDeclarationNames(source.slice(start, end))) declared.add(name);
   }
   for (const match of source.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g)) {
     declared.add(match[1] ?? '');
@@ -913,12 +934,11 @@ function isApplicationRouteInternalStackFrame(line: string, file: string): boole
   if (file === applicationRouteSourceModulePath || file === applicationDslModulePath) {
     return true;
   }
-  return /\bat (?:extractApplicationRouteHandlerSource|applicationRouteCallsiteLocations?|record|Object\.(?:get|post))\b/.test(line);
+  return /\bat (?:extractApplicationRouteHandlerSource|extractApplicationCallArgumentSource|applicationRouteCallsiteLocations?|record|Object\.(?:get|post))\b/.test(line);
 }
 
-function routeHandlerExpressionAtLocation(source: string, location: ApplicationRouteSourceLocation, method: ApplicationRouteSourceRoute['method']): string | undefined {
+function callArgumentExpressionAtLocation(source: string, location: ApplicationRouteSourceLocation, methodName: string, argumentIndex: number, requireLiteralFirstArgument: boolean): string | undefined {
   const position = sourceOffsetForLineColumn(source, location.line, location.column);
-  const methodName = method.toLowerCase();
   const searchStart = Math.max(0, position - 4000);
   const searchEnd = Math.min(source.length, position + 8000);
   const windowSource = source.slice(searchStart, searchEnd);
@@ -931,9 +951,9 @@ function routeHandlerExpressionAtLocation(source: string, location: ApplicationR
       continue;
     }
     const args = splitTopLevelArguments(source.slice(openParen + 1, closeParen));
-    const routePath = args[0]?.trim() ?? '';
-    const handlerSource = args[1]?.trim();
-    if (!handlerSource || !/^['"`]/.test(routePath)) {
+    const firstArgument = args[0]?.trim() ?? '';
+    const handlerSource = args[argumentIndex]?.trim();
+    if (!handlerSource || (argumentIndex >= 1 && !/(?:=>|^\s*(?:async\s+)?function\b)/.test(handlerSource)) || (requireLiteralFirstArgument && !/^['"`]/.test(firstArgument))) {
       continue;
     }
     calls.push({ openParen, closeParen, distance: position >= openParen && position <= closeParen ? 0 : Math.abs(openParen - position), handlerSource });
