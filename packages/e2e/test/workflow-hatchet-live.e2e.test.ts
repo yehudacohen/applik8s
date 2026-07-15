@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type ApplicationWorkflowRun, setApplicationWorkflowRuntimeFactory } from '@applik8s/applik8s';
+import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 
 import { createHatchetWorkflowRuntime } from '../../applik8s/src/workflow-runtime-hatchet.js';
@@ -68,6 +69,12 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
       await waitForDeploymentReady(workerName);
       const engineForward = await startPortForward(`service/${engineName}-engine`, 7070);
       workerForward = engineForward;
+      const hatchet = HatchetClient.init({
+        token,
+        host_port: `127.0.0.1:${engineForward.port}`,
+        api_url: apiForward.endpoint,
+        tls_config: { tls_strategy: 'none' },
+      });
       restoreRuntime = setApplicationWorkflowRuntimeFactory(async () => createHatchetWorkflowRuntime({
         kind: 'hatchet',
         provision: false,
@@ -85,8 +92,11 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
       });
       await waitForEffectCount('provision:restart-proof', 2);
       const oldPod = await runningWorkerPod();
+      const previousWorkerIds = await activeWorkflowWorkerIds(hatchet);
+      const replacementStartedAt = Date.now();
       await kubectl(['delete', `pod/${oldPod}`, '--namespace', namespace, '--wait=false', '--grace-period=30']);
       await waitForReplacementWorker(oldPod);
+      await waitForRegisteredReplacementWorker(hatchet, previousWorkerIds, replacementStartedAt);
       await binding.signal(run.id, 'approval', { approved: true, reviewer: 'live-test' });
       await expect(run.result()).resolves.toMatchObject({ phase: 'Ready', attempts: 2 });
 
@@ -329,6 +339,43 @@ async function waitForReplacementWorker(previous: string): Promise<void> {
     await sleep(1_000);
   }
   throw new Error(`Workflow worker ${previous} was not replaced.`);
+}
+
+async function activeWorkflowWorkerIds(client: Pick<HatchetClient, 'workers'>): Promise<ReadonlySet<string>> {
+  const workers = await client.workers.list();
+  const active = (workers.rows ?? []).filter((worker) => worker.name === workerName && worker.status === 'ACTIVE');
+  if (active.length === 0) throw new Error(`Hatchet reports no active ${workerName} worker before replacement.`);
+  return new Set(active.map((worker) => worker.metadata.id));
+}
+
+async function waitForRegisteredReplacementWorker(client: Pick<HatchetClient, 'workers'>, previousIds: ReadonlySet<string>, replacementStartedAt: number): Promise<void> {
+  const started = Date.now();
+  let consecutiveReadyObservations = 0;
+  let lastWorkers: unknown;
+  while (Date.now() - started < 180_000) {
+    try {
+      const workers = await client.workers.list();
+      lastWorkers = workers.rows;
+      const replacement = (workers.rows ?? []).find((worker) => {
+        const lastHeartbeatAt = Date.parse(worker.lastHeartbeatAt ?? '');
+        const hasWorkflow = worker.actions?.some((action) => action.startsWith('proof.durable.v1:')) === true;
+        const hasCapacity = Object.values(worker.slotConfig ?? {}).some((slot) => slot.limit > 0 && (slot.available ?? 0) > 0);
+        return worker.name === workerName
+          && worker.status === 'ACTIVE'
+          && !previousIds.has(worker.metadata.id)
+          && Number.isFinite(lastHeartbeatAt)
+          && lastHeartbeatAt >= replacementStartedAt - 5_000
+          && hasWorkflow
+          && hasCapacity;
+      });
+      consecutiveReadyObservations = replacement ? consecutiveReadyObservations + 1 : 0;
+      if (consecutiveReadyObservations >= 2) return;
+    } catch {
+      consecutiveReadyObservations = 0;
+    }
+    await sleep(1_000);
+  }
+  throw new Error(`Hatchet did not register a stable replacement ${workerName} worker: ${JSON.stringify(lastWorkers)}`);
 }
 
 async function startPortForward(resource: string, remotePort: number): Promise<PortForward> {
