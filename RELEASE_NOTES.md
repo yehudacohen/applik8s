@@ -1,6 +1,6 @@
 # Release Notes
 
-## v0.5.0 (in development)
+## v0.5.0
 
 v0.5 adds inert typed tasks and workflows, app-bound runtime handles, and a versioned `WorkflowEngine` provider contract. The first implementation pins Hatchet and its chart, runs it in PostgreSQL-only mode on external CNPG, disables RabbitMQ, and generates self-contained Node workers with health, graceful drain, retries, schedules, durable sleeps, child calls, event waits, cancellation, correlation propagation, fixed scaling, and optional KEDA task-stat scaling.
 
@@ -20,6 +20,20 @@ connection-scoped publication uses bounded polling. ExternalDNS generation obser
 not reported as provider success or DNS propagation.
 
 The Tenant Platform v0.5 artifact now uses that same local adapter to publish and revise tenant DNS with stable identity, exact owner wakeup, and guarded finalization. The pre-v0.6 maintainability pass also separates generated HTTP bundle construction, exposure normalization, graph serialization, compatibility policy, and deterministic TypeKro emission planning; ratcheted module ceilings and dependency-direction checks keep those boundaries enforceable. External provider packages can run the new registration-conformance harness before adding provider-specific semantic and live suites.
+
+The final operator-runtime hardening preserves source-module identity while statically capturing thin
+entrypoints and imported operator factories. Reachable declarations execute in isolated module scopes,
+including same-named helpers imported through different aliases; unresolved lexical state and capture
+cycles still fail closed. Nested status fields retain their names through ComponentizeJS, WIT, and
+Wasmtime, declared finalizers are attached and removed by the host, and focused handler-safe imports
+remain the supported minimal-WASM path.
+
+Two-replica operators now keep healthy followers Pod-ready, cooperatively yield CPU-bound WASM work so
+Lease renewal and health tasks continue, handle Kubernetes `SIGTERM`, release leadership during rolling
+replacement, and retain Lease-expiry failover for forced crashes. OrbStack evidence covers two distinct
+connection aliases with separate credentials and management identities against one API server. A
+genuinely separate second Kubernetes API server remains an explicit post-v0.5 portability proof rather
+than a release claim.
 
 ## v0.4.3
 
