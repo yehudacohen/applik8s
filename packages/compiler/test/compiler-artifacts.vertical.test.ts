@@ -858,7 +858,7 @@ export const imagePipeline = sdk.operator({
         adapter: 'wasmComponent',
         portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
       });
-      expect(result.ok).toBe(true);
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
       if (result.ok) {
         expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
           expect.objectContaining({ kind: 'CustomResourceDefinition', metadata: expect.objectContaining({ name: 'guestbooks.guestbook.applik8s.dev' }) }),
@@ -1421,18 +1421,18 @@ export const operator = createOperator({ prefix: 'ready:', authoringGraph: 'UNUS
         portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
       });
 
-      expect(result.ok).toBe(true);
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
       if (!result.ok) return;
       const generatedDispatcher = await readFile(join(dir, 'dist', 'bundle', 'handler-dispatcher.generated.ts'), 'utf8');
       expect(generatedDispatcher).toContain('function resolveMessage');
-      expect(generatedDispatcher).toContain('const deps = { "prefix":');
+      expect(generatedDispatcher).toContain("{ \"prefix\": ('ready:') }");
       expect(generatedDispatcher).not.toContain('UNUSED_AUTHORING_GRAPH_SENTINEL');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   }, 120_000);
 
-  it('fails closed when reachable module-local helper names are ambiguous', async () => {
+  it('uses defining-module provenance when an unrelated module has the same helper name', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-static-helper-collision-'));
     try {
       const helperA = join(dir, 'helper-a.ts');
@@ -1462,13 +1462,52 @@ export const operator = sdk.operator({ name: 'helper-collision', resources: { Wo
         portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
       });
 
-      expect(result.ok).toBe(false);
-      if (!result.ok) {
-        expect(result.error.message).toContain('capture ownedMetadata reaches ambiguous module-local declarations');
-        expect(result.error.message).toContain('helper-a.ts');
-        expect(result.error.message).toContain('helper-b.ts');
-        expect(result.error.message).toContain('Rename the colliding top-level declarations');
-      }
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const generatedDispatcher = await readFile(join(dir, 'dist', 'bundle', 'handler-dispatcher.generated.ts'), 'utf8');
+      expect(generatedDispatcher).toContain("return 'a:' + name");
+      expect(generatedDispatcher).not.toContain("return 'b:' + name");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('isolates same-named helpers when both modules are reachable through aliases', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-static-helper-aliases-'));
+    try {
+      const helperA = join(dir, 'helper-a.ts');
+      const helperB = join(dir, 'helper-b.ts');
+      const entrypoint = join(dir, 'operator-entry.ts');
+      await writeFile(helperA, `export function ownedMetadata(name: string): string { return 'a:' + name; }\n`);
+      await writeFile(helperB, `export function ownedMetadata(name: string): string { return 'b:' + name; }\n`);
+      await writeFile(entrypoint, `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/sdk/src/index.ts'))};
+import { ownedMetadata as ownedA } from './helper-a.js';
+import { ownedMetadata as ownedB } from './helper-b.js';
+const spec = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'WorkSpec' }, schema: { type: 'object', properties: {} } };
+const status = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'WorkStatus' }, schema: { type: 'object', properties: { result: { type: 'string' } } } };
+export const Work = sdk.crd({ apiVersion: 'aliases.applik8s.dev/v1alpha1', kind: 'Work', spec, status });
+export const operator = sdk.operator({ name: 'helper-aliases', resources: { Work }, handlers: [
+  Work.on.reconcile((work: any) => { work.status.result = ownedA(work.metadata.name) + ownedB(work.metadata.name); }),
+] });
+`);
+
+      const result = await createCompilerPipeline().run({
+        entrypoint,
+        operatorName: 'helper-aliases',
+        dispatcherMode: 'staticSerializable',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
+      if (!result.ok) return;
+      const generatedDispatcher = await readFile(join(dir, 'dist', 'bundle', 'handler-dispatcher.generated.ts'), 'utf8');
+      expect(generatedDispatcher).toContain("return 'a:' + name");
+      expect(generatedDispatcher).toContain("return 'b:' + name");
+      expect(generatedDispatcher).toContain('ownedA, ownedB');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

@@ -61,4 +61,4 @@ Expected policy:
 
 ## Live Proof
 
-The opt-in adversarial live suite runs on `orbstack` with two replicas, a generated Lease-enabled operator, and assertions that deleting the current holder lets another replica acquire leadership and reconcile the next generation change. Non-leader replicas remain healthy but not ready.
+The opt-in adversarial live suite runs on `orbstack` with two replicas and a generated Lease-enabled operator. It proves both leader and follower are Kubernetes Pod-ready, Lease renewal continues during a reconcile longer than the Lease duration, a rolling restart completes with release-driven handoff before expiry, and forced holder deletion falls back to crash-safe acquisition before the next generation reconciles. Followers remain healthy and Pod-ready through `/healthz`; their diagnostic `/readyz` remains false until they hold leadership.

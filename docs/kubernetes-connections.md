@@ -134,3 +134,12 @@ requires regenerating and deploying the installation artifacts.
 
 Credential bytes never enter handler input, operation plans, WASM artifacts, replay payloads, domain
 status, events, or telemetry.
+
+## Live proof boundary
+
+The v0.5 live suite binds two logical aliases through separate exact-name kubeconfig Secrets and uses
+them in separate reconciliation plans against the OrbStack API. It proves the operator's local
+ServiceAccount cannot perform destination mutations, the connection identity cannot read management
+Secrets, each alias receives a distinct management identity, rotation is pinned per invocation, and
+finalization removes only its managed object. A genuinely separate second Kubernetes API server
+remains an explicit post-v0.5 portability proof rather than a claimed release result.

@@ -1,11 +1,13 @@
 import { rmSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readFile } from 'node:fs/promises';
+import { dirname, extname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
 
 import type { Diagnostic, OperatorDefinition, Result } from '@applik8s/core';
 import { build } from 'esbuild';
+import type { Plugin } from 'esbuild';
+import ts from 'typescript';
 
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import type { CompileResult } from '../interfaces.js';
@@ -44,7 +46,7 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
         js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);",
       },
       external: ['applik8s:handler/capabilities', 'applik8s:handler/kubernetes', '@applik8s/compiler', '@applik8s/compiler/*', 'esbuild', 'typekro', 'typekro/*', '@napi-rs/lzma-*', '@oxc-parser/binding-*'],
-      plugins: [applik8sWorkspaceSourcePlugin()],
+      plugins: [handlerSourceMetadataPlugin(), applik8sWorkspaceSourcePlugin()],
     });
     const discoverySpecifier = `${pathToFileURL(discoveryBundle).href}?applik8s=${Date.now()}`;
     const discoveryEntrypointKey = Symbol.for('applik8s.discovery.entrypoint');
@@ -71,6 +73,95 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
   } finally {
     deferTemporaryDirectoryCleanup(bundleRoot);
   }
+}
+
+function handlerSourceMetadataPlugin(): Plugin {
+  return {
+    name: 'applik8s-handler-source-metadata',
+    setup(buildContext) {
+      buildContext.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, async (args) => {
+        if (args.namespace !== 'file' || args.path.includes('/node_modules/')) return undefined;
+        const source = await readFile(args.path, 'utf8');
+        const instrumented = instrumentHandlerRegistrations(source, args.path);
+        if (instrumented === source) return undefined;
+        const extension = extname(args.path);
+        const loader = extension === '.tsx' ? 'tsx' : extension === '.jsx' ? 'jsx' : extension === '.js' || extension === '.mjs' || extension === '.cjs' ? 'js' : 'ts';
+        return { contents: instrumented, loader, resolveDir: dirname(args.path) };
+      });
+    },
+  };
+}
+
+function instrumentHandlerRegistrations(source: string, sourceFile: string): string {
+  const file = ts.createSourceFile(sourceFile, source, ts.ScriptTarget.Latest, true, sourceFile.endsWith('.tsx') ? ts.ScriptKind.TSX : sourceFile.endsWith('.jsx') ? ts.ScriptKind.JSX : sourceFile.endsWith('.js') || sourceFile.endsWith('.mjs') || sourceFile.endsWith('.cjs') ? ts.ScriptKind.JS : ts.ScriptKind.TS);
+  let changed = false;
+  const transformer: ts.TransformerFactory<ts.SourceFile> = (context) => {
+    const visit: ts.Visitor = (node) => {
+      if (ts.isCallExpression(node) && isHandlerRegistrationCall(node) && node.arguments.length > 0) {
+        const decoratedArguments = node.arguments.map((argument) => decorateHandlerCandidate(argument, file, sourceFile, visit));
+        changed = true;
+        // typecast: visiting an existing call expression cannot remove its callee, but the TypeScript visitor result is Node | undefined.
+        return ts.factory.updateCallExpression(node, ts.visitNode(node.expression, visit) as ts.Expression, node.typeArguments, decoratedArguments);
+      }
+      return ts.visitEachChild(node, visit, context);
+    };
+    // typecast: the transformer is rooted at a SourceFile and this visitor never replaces or removes that root.
+    return (root) => ts.visitNode(root, visit) as ts.SourceFile;
+  };
+  const transformed = ts.transform(file, [transformer]);
+  try {
+    // typecast: a SourceFile transformer produces a SourceFile at index zero when given one SourceFile input.
+    return changed ? ts.createPrinter({ newLine: ts.NewLineKind.LineFeed }).printFile(transformed.transformed[0] as ts.SourceFile) : source;
+  } finally {
+    transformed.dispose();
+  }
+}
+
+function decorateHandlerCandidate(argument: ts.Expression, file: ts.SourceFile, sourceFile: string, visit: ts.Visitor): ts.Expression {
+  const position = file.getLineAndCharacterOfPosition(argument.getStart(file));
+  const candidate = ts.factory.createIdentifier('__applik8sHandlerCandidate');
+  const metadata = ts.factory.createObjectLiteralExpression([
+    ts.factory.createPropertyAssignment('file', ts.factory.createStringLiteral(sourceFile)),
+    ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(position.line + 1)),
+    ts.factory.createPropertyAssignment('column', ts.factory.createNumericLiteral(position.character + 1)),
+  ]);
+  const decorated = ts.factory.createCallExpression(
+    ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier('Object'), 'defineProperty'),
+    undefined,
+    [
+      candidate,
+      ts.factory.createCallExpression(ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier('Symbol'), 'for'), undefined, [ts.factory.createStringLiteral('applik8s.handlerSourceModule')]),
+      ts.factory.createObjectLiteralExpression([
+        ts.factory.createPropertyAssignment('configurable', ts.factory.createTrue()),
+        ts.factory.createPropertyAssignment('value', metadata),
+      ]),
+    ],
+  );
+  const decorateIfFunction = ts.factory.createArrowFunction(
+    undefined,
+    undefined,
+    [ts.factory.createParameterDeclaration(undefined, undefined, candidate)],
+    undefined,
+    ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+    ts.factory.createConditionalExpression(
+      ts.factory.createBinaryExpression(
+        ts.factory.createTypeOfExpression(candidate),
+        ts.factory.createToken(ts.SyntaxKind.EqualsEqualsEqualsToken),
+        ts.factory.createStringLiteral('function'),
+      ),
+      ts.factory.createToken(ts.SyntaxKind.QuestionToken),
+      decorated,
+      ts.factory.createToken(ts.SyntaxKind.ColonToken),
+      candidate,
+    ),
+  );
+  // typecast: visitNode preserves each existing call argument as an Expression; this visitor does not remove arguments.
+  return ts.factory.createCallExpression(ts.factory.createParenthesizedExpression(decorateIfFunction), undefined, [ts.visitNode(argument, visit) as ts.Expression]);
+}
+
+function isHandlerRegistrationCall(node: ts.CallExpression): boolean {
+  if (!ts.isPropertyAccessExpression(node.expression)) return false;
+  return ['reconcile', 'created', 'updated', 'deleted', 'finalize', 'statusChanged'].includes(node.expression.name.text);
 }
 
 const deferredTemporaryDirectoryCleanups = new Set<string>();

@@ -15,13 +15,17 @@ const group = `connection${suffix}.applik8s.dev`;
 const operatorName = 'connection-proof';
 const remoteServiceAccount = 'connection-client';
 const connectionSecret = 'destination-kubeconfig';
+const mirrorConnectionSecret = 'mirror-kubeconfig';
 const workName = 'proof';
+const mirrorWorkName = 'mirror-proof';
 const remoteConfigMap = 'remote-proof';
+const mirrorRemoteConfigMap = 'remote-mirror-proof';
 const execFileAsync = promisify(execFile);
 
 let tempDir: string | undefined;
 let artifactDir: string | undefined;
 let workPath: string | undefined;
+let mirrorWorkPath: string | undefined;
 
 describeLive('v0.5 connection-scoped Kubernetes proof', () => {
   beforeAll(async () => {
@@ -49,6 +53,14 @@ describeLive('v0.5 connection-scoped Kubernetes proof', () => {
             hosts: ['kubernetes.default.svc'], ports: [443], redirects: 'deny',
           },
         },
+        mirror: {
+          kubeconfigSecretRef: { name: mirrorConnectionSecret, namespace: operatorNamespace, key: 'kubeconfig' },
+          context: 'mirror',
+          endpointPolicy: {
+            name: 'in-cluster-destination', version: '1', scheme: 'https',
+            hosts: ['kubernetes.default.svc'], ports: [443], redirects: 'deny',
+          },
+        },
       },
       portability: {
         deterministicBuild: true,
@@ -60,9 +72,10 @@ describeLive('v0.5 connection-scoped Kubernetes proof', () => {
       },
     });
     if (!compiled.ok) throw new Error(compiled.error.message);
-    expect(compiled.value.manifest.spec.permissions).toContainEqual({
-      apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: [connectionSecret],
-    });
+    const secretResourceNames = compiled.value.manifest.spec.permissions
+      .filter((rule) => rule.apiGroups.includes('') && rule.resources.includes('secrets') && rule.verbs.includes('get'))
+      .flatMap((rule) => rule.resourceNames ?? []);
+    expect(secretResourceNames).toEqual(expect.arrayContaining([connectionSecret, mirrorConnectionSecret]));
     expect(compiled.value.manifest.spec.permissions).not.toContainEqual(expect.objectContaining({
       apiGroups: [''], resources: ['configmaps'],
     }));
@@ -76,7 +89,9 @@ describeLive('v0.5 connection-scoped Kubernetes proof', () => {
     await kubectl(['wait', `crd/works.${group}`, '--for=condition=Established', '--timeout=60s']);
     await rolloutWithDiagnostics();
     workPath = join(tempDir, 'work.yaml');
-    await writeFile(workPath, workYaml('first'));
+    mirrorWorkPath = join(tempDir, 'mirror-work.yaml');
+    await writeFile(workPath, workYaml(workName, 'destination', remoteConfigMap, 'first'));
+    await writeFile(mirrorWorkPath, workYaml(mirrorWorkName, 'mirror', mirrorRemoteConfigMap, 'mirror-first'));
   }, 600_000);
 
   afterAll(async () => {
@@ -85,25 +100,33 @@ describeLive('v0.5 connection-scoped Kubernetes proof', () => {
   }, 600_000);
 
   it('uses only the bound identity for bounded reads and guarded create, update, and finalization delete', async () => {
-    if (!workPath) throw new Error('Connection proof fixture was not prepared.');
+    if (!workPath || !mirrorWorkPath) throw new Error('Connection proof fixture was not prepared.');
     await kubectl(['apply', '--server-side', '--field-manager=applik8s-connection-e2e', '--filename', workPath]);
-    await waitForWorkStatus('first', 'false');
+    await kubectl(['apply', '--server-side', '--field-manager=applik8s-connection-e2e', '--filename', mirrorWorkPath]);
+    await waitForWorkStatus(workName, 'first', 'false');
+    await waitForWorkStatus(mirrorWorkName, 'mirror-first', 'false');
 
     const uid = (await kubectl(['get', `works.${group}/${workName}`, '--namespace', operatorNamespace, '--output=jsonpath={.metadata.uid}'])).stdout.trim();
     expect((await kubectl(['get', `configmap/${remoteConfigMap}`, '--namespace', destinationNamespace, '--output=jsonpath={.data.value}'])).stdout.trim()).toBe('first');
     expect((await kubectl(['get', `configmap/${remoteConfigMap}`, '--namespace', destinationNamespace, '--output=jsonpath={.metadata.annotations.applik8s\\.dev/remote-source-uid}'])).stdout.trim()).toBe(uid);
     expect((await kubectl(['get', `configmap/${remoteConfigMap}`, '--namespace', destinationNamespace, '--output=jsonpath={.metadata.annotations.applik8s\\.dev/remote-management-identity}'])).stdout.trim()).toBe(`${operatorName}/destination/work/${uid}/config`);
+    const mirrorUid = (await kubectl(['get', `works.${group}/${mirrorWorkName}`, '--namespace', operatorNamespace, '--output=jsonpath={.metadata.uid}'])).stdout.trim();
+    expect((await kubectl(['get', `configmap/${mirrorRemoteConfigMap}`, '--namespace', destinationNamespace, '--output=jsonpath={.data.value}'])).stdout.trim()).toBe('mirror-first');
+    expect((await kubectl(['get', `configmap/${mirrorRemoteConfigMap}`, '--namespace', destinationNamespace, '--output=jsonpath={.metadata.annotations.applik8s\\.dev/remote-management-identity}'])).stdout.trim()).toBe(`${operatorName}/mirror/work/${mirrorUid}/config`);
 
     await expect(canI([`--as=system:serviceaccount:${operatorNamespace}:${operatorName}-controller`, 'get', 'configmaps', '--namespace', destinationNamespace])).resolves.toBe(false);
     await expect(canI([`--as=system:serviceaccount:${destinationNamespace}:${remoteServiceAccount}`, 'get', 'secrets', '--namespace', operatorNamespace])).resolves.toBe(false);
 
-    await writeFile(workPath, workYaml('second'));
+    await writeFile(workPath, workYaml(workName, 'destination', remoteConfigMap, 'second'));
     await kubectl(['apply', '--server-side', '--field-manager=applik8s-connection-e2e', '--filename', workPath]);
-    await waitForWorkStatus('second', 'true');
+    await waitForWorkStatus(workName, 'second', 'true');
     expect((await kubectl(['get', `configmap/${remoteConfigMap}`, '--namespace', destinationNamespace, '--output=jsonpath={.data.value}'])).stdout.trim()).toBe('second');
 
     await kubectl(['delete', `works.${group}/${workName}`, '--namespace', operatorNamespace, '--wait=true', '--timeout=180s']);
     expect((await kubectl(['get', `configmap/${remoteConfigMap}`, '--namespace', destinationNamespace, '--ignore-not-found=true', '--output=name'])).stdout.trim()).toBe('');
+    expect((await kubectl(['get', `configmap/${mirrorRemoteConfigMap}`, '--namespace', destinationNamespace, '--output=name'])).stdout.trim()).toBe(`configmap/${mirrorRemoteConfigMap}`);
+    await kubectl(['delete', `works.${group}/${mirrorWorkName}`, '--namespace', operatorNamespace, '--wait=true', '--timeout=180s']);
+    expect((await kubectl(['get', `configmap/${mirrorRemoteConfigMap}`, '--namespace', destinationNamespace, '--ignore-not-found=true', '--output=name'])).stdout.trim()).toBe('');
   }, 600_000);
 });
 
@@ -112,7 +135,7 @@ function connectionOperatorSource(): string {
 
 const Work = sdk.crd({
   apiVersion: '${group}/v1alpha1', kind: 'Work',
-  spec: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: 'WorkSpec' }, schema: { type: 'object', additionalProperties: false, required: ['value'], properties: { value: { type: 'string' } } } },
+  spec: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: 'WorkSpec' }, schema: { type: 'object', additionalProperties: false, required: ['value', 'connection', 'configMapName'], properties: { value: { type: 'string' }, connection: { type: 'string', enum: ['destination', 'mirror'] }, configMapName: { type: 'string' } } } },
   status: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: 'WorkStatus' }, schema: { type: 'object', additionalProperties: false, properties: { phase: { type: 'string' }, value: { type: 'string' }, existed: { type: 'boolean' }, observedCount: { type: 'integer' } } } },
 });
 const RemoteConfigMap = sdk.kubernetes.resource({ apiVersion: 'v1', kind: 'ConfigMap', plural: 'configmaps', namespaces: ['${destinationNamespace}'], access: 'connection' });
@@ -120,22 +143,26 @@ const destination = sdk.kubernetes.connection.required({
   endpointPolicy: 'in-cluster-destination',
   permissions: [{ apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'list', 'create', 'patch', 'delete'], namespaces: ['${destinationNamespace}'] }],
 });
+const mirror = sdk.kubernetes.connection.required({
+  endpointPolicy: 'in-cluster-destination',
+  permissions: [{ apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'list', 'create', 'patch', 'delete'], namespaces: ['${destinationNamespace}'] }],
+});
 
 export const connectionProof = sdk.operator({
-  name: '${operatorName}', deployment: { namespace: '${operatorNamespace}' }, resources: { Work }, reads: { RemoteConfigMap }, capabilities: { destination },
+  name: '${operatorName}', deployment: { namespace: '${operatorNamespace}' }, resources: { Work }, reads: { RemoteConfigMap }, capabilities: { destination, mirror },
   handlers: ({ resources }) => [
     resources.Work.on.context.reconcile(async (work, ctx) => {
-      const remote = ctx.kubernetes.connection('destination');
-      const existing = await remote.read.resource(RemoteConfigMap).get({ name: '${remoteConfigMap}', namespace: '${destinationNamespace}' });
+      const remote = ctx.kubernetes.connection(work.spec.connection);
+      const existing = await remote.read.resource(RemoteConfigMap).get({ name: work.spec.configMapName, namespace: '${destinationNamespace}' });
       const page = await remote.read.resource(RemoteConfigMap).list({ namespace: '${destinationNamespace}', limit: 10 });
-      remote.resources.apply({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: '${remoteConfigMap}', namespace: '${destinationNamespace}' }, data: { value: work.spec.value } }, {
+      remote.resources.apply({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: work.spec.configMapName, namespace: '${destinationNamespace}' }, data: { value: work.spec.value } }, {
         ownership: { mode: 'none' }, authority: { mode: 'managed', identity: 'work/' + work.metadata.uid + '/config', sourceUid: work.metadata.uid },
       });
       return ctx.apply({ status: { phase: 'Ready', value: work.spec.value, existed: Boolean(existing), observedCount: page.items.length } });
     }),
     resources.Work.on.context.finalize((work, ctx) => {
-      ctx.kubernetes.connection('destination').resources.delete(
-        { apiVersion: 'v1', kind: 'ConfigMap', name: '${remoteConfigMap}', namespace: '${destinationNamespace}' },
+      ctx.kubernetes.connection(work.spec.connection).resources.delete(
+        { apiVersion: 'v1', kind: 'ConfigMap', name: work.spec.configMapName, namespace: '${destinationNamespace}' },
         { authority: { mode: 'managed', identity: 'work/' + work.metadata.uid + '/config', sourceUid: work.metadata.uid } },
       );
       return ctx.noop();
@@ -145,8 +172,8 @@ export const connectionProof = sdk.operator({
 `;
 }
 
-function workYaml(value: string): string {
-  return `apiVersion: ${group}/v1alpha1\nkind: Work\nmetadata:\n  name: ${workName}\n  namespace: ${operatorNamespace}\nspec:\n  value: ${value}\n`;
+function workYaml(name: string, connection: 'destination' | 'mirror', configMapName: string, value: string): string {
+  return `apiVersion: ${group}/v1alpha1\nkind: Work\nmetadata:\n  name: ${name}\n  namespace: ${operatorNamespace}\nspec:\n  value: ${value}\n  connection: ${connection}\n  configMapName: ${configMapName}\n`;
 }
 
 async function createNamespaces(): Promise<void> {
@@ -193,23 +220,23 @@ async function installConnectionSecret(): Promise<void> {
   const token = (await kubectl(['create', 'token', remoteServiceAccount, '--namespace', destinationNamespace, '--duration=1h'])).stdout.trim();
   const ca = (await kubectl(['get', 'configmap/kube-root-ca.crt', '--namespace', operatorNamespace, '--output=jsonpath={.data.ca\\.crt}'])).stdout;
   if (!token || !ca) throw new Error('Could not obtain the bounded destination token and cluster CA.');
-  const kubeconfig = `apiVersion: v1
+  const kubeconfig = (context: 'destination' | 'mirror') => `apiVersion: v1
 kind: Config
 clusters:
-  - name: destination
+  - name: ${context}
     cluster:
       server: https://kubernetes.default.svc:443
       certificate-authority-data: ${Buffer.from(ca).toString('base64')}
 users:
-  - name: destination
+  - name: ${context}
     user:
       token: ${token}
 contexts:
-  - name: destination
+  - name: ${context}
     context:
-      cluster: destination
-      user: destination
-current-context: destination
+      cluster: ${context}
+      user: ${context}
+current-context: ${context}
 `;
   const path = join(requiredTempDir(), 'connection-secret.yaml');
   await writeFile(path, `apiVersion: v1
@@ -219,18 +246,27 @@ metadata:
   namespace: ${operatorNamespace}
 type: applik8s.dev/kubeconfig
 stringData:
-  kubeconfig: ${JSON.stringify(kubeconfig)}
+  kubeconfig: ${JSON.stringify(kubeconfig('destination'))}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${mirrorConnectionSecret}
+  namespace: ${operatorNamespace}
+type: applik8s.dev/kubeconfig
+stringData:
+  kubeconfig: ${JSON.stringify(kubeconfig('mirror'))}
 `);
   await kubectl(['apply', '--filename', path]);
 }
 
-async function waitForWorkStatus(value: string, existed: string): Promise<void> {
+async function waitForWorkStatus(name: string, value: string, existed: string): Promise<void> {
   try {
-    await kubectl(['wait', `works.${group}/${workName}`, '--namespace', operatorNamespace, `--for=jsonpath={.status.value}=${value}`, '--timeout=180s']);
-    await kubectl(['wait', `works.${group}/${workName}`, '--namespace', operatorNamespace, `--for=jsonpath={.status.existed}=${existed}`, '--timeout=180s']);
+    await kubectl(['wait', `works.${group}/${name}`, '--namespace', operatorNamespace, `--for=jsonpath={.status.value}=${value}`, '--timeout=180s']);
+    await kubectl(['wait', `works.${group}/${name}`, '--namespace', operatorNamespace, `--for=jsonpath={.status.existed}=${existed}`, '--timeout=180s']);
   } catch (cause) {
     const diagnostics = await Promise.allSettled([
-      kubectl(['get', `works.${group}/${workName}`, '--namespace', operatorNamespace, '--output=yaml']),
+      kubectl(['get', `works.${group}/${name}`, '--namespace', operatorNamespace, '--output=yaml']),
       kubectl(['get', 'all,configmaps', '--namespace', destinationNamespace, '--output=wide']),
       kubectl(['logs', '--namespace', operatorNamespace, '--selector', `app.kubernetes.io/name=${operatorName}`, '--all-containers=true', '--tail=300']),
       kubectl(['get', 'events', '--namespace', operatorNamespace, '--sort-by=.lastTimestamp']),
@@ -254,8 +290,8 @@ async function rolloutWithDiagnostics(): Promise<void> {
 
 async function cleanup(): Promise<void> {
   if (artifactDir) {
-    await kubectl(['delete', `works.${group}/${workName}`, '--namespace', operatorNamespace, '--ignore-not-found=true', '--wait=true', '--timeout=180s']);
-    const remote = await kubectl(['get', `configmap/${remoteConfigMap}`, '--namespace', destinationNamespace, '--ignore-not-found=true', '--output=name']);
+    await kubectl(['delete', `works.${group}/${workName}`, `works.${group}/${mirrorWorkName}`, '--namespace', operatorNamespace, '--ignore-not-found=true', '--wait=true', '--timeout=180s']);
+    const remote = await kubectl(['get', `configmap/${remoteConfigMap}`, `configmap/${mirrorRemoteConfigMap}`, '--namespace', destinationNamespace, '--ignore-not-found=true', '--output=name']);
     if (remote.stdout.trim()) throw new Error(`Finalization left ${remote.stdout.trim()} behind.`);
     const manifests = await generatedManifestPaths(artifactDir);
     const crdFlags = await Promise.all(manifests.map(async (path) => /^kind:\s*CustomResourceDefinition\s*$/m.test(await readFile(path, 'utf8'))));

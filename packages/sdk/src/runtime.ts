@@ -33,6 +33,8 @@ import { normalizeSchema, toRuntimeSchema } from './schema-runtime.js';
 
 type StoredHandler = (...args: readonly unknown[]) => unknown;
 
+const handlerSourceModuleSymbol = Symbol.for('applik8s.handlerSourceModule');
+
 export interface RunnableHandlerRegistration<TSpec extends object = object, TStatus extends object = object, TCapabilities extends CapabilityClientSet = CapabilityClientSet> extends HandlerRegistration<TSpec, TStatus, TCapabilities> {
   readonly handler: StoredHandler;
 }
@@ -309,7 +311,10 @@ export function secretRef(name: string, key: string, namespace?: string): Secret
 }
 
 export function withPermissions<TRegistration extends HandlerRegistration<object, object, CapabilityClientSet>>(registration: TRegistration, permissions: readonly PermissionRule[]): TRegistration {
-  return { ...registration, permissions: [...(registration.permissions ?? []), ...permissions] };
+  const decorated = { ...registration, permissions: [...(registration.permissions ?? []), ...permissions] };
+  const sourceModule = Reflect.get(registration, handlerSourceModuleSymbol);
+  if (isHandlerSourceMetadata(sourceModule)) attachHandlerSourceModule(decorated, sourceModule);
+  return decorated;
 }
 
 export function isRunnableHandlerRegistration(value: unknown): value is RunnableHandlerRegistration {
@@ -350,10 +355,44 @@ function createResourceHandlers<TSpec extends object, TStatus extends object, TC
         handler,
         ...(finalizers && finalizers.length > 0 ? { finalizers } : {}),
       };
+      const handlerSourceModule = Reflect.get(handler, handlerSourceModuleSymbol);
+      const sourceModule = isHandlerSourceMetadata(handlerSourceModule)
+        ? handlerSourceModule
+        : inferHandlerSourceModule();
+      if (sourceModule) attachHandlerSourceModule(registration, sourceModule);
       registrations.push(registration);
       return registration;
     },
   };
+}
+
+interface HandlerSourceMetadata { readonly file: string; readonly line: number; readonly column: number; }
+
+function attachHandlerSourceModule(registration: object, sourceModule: HandlerSourceMetadata): void {
+  Object.defineProperty(registration, handlerSourceModuleSymbol, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: sourceModule,
+  });
+}
+
+function inferHandlerSourceModule(): HandlerSourceMetadata | undefined {
+  const stack = new Error().stack;
+  if (!stack) return undefined;
+  for (const line of stack.split('\n').slice(1)) {
+    const match = line.match(/(?:file:\/\/)?((?:\/[^(\s]+|[A-Za-z]:\\[^)]+?)):(\d+):(\d+)\)?$/);
+    if (!match?.[1]) continue;
+    const file = decodeURIComponent(match[1].replace(/^file:\/\//, ''));
+    const normalized = file.replaceAll('\\', '/');
+    if (normalized.endsWith('/packages/sdk/src/runtime.ts') || normalized.includes('/node_modules/@applik8s/sdk/dist/runtime.js')) continue;
+    return { file, line: Number(match[2]), column: Number(match[3]) };
+  }
+  return undefined;
+}
+
+function isHandlerSourceMetadata(value: unknown): value is HandlerSourceMetadata {
+  return Boolean(value && typeof value === 'object' && typeof Reflect.get(value, 'file') === 'string' && typeof Reflect.get(value, 'line') === 'number' && typeof Reflect.get(value, 'column') === 'number');
 }
 
 function normalizeFinalizeHandlerOptions(options: FinalizeHandlerOptions | undefined): readonly string[] | undefined {

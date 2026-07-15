@@ -3,16 +3,16 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use applik8s_runtime_bridge::{
     KubernetesHttpTransport, RuntimeBridgeError, capability_denied_payload, component_host_imports,
     component_model_engine, decode_handler_input_payload, decode_handler_output_plan_payload,
     invoke_handler_component_bytes, invoke_handler_component_bytes_with_timeout,
     invoke_handler_component_bytes_with_timeout_and_capabilities_async,
-    invoke_handler_component_bytes_with_timeout_and_kubernetes_http_async, retry_after,
-    runtime_abi_version, validate_component_host_imports, validate_handler_input,
-    validate_operation_plan,
+    invoke_handler_component_bytes_with_timeout_and_kubernetes_http_async,
+    invoke_handler_component_bytes_with_timeout_async, retry_after, runtime_abi_version,
+    validate_component_host_imports, validate_handler_input, validate_operation_plan,
 };
 use kube::runtime::controller::Action;
 use wasmtime::Store;
@@ -308,6 +308,49 @@ fn bridge_times_out_non_terminating_handler_component() {
         ),
         "expected HandlerTimedOut, got {error:?}"
     );
+}
+
+#[test]
+fn cpu_bound_guest_yields_to_control_plane_tasks_before_timeout() {
+    let engine = component_model_engine().expect("component model engine configures");
+    let component_bytes = non_terminating_handler_component_bytes();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("test runtime builds")
+        .block_on(async {
+            let invocation = invoke_handler_component_bytes_with_timeout_async(
+                &engine,
+                &component_bytes,
+                valid_handler_input_payload(),
+                &[],
+                Duration::from_millis(100),
+            );
+            tokio::pin!(invocation);
+
+            let started = Instant::now();
+            let timer_result =
+                tokio::time::timeout(Duration::from_millis(20), &mut invocation).await;
+            assert!(
+                timer_result.is_err(),
+                "the control-plane timer must run before the guest's own timeout"
+            );
+            assert!(
+                started.elapsed() < Duration::from_millis(70),
+                "a CPU-bound guest must cooperatively yield so the control-plane timer is not delayed until the 100ms handler timeout"
+            );
+
+            let error = invocation
+                .await
+                .expect_err("non-terminating component still obeys its wall-clock timeout");
+            assert!(
+                matches!(
+                    error,
+                    RuntimeBridgeError::HandlerTimedOut { timeout_ms: 100 }
+                ),
+                "expected HandlerTimedOut, got {error:?}"
+            );
+        });
 }
 
 #[test]

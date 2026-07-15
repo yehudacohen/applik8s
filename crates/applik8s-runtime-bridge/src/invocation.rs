@@ -461,7 +461,7 @@ async fn invoke_handler_component_bytes_with_policy(
         engine,
         InvocationState::new(capability_request, kubernetes_read, kubernetes_http),
     );
-    configure_epoch_deadline(&mut store, timeout);
+    configure_epoch_deadline(&mut store);
     let instance = linker.instantiate_async(&mut store, &component).await?;
     let handle = instance.get_func(&mut store, "handle").ok_or_else(|| {
         RuntimeBridgeError::InvalidPayload("component does not export handle".to_string())
@@ -515,17 +515,14 @@ fn block_on_invocation(
         .block_on(future)
 }
 
-fn configure_epoch_deadline(store: &mut Store<InvocationState>, timeout: Option<Duration>) {
-    let ticks = timeout.map(timeout_ticks).unwrap_or(1_000_000_000);
-    store.set_epoch_deadline(ticks);
-    store.epoch_deadline_trap();
-}
-
-fn timeout_ticks(timeout: Duration) -> u64 {
-    const EPOCH_TICK_MS: u128 = 10;
-    let millis = timeout.as_millis().max(1);
-    let ticks = millis.div_ceil(EPOCH_TICK_MS);
-    ticks.min(u128::from(u64::MAX)) as u64
+fn configure_epoch_deadline(store: &mut Store<InvocationState>) {
+    // A CPU-bound guest does not naturally yield while Wasmtime executes it. If the
+    // store only traps at the wall-clock deadline, one handler can monopolize a
+    // single-thread Tokio runtime long enough to starve lease renewal and health
+    // work. Epoch-driven cooperative yields keep those control-plane tasks live;
+    // the surrounding Tokio timeout remains the authoritative wall-clock limit.
+    store.set_epoch_deadline(1);
+    store.epoch_deadline_async_yield_and_update(1);
 }
 
 fn is_epoch_deadline_trap(error: &wasmtime::Error) -> bool {

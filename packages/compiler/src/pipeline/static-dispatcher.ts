@@ -41,7 +41,9 @@ function staticSerializableOperatorSource(operator: OperatorDefinition, userEntr
     if (typeof handler !== 'function') {
       return error('BUNDLE_INVALID', `Handler ${registration.id} cannot be statically bundled because it does not carry a runnable handler function.`);
     }
-    const handlerSource = staticHandlerSource(handler, registration.id, allowedFreeIdentifiers, entrypointCaptures);
+    const sourceMetadata = handlerSourceMetadata(Reflect.get(registration, Symbol.for('applik8s.handlerSourceModule')));
+    if (process.env.APPLIK8S_DEBUG_STATIC_CAPTURES === '1') console.error(JSON.stringify({ component: 'static-handler-source-metadata', handlerId: registration.id, sourceMetadata }));
+    const handlerSource = staticHandlerSource(handler, registration.id, allowedFreeIdentifiers, entrypointCaptures, sourceMetadata);
     if (!handlerSource.ok) {
       return handlerSource;
     }
@@ -73,63 +75,142 @@ return Object.assign(__operator, { handlers: [${handlerRegistrations.join(', ')}
 }
 
 interface StaticEntrypointCaptures {
-  readonly declarations: ReadonlyMap<string, readonly string[]>;
-  readonly ambiguousCaptures: ReadonlyMap<string, readonly string[]>;
-  readonly factoryObjectParameters: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  createSession(handlerId: string, sourceModule?: string): StaticCaptureSession;
+  readonly factoryObjectParameters: ReadonlyMap<string, StaticFactoryObjectCapture>;
+  readonly factoryParameterOrigins: ReadonlyMap<string, readonly string[]>;
 }
 
-function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: string, allowedFreeIdentifiers: ReadonlySet<string>, entrypointCaptures: StaticEntrypointCaptures): Result<{ readonly source: string; readonly imports: readonly string[] }> {
-  const source = handler.toString();
+interface StaticCaptureSession {
+  readonly sourceModule?: string;
+  resolve(identifier: string, modulePath?: string): string | undefined;
+  error(identifier: string): string | undefined;
+  render(): readonly string[];
+}
+
+interface StaticFactoryObjectCapture {
+  readonly callsiteModule: string;
+  readonly properties: ReadonlyMap<string, string>;
+}
+
+interface StaticHandlerSourceMetadata { readonly file: string; readonly line: number; readonly column: number; }
+
+function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: string, allowedFreeIdentifiers: ReadonlySet<string>, entrypointCaptures: StaticEntrypointCaptures, sourceMetadata?: StaticHandlerSourceMetadata): Result<{ readonly source: string; readonly imports: readonly string[] }> {
+  const source = authoredHandlerSource(sourceMetadata) ?? handler.toString();
   if (source.includes('[native code]')) {
     return error('BUNDLE_INVALID', `Handler ${handlerId} cannot be statically bundled because it is native code.`);
   }
-  const captures = new Map<string, readonly string[]>();
+  const session = entrypointCaptures.createSession(handlerId, sourceMetadata?.file);
+  const captureExpressions = new Map<string, string>();
+  const directImports = new Set<string>();
   const freeCandidates = likelyFreeIdentifiers(source).filter((candidate) => !allowedFreeIdentifiers.has(candidate));
   for (const identifier of freeCandidates) {
-    const ambiguousCapture = entrypointCaptures.ambiguousCaptures.get(identifier);
-    if (ambiguousCapture) {
+    const moduleCapture = session.resolve(identifier);
+    if (moduleCapture) {
+      captureExpressions.set(identifier, moduleCapture);
+      continue;
+    }
+    const captureError = session.error(identifier);
+    if (captureError) {
       return error(
         'BUNDLE_INVALID',
-        `Handler ${handlerId} cannot be statically bundled because capture ${identifier} reaches ambiguous module-local declarations: ${ambiguousCapture.join('; ')}. Rename the colliding top-level declarations to globally unique names so the generated dispatcher cannot silently bind the handler to a different module's implementation.`
+        `Handler ${handlerId} cannot be statically bundled because capture ${identifier} ${captureError}`
       );
     }
-    const capture = staticHandlerCapturedImports.get(identifier)
-      ?? entrypointCaptures.declarations.get(identifier)
-      ?? factoryObjectParameterCapture(identifier, source, entrypointCaptures);
-    if (capture) captures.set(identifier, capture);
+    const directImport = staticHandlerCapturedImports.get(identifier);
+    if (directImport) {
+      for (const statement of directImport) directImports.add(statement);
+      continue;
+    }
+    const factoryCapture = factoryObjectParameterCapture(identifier, source, entrypointCaptures, session);
+    if (factoryCapture) captureExpressions.set(identifier, factoryCapture);
   }
-  const capturedImports = [...captures.values()].flat();
-  const freeIdentifiers = freeCandidates.filter((identifier) => !captures.has(identifier));
+  const freeIdentifiers = freeCandidates.filter((identifier) => !captureExpressions.has(identifier) && !staticHandlerCapturedImports.has(identifier));
   if (freeIdentifiers.length > 0) {
     return error(
       'BUNDLE_INVALID',
       `Handler ${handlerId} cannot be statically bundled. The reconcile callback references closure-local identifier(s) that cannot be recovered from the module: ${freeIdentifiers.join(', ')}. Move captured values and helper functions to top-level declarations, keep them inside the handler, or pass literal data through the reconciled resource spec/status. Top-level reachable helpers and imports are serialized into the WASM dispatcher; factory-local lexical state fails closed.`
     );
   }
-  try {
-    new Function(`return (${source});`);
-  } catch (cause) {
-    return error('BUNDLE_INVALID', `Handler ${handlerId} cannot be statically bundled from its function source: ${cause instanceof Error ? cause.message : 'invalid function source'}.`);
-  }
-  return { ok: true, value: { source, imports: [...new Set(capturedImports)].sort() } };
+  const validation = ts.transpileModule(`const __applik8sHandler = (${source});`, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+    reportDiagnostics: true,
+  });
+  const syntaxError = validation.diagnostics?.find((diagnostic) => diagnostic.category === ts.DiagnosticCategory.Error);
+  if (syntaxError) return error('BUNDLE_INVALID', `Handler ${handlerId} cannot be statically bundled from its function source: ${ts.flattenDiagnosticMessageText(syntaxError.messageText, '\n')}.`);
+  const captureNames = [...captureExpressions.keys()].sort();
+  const wrappedSource = captureNames.length === 0
+    ? source
+    : `((${captureNames.join(', ')}) => (${source}))(${captureNames.map((name) => captureExpressions.get(name)).join(', ')})`;
+  return { ok: true, value: { source: wrappedSource, imports: [...directImports, ...session.render()] } };
 }
 
-function factoryObjectParameterCapture(identifier: string, handlerSource: string, captures: StaticEntrypointCaptures): readonly string[] | undefined {
-  const properties = captures.factoryObjectParameters.get(identifier);
-  if (!properties) return undefined;
+function handlerSourceMetadata(value: unknown): StaticHandlerSourceMetadata | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const file = Reflect.get(value, 'file');
+  const line = Reflect.get(value, 'line');
+  const column = Reflect.get(value, 'column');
+  return typeof file === 'string' && typeof line === 'number' && typeof column === 'number' ? { file, line, column } : undefined;
+}
+
+function authoredHandlerSource(metadata: StaticHandlerSourceMetadata | undefined): string | undefined {
+  if (!metadata) return undefined;
+  let source: string;
+  try {
+    source = readFileSync(metadata.file, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const file = ts.createSourceFile(metadata.file, source, ts.ScriptTarget.Latest, true, scriptKindForPath(metadata.file));
+  const line = Math.max(0, metadata.line - 1);
+  const column = Math.max(0, metadata.column - 1);
+  const target = file.getPositionOfLineAndCharacter(Math.min(line, file.getLineAndCharacterOfPosition(file.end).line), column);
+  const candidates: Array<{ readonly distance: number; readonly size: number; readonly expression: ts.ArrowFunction | ts.FunctionExpression }> = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const expression = node.arguments.find((argument): argument is ts.ArrowFunction | ts.FunctionExpression => ts.isArrowFunction(argument) || ts.isFunctionExpression(argument));
+      if (expression) {
+        const start = node.getStart(file);
+        const end = node.getEnd();
+        const distance = target < start ? start - target : target > end ? target - end : 0;
+        const nodeLine = file.getLineAndCharacterOfPosition(start).line;
+        if (distance === 0 || nodeLine === line) candidates.push({ distance, size: end - start, expression });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  candidates.sort((left, right) => left.distance - right.distance || left.size - right.size);
+  return candidates[0]?.expression.getText(file);
+}
+
+function factoryObjectParameterCapture(identifier: string, handlerSource: string, captures: StaticEntrypointCaptures, session: StaticCaptureSession): string | undefined {
+  const exactKey = session.sourceModule ? factoryCaptureKey(session.sourceModule, identifier) : undefined;
+  const fallbackOrigins = captures.factoryParameterOrigins.get(identifier) ?? [];
+  const key = exactKey && captures.factoryObjectParameters.has(exactKey)
+    ? exactKey
+    : fallbackOrigins.length === 1 ? fallbackOrigins[0] : undefined;
+  const capture = key ? captures.factoryObjectParameters.get(key) : undefined;
+  if (!capture) return undefined;
   const accessed = directlyAccessedProperties(handlerSource, identifier);
-  if (accessed.length === 0 || accessed.some((property) => !properties.has(property))) return undefined;
+  if (accessed.length === 0 || accessed.some((property) => !capture.properties.has(property))) return undefined;
   const selected: Array<readonly [string, string]> = [];
   for (const property of accessed) {
-    const expression = properties.get(property);
+    const expression = capture.properties.get(property);
     if (expression === undefined) return undefined;
     selected.push([property, expression]);
   }
-  const dependencies = selected.flatMap(([, expression]) => likelyFreeIdentifiersInStatements(expression)
-    .filter((dependency) => dependency !== identifier)
-    .flatMap((dependency) => captures.declarations.get(dependency) ?? []));
+  const dependencies = new Map<string, string>();
+  for (const [, expression] of selected) {
+    for (const dependency of likelyFreeIdentifiersInStatements(expression).filter((candidate) => candidate !== identifier)) {
+      const captured = session.resolve(dependency, capture.callsiteModule);
+      if (!captured) return undefined;
+      dependencies.set(dependency, captured);
+    }
+  }
   const objectSource = selected.map(([property, expression]) => `${JSON.stringify(property)}: (${expression})`).join(', ');
-  return [...new Set([...dependencies, `const ${identifier} = { ${objectSource} };`])];
+  const dependencyNames = [...dependencies.keys()].sort();
+  if (dependencyNames.length === 0) return `{ ${objectSource} }`;
+  return `((${dependencyNames.join(', ')}) => ({ ${objectSource} }))(${dependencyNames.map((name) => dependencies.get(name)).join(', ')})`;
 }
 
 function directlyAccessedProperties(handlerSource: string, identifier: string): readonly string[] {
@@ -150,14 +231,23 @@ function directlyAccessedProperties(handlerSource: string, identifier: string): 
 interface StaticModuleRecord {
   readonly path: string;
   readonly file: ts.SourceFile;
+  readonly index: number;
+  readonly declarations: ReadonlyMap<string, StaticDeclarationRecord>;
+  readonly packageImports: ReadonlyMap<string, StaticPackageImport>;
+  readonly localImports: ReadonlyMap<string, StaticLocalImport>;
+  defaultExport?: string;
 }
 
+interface StaticDeclarationRecord { readonly index: number; readonly statement: ts.Statement; readonly names: readonly string[]; }
+interface StaticPackageImport { readonly specifier: string; readonly kind: 'default' | 'namespace' | 'named'; readonly imported?: string; }
+interface StaticLocalImport { readonly target: string; readonly imported: string; }
+interface StaticExternalBinding { readonly expression: string; readonly dependencyModule?: string; }
+interface StaticRenderedPackageImport { readonly statement: string; readonly local: string; }
+
 function staticEntrypointCaptures(entrypoint: string): StaticEntrypointCaptures {
-  const declarations = new Map<string, string>();
   const declarationOrigins = new Map<string, Set<string>>();
-  const packageImports = new Map<string, string>();
-  const localAliases = new Map<string, string>();
   const modules: StaticModuleRecord[] = [];
+  const modulesByPath = new Map<string, StaticModuleRecord>();
   const visited = new Set<string>();
 
   const visitModule = (modulePath: string): void => {
@@ -171,105 +261,66 @@ function staticEntrypointCaptures(entrypoint: string): StaticEntrypointCaptures 
       return;
     }
     const file = ts.createSourceFile(absolutePath, source, ts.ScriptTarget.Latest, true, scriptKindForPath(absolutePath));
-    modules.push({ path: absolutePath, file });
-    for (const statement of file.statements) {
+    const declarations = new Map<string, StaticDeclarationRecord>();
+    const packageImports = new Map<string, StaticPackageImport>();
+    const localImports = new Map<string, StaticLocalImport>();
+    let defaultExport: string | undefined;
+    const module: StaticModuleRecord = { path: absolutePath, file, index: modules.length, declarations, packageImports, localImports };
+    modules.push(module);
+    modulesByPath.set(absolutePath, module);
+    for (const [statementIndex, statement] of file.statements.entries()) {
       if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
         const specifier = statement.moduleSpecifier.text;
         const clause = statement.importClause;
         const localTarget = resolveStaticLocalImport(absolutePath, specifier);
         if (!localTarget) {
-          const text = statement.getText(file);
-          if (clause?.name && !clause.isTypeOnly) packageImports.set(clause.name.text, text);
-          if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings) && !clause.isTypeOnly) packageImports.set(clause.namedBindings.name.text, text);
+          if (clause?.name && !clause.isTypeOnly) packageImports.set(clause.name.text, { specifier, kind: 'default' });
+          if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings) && !clause.isTypeOnly) packageImports.set(clause.namedBindings.name.text, { specifier, kind: 'namespace' });
           if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings) && !clause.isTypeOnly) {
             for (const element of clause.namedBindings.elements) {
-              if (!element.isTypeOnly) packageImports.set(element.name.text, text);
+              if (!element.isTypeOnly) packageImports.set(element.name.text, { specifier, kind: 'named', imported: element.propertyName?.text ?? element.name.text });
             }
           }
           continue;
         }
         visitModule(localTarget);
-        if (clause?.name && !clause.isTypeOnly) localAliases.set(clause.name.text, 'default');
+        const target = resolve(localTarget);
+        if (clause?.name && !clause.isTypeOnly) localImports.set(clause.name.text, { target, imported: 'default' });
         if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings) && !clause.isTypeOnly) {
           for (const element of clause.namedBindings.elements) {
-            if (!element.isTypeOnly) localAliases.set(element.name.text, element.propertyName?.text ?? element.name.text);
+            if (!element.isTypeOnly) localImports.set(element.name.text, { target, imported: element.propertyName?.text ?? element.name.text });
           }
         }
         continue;
       }
       const declaredNames = runtimeDeclarationNames(statement);
       if (declaredNames.length === 0) continue;
-      const text = statement.getText(file);
       for (const name of declaredNames) {
-        if (!declarations.has(name)) declarations.set(name, text);
+        declarations.set(name, { index: statementIndex, statement, names: declaredNames });
         const origins = declarationOrigins.get(name) ?? new Set<string>();
         origins.add(absolutePath);
         declarationOrigins.set(name, origins);
       }
+      if (hasDefaultModifier(statement)) defaultExport = declaredNames[0];
     }
+    if (defaultExport) module.defaultExport = defaultExport;
   };
 
   visitModule(resolve(entrypoint));
 
-  const ambiguousDeclarationOrigins = new Map<string, readonly string[]>();
-  for (const [name, origins] of declarationOrigins) {
-    if (origins.size > 1) ambiguousDeclarationOrigins.set(name, [...origins].sort());
-  }
-
-  const statements = new Map<string, string>();
-  for (const [name, statement] of declarations) statements.set(name, statement);
-
-  const resolved = new Map<string, readonly string[]>();
-  const captureAmbiguities = new Map<string, readonly string[]>();
-  const resolving = new Set<string>();
-  const resolveCapture = (identifier: string): readonly string[] | undefined => {
-    const cached = resolved.get(identifier);
-    if (cached) return cached;
-    const imported = packageImports.get(identifier);
-    if (imported) {
-      const result = [imported];
-      resolved.set(identifier, result);
-      return result;
-    }
-    const aliased = localAliases.get(identifier);
-    const statement = statements.get(identifier) ?? (aliased ? statements.get(aliased) : undefined);
-    if (!statement || resolving.has(identifier)) return undefined;
-    const ambiguityTarget = ambiguousDeclarationOrigins.has(identifier)
-      ? identifier
-      : aliased && ambiguousDeclarationOrigins.has(aliased)
-        ? aliased
-        : undefined;
-    if (ambiguityTarget) {
-      captureAmbiguities.set(identifier, [`${ambiguityTarget} (${ambiguousDeclarationOrigins.get(ambiguityTarget)?.join(', ')})`]);
-      return undefined;
-    }
-    resolving.add(identifier);
-    const dependencies: string[] = [];
-    const ambiguities = new Set<string>();
-    for (const dependency of likelyFreeIdentifiersInStatements(statement).filter((candidate) => candidate !== identifier)) {
-      dependencies.push(...(resolveCapture(dependency) ?? []));
-      for (const ambiguity of captureAmbiguities.get(dependency) ?? []) ambiguities.add(ambiguity);
-    }
-    resolving.delete(identifier);
-    if (ambiguities.size > 0) captureAmbiguities.set(identifier, [...ambiguities].sort());
-    const aliasStatement = aliased && aliased !== identifier && aliased !== 'default' ? `const ${identifier} = ${aliased};` : undefined;
-    const result = [...new Set([...dependencies, statement, ...(aliasStatement ? [aliasStatement] : [])])];
-    resolved.set(identifier, result);
-    return result;
-  };
-  for (const identifier of statements.keys()) resolveCapture(identifier);
-  for (const identifier of localAliases.keys()) resolveCapture(identifier);
-
-  const factoryObjectParameters = new Map<string, ReadonlyMap<string, string>>();
+  const factoryObjectParameters = new Map<string, StaticFactoryObjectCapture>();
+  const factoryParameterOrigins = new Map<string, string[]>();
   for (const module of modules) {
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && isTopLevelExpression(node)) {
-        const factoryName = localAliases.get(node.expression.text) ?? node.expression.text;
-        const declarationSource = declarations.get(factoryName);
+        const localImport = module.localImports.get(node.expression.text);
+        const factoryModule = localImport ? modulesByPath.get(localImport.target) : module;
+        const importedName = localImport?.imported === 'default' ? factoryModule?.defaultExport : localImport?.imported;
+        const factoryName = importedName ?? node.expression.text;
+        const declaration = factoryModule?.declarations.get(factoryName);
         const argument = node.arguments[0];
-        if (declarationSource && argument && ts.isObjectLiteralExpression(argument)) {
-          const declarationFile = ts.createSourceFile('applik8s-static-factory.ts', declarationSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-          const factory = declarationFile.statements.find(ts.isFunctionDeclaration);
+        if (declaration && argument && ts.isObjectLiteralExpression(argument)) {
+          const factory = ts.isFunctionDeclaration(declaration.statement) ? declaration.statement : undefined;
           const parameter = factory?.parameters[0];
           if (parameter && ts.isIdentifier(parameter.name)) {
             const properties = new Map<string, string>();
@@ -280,7 +331,15 @@ function staticEntrypointCaptures(entrypoint: string): StaticEntrypointCaptures 
                 properties.set(property.name.text, property.name.text);
               }
             }
-            if (properties.size > 0 && !factoryObjectParameters.has(parameter.name.text)) factoryObjectParameters.set(parameter.name.text, properties);
+            if (properties.size > 0 && factoryModule) {
+              const key = factoryCaptureKey(factoryModule.path, parameter.name.text);
+              if (!factoryObjectParameters.has(key)) {
+                factoryObjectParameters.set(key, { callsiteModule: module.path, properties });
+                const origins = factoryParameterOrigins.get(parameter.name.text) ?? [];
+                origins.push(key);
+                factoryParameterOrigins.set(parameter.name.text, origins);
+              }
+            }
           }
         }
       }
@@ -292,11 +351,146 @@ function staticEntrypointCaptures(entrypoint: string): StaticEntrypointCaptures 
     console.error(JSON.stringify({
       component: 'static-entrypoint-capture-analysis',
       modules: modules.map((module) => module.path),
-      declarations: [...resolved.keys()].sort(),
-      factoryObjectParameters: [...factoryObjectParameters.entries()].map(([parameter, properties]) => ({ parameter, properties: [...properties.keys()] })),
+      declarations: modules.flatMap((module) => [...module.declarations.keys()].map((name) => `${module.path}#${name}`)).sort(),
+      factoryObjectParameters: [...factoryObjectParameters.entries()].map(([key, capture]) => ({ key, properties: [...capture.properties.keys()] })),
     }));
   }
-  return { declarations: resolved, ambiguousCaptures: captureAmbiguities, factoryObjectParameters };
+  return {
+    factoryObjectParameters,
+    factoryParameterOrigins,
+    createSession: (handlerId, sourceModule) => createStaticCaptureSession(handlerId, sourceModule, modulesByPath, declarationOrigins),
+  };
+}
+
+function createStaticCaptureSession(handlerId: string, sourceModule: string | undefined, modulesByPath: ReadonlyMap<string, StaticModuleRecord>, declarationOrigins: ReadonlyMap<string, ReadonlySet<string>>): StaticCaptureSession {
+  const prefix = `__applik8s_${handlerId.replace(/[^A-Za-z0-9_$]/g, '_')}`;
+  const selected = new Map<string, Map<number, StaticDeclarationRecord>>();
+  const bindings = new Map<string, Map<string, StaticExternalBinding>>();
+  const packageStatements = new Map<string, StaticRenderedPackageImport>();
+  const errors = new Map<string, string>();
+  const resolving = new Set<string>();
+  const normalizedSourceModule = matchStaticModule(sourceModule, modulesByPath);
+  let packageIndex = 0;
+
+  const namespaceFor = (module: StaticModuleRecord): string => `${prefix}_m${module.index}`;
+  const resolveFrom = (modulePath: string | undefined, identifier: string): string | undefined => {
+    const module = modulePath ? modulesByPath.get(modulePath) : undefined;
+    if (!module) {
+      const origins = [...(declarationOrigins.get(identifier) ?? [])];
+      if (origins.length > 1) {
+        errors.set(identifier, `has no defining-module provenance and matches multiple module-local declarations: ${origins.sort().join(', ')}.`);
+        return undefined;
+      }
+      if (origins.length === 1) return resolveFrom(origins[0], identifier);
+      return undefined;
+    }
+    const key = `${module.path}\0${identifier}`;
+    if (resolving.has(key)) {
+      errors.set(identifier, `participates in an unsupported cyclic static capture rooted at ${module.path}.`);
+      return undefined;
+    }
+    const packageImport = module.packageImports.get(identifier);
+    if (packageImport) {
+      const importKey = `${module.path}\0${identifier}`;
+      if (!packageStatements.has(importKey)) {
+        const local = `${prefix}_pkg${packageIndex++}`;
+        const statement = packageImport.kind === 'default'
+          ? `import ${local} from ${JSON.stringify(packageImport.specifier)};`
+          : packageImport.kind === 'namespace'
+            ? `import * as ${local} from ${JSON.stringify(packageImport.specifier)};`
+            : `import { ${packageImport.imported}${packageImport.imported === local ? '' : ` as ${local}`} } from ${JSON.stringify(packageImport.specifier)};`;
+        packageStatements.set(importKey, { statement, local });
+      }
+      return packageStatements.get(importKey)?.local;
+    }
+    const localImport = module.localImports.get(identifier);
+    if (localImport) {
+      const target = modulesByPath.get(localImport.target);
+      const targetName = localImport.imported === 'default' ? target?.defaultExport : localImport.imported;
+      if (!target || !targetName) return undefined;
+      const expression = resolveFrom(target.path, targetName);
+      if (expression) {
+        const moduleBindings = bindings.get(module.path) ?? new Map<string, StaticExternalBinding>();
+        moduleBindings.set(identifier, { expression, dependencyModule: target.path });
+        bindings.set(module.path, moduleBindings);
+      }
+      return expression;
+    }
+    const declaration = module.declarations.get(identifier);
+    if (!declaration) return undefined;
+    resolving.add(key);
+    const moduleSelected = selected.get(module.path) ?? new Map<number, StaticDeclarationRecord>();
+    moduleSelected.set(declaration.index, declaration);
+    selected.set(module.path, moduleSelected);
+    for (const dependency of likelyFreeIdentifiersInStatements(declaration.statement.getText(module.file)).filter((candidate) => candidate !== identifier)) {
+      if (module.declarations.has(dependency)) {
+        if (!resolveFrom(module.path, dependency)) errors.set(identifier, `depends on unresolved module-local declaration ${dependency} in ${module.path}.`);
+        continue;
+      }
+      const expression = resolveFrom(module.path, dependency);
+      if (!expression) {
+        errors.set(identifier, `depends on unresolved identifier ${dependency} in ${module.path}.`);
+        continue;
+      }
+      const moduleBindings = bindings.get(module.path) ?? new Map<string, StaticExternalBinding>();
+      const dependencyModule = module.localImports.get(dependency)?.target;
+      if (!moduleBindings.has(dependency)) moduleBindings.set(dependency, { expression, ...(dependencyModule ? { dependencyModule } : {}) });
+      bindings.set(module.path, moduleBindings);
+    }
+    resolving.delete(key);
+    return `${namespaceFor(module)}.${identifier}`;
+  };
+
+  return {
+    ...(normalizedSourceModule ? { sourceModule: normalizedSourceModule } : {}),
+    resolve: (identifier, modulePath) => resolveFrom(matchStaticModule(modulePath, modulesByPath) ?? normalizedSourceModule, identifier),
+    error: (identifier) => errors.get(identifier),
+    render: () => {
+      const output = [...packageStatements.values()].map(({ statement }) => statement);
+      const rendered = new Set<string>();
+      const rendering = new Set<string>();
+      const renderModule = (path: string): void => {
+        if (rendered.has(path) || rendering.has(path)) return;
+        rendering.add(path);
+        for (const binding of bindings.get(path)?.values() ?? []) {
+          if (binding.dependencyModule && selected.has(binding.dependencyModule)) renderModule(binding.dependencyModule);
+        }
+        const module = modulesByPath.get(path);
+        const statements = [...(selected.get(path)?.values() ?? [])].sort((left, right) => left.index - right.index);
+        if (module && statements.length > 0) {
+          const moduleBindings = [...(bindings.get(path)?.entries() ?? [])].sort(([left], [right]) => left.localeCompare(right));
+          const body = statements.map((record) => stripStaticExport(record.statement.getText(module.file))).join('\n');
+          const exportedNames = [...new Set(statements.flatMap((record) => record.names))].sort();
+          output.push(`const ${namespaceFor(module)} = ((${moduleBindings.map(([name]) => name).join(', ')}) => {\n${body}\nreturn { ${exportedNames.join(', ')} };\n})(${moduleBindings.map(([, binding]) => binding.expression).join(', ')});`);
+        }
+        rendering.delete(path);
+        rendered.add(path);
+      };
+      for (const path of selected.keys()) renderModule(path);
+      return output;
+    },
+  };
+}
+
+function matchStaticModule(sourceModule: string | undefined, modulesByPath: ReadonlyMap<string, StaticModuleRecord>): string | undefined {
+  if (!sourceModule) return undefined;
+  const absolute = resolve(sourceModule.replace(/^file:\/\//, ''));
+  if (modulesByPath.has(absolute)) return absolute;
+  const extension = extname(absolute);
+  const base = extension === '.js' || extension === '.mjs' || extension === '.cjs' ? absolute.slice(0, -extension.length) : absolute;
+  return [...modulesByPath.keys()].find((candidate) => candidate === `${base}.ts` || candidate === `${base}.tsx` || candidate === `${base}.js`);
+}
+
+function factoryCaptureKey(modulePath: string, parameter: string): string {
+  return `${resolve(modulePath)}\0${parameter}`;
+}
+
+function stripStaticExport(source: string): string {
+  return source.replace(/^\s*export\s+(?:default\s+)?/, '');
+}
+
+function hasDefaultModifier(statement: ts.Statement): boolean {
+  return Boolean(ts.canHaveModifiers(statement) && ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword));
 }
 
 function resolveStaticLocalImport(importer: string, specifier: string): string | undefined {

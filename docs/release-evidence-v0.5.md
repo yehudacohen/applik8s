@@ -2,6 +2,13 @@
 
 v0.5 is the durable workflow, bounded connection-scoped Kubernetes, and operator-runtime DNS publication release. Its supported path is the provider-neutral task/workflow graph with the pinned PostgreSQL-only Hatchet implementation, named Kubernetes connections whose credentials remain host-owned, and the handler-safe provider-neutral DNS contract with its first-party ExternalDNS adapter.
 
+The final runtime-hardening proof also covers module-provenance-aware static handler capture, including
+same-named helpers reached through different import aliases; two independently bound Kubernetes
+connection aliases against the OrbStack API; two-replica follower readiness; Lease renewal during a
+reconcile longer than the Lease duration; graceful rolling handoff before expiry; and forced-holder
+crash failover. Cross-API-server execution remains intentionally unclaimed until a second Kubernetes
+cluster is available to the release suite.
+
 ## Local evidence
 
 The release gate is:

@@ -17,7 +17,7 @@ This is the supported public surface for `applik8s` v0.5. The v0.3 application s
 
 The umbrella package is the normal application-authoring and integration surface. Code that must be captured inside a minimal WASM reconciliation closure should import focused handler-safe APIs from `@applik8s/sdk` or an explicitly documented handler-safe subpath. The compiler follows the reachable closure and fails closed on unsupported Node or integration dependencies; it does not promise that importing the umbrella entrypoint from inside a handler is minimal or portable.
 
-Static dispatcher capture currently requires reachable top-level runtime declaration names to be unique across local modules. A collision fails closed even when JavaScript module scope would disambiguate it; rename the declarations rather than relying on an import alias. Module-provenance-aware capture is deferred until the dispatcher can preserve source-module identity end to end.
+Static dispatcher capture preserves the defining source module and authored handler expression through discovery metadata. Reachable declarations are emitted in isolated module scopes, so unrelated duplicate helper names and explicitly aliased same-named imports retain normal JavaScript module semantics. Missing source provenance, unresolved lexical state, and unsupported capture cycles still fail closed with the handler and dependency named.
 
 ## SDK Authoring
 
