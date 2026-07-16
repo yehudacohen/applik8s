@@ -1,6 +1,7 @@
-import { app, applicationGraphFor, ProjectionStore, stream } from '@applik8s/applik8s';
+import { app, applicationGraphFor, Certificate, DnsPublication, ProjectionStore, stream } from '@applik8s/applik8s';
 import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
 import { type } from 'arktype';
+import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
 const AccountChanged = stream('accounts.changed.v1', {
@@ -8,6 +9,60 @@ const AccountChanged = stream('accounts.changed.v1', {
 });
 
 describe('v0.6 streams, subscriptions, and projections', () => {
+  it('exposes a generated query gateway through managed HTTPS without manually reconstructing its Service', () => {
+    const entries = pgTable('guestbook_entries', {
+      id: text('id').primaryKey(),
+      message: text('message').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const guestbook = app('reactive-guestbook', { namespace: 'guestbook' });
+    const database = guestbook.database.postgres('guestbook', { schema: { entries } });
+    const Entry = guestbook.model(entries, { name: 'GuestBookEntry', database });
+    const published = guestbook.query('guestbook.entries.v1', {
+      input: type({}),
+      output: Entry.$model.schema.select.array(),
+      database,
+      reads: [Entry],
+      authorize: () => true,
+      run: async ({ context }) => context.database(database).select().from(Entry),
+    });
+    const gateway = guestbook.gateway('public', {
+      queries: [published],
+      deployment: {
+        namespace: 'guestbook',
+        port: 8443,
+        cursorSecret: { name: 'guestbook-cursor', key: 'secret' },
+        authenticate: async () => ({ principal: { id: 'guest' }, trustedContext: {}, authorizationVersion: 'v1' }),
+      },
+    });
+    guestbook.provide(Certificate, Certificate.certManager({ issuerRef: { name: 'letsencrypt-prod', kind: 'ClusterIssuer' } }));
+    guestbook.provide(DnsPublication, DnsPublication.externalDns());
+    const exposure = guestbook.expose('public', {
+      service: gateway,
+      hostnames: ['guestbook.example.com'],
+      tls: { mode: 'managed' },
+      dns: { mode: 'managed', ttlSeconds: 120 },
+    });
+
+    expect(gateway).toMatchObject({ serviceName: 'reactive-guestbook-public', namespace: 'guestbook', port: 8443 });
+    expect(exposure).toMatchObject({ publicUrl: 'https://guestbook.example.com', tlsIntent: { mode: 'managed', secretName: 'public-tls' } });
+    expect(guestbook.composition.resources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'Ingress', spec: expect.objectContaining({ rules: [expect.objectContaining({ http: { paths: [expect.objectContaining({ backend: { service: { name: 'reactive-guestbook-public', port: { number: 8443 } } } })] } })] }) }),
+      expect.objectContaining({ apiVersion: 'cert-manager.io/v1', kind: 'Certificate', spec: expect.objectContaining({ secretName: 'public-tls', issuerRef: expect.objectContaining({ name: 'letsencrypt-prod', kind: 'ClusterIssuer' }) }) }),
+    ]));
+  });
+
+  it('fails closed when exposure targets a runtime-only gateway with no generated Service', () => {
+    const entries = pgTable('runtime_only_entries', { id: text('id').primaryKey(), revision: text('revision').notNull() });
+    const guestbook = app('runtime-only-guestbook');
+    const database = guestbook.database.postgres('guestbook', { schema: { entries } });
+    const Entry = guestbook.model(entries, { name: 'RuntimeOnlyEntry', database });
+    const query = guestbook.query('guestbook.runtime-only.v1', { input: type({}), output: Entry.$model.schema.select.array(), database, reads: [Entry], authorize: () => true, run: async () => [] });
+    const gateway = guestbook.gateway('public', { queries: [query] });
+
+    expect(() => guestbook.expose('public', { service: gateway, hostnames: ['guestbook.example.com'] })).toThrow(/runtime-only gateway.*deployment options/);
+  });
+
   it('records explicit replay, delivery, ClickHouse, and rebuild semantics', () => {
     const catalog = app('reactive-catalog', { namespace: 'catalog' });
     const database = catalog.database.postgres('catalog', { schema: {} });

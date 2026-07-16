@@ -15,7 +15,7 @@ import { getTableColumns, getTableName, isTable } from 'drizzle-orm';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import type { ApplicationServerRuntimeIndex, ApplicationServerRuntimeResource } from './application-generated-runtime-sources.js';
 import { generatedApplicationAggregateSource, generatedValkeyIndexerSource } from './application-generated-runtime-sources.js';
-import { applicationConfigLabels, applicationExposureServiceName, applicationExposureServiceNamespace, applicationExternalDnsAnnotations, applicationLegacyTlsMode, normalizeApplicationTlsIntent } from './application-exposure.js';
+import { applicationConfigLabels, applicationExposureServiceName, applicationExposureServiceNamespace, applicationExposureServicePort, applicationExternalDnsAnnotations, applicationLegacyTlsMode, normalizeApplicationTlsIntent } from './application-exposure.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, applicationGraphFromState, isApplicationGraph } from './application-graph-state.js';
 import { apiGroupForApiVersion, graphResourceId, kubernetesNameSegment, pascalCase, pluralizeKubernetesKind, unique } from './application-identifiers.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobPhaseStatusContract, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
@@ -218,7 +218,7 @@ export interface ApplicationSecretBinding {
 
 export interface ApplicationExposureOptions {
   readonly namespace?: string;
-  readonly service?: string | ApplicationServerBinding;
+  readonly service?: string | ApplicationServerBinding | ApplicationGatewayBinding;
   readonly servicePort?: number;
   readonly hostnames?: readonly string[];
   readonly tls?: 'required' | 'optional' | 'disabled' | ApplicationTlsIntent;
@@ -1193,7 +1193,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       return registerApplicationProjection(state, name, options);
     },
     gateway(name, options) {
-      return registerApplicationGateway(state, name, options);
+      return registerApplicationGateway(state, name, options, definition.name);
     },
     reconcile,
     infra(resource) {
@@ -1648,6 +1648,9 @@ function emitApplicationExposure(state: ApplicationScopeState, name: string, opt
   }
   const exposedService = applicationExposureServiceName(options.service);
   const exposedNamespace = applicationExposureServiceNamespace(options.service) ?? options.namespace;
+  if (options.service && typeof options.service === 'object' && 'kind' in options.service && options.service.kind === 'applicationGateway' && !exposedService) {
+    throw new Error(`app.expose(${JSON.stringify(name)}, ...) cannot target runtime-only gateway ${JSON.stringify(options.service.name)}. Add gateway deployment options so Applik8s can materialize and expose its Service.`);
+  }
   if (!exposedService) {
     throw new Error(`app.expose(${JSON.stringify(name)}, ...) requires an explicit service name for the v0.3 Ingress exposure slice.`);
   }
@@ -1700,7 +1703,7 @@ function emitApplicationExposure(state: ApplicationScopeState, name: string, opt
       ...(ingressClassName ? { ingressClassName } : {}),
       rules: hostnames.map((host) => ({
         host,
-        http: { paths: [{ path: options.path ?? '/', pathType: 'Prefix', backend: { service: { name: exposedService, port: { number: options.servicePort ?? 80 } } } }] },
+        http: { paths: [{ path: options.path ?? '/', pathType: 'Prefix', backend: { service: { name: exposedService, port: { number: options.servicePort ?? applicationExposureServicePort(options.service) ?? 80 } } } }] },
       })),
       ...(tlsIntent.mode !== 'disabled' ? { tls: [{ hosts: hostnames, secretName: tlsIntent.secretName }] } : {}),
     },

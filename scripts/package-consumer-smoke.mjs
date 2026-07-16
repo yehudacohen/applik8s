@@ -151,7 +151,7 @@ if (!graph?.nodes.some((node) => node.kind === 'workflowWorker') || !graph.provi
   console.log('Package consumer smoke: packed v0.5 task/workflow graph passed.');
 
   const v06Path = join(consumerDir, 'v06.mjs');
-  await writeFile(v06Path, `import { app, applicationGraphFor, postgres, trustedContext } from '@applik8s/applik8s';
+  await writeFile(v06Path, `import { app, applicationGraphFor, Certificate, DnsPublication, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { ApplicationQueryClient } from '@applik8s/client';
 import { ApplicationQueryClientProvider } from '@applik8s/react';
@@ -163,13 +163,18 @@ const OrganizationId = trustedContext('organizationId', { schema: type('string')
 const platform = app('packed-v06', { namespace: 'packed-v06' });
 const Database = platform.database.postgres('catalog', { schema: { cards }, access: postgres.rls({ context: OrganizationId, column: 'organizationId' }) });
 const Card = platform.model(cards, { name: 'Card', database: Database });
-platform.query('cards.list.v1', { input: type({}), output: Card.$model.schema.select.array(), database: Database, context: [OrganizationId], reads: [Card], authorize: () => true, run: async ({ context }) => context.database(Database).select().from(Card) });
+const query = platform.query('cards.list.v1', { input: type({}), output: Card.$model.schema.select.array(), database: Database, context: [OrganizationId], reads: [Card], authorize: () => true, run: async ({ context }) => context.database(Database).select().from(Card) });
+const gateway = platform.gateway('public', { queries: [query], deployment: { namespace: 'packed-v06', cursorSecret: { name: 'cursor', key: 'secret' }, authenticate: async () => ({ principal: { id: 'guest' }, trustedContext: { organizationId: 'guest' }, authorizationVersion: 'v1' }) } });
+platform.provide(Certificate, Certificate.certManager({ issuerRef: { name: 'letsencrypt-prod', kind: 'ClusterIssuer' } }));
+platform.provide(DnsPublication, DnsPublication.externalDns());
+platform.expose('public', { service: gateway, hostnames: ['packed.example.test'], tls: { mode: 'managed' }, dns: { mode: 'managed' } });
 const graph = applicationGraphFor(platform.composition);
 const native = graph?.nodes.find((node) => node.kind === 'model' && node.name === 'Card');
-if (Card !== cards || native?.runtime?.storageShape !== 'native-relational' || native.native?.schemaAuthority !== 'drizzle') throw new Error('Packed v0.6 native model/query graph did not materialize.');
+const exposure = graph?.nodes.find((node) => node.kind === 'exposure' && node.name === 'public');
+if (Card !== cards || native?.runtime?.storageShape !== 'native-relational' || native.native?.schemaAuthority !== 'drizzle' || exposure?.service !== 'packed-v06-public' || exposure.publicUrl !== 'https://packed.example.test') throw new Error('Packed v0.6 native model/query/exposure graph did not materialize.');
 `);
   await execFileAsync(process.execPath, [v06Path], { cwd: consumerDir });
-  console.log('Package consumer smoke: packed v0.6 native model/query graph passed.');
+  console.log('Package consumer smoke: packed v0.6 native model/query/exposure graph passed.');
 
   const operatorPath = join(consumerDir, 'operator.ts');
   const outDir = join(consumerDir, 'dist');
@@ -207,7 +212,7 @@ if (!graph?.nodes.some((node) => node.kind === 'processor') || !graph.providerRe
   await execFileAsync(process.execPath, [v04Path], { cwd: consumerDir });
   console.log('Package consumer smoke: packed v0.4 graph passed.');
 
-  console.log(`Package consumer smoke passed under Node for ${packageDirs.length} packed packages, ${publicEntrypoints.length} public entrypoints, the packed executable, v0.4 command/EventLog, v0.5 task/workflow, and v0.6 native model/query graphs, plus a clean-directory CLI build.`);
+  console.log(`Package consumer smoke passed under Node for ${packageDirs.length} packed packages, ${publicEntrypoints.length} public entrypoints, the packed executable, v0.4 command/EventLog, v0.5 task/workflow, and v0.6 native model/query/exposure graphs, plus a clean-directory CLI build.`);
 } finally {
   await rm(workDir, { recursive: true, force: true });
 }

@@ -1,3 +1,4 @@
+import type { ApplicationGatewayBinding } from './application-reactive.js';
 import type { ApplicationDnsIntent, ApplicationExposureOptions, ApplicationServerBinding, ApplicationTlsIntent } from './application.js';
 import { kubernetesNameSegment } from './application-identifiers.js';
 import type { ApplicationDnsPublicationProvider } from './application-providers.js';
@@ -31,12 +32,18 @@ export function applicationExternalDnsAnnotations(provider: ApplicationDnsPublic
   return { [`${prefix}/hostname`]: hostnames.join(','), ...(intent.ttlSeconds === undefined ? {} : { [`${prefix}/ttl`]: String(intent.ttlSeconds) }) };
 }
 
-export function applicationExposureServiceName(service: string | ApplicationServerBinding | undefined): string | undefined {
+type ApplicationExposureService = string | ApplicationServerBinding | ApplicationGatewayBinding | undefined;
+
+export function applicationExposureServiceName(service: ApplicationExposureService): string | undefined {
   return typeof service === 'string' ? service : service?.serviceName;
 }
 
-export function applicationExposureServiceNamespace(service: string | ApplicationServerBinding | undefined): string | undefined {
+export function applicationExposureServiceNamespace(service: ApplicationExposureService): string | undefined {
   return typeof service === 'string' ? undefined : service?.namespace;
+}
+
+export function applicationExposureServicePort(service: ApplicationExposureService): number | undefined {
+  return typeof service === 'string' || !service || !('kind' in service) || service.kind !== 'applicationGateway' ? undefined : service.port;
 }
 
 export function applicationConfigLabels(name: string, component: 'config' | 'secret' | 'exposure'): Readonly<Record<string, string>> {

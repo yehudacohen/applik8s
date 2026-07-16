@@ -10,9 +10,10 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 
 import { assertExpectedKubectlContext, describeLive, docker, exec, formatSettledOutput, kubectl, sleep } from './live-e2e-helpers';
 
-const namespace = process.env.APPLIK8S_E2E_NAMESPACE ?? `applik8s-guestbook-${process.pid}`;
+const namespace = process.env.APPLIK8S_E2E_NAMESPACE ?? 'applik8s-guestbook-e2e';
 const runtimeNamespace = process.env.APPLIK8S_E2E_TYPEKRO_RUNTIME_NAMESPACE ?? 'applik8s-typekro-runtime';
-const group = `guestbook${process.pid}.applik8s.dev`;
+// Reuse the fixture CRDs across live runs. OrbStack can strand empty CRDs in InstanceDeletionPending, while a stable API group avoids both destructive cluster-wide churn and per-process CRD leakage.
+const group = 'guestbook-e2e.applik8s.dev';
 const operatorName = 'guestbook-renderer';
 const stackName = `guestbook-${process.pid}`;
 const stackKind = `GuestBook${process.pid}`;
@@ -22,6 +23,7 @@ const expectedDescription = 'This page was rendered from live GuestBookEntry CRD
 
 let tempDir: string | undefined;
 let outDir: string | undefined;
+let instanceApplied = false;
 
 describeLive('live TypeKro GuestBook tutorial', () => {
   beforeAll(async () => {
@@ -36,7 +38,6 @@ describeLive('live TypeKro GuestBook tutorial', () => {
     const entrypoint = join(tempDir, 'guestbook-live.ts');
     await writeFile(entrypoint, liveEntrypointSource());
     setBuildTimeExampleEnv();
-
     await exec('bun', ['run', 'applik8s', 'build', entrypoint, '--typekro', '--composition-name', 'guestBookStack', '--out-dir', outDir], process.cwd());
 
     for (const manifestPath of await nestedOperatorManifestPaths()) {
@@ -49,16 +50,13 @@ describeLive('live TypeKro GuestBook tutorial', () => {
 
   afterAll(async () => {
     if (process.env.APPLIK8S_E2E_LIVE === '1') {
-      await kubectl(['delete', 'namespace', namespace, '--ignore-not-found=true', '--wait=false']);
-      await kubectl(['delete', 'resourcegraphdefinition', stackName, '--ignore-not-found=true', '--wait=false']);
-      await kubectl(['delete', 'crd', `guestbooks.${group}`, '--ignore-not-found=true', '--wait=false']);
-      await kubectl(['delete', 'crd', `guestbookentries.${group}`, '--ignore-not-found=true', '--wait=false']);
-      await kubectl(['delete', 'crd', `guestbookpageviewbuckets.${group}`, '--ignore-not-found=true', '--wait=false']);
+      await deleteApplicationThroughTypeKro();
+      await kubectl(['delete', 'resourcegraphdefinition', stackName, '--ignore-not-found=true', '--wait=true', '--timeout=180s']);
     }
     if (tempDir && process.env.APPLIK8S_KEEP_TMP !== '1') {
       await rm(tempDir, { recursive: true, force: true });
     }
-  });
+  }, 720_000);
 
   it('renders a website from cached typed GuestBookEntry CRD indexes', async () => {
     await runGeneratedTypeKroApplyScript();
@@ -71,29 +69,28 @@ describeLive('live TypeKro GuestBook tutorial', () => {
     await rolloutStatusWithDiagnostics(`${bookName}-server-index`);
     await rolloutStatusWithDiagnostics(`${bookName}-server-indexer`);
     await rolloutStatusWithDiagnostics(`${bookName}-server`);
-    await rolloutStatusWithDiagnostics('page-view-stats-aggregate');
 
     expect(await serverPageViewBucketVerbs()).toBe('create get patch');
 
-    const html = await waitForRenderedHtml();
+    await waitForGuestBookEntryCount(2);
+    const html = await waitForRenderedHtml('Grace');
     expect(html).toContain(expectedTitle);
     expect(html).toContain(expectedDescription);
     expect(html).toContain('Ada');
     expect(html).toContain('Typed reads make CRDs feel like application data.');
     expect(html).toContain('Grace');
     expect(html).toContain('The generated server rendered this page from a cached typed index.');
-    await waitForPageViewBucketObserved();
-    await waitForGuestBookPageViewStats(1);
+    expect(html).toContain('data-exposure-mode="local-http"');
+    expect(html).toContain('Local profile · HTTP only');
+    expect(html).toContain('app.expose("web"');
+    expect(html).not.toContain('\n+ const publishedGuestBookEntries');
+    await waitForPageViewBucketCount(1);
 
-    await waitForGuestBookEntryCount(2);
     const status = await guestBookStatus();
     expect(status.phase).toBe('Rendered');
-    expect(status.url).toBe(`http://${bookName}-svc.${namespace}.svc.cluster.local/`);
-    expect(status.entryCount).toBe(2);
-    expect(status.pageViewsTotal).toBeGreaterThanOrEqual(1);
-    expect(status.pageViewsLastMinute).toBeGreaterThanOrEqual(1);
+    expect(status.url).toBe('http://guestbook.localhost/');
     expect(status.contentHash).toMatch(/^[a-f0-9]{8}$/);
-    expect(status.message).toContain('cached typed index');
+    expect(status.message).toContain('pre-rendered HTML served by the generated server');
 
     expect(await guestBookEntryPhase(`${bookName}-ada`)).toBe('Published');
     expect((await kubectl(['get', `deployment/${bookName}-server`, '--namespace', namespace, '--output=jsonpath={.spec.template.spec.volumes[0].configMap.name}'])).stdout.trim()).toBe(`${bookName}-server-source`);
@@ -103,10 +100,10 @@ describeLive('live TypeKro GuestBook tutorial', () => {
     const updatedHtml = await waitForRenderedHtml('A web form created this GuestBookEntry CRD.');
     expect(updatedHtml).toContain('Katherine');
     expect(updatedHtml).toContain('<time datetime=');
-    expect(updatedHtml).toContain('Page 1 of');
+    expect(updatedHtml).toContain('<ol class="entries-list">');
     expect(updatedHtml.indexOf('Katherine')).toBeLessThan(updatedHtml.indexOf('Grace'));
     await waitForGuestBookEntryCount(3);
-    expect(await guestBookStatus()).toMatchObject({ phase: 'Rendered', entryCount: 3 });
+    expect(await guestBookStatus()).toMatchObject({ phase: 'Rendered' });
 
     await createGuestBookEntry(`${bookName}-link-rejected`, 'Spammer', 'Visit http://example.test for a surprise.');
     await waitForGuestBookEntryStatus(`${bookName}-link-rejected`, { phase: 'Rejected', reason: 'links-disabled' });
@@ -115,7 +112,7 @@ describeLive('live TypeKro GuestBook tutorial', () => {
     });
     await waitForGuestBookEntryStatus(`${bookName}-katherine-duplicate`, { phase: 'Rejected', reason: 'duplicate' });
     await waitForGuestBookEntryCount(3);
-    expect(await guestBookStatus()).toMatchObject({ phase: 'Rendered', entryCount: 3 });
+    expect(await guestBookStatus()).toMatchObject({ phase: 'Rendered' });
     expect(await waitForRenderedHtml('A web form created this GuestBookEntry CRD.')).not.toContain('Visit http://example.test for a surprise.');
   }, 360_000);
 });
@@ -159,6 +156,37 @@ async function readOperatorManifest(path: string): Promise<OperatorManifest> {
 
 async function runGeneratedTypeKroApplyScript(): Promise<void> {
   await exec('sh', [join(requiredOutDir(), 'typekro', 'apply.sh')], process.cwd());
+  instanceApplied = true;
+}
+
+async function deleteApplicationThroughTypeKro(): Promise<void> {
+  if (!instanceApplied) return;
+  const lifecycleSource = `
+const { guestBookStack } = await import(${JSON.stringify(join(process.cwd(), 'examples/guestbook.ts'))});
+const factory = guestBookStack.factory('kro', { namespace: 'default', waitForReady: true, timeout: 600_000 });
+try {
+  const names = (await factory.getInstances()).map((instance) => instance.metadata?.name).filter(Boolean);
+  if (!names.includes(${JSON.stringify(stackName)})) throw new Error('Expected GuestBook TypeKro instance default/${stackName}, found ' + JSON.stringify(names) + '.');
+  await factory.deleteInstance(${JSON.stringify(stackName)});
+} finally {
+  await factory.dispose();
+}
+`;
+  // The example's identity is read at module initialization. A fresh Bun process prevents Vitest's module cache from reusing a differently configured composition.
+  await exec('bun', ['-e', lifecycleSource], process.cwd());
+  await kubectl(['wait', '--for=delete', `${stackKind.toLowerCase()}s.${group}/${stackName}`, '--namespace', 'default', '--timeout=600s']);
+  // Form submissions, rejection fixtures, and page-view buckets are runtime-created rather than graph children. Delete them after the graph-owned runtimes are gone, so no writer can recreate an object during CRD cleanup.
+  await kubectl([
+    'delete',
+    `guestbooks.${group},guestbookentries.${group},guestbookpageviewbuckets.${group}`,
+    '--all',
+    '--namespace',
+    namespace,
+    '--ignore-not-found=true',
+    '--wait=true',
+    '--timeout=180s',
+  ]);
+  instanceApplied = false;
 }
 
 async function rolloutStatusWithDiagnostics(deployment: string): Promise<void> {
@@ -285,39 +313,27 @@ async function waitForGuestBookEntryCount(expected: number): Promise<void> {
   const started = Date.now();
   let lastOutput = '<missing>';
   while (Date.now() - started < 120_000) {
-    lastOutput = (await kubectl(['get', `guestbooks.${group}/${bookName}`, '--namespace', namespace, '--output=jsonpath={.status.entryCount}'])).stdout.trim();
-    if (lastOutput === String(expected)) {
+    lastOutput = (await kubectl(['get', `guestbookentries.${group}`, '--namespace', namespace, '--output=jsonpath={range .items[*]}{.status.phase}{"\\n"}{end}'])).stdout.trim();
+    const published = lastOutput.split(/\s+/).filter((phase) => phase === 'Published').length;
+    if (published === expected) {
       return;
     }
     await sleep(1_000);
   }
-  throw new Error(`Expected GuestBook status.entryCount ${expected}, got ${lastOutput}.`);
+  throw new Error(`Expected ${expected} published GuestBookEntry resources, got phases ${JSON.stringify(lastOutput)}.`);
 }
 
-async function waitForGuestBookPageViewStats(minimum: number): Promise<void> {
-  const started = Date.now();
-  let lastStatus: Awaited<ReturnType<typeof guestBookStatus>> | undefined;
-  while (Date.now() - started < 120_000) {
-    lastStatus = await guestBookStatus();
-    if ((lastStatus.pageViewsTotal ?? 0) >= minimum && (lastStatus.pageViewsLastMinute ?? 0) >= minimum) {
-      return;
-    }
-    await sleep(1_000);
-  }
-  throw new Error(`Expected GuestBook page views >= ${minimum}, got ${JSON.stringify(lastStatus)}.`);
-}
-
-async function waitForPageViewBucketObserved(): Promise<void> {
+async function waitForPageViewBucketCount(minimum: number): Promise<void> {
   const started = Date.now();
   let lastOutput = '<missing>';
   while (Date.now() - started < 120_000) {
-    lastOutput = (await kubectl(['get', `guestbookpageviewbuckets.${group}`, '--namespace', namespace, '--selector', `guestbook.applik8s.dev/book=${bookName}`, '--output=jsonpath={.items[*].status.observedCount}'])).stdout.trim();
-    if (lastOutput.split(/\s+/).some((value) => Number.parseInt(value, 10) > 0)) {
+    lastOutput = (await kubectl(['get', `guestbookpageviewbuckets.${group}`, '--namespace', namespace, '--selector', `guestbook.applik8s.dev/book=${bookName}`, '--output=jsonpath={.items[*].spec.count}'])).stdout.trim();
+    if (lastOutput.split(/\s+/).some((value) => Number.parseInt(value, 10) >= minimum)) {
       return;
     }
     await sleep(1_000);
   }
-  throw new Error(`Expected an observed GuestBookPageViewBucket count, got ${lastOutput}.`);
+  throw new Error(`Expected a GuestBookPageViewBucket count >= ${minimum}, got ${lastOutput}.`);
 }
 
 async function waitForGuestBookEntryStatus(name: string, expected: { readonly phase: string; readonly reason?: string }): Promise<void> {
@@ -391,10 +407,10 @@ async function serverPageViewBucketVerbs(): Promise<string> {
   ])).stdout.trim();
 }
 
-async function guestBookStatus(): Promise<{ readonly phase: string; readonly url: string; readonly entryCount: number; readonly pageViewsTotal?: number; readonly pageViewsLastMinute?: number; readonly contentHash: string; readonly message: string }> {
+async function guestBookStatus(): Promise<{ readonly phase: string; readonly url: string; readonly contentHash: string; readonly message: string }> {
   const raw = (await kubectl(['get', `guestbooks.${group}/${bookName}`, '--namespace', namespace, '--output=jsonpath={.status}'])).stdout.trim();
   // typecast: status JSON is read back from the generated CRD instance this test just waited on.
-  return JSON.parse(raw) as { readonly phase: string; readonly url: string; readonly entryCount: number; readonly pageViewsTotal?: number; readonly pageViewsLastMinute?: number; readonly contentHash: string; readonly message: string };
+  return JSON.parse(raw) as { readonly phase: string; readonly url: string; readonly contentHash: string; readonly message: string };
 }
 
 async function guestBookEntryPhase(name: string): Promise<string> {

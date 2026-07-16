@@ -14,6 +14,18 @@ On this page, a POST creates a bounded `GuestBookEntry` CR. A generated TypeScri
 
 The provocative title does not mean `kube-apiserver` or etcd executes a template engine. The renderer is a custom controller extending the Kubernetes control-loop model. applik8s compiles handler closures to a JavaScript-in-WASM component, generates CRDs/RBAC/Deployments/Services and an `ApplicationGraph`, and delegates Kubernetes resource composition to TypeKro. TypeKro in turn can delegate non-Kubernetes infrastructure to Alchemy.
 
+The page is also the exposure demonstration. Its local profile uses HTTP and has no certificate or DNS dependency. Its public profile binds cert-manager and ExternalDNS providers, then one `app.expose("web", ...)` declaration generates the Ingress, namespaced `Certificate`, TLS Secret intent, DNS annotations, and public HTTPS URL. cert-manager, the chosen issuer, and ExternalDNS are shared platform prerequisites rather than application-owned installations.
+
+```sh
+APPLIK8S_GUESTBOOK_PROFILE=public \
+APPLIK8S_GUESTBOOK_DOMAIN=guestbook.example.com \
+APPLIK8S_GUESTBOOK_ISSUER_NAME=letsencrypt-prod \
+APPLIK8S_GUESTBOOK_ISSUER_KIND=ClusterIssuer \
+bun run build:guestbook
+```
+
+The UI states whether HTTP or managed HTTPS was requested, but deliberately does not label either certificate issuance or DNS propagation ready based only on accepted Kubernetes intent.
+
 CRDs are useful here because the example is deliberately control-plane-shaped and inspectable. I would keep high-write events, large blobs, arbitrary user content, and conventional transactional application data in their appropriate database/object/event stores. applik8s is an SDK, not a portability standard, and this is pre-1.0 software. The feedback I most want is where the TypeScript/control-plane boundary feels elegant, surprising, or dishonest.
 
 ## Technical FAQ
@@ -42,6 +54,7 @@ CRDs are useful here because the example is deliberately control-plane-shaped an
 
 - [ ] Domain resolves to the intended Ingress endpoint.
 - [ ] `Certificate` is `Ready=True` and HTTPS validates from an external client.
+- [ ] The rendered UI reports the public HTTPS URL and `data-exposure-mode="managed-https"` without claiming DNS propagation readiness.
 - [ ] Mobile layout and keyboard navigation work.
 - [ ] Anonymous submission creates a named CR and reaches Published/Rejected then Rendered.
 - [ ] Sanitized inspect endpoint reveals no secrets, annotations, managed fields, or internal endpoints.

@@ -93,6 +93,10 @@ export interface ApplicationGatewayAdmission {
 export interface ApplicationGatewayBinding {
   readonly kind: 'applicationGateway';
   readonly name: string;
+  /** Generated Kubernetes Service identity when this gateway is materialized as a Deployment. */
+  readonly serviceName?: string;
+  readonly namespace?: string;
+  readonly port?: number;
   readonly queries: readonly ApplicationQueryBinding[];
   readonly commands: readonly ApplicationModelCommandBinding[];
   readonly subscriptions: readonly ApplicationSubscriptionBinding[];
@@ -202,7 +206,7 @@ export function registerApplicationProjection<TPayload extends object, TRow exte
   return { kind: 'applicationProjection', name, source: options.source, provider, output: options.output, project: options.project };
 }
 
-export function registerApplicationGateway(state: ApplicationReactiveState, name: string, options: ApplicationGatewayOptions): ApplicationGatewayBinding {
+export function registerApplicationGateway(state: ApplicationReactiveState, name: string, options: ApplicationGatewayOptions, graphName = 'app'): ApplicationGatewayBinding {
   const queries = options.queries ?? [];
   const subscriptions = options.subscriptions ?? [];
   if (queries.length + (options.commands?.length ?? 0) + subscriptions.length === 0) throw new Error(`Application gateway ${name} must expose at least one query, command, or subscription.`);
@@ -246,7 +250,13 @@ export function registerApplicationGateway(state: ApplicationReactiveState, name
   for (const command of commandRefs) addApplicationGraphEdge(state, { from: { nodeId }, to: command.command, relationship: 'exposes' });
   for (const subscription of subscriptionRefs) addApplicationGraphEdge(state, { from: { nodeId }, to: subscription, relationship: 'exposes' });
   return {
-    kind: 'applicationGateway', name, queries, commands: options.commands ?? [], subscriptions, basePath,
+    kind: 'applicationGateway',
+    name,
+    ...(deployment ? { serviceName: reactiveName(`${graphName}-${name}`), namespace: deployment.namespace, port: deployment.port ?? 8080 } : {}),
+    queries,
+    commands: options.commands ?? [],
+    subscriptions,
+    basePath,
     runtime(runtimeOptions) {
       return createApplicationQueryGateway({ ...runtimeOptions, queries, subscriptionLimits: limits });
     },

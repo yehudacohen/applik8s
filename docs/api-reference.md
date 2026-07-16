@@ -165,7 +165,9 @@ The `applik8s` CLI is intentionally thin:
 
 The workspace exposes the v0.3 flagship through `examples/tenant-platform.ts`. Build its artifacts with `bun run applik8s build examples/tenant-platform.ts --typekro --composition-name tenantPlatform --out-dir dist/examples/tenant-platform`.
 
-The v0.2 flagship TypeKro example remains available through `examples/guestbook.ts`. It is a pure applik8s/TypeKro composition: `GuestBook` reconciles a rendered website from typed live `GuestBookEntry` reads, serves cached entries through an `app.server(...)`, buffers page-view counters with `GuestBookPageViewBucket.increment(...)`, and projects entry/page-view aggregates into status. Build its artifacts with `bun run build:guestbook`.
+The v0.2 flagship TypeKro example remains available through `examples/guestbook.ts`. It is a pure applik8s/TypeKro composition: `GuestBook` reconciles a responsive rendered website from typed live `GuestBookEntry` reads into authoritative status, serves cached entries through an `app.server(...)`, buffers page views into bounded `GuestBookPageViewBucket` resources, and uses `app.expose(...)` for local HTTP or public Ingress/cert-manager/ExternalDNS intent. Build its artifacts with `bun run build:guestbook`.
+
+`app.expose(...)` accepts a generated server binding, a generated v0.6 gateway binding, or an explicit Service name. Binding the workload is preferred because Applik8s derives its generated Service name, namespace, and port. Managed TLS requires an explicit `Certificate` provider such as `Certificate.certManager(...)`; managed DNS requires an explicit `DnsPublication` provider such as `DnsPublication.externalDns()`. Those declarations create application-owned namespaced intent and do not install or own the cluster-wide controllers.
 
 No `dev` or `package` command is promised in v0.3.
 

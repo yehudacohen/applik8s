@@ -128,6 +128,23 @@ Build the flagship artifacts:
 bun run build:guestbook
 ```
 
+The default profile serves the complete responsive GuestBook UI at `http://guestbook.localhost` and
+does not require a cluster-wide certificate or DNS controller. The public profile keeps the same
+application code while making the edge intent explicit:
+
+```sh
+APPLIK8S_GUESTBOOK_PROFILE=public \
+APPLIK8S_GUESTBOOK_DOMAIN=guestbook.example.com \
+APPLIK8S_GUESTBOOK_ISSUER_NAME=letsencrypt-prod \
+APPLIK8S_GUESTBOOK_ISSUER_KIND=ClusterIssuer \
+bun run build:guestbook
+```
+
+That profile's `app.expose("web", ...)` declaration emits an Ingress, a namespaced cert-manager
+`Certificate`, ExternalDNS intent, and an HTTPS public URL in the `ApplicationGraph`. cert-manager,
+the selected Issuer/ClusterIssuer, and ExternalDNS remain explicitly platform-owned prerequisites;
+the example never represents accepted intent as completed certificate issuance or DNS propagation.
+
 Run the live GuestBook proof against an explicit local Kubernetes context:
 
 ```sh
@@ -135,6 +152,10 @@ APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vites
 ```
 
 The important v0.2 boundary is honesty: GuestBook is Kubernetes-native application state, not a claim that CRDs are a general-purpose database. High-volume product data belongs in explicit storage-backed models such as the v0.3 Postgres `ModelStore` slice.
+
+For v0.6 generated query gateways, the same exposure API accepts the gateway binding directly:
+`app.expose("public", { service: gateway, ... })`. Applik8s derives the generated Service identity,
+namespace, and port, so applications do not need to repeat compiler naming conventions.
 
 ## A Kubernetes App In TypeScript
 
