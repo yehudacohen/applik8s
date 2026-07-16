@@ -94,6 +94,7 @@ export async function handleJetStreamCommandMessage(
       attempt: deliveryCount,
       recordedAt: envelope.recordedAt,
       ...(envelope.expectedRevision ? { expectedRevision: envelope.expectedRevision } : {}),
+      ...(envelope.trustedContext ? { context: envelope.trustedContext } : {}),
       ...(envelope.routing?.targetKey ? { targetKey: envelope.routing.targetKey } : {}),
       ...(envelope.routing?.idempotencyKey ? { idempotencyKey: envelope.routing.idempotencyKey } : {}),
       ...(options.databaseUrl ? { databaseUrl: options.databaseUrl } : {}),

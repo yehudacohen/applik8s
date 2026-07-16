@@ -276,6 +276,11 @@ function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): 
     return [`${path} must be ${type}.`];
   }
 
+  const pattern = readString(schema, 'pattern');
+  if (pattern && typeof value === 'string' && !new RegExp(pattern).test(value)) {
+    return [`${path} must match pattern ${pattern}.`];
+  }
+
   if (type === 'object' || (isJsonObject(value) && schema.properties !== undefined)) {
     if (!isJsonObject(value)) {
       return [`${path} must be object.`];
@@ -343,7 +348,7 @@ function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): 
 
 function unsupportedJsonSchemaDiagnostics(schema: JsonObject, path: string) {
   const diagnostics: Diagnostic[] = [];
-  const supportedKeywords = new Set(['type', 'required', 'properties', 'items', 'enum', 'nullable', 'additionalProperties', 'description', 'title', 'default', 'examples', 'deprecated', '$schema', 'oneOf', 'anyOf', 'allOf', 'not']);
+  const supportedKeywords = new Set(['type', 'required', 'properties', 'items', 'enum', 'nullable', 'additionalProperties', 'description', 'title', 'default', 'examples', 'deprecated', '$schema', 'pattern', 'oneOf', 'anyOf', 'allOf', 'not']);
   for (const key of Object.keys(schema)) {
     if (!supportedKeywords.has(key)) {
       diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path} uses unsupported JSON Schema keyword ${key}.` });
@@ -381,6 +386,16 @@ function unsupportedJsonSchemaDiagnostics(schema: JsonObject, path: string) {
 
   if ('nullable' in schema && typeof schema.nullable !== 'boolean') {
     diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.nullable must be boolean.` });
+  }
+
+  if ('pattern' in schema) {
+    if (typeof schema.pattern !== 'string') {
+      diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.pattern must be a string.` });
+    } else {
+      try { new RegExp(schema.pattern); } catch {
+        diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.pattern must be a valid JavaScript regular expression.` });
+      }
+    }
   }
 
   const properties = readSchemaMap(schema, 'properties');

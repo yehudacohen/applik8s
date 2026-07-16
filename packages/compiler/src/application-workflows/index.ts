@@ -236,7 +236,12 @@ function validate(schema, value, name) {
 function metadata(context) {
   const invocationId = String(context.workflowRunId?.() ?? context.stepRunId?.() ?? 'unknown');
   const data = typeof context.additionalMetadata === 'function' ? context.additionalMetadata() : {};
-  return { invocationId, idempotencyKey: invocationId, attempt: Number(context.retryCount?.() ?? 0) + 1, correlationId: data?.['applik8s.correlation-id'], causationId: data?.['applik8s.causation-id'], traceparent: data?.traceparent, signal: context.abortController?.signal ?? new AbortController().signal };
+  let trustedContext;
+  if (data?.['applik8s.trusted-context']) {
+    try { trustedContext = JSON.parse(data['applik8s.trusted-context']); } catch { throw new Error('applik8s-workflow-trusted-context-invalid'); }
+    if (!trustedContext || typeof trustedContext !== 'object' || !trustedContext.values || typeof trustedContext.digest !== 'string') throw new Error('applik8s-workflow-trusted-context-invalid');
+  }
+  return { invocationId, idempotencyKey: invocationId, attempt: Number(context.retryCount?.() ?? 0) + 1, correlationId: data?.['applik8s.correlation-id'], causationId: data?.['applik8s.causation-id'], traceparent: data?.traceparent, ...(trustedContext ? { trustedContext } : {}), signal: context.abortController?.signal ?? new AbortController().signal };
 }
 function declaredFailure(contractName, errorSchemas, name, payload) {
   const schema = errorSchemas[name];
@@ -248,14 +253,14 @@ function taskContext(context, contractName, errorSchemas) {
   return { ...metadata(context), fail: (name, payload) => declaredFailure(contractName, errorSchemas, name, payload) };
 }
 function childOptions(options) {
-  return { ...(options?.idempotencyKey ? { childKey: options.idempotencyKey } : {}), ...(options ? { additionalMetadata: Object.fromEntries(Object.entries({ 'applik8s.idempotency-key': options.idempotencyKey, 'applik8s.tenant': options.tenant, 'applik8s.correlation-id': options.correlationId, 'applik8s.causation-id': options.causationId, traceparent: options.traceparent }).filter(([, value]) => typeof value === 'string')) } : {}) };
+  return { ...(options?.idempotencyKey ? { childKey: options.idempotencyKey } : {}), ...(options ? { additionalMetadata: Object.fromEntries(Object.entries({ 'applik8s.idempotency-key': options.idempotencyKey, 'applik8s.tenant': options.tenant, 'applik8s.correlation-id': options.correlationId, 'applik8s.causation-id': options.causationId, traceparent: options.traceparent, 'applik8s.trusted-context': options.trustedContext ? JSON.stringify(options.trustedContext) : undefined }).filter(([, value]) => typeof value === 'string')) } : {}) };
 }
 function workflowContext(context, workflowName, taskBindings, childBindings, errorSchemas, registry) {
   const base = metadata(context);
   return {
     ...base,
-    task: (alias, input, options) => context.spawnChild(resolveDeclaration(registry, taskBindings, 'task', alias), input, childOptions(options)),
-    child: (alias, input, options) => context.spawnChild(resolveDeclaration(registry, childBindings, 'child workflow', alias), input, childOptions(options)),
+    task: (alias, input, options) => context.spawnChild(resolveDeclaration(registry, taskBindings, 'task', alias), input, childOptions({ ...base, ...options, trustedContext: options?.trustedContext ?? base.trustedContext })),
+    child: (alias, input, options) => context.spawnChild(resolveDeclaration(registry, childBindings, 'child workflow', alias), input, childOptions({ ...base, ...options, trustedContext: options?.trustedContext ?? base.trustedContext })),
     sleep: async (duration) => { await context.sleepFor(duration); },
     waitFor: (signal, options = {}) => context.waitForEvent(workflowName + '.' + signal, options.expression, undefined, options.scope ?? base.invocationId, options.lookback),
     now: () => context.now(),

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 const failures = [];
 
 const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
-for (const script of ['applik8s', 'build:imagejob', 'build:tenant-platform-v04', 'build:tenant-platform-v05', 'test:imagejob', 'test:readme-live', 'check:v04:local', 'check:v04:scorecard', 'check:v04:prerelease:orbstack', 'check:v05:local', 'check:v05:scorecard', 'check:v05:prerelease:orbstack', 'benchmark:v041:record', 'benchmark:v041:live', 'check:v041:performance']) {
+for (const script of ['applik8s', 'build:imagejob', 'build:tenant-platform-v04', 'build:tenant-platform-v05', 'build:v06-generated-proof', 'test:imagejob', 'test:readme-live', 'check:v04:local', 'check:v04:scorecard', 'check:v04:prerelease:orbstack', 'check:v05:local', 'check:v05:scorecard', 'check:v05:prerelease:orbstack', 'check:v06:local', 'check:v06:prerelease:orbstack', 'benchmark:v041:record', 'benchmark:v041:live', 'check:v041:performance']) {
   if (!packageJson.scripts?.[script]) {
     failures.push(`package.json: missing ${script} script used by public docs.`);
   }
@@ -41,9 +41,13 @@ const publicDocs = [
   'docs/commands.md',
   'docs/workflows.md',
   'docs/v0.5-scorecard.md',
+  'docs/v0.6-scorecard.md',
+  'docs/v0.6-foundation.md',
+  'docs/native-models-and-live-queries.md',
   'docs/v0.4-scorecard.md',
   'docs/release-evidence-v0.4.md',
   'docs/release-evidence-v0.4.1.md',
+  'docs/release-evidence-v0.6.md',
   'docs/stabilization-boundary.md',
   'docs/future-surface.md',
   'docs/scale-boundaries.md',

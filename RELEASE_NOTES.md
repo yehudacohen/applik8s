@@ -1,5 +1,23 @@
 # Release Notes
 
+## v0.6.0
+
+v0.6 adds native relational models and the reactive application layer. A Drizzle table remains the single relational schema and relationship authority while Applik8s derives ArkType select, insert, and update contracts and attaches a provider-neutral model facet. The same table continues to work in ordinary Drizzle expressions; applications do not maintain a second field map.
+
+Trusted context is declared once and carried through query, stream, and projection boundaries. The PostgreSQL provider lowers that contract to row-level security, transaction-scoped admitted settings, generated migrations, advisory locking, migration history, and pooled-connection cleanup. Queries are bounded authoritative snapshots with opaque resumable invalidation rather than inferred row diffs.
+
+The release adds durable application streams, authorization-aware subscriptions, ClickHouse projections with idempotent writes and durable checkpoints, a framework-neutral browser store, React bindings, and a TanStack Start adapter. Generated gateways enforce authentication, query budgets, cursor integrity, subscription limits, replay bounds, and fail-closed model dependency declarations. Generated projection workers have bounded concurrency, restart-resume behavior, readiness, and explicit network access to application-owned ClickHouse installations.
+
+The application graph now records native model, database, query, stream, subscription, projection, gateway, migration, and provider relationships as inspectable contracts. The compiler emits TypeKro resources for CNPG, migrations, gateways, ClickHouse, projection workers, Services, RBAC, and NetworkPolicy, and retries server-side apply while a same-named object is still terminating. Projection-store materialization and reactive compiler lowering are separated into focused modules with enforced dependency directions and line budgets.
+
+The coordinated `0.6.0` package train includes `@applik8s/client`, `@applik8s/react`, and `@applik8s/tanstack-start`. Clean packed-consumer checks import every public entrypoint and build v0.4, v0.5, and v0.6 applications without workspace aliases. Runtime JSON Schema validation now enforces string patterns consistently with generated Kubernetes schemas.
+
+The clean production-dependency audit passes its reviewed expiring baseline but is not vulnerability-free: the latest TypeKro and ComponentizeJS releases still contribute seven upstream build-tool advisories, propagated by npm to twelve package findings. Generated runtime images do not contain that compiler dependency tree; the release fails on any unreviewed, changed, stale, or expired advisory.
+
+Live OrbStack evidence proves generated TypeKro apply, PostgreSQL RLS isolation, migration execution, gateway and projection readiness, SSE invalidation, stream replay, ClickHouse projection/checkpoint state, projection restart/resume, and TypeKro-owned application deletion. KRO 0.9 can leave completed ownerless Job Pods and an empty generated CRD finalizer during deletion; the disposable-cluster harness records and narrowly recovers those cases only after `factory.deleteInstance()` succeeds. This is an explicit dependency boundary, not a claim of native KRO lifecycle behavior.
+
+v0.6 does not claim distributed transactions, global exactly-once processing, automatic CDC for writes outside the observable transaction boundary, arbitrary analytical query planning, or production capacity from synthetic benchmarks. A second Kubernetes API server remains outside this release's evidence boundary.
+
 ## v0.5.0
 
 v0.5 adds inert typed tasks and workflows, app-bound runtime handles, and a versioned `WorkflowEngine` provider contract. The first implementation pins Hatchet and its chart, runs it in PostgreSQL-only mode on external CNPG, disables RabbitMQ, and generates self-contained Node workers with health, graceful drain, retries, schedules, durable sleeps, child calls, event waits, cancellation, correlation propagation, fixed scaling, and optional KEDA task-stat scaling.

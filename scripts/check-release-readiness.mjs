@@ -2,6 +2,9 @@ import { access, readFile } from 'node:fs/promises';
 
 const publishablePackages = [
   'packages/applik8s/package.json',
+  'packages/client/package.json',
+  'packages/react/package.json',
+  'packages/tanstack-start/package.json',
   'packages/core/package.json',
   'packages/sdk/package.json',
   'packages/compiler/package.json',
@@ -12,7 +15,7 @@ const publishablePackages = [
   'packages/typetainer/package.json',
 ];
 
-const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.5.0';
+const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.6.0';
 const releaseLabel = `v${expectedVersion}`;
 const publishablePackageNames = new Set();
 
@@ -50,10 +53,14 @@ const requiredDocs = [
   'docs/release-evidence-v0.4.2.md',
   'docs/release-evidence-v0.4.3.md',
   'docs/release-evidence-v0.5.md',
+  'docs/release-evidence-v0.6.md',
   'docs/commands.md',
   'docs/npm-first-run.md',
   'docs/v0.4-scorecard.md',
   'docs/v0.5-scorecard.md',
+  'docs/v0.6-scorecard.md',
+  'docs/v0.6-foundation.md',
+  'docs/native-models-and-live-queries.md',
   'docs/workflows.md',
   'docs/guestbook-show-hn.md',
   'docs/kubernetes-connections.md',
@@ -78,6 +85,8 @@ const publicReleaseFiles = [
   'scripts/check-v04-scorecard.ts',
   'scripts/check-v05-scorecard.ts',
   'scripts/benchmark-v05.ts',
+  'scripts/check-v06-scorecard.ts',
+  'scripts/benchmark-v06.ts',
   'scripts/verify-v04-live-evidence.mjs',
   'scripts/publish-packages.mjs',
   'security/npm-audit-baseline.json',
@@ -95,6 +104,7 @@ const publicReleaseFiles = [
   'docs/npm-first-run.md',
   'docs/v0.4-scorecard.md',
   'docs/v0.5-scorecard.md',
+  'docs/v0.6-scorecard.md',
   'docs/workflows.md',
   'docs/guestbook-show-hn.md',
   'docs/release-evidence-v0.4.md',
@@ -102,6 +112,7 @@ const publicReleaseFiles = [
   'docs/release-evidence-v0.4.2.md',
   'docs/release-evidence-v0.4.3.md',
   'docs/release-evidence-v0.5.md',
+  'docs/release-evidence-v0.6.md',
   'docs/kubernetes-connections.md',
   'docs/security-model.md',
   'docs/build-supply-chain.md',

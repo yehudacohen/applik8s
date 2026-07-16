@@ -6,6 +6,17 @@ You write typed Kubernetes APIs and event listeners. `applik8s` compiles them in
 
 Reconciliation TypeScript becomes WASM component logic evaluated by Kubernetes events through a Rust operator host. Application servers and durable command processors compile into separate, inspectable Node workloads when the application graph requires them.
 
+## v0.6 Flagship: Native Models and Live Applications
+
+v0.6 lets one Drizzle table remain the relational schema authority while gaining derived ArkType contracts and a common Applik8s model facet. Applications can declare trusted context, PostgreSQL RLS, bounded queries, durable replayable streams, ClickHouse projections, authenticated subscriptions, and browser stores from the same inspectable application graph. Generated migrations, gateways, projection workers, provider infrastructure, RBAC, and network policy remain explicit deployment artifacts.
+
+```sh
+bun run build:v06-generated-proof
+bun run check:v06:prerelease:orbstack
+```
+
+The release claims provider-specific guarantees rather than a fictional universal consistency model: PostgreSQL is authoritative for relational state and RLS, query delivery is snapshot plus resumable invalidation, streams are bounded durable replay, and ClickHouse projections use idempotent application with durable checkpoints. See [`docs/native-models-and-live-queries.md`](docs/native-models-and-live-queries.md), [`docs/v0.6-foundation.md`](docs/v0.6-foundation.md), and [`docs/v0.6-scorecard.md`](docs/v0.6-scorecard.md).
+
 ## v0.5 Flagship: Durable Tenant Orchestration
 
 v0.5 adds provider-neutral durable tasks and workflows with a pinned PostgreSQL-only Hatchet implementation. It also adds bounded, named Kubernetes connections: handlers can read and mutate an installation-authorized cluster without receiving kubeconfig material or ambient client authority. The Tenant Platform models tenant onboarding and decommissioning with retry-safe external-effect tasks, durable approval waits, cancellation, compensation, explicit operator intervention, canonical transitions committed through the v0.4 model transaction boundary, and stable-identity ExternalDNS publication through the operator runtime.

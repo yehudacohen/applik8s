@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { JsonValue } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { type } from 'arktype';
 
@@ -54,6 +55,14 @@ export interface EventDefinition<TPayload extends object> {
   readonly payload: SchemaInput<TPayload>;
 }
 
+export interface StreamDefinition<TPayload extends object> {
+  readonly kind: 'applik8sStream';
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly payload: SchemaInput<TPayload>;
+}
+
 export interface TaskDefinition<
   TInput extends object,
   TOutput extends object,
@@ -98,6 +107,10 @@ export interface ApplicationMessageEnvelope<TPayload extends object> {
   readonly routing?: Readonly<Record<string, string>>;
   readonly expectedRevision?: string;
   readonly stateRevision?: ApplicationStateRevisionRef;
+  readonly trustedContext?: {
+    readonly values: Readonly<Record<string, JsonValue>>;
+    readonly digest: string;
+  };
 }
 
 export interface ApplicationStateRevisionRef {
@@ -170,6 +183,15 @@ export function event<TPayload extends object>(
 ): EventDefinition<TPayload> {
   const identity = applicationContractIdentity('event', id);
   return { kind: 'applik8sEvent', id, ...identity, payload: options.payload };
+}
+
+/** Defines an inert, versioned public replay contract. Materialize it with app.stream(...). */
+export function stream<TPayload extends object>(
+  id: string,
+  options: { readonly payload: SchemaInput<TPayload> }
+): StreamDefinition<TPayload> {
+  const identity = applicationContractIdentity('stream', id);
+  return { kind: 'applik8sStream', id, ...identity, payload: options.payload };
 }
 
 export function task<
@@ -254,7 +276,7 @@ function expression(expressionKind: string, value: string): DslExpression {
   return current;
 }
 
-function applicationContractIdentity(kind: 'command' | 'event' | 'task' | 'workflow', id: string): { readonly name: string; readonly version: string } {
+function applicationContractIdentity(kind: 'command' | 'event' | 'stream' | 'task' | 'workflow', id: string): { readonly name: string; readonly version: string } {
   const match = /^(.*)\.(v[1-9][0-9]*)$/.exec(id.trim());
   if (!match?.[1] || !match[2]) {
     throw new Error(`applik8s ${kind} contract ${JSON.stringify(id)} must end with an explicit version such as ".v1".`);

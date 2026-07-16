@@ -210,8 +210,10 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
   const packageAliases = new Map<string, string>([
     ['@applik8s/applik8s', resolve(workspaceRoot, 'packages/applik8s/src/index.ts')],
     ['@applik8s/applik8s/processor-runtime', resolve(workspaceRoot, 'packages/applik8s/src/processor-runtime.ts')],
+    ['@applik8s/applik8s/reactive-runtime', resolve(workspaceRoot, 'packages/applik8s/src/reactive-runtime.ts')],
     ['@applik8s/core', resolve(workspaceRoot, 'packages/core/src/index.ts')],
     ['@applik8s/sdk', resolve(workspaceRoot, 'packages/sdk/src/index.ts')],
+    ['@applik8s/sdk/schema-runtime', resolve(workspaceRoot, 'packages/sdk/src/schema-runtime.ts')],
     ['@applik8s/testing', resolve(workspaceRoot, 'packages/testing/src/index.ts')],
     ['@applik8s/compiler', resolve(workspaceRoot, 'packages/compiler/src/index.ts')],
     ['@applik8s/runtime-contract', resolve(workspaceRoot, 'packages/runtime-contract/src/index.ts')],

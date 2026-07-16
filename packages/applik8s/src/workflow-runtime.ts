@@ -7,6 +7,11 @@ export interface ApplicationWorkflowInvocationMetadata {
   readonly causationId?: string;
   readonly traceparent?: string;
   readonly priority?: 'low' | 'medium' | 'high';
+  /** Trusted provider-admitted values propagated as durable invocation metadata. */
+  readonly trustedContext?: {
+    readonly values: Readonly<Record<string, import('@applik8s/core').JsonValue>>;
+    readonly digest: string;
+  };
 }
 
 export interface ApplicationDurableErrorDescriptor<TName extends string = string, TPayload extends object = object> {

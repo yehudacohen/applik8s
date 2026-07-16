@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import type {
@@ -16,8 +15,12 @@ import { imageRefString } from '@applik8s/typetainer';
 import { parseAllDocuments, stringify } from 'yaml';
 import type { GeneratedApplicationProcessorArtifact } from '../application-processors/index.js';
 import { emitGeneratedApplicationProcessors } from '../application-processors/index.js';
+import type { GeneratedApplicationMigrationArtifact } from '../application-migrations/index.js';
+import { emitGeneratedApplicationMigrations } from '../application-migrations/index.js';
 import type { GeneratedApplicationWorkflowArtifact } from '../application-workflows/index.js';
 import { emitGeneratedApplicationWorkflows } from '../application-workflows/index.js';
+import type { GeneratedApplicationReactiveArtifact } from '../application-reactive/index.js';
+import { emitGeneratedApplicationReactive } from '../application-reactive/index.js';
 import { compilerArtifactLayout } from '../artifacts/index.js';
 import { bundleHandlerEntrypoint } from '../bundling/index.js';
 import type {
@@ -37,7 +40,9 @@ import { emitWasmComponentArtifact } from '../wasm-component/index.js';
 import type { TypeKroCompositionExport } from './entrypoint-discovery.js';
 import { discoverEntrypointExports, discoverExportedOperators } from './entrypoint-discovery.js';
 import { generatedDispatcherEntrypoint } from './static-dispatcher.js';
-import { planTypeKroEmission, typeKroResourceFingerprint } from './typekro-emission-plan.js';
+import { typeKroSchemaApiResources } from './typekro-api-resources.js';
+import { planTypeKroEmission, typeKroGeneratedResourceId, typeKroResourceFingerprint } from './typekro-emission-plan.js';
+import { digestFile, shellQuote } from './utilities.js';
 
 const DEFAULT_OUT_DIR = 'dist/applik8s';
 
@@ -124,8 +129,10 @@ export interface TypeKroCompositionBundleManifest extends JsonObject {
     readonly resourceCount: number;
     readonly operators: readonly TypeKroCompositionOperatorArtifactReference[];
     readonly applicationGraph?: ApplicationGraphArtifactReference;
+    readonly migrations?: readonly TypeKroCompositionMigrationArtifactReference[];
     readonly processors?: readonly TypeKroCompositionProcessorArtifactReference[];
     readonly workflows?: readonly TypeKroCompositionWorkflowArtifactReference[];
+    readonly reactive?: readonly TypeKroCompositionReactiveArtifactReference[];
   };
 }
 
@@ -151,6 +158,22 @@ export interface TypeKroCompositionWorkflowArtifactReference extends JsonObject 
   readonly sizeBytes: number;
 }
 
+export interface TypeKroCompositionReactiveArtifactReference extends JsonObject {
+  readonly name: string;
+  readonly kind: 'queryGateway' | 'projectionWorker';
+  readonly manifest: string;
+  readonly source: string;
+  readonly digest: string;
+  readonly sizeBytes: number;
+}
+
+export interface TypeKroCompositionMigrationArtifactReference extends JsonObject {
+  readonly name: string;
+  readonly manifest: string;
+  readonly source: string;
+  readonly digest: string;
+}
+
 export interface TypeKroCompositionArtifacts {
   readonly manifest: TypeKroCompositionBundleManifest;
   readonly resources: readonly TypeKroCompositionResource[];
@@ -161,8 +184,10 @@ export interface TypeKroCompositionArtifacts {
   readonly resourceYamlPaths: readonly string[];
   readonly instanceYamlPaths: readonly string[];
   readonly applicationGraphJsonPath?: string;
+  readonly migrationArtifacts: readonly GeneratedApplicationMigrationArtifact[];
   readonly processorArtifacts: readonly GeneratedApplicationProcessorArtifact[];
   readonly workflowArtifacts: readonly GeneratedApplicationWorkflowArtifact[];
+  readonly reactiveArtifacts: readonly GeneratedApplicationReactiveArtifact[];
   readonly operatorArtifacts: readonly TypeKroCompositionOperatorArtifacts[];
 }
 
@@ -306,17 +331,27 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
 
 async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionArtifactsRequest): Promise<Result<TypeKroCompositionArtifacts>> {
   try {
+    const migrationArtifacts = request.applicationGraph
+      ? await emitGeneratedApplicationMigrations({ graph: request.applicationGraph, outDir: join(request.outDir, 'migrations'), entrypoint: request.entrypoint })
+      : [];
     const processorArtifacts = request.applicationGraph
       ? await emitGeneratedApplicationProcessors({ graph: request.applicationGraph, outDir: join(request.outDir, 'processors'), entrypoint: request.entrypoint })
       : [];
     const workflowArtifacts = request.applicationGraph
       ? await emitGeneratedApplicationWorkflows({ graph: request.applicationGraph, outDir: join(request.outDir, 'workflows'), entrypoint: request.entrypoint })
       : [];
+    const reactiveArtifacts = request.applicationGraph
+      ? await emitGeneratedApplicationReactive({ graph: request.applicationGraph, outDir: join(request.outDir, 'reactive'), entrypoint: request.entrypoint })
+      : [];
     // typecast: generated processor resources are concrete Kubernetes JSON objects and are validated by the same serialization path as composition resources.
     const processorResources = processorArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
+    // typecast: generated migration resources are concrete Kubernetes JSON objects and use the shared TypeKro serialization path.
+    const migrationResources = migrationArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated workflow resources are concrete Kubernetes JSON objects and pass through the shared TypeKro serialization path.
     const workflowResources = workflowArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
-    const generatedResources = [...processorResources, ...workflowResources];
+    // typecast: generated reactive resources are concrete Kubernetes JSON objects and use the shared TypeKro serialization path.
+    const reactiveResources = reactiveArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
+    const generatedResources = [...migrationResources, ...processorResources, ...workflowResources, ...reactiveResources];
     const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition, request.applicationGraph?.metadata);
     const factoryArtifacts = request.applicationGraph
       ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, generatedResources, request.applicationGraph.metadata.name)
@@ -324,8 +359,10 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const emissionPlan = planTypeKroEmission({
       factory: factoryArtifacts.resources,
       composition: compositionResources(request.composition),
+      migrations: migrationResources,
       processors: processorResources,
       workflows: workflowResources,
+      reactive: reactiveResources,
     });
     const resources = emissionPlan.resources;
     const resourcesDir = join(request.outDir, 'resources');
@@ -367,6 +404,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
             digest: applicationGraphDigest,
           },
         } : {}),
+        ...(migrationArtifacts.length > 0 ? { migrations: migrationArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest })) } : {}),
         operators: request.operatorCompiles.map((compiled) => ({
           name: compiled.manifest.metadata.name,
           manifest: compiled.artifacts.manifestJsonPath,
@@ -374,6 +412,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         })),
         ...(processorArtifacts.length > 0 ? { processors: processorArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes })) } : {}),
         ...(workflowArtifacts.length > 0 ? { workflows: workflowArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes })) } : {}),
+        ...(reactiveArtifacts.length > 0 ? { reactive: reactiveArtifacts.map((artifact) => ({ name: artifact.name, kind: artifact.kind, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes })) } : {}),
       },
     };
 
@@ -413,8 +452,10 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         resourceYamlPaths,
         instanceYamlPaths,
         ...(applicationGraphJsonPath ? { applicationGraphJsonPath } : {}),
+        migrationArtifacts,
         processorArtifacts,
         workflowArtifacts,
+        reactiveArtifacts,
         operatorArtifacts: request.operatorCompiles.map((compiled) => ({
           operatorName: compiled.manifest.metadata.name,
           outDir: dirname(compiled.artifacts.manifestJsonPath),
@@ -444,7 +485,7 @@ function injectGeneratedResourcesIntoApplicationRgd(
   // from removing the API and avoids CRD cleanup finalizers blocking KRO teardown.
   const existingResources = spec.resources.filter((resource) => !isResourceGraphTemplateKind(resource, 'CustomResourceDefinition'));
   const injected = generatedResources.map((resource, index) => ({
-    id: `applik8sGenerated${safeResourceIdentifier(resource.kind)}${safeResourceIdentifier(String(resource.metadata.name))}${index + 1}`,
+    id: typeKroGeneratedResourceId(resource, index),
     template: resource,
   }));
   return {
@@ -459,11 +500,6 @@ function injectGeneratedResourcesIntoApplicationRgd(
 function isResourceGraphTemplateKind(resource: unknown, kind: string): boolean {
   if (!isJsonObject(resource) || !isJsonObject(resource.template)) return false;
   return resource.template.kind === kind;
-}
-
-function safeResourceIdentifier(value: string): string {
-  const identifier = value.replace(/[^a-zA-Z0-9]+(.)?/g, (_, next: string | undefined) => next?.toUpperCase() ?? '');
-  return identifier.length > 0 ? `${identifier[0]?.toUpperCase()}${identifier.slice(1)}` : 'Resource';
 }
 
 function applicationGraphForComposition(composition: object): ApplicationGraph | undefined {
@@ -675,25 +711,6 @@ function typeKroInstanceResources(resources: readonly TypeKroCompositionResource
       },
       spec: {},
     };
-  });
-}
-
-function typeKroSchemaApiResources(resources: readonly TypeKroCompositionResource[]): readonly { readonly group: string; readonly kind: string }[] {
-  const apiResources = typeKroResourceGraphDefinitions(resources).flatMap((rgd) => {
-    const schema = typeKroResourceGraphSchema(rgd);
-    const kind = typeof schema?.kind === 'string' ? schema.kind : undefined;
-    const apiVersion = typeof schema?.apiVersion === 'string' ? schema.apiVersion : undefined;
-    const group = typeof schema?.group === 'string' && schema.group.length > 0 ? schema.group : apiVersion?.split('/')[0];
-    return kind && group ? [{ group, kind }] : [];
-  });
-  const seen = new Set<string>();
-  return apiResources.filter((resource) => {
-    const key = `${resource.group}/${resource.kind}`;
-    if (seen.has(key)) {
-      return false;
-    }
-    seen.add(key);
-    return true;
   });
 }
 
@@ -1071,7 +1088,15 @@ function emitTypeKroApplyScript(resources: readonly TypeKroCompositionResource[]
     '',
     'apply_with_retry() {',
     '  deadline=$(( $(date +%s) + APPLY_RETRY_SECONDS ))',
-    '  until apply_manifest "$1"; do',
+    '  while :; do',
+    '    if apply_manifest "$1"; then',
+    '      if deletion_timestamp=$("$KUBECTL" get --filename "$1" --output=jsonpath="{.metadata.deletionTimestamp}" 2>/dev/null); then',
+    '        if [ -z "$deletion_timestamp" ]; then',
+    '          return 0',
+    '        fi',
+    '        echo "Waiting for terminating resource from $1 to disappear before recreating it..." >&2',
+    '      fi',
+    '    fi',
     '    if [ "$(date +%s)" -ge "$deadline" ]; then',
     '      echo "Timed out applying $1 after $APPLY_RETRY_SECONDS seconds" >&2',
     '      return 1',
@@ -1151,14 +1176,6 @@ function emitTypeKroApplyScript(resources: readonly TypeKroCompositionResource[]
     'echo "Applied TypeKro composition resources from $RESOURCES_DIR"',
     '',
   ].join('\n');
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\"'\"'")}'`;
-}
-
-async function digestFile(path: string): Promise<string> {
-  return `sha256:${createHash('sha256').update(await readFile(path)).digest('hex')}`;
 }
 
 function error<T = never>(code: Diagnostic['code'], message: string): Result<T> {

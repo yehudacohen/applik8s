@@ -10,7 +10,7 @@ Starting with v0.4.2, the compiler defaults to a public, immutable operator-host
 ghcr.io/yehudacohen/applik8s-operator-host
 ```
 
-For v0.5.0 the compiler records the matching immutable semver tag. The release workflow publishes and anonymously verifies its multi-platform manifest before publishing npm packages, then records the resolved `sha256` digest in release evidence. This ordering avoids requiring the compiler package to predict the digest of a host image built from the same release tag. Generated Dockerfiles declare the tag as the default `APPLIK8S_BASE_IMAGE` build argument; builds may deliberately override it.
+For v0.6.0 the compiler records the matching immutable semver tag. The release workflow publishes and anonymously verifies its multi-platform manifest before publishing npm packages, then records the resolved `sha256` digest in release evidence. This ordering avoids requiring the compiler package to predict the digest of a host image built from the same release tag. Generated Dockerfiles declare the tag as the default `APPLIK8S_BASE_IMAGE` build argument; builds may deliberately override it.
 
 The release image is published for:
 
@@ -62,7 +62,7 @@ The tag-driven workflow publishes the host before npm packages. It then installs
 Run the same released-artifact proof against OrbStack with:
 
 ```sh
-APPLIK8S_PUBLISHED_VERSION=0.5.0 bun run check:published-release:orbstack
+APPLIK8S_PUBLISHED_VERSION=0.6.0 bun run check:published-release:orbstack
 ```
 
 The live script refuses to mutate a cluster unless the current kubectl context exactly matches `orbstack`. It deploys the generated CRD/controller, observes a real reconciliation status write, and cleans up its namespace and CRD.

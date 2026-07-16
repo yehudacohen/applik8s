@@ -76,6 +76,11 @@ describe('application graph substrate contract', () => {
       'workflow',
       'workflowHandler',
       'workflowWorker',
+      'query',
+      'gateway',
+      'stream',
+      'subscription',
+      'projection',
       'job',
       'config',
       'secret',
@@ -98,6 +103,7 @@ describe('application graph substrate contract', () => {
       'DnsPublication',
       'CredentialStore',
       'WorkflowEngine',
+      'ProjectionStore',
     ]);
     expect(isApplicationGraphNodeKind('job')).toBe(true);
     expect(isApplicationGraphNodeKind('workflow')).toBe(true);
@@ -468,6 +474,7 @@ describe('application graph substrate contract', () => {
       'DnsPublication:failClosedReserved',
       'CredentialStore:failClosedReserved',
       'WorkflowEngine:failClosedReserved',
+      'ProjectionStore:failClosedReserved',
     ]);
     expect(contracts.flatMap(validateApplicationProviderInterfaceContract)).toEqual([]);
     expect(validateApplicationProviderInterfaceContract({ interface: 'Queue', surface: 'stablePublicApi', support: 'failClosedReserved', diagnostics: [] })).toEqual(expect.arrayContaining([
@@ -501,7 +508,7 @@ describe('application graph substrate contract', () => {
     const matrix = providerCompatibilityMatrix();
     const projectionStore: ApplicationProviderInterfaceContract = {
       apiVersion: 'applik8s.provider/v1alpha1',
-      interface: 'ProjectionStore',
+      interface: 'VectorStore',
       version: 'v1alpha1',
       requirements: ['atomicProjectionCheckpoint'],
       guarantees: ['replaySafeProjectionWrites'],
@@ -510,7 +517,7 @@ describe('application graph substrate contract', () => {
       support: 'implemented',
       diagnostics: [],
     };
-    expect(applicationProviderInterfaceKinds).not.toContain('ProjectionStore');
+    expect(applicationProviderInterfaceKinds).not.toContain('VectorStore');
     expect(validateApplicationProviderCompatibilityMatrixContract({ ...matrix, providers: [...matrix.providers, projectionStore] })).toEqual([]);
   });
 
@@ -529,6 +536,7 @@ describe('application graph substrate contract', () => {
       DnsPublication: 'dnsPublication',
       CredentialStore: 'credentialStore',
       WorkflowEngine: 'workflowEngine',
+      ProjectionStore: 'projectionStore',
     };
     const requirements = applicationProviderInterfaceKinds.map((providerInterface) => ({
       id: `requirement.${providerInterface}`,
@@ -542,7 +550,7 @@ describe('application graph substrate contract', () => {
       },
     }) satisfies ApplicationProviderRequirement);
 
-    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['modelStore', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine']);
+    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['modelStore', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'projectionStore']);
     for (const requirement of requirements) {
       expect(requirement.diagnostics.missing).toContain(requirement.interface);
     }

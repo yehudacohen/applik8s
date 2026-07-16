@@ -11,6 +11,9 @@ await execFileAsync(process.execPath, ['scripts/build-publishable-packages.mjs']
 
 const publishablePackages = [
   'packages/applik8s',
+  'packages/client',
+  'packages/react',
+  'packages/tanstack-start',
   'packages/core',
   'packages/sdk',
   'packages/compiler',

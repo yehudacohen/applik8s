@@ -9,7 +9,7 @@ on:
       release_version:
         description: Existing immutable release version to recover (X.Y.Z)
         required: true
-        default: '0.5.0'
+        default: '0.6.0'
         type: string
       publish_npm:
         description: Publish packages to npm using trusted publishing
@@ -67,8 +67,8 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: APPLIK8S_RELEASE_VERSION="${GITHUB_REF_NAME#v}" bun run check:release
 
-      - name: Run local gates
-        if: ${{ steps.release.outputs.line != 'v0.5' }}
+      - name: Run legacy local gates
+        if: ${{ steps.release.outputs.line != 'v0.5' && steps.release.outputs.line != 'v0.6' }}
         run: bun run check:local
 
       - name: Run v0.4 durable-behavior gates
@@ -79,7 +79,12 @@ jobs:
         if: ${{ steps.release.outputs.line == 'v0.5' }}
         run: bun run check:v05:local
 
+      - name: Run v0.6 native-model and reactive-application gates
+        if: ${{ steps.release.outputs.line == 'v0.6' }}
+        run: bun run check:v06:local
+
       - name: Run package release checks
+        if: ${{ steps.release.outputs.line != 'v0.5' && steps.release.outputs.line != 'v0.6' }}
         run: bun run check:packages
 
       - name: Review published consumer dependency audit
@@ -96,8 +101,12 @@ jobs:
         if: ${{ steps.release.outputs.line == 'v0.5' }}
         run: bun run build:tenant-platform-v05
 
+      - name: Build v0.6 generated application proof
+        if: ${{ steps.release.outputs.line == 'v0.6' }}
+        run: bun run build:v06-generated-proof
+
       - name: Capture artifact listing
-        run: find dist/applik8s dist/examples/tenant-platform-* -maxdepth 4 -type f | sort > dist/applik8s-artifact-list.txt
+        run: find dist/applik8s dist/examples/tenant-platform-* dist/examples/v06-generated-proof -maxdepth 4 -type f 2>/dev/null | sort > dist/applik8s-artifact-list.txt
 
       - name: Upload release evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -106,6 +115,7 @@ jobs:
           path: |
             dist/applik8s
             dist/examples/tenant-platform-*
+            dist/examples/v06-generated-proof
             dist/applik8s-artifact-list.txt
 
   publish-npm:

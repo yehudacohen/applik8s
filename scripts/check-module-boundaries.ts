@@ -15,7 +15,7 @@ const rules: readonly BoundaryRule[] = [
     rationale: 'Operator closure entrypoints must stay WASM-safe and free of Node, compiler, and TypeKro dependencies.',
   },
   {
-    roots: ['packages/browser-client/src', 'packages/react/src', 'packages/tanstack-start/src'],
+    roots: ['packages/client/src', 'packages/react/src', 'packages/tanstack-start/src'],
     forbidden: [/^node:/, /^@kubernetes\/client-node$/, /^@applik8s\/(?:applik8s|compiler|runtime|sdk|typekro-adapter)$/, /^typekro(?:\/|$)/],
     rationale: 'Future v0.6 browser packages may depend only on browser-safe contracts and transport clients.',
   },

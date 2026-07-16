@@ -9,6 +9,7 @@ import { fileURLToPath, URL } from 'node:url';
 export function workspaceAliases(): Record<string, string> {
   return {
     '@applik8s/applik8s/processor-runtime': fileURLToPath(new URL('./packages/applik8s/src/processor-runtime.ts', import.meta.url)),
+    '@applik8s/applik8s/reactive-runtime': fileURLToPath(new URL('./packages/applik8s/src/reactive-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/factories/simple': fileURLToPath(new URL('./packages/applik8s/src/factories/simple.ts', import.meta.url)),
     '@applik8s/applik8s/factories': fileURLToPath(new URL('./packages/applik8s/src/factories.ts', import.meta.url)),
     '@applik8s/applik8s/operator': fileURLToPath(new URL('./packages/applik8s/src/operator.ts', import.meta.url)),
@@ -16,7 +17,11 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/applik8s/dns': fileURLToPath(new URL('./packages/applik8s/src/dns.ts', import.meta.url)),
     '@applik8s/applik8s/dsl': fileURLToPath(new URL('./packages/applik8s/src/dsl.ts', import.meta.url)),
     '@applik8s/applik8s': fileURLToPath(new URL('./packages/applik8s/src/index.ts', import.meta.url)),
+    '@applik8s/client': fileURLToPath(new URL('./packages/client/src/index.ts', import.meta.url)),
+    '@applik8s/react': fileURLToPath(new URL('./packages/react/src/index.ts', import.meta.url)),
+    '@applik8s/tanstack-start': fileURLToPath(new URL('./packages/tanstack-start/src/index.ts', import.meta.url)),
     '@applik8s/core': fileURLToPath(new URL('./packages/core/src/index.ts', import.meta.url)),
+    '@applik8s/sdk/schema-runtime': fileURLToPath(new URL('./packages/sdk/src/schema-runtime.ts', import.meta.url)),
     '@applik8s/sdk': fileURLToPath(new URL('./packages/sdk/src/index.ts', import.meta.url)),
     '@applik8s/testing': fileURLToPath(new URL('./packages/testing/src/index.ts', import.meta.url)),
     '@applik8s/compiler/kubernetes-schema': fileURLToPath(new URL('./packages/compiler/src/kubernetes-schema/index.ts', import.meta.url)),

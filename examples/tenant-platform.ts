@@ -598,6 +598,7 @@ function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfa
       { interface: 'Certificate', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'ProjectionStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     ];
 }
 

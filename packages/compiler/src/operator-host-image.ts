@@ -10,7 +10,7 @@ import { type ImageRef, imageRefString } from '@applik8s/typetainer';
 export const DEFAULT_OPERATOR_HOST_IMAGE: ImageRef = Object.freeze({
   registry: 'ghcr.io',
   repository: 'yehudacohen/applik8s-operator-host',
-  tag: 'v0.5.0',
+  tag: 'v0.6.0',
 });
 
 export const DEFAULT_OPERATOR_HOST_IMAGE_REFERENCE = imageRefString(DEFAULT_OPERATOR_HOST_IMAGE);

@@ -190,6 +190,23 @@ describe('schema runtime', () => {
     }
   });
 
+  it('preserves ArkType string refinements when normalized JSON Schema is dispatched at runtime', () => {
+    const schema = toRuntimeSchema<{ readonly id: string }>({
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: 'UuidRow' },
+      schema: {
+        type: 'object',
+        properties: { id: { type: 'string', pattern: '^[\\da-f]{8}(?:-[\\da-f]{4}){3}-[\\da-f]{12}$' } },
+        required: ['id'],
+      },
+    });
+
+    expect(schema.validate({ id: '10000000-0000-0000-0000-000000000001' }).ok).toBe(true);
+    const invalid = schema.validate({ id: 'not-a-uuid' });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) expect(invalid.error.message).toContain('must match pattern');
+  });
+
   it('fails closed for unsupported composition inside map schemas', () => {
     const schema = toRuntimeSchema<MapSpec>({
       kind: 'jsonSchema',

@@ -16,6 +16,9 @@ const packageDirs = [
   'packages/testing',
   'packages/runtime',
   'packages/typekro-adapter',
+  'packages/client',
+  'packages/react',
+  'packages/tanstack-start',
   'packages/applik8s',
 ];
 

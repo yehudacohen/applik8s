@@ -89,6 +89,23 @@ export interface ApplicationHatchetWorkflowEngineProvider {
 
 export type ApplicationWorkflowEngineProvider = ApplicationHatchetWorkflowEngineProvider;
 
+export interface ApplicationClickHouseProjectionStoreProvider {
+  readonly kind: 'clickhouse';
+  readonly name?: string;
+  readonly namespace?: string;
+  readonly provision?: boolean;
+  readonly version?: string;
+  readonly storageSize?: string;
+  readonly storageClassName?: string;
+  readonly endpoint?: string;
+  readonly database?: string;
+  readonly credentialsSecret?: ApplicationResourceRef;
+  readonly usernameKey?: string;
+  readonly passwordKey?: string;
+}
+
+export type ApplicationProjectionStoreProvider = ApplicationClickHouseProjectionStoreProvider;
+
 export type ApplicationPostgresModelStoreOptions = Omit<ApplicationPostgresModelStoreProvider, 'kind'>;
 
 export interface ApplicationPostgresModelStoreProvider {
@@ -163,6 +180,7 @@ export interface ApplicationDefaults {
   readonly expose?: ApplicationHttpExposureProvider | ApplicationProviderBinding<ApplicationHttpExposureProvider>;
   readonly certificates?: ApplicationCertificateProvider | ApplicationProviderBinding<ApplicationCertificateProvider>;
   readonly dns?: ApplicationDnsPublicationProvider | ApplicationProviderBinding<ApplicationDnsPublicationProvider>;
+  readonly projections?: ApplicationProjectionStoreProvider | ApplicationProviderBinding<ApplicationProjectionStoreProvider>;
 }
 
 export interface ApplicationDefaultsBinding {
@@ -223,6 +241,10 @@ export interface ApplicationWorkflowEngineProviderToken extends ApplicationProvi
   hatchet(options?: Omit<ApplicationHatchetWorkflowEngineProvider, 'kind'>): ApplicationHatchetWorkflowEngineProvider;
 }
 
+export interface ApplicationProjectionStoreProviderToken extends ApplicationProviderToken<ApplicationProjectionStoreProvider> {
+  clickhouse(options?: Omit<ApplicationClickHouseProjectionStoreProvider, 'kind'>): ApplicationClickHouseProjectionStoreProvider;
+}
+
 export interface ApplicationProviderBinding<TImplementation = unknown> {
   readonly kind: 'applicationProvider';
   readonly token: ApplicationProviderToken<TImplementation>;
@@ -230,8 +252,8 @@ export interface ApplicationProviderBinding<TImplementation = unknown> {
 }
 
 export interface ApplicationProviderState {
-  readonly defaults: { indexes?: unknown; models?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown };
-  readonly providers: { indexes?: unknown; models?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown; extensions?: Record<string, unknown> };
+  readonly defaults: { indexes?: unknown; models?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown; projections?: unknown };
+  readonly providers: { indexes?: unknown; models?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown; projections?: unknown; extensions?: Record<string, unknown> };
 }
 
 export const IndexStore: ApplicationProviderToken<ApplicationIndexBackend | 'valkey'> = {
@@ -341,12 +363,22 @@ export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = {
   },
 };
 
+export const ProjectionStore: ApplicationProjectionStoreProviderToken = {
+  name: 'ProjectionStore',
+  description: 'Rebuildable analytical projection storage; durable replay remains owned by the source stream.',
+  contract: builtInProviderContract('ProjectionStore', ['idempotentInsert', 'checkpoint', 'fullRebuild']),
+  accepts: isClickHouseProjectionStoreProvider,
+  clickhouse(options = {}) {
+    return { kind: 'clickhouse', ...options };
+  },
+};
+
 function builtInProviderContract(providerInterface: string, guarantees: readonly string[]): ApplicationTypedProviderContract {
   return { apiVersion: 'applik8s.provider/v1alpha1', interface: providerInterface, version: 'v1alpha1', requirements: [], guarantees };
 }
 
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, ModelStore, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine } as const;
+export const providers = { IndexStore, ModelStore, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ProjectionStore } as const;
 
 export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
   if (!name) return undefined;
@@ -408,6 +440,16 @@ export function isHatchetWorkflowEngineProvider(value: unknown): value is Applic
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'hatchet');
 }
 
+export function isClickHouseProjectionStoreProvider(value: unknown): value is ApplicationClickHouseProjectionStoreProvider {
+  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'clickhouse');
+}
+
+export function applicationProjectionStoreImplementation(value: unknown): ApplicationProjectionStoreProvider | undefined {
+  if (isClickHouseProjectionStoreProvider(value)) return value;
+  if (isApplicationProviderBinding(value) && value.token === ProjectionStore && isClickHouseProjectionStoreProvider(value.implementation)) return value.implementation;
+  return undefined;
+}
+
 export function applicationWorkflowEngineImplementation(state: ApplicationProviderState): ApplicationWorkflowEngineProvider {
   const selected = state.providers.extensions?.['WorkflowEngine@v1alpha1'];
   if (isHatchetWorkflowEngineProvider(selected)) {
@@ -453,6 +495,7 @@ export function isValkeyIndexDefault(value: unknown): boolean {
   return value === 'valkey' || Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'valkey');
 }
 
+// typecast-boundary: provider tokens are identity-based and compared only after their public name and implementation contract are validated.
 export function applyApplicationProvider<TImplementation>(state: ApplicationProviderState, token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): void {
   if (applicationProviderTokenName(token) === 'IndexStore') {
     if (!isValkeyIndexDefault(implementation)) {
@@ -489,13 +532,28 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.dns = implementation;
     return;
   }
+  if (applicationProviderTokenName(token) === 'ProjectionStore') {
+    if (!isClickHouseProjectionStoreProvider(implementation)) {
+      throw new Error('app.provide(ProjectionStore, ...) currently supports the ClickHouse projection provider. Use ProjectionStore.clickhouse(...).');
+    }
+    state.providers.projections = implementation;
+    return;
+  }
+  if ((token as unknown) === WorkflowEngine) {
+    if (!isHatchetWorkflowEngineProvider(implementation)) {
+      throw new Error('app.provide(WorkflowEngine, ...) currently supports the Hatchet workflow provider. Use WorkflowEngine.hatchet(...).');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['WorkflowEngine@v1alpha1'] = implementation;
+    return;
+  }
   const tokenName = applicationProviderTokenName(token);
   const field = applicationProviderStateField(tokenName);
   if (field && isSupportedDefaultProvider(tokenName, implementation)) {
     state.providers[field] = implementation;
     return;
   }
-  if (applicationProviderInterface(tokenName)) {
+  if (applicationProviderInterface(tokenName) && Object.values(providers).some((candidate) => (candidate as unknown) === token)) {
     throw new Error(`app.provide(${tokenName}, ...) does not match the bounded v0.3 Kubernetes-native provider contract.`);
   }
   if (token.contract) {
@@ -504,6 +562,9 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     if (!state.providers.extensions) state.providers.extensions = {};
     state.providers.extensions[`${token.contract.interface}@${token.contract.version}`] = implementation;
     return;
+  }
+  if (applicationProviderInterface(tokenName)) {
+    throw new Error(`app.provide(${tokenName}, ...) does not match the bounded v0.3 Kubernetes-native provider contract.`);
   }
   throw new Error(`app.provide(${tokenName}, ...) requires a versioned provider token created with defineApplicationProvider().`);
 }
@@ -612,7 +673,7 @@ export function applicationProviderTokenName(token: ApplicationProviderToken<unk
 }
 
 export function applicationProviderInterface(tokenName: string | undefined): ApplicationProviderInterfaceKind | undefined {
-  if (tokenName === 'IndexStore' || tokenName === 'ModelStore' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore') {
+  if (tokenName === 'IndexStore' || tokenName === 'ModelStore' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ProjectionStore') {
     return tokenName;
   }
   return undefined;

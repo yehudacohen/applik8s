@@ -6,9 +6,10 @@ on:
       release_line:
         description: Release line to attest
         required: true
-        default: 'v0.5'
+        default: 'v0.6'
         type: choice
         options:
+          - 'v0.6'
           - 'v0.5'
           - 'v0.4'
       run_live_e2e:
@@ -47,7 +48,8 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Run local gates
+      - name: Run legacy local gates
+        if: ${{ inputs.release_line != 'v0.5' && inputs.release_line != 'v0.6' }}
         run: bun run check:local
 
       - name: Run v0.4 durable-behavior gates
@@ -58,7 +60,12 @@ jobs:
         if: ${{ inputs.release_line == 'v0.5' }}
         run: bun run check:v05:local
 
+      - name: Run v0.6 native-model and reactive-application gates
+        if: ${{ inputs.release_line == 'v0.6' }}
+        run: bun run check:v06:local
+
       - name: Run package release checks
+        if: ${{ inputs.release_line != 'v0.5' && inputs.release_line != 'v0.6' }}
         run: bun run check:packages
 
       - name: Review published consumer dependency audit
@@ -75,8 +82,12 @@ jobs:
         if: ${{ inputs.release_line == 'v0.5' }}
         run: bun run build:tenant-platform-v05
 
+      - name: Build v0.6 generated application proof
+        if: ${{ inputs.release_line == 'v0.6' }}
+        run: bun run build:v06-generated-proof
+
       - name: Capture artifact listing
-        run: find dist/applik8s dist/examples/tenant-platform-* -maxdepth 4 -type f | sort > dist/applik8s-artifact-list.txt
+        run: find dist/applik8s dist/examples/tenant-platform-* dist/examples/v06-generated-proof -maxdepth 4 -type f 2>/dev/null | sort > dist/applik8s-artifact-list.txt
 
       - name: Configure live kubeconfig
         if: ${{ inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
@@ -99,6 +110,12 @@ jobs:
       - name: Run v0.5 live prerelease gates
         if: ${{ inputs.release_line == 'v0.5' && inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
         run: APPLIK8S_E2E_CONTEXT=${APPLIK8S_E2E_CONTEXT} bun run test:v05:live
+        env:
+          APPLIK8S_E2E_CONTEXT: ${{ vars.APPLIK8S_E2E_CONTEXT }}
+
+      - name: Run v0.6 live prerelease gates
+        if: ${{ inputs.release_line == 'v0.6' && inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
+        run: bun run test:v06:datastores-live && bun run test:v06:live && bun run scripts/check-v06-scorecard.ts --require-live
         env:
           APPLIK8S_E2E_CONTEXT: ${{ vars.APPLIK8S_E2E_CONTEXT }}
 
@@ -136,4 +153,5 @@ jobs:
           path: |
             dist/applik8s
             dist/examples/tenant-platform-*
+            dist/examples/v06-generated-proof
             dist/applik8s-artifact-list.txt

@@ -1,8 +1,8 @@
 {
-  "packages/applik8s/src/application.ts": 3200,
+  "packages/applik8s/src/application.ts": 3450,
   "packages/applik8s/src/application-server-bundle.ts": 725,
   "packages/applik8s/src/application-exposure.ts": 80,
-  "packages/core/src/application-graph.ts": 2800,
+  "packages/core/src/application-graph.ts": 3000,
   "packages/core/src/application-graph-compatibility.ts": 110,
   "packages/core/src/application-graph-serialization.ts": 100,
   "packages/compiler/src/pipeline/index.ts": 1200,

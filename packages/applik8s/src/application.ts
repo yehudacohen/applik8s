@@ -11,6 +11,8 @@ import { certificate as typeKroCertificate } from 'typekro/cert-manager';
 import { cluster as typeKroCnpgCluster } from 'typekro/cnpg';
 import { configMap as typeKroConfigMap, cronJob as typeKroCronJob, deployment as typeKroDeployment, ingress as typeKroIngress, job as typeKroJob, role as typeKroRole, roleBinding as typeKroRoleBinding, secret as typeKroSecret, service as typeKroService, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import { valkey as typeKroValkey } from 'typekro/valkey';
+import { getTableColumns, getTableName, isTable } from 'drizzle-orm';
+import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import type { ApplicationServerRuntimeIndex, ApplicationServerRuntimeResource } from './application-generated-runtime-sources.js';
 import { generatedApplicationAggregateSource, generatedValkeyIndexerSource } from './application-generated-runtime-sources.js';
 import { applicationConfigLabels, applicationExposureServiceName, applicationExposureServiceNamespace, applicationExternalDnsAnnotations, applicationLegacyTlsMode, normalizeApplicationTlsIntent } from './application-exposure.js';
@@ -18,9 +20,10 @@ import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGrap
 import { apiGroupForApiVersion, graphResourceId, kubernetesNameSegment, pascalCase, pluralizeKubernetesKind, unique } from './application-identifiers.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobPhaseStatusContract, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
 import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationRuntimeModelContract } from './application-models.js';
-import { applicationModelBinding, applicationModelMigrationPlan, applicationModelMigrationPreflightSql, applicationModelMigrationSql, applicationRuntimeModelContract, recordApplicationModelCommandGraph, recordApplicationModelGraph, resolveApplicationModelStore } from './application-models.js';
-import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationPostgresModelStoreOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend } from './application-providers.js';
-import { applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHttpExposureImplementation, applicationModelStoreImplementation, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, applicationTypedProviderContract, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, isIngressHttpExposureProvider, isValkeyIndexDefault, ModelStore } from './application-providers.js';
+import { applicationModelBinding, applicationModelMigrationPlan, applicationModelMigrationPreflightSql, applicationModelMigrationSql, applicationRuntimeModelContract, recordApplicationModelCommandGraph, recordApplicationModelGraph, recordApplicationNativeModelGraph, resolveApplicationModelStore } from './application-models.js';
+import { emitApplicationProjectionStoreResources } from './application-projection-store-resources.js';
+import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationPostgresModelStoreOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend } from './application-providers.js';
+import { applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHttpExposureImplementation, applicationModelStoreImplementation, applicationProjectionStoreImplementation, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, applicationTypedProviderContract, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, isIngressHttpExposureProvider, isValkeyIndexDefault, ModelStore } from './application-providers.js';
 import type { ApplicationRouteSourceLocation, ApplicationServerRouteSourceAnalysis, SerializedApplicationServerRouteWithDependencies } from './application-route-source.js';
 import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationRouteHandlerSource, normalizeSerializableFunctionSource, routeAnalysisCallsMethod, routeDynamicBindingAccesses, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 import { generatedApplicationRuntimeModuleBundle, generatedJobStatusRuntimeBundle } from './application-runtime-modules.js';
@@ -30,12 +33,17 @@ import type { ApplicationGeneratedJobStatusProjectionStore, ApplicationGenerated
 import { applicationStatusReconcilerName, emitApplicationGeneratedJobStatusReconcilers } from './application-status-reconciler.js';
 import type { ApplicationTaskBinding, ApplicationTaskHandler, ApplicationTaskOptions, ApplicationTaskReference, ApplicationWorkflowBinding, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference } from './application-workflows.js';
 import { type ApplicationWorkflowState, registerApplicationTask, registerApplicationWorkflow } from './application-workflows.js';
-import type { EntityDefinition, TaskDefinition, WorkflowDefinition } from './dsl.js';
+import type { EntityDefinition, StreamDefinition, TaskDefinition, WorkflowDefinition } from './dsl.js';
+import { registerApplicationQuery, type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal } from './application-queries.js';
+import { registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationSubscription, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationProjectionBinding, type ApplicationProjectionOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions } from './application-reactive.js';
+import { bindNativeApplicationModelCommands, getApplicationModelFacet, nativeApplicationModelCommandRegistrar, promoteDrizzleTable, promoteKubernetesResource, type PromotedDrizzleTable, type PromotedKubernetesResource, type PromoteDrizzleTableOptions } from './native-models.js';
+import type { ApplicationPostgresRlsPolicy } from './trusted-context.js';
 
 export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationCommandSubmissionAcknowledgement, ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandOptions, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
+export type { ApplicationGatewayAdmission, ApplicationGatewayBinding, ApplicationGatewayOptions, ApplicationProjectionBinding, ApplicationProjectionOptions, ApplicationStreamBinding, ApplicationStreamOptions, ApplicationSubscriptionBinding, ApplicationSubscriptionOptions } from './application-reactive.js';
 export type { ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalDnsPublicationProvider, ApplicationGeneratedModelStoreMigrationJobOptions, ApplicationHatchetWorkflowEngineProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationObjectStorageProvider, ApplicationPostgresModelStoreOptions, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationQueueProvider, ApplicationSecretProvider, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
-export { Certificate, CounterStore, CredentialStore, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, providers, Queue, Secret, WorkflowEngine } from './application-providers.js';
+export { Certificate, CounterStore, CredentialStore, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, ProjectionStore, providers, Queue, Secret, WorkflowEngine } from './application-providers.js';
 export { ApplicationDurableError, isApplicationDurableError } from './application-workflows.js';
 export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskOptions, ApplicationTaskReference, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference, ApplicationWorkflowResultOptions, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
 
@@ -44,11 +52,18 @@ export interface KubernetesApplicationScope {
   readonly http: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
   readonly server: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
   readonly storage: ApplicationStorageRegistrar;
+  readonly database: ApplicationDatabaseRegistrar;
   operator<TBinding>(operator: (options: OperatorDeploymentOptions) => TBinding, options: OperatorDeploymentOptions): TBinding;
   resource<TSpec extends object, TStatus extends object = Record<string, never>>(name: string, options: ApplicationResourceOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus>;
-  crd<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options: ApplicationCrdOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus>;
+  crd<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options: ApplicationCrdOptions<TSpec, TStatus>): PromotedKubernetesResource<TSpec, TStatus>;
   model<TSpec extends object, TStatus extends object = Record<string, never>>(name: string, options: ApplicationNamedModelOptions<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus>;
   model<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options?: ApplicationModelOptions<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus>;
+  model<TTable extends AnyPgTable>(table: TTable, options?: ApplicationNativeDrizzleModelOptions<TTable>): PromotedDrizzleTable<TTable>;
+  query<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(id: string, options: ApplicationQueryOptions<TInput, TOutput, TPrincipal>): ApplicationQueryBinding<TInput, TOutput, TPrincipal>;
+  stream<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(definition: StreamDefinition<TPayload>, options: ApplicationStreamOptions<TPayload, TPrincipal>): ApplicationStreamBinding<TPayload, TPrincipal>;
+  subscription<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(name: string, options: ApplicationSubscriptionOptions<TPrincipal>): ApplicationSubscriptionBinding<TPrincipal>;
+  projection<TPayload extends object, TRow extends object>(name: string, options: ApplicationProjectionOptions<TPayload, TRow>): ApplicationProjectionBinding<TPayload, TRow>;
+  gateway(name: string, options: ApplicationGatewayOptions): ApplicationGatewayBinding;
   reconcile<TSpec extends object, TStatus extends object = Record<string, never>>(resource: ResourceDefinition<TSpec, TStatus>, handler: ApplicationReconcileHandler<TSpec, TStatus>, options?: ApplicationReconcileOptions): unknown;
   infra<TResource extends object>(resource: TResource): TResource;
   config(name: string, options: ApplicationConfigOptions): ApplicationConfigBinding;
@@ -77,6 +92,30 @@ export interface ApplicationServerRegistrar {
 
 export interface ApplicationStorageRegistrar {
   postgres(name: string, options?: ApplicationStoragePostgresOptions): ApplicationDefaultsBinding;
+}
+
+export interface ApplicationDatabaseRegistrar {
+  postgres<TSchema extends Readonly<Record<string, unknown>>>(name: string, options: ApplicationDatabasePostgresOptions<TSchema>): ApplicationDatabaseBinding<TSchema>;
+}
+
+export interface ApplicationDatabasePostgresOptions<TSchema extends Readonly<Record<string, unknown>>> extends Omit<ApplicationStoragePostgresOptions, 'migrations'> {
+  readonly schema: TSchema;
+  readonly migrations?: string | { readonly path: string; readonly digest?: string };
+  readonly access?: ApplicationPostgresRlsPolicy;
+}
+
+export interface ApplicationDatabaseBinding<TSchema extends Readonly<Record<string, unknown>> = Readonly<Record<string, unknown>>> {
+  readonly kind: 'applicationDatabase';
+  readonly name: string;
+  readonly provider: ApplicationModelStoreProvider;
+  readonly schema: TSchema;
+  readonly migrations?: { readonly path: string; readonly digest?: string };
+  readonly access?: ApplicationPostgresRlsPolicy;
+}
+
+export interface ApplicationNativeDrizzleModelOptions<TTable extends AnyPgTable> extends Omit<PromoteDrizzleTableOptions<TTable>, 'database' | 'schema'> {
+  readonly database?: ApplicationDatabaseBinding;
+  readonly access?: 'required' | 'global';
 }
 
 export type ApplicationStoragePostgresOptions = Omit<ApplicationPostgresModelStoreOptions, 'name' | 'migrations'> & {
@@ -112,6 +151,10 @@ export interface ApplicationReconcileOptions extends OperatorDeploymentOptions {
 
 export type ApplicationCrdOptions<TSpec extends object, TStatus extends object> = Omit<CrdOptions<TSpec, TStatus>, 'kind' | 'spec' | 'status'> & {
   readonly kind?: string;
+  readonly access?: {
+    readonly context: import('./trusted-context.js').ApplicationTrustedContext<unknown>;
+    readonly namespaceLabel: string;
+  };
 };
 
 export interface ApplicationJobOptions {
@@ -348,7 +391,9 @@ interface ApplicationScopeState extends ApplicationGraphState, ApplicationProvid
   readonly resources: Record<string, AnyResourceDefinition>;
   readonly indexes: Record<string, ResourceIndex<object, object>>;
   readonly models: Record<string, ApplicationRuntimeModelContract>;
+  readonly databases: Map<string, ApplicationDatabaseBinding>;
   readonly emittedModelStores: Set<string>;
+  readonly emittedProjectionStores: Set<string>;
   readonly appResource: ApplicationCompositionResourceTarget;
   readonly generatedJobStatusTargets: ApplicationGeneratedJobStatusTarget[];
 }
@@ -538,6 +583,7 @@ export const sdk = Object.assign({}, baseSdk, { app, kubernetesComposition });
 
 type ApplicationBuilderReplay = (scope: KubernetesApplicationScope) => void;
 
+// typecast-boundary: the replayable builder erases heterogeneous generics only inside its private registration and replay registry.
 function createKubernetesApplicationBuilder(name: string, options: KubernetesApplicationBuilderOptions = {}): KubernetesApplicationBuilder {
   const definition = applicationBuilderDefinition(name, options);
   const preview = createApplicationContext(definition).scope;
@@ -592,6 +638,17 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
       return binding;
     },
   };
+  const database: ApplicationDatabaseRegistrar = {
+    postgres(databaseName, databaseOptions) {
+      const normalizedOptions = withDefaultNamespace(databaseOptions);
+      const binding = preview.database.postgres(databaseName, normalizedOptions);
+      replays.push((scope) => {
+        scope.database.postgres(databaseName, normalizedOptions);
+      });
+      invalidate();
+      return binding;
+    },
+  };
   // typecast: the implementation records one runtime branch for both app.http(name, configure) and app.http(name, options, configure) overloads.
   const http = ((serverName: string, optionsOrConfigure: ApplicationServerOptions | ((server: ApplicationServer) => void), maybeConfigure?: (server: ApplicationServer) => void) => {
     const explicitOptions = typeof optionsOrConfigure === 'function' ? {} : optionsOrConfigure;
@@ -632,6 +689,7 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
     http,
     server: http,
     storage,
+    database,
     operator<TBinding>(operator: (operatorOptions: OperatorDeploymentOptions) => TBinding, operatorOptions: OperatorDeploymentOptions): TBinding {
       const normalizedOptions = withDefaultNamespace(operatorOptions);
       const binding = preview.operator(operator, normalizedOptions);
@@ -651,7 +709,7 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
       invalidate();
       return resource;
     },
-    crd<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, crdOptions: ApplicationCrdOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus> {
+    crd<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, crdOptions: ApplicationCrdOptions<TSpec, TStatus>): PromotedKubernetesResource<TSpec, TStatus> {
       const resource = preview.crd(entity, crdOptions);
       // typecast: declaredResources stores heterogeneous entity-backed CRD definitions for later inferred app.http bindings.
       declaredResources[entity.name] = resource as unknown as AnyResourceDefinition;
@@ -661,7 +719,28 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
       invalidate();
       return resource;
     },
-    model<TSpec extends object, TStatus extends object = Record<string, never>>(entityOrName: EntityDefinition<TSpec, TStatus> | string, modelOptions?: ApplicationModelOptions<TSpec, TStatus> | ApplicationNamedModelOptions<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus> {
+    model<TSpec extends object, TStatus extends object = Record<string, never>, TTable extends AnyPgTable = AnyPgTable>(entityOrName: EntityDefinition<TSpec, TStatus> | TTable | string, modelOptions?: ApplicationModelOptions<TSpec, TStatus> | ApplicationNamedModelOptions<TSpec, TStatus> | ApplicationNativeDrizzleModelOptions<TTable>): ApplicationModelBinding<TSpec, TStatus> | PromotedDrizzleTable<TTable> {
+      if (isTable(entityOrName)) {
+        const nativeOptions = modelOptions as ApplicationNativeDrizzleModelOptions<TTable> | undefined;
+        const previewModel = preview.model(entityOrName as TTable, nativeOptions);
+        const previewRegistrar = nativeApplicationModelCommandRegistrar(previewModel);
+        if (!previewRegistrar) throw new Error(`Native model ${previewModel.$model.name} did not install its application command registrar.`);
+        const commandReplays: Parameters<typeof previewRegistrar>[] = [];
+        bindNativeApplicationModelCommands(previewModel, ((command: Parameters<typeof previewRegistrar>[0], commandOptions: Parameters<typeof previewRegistrar>[1], handler: Parameters<typeof previewRegistrar>[2]) => {
+          const binding = previewRegistrar(command, commandOptions, handler);
+          commandReplays.push([command, commandOptions, handler]);
+          invalidate();
+          return binding;
+        }) as typeof previewRegistrar);
+        replays.push((scope) => {
+          const replayed = scope.model(entityOrName as TTable, nativeOptions);
+          const registrar = nativeApplicationModelCommandRegistrar(replayed);
+          if (!registrar) throw new Error(`Native model ${replayed.$model.name} did not install its replay command registrar.`);
+          for (const declaration of commandReplays) registrar(...declaration);
+        });
+        invalidate();
+        return previewModel;
+      }
       const previewModel = typeof entityOrName === 'string'
         // typecast: named golden-path models require ApplicationNamedModelOptions and are guarded by the string branch.
         ? preview.model(entityOrName, modelOptions as ApplicationNamedModelOptions<TSpec, TStatus>)
@@ -696,6 +775,38 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
       });
       invalidate();
       return model;
+    },
+    query<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(id: string, queryOptions: ApplicationQueryOptions<TInput, TOutput, TPrincipal>): ApplicationQueryBinding<TInput, TOutput, TPrincipal> {
+      const binding = preview.query(id, queryOptions);
+      replays.push((scope) => {
+        scope.query(id, queryOptions);
+      });
+      invalidate();
+      return binding;
+    },
+    stream<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(definition: StreamDefinition<TPayload>, streamOptions: ApplicationStreamOptions<TPayload, TPrincipal>): ApplicationStreamBinding<TPayload, TPrincipal> {
+      const binding = preview.stream(definition, streamOptions);
+      replays.push((scope) => { scope.stream(definition, streamOptions); });
+      invalidate();
+      return binding;
+    },
+    subscription<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(subscriptionName: string, subscriptionOptions: ApplicationSubscriptionOptions<TPrincipal>): ApplicationSubscriptionBinding<TPrincipal> {
+      const binding = preview.subscription(subscriptionName, subscriptionOptions);
+      replays.push((scope) => { scope.subscription(subscriptionName, subscriptionOptions); });
+      invalidate();
+      return binding;
+    },
+    projection<TPayload extends object, TRow extends object>(projectionName: string, projectionOptions: ApplicationProjectionOptions<TPayload, TRow>): ApplicationProjectionBinding<TPayload, TRow> {
+      const binding = preview.projection(projectionName, projectionOptions);
+      replays.push((scope) => { scope.projection(projectionName, projectionOptions); });
+      invalidate();
+      return binding;
+    },
+    gateway(gatewayName: string, gatewayOptions: ApplicationGatewayOptions): ApplicationGatewayBinding {
+      const binding = preview.gateway(gatewayName, gatewayOptions);
+      replays.push((scope) => { scope.gateway(gatewayName, gatewayOptions); });
+      invalidate();
+      return binding;
     },
     reconcile<TSpec extends object, TStatus extends object = Record<string, never>>(resource: ResourceDefinition<TSpec, TStatus>, handler: ApplicationReconcileHandler<TSpec, TStatus>, reconcileOptions: ApplicationReconcileOptions = {}): unknown {
       const normalizedOptions = withDefaultNamespace(reconcileOptions);
@@ -830,10 +941,11 @@ function applicationBuilderServerOptions(options: ApplicationServerOptions, reso
   };
 }
 
+// typecast-boundary: the scope assembles overloaded registrars after runtime discriminants select native, named, or Kubernetes implementations.
 function createApplicationContext<TSpec extends KroCompatibleType, TStatus extends KroCompatibleType>(definition: TypeKroListenerCompositionDefinition<TSpec, TStatus>): ApplicationContext {
   const servers: Record<string, ApplicationServerBinding> = {};
   const state: ApplicationScopeState = {
-    resources: {}, indexes: {}, models: {}, emittedModelStores: new Set(), appResource: applicationCompositionResourceTarget(definition), generatedJobStatusTargets: [],
+    resources: {}, indexes: {}, models: {}, databases: new Map(), emittedModelStores: new Set(), emittedProjectionStores: new Set(), appResource: applicationCompositionResourceTarget(definition), generatedJobStatusTargets: [],
     defaults: {
       indexes: defaultApplicationProviders.IndexStore,
       models: defaultApplicationProviders.ModelStore,
@@ -933,6 +1045,14 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       state.defaults.indexes = defaults.indexes;
       recordApplicationProviderGraph(state, 'IndexStore', 'default', defaults.indexes);
     }
+    if ('projections' in defaults) {
+      const projectionStore = applicationProjectionStoreImplementation(defaults.projections);
+      if (!projectionStore) {
+        throw new Error('app.defaults({ projections: ... }) requires ProjectionStore.clickhouse(...).');
+      }
+      state.defaults.projections = projectionStore;
+      recordApplicationProviderGraph(state, 'ProjectionStore', 'default', projectionStore);
+    }
     return { kind: 'applicationDefaults', defaults };
   };
   const provide = <TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): ApplicationProviderBinding<TImplementation> => {
@@ -946,6 +1066,30 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       return defaults({ models: provider });
     },
   };
+  const database: ApplicationDatabaseRegistrar = {
+    postgres(name, options) {
+      if (state.databases.has(name)) {
+        throw new Error(`Application database ${name} is already registered.`);
+      }
+      const { schema, access, migrations, ...providerOptions } = options;
+      const provider = ModelStore.postgres({
+        ...applicationStoragePostgresOptions(name, providerOptions),
+        migrations: { strategy: migrations ? 'external' : 'none', compatibility: 'requiresExplicitMigration', apply: 'manual' },
+      });
+      defaults({ models: provider });
+      const migrationArtifact = typeof migrations === 'string' ? { path: migrations } : migrations;
+      const binding: ApplicationDatabaseBinding<typeof schema> = {
+        kind: 'applicationDatabase',
+        name,
+        provider,
+        schema,
+        ...(migrationArtifact ? { migrations: migrationArtifact } : {}),
+        ...(access ? { access } : {}),
+      };
+      state.databases.set(name, binding);
+      return binding;
+    },
+  };
   const resource = <TSpec extends object, TStatus extends object = Record<string, never>>(name: string, options: ApplicationResourceOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus> => {
     const definitionResource = baseSdk.crd({
       ...options,
@@ -956,16 +1100,23 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     recordApplicationCrdGraph(state, name, definitionResource);
     return definitionResource;
   };
-  const crd = <TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options: ApplicationCrdOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus> => {
+  const crd = <TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options: ApplicationCrdOptions<TSpec, TStatus>): PromotedKubernetesResource<TSpec, TStatus> => {
+    const { access, ...crdOptions } = options;
     const definitionResource = baseSdk.crd({
-      ...options,
+      ...crdOptions,
       kind: options.kind ?? entity.name,
       spec: entity.spec,
       ...(entity.status ? { status: entity.status } : {}),
     });
-    collectApplicationResources(state, { [entity.name]: definitionResource });
-    recordApplicationCrdGraph(state, entity.name, definitionResource);
-    return definitionResource;
+    if (access && definitionResource.scope !== 'Namespaced') throw new Error(`Kubernetes model ${entity.name} cannot use namespace trusted-context enforcement because it is cluster-scoped.`);
+    if (access && !access.namespaceLabel.trim()) throw new Error(`Kubernetes model ${entity.name} namespaceLabel must not be empty.`);
+    const modelResource = promoteKubernetesResource(definitionResource, {
+      name: entity.name,
+      ...(access ? { access: { context: access.context.name, namespaceLabel: access.namespaceLabel } } : {}),
+    });
+    collectApplicationResources(state, { [entity.name]: modelResource });
+    recordApplicationCrdGraph(state, entity.name, modelResource);
+    return modelResource;
   };
   const reconcile = <TSpec extends object, TStatus extends object = Record<string, never>>(resource: ResourceDefinition<TSpec, TStatus>, handler: ApplicationReconcileHandler<TSpec, TStatus>, options: ApplicationReconcileOptions = {}): unknown => {
     const { name, permissions, ...deploymentOptions } = options;
@@ -989,6 +1140,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     // typecast: the callable server registrar also exposes named server bindings such as app.server.web after registration.
     server: server as ApplicationServerRegistrar & Record<string, ApplicationServerBinding>,
     storage,
+    database,
     operator(operator, options) {
       collectApplicationResources(state, applicationOperatorResources(operator));
       recordApplicationOperatorGraph(state, operator);
@@ -996,7 +1148,29 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     },
     resource,
     crd,
-    model(entityOrName, options) {
+    model: ((entityOrName: string | EntityDefinition<object, object> | AnyPgTable, options?: ApplicationModelOptions<object, object> | ApplicationNamedModelOptions<object, object> | ApplicationNativeDrizzleModelOptions<AnyPgTable>) => {
+      if (isTable(entityOrName)) {
+        const nativeOptions = options as ApplicationNativeDrizzleModelOptions<AnyPgTable> | undefined;
+        const databaseBinding = resolveApplicationDatabase(state, nativeOptions?.database);
+        validateNativeModelAccess(entityOrName, databaseBinding, nativeOptions?.access);
+        const promoted = promoteDrizzleTable(entityOrName, {
+          ...nativeOptions,
+          database: databaseBinding.name,
+          schema: databaseBinding.schema,
+        });
+        const runtimeModel = applicationNativeRuntimeModelContract(promoted, databaseBinding);
+        emitApplicationModelStoreResources(state, runtimeModel, databaseBinding.provider);
+        recordApplicationNativeModelGraph(state, promoted.$model, databaseBinding.provider, runtimeModel, databaseBinding.migrations ? { artifact: databaseBinding.migrations.path, ...(databaseBinding.migrations.digest ? { digest: databaseBinding.migrations.digest } : {}) } : {});
+        state.models[runtimeModel.name] = runtimeModel;
+        bindNativeApplicationModelCommands(promoted, (command, commandOptions, handler) => recordApplicationModelCommandGraph(
+          state,
+          applicationNativeCommandModelBinding(promoted, runtimeModel),
+          command,
+          commandOptions,
+          handler,
+        ));
+        return promoted;
+      }
       const { entity, modelOptions } = applicationModelInput(entityOrName, options);
       const modelStore = resolveApplicationModelStore(state, entity.name, modelOptions?.store);
       const runtimeModel = applicationRuntimeModelContract(entity, modelStore, modelOptions);
@@ -1004,6 +1178,22 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       recordApplicationModelGraph(state, entity, modelStore, modelOptions, runtimeModel);
       state.models[runtimeModel.name] = runtimeModel;
       return applicationModelBindingWithCommandGraph(state, entity, modelStore, modelOptions, runtimeModel);
+    }) as KubernetesApplicationScope['model'],
+    query(id, options) {
+      return registerApplicationQuery(state, id, options);
+    },
+    stream(definition, options) {
+      return registerApplicationStream(state, definition, options);
+    },
+    subscription(name, options) {
+      return registerApplicationSubscription(state, name, options);
+    },
+    projection(name, options) {
+      emitApplicationProjectionStoreResources(state, options.provider ?? state.providers.projections ?? state.defaults.projections);
+      return registerApplicationProjection(state, name, options);
+    },
+    gateway(name, options) {
+      return registerApplicationGateway(state, name, options);
     },
     reconcile,
     infra(resource) {
@@ -1108,6 +1298,107 @@ function applicationModelInput<TSpec extends object, TStatus extends object>(ent
     ...(namedOptions.status ? { status: namedOptions.status } : {}),
   };
   return { entity, modelOptions: applicationNamedModelOptions(namedOptions) };
+}
+
+function resolveApplicationDatabase(state: ApplicationScopeState, explicit: ApplicationDatabaseBinding | undefined): ApplicationDatabaseBinding {
+  if (explicit) {
+    const registered = state.databases.get(explicit.name);
+    if (!registered || registered.schema !== explicit.schema) {
+      throw new Error(`Application database ${explicit.name} is not registered in this app context.`);
+    }
+    return registered;
+  }
+  const databases = [...state.databases.values()];
+  if (databases.length === 1 && databases[0]) {
+    return databases[0];
+  }
+  if (databases.length === 0) {
+    throw new Error('app.model(table) requires a registered native database. Declare app.database.postgres("name", { schema, migrations, access }) before promoting a Drizzle table.');
+  }
+  throw new Error(`app.model(table) is ambiguous because ${databases.length} native databases are registered. Pass { database } explicitly.`);
+}
+
+function validateNativeModelAccess(table: AnyPgTable, database: ApplicationDatabaseBinding, access: ApplicationNativeDrizzleModelOptions<AnyPgTable>['access']): void {
+  const policy = database.access;
+  const effective = access ?? policy?.default ?? 'global';
+  if (effective === 'global') {
+    return;
+  }
+  if (!policy) {
+    throw new Error(`Drizzle table ${getTableName(table)} requires trusted-context enforcement, but database ${database.name} has no PostgreSQL RLS access policy.`);
+  }
+  const columns = getTableColumns(table);
+  const column = columns[policy.column];
+  if (!column) {
+    throw new Error(`Drizzle table ${getTableName(table)} must declare column ${policy.column} for database ${database.name}'s required trusted-context/RLS policy, or opt out explicitly with { access: "global" }.`);
+  }
+  if (!column.notNull) {
+    throw new Error(`Drizzle table ${getTableName(table)} access column ${policy.column} must be non-null when trusted context ${policy.context.name} is required.`);
+  }
+}
+
+function applicationNativeRuntimeModelContract<TTable extends AnyPgTable>(model: PromotedDrizzleTable<TTable>, database: ApplicationDatabaseBinding): ApplicationRuntimeModelContract {
+  const provider = database.provider;
+  const name = model.$model.name;
+  const segment = kubernetesNameSegment(name);
+  const clusterName = provider.name ?? `${segment}-db`;
+  const secret = provider.connectionSecret ?? { apiVersion: 'v1', kind: 'Secret', name: `${clusterName}-app`, ...(provider.namespace ? { namespace: provider.namespace } : {}) };
+  const columns = getTableColumns(model);
+  const identityProperty = model.$model.identity.fields[0];
+  const identityColumn = identityProperty ? columns[identityProperty] : undefined;
+  if (!identityProperty || !identityColumn) throw new Error(`Native model ${name} has no serializable identity column.`);
+  const revisionProperty = model.$model.revision?.field;
+  const revisionColumn = revisionProperty ? columns[revisionProperty] : undefined;
+  return {
+    name,
+    tableName: model.$model.table.name,
+    provider: 'postgres',
+    database: provider.database ?? database.name,
+    clusterName,
+    secretName: secret.name ?? `${clusterName}-app`,
+    secretKey: provider.connectionSecretKey ?? 'uri',
+    ...(secret.namespace ?? provider.namespace ? { secretNamespace: secret.namespace ?? provider.namespace } : {}),
+    connectionEnvName: `APPLIK8S_DATABASE_${kubernetesNameSegment(database.name).replace(/[^A-Z0-9_a-z]+/g, '_').toUpperCase()}_URL`,
+    constraints: model.$model.relationships.filter((relationship) => relationship.integrity === 'foreign-key').map((relationship) => ({ name: `${name}_${relationship.name}_fk`, fields: relationship.fields, kind: 'foreignKey' })),
+    indexes: [],
+    retention: { mode: 'retain' },
+    storageShape: 'native-relational',
+    nativeRelational: {
+      ...(model.$model.table.schema ? { schema: model.$model.table.schema } : {}),
+      identity: { property: identityProperty, column: identityColumn.name },
+      ...(revisionProperty && revisionColumn ? { revision: { property: revisionProperty, column: revisionColumn.name } } : {}),
+      columns: Object.entries(columns).map(([property, column]) => ({ property, column: column.name })),
+      ...(database.access ? { access: { context: database.access.context.name, setting: database.access.setting, property: database.access.column, column: columns[database.access.column]?.name ?? database.access.column } } : {}),
+    },
+  };
+}
+
+// typecast-boundary: command graph registration consumes a deliberately non-persistent adapter with the native model's validated metadata.
+function applicationNativeCommandModelBinding<TTable extends AnyPgTable>(model: PromotedDrizzleTable<TTable>, runtime: ApplicationRuntimeModelContract): ApplicationModelBinding<import('drizzle-orm').InferSelectModel<TTable>, Record<string, never>> {
+  const unsupported = () => { throw new Error(`Native model ${model.$model.name} uses its Drizzle API for direct persistence and the common relational runtime for observable writes.`); };
+  // typecast: command graph registration consumes only name, runtime, and transaction capability; persistence methods remain deliberately unavailable on this internal adapter.
+  return {
+    kind: 'applicationModel',
+    name: model.$model.name,
+    entity: { kind: 'applik8sEntity', name: model.$model.name, spec: model.$model.schema.select } as never,
+    runtime,
+    backend: {
+      interface: 'ModelStore',
+      runtimeBoundary: { serializedCallbacks: 'generatedRuntimeClient', scriptExecution: 'scriptRuntimeClient' },
+      transactions: 'required',
+      queryConsistency: 'strong',
+      eventSemantics: 'transactionalOutbox',
+      limitations: ['Native relational reads and arbitrary SQL remain Drizzle-owned; only declared observable writes are live-query authoritative.'],
+    },
+    create: unsupported as never,
+    get: unsupported as never,
+    query: unsupported as never,
+    patch: unsupported as never,
+    delete: unsupported as never,
+    index: unsupported as never,
+    transaction: unsupported as never,
+    on: { created: unsupported as never, updated: unsupported as never, deleted: unsupported as never, command: unsupported as never },
+  };
 }
 
 function applicationNamedModelOptions<TSpec extends object, TStatus extends object>(options: ApplicationNamedModelOptions<TSpec, TStatus>): ApplicationModelOptions<TSpec, TStatus> {
@@ -1254,7 +1545,9 @@ function collectApplicationIndexes(state: ApplicationScopeState, indexes: Readon
   }
 }
 
-function recordApplicationCrdGraph(state: ApplicationScopeState, name: string, resource: Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>): void {
+// typecast-boundary: literal discriminants preserve the normalized native Kubernetes graph contract across conditional object spreads.
+function recordApplicationCrdGraph(state: ApplicationScopeState, name: string, resource: Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'> & Partial<AnyResourceDefinition>): void {
+  const model = getApplicationModelFacet<object, string, never, never>(resource);
   addApplicationGraphNode(state, {
     id: applicationGraphNodeId('crd', name),
     kind: 'crd',
@@ -1262,6 +1555,24 @@ function recordApplicationCrdGraph(state: ApplicationScopeState, name: string, r
     stability: 'stable',
     materialization: 'kubernetes-crd',
     resource: applicationResourceContract(resource),
+    ...(model?.native === 'kubernetes-resource' ? {
+      native: {
+        kind: 'kubernetes-resource' as const,
+        authority: 'kubernetes' as const,
+        artifact: { name: `${resource.apiVersion}/${resource.kind}` },
+        schemaAuthority: 'arktype' as const,
+        runtimeSchema: 'declared-arktype' as const,
+        nativeApi: 'preserved' as const,
+      },
+      common: {
+        identity: model.identity,
+        ...(model.revision ? { revision: model.revision } : {}),
+        snapshot: { shape: 'identity-value-revision' as const, revisionOptional: true as const },
+        changes: { authority: 'kubernetes-watch' as const, rawWrites: 'observed' as const },
+        relationships: model.relationships,
+        ...(model.access ? { access: { context: model.access.context, enforcement: 'kubernetes-namespace-label' as const, providerField: model.access.namespaceLabel } } : {}),
+      },
+    } : {}),
   });
 }
 

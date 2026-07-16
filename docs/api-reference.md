@@ -1,5 +1,8 @@
 # API Reference
 
+For the v0.6 native Drizzle/Kubernetes model, trusted-context, migration, query, stream, client, and
+projection contracts, see [Native Models and Live Queries](./native-models-and-live-queries.md).
+
 This is the supported public surface for `applik8s` v0.5. The v0.3 application substrate and v0.4 durable command semantics remain supported; v0.5 adds provider-neutral durable tasks and workflows plus bounded named Kubernetes connections without broadening into v0.6 projection/UI APIs.
 
 ## Packages

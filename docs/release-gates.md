@@ -1,6 +1,6 @@
 # Release Gates
 
-Release readiness has two layers: local gates and pre-release live gates. v0.5 retains the earlier substrate and command gates and adds durable-workflow, connection-scoped Kubernetes, performance-history, and clean TypeKro lifecycle evidence.
+Release readiness has two layers: local gates and pre-release live gates. v0.6 retains the earlier substrate, command, workflow, connection, and DNS gates and adds native-model, PostgreSQL RLS, live-query, stream, projection, browser-client, performance-history, and generated TypeKro lifecycle evidence.
 
 ## Local Gates
 
@@ -43,13 +43,37 @@ bun run check:release
 The checker verifies:
 
 - publishable package metadata
-- version `0.5.0` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
+- version `0.6.0` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
 - Apache-2.0 license metadata
 - public publish config
 - no `file:` dependency ranges in publishable packages
 - required public docs exist
 - public release files do not contain private branding or excluded product terms
 - internal-only package paths are absent from the public tree
+
+## v0.6 Native-Model and Reactive-Application Gates
+
+Run the complete local candidate gate:
+
+```sh
+bun run check:v06:local
+```
+
+It combines type, lint, module-boundary, full implemented, focused v0.6 contract, character, coordinated
+dry-pack, clean-consumer, executable scorecard, synthetic performance-budget, Rust formatting, Clippy,
+host-contract, and real ComponentizeJS/WIT/Wasmtime checks.
+
+Run the complete live candidate against the explicitly selected OrbStack context:
+
+```sh
+bun run check:v06:prerelease:orbstack
+```
+
+That lane refreshes PostgreSQL and ClickHouse integration receipts, deploys the generated v0.6
+application through TypeKro, proves RLS isolation, query invalidation, stream replay, projection
+checkpointing and restart/resume, deletes through the owning TypeKro factory, and requires unexpired live
+evidence in the executable scorecard. See `docs/release-evidence-v0.6.md` for the exact claims and
+`docs/v0.6-foundation.md` for provider and KRO lifecycle boundaries.
 
 ## Historical v0.2 Pre-Release Gates
 

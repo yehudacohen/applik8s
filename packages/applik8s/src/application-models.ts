@@ -13,6 +13,8 @@ import { createJetStreamEventLog } from './event-log-jetstream-runtime.js';
 import type { PostgresModelCommandResult } from './model-command-postgres-runtime.js';
 import { canonicalApplicationCommandKey, executePostgresModelCommand } from './model-command-postgres-runtime.js';
 import { createPostgresModelClient } from './model-store-postgres-runtime.js';
+import type { AnyPgTable } from 'drizzle-orm/pg-core';
+import type { DrizzleApplicationModelFacet } from './native-models.js';
 
 export interface ApplicationModelOptions<TSpec extends object = object, TStatus extends object = Record<string, never>> {
   readonly name?: string;
@@ -65,6 +67,10 @@ export interface ApplicationModelCommandOptions<
   readonly idempotencyKey?: (input: TInput) => string;
   /** Route a missing submitted key to this alternate key in the same model. */
   readonly missing?: 'reject' | { readonly initialize: (input: TInput) => TSpec } | { readonly route: string };
+  /** Concise primary-model history declaration. Equivalent to adding this model to transaction.history. */
+  readonly history?: boolean;
+  /** Concise domain outbox declaration. Equivalent to transaction.outbox. */
+  readonly events?: readonly EventDefinition<object>[];
   readonly transaction?: {
     readonly models?: readonly ApplicationModelBinding<object, object>[];
     readonly history?: readonly ApplicationModelBinding<object, object>[];
@@ -102,6 +108,11 @@ export interface ApplicationModelCommandContext<TErrors extends Readonly<Record<
   readonly attempt: number;
   readonly now: string;
   readonly models: Readonly<Record<string, ApplicationModelCommandParticipantClient>>;
+  update<TValue extends object>(
+    model: ApplicationModelCommandTarget<TValue, object>,
+    patch: Partial<TValue>,
+    options?: { readonly ifRevision?: string },
+  ): Promise<{ readonly value: import('./native-models.js').ApplicationModelSnapshot<TValue>; readonly changed: boolean }>;
   id(scope?: string): string;
   emit<TPayload extends object>(event: EventDefinition<TPayload>, payload: TPayload): void;
   send<TInput extends object>(command: CommandDefinition<TInput, object, Readonly<Record<string, object>>>, input: TInput, options: { readonly targetKey: ApplicationCommandKey; readonly idempotencyKey?: string }): void;
@@ -110,6 +121,8 @@ export interface ApplicationModelCommandContext<TErrors extends Readonly<Record<
 
 export interface ApplicationModelCommandTarget<TSpec extends object, TStatus extends object> {
   readonly id: string;
+  readonly identity: string;
+  readonly value: TSpec;
   readonly spec: TSpec;
   readonly status: TStatus | undefined;
   readonly revision?: string;
@@ -137,6 +150,11 @@ export interface ApplicationModelCommandDeliveryOptions {
   readonly attempt?: number;
   readonly recordedAt?: string;
   readonly expectedRevision?: string;
+  /** Internal trusted-context envelope established by an authenticated server boundary. */
+  readonly context?: {
+    readonly values: Readonly<Record<string, JsonValue>>;
+    readonly digest: string;
+  };
   readonly databaseUrl?: string;
   /** Internal durable-envelope override used by declared command outboxes. */
   readonly targetKey?: string;
@@ -183,6 +201,14 @@ export interface ApplicationRuntimeModelContract {
   readonly constraints: readonly ApplicationModelConstraint[];
   readonly indexes: readonly ApplicationModelIndex[];
   readonly retention: ApplicationRetentionPolicy;
+  readonly storageShape?: 'jsonb-envelope' | 'native-relational';
+  readonly nativeRelational?: {
+    readonly schema?: string;
+    readonly identity: { readonly property: string; readonly column: string };
+    readonly revision?: { readonly property: string; readonly column: string };
+    readonly columns: readonly { readonly property: string; readonly column: string }[];
+    readonly access?: { readonly context: string; readonly setting: string; readonly property: string; readonly column: string };
+  };
 }
 
 export interface ApplicationModelBackendContract {
@@ -340,6 +366,96 @@ export function recordApplicationModelGraph<TSpec extends object, TStatus extend
   }
 }
 
+// typecast-boundary: Drizzle relation metadata is normalized into the closed graph constraint union after integrity filtering.
+export function recordApplicationNativeModelGraph<TTable extends AnyPgTable>(
+  state: ApplicationModelGraphState,
+  model: DrizzleApplicationModelFacet<TTable>,
+  provider: ApplicationModelStoreProvider,
+  runtime: ApplicationRuntimeModelContract,
+  migrations: { readonly artifact?: string; readonly digest?: string } = {},
+): void {
+  const nodeId = applicationGraphNodeId('model', model.name);
+  const providerNodeId = applicationProviderNodeId('ModelStore');
+  const providerResources = applicationModelStoreProviderResources(provider, model.name);
+  recordApplicationProviderGraph(state, 'ModelStore', 'nativeRelationalModel', provider);
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'model',
+    name: model.name,
+    stability: 'stable',
+    entity: { name: model.name },
+    store: { interface: 'ModelStore', nodeId: providerNodeId },
+    schema: {
+      identity: model.identity.fields,
+      constraints: model.relationships.filter((relationship) => relationship.integrity === 'foreign-key').map((relationship) => ({ name: `${model.name}_${relationship.name}_fk`, fields: relationship.fields, kind: 'foreignKey' as const })),
+      indexes: [],
+      migrations: { strategy: migrations.artifact ? 'external' : 'none', compatibility: 'requiresExplicitMigration' },
+      transactions: 'required',
+      retention: { mode: 'retain' },
+      guarantees: {
+        identity: 'stableId',
+        uniqueness: 'databaseConstraint',
+        indexes: 'declaredSecondaryIndexes',
+        transactions: 'required',
+        retention: 'retain',
+        migrationOwnership: migrations.artifact ? 'external' : 'none',
+      },
+    },
+    materialization: {
+      mode: 'providerBacked',
+      provider: { interface: 'ModelStore', nodeId: providerNodeId },
+      backingResources: providerResources,
+      connection: applicationModelStoreRuntime(provider, model.name, providerResources),
+      runtimeBoundary: applicationModelRuntimeBoundary(),
+      reconciliation: { ownership: provider.provision === false ? 'external' : 'application', schemaDrift: 'failClosed', deletionPolicy: 'retain' },
+    },
+    native: {
+      kind: 'drizzle-table',
+      authority: 'postgres',
+      artifact: { name: model.table.name, ...(model.table.schema ? { schema: model.table.schema } : {}), database: model.database, ...(migrations.artifact ? { migrations: { path: migrations.artifact, ...(migrations.digest ? { digest: migrations.digest } : {}) } } : {}) },
+      schemaAuthority: 'drizzle',
+      runtimeSchema: 'derived-arktype',
+      nativeApi: 'preserved',
+    },
+    common: {
+      identity: model.identity,
+      ...(model.revision ? { revision: model.revision } : {}),
+      snapshot: { shape: 'identity-value-revision', revisionOptional: true },
+      changes: { authority: 'postgres-change-log', rawWrites: 'explicit-invalidation-required' },
+      relationships: model.relationships,
+    },
+    runtime: { ...runtime, storageShape: 'native-relational' },
+    generatedResources: providerResources.map((resource) => ({
+      role: 'providerDependency',
+      graphNode: { nodeId },
+      resource,
+      artifact: { kind: 'providerContract', name: `${model.name}-native-relational-model-store` },
+      dependsOn: [{ nodeId: providerNodeId }],
+    })),
+  });
+  addApplicationGraphEdge(state, { from: { nodeId: providerNodeId }, to: { nodeId }, relationship: 'provides' });
+  const requirementId = applicationModelStoreRequirementId(model.name);
+  addApplicationProviderRequirement(state, {
+    id: requirementId,
+    interface: 'ModelStore',
+    consumer: { nodeId },
+    provider: { interface: 'ModelStore', nodeId: providerNodeId },
+    required: true,
+    purpose: 'modelStore',
+    diagnostics: {
+      missing: `Native relational model ${model.name} requires its registered PostgreSQL database provider.`,
+      ambiguous: `Native relational model ${model.name} is associated with more than one PostgreSQL database provider.`,
+    },
+  });
+  addApplicationProviderBinding(state, {
+    requirement: requirementId,
+    provider: { interface: 'ModelStore', nodeId: providerNodeId },
+    generatedResources: providerResources,
+    runtime: applicationModelStoreRuntime(provider, model.name, providerResources),
+    metadataLinks: [{ graphNode: { nodeId: providerNodeId }, artifact: { kind: 'providerContract', name: `${model.name}-native-relational-model-store` }, purpose: 'providerDependency' }],
+  });
+}
+
 export function recordApplicationModelCommandGraph<
   TSpec extends object,
   TStatus extends object,
@@ -371,7 +487,7 @@ export function recordApplicationModelCommandGraph<
     ? applicationCommandFunctionExpression('idempotencyKey', model.name, command.id, options.idempotencyKey)
     : undefined;
   const transactionModels = uniqueApplicationModelBindings([model, ...(options.transaction?.models ?? [])]);
-  const historyModels = uniqueApplicationModelBindings(options.transaction?.history ?? []);
+  const historyModels = uniqueApplicationModelBindings([...(options.history ? [model] : []), ...(options.transaction?.history ?? [])]);
   const transactionModelIds = new Set(transactionModels.map((participant) => applicationGraphNodeId('model', participant.name)));
   for (const historyModel of historyModels) {
     if (!transactionModelIds.has(applicationGraphNodeId('model', historyModel.name))) {
@@ -380,7 +496,8 @@ export function recordApplicationModelCommandGraph<
   }
   validateApplicationCommandTransactionDomain(model.name, command.id, transactionModels);
 
-  const outboxEvents = options.transaction?.outbox ?? [];
+  const outboxEvents = [...(options.events ?? []), ...(options.transaction?.outbox ?? [])];
+  if (new Set(outboxEvents.map((event) => event.id)).size !== outboxEvents.length) throw new Error(`Model ${model.name} command ${command.id} declares a duplicate outbox event.`);
   const outboxCommands = options.transaction?.commands ?? [];
   const handlerSource = applicationCommandFunctionSource('handler', model.name, command.id, handler);
   const eventBindings = outboxEvents.length > 0 ? applicationCommandEventBindings(handlerSource, outboxEvents, model.name, command.id) : [];
@@ -570,6 +687,7 @@ export function recordApplicationModelCommandGraph<
         ...(delivery.traceparent ? { traceparent: delivery.traceparent } : {}),
         ...(delivery.attempt ? { attempt: delivery.attempt } : {}),
         ...(delivery.expectedRevision ? { expectedRevision: delivery.expectedRevision } : {}),
+        ...(delivery.context ? { trustedContext: delivery.context } : {}),
       }, 'commands');
       return {
         ...acknowledgement,
@@ -607,6 +725,7 @@ export function recordApplicationModelCommandGraph<
           ...(delivery.attempt ? { attempt: delivery.attempt } : {}),
           ...(delivery.recordedAt ? { recordedAt: delivery.recordedAt } : {}),
           ...(delivery.expectedRevision ? { expectedRevision: delivery.expectedRevision } : {}),
+          ...(delivery.context ? { context: delivery.context } : {}),
         },
         history: historyModels.some((participant) => participant.name === model.name),
         // typecast: command transaction declarations erase payload specifics after their schemas have been validated and recorded in the graph.
@@ -935,6 +1054,11 @@ export function applicationModelMigrationSql(model: ApplicationRuntimeModelContr
     `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_event_outbox')} (\n  id text PRIMARY KEY,\n  scope text NOT NULL REFERENCES ${quoteSqlIdentifier('applik8s_command_inbox')}(scope) ON DELETE CASCADE,\n  contract_name text NOT NULL,\n  contract_version text NOT NULL,\n  partition_key text NOT NULL,\n  envelope jsonb NOT NULL,\n  payload jsonb NOT NULL,\n  published_at timestamptz,\n  created_at timestamptz NOT NULL DEFAULT now()\n);`,
     `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_event_outbox_pending')} ON ${quoteSqlIdentifier('applik8s_event_outbox')} (created_at) WHERE published_at IS NULL;`,
     `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_event_outbox_cleanup')} ON ${quoteSqlIdentifier('applik8s_event_outbox')} (published_at) WHERE published_at IS NOT NULL;`,
+    `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_public_stream_events')} (\n  id text PRIMARY KEY,\n  sequence bigint GENERATED ALWAYS AS IDENTITY UNIQUE,\n  contract_name text NOT NULL,\n  contract_version text NOT NULL,\n  partition_key text NOT NULL,\n  envelope jsonb NOT NULL,\n  payload jsonb NOT NULL,\n  context_digest text,\n  recorded_at timestamptz NOT NULL\n);`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_public_stream_events_sequence')} ON ${quoteSqlIdentifier('applik8s_public_stream_events')} (sequence);`,
+    `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_public_stream_events_contract_sequence')} ON ${quoteSqlIdentifier('applik8s_public_stream_events')} (contract_name, contract_version, sequence);`,
+    `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_public_stream_events_contract_recorded_at')} ON ${quoteSqlIdentifier('applik8s_public_stream_events')} (contract_name, contract_version, recorded_at);`,
+    `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_public_stream_events_context_sequence')} ON ${quoteSqlIdentifier('applik8s_public_stream_events')} (contract_name, contract_version, context_digest, sequence);`,
     `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_outbox')} (\n  id text PRIMARY KEY,\n  scope text NOT NULL REFERENCES ${quoteSqlIdentifier('applik8s_command_inbox')}(scope) ON DELETE CASCADE,\n  contract_name text NOT NULL,\n  contract_version text NOT NULL,\n  partition_key text NOT NULL,\n  envelope jsonb NOT NULL,\n  payload jsonb NOT NULL,\n  published_at timestamptz,\n  created_at timestamptz NOT NULL DEFAULT now()\n);`,
     `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_outbox_pending')} ON ${quoteSqlIdentifier('applik8s_command_outbox')} (created_at) WHERE published_at IS NULL;`,
     `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_outbox_cleanup')} ON ${quoteSqlIdentifier('applik8s_command_outbox')} (published_at) WHERE published_at IS NOT NULL;`,
@@ -1279,6 +1403,8 @@ function recordApplicationProviderGraph(state: ApplicationGraphState, tokenName:
         stream: eventLog.stream ?? 'APPLIK8S_EVENTS',
         subjectPrefix: eventLog.subjectPrefix ?? 'applik8s',
         provision: eventLog.provision ?? true,
+        authMode: eventLog.authMode ?? 'token',
+        ...(eventLog.connectionSecret ? { connectionSecret: { apiVersion: eventLog.connectionSecret.apiVersion, kind: eventLog.connectionSecret.kind, ...(eventLog.connectionSecret.name ? { name: eventLog.connectionSecret.name } : {}), ...(eventLog.connectionSecret.namespace ? { namespace: eventLog.connectionSecret.namespace } : {}) } } : {}),
         tokenKey: eventLog.tokenKey ?? 'token',
         userKey: eventLog.userKey ?? 'user',
         passwordKey: eventLog.passwordKey ?? 'password',

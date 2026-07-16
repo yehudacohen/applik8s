@@ -2,8 +2,9 @@ import type { ApplicationExpressionContract, ApplicationMessageContractSchema, A
 import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
 
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
+import { instrumentedApplicationCallbackSource } from './application-callback.js';
 import { type ApplicationProviderState, type ApplicationWorkflowEngineProvider, applicationProviderImplementationName, applicationWorkflowEngineImplementation } from './application-providers.js';
-import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationCallArgumentSource, normalizeSerializableFunctionSource, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
+import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationCallArgumentSource, normalizeSerializableFunctionSource, serializedCallbackClosureMessage, transpileApplicationCallbackExpression, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 import type { TaskDefinition, WorkflowDefinition } from './dsl.js';
 import { type ApplicationWorkflowInvocationMetadata, type ApplicationWorkflowResultOptions, type ApplicationWorkflowRun, applicationWorkflowRuntime } from './workflow-runtime.js';
 
@@ -22,6 +23,7 @@ export interface ApplicationTaskContext<TErrors extends Readonly<Record<string, 
   readonly correlationId?: string;
   readonly causationId?: string;
   readonly traceparent?: string;
+  readonly trustedContext?: ApplicationWorkflowInvocationMetadata['trustedContext'];
   readonly signal: AbortSignal;
   fail<TName extends keyof TErrors & string>(name: TName, payload: TErrors[TName]): never;
 }
@@ -43,6 +45,7 @@ export interface ApplicationWorkflowContext<
   readonly correlationId?: string;
   readonly causationId?: string;
   readonly traceparent?: string;
+  readonly trustedContext?: ApplicationWorkflowInvocationMetadata['trustedContext'];
   fail<TName extends keyof TErrors & string>(name: TName, payload: TErrors[TName]): never;
 }
 
@@ -429,7 +432,10 @@ function validateMessage<T extends object>(schema: SchemaInput<T>, value: unknow
 }
 
 function workflowHandlerSerialization(kind: 'task' | 'workflow', id: string, handler: (...args: never[]) => unknown, orchestrationOnly: boolean): { readonly source: string; readonly dependencies?: { readonly source: string; readonly resolveDir: string }; readonly location?: { readonly file: string; readonly line: number; readonly column: number } } {
-  const extracted = extractApplicationCallArgumentSource(kind, 2);
+  const instrumented = instrumentedApplicationCallbackSource(handler);
+  const extracted = instrumented
+    ? { source: instrumented.source ? transpileApplicationCallbackExpression(instrumented.source) : Function.prototype.toString.call(handler), location: { file: instrumented.file, line: instrumented.line, column: instrumented.column } }
+    : extractApplicationCallArgumentSource(kind, 2);
   const source = serializableHandlerSource(kind, id, extracted?.source ?? Function.prototype.toString.call(handler), orchestrationOnly);
   const unsupported = unsupportedRouteFreeIdentifiers(analyzeApplicationServerRouteSource(source), new Set());
   const dependencies = applicationRouteSourceDependencies({ id, method: 'POST', path: `/${kind}/${id}`, handlerSource: source, handlerSourceKind: extracted ? 'source' : 'functionToString', ...(extracted ? { handlerSourceLocation: extracted.location } : {}) }, unsupported, new Set());

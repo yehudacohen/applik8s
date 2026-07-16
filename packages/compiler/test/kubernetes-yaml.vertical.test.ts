@@ -477,7 +477,7 @@ describe('Kubernetes YAML generation', () => {
     }
   });
 
-  it('fails closed when a CRD schema cannot be represented structurally', async () => {
+  it('preserves JSON Schema patterns in structural CRDs', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-structural-schema-'));
 
     try {
@@ -523,9 +523,11 @@ describe('Kubernetes YAML generation', () => {
         outDir: join(dir, 'kubernetes'),
       });
 
-      expect(yaml.ok).toBe(false);
-      if (!yaml.ok) {
-        expect(yaml.error.message).toContain('not structurally supported');
+      expect(yaml.ok).toBe(true);
+      if (yaml.ok) {
+        const documents = await Promise.all(yaml.value.paths.map(async (path) => parse(await readFile(path, 'utf8'))));
+        const crd = documents.find((document) => document.kind === 'CustomResourceDefinition');
+        expect(crd?.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.sourceUrl.pattern).toBe('^s3://');
       }
     } finally {
       await rm(dir, { recursive: true, force: true });

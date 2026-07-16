@@ -11,6 +11,7 @@ import ts from 'typescript';
 
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import type { CompileResult } from '../interfaces.js';
+import { decorateApplicationCallbackArguments } from './entrypoint-application-callbacks.js';
 
 export interface EntrypointExports {
   readonly operators: readonly OperatorDefinition[];
@@ -102,6 +103,14 @@ function instrumentHandlerRegistrations(source: string, sourceFile: string): str
         changed = true;
         // typecast: visiting an existing call expression cannot remove its callee, but the TypeScript visitor result is Node | undefined.
         return ts.factory.updateCallExpression(node, ts.visitNode(node.expression, visit) as ts.Expression, node.typeArguments, decoratedArguments);
+      }
+      if (ts.isCallExpression(node)) {
+        const decoratedArguments = decorateApplicationCallbackArguments(node, file, sourceFile, visit);
+        if (decoratedArguments) {
+          changed = true;
+          // typecast: visiting an existing call expression cannot remove its callee, but the TypeScript visitor result is Node | undefined.
+          return ts.factory.updateCallExpression(node, ts.visitNode(node.expression, visit) as ts.Expression, node.typeArguments, decoratedArguments);
+        }
       }
       return ts.visitEachChild(node, visit, context);
     };

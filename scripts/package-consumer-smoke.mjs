@@ -11,6 +11,9 @@ await execFileAsync(process.execPath, [join(root, 'scripts/build-publishable-pac
 console.log('Package consumer smoke: built publishable packages.');
 const packageDirs = [
   'packages/applik8s',
+  'packages/client',
+  'packages/react',
+  'packages/tanstack-start',
   'packages/core',
   'packages/sdk',
   'packages/compiler',
@@ -28,6 +31,9 @@ const publicEntrypoints = [
   '@applik8s/applik8s/factories',
   '@applik8s/applik8s/processor-runtime',
   '@applik8s/applik8s/dns',
+  '@applik8s/client',
+  '@applik8s/react',
+  '@applik8s/tanstack-start',
   '@applik8s/core',
   '@applik8s/sdk',
   '@applik8s/compiler',
@@ -48,7 +54,7 @@ const externalPackages = new Map();
 async function assertDirectRuntimeDependencies(packageDir, manifest) {
   const distDir = join(packageDir, 'dist');
   const pending = [distDir];
-  const declared = new Set(Object.keys(manifest.dependencies ?? {}));
+  const declared = new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {}), ...Object.keys(manifest.optionalDependencies ?? {})]);
   while (pending.length > 0) {
     const directory = pending.pop();
     for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -87,7 +93,7 @@ try {
     const absolutePackageDir = join(root, packageDir);
     const manifest = JSON.parse(await readFile(join(absolutePackageDir, 'package.json'), 'utf8'));
     await assertDirectRuntimeDependencies(absolutePackageDir, manifest);
-    for (const dependency of Object.keys(manifest.dependencies ?? {})) {
+    for (const dependency of [...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.peerDependencies ?? {})]) {
       if (!dependency.startsWith('@applik8s/')) {
         externalPackages.set(dependency, join(absolutePackageDir, 'node_modules', ...dependency.split('/')));
       }
@@ -144,6 +150,27 @@ if (!graph?.nodes.some((node) => node.kind === 'workflowWorker') || !graph.provi
   await execFileAsync(process.execPath, [v05Path], { cwd: consumerDir });
   console.log('Package consumer smoke: packed v0.5 task/workflow graph passed.');
 
+  const v06Path = join(consumerDir, 'v06.mjs');
+  await writeFile(v06Path, `import { app, applicationGraphFor, postgres, trustedContext } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { ApplicationQueryClient } from '@applik8s/client';
+import { ApplicationQueryClientProvider } from '@applik8s/react';
+import { preloadApplicationQuery } from '@applik8s/tanstack-start';
+import { pgTable, text } from 'drizzle-orm/pg-core';
+void ApplicationQueryClient; void ApplicationQueryClientProvider; void preloadApplicationQuery;
+const cards = pgTable('cards', { id: text('id').primaryKey(), organizationId: text('organization_id').notNull(), name: text('name').notNull(), revision: text('revision').notNull() });
+const OrganizationId = trustedContext('organizationId', { schema: type('string') });
+const platform = app('packed-v06', { namespace: 'packed-v06' });
+const Database = platform.database.postgres('catalog', { schema: { cards }, access: postgres.rls({ context: OrganizationId, column: 'organizationId' }) });
+const Card = platform.model(cards, { name: 'Card', database: Database });
+platform.query('cards.list.v1', { input: type({}), output: Card.$model.schema.select.array(), database: Database, context: [OrganizationId], reads: [Card], authorize: () => true, run: async ({ context }) => context.database(Database).select().from(Card) });
+const graph = applicationGraphFor(platform.composition);
+const native = graph?.nodes.find((node) => node.kind === 'model' && node.name === 'Card');
+if (Card !== cards || native?.runtime?.storageShape !== 'native-relational' || native.native?.schemaAuthority !== 'drizzle') throw new Error('Packed v0.6 native model/query graph did not materialize.');
+`);
+  await execFileAsync(process.execPath, [v06Path], { cwd: consumerDir });
+  console.log('Package consumer smoke: packed v0.6 native model/query graph passed.');
+
   const operatorPath = join(consumerDir, 'operator.ts');
   const outDir = join(consumerDir, 'dist');
   await writeFile(operatorPath, `import { sdk } from '@applik8s/sdk';
@@ -180,7 +207,7 @@ if (!graph?.nodes.some((node) => node.kind === 'processor') || !graph.providerRe
   await execFileAsync(process.execPath, [v04Path], { cwd: consumerDir });
   console.log('Package consumer smoke: packed v0.4 graph passed.');
 
-  console.log(`Package consumer smoke passed under Node for ${packageDirs.length} packed packages, ${publicEntrypoints.length} public entrypoints, the packed executable, v0.4 command/EventLog and v0.5 task/workflow graphs, and a clean-directory CLI build.`);
+  console.log(`Package consumer smoke passed under Node for ${packageDirs.length} packed packages, ${publicEntrypoints.length} public entrypoints, the packed executable, v0.4 command/EventLog, v0.5 task/workflow, and v0.6 native model/query graphs, plus a clean-directory CLI build.`);
 } finally {
   await rm(workDir, { recursive: true, force: true });
 }

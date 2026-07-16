@@ -2,6 +2,7 @@ import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, Nam
 import type { PermissionRule } from './resource.js';
 import { normalizeApplicationGraphArtifact, serializeNormalizedApplicationGraph } from './application-graph-serialization.js';
 import { validateApplicationGraphCompatibility } from './application-graph-compatibility.js';
+import { applicationReactiveNodeStructureMessages } from './application-graph-reactive-validation.js';
 
 export type ApplicationGraphVersion = 'applik8s.appGraph/v1alpha1';
 
@@ -32,6 +33,11 @@ export type ApplicationGraphNodeKind =
   | 'workflow'
   | 'workflowHandler'
   | 'workflowWorker'
+  | 'query'
+  | 'gateway'
+  | 'stream'
+  | 'subscription'
+  | 'projection'
   | 'job'
   | 'config'
   | 'secret'
@@ -58,6 +64,11 @@ export const applicationGraphNodeKinds = [
   'workflow',
   'workflowHandler',
   'workflowWorker',
+  'query',
+  'gateway',
+  'stream',
+  'subscription',
+  'projection',
   'job',
   'config',
   'secret',
@@ -80,7 +91,8 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'Certificate'
   | 'DnsPublication'
   | 'CredentialStore'
-  | 'WorkflowEngine';
+  | 'WorkflowEngine'
+  | 'ProjectionStore';
 
 /** Built-ins remain strongly named while versioned provider packages may add interfaces without editing core. */
 export type ApplicationProviderInterfaceKind = ApplicationBuiltInProviderInterfaceKind | (string & {});
@@ -100,6 +112,7 @@ export const applicationProviderInterfaceKinds = [
   'DnsPublication',
   'CredentialStore',
   'WorkflowEngine',
+  'ProjectionStore',
 ] as const satisfies readonly ApplicationProviderInterfaceKind[];
 
 // typecast: v0.3 predates the experimental EventLog surface introduced for v0.4 durable behavior.
@@ -166,6 +179,11 @@ export type ApplicationGraphNode =
   | ApplicationWorkflowNode
   | ApplicationWorkflowHandlerNode
   | ApplicationWorkflowWorkerNode
+  | ApplicationQueryNode
+  | ApplicationGatewayNode
+  | ApplicationStreamNode
+  | ApplicationSubscriptionNode
+  | ApplicationProjectionNode
   | ApplicationJobNode
   | ApplicationConfigNode
   | ApplicationSecretNode
@@ -187,6 +205,8 @@ export type ApplicationGraphStability = 'stable' | 'experimental' | 'internal';
 export interface ApplicationCrdNode extends ApplicationGraphNodeBase<'crd'> {
   readonly resource: ApplicationResourceContract;
   readonly materialization: 'kubernetes-crd';
+  readonly native?: ApplicationNativeModelContract;
+  readonly common?: ApplicationCommonModelContract;
 }
 
 export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> {
@@ -194,8 +214,61 @@ export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> 
   readonly store: ApplicationProviderRef<'ModelStore'>;
   readonly schema: ApplicationModelSchemaContract;
   readonly materialization: ApplicationModelMaterializationContract;
+  /** Present for explicitly promoted native tables/resources; absent for legacy JSONB models. */
+  readonly native?: ApplicationNativeModelContract;
+  /** Provider-neutral identity, revision, relationship, and change semantics. */
+  readonly common?: ApplicationCommonModelContract;
   readonly runtime?: ApplicationModelRuntimeContract;
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
+}
+
+export interface ApplicationNativeModelContract {
+  readonly kind: 'drizzle-table' | 'kubernetes-resource' | 'jsonb-model';
+  readonly authority: 'postgres' | 'kubernetes' | 'model-store';
+  readonly artifact: {
+    readonly name: string;
+    readonly schema?: string;
+    readonly database?: string;
+    readonly migrations?: { readonly path: string; readonly digest?: string };
+  };
+  readonly schemaAuthority: 'drizzle' | 'arktype';
+  readonly runtimeSchema: 'derived-arktype' | 'declared-arktype';
+  readonly nativeApi: 'preserved';
+}
+
+export interface ApplicationCommonModelContract {
+  readonly identity: {
+    readonly fields: readonly string[];
+    readonly encoding: 'scalar';
+  };
+  readonly revision?: {
+    readonly field: string;
+    readonly authority: 'postgres-row' | 'kubernetes-resource-version' | 'model-store';
+  };
+  readonly snapshot: {
+    readonly shape: 'identity-value-revision';
+    readonly revisionOptional: true;
+  };
+  readonly changes: {
+    readonly authority: 'postgres-change-log' | 'kubernetes-watch' | 'model-store-outbox';
+    readonly rawWrites: 'explicit-invalidation-required' | 'observed';
+  };
+  readonly relationships: readonly ApplicationModelRelationshipGraphContract[];
+  readonly access?: {
+    readonly context: string;
+    readonly enforcement: 'postgres-rls' | 'kubernetes-namespace-label';
+    readonly providerField: string;
+  };
+}
+
+export interface ApplicationModelRelationshipGraphContract {
+  readonly source: string;
+  readonly name: string;
+  readonly target: string;
+  readonly cardinality: 'one' | 'many';
+  readonly integrity: 'foreign-key' | 'relation-only' | 'soft' | 'reconcile-checked';
+  readonly fields: readonly string[];
+  readonly references: readonly string[];
 }
 
 export interface ApplicationServerNode extends ApplicationGraphNodeBase<'server'> {
@@ -410,6 +483,137 @@ export interface ApplicationWorkflowWorkerNode extends ApplicationGraphNodeBase<
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
 }
 
+export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> {
+  readonly version: string;
+  readonly input: ApplicationMessageContractSchema;
+  readonly output: ApplicationMessageContractSchema;
+  readonly reads: readonly ApplicationQueryReadContract[];
+  readonly authorization: 'application-defined';
+  readonly trustedContext: readonly string[];
+  readonly budgets: {
+    readonly timeoutMs: number;
+    readonly maxResultBytes: number;
+    readonly maxRows: number;
+  };
+  readonly snapshotResume: 'atomicSnapshotResume' | 'resumableInvalidation' | 'resetOnly' | 'unsupported';
+  readonly incremental: 'invalidation-requery';
+  readonly cursor: 'opaque-query-version-context-scoped';
+  readonly database?: ApplicationReactiveDatabaseRuntimeContract;
+  readonly authorizationSource: string;
+  readonly authorizationDependencies?: ApplicationHandlerDependencies;
+  readonly authorizationLocation?: SourceLocation;
+  readonly authorizationUnresolved?: readonly string[];
+  readonly handlerSource: string;
+  readonly handlerDependencies?: ApplicationHandlerDependencies;
+  readonly handlerLocation?: SourceLocation;
+  readonly handlerUnresolved?: readonly string[];
+}
+
+export interface ApplicationHandlerDependencies {
+  readonly source: string;
+  readonly resolveDir: string;
+}
+
+export interface ApplicationReactiveDatabaseRuntimeContract {
+  readonly name: string;
+  readonly connectionEnvName: string;
+  readonly secretName: string;
+  readonly secretKey: string;
+  readonly secretNamespace?: string;
+  readonly access?: {
+    readonly context: string;
+    readonly contextSchema: JsonObject;
+    readonly setting: string;
+    readonly column: string;
+  };
+}
+
+export interface ApplicationQueryReadContract {
+  readonly model: ApplicationGraphNodeRef;
+  readonly relationship?: string;
+}
+
+export interface ApplicationGatewayNode extends ApplicationGraphNodeBase<'gateway'> {
+  readonly queries: readonly ApplicationGraphNodeRef[];
+  readonly commands: readonly ApplicationGatewayCommandContract[];
+  readonly subscriptions: readonly ApplicationGraphNodeRef[];
+  readonly transport: 'http-sse';
+  readonly authentication: 'external-provider';
+  readonly trustedContextAdmission: 'server-validated';
+  readonly browserCredentials: 'forbidden';
+  readonly subscriptionLimits: { readonly perPrincipal: number; readonly total: number };
+  readonly routes: { readonly snapshots: string; readonly subscriptions: string; readonly streamReplay: string; readonly streamSubscriptions: string; readonly commandSubmission: string; readonly commandProgress: string };
+  readonly resume: 'resumableInvalidation';
+  readonly materialization: 'runtimeOnly' | 'generatedDeployment';
+  readonly authenticationSource?: string;
+  readonly authenticationDependencies?: ApplicationHandlerDependencies;
+  readonly authenticationLocation?: SourceLocation;
+  readonly authenticationUnresolved?: readonly string[];
+  readonly commandAuthorizationSource?: string;
+  readonly commandAuthorizationDependencies?: ApplicationHandlerDependencies;
+  readonly commandAuthorizationLocation?: SourceLocation;
+  readonly commandAuthorizationUnresolved?: readonly string[];
+  readonly cursorSecret?: ApplicationResourceRef & { readonly key: string };
+  readonly deployment?: {
+    readonly namespace: string;
+    readonly image: string;
+    readonly replicas: number;
+    readonly port: number;
+  };
+}
+
+export interface ApplicationGatewayCommandContract {
+  readonly command: ApplicationGraphNodeRef;
+  readonly handler: ApplicationGraphNodeRef;
+}
+
+export interface ApplicationStreamNode extends ApplicationGraphNodeBase<'stream'> {
+  readonly version: string;
+  readonly payload: ApplicationMessageContractSchema;
+  readonly authority: 'postgres-outbox' | 'kubernetes-watch' | 'provider';
+  readonly delivery: 'at-least-once';
+  readonly replay: 'supported' | 'reset-only';
+  readonly retention: { readonly maxAgeSeconds: number; readonly maxMessages?: number };
+  readonly partitioning: 'declared';
+  readonly compatibility: 'versioned-schema';
+  readonly authorization: 'application-defined';
+  readonly database: ApplicationReactiveDatabaseRuntimeContract;
+  readonly partitionSource: string;
+  readonly partitionDependencies?: ApplicationHandlerDependencies;
+  readonly partitionUnresolved?: readonly string[];
+  readonly authorizationSource: string;
+  readonly authorizationDependencies?: ApplicationHandlerDependencies;
+  readonly authorizationUnresolved?: readonly string[];
+}
+
+export interface ApplicationSubscriptionNode extends ApplicationGraphNodeBase<'subscription'> {
+  readonly source: ApplicationGraphNodeRef;
+  readonly delivery: 'polling' | 'sse' | 'webhook' | 'queue';
+  readonly cursor: 'opaque-scoped';
+  readonly authorization: 'application-defined';
+  readonly authorizationSource: string;
+  readonly authorizationDependencies?: ApplicationHandlerDependencies;
+  readonly authorizationLocation?: SourceLocation;
+  readonly authorizationUnresolved?: readonly string[];
+  readonly retry: ApplicationRetryPolicy;
+  readonly suspension: 'bounded-failures';
+}
+
+export interface ApplicationProjectionNode extends ApplicationGraphNodeBase<'projection'> {
+  readonly source: ApplicationGraphNodeRef;
+  readonly provider: ApplicationProviderRef;
+  readonly rebuildable: boolean;
+  readonly checkpoint: 'transactional' | 'idempotent' | 'external';
+  readonly output: ApplicationMessageContractSchema;
+  readonly eventIdentity: 'stable-source-event-id';
+  readonly duplicateHandling: 'idempotent';
+  readonly rebuild: 'full-replay';
+  readonly handlerSource: string;
+  readonly handlerDependencies?: ApplicationHandlerDependencies;
+  readonly handlerLocation?: SourceLocation;
+  readonly handlerUnresolved?: readonly string[];
+}
+
 export interface ApplicationModelRuntimeContract {
   readonly name: string;
   readonly tableName: string;
@@ -423,6 +627,14 @@ export interface ApplicationModelRuntimeContract {
   readonly constraints: readonly ApplicationModelConstraint[];
   readonly indexes: readonly ApplicationModelIndex[];
   readonly retention: ApplicationRetentionPolicy;
+  readonly storageShape?: 'jsonb-envelope' | 'native-relational';
+  readonly nativeRelational?: {
+    readonly schema?: string;
+    readonly identity: { readonly property: string; readonly column: string };
+    readonly revision?: { readonly property: string; readonly column: string };
+    readonly columns: readonly { readonly property: string; readonly column: string }[];
+    readonly access?: { readonly context: string; readonly setting: string; readonly property: string; readonly column: string };
+  };
 }
 
 export interface ApplicationJobNode extends ApplicationGraphNodeBase<'job'> {
@@ -2353,6 +2565,16 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
       return applicationWorkflowHandlerNodeStructureDiagnostics(node, graph);
     case 'workflowWorker':
       return applicationWorkflowWorkerNodeStructureDiagnostics(node, graph);
+    case 'query':
+      return applicationReactiveNodeStructureMessages(node, graph).map(applicationGraphStructureDiagnostic);
+    case 'gateway':
+      return applicationReactiveNodeStructureMessages(node, graph).map(applicationGraphStructureDiagnostic);
+    case 'stream':
+      return applicationReactiveNodeStructureMessages(node, graph).map(applicationGraphStructureDiagnostic);
+    case 'subscription':
+      return applicationReactiveNodeStructureMessages(node, graph).map(applicationGraphStructureDiagnostic);
+    case 'projection':
+      return applicationReactiveNodeStructureMessages(node, graph).map(applicationGraphStructureDiagnostic);
     default:
       return [];
   }
@@ -2721,6 +2943,8 @@ function applicationProviderRefsForNode(node: ApplicationGraphNode): readonly Ap
     case 'workflowHandler':
     case 'workflowWorker':
       return [node.workflowEngine];
+    case 'projection':
+      return [node.provider];
     default:
       return [];
   }

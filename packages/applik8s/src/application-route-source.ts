@@ -98,6 +98,7 @@ interface ApplicationRouteTopLevelBinding {
   readonly source: string;
   readonly analysisSource: string;
   readonly kind: 'declaration' | 'import';
+  readonly position: number;
 }
 
 export function normalizeSerializableFunctionSource(source: string): string {
@@ -231,8 +232,9 @@ function resolveApplicationRouteSourceDependencies(file: string, unsupported: re
     }
   }
   if (unresolved.size > 0) return undefined;
-  const imports = unique([...included.values()].filter((binding) => binding.kind === 'import').map((binding) => binding.source));
-  const declarations = unique([...included.values()].filter((binding) => binding.kind === 'declaration').map((binding) => binding.source));
+  const ordered = [...new Map([...included.values()].map((binding) => [`${binding.kind}:${binding.position}:${binding.source}`, binding])).values()].sort((left, right) => left.position - right.position);
+  const imports = ordered.filter((binding) => binding.kind === 'import').map((binding) => binding.source);
+  const declarations = ordered.filter((binding) => binding.kind === 'declaration').map((binding) => binding.source);
   return { source: [...imports, ...declarations].join('\n\n'), resolveDir: dirname(file) };
 }
 
@@ -261,7 +263,26 @@ export function extractApplicationCallArgumentSource(methodName: string, argumen
         debugRouteSourceExtraction(`no route expression at ${location.file}:${location.line}:${location.column}`);
         continue;
       }
-      return { source: transpileRouteHandlerExpression(expression), location };
+      return { source: transpileApplicationCallbackExpression(expression), location };
+    } catch (error) {
+      debugRouteSourceExtraction(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return undefined;
+}
+
+/** Extracts a function-valued property from an object literal passed to an app registrar. */
+export function extractApplicationCallObjectFunctionSource(methodName: string, argumentIndex: number, property: string): { readonly source: string; readonly location: ApplicationRouteSourceLocation } | undefined {
+  const previousStackTraceLimit = Error.stackTraceLimit;
+  Error.stackTraceLimit = Math.max(previousStackTraceLimit, 50);
+  const stack = new Error().stack;
+  Error.stackTraceLimit = previousStackTraceLimit;
+  for (const location of applicationRouteCallsiteLocations(stack)) {
+    try {
+      const fileSource = readFileSync(location.file, 'utf8');
+      const objectSource = callArgumentRawAtLocation(fileSource, location, methodName, argumentIndex);
+      const expression = objectSource ? objectLiteralFunctionProperty(objectSource, property) : undefined;
+      if (expression) return { source: transpileApplicationCallbackExpression(expression), location };
     } catch (error) {
       debugRouteSourceExtraction(error instanceof Error ? error.message : String(error));
     }
@@ -446,7 +467,7 @@ function applicationRouteTopLevelBindings(source: string, bindingNames: Readonly
       const importBinding = topLevelImportBindingAt(source, index);
       if (importBinding) {
         for (const name of importBinding.names) {
-          bindings.set(name, { name, source: importBinding.source, analysisSource: importBinding.source, kind: 'import' });
+          bindings.set(name, { name, source: importBinding.source, analysisSource: importBinding.source, kind: 'import', position: index });
         }
         index = importBinding.end;
         continue;
@@ -454,7 +475,7 @@ function applicationRouteTopLevelBindings(source: string, bindingNames: Readonly
       const declaration = topLevelDeclarationBindingAt(source, index, bindingNames);
       if (declaration) {
         for (const name of declaration.names) {
-          bindings.set(name, { name, source: declaration.source, analysisSource: transpileRouteDependencySourceForAnalysis(declaration.source), kind: 'declaration' });
+          bindings.set(name, { name, source: declaration.source, analysisSource: transpileRouteDependencySourceForAnalysis(declaration.source), kind: 'declaration', position: index });
         }
         index = declaration.end;
         continue;
@@ -934,15 +955,27 @@ function isApplicationRouteInternalStackFrame(line: string, file: string): boole
   if (file === applicationRouteSourceModulePath || file === applicationDslModulePath) {
     return true;
   }
-  return /\bat (?:extractApplicationRouteHandlerSource|extractApplicationCallArgumentSource|applicationRouteCallsiteLocations?|record|Object\.(?:get|post))\b/.test(line);
+  return /\bat (?:extractApplicationRouteHandlerSource|extractApplicationCallArgumentSource|extractApplicationCallObjectFunctionSource|applicationRouteCallsiteLocations?|record|Object\.(?:get|post))\b/.test(line);
 }
 
 function callArgumentExpressionAtLocation(source: string, location: ApplicationRouteSourceLocation, methodName: string, argumentIndex: number, requireLiteralFirstArgument: boolean): string | undefined {
+  const args = callArgumentsAtLocation(source, location, methodName);
+  const firstArgument = args?.[0]?.trim() ?? '';
+  const handlerSource = args?.[argumentIndex]?.trim();
+  if (!handlerSource || (argumentIndex >= 1 && !/(?:=>|^\s*(?:async\s+)?function\b)/.test(handlerSource)) || (requireLiteralFirstArgument && !/^['"`]/.test(firstArgument))) return undefined;
+  return handlerSource;
+}
+
+function callArgumentRawAtLocation(source: string, location: ApplicationRouteSourceLocation, methodName: string, argumentIndex: number): string | undefined {
+  return callArgumentsAtLocation(source, location, methodName)?.[argumentIndex]?.trim();
+}
+
+function callArgumentsAtLocation(source: string, location: ApplicationRouteSourceLocation, methodName: string): readonly string[] | undefined {
   const position = sourceOffsetForLineColumn(source, location.line, location.column);
   const searchStart = Math.max(0, position - 4000);
   const searchEnd = Math.min(source.length, position + 8000);
   const windowSource = source.slice(searchStart, searchEnd);
-  const calls: { readonly openParen: number; readonly closeParen: number; readonly distance: number; readonly handlerSource: string }[] = [];
+  const calls: { readonly openParen: number; readonly closeParen: number; readonly distance: number; readonly args: readonly string[] }[] = [];
   const callPattern = new RegExp(`\\.\\s*${methodName}\\s*\\(`, 'g');
   for (const match of windowSource.matchAll(callPattern)) {
     const openParen = searchStart + (match.index ?? 0) + match[0].lastIndexOf('(');
@@ -951,18 +984,28 @@ function callArgumentExpressionAtLocation(source: string, location: ApplicationR
       continue;
     }
     const args = splitTopLevelArguments(source.slice(openParen + 1, closeParen));
-    const firstArgument = args[0]?.trim() ?? '';
-    const handlerSource = args[argumentIndex]?.trim();
-    if (!handlerSource || (argumentIndex >= 1 && !/(?:=>|^\s*(?:async\s+)?function\b)/.test(handlerSource)) || (requireLiteralFirstArgument && !/^['"`]/.test(firstArgument))) {
-      continue;
-    }
-    calls.push({ openParen, closeParen, distance: position >= openParen && position <= closeParen ? 0 : Math.abs(openParen - position), handlerSource });
+    calls.push({ openParen, closeParen, distance: position >= openParen && position <= closeParen ? 0 : Math.abs(openParen - position), args });
   }
   const call = calls.sort((left, right) => left.distance - right.distance)[0];
   if (!call) {
     return undefined;
   }
-  return call.handlerSource;
+  return call.args;
+}
+
+function objectLiteralFunctionProperty(source: string, property: string): string | undefined {
+  const trimmed = source.trim();
+  if (!trimmed.startsWith('{')) return undefined;
+  const close = matchingDelimiter(trimmed, 0, '{', '}');
+  if (close === undefined) return undefined;
+  for (const entry of splitTopLevelArguments(trimmed.slice(1, close))) {
+    const candidate = entry.trim();
+    const assignment = candidate.match(new RegExp(`^(?:['"]${escapeRegExp(property)}['"]|${escapeRegExp(property)})\\s*:\\s*([\\s\\S]+)$`));
+    if (assignment?.[1]) return assignment[1].trim();
+    const method = candidate.match(new RegExp(`^(async\\s+)?${escapeRegExp(property)}\\s*(\\([^)]*\\)\\s*\\{[\\s\\S]*\\})$`));
+    if (method?.[2]) return `${method[1] ?? ''}function ${property}${method[2]}`;
+  }
+  return undefined;
 }
 
 function sourceOffsetForLineColumn(source: string, line: number, column: number): number {
@@ -977,7 +1020,7 @@ function sourceOffsetForLineColumn(source: string, line: number, column: number)
   return Math.min(source.length, offset + Math.max(0, column - 1));
 }
 
-function transpileRouteHandlerExpression(source: string): string {
+export function transpileApplicationCallbackExpression(source: string): string {
   const wrapped = `const __applik8sRouteHandler = (${source});\nexport { __applik8sRouteHandler };\n`;
   const output = transformSync(wrapped, { loader: 'ts', format: 'esm', target: 'node22' }).code.trim();
   const prefix = 'const __applik8sRouteHandler = ';

@@ -445,7 +445,7 @@ describe.runIf(liveDatabaseUrl)('Postgres ModelStore script runtime live databas
     await expect(executePostgresModelCommand<{ readonly count: number }, Record<string, never>, Record<string, never>, { readonly ok: boolean }>({
       bindingId: `${bindingId}-effect`, command: { name: 'counter.effect', version: 'v1' }, model,
       message: { id: 'effect-message', input: {}, targetKey: 'fallback-counter', idempotencyKey: 'effect-request' }, databaseUrl: liveDatabaseUrl,
-      async handler() { await globalThis['fetch']('http://127.0.0.1:1/forbidden'); return { ok: true }; },
+      async handler() { await globalThis.fetch('http://127.0.0.1:1/forbidden'); return { ok: true }; },
     })).rejects.toThrow(/applik8s-command-external-effect-forbidden/);
     await expect(client.get({ id: 'fallback-counter' })).resolves.toMatchObject({ spec: { count: 11 } });
 
@@ -472,12 +472,16 @@ describe.runIf(liveDatabaseUrl)('Postgres ModelStore script runtime live databas
 
     const cleanup = await cleanupPostgresCommandData({ databaseUrl: liveDatabaseUrl, bindingIds: [bindingId], auditWindowSeconds: 30 * 24 * 60 * 60, publishedOutboxWindowSeconds: 24 * 60 * 60, batchSize: 100, now: '2026-07-11T00:00:00.000Z' });
     expect(cleanup).toEqual({ eventOutboxDeleted: 1, commandOutboxDeleted: 0, commandsDeleted: 1 });
-    await expect(sql.unsafe('SELECT scope FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[]) ORDER BY scope', [[bindingId, otherBindingId]])).resolves.toMatchObject([
-      { scope: `${bindingId}-pending` },
-      { scope: `${bindingId}-recent` },
-      { scope: `${otherBindingId}-expired` },
-    ]);
+    const retained = await sql.unsafe('SELECT scope FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[]) ORDER BY scope', [[bindingId, otherBindingId]]);
+    expect(retained).toHaveLength(3);
+    expect(retained).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: `${bindingId}-pending` }),
+      expect.objectContaining({ scope: `${bindingId}-recent` }),
+      expect.objectContaining({ scope: `${otherBindingId}-expired` }),
+    ]));
     await expect(observePostgresOutboxLag(liveDatabaseUrl)).resolves.toEqual(expect.objectContaining({ pendingEvents: expect.any(Number), pendingCommands: expect.any(Number), oldestPendingSeconds: expect.any(Number) }));
+    await sql.unsafe('DELETE FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[]))', [[bindingId, otherBindingId]]);
+    await sql.unsafe('DELETE FROM applik8s_command_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[]))', [[bindingId, otherBindingId]]);
     await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[])', [[bindingId, otherBindingId]]);
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(cleanupModel.tableName)}`);
   });
