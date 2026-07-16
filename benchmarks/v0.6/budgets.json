@@ -1,4 +1,5 @@
 {
   "client": { "minimumCacheKeysPerSecond": 10000 },
-  "projection": { "minimumEventsPerSecond": 10000, "maximumRssGrowthBytes": 67108864 }
+  "projection": { "minimumEventsPerSecond": 10000, "maximumRssGrowthBytes": 67108864 },
+  "facade": { "maximumMinimalGzipBytes": 35840, "maximumMarginalModelGzipBytes": 4096 }
 }

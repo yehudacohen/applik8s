@@ -1,0 +1,28 @@
+{
+  "name": "@applik8s/vite",
+  "version": "0.6.0",
+  "description": "Framework-neutral Vite build partitioning and server gateway adapters for Applik8s applications.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/vite"
+  },
+  "dependencies": {
+    "@applik8s/client": "0.6.0",
+    "@applik8s/compiler": "0.6.0",
+    "@applik8s/core": "0.6.0",
+    "@applik8s/sdk": "0.6.0",
+    "@kubernetes/client-node": "^1.3.0"
+  },
+  "peerDependencies": {
+    "vite": ">=7 <9"
+  },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./server": { "types": "./dist/server.d.ts", "import": "./dist/server.js" }
+  }
+}

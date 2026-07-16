@@ -105,7 +105,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       const query = requiredQuery(queries, queryId);
       const input = validateQueryInput(query, rawInput);
       const identity = await admittedIdentity(options, request, query);
-      if (!await query.authorize(identity.principal, input)) {
+      if (!await query.authorize(identity.principal, input, identity.admittedContext.values)) {
         options.audit?.({ event: 'authorization-denied', query: query.id, principal: identity.principal.id });
         throw new ApplicationQueryAuthorizationError(query.id);
       }
@@ -141,7 +141,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       const query = requiredQuery(queries, queryId);
       const input = validateQueryInput(query, rawInput);
       const identity = await admittedIdentity(options, request, query);
-      if (!await query.authorize(identity.principal, input)) {
+      if (!await query.authorize(identity.principal, input, identity.admittedContext.values)) {
         options.audit?.({ event: 'authorization-denied', query: query.id, principal: identity.principal.id });
         throw new ApplicationQueryAuthorizationError(query.id);
       }
@@ -174,7 +174,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       let lastHeartbeat = started;
       while (!subscribeOptions.signal?.aborted && now().getTime() - started < maxSessionMs) {
         const currentIdentity = await admittedIdentity(options, request, query);
-        if (currentIdentity.authorizationVersion !== identity.authorizationVersion || applicationAdmittedContextDigest(currentIdentity.admittedContext) !== applicationAdmittedContextDigest(identity.admittedContext) || !await query.authorize(currentIdentity.principal, input)) {
+        if (currentIdentity.authorizationVersion !== identity.authorizationVersion || applicationAdmittedContextDigest(currentIdentity.admittedContext) !== applicationAdmittedContextDigest(identity.admittedContext) || !await query.authorize(currentIdentity.principal, input, currentIdentity.admittedContext.values)) {
           options.audit?.({ event: 'subscription-reset', query: query.id, principal: identity.principal.id, reason: 'authorizationChanged' });
           yield resetEvent(query.id, 'authorizationChanged', now());
           return;

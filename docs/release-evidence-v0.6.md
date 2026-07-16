@@ -3,7 +3,10 @@
 v0.6 is the native relational model and reactive application release. Its supported path keeps Drizzle
 as the relational schema and relationship authority, derives ArkType runtime contracts, and connects
 PostgreSQL RLS, bounded queries, durable streams, authenticated subscriptions, ClickHouse projections,
-and browser stores through one inspectable application graph.
+and browser stores through one inspectable application graph. It also adds the framework-neutral Vite
+and Fetch application boundary: one authored model contract lowers to browser/server facades, TanStack
+Start mounts the generic gateway, and `ApplicationHost.kubernetes(...)` packages the immutable server
+artifact as an OCI workload rather than embedding application source in a ConfigMap.
 
 ## Local candidate gate
 
@@ -31,10 +34,15 @@ The live lane requires an explicitly selected disposable OrbStack context. It pr
 - authenticated query snapshots and SSE invalidation;
 - bounded public-stream replay and continuation;
 - projection worker deletion, recreation, checkpoint resume, and continued projection;
+- a disposable GuestBook Start application built by Vite and deployed through `ApplicationHost`;
+- browser-shaped `GuestBookEntry.create(...)` submission, Kubernetes creation, operator publication and
+  rejection, resumable SSE invalidation, authoritative requery, SSR rendering, and host/operator restart
+  recovery without manually inserting events or status;
 - root deletion initiated and awaited through `composition.factory('kro').deleteInstance()`;
+- runtime-created GuestBook model instances removed before application-root teardown;
 - absence of generated children, CR instances, generated CRD, and application namespaces after teardown.
 
-Receipts under `.applik8s-tmp/evidence/v0.6/` are machine-local, expire after 24 hours, and are accepted by
+Receipts under `.applik8s-tmp/evidence/v0.6/`, including `guestbook-start.json`, are machine-local, expire after 24 hours, and are accepted by
 `bun run scripts/check-v06-scorecard.ts --require-live`. They are not committed substitutes for a fresh
 candidate run.
 

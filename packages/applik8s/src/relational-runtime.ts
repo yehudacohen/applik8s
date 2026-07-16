@@ -5,6 +5,7 @@ import type { ApplicationDatabaseBinding } from './application.js';
 import { and, eq, getTableColumns, sql, type InferInsertModel, type InferSelectModel } from 'drizzle-orm';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import { applicationModelChangeCommitScope } from './relational-runtime-contract.js';
 import { validateTrustedContextValue } from './trusted-context.js';
 
 export type ApplicationDatabaseClient<TSchema extends Readonly<Record<string, unknown>>> = PostgresJsDatabase<TSchema>;
@@ -46,7 +47,9 @@ export interface ApplicationUpdateOptions {
 }
 
 export interface ApplicationModelUpdateResult<TValue, TIdentity> {
-  readonly value: ApplicationModelSnapshot<TValue, TIdentity>;
+  readonly identity: TIdentity;
+  readonly value: TValue;
+  readonly revision?: string;
   readonly changed: boolean;
 }
 
@@ -115,6 +118,7 @@ export function createApplicationRelationalContext(options: {
       return registered.db.transaction(async (tx) => {
         await tx.execute(sql.raw('set transaction isolation level repeatable read read only'));
         await installTrustedContext(tx, registered.binding, options.admittedContext);
+        await acquireApplicationModelChangeCommitLock(tx, contextDigest(options.admittedContext));
         const value = await active.run({ database: binding.name, db: tx as ApplicationDatabaseClient<Readonly<Record<string, unknown>>> }, handler);
         const digest = contextDigest(options.admittedContext);
         const rows = await tx.execute(sql`select coalesce(max(sequence), 0) as sequence from applik8s_model_changes where context_digest = ${digest}`);
@@ -142,6 +146,7 @@ export function createApplicationRelationalContext(options: {
       const registered = registeredDatabase(databases, binding);
       return registered.db.transaction(async (tx) => {
         await installTrustedContext(tx, registered.binding, options.admittedContext);
+        await acquireApplicationModelChangeCommitLock(tx, contextDigest(options.admittedContext));
         const collector = new MutableChangeCollector(registered.binding, options.admittedContext, now);
         // typecast: the transaction is created by the same schema-bound Drizzle database and preserves that schema at runtime.
         const typedTransaction = tx as unknown as ApplicationDatabaseClient<typeof binding.schema>;
@@ -172,7 +177,7 @@ export function createApplicationRelationalContext(options: {
         const db = context.database(binding);
         const scope = active.getStore();
         if (!scope?.changes) throw new Error(`Model ${model.$model.name} update requires an observable transaction scope.`);
-        if (Object.keys(patch).length === 0) return { value: snapshot, changed: false };
+        if (Object.keys(patch).length === 0) return { identity: snapshot.identity, value: snapshot.value, ...(snapshot.revision ? { revision: snapshot.revision } : {}), changed: false };
         const identityField = model.$model.identity.fields[0];
         const identityColumn = identityField ? getTableColumns(model)[identityField] : undefined;
         if (!identityColumn) throw new Error(`Model ${model.$model.name} has no usable scalar identity column.`);
@@ -197,7 +202,7 @@ export function createApplicationRelationalContext(options: {
           ...(revision ? { revision } : {}),
           changedFields: Object.keys(patch).sort(),
         });
-        return { value: { identity: snapshot.identity, value, ...(revision ? { revision } : {}) }, changed: true };
+        return { identity: snapshot.identity, value, ...(revision ? { revision } : {}), changed: true };
       };
       if (active.getStore()?.database === binding.name && active.getStore()?.changes) return execute();
       return context.transaction(binding, execute);
@@ -284,6 +289,14 @@ export function applicationRelationalFrameworkMigrationSql(database: Application
 
 export function applicationAdmittedContextDigest(admitted: ApplicationAdmittedContext): string {
   return contextDigest(admitted);
+}
+
+async function acquireApplicationModelChangeCommitLock<TSchema extends Readonly<Record<string, unknown>>>(
+  db: ApplicationDatabaseClient<TSchema>,
+  contextDigestValue: string,
+): Promise<void> {
+  const scope = applicationModelChangeCommitScope(contextDigestValue);
+  await db.execute(sql`select pg_advisory_xact_lock(hashtextextended(${scope}, 0))`);
 }
 
 function registeredDatabase(databases: ReadonlyMap<string, RegisteredDatabase>, binding: ApplicationDatabaseBinding): RegisteredDatabase {

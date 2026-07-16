@@ -1,8 +1,16 @@
 // typecast-file-boundary: test doubles model untyped PostgreSQL and protocol boundaries exercised by runtime validation.
 import { createApplicationCommandGateway } from '@applik8s/applik8s';
 import { describe, expect, it, vi } from 'vitest';
+import { applicationCommandScope } from '../src/command-runtime-contract.js';
 
 describe('authenticated command gateway', () => {
+  it('includes admitted context in durable idempotency scope', () => {
+    const first = applicationCommandScope('binding', 'Card', 'card-1', 'once', 'a'.repeat(64));
+    const second = applicationCommandScope('binding', 'Card', 'card-1', 'once', 'b'.repeat(64));
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/^sha256:/);
+  });
+
   it('separates transport acknowledgement from durable result and scopes opaque progress to admission', async () => {
     const publish = vi.fn(async () => ({ stream: 'APPLIK8S_EVENTS', sequence: 1, duplicate: false, subject: 'applik8s.commands.cards.rename.v1.card-1', messageId: 'command-1' }));
     const unsafe = vi.fn(async () => [{ output: { changed: true }, error: null, model_revision: 'revision-2' }]);

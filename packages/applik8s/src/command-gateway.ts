@@ -97,7 +97,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
         if (cursor.command !== command.id || cursor.principalId !== admission.principal.id || cursor.authorizationVersion !== admission.authorizationVersion) return json({ error: 'cursor_invalid' }, 400);
         const contextDigest = applicationAdmittedContextDigest({ values: admission.trustedContext, digestSecret: options.cursorSecret });
         if (cursor.contextDigest !== contextDigest) return json({ error: 'cursor_invalid' }, 400);
-        const scope = applicationCommandScope(cursor.bindingId, cursor.model, cursor.targetKey, cursor.idempotencyKey);
+        const scope = applicationCommandScope(cursor.bindingId, cursor.model, cursor.targetKey, cursor.idempotencyKey, cursor.contextDigest);
         const sql = command.sql ?? database(databases, command.databaseUrl);
         const rows = await sql.unsafe('SELECT output, error, model_revision FROM applik8s_command_results WHERE scope = $1 LIMIT 1', [scope]);
         const row = rows[0] as { readonly output?: unknown; readonly error?: unknown; readonly model_revision?: unknown } | undefined;

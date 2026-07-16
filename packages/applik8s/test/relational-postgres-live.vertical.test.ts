@@ -1,12 +1,13 @@
 // typecast-file-boundary: this live test restores Drizzle generics after connecting through PostgreSQL's untyped wire protocol.
 import type { ApplicationDatabaseBinding, ApplicationDatabaseClient } from '@applik8s/applik8s';
-import { applicationRelationalFrameworkMigrationSql, createApplicationRelationalContext, postgres as postgresAccess, promoteDrizzleTable, trustedContext } from '@applik8s/applik8s';
+import { applicationAdmittedContextDigest, applicationRelationalFrameworkMigrationSql, createApplicationRelationalContext, postgres as postgresAccess, promoteDrizzleTable, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { eq } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { applicationModelChangeCommitScope } from '../src/relational-runtime-contract.js';
 
 const databaseUrl = process.env.APPLIK8S_V06_POSTGRES_DATABASE_URL;
 
@@ -77,6 +78,48 @@ describe.runIf(databaseUrl)('v0.6 real PostgreSQL relational authority', () => {
     const page = await context1.changes(database, 0, 10);
     expect(page.items).toEqual([expect.objectContaining({ model: 'Card', operation: 'invalidate', contextDigest: expect.stringMatching(/^[a-f0-9]{64}$/) })]);
     expect(page.items[0]?.contextDigest).not.toContain(org1);
+  });
+
+  test('does not miss a late commit whose change sequence was allocated before a concurrent commit', async () => {
+    const context = relationalContext(org1);
+    const admitted = { values: { organizationId: org1 }, digestSecret: 'v06-live-context-digest-secret' } as const;
+    const digest = applicationAdmittedContextDigest(admitted);
+    const firstId = '10000000-0000-0000-0000-000000000010';
+    const secondId = '10000000-0000-0000-0000-000000000011';
+    let releaseFirst: (() => void) | undefined;
+    let firstAllocated: (() => void) | undefined;
+    const release = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const allocated = new Promise<void>((resolve) => { firstAllocated = resolve; });
+
+    const first = sql.begin(async (transaction) => {
+      await transaction.unsafe('SELECT set_config($1, $2, true)', ['applik8s.context.organizationId', org1]);
+      await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [applicationModelChangeCommitScope(digest)]);
+      await transaction.unsafe('INSERT INTO cards (id, organization_id, name, revision) VALUES ($1::uuid, $2::uuid, $3, $4)', [firstId, org1, 'late-first', 'r1']);
+      await transaction.unsafe(
+        'INSERT INTO applik8s_model_changes (model, operation, identity, revision, context_digest, changed_fields, recorded_at) VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb, now())',
+        ['Card', 'insert', JSON.stringify(firstId), 'r1', digest, JSON.stringify(['name'])],
+      );
+      firstAllocated?.();
+      await release;
+    });
+
+    await allocated;
+    const second = context.transaction(database, async ({ db: transaction, changes }) => {
+      await transaction.insert(Card).values({ id: secondId, organizationId: org1, name: 'second', revision: 'r1' });
+      changes.invalidate(Card, { identity: secondId, revision: 'r1', changedFields: ['name'] });
+    });
+    const snapshotPromise = context.snapshot(database, () => context.database(database).select().from(Card));
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    releaseFirst?.();
+    const snapshot = await snapshotPromise;
+    await Promise.all([first, second]);
+
+    const after = await context.changes(database, snapshot.sequence, 100);
+    const visibleAtSnapshot = new Set(snapshot.value.map((row) => row.id));
+    const visibleAfterSnapshot = new Set(after.items.map((change) => String(change.identity)));
+    expect(visibleAtSnapshot.has(firstId) || visibleAfterSnapshot.has(firstId)).toBe(true);
+    expect(visibleAtSnapshot.has(secondId) || visibleAfterSnapshot.has(secondId)).toBe(true);
   });
 
   function relationalContext(organizationId: string) {

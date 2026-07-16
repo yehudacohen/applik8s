@@ -1,5 +1,16 @@
 import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, NamespaceName, ObjectRef, ResourceScope, SourceLocation } from './common.js';
 import type { PermissionRule } from './resource.js';
+import type {
+  ApplicationHandlerDependencies,
+  ApplicationKubernetesCreateAuthorityContract,
+  ApplicationKubernetesQueryAuthorityContract,
+} from './application-graph-gateway.js';
+export type {
+  ApplicationHandlerDependencies,
+  ApplicationKubernetesCreateAuthorityContract,
+  ApplicationKubernetesQueryAuthorityContract,
+  ApplicationSerializedCallbackContract,
+} from './application-graph-gateway.js';
 import { normalizeApplicationGraphArtifact, serializeNormalizedApplicationGraph } from './application-graph-serialization.js';
 import { validateApplicationGraphCompatibility } from './application-graph-compatibility.js';
 import { applicationReactiveNodeStructureMessages } from './application-graph-reactive-validation.js';
@@ -92,7 +103,9 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'DnsPublication'
   | 'CredentialStore'
   | 'WorkflowEngine'
-  | 'ProjectionStore';
+  | 'ProjectionStore'
+  | 'ApplicationHost'
+  | 'RequestIdentity';
 
 /** Built-ins remain strongly named while versioned provider packages may add interfaces without editing core. */
 export type ApplicationProviderInterfaceKind = ApplicationBuiltInProviderInterfaceKind | (string & {});
@@ -113,6 +126,8 @@ export const applicationProviderInterfaceKinds = [
   'CredentialStore',
   'WorkflowEngine',
   'ProjectionStore',
+  'ApplicationHost',
+  'RequestIdentity',
 ] as const satisfies readonly ApplicationProviderInterfaceKind[];
 
 // typecast: v0.3 predates the experimental EventLog surface introduced for v0.4 durable behavior.
@@ -207,6 +222,7 @@ export interface ApplicationCrdNode extends ApplicationGraphNodeBase<'crd'> {
   readonly materialization: 'kubernetes-crd';
   readonly native?: ApplicationNativeModelContract;
   readonly common?: ApplicationCommonModelContract;
+  readonly create?: ApplicationKubernetesCreateAuthorityContract;
 }
 
 export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> {
@@ -254,11 +270,22 @@ export interface ApplicationCommonModelContract {
     readonly rawWrites: 'explicit-invalidation-required' | 'observed';
   };
   readonly relationships: readonly ApplicationModelRelationshipGraphContract[];
+  readonly operations?: readonly ApplicationModelOperationGraphContract[];
   readonly access?: {
     readonly context: string;
     readonly enforcement: 'postgres-rls' | 'kubernetes-namespace-label';
     readonly providerField: string;
   };
+}
+
+export interface ApplicationModelOperationGraphContract {
+  readonly name: string;
+  readonly operation: 'create' | 'get' | 'query' | 'update' | 'delete' | 'custom';
+  readonly transport: 'command' | 'query' | 'runtime';
+  readonly publicId: string;
+  readonly input?: ApplicationMessageContractSchema;
+  readonly output?: ApplicationMessageContractSchema;
+  readonly authorization: 'application-defined' | 'provider-enforced' | 'undeclared';
 }
 
 export interface ApplicationModelRelationshipGraphContract {
@@ -484,6 +511,12 @@ export interface ApplicationWorkflowWorkerNode extends ApplicationGraphNodeBase<
 }
 
 export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> {
+  readonly publicId?: string;
+  readonly modelOperation?: {
+    readonly model: ApplicationGraphNodeRef;
+    readonly name: string;
+    readonly kind: 'view';
+  };
   readonly version: string;
   readonly input: ApplicationMessageContractSchema;
   readonly output: ApplicationMessageContractSchema;
@@ -499,6 +532,7 @@ export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> 
   readonly incremental: 'invalidation-requery';
   readonly cursor: 'opaque-query-version-context-scoped';
   readonly database?: ApplicationReactiveDatabaseRuntimeContract;
+  readonly kubernetes?: ApplicationKubernetesQueryAuthorityContract;
   readonly authorizationSource: string;
   readonly authorizationDependencies?: ApplicationHandlerDependencies;
   readonly authorizationLocation?: SourceLocation;
@@ -507,11 +541,6 @@ export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> 
   readonly handlerDependencies?: ApplicationHandlerDependencies;
   readonly handlerLocation?: SourceLocation;
   readonly handlerUnresolved?: readonly string[];
-}
-
-export interface ApplicationHandlerDependencies {
-  readonly source: string;
-  readonly resolveDir: string;
 }
 
 export interface ApplicationReactiveDatabaseRuntimeContract {

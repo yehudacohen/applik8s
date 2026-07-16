@@ -5,3 +5,4 @@ export { createClickHouseProjectionStore, runApplicationProjection } from './pro
 export { createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from './stream-runtime-postgres.js';
 export { createApplicationCommandGateway } from './command-gateway.js';
 export { createApplicationStreamSubscriptionGateway } from './stream-subscription-gateway.js';
+export { createApplicationFetchGateway } from './application-gateway.js';

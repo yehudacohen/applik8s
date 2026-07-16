@@ -1,5 +1,5 @@
 // typecast-file-boundary: protocol doubles construct narrowed command states to exercise client transitions.
-import { ApplicationCommandClient, createHttpApplicationCommandTransport, type ApplicationCommandProgress, type ApplicationCommandTransport } from '@applik8s/client';
+import { ApplicationCommandClient, ApplicationCommandRejectedError, createHttpApplicationCommandTransport, type ApplicationCommandProgress, type ApplicationCommandTransport } from '@applik8s/client';
 import { describe, expect, it, vi } from 'vitest';
 
 describe('browser-safe durable command client', () => {
@@ -32,6 +32,32 @@ describe('browser-safe durable command client', () => {
     const transport = createHttpApplicationCommandTransport({ baseUrl: 'https://catalog.test', fetch: fetch as unknown as typeof globalThis.fetch });
     await expect(transport.submit('cards.rename.v1', {}, { commandId: 'command-1', idempotencyKey: 'retry-1' })).resolves.toMatchObject({ transport: 'acknowledged', durableResult: 'pending' });
     expect(fetch).toHaveBeenCalledWith('https://catalog.test/commands/cards.rename.v1/submit', expect.objectContaining({ method: 'POST', body: JSON.stringify({ input: {}, commandId: 'command-1', idempotencyKey: 'retry-1' }) }));
+  });
+
+  it('resolves execute only after the durable result succeeds', async () => {
+    const transport: ApplicationCommandTransport = {
+      async submit(command, _input, options) {
+        return { protocol: 'applik8s.command/v1alpha1', command, commandId: options.commandId, correlationId: options.commandId, transport: 'acknowledged', durableResult: 'pending', progressCursor: 'cursor', workflow: 'notStarted', reconciliation: 'notObserved' };
+      },
+      async progress(command) {
+        return { protocol: 'applik8s.command/v1alpha1', command, commandId: 'execute-1', correlationId: 'execute-1', transport: 'acknowledged', durableResult: 'succeeded', output: { identity: 'entry-1' }, workflow: 'notStarted', reconciliation: 'notObserved' };
+      },
+    };
+    const client = new ApplicationCommandClient(transport, { id: () => 'execute-1', poll: { initialMs: 10, maxMs: 10 } });
+    await expect(client.execute('GuestBookEntry.create', { message: 'hello' })).resolves.toEqual({ identity: 'entry-1' });
+  });
+
+  it('rejects execute with the durable domain rejection', async () => {
+    const transport: ApplicationCommandTransport = {
+      async submit(command, _input, options) {
+        return { protocol: 'applik8s.command/v1alpha1', command, commandId: options.commandId, correlationId: options.commandId, transport: 'acknowledged', durableResult: 'pending', progressCursor: 'rejected', workflow: 'notStarted', reconciliation: 'notObserved' };
+      },
+      async progress(command) {
+        return { protocol: 'applik8s.command/v1alpha1', command, commandId: 'rejected-1', correlationId: 'rejected-1', transport: 'acknowledged', durableResult: 'rejected', rejection: { name: 'forbidden', payload: { reason: 'reader' } }, workflow: 'notStarted', reconciliation: 'notObserved' };
+      },
+    };
+    const client = new ApplicationCommandClient(transport, { id: () => 'rejected-1' });
+    await expect(client.execute('GuestBookEntry.create', { message: 'hello' })).rejects.toBeInstanceOf(ApplicationCommandRejectedError);
   });
 });
 

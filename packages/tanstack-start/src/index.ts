@@ -1,4 +1,59 @@
 import type { ApplicationQueryClient, ApplicationQuerySnapshot } from '@applik8s/client';
+import {
+  app,
+  RequestIdentity,
+  type ApplicationRequestAdmission,
+  type KubernetesApplicationBuilder,
+  type SchemaInput,
+} from '@applik8s/applik8s';
+
+export {
+  ApplicationHost,
+  Certificate,
+  DnsPublication,
+  EventLog,
+  HttpExposure,
+  IndexStore,
+  ModelStore,
+} from '@applik8s/applik8s';
+
+export type Applik8sStartAuthentication = ApplicationRequestAdmission;
+
+export type Applik8sAuthenticationHandler = (request: Request) => Applik8sStartAuthentication | Promise<Applik8sStartAuthentication>;
+
+export interface CreateApplik8sStartOptions<TContext extends object> {
+  readonly name: string;
+  readonly namespace?: string;
+  readonly context: SchemaInput<TContext>;
+  readonly authenticate: Applik8sAuthenticationHandler;
+}
+
+export interface Applik8sStartApplication<TContext extends object = object> extends KubernetesApplicationBuilder {
+  readonly start: {
+    readonly apiVersion: 'applik8s.start/v1alpha1';
+    readonly context: SchemaInput<TContext>;
+    readonly authenticate: Applik8sAuthenticationHandler;
+  };
+}
+
+/** Creates the dependency root shared by Start routes, model declarations, discovery, and generated hosting. */
+export function createApplik8sStart<TContext extends object>(options: CreateApplik8sStartOptions<TContext>): Applik8sStartApplication<TContext> {
+  if (!options.name.trim()) throw new Error('createApplik8sStart({ name }) must not be empty.');
+  const application = app(options.name, options.namespace ? { namespace: options.namespace } : {});
+  application.provide(RequestIdentity, RequestIdentity.from(options.authenticate));
+  Object.defineProperty(application, 'start', {
+    value: Object.freeze({
+      apiVersion: 'applik8s.start/v1alpha1',
+      context: options.context,
+      authenticate: options.authenticate,
+    }),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  // typecast: the immutable start metadata was just installed on this Kubernetes application builder.
+  return application as Applik8sStartApplication<TContext>;
+}
 
 export interface ApplicationQueryLoaderResult<TValue = unknown> {
   readonly applik8s: readonly ApplicationQuerySnapshot<TValue>[];

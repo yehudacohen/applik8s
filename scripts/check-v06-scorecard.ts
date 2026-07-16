@@ -28,6 +28,7 @@ const diagnostics = validateApplicationGraphStructure(graph);
 const postgresReceipt = await liveReceipt('.applik8s-tmp/evidence/v0.6/postgres.json', 'postgres');
 const clickhouseReceipt = await liveReceipt('.applik8s-tmp/evidence/v0.6/clickhouse.json', 'clickhouse');
 const orbstackReceipt = await liveReceipt('.applik8s-tmp/evidence/v0.6/orbstack.json', 'orbstack');
+const guestbookReceipt = await liveReceipt('.applik8s-tmp/evidence/v0.6/guestbook-start.json', 'guestbook-start');
 const baseline = await jsonFile('benchmarks/v0.6/baseline.json') as { readonly evidenceClass?: string; readonly client?: { readonly cacheKeysPerSecond?: number }; readonly projection?: { readonly eventsPerSecond?: number } } | undefined;
 
 const dimensions: readonly Dimension[] = [
@@ -47,11 +48,20 @@ const dimensions: readonly Dimension[] = [
   ),
   dimension('Generated runtime and packaging',
     check('focused-runtime-entrypoint', await fileExists('packages/applik8s/src/reactive-runtime.ts') && await fileExists('packages/sdk/src/schema-runtime.ts'), 'Generated workloads depend on focused runtime/schema entrypoints.'),
+    check('framework-neutral-vite', await fileExists('packages/vite/src/index.ts') && await fileExists('packages/vite/src/kubernetes-gateway.ts'), 'Vite graph discovery, facade partitioning, and the Fetch-compatible Kubernetes authority live outside TanStack.'),
+    check('thin-tanstack-adapter', await fileExists('packages/tanstack-start/src/vite.ts') && await fileExists('packages/tanstack-start/src/react.ts'), 'TanStack Start is a first-party adapter over the framework-neutral client and gateway.'),
     check('packed-consumer-gate', await fileExists('scripts/package-consumer-smoke.mjs') && await fileExists('scripts/package-publish-dry-run.mjs'), 'Clean packed-consumer and coordinated dry-pack gates are present in the release lane.'),
     check('bundle-budget', await fileExists('benchmarks/v0.6/budgets.json'), 'A tracked generated-runtime budget exists and is enforced by compiler tests.'),
   ),
+  dimension('Application host and dual-runtime model experience',
+    check('generated-facades', await fileExists('packages/compiler/src/application-facade/index.ts') && await fileExists('packages/client/src/operations.ts'), 'One graph-derived model contract lowers to callable browser and server operation facades.'),
+    check('generated-fetch-gateway', await fileExists('packages/compiler/src/application-fetch-gateway/index.ts') && await fileExists('packages/applik8s/src/application-gateway.ts'), 'The compiler emits a framework-neutral Request-to-Response gateway with isolated callbacks.'),
+    check('oci-application-host', await fileExists('packages/compiler/src/application-host/index.ts'), 'ApplicationHost emits an immutable OCI build context, Deployment, Service, probes, inferred RBAC, and image provenance.'),
+    check('guestbook-source-shape', await fileExists('examples/guestbook-start/src/application.ts') && await fileExists('examples/guestbook-start/src/routes/index.tsx'), 'The flagship example is an official-shape Start application using shared model facades rather than HTML-in-status.'),
+  ),
   dimension('Kubernetes lifecycle evidence',
     receiptCheck(orbstackReceipt, 'orbstack-generated-app', ['typekro-apply', 'gateway-ready', 'projection-ready', 'restart-resume', 'factory-delete', 'generated-child-cleanup', 'generated-crd-removed', 'namespace-removed']),
+    receiptCheck(guestbookReceipt, 'guestbook-start-golden-path', ['vite-application-build', 'application-host-ready', 'operator-ready', 'browser-command-submit', 'kubernetes-create', 'operator-publish', 'operator-reject', 'sse-invalidation', 'authoritative-requery', 'ssr-render', 'restart-resume', 'factory-delete', 'runtime-created-data-cleanup', 'namespace-removed']),
   ),
   dimension('Performance evidence',
     check('tracked-baseline', Boolean(baseline && (baseline.client?.cacheKeysPerSecond ?? 0) > 0 && (baseline.projection?.eventsPerSecond ?? 0) > 0), 'A repeatable local microbenchmark baseline is tracked.'),

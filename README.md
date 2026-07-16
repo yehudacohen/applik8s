@@ -10,6 +10,13 @@ Reconciliation TypeScript becomes WASM component logic evaluated by Kubernetes e
 
 v0.6 lets one Drizzle table remain the relational schema authority while gaining derived ArkType contracts and a common Applik8s model facet. Applications can declare trusted context, PostgreSQL RLS, bounded queries, durable replayable streams, ClickHouse projections, authenticated subscriptions, and browser stores from the same inspectable application graph. Generated migrations, gateways, projection workers, provider infrastructure, RBAC, and network policy remain explicit deployment artifacts.
 
+The flagship full-stack path is framework-neutral beneath its first TanStack Start adapter:
+`@applik8s/vite` generates browser/server facades and a Fetch-compatible gateway,
+`GuestBookEntry.create(...)` and named views share one authored model contract, and
+`ApplicationHost.kubernetes(...)` builds the immutable Start artifact into the TypeKro-managed
+application. The operator updates domain status; React renders authoritative query results after
+resumable SSE invalidation.
+
 ```sh
 bun run build:v06-generated-proof
 bun run check:v06:prerelease:orbstack

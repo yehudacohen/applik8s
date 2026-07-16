@@ -18,6 +18,7 @@ const packageDirs = [
   'packages/typekro-adapter',
   'packages/client',
   'packages/react',
+  'packages/vite',
   'packages/tanstack-start',
   'packages/applik8s',
 ];

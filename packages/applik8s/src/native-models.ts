@@ -1,9 +1,11 @@
-import type { ResourceDefinition, RuntimeSchema } from '@applik8s/core';
+import type { JsonValue, ResourceDefinition, ResourceInstanceInput, ResourceObject, RuntimeSchema } from '@applik8s/core';
+import { createApplicationMutationOperation, decorateApplicationMutationOperation, type ApplicationMutationOperation, type ApplicationQueryOperation } from '@applik8s/client';
 import { type as arkType, type Type } from 'arktype';
 import { createInsertSchema, createSelectSchema, createUpdateSchema } from 'drizzle-arktype';
 import { createTableRelationsHelpers, extractTablesRelationalConfig, getTableColumns, getTableName, isTable, Many, normalizeRelation, One, type InferInsertModel, type InferSelectModel, type Relation, type Relations, type Table } from 'drizzle-orm';
 import { getTableConfig, type AnyPgTable } from 'drizzle-orm/pg-core';
 import type { ApplicationModelCommandBinding, ApplicationModelCommandHandler, ApplicationModelCommandOptions } from './application-models.js';
+import type { ApplicationKubernetesModelViewOptions, ApplicationModelViewOptions, ApplicationQueryPrincipal } from './application-queries.js';
 import type { CommandDefinition } from './dsl.js';
 
 /** Stable runtime metadata key for native objects promoted into the Applik8s model graph. */
@@ -102,6 +104,11 @@ export interface DrizzleApplicationModelFacet<TTable extends AnyPgTable, TIdenti
 export type PromotedDrizzleTable<TTable extends AnyPgTable, TIdentity = ConventionalTableIdentity<TTable>> = TTable & {
   readonly $model: DrizzleApplicationModelFacet<TTable, TIdentity>;
   readonly [applicationModelFacet]: DrizzleApplicationModelFacet<TTable, TIdentity>;
+  readonly create: ApplicationMutationOperation<InferInsertModel<TTable>, ApplicationModelSnapshot<InferSelectModel<TTable>, TIdentity>>;
+  view<const TName extends string, TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(
+    name: TName,
+    options: ApplicationModelViewOptions<TInput, TOutput, TPrincipal>,
+  ): PromotedDrizzleTable<TTable, TIdentity> & Readonly<Record<TName, ApplicationQueryOperation<TInput, TOutput>>>;
 };
 
 export interface PromoteDrizzleTableOptions<TTable extends AnyPgTable> {
@@ -113,8 +120,10 @@ export interface PromoteDrizzleTableOptions<TTable extends AnyPgTable> {
 }
 
 type NativeModelCommandRegistrar = (command: CommandDefinition<object, object, Readonly<Record<string, object>>>, options: ApplicationModelCommandOptions<object, object>, handler: ApplicationModelCommandHandler<object, Record<string, never>, object, object, Readonly<Record<string, object>>>) => ApplicationModelCommandBinding<object, object, object, Record<string, never>>;
+type ApplicationModelViewRegistrar = (name: string, options: ApplicationModelViewOptions<unknown, unknown, ApplicationQueryPrincipal>) => ApplicationQueryOperation<unknown, unknown>;
 
 const nativeModelCommandRegistrars = new WeakMap<object, NativeModelCommandRegistrar>();
+const applicationModelViewRegistrars = new WeakMap<object, ApplicationModelViewRegistrar>();
 
 export interface KubernetesApplicationModelFacet<TSpec extends object, TStatus extends object = Record<string, never>>
   extends Omit<CommonApplicationModelFacet<TSpec, string>, 'provider' | 'native' | 'schema' | 'revision'> {
@@ -132,12 +141,37 @@ export interface KubernetesApplicationModelFacet<TSpec extends object, TStatus e
     readonly context: string;
     readonly namespaceLabel: string;
   };
+  readonly create?: ApplicationKubernetesCreatePolicy<TSpec>;
   readonly __status?: TStatus;
+}
+
+export interface ApplicationKubernetesCreateRequest<TSpec extends object, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
+  readonly principal: TPrincipal;
+  readonly context: Readonly<Record<string, JsonValue>>;
+  readonly input: TSpec;
+}
+
+export interface ApplicationKubernetesCreatePlacement {
+  readonly namespace?: string;
+  readonly name?: string;
+  readonly generateName?: string;
+  readonly labels?: Readonly<Record<string, string>>;
+  readonly annotations?: Readonly<Record<string, string>>;
+}
+
+export interface ApplicationKubernetesCreatePolicy<TSpec extends object, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
+  readonly authorize: (request: ApplicationKubernetesCreateRequest<TSpec, TPrincipal>) => boolean | Promise<boolean>;
+  readonly place: (request: { readonly context: Readonly<Record<string, JsonValue>>; readonly input: TSpec }) => ApplicationKubernetesCreatePlacement;
 }
 
 export type PromotedKubernetesResource<TSpec extends object, TStatus extends object = Record<string, never>> = ResourceDefinition<TSpec, TStatus> & {
   readonly $model: KubernetesApplicationModelFacet<TSpec, TStatus>;
   readonly [applicationModelFacet]: KubernetesApplicationModelFacet<TSpec, TStatus>;
+  readonly create: ApplicationMutationOperation<TSpec | ResourceInstanceInput<TSpec> | ResourceObject<TSpec, TStatus>, ResourceObject<TSpec, TStatus>>;
+  view<const TName extends string, TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(
+    name: TName,
+    options: ApplicationKubernetesModelViewOptions<TInput, ResourceObject<TSpec, TStatus>, TOutput, TPrincipal>,
+  ): PromotedKubernetesResource<TSpec, TStatus> & Readonly<Record<TName, ApplicationQueryOperation<TInput, TOutput>>>;
 };
 
 /**
@@ -159,6 +193,12 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
   }
   if ('$model' in table) {
     throw new Error(`Drizzle table ${getTableName(table)} cannot be promoted because it already exposes a $model property or column. Rename that column or use the symbol-based getApplicationModelFacet(...) access path.`);
+  }
+  if ('create' in table) {
+    throw new Error(`Drizzle table ${getTableName(table)} cannot expose the conventional create operation because it already has a create property or column.`);
+  }
+  if ('view' in table) {
+    throw new Error(`Drizzle table ${getTableName(table)} cannot expose model-native views because it already has a view property or column.`);
   }
 
   const tableConfig = getTableConfig(table);
@@ -215,6 +255,26 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
   Object.defineProperties(table, {
     [applicationModelFacet]: { value: facet, enumerable: false, configurable: false, writable: false },
     $model: { value: facet, enumerable: false, configurable: false, writable: false },
+    create: {
+      value: createApplicationMutationOperation({
+        apiVersion: 'applik8s.operation/v1alpha1',
+        kind: 'applicationOperation',
+        id: `${name}.create`,
+        model: name,
+        name: 'create',
+        operation: 'create',
+        transport: 'command',
+      }),
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    },
+    view: {
+      value: (viewName: string, viewOptions: ApplicationModelViewOptions<unknown, unknown, ApplicationQueryPrincipal>) => installApplicationModelView(table, viewName, viewOptions),
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    },
   });
   return table as PromotedDrizzleTable<TTable>;
 }
@@ -232,17 +292,26 @@ export function nativeApplicationModelCommandRegistrar<TTable extends AnyPgTable
   return nativeModelCommandRegistrars.get(model) as DrizzleApplicationModelFacet<TTable>['on']['command'] | undefined;
 }
 
-export interface PromoteKubernetesResourceOptions {
+export function bindApplicationModelViews(model: object, registrar: ApplicationModelViewRegistrar): void {
+  applicationModelViewRegistrars.set(model, registrar);
+}
+
+export function applicationModelViewRegistrar(model: object): ApplicationModelViewRegistrar | undefined {
+  return applicationModelViewRegistrars.get(model);
+}
+
+export interface PromoteKubernetesResourceOptions<TSpec extends object = object> {
   readonly name?: string;
   /**
    * Declares a provider-enforced namespace boundary. The model context reads the
    * Namespace and compares this label with the admitted trusted-context value.
    */
   readonly access?: { readonly context: string; readonly namespaceLabel: string };
+  readonly create?: ApplicationKubernetesCreatePolicy<TSpec>;
 }
 
 // typecast-boundary: the resource definition owns the spec/status generics installed in its immutable common model facet.
-export function promoteKubernetesResource<TSpec extends object, TStatus extends object>(resource: ResourceDefinition<TSpec, TStatus>, nameOrOptions: string | PromoteKubernetesResourceOptions = resource.kind): PromotedKubernetesResource<TSpec, TStatus> {
+export function promoteKubernetesResource<TSpec extends object, TStatus extends object>(resource: ResourceDefinition<TSpec, TStatus>, nameOrOptions: string | PromoteKubernetesResourceOptions<TSpec> = resource.kind): PromotedKubernetesResource<TSpec, TStatus> {
   const options = typeof nameOrOptions === 'string' ? { name: nameOrOptions } : nameOrOptions;
   const name = options.name ?? resource.kind;
   const existing = Reflect.get(resource, applicationModelFacet) as KubernetesApplicationModelFacet<TSpec, TStatus> | undefined;
@@ -270,6 +339,7 @@ export function promoteKubernetesResource<TSpec extends object, TStatus extends 
     relations: Object.freeze(Object.fromEntries(relationships.map((relationship) => [relationship.name, relationship]))),
     resource: { apiVersion: resource.apiVersion, kind: resource.kind, plural: resource.plural, scope: resource.scope },
     ...(options.access ? { access: Object.freeze({ ...options.access }) } : {}),
+    ...(options.create ? { create: options.create } : {}),
     ref() {
       return decorateModelReference(arkType('string'), { target: name, identity, integrity: 'reconcile-checked' });
     },
@@ -277,8 +347,36 @@ export function promoteKubernetesResource<TSpec extends object, TStatus extends 
   Object.defineProperties(resource, {
     [applicationModelFacet]: { value: facet, enumerable: false, configurable: false, writable: false },
     $model: { value: facet, enumerable: false, configurable: false, writable: false },
+    view: {
+      value: (viewName: string, viewOptions: ApplicationModelViewOptions<unknown, unknown, ApplicationQueryPrincipal>) => installApplicationModelView(resource, viewName, viewOptions),
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    },
+  });
+  decorateApplicationMutationOperation(resource.create, {
+    apiVersion: 'applik8s.operation/v1alpha1',
+    kind: 'applicationOperation',
+    id: `${name}.create`,
+    model: name,
+    name: 'create',
+    operation: 'create',
+    transport: 'command',
   });
   return resource as PromotedKubernetesResource<TSpec, TStatus>;
+}
+
+function installApplicationModelView(
+  model: object,
+  name: string,
+  options: ApplicationModelViewOptions<unknown, unknown, ApplicationQueryPrincipal>,
+): object {
+  if (name in model) throw new Error(`Application model view ${name} cannot replace an existing model member.`);
+  const registrar = applicationModelViewRegistrars.get(model);
+  if (!registrar) throw new Error('Application model views must be declared on a model registered through app.model(...) or app.crd(...).');
+  const operation = registrar(name, options);
+  Object.defineProperty(model, name, { value: operation, enumerable: false, configurable: false, writable: false });
+  return model;
 }
 
 // typecast-boundary: the private symbol is installed only by the validated promotion functions above.
@@ -352,10 +450,17 @@ function normalizeDrizzleModelRelationships(table: AnyPgTable, schema: Readonly<
   if (!tableEntry) {
     throw new Error(`Drizzle table ${getTableName(table)} is not present in the registered relational schema.`);
   }
-  return Object.entries(tableEntry.relations).sort(([left], [right]) => left.localeCompare(right)).map(([name, relation]) => drizzleRelationshipContract(source, name, relation, extracted.tables, extracted.tableNamesMap));
+  return Object.entries(tableEntry.relations).sort(([left], [right]) => left.localeCompare(right)).map(([name, relation]) => drizzleRelationshipContract(
+    source,
+    name,
+    relation,
+    extracted.tables,
+    extracted.tableNamesMap,
+    () => logicalModelNameForTable(schema, relation.referencedTableName) ?? relation.referencedTableName,
+  ));
 }
 
-function drizzleRelationshipContract(source: string, name: string, relation: Relation, tables: ReturnType<typeof extractTablesRelationalConfig>['tables'], tableNamesMap: Readonly<Record<string, string>>): ApplicationModelRelationshipContract {
+function drizzleRelationshipContract(source: string, name: string, relation: Relation, tables: ReturnType<typeof extractTablesRelationalConfig>['tables'], tableNamesMap: Readonly<Record<string, string>>, target: () => string): ApplicationModelRelationshipContract {
   const normalized = normalizeRelation(tables, tableNamesMap, relation);
   const sourceColumns = getTableColumns(relation.sourceTable);
   const targetColumns = getTableColumns(relation.referencedTable);
@@ -364,12 +469,21 @@ function drizzleRelationshipContract(source: string, name: string, relation: Rel
   return {
     source,
     name,
-    target: relation.referencedTableName,
+    get target() { return target(); },
     cardinality: relation instanceof Many ? 'many' : 'one',
     integrity: relation instanceof One && relation.config ? 'foreign-key' : 'relation-only',
     fields,
     references,
   };
+}
+
+function logicalModelNameForTable(schema: Readonly<Record<string, unknown>>, tableName: string): string | undefined {
+  for (const candidate of Object.values(schema)) {
+    if (!isTable(candidate) || getTableName(candidate) !== tableName) continue;
+    const facet = getApplicationModelFacet(candidate);
+    if (facet) return facet.name;
+  }
+  return undefined;
 }
 
 function columnPropertyName(columns: Readonly<Record<string, unknown>>, column: unknown): string {

@@ -296,6 +296,9 @@ const v03ProviderInterfaces = [
   { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'ProjectionStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'RequestIdentity', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
 ] satisfies ApplicationV03PressureTestContract['requiredProviderInterfaces'];
 
 const v03ProviderCompatibility = {

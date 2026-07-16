@@ -4,6 +4,7 @@ const publishablePackages = [
   'packages/applik8s/package.json',
   'packages/client/package.json',
   'packages/react/package.json',
+  'packages/vite/package.json',
   'packages/tanstack-start/package.json',
   'packages/core/package.json',
   'packages/sdk/package.json',

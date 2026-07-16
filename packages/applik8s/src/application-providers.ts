@@ -106,6 +106,40 @@ export interface ApplicationClickHouseProjectionStoreProvider {
 
 export type ApplicationProjectionStoreProvider = ApplicationClickHouseProjectionStoreProvider;
 
+export interface ApplicationRequestAdmission {
+  readonly principal: {
+    readonly id: string;
+    readonly claims?: Readonly<Record<string, unknown>>;
+    can?(action: string, model: unknown, identity?: unknown): boolean | Promise<boolean>;
+  };
+  readonly trustedContext: Readonly<Record<string, import('@applik8s/core').JsonValue>>;
+  readonly authorizationVersion: string;
+}
+
+export interface ApplicationRequestIdentityProvider {
+  readonly kind: 'request-identity';
+  authenticate(request: Request): ApplicationRequestAdmission | Promise<ApplicationRequestAdmission>;
+}
+
+export interface ApplicationKubernetesHostProvider {
+  readonly kind: 'kubernetes-application-host';
+  readonly namespace?: string;
+  readonly name?: string;
+  /** Immutable target image reference. Omit for a locally built digest-tagged image. */
+  readonly image?: string;
+  readonly imagePullPolicy?: 'Always' | 'IfNotPresent' | 'Never';
+  readonly replicas?: number;
+  readonly port?: number;
+  readonly serviceAccountName?: string;
+  readonly cursorSecret?: { readonly name?: string; readonly key?: string };
+  readonly resources?: {
+    readonly requests?: { readonly cpu?: string; readonly memory?: string };
+    readonly limits?: { readonly cpu?: string; readonly memory?: string };
+  };
+}
+
+export type ApplicationHostProvider = ApplicationKubernetesHostProvider;
+
 export type ApplicationPostgresModelStoreOptions = Omit<ApplicationPostgresModelStoreProvider, 'kind'>;
 
 export interface ApplicationPostgresModelStoreProvider {
@@ -245,11 +279,32 @@ export interface ApplicationProjectionStoreProviderToken extends ApplicationProv
   clickhouse(options?: Omit<ApplicationClickHouseProjectionStoreProvider, 'kind'>): ApplicationClickHouseProjectionStoreProvider;
 }
 
-export interface ApplicationProviderBinding<TImplementation = unknown> {
+export interface ApplicationHostProviderToken extends ApplicationProviderToken<ApplicationHostProvider> {
+  kubernetes(options?: Omit<ApplicationKubernetesHostProvider, 'kind'>): ApplicationKubernetesHostProvider;
+}
+
+export interface ApplicationRequestIdentityProviderToken extends ApplicationProviderToken<ApplicationRequestIdentityProvider> {
+  from(authenticate: ApplicationRequestIdentityProvider['authenticate']): ApplicationRequestIdentityProvider;
+}
+
+export interface ApplicationProviderBindingBase<TImplementation = unknown> {
   readonly kind: 'applicationProvider';
   readonly token: ApplicationProviderToken<TImplementation>;
   readonly implementation: TImplementation;
 }
+
+export interface ApplicationHostBinding extends Omit<ApplicationProviderBindingBase<ApplicationHostProvider>, 'kind'> {
+  readonly kind: 'applicationHost';
+  readonly service: { readonly name: string; readonly namespace: string; readonly port: number };
+  readonly status: { readonly ready: boolean };
+  readonly image: { readonly digest: string };
+  readonly url: { readonly internal: string };
+}
+
+export type ApplicationProviderBinding<TImplementation = unknown> =
+  TImplementation extends ApplicationHostProvider
+    ? ApplicationHostBinding
+    : ApplicationProviderBindingBase<TImplementation>;
 
 export interface ApplicationProviderState {
   readonly defaults: { indexes?: unknown; models?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown; projections?: unknown };
@@ -373,12 +428,47 @@ export const ProjectionStore: ApplicationProjectionStoreProviderToken = {
   },
 };
 
+export const ApplicationHost: ApplicationHostProviderToken = {
+  name: 'ApplicationHost',
+  description: 'Immutable application artifact hosting and runtime lifecycle.',
+  contract: builtInProviderContract('ApplicationHost', ['immutableArtifact', 'readiness', 'gracefulShutdown', 'serviceDiscovery']),
+  accepts: isKubernetesApplicationHostProvider,
+  kubernetes(options = {}) {
+    if (options.replicas !== undefined && (!Number.isInteger(options.replicas) || options.replicas < 1)) {
+      throw new Error('ApplicationHost.kubernetes({ replicas }) requires a positive integer.');
+    }
+    if (options.port !== undefined && (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535)) {
+      throw new Error('ApplicationHost.kubernetes({ port }) requires a valid TCP port.');
+    }
+    if (options.image !== undefined && !options.image.trim()) {
+      throw new Error('ApplicationHost.kubernetes({ image }) must not be empty.');
+    }
+    if (options.cursorSecret?.name !== undefined && !options.cursorSecret.name.trim()) {
+      throw new Error('ApplicationHost.kubernetes({ cursorSecret.name }) must not be empty.');
+    }
+    if (options.cursorSecret?.key !== undefined && !options.cursorSecret.key.trim()) {
+      throw new Error('ApplicationHost.kubernetes({ cursorSecret.key }) must not be empty.');
+    }
+    return { kind: 'kubernetes-application-host', ...options };
+  },
+};
+
+export const RequestIdentity: ApplicationRequestIdentityProviderToken = {
+  name: 'RequestIdentity',
+  description: 'Application-supplied request authentication and trusted-context admission.',
+  contract: builtInProviderContract('RequestIdentity', ['principalIdentity', 'trustedContextAdmission', 'authorizationVersion']),
+  accepts: isApplicationRequestIdentityProvider,
+  from(authenticate) {
+    return { kind: 'request-identity', authenticate };
+  },
+};
+
 function builtInProviderContract(providerInterface: string, guarantees: readonly string[]): ApplicationTypedProviderContract {
   return { apiVersion: 'applik8s.provider/v1alpha1', interface: providerInterface, version: 'v1alpha1', requirements: [], guarantees };
 }
 
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, ModelStore, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ProjectionStore } as const;
+export const providers = { IndexStore, ModelStore, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ProjectionStore, ApplicationHost, RequestIdentity } as const;
 
 export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
   if (!name) return undefined;
@@ -547,6 +637,22 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.extensions['WorkflowEngine@v1alpha1'] = implementation;
     return;
   }
+  if ((token as unknown) === ApplicationHost) {
+    if (!isKubernetesApplicationHostProvider(implementation)) {
+      throw new Error('app.provide(ApplicationHost, ...) currently supports ApplicationHost.kubernetes(...).');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['ApplicationHost@v1alpha1'] = implementation;
+    return;
+  }
+  if ((token as unknown) === RequestIdentity) {
+    if (!isApplicationRequestIdentityProvider(implementation)) {
+      throw new Error('app.provide(RequestIdentity, ...) requires RequestIdentity.from(authenticate).');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['RequestIdentity@v1alpha1'] = implementation;
+    return;
+  }
   const tokenName = applicationProviderTokenName(token);
   const field = applicationProviderStateField(tokenName);
   if (field && isSupportedDefaultProvider(tokenName, implementation)) {
@@ -665,7 +771,8 @@ export function applicationEventLogImplementation(value: unknown): ApplicationEv
 }
 
 function isApplicationProviderBinding(value: unknown): value is ApplicationProviderBinding<unknown> {
-  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'applicationProvider');
+  const kind = value && typeof value === 'object' ? Reflect.get(value, 'kind') : undefined;
+  return kind === 'applicationProvider' || kind === 'applicationHost';
 }
 
 export function applicationProviderTokenName(token: ApplicationProviderToken<unknown>): string {
@@ -673,10 +780,38 @@ export function applicationProviderTokenName(token: ApplicationProviderToken<unk
 }
 
 export function applicationProviderInterface(tokenName: string | undefined): ApplicationProviderInterfaceKind | undefined {
-  if (tokenName === 'IndexStore' || tokenName === 'ModelStore' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ProjectionStore') {
+  if (tokenName === 'IndexStore' || tokenName === 'ModelStore' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ProjectionStore' || tokenName === 'ApplicationHost' || tokenName === 'RequestIdentity') {
     return tokenName;
   }
   return undefined;
+}
+
+export function isApplicationRequestIdentityProvider(value: unknown): value is ApplicationRequestIdentityProvider {
+  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'request-identity' && typeof Reflect.get(value, 'authenticate') === 'function');
+}
+
+export function isKubernetesApplicationHostProvider(value: unknown): value is ApplicationKubernetesHostProvider {
+  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'kubernetes-application-host');
+}
+
+export function applicationHostBinding(
+  token: ApplicationHostProviderToken,
+  implementation: ApplicationHostProvider,
+  applicationName: string,
+  defaultNamespace?: string,
+): ApplicationHostBinding {
+  const name = implementation.name ?? `${applicationName}-web`;
+  const namespace = implementation.namespace ?? defaultNamespace ?? 'default';
+  const port = implementation.port ?? 3000;
+  return {
+    kind: 'applicationHost',
+    token,
+    implementation,
+    service: { name, namespace, port },
+    status: { ready: false },
+    image: { digest: 'sha256:pending-build' },
+    url: { internal: `http://${name}.${namespace}.svc:${port}` },
+  };
 }
 
 export function applicationProviderImplementationName(implementation: unknown): string {

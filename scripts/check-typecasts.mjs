@@ -25,9 +25,10 @@ function collectFiles(path) {
 
   const files = [];
   for (const entry of readdirSync(path)) {
-    if (entry === 'node_modules' || entry === 'dist') {
+    if (entry === 'node_modules' || entry === 'dist' || entry === '.applik8s' || entry === '.output') {
       continue;
     }
+    if (entry === 'routeTree.gen.ts') continue;
     files.push(...collectFiles(join(path, entry)));
   }
   return files;

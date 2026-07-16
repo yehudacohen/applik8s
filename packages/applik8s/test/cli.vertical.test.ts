@@ -26,6 +26,7 @@ describe('applik8s CLI', () => {
 
     expect(code).toBe(0);
     expect(output.join('\n')).toContain('build [options] <entrypoint>');
+    expect(output.join('\n')).toContain('deploy [options] <entrypoint>');
     expect(output.join('\n')).toContain('replay');
   });
 
@@ -175,6 +176,8 @@ describe('applik8s CLI', () => {
       expect(applyScript).toContain('Applying TypeKro prerequisite CustomResourceDefinitions');
       expect(applyScript).toContain('Applying TypeKro ResourceGraphDefinitions');
       expect(applyScript).toContain('apply_with_retry');
+      expect(applyScript).toContain('APPLIK8S_KUBE_CONTEXT');
+      expect(applyScript).toContain('kubectl_run');
       const operatorManifest = JSON.parse(await readFile(join(outDir, 'operators', 'cli-image-pipeline', 'operator-manifest.json'), 'utf8'));
       expect(operatorManifest.metadata.name).toBe('cli-image-pipeline');
     } finally {

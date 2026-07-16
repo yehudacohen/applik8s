@@ -1,4 +1,9 @@
-import type { ApplicationMessageContractSchema, JsonObject } from '@applik8s/core';
+import type {
+  ApplicationKubernetesQueryAuthorityContract,
+  ApplicationMessageContractSchema,
+  ApplicationSerializedCallbackContract,
+  JsonObject,
+} from '@applik8s/core';
 import type { Type } from 'arktype';
 import type { ApplicationGraphState } from './application-graph-state.js';
 import { addApplicationGraphEdge, addApplicationGraphNode } from './application-graph-state.js';
@@ -8,6 +13,7 @@ import { getApplicationModelFacet } from './native-models.js';
 import type { ApplicationRelationalContext } from './relational-runtime.js';
 import type { ApplicationTrustedContext } from './trusted-context.js';
 import { serializeApplicationCallback } from './application-callback.js';
+import { createApplicationQueryOperation, type ApplicationQueryOperation } from '@applik8s/client';
 
 export interface ApplicationQueryPrincipal {
   readonly id: string;
@@ -17,20 +23,62 @@ export interface ApplicationQueryPrincipal {
 
 export type ApplicationQueryReadDependency = object | ApplicationModelRelationshipContract;
 
-export interface ApplicationQueryOptions<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
+export interface ApplicationQueryAuthorizationRequest<TInput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
+  readonly principal: TPrincipal;
+  readonly context: Readonly<Record<string, unknown>>;
+  readonly input: TInput;
+}
+
+export interface ApplicationKubernetesModelViewOptions<TInput, TObject, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly input: Type<TInput>;
   readonly output: Type<TOutput>;
-  readonly database?: ApplicationDatabaseBinding;
   readonly context?: readonly ApplicationTrustedContext<unknown>[];
-  readonly reads: readonly ApplicationQueryReadDependency[];
-  readonly authorize: (request: { readonly principal: TPrincipal; readonly input: TInput }) => boolean | Promise<boolean>;
-  readonly run: (request: { readonly context: ApplicationRelationalContext; readonly principal: TPrincipal; readonly input: TInput }) => TOutput | Promise<TOutput>;
+  readonly reads?: readonly ApplicationQueryReadDependency[];
+  readonly authorize: (request: ApplicationQueryAuthorizationRequest<TInput, TPrincipal>) => boolean | Promise<boolean>;
+  readonly kubernetes: {
+    readonly namespace?: string | ((request: { readonly context: Readonly<Record<string, unknown>>; readonly input: TInput }) => string);
+    readonly labelSelector?: (request: { readonly context: Readonly<Record<string, unknown>>; readonly input: TInput }) => string | undefined;
+    readonly fieldSelector?: (request: { readonly context: Readonly<Record<string, unknown>>; readonly input: TInput }) => string | undefined;
+    readonly filter?: (request: { readonly context: Readonly<Record<string, unknown>>; readonly input: TInput; readonly value: TObject }) => boolean;
+    readonly compare?: (request: { readonly context: Readonly<Record<string, unknown>>; readonly input: TInput; readonly left: TObject; readonly right: TObject }) => number;
+    readonly project: (request: { readonly context: Readonly<Record<string, unknown>>; readonly input: TInput; readonly value: TObject }) => unknown;
+    readonly limit?: (request: { readonly context: Readonly<Record<string, unknown>>; readonly input: TInput }) => number;
+    readonly pageSize?: number;
+    readonly maxPages?: number;
+    readonly maxItems?: number;
+  };
   readonly budgets?: {
     readonly timeoutMs?: number;
     readonly maxResultBytes?: number;
     readonly maxRows?: number;
   };
 }
+
+export interface ApplicationQueryOptions<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
+  readonly input: Type<TInput>;
+  readonly output: Type<TOutput>;
+  readonly database?: ApplicationDatabaseBinding;
+  readonly context?: readonly ApplicationTrustedContext<unknown>[];
+  readonly reads: readonly ApplicationQueryReadDependency[];
+  readonly authorize: (request: ApplicationQueryAuthorizationRequest<TInput, TPrincipal>) => boolean | Promise<boolean>;
+  readonly run?: (request: { readonly context: ApplicationRelationalContext; readonly principal: TPrincipal; readonly input: TInput }) => TOutput | Promise<TOutput>;
+  readonly kubernetes?: ApplicationKubernetesModelViewOptions<TInput, unknown, TOutput, TPrincipal>['kubernetes'];
+  readonly budgets?: {
+    readonly timeoutMs?: number;
+    readonly maxResultBytes?: number;
+    readonly maxRows?: number;
+  };
+  /** Compiler-owned metadata for direct model-native named views. */
+  readonly modelOperation?: {
+    readonly model: object;
+    readonly name: string;
+  };
+}
+
+export type ApplicationModelViewOptions<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> =
+  Omit<ApplicationQueryOptions<TInput, TOutput, TPrincipal>, 'reads' | 'modelOperation'> & {
+    readonly reads?: readonly ApplicationQueryReadDependency[];
+  };
 
 export interface ApplicationQueryBinding<TInput = unknown, TOutput = unknown, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly kind: 'applicationQuery';
@@ -47,7 +95,8 @@ export interface ApplicationQueryBinding<TInput = unknown, TOutput = unknown, TP
     readonly maxResultBytes: number;
     readonly maxRows: number;
   };
-  authorize(principal: TPrincipal, input: TInput): Promise<boolean>;
+  readonly kubernetes?: ApplicationKubernetesQueryAuthorityContract;
+  authorize(principal: TPrincipal, input: TInput, context?: Readonly<Record<string, unknown>>): Promise<boolean>;
   run(context: ApplicationRelationalContext, principal: TPrincipal, input: TInput): Promise<TOutput>;
 }
 
@@ -56,7 +105,13 @@ export function registerApplicationQuery<TInput, TOutput, TPrincipal extends App
   const nodeId = `query.${id}`;
   if (state.graphNodes.some((node) => node.id === nodeId)) throw new Error(`Application query ${id} is already registered.`);
   if (options.reads.length === 0) throw new Error(`Application query ${id} must declare at least one model or relationship read dependency.`);
-  const reads = options.reads.map((dependency) => queryReadContract(state, dependency, id));
+  if (Boolean(options.database) === Boolean(options.kubernetes)) {
+    throw new Error(`Application query ${id} must declare exactly one PostgreSQL or Kubernetes snapshot authority.`);
+  }
+  if (options.database && !options.run) throw new Error(`Application query ${id} requires run() for its PostgreSQL snapshot authority.`);
+  if (options.kubernetes && options.run) throw new Error(`Application query ${id} must use declarative kubernetes projection callbacks instead of run().`);
+  const normalizedDependencies = options.reads.map((dependency) => normalizeQueryReadDependency(state, dependency));
+  const reads = normalizedDependencies.map((dependency) => queryReadContract(state, dependency, id));
   const budgets = {
     timeoutMs: options.budgets?.timeoutMs ?? 5_000,
     maxResultBytes: options.budgets?.maxResultBytes ?? 1_048_576,
@@ -66,12 +121,33 @@ export function registerApplicationQuery<TInput, TOutput, TPrincipal extends App
   // typecast: callback serialization erases only generic parameter names; runtime schemas remain authoritative for their values.
   const authorization = serializeApplicationCallback({ registrar: 'query', argumentIndex: 1, property: 'authorize', label: `Application query ${id} authorization`, callback: options.authorize as (...args: never[]) => unknown, allowDeferredResolution: true });
   // typecast: callback serialization preserves executable source while the query binding validates input and output at runtime.
-  const handler = serializeApplicationCallback({ registrar: 'query', argumentIndex: 1, property: 'run', label: `Application query ${id} handler`, callback: options.run as (...args: never[]) => unknown, allowDeferredResolution: true });
+  const handler = options.run
+    ? serializeApplicationCallback({
+        registrar: 'query',
+        argumentIndex: 1,
+        property: 'run',
+        label: `Application query ${id} handler`,
+        // typecast: serialization needs only the callback's executable shape; the public binding retains its input/output generics.
+        callback: options.run as (...args: never[]) => unknown,
+        allowDeferredResolution: true,
+      })
+    : { source: '() => { throw new Error("Kubernetes queries execute through their snapshot/watch authority."); }' };
+  const kubernetes = options.kubernetes
+    ? kubernetesQueryAuthority(state, id, normalizedDependencies[0], options.kubernetes)
+    : undefined;
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'query',
     name: parsed.name,
     version: parsed.version,
+    ...(parsed.publicId ? { publicId: parsed.publicId } : {}),
+    ...(options.modelOperation ? {
+      modelOperation: {
+        model: queryReadContract(state, options.modelOperation.model, id).model,
+        name: options.modelOperation.name,
+        kind: 'view',
+      },
+    } : {}),
     stability: 'stable',
     input: querySchema(options.input),
     output: querySchema(options.output),
@@ -79,10 +155,11 @@ export function registerApplicationQuery<TInput, TOutput, TPrincipal extends App
     authorization: 'application-defined',
     trustedContext: (options.context ?? []).map((context) => context.name).sort(),
     budgets,
-    snapshotResume: options.database ? 'resumableInvalidation' : 'resetOnly',
+    snapshotResume: options.database || kubernetes ? 'resumableInvalidation' : 'resetOnly',
     incremental: 'invalidation-requery',
     cursor: 'opaque-query-version-context-scoped',
     ...(options.database ? { database: reactiveDatabaseRuntime(options.database) } : {}),
+    ...(kubernetes ? { kubernetes } : {}),
     authorizationSource: authorization.source,
     ...(authorization.dependencies ? { authorizationDependencies: authorization.dependencies } : {}),
     ...(authorization.location ? { authorizationLocation: authorization.location } : {}),
@@ -101,16 +178,128 @@ export function registerApplicationQuery<TInput, TOutput, TPrincipal extends App
     input: options.input,
     output: options.output,
     ...(options.database ? { database: options.database } : {}),
+    ...(kubernetes ? { kubernetes } : {}),
     trustedContext: options.context ?? [],
-    reads: options.reads,
+    reads: normalizedDependencies,
     budgets,
-    async authorize(principal, input) {
-      return options.authorize({ principal, input });
+    async authorize(principal, input, context = {}) {
+      return options.authorize({ principal, context, input });
     },
     async run(context, principal, input) {
+      if (!options.run) throw new Error(`Application query ${id} executes through its Kubernetes snapshot/watch authority.`);
       return options.run({ context, principal, input });
     },
   };
+}
+
+export function registerApplicationModelView<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal>(
+  state: ApplicationGraphState,
+  model: object,
+  name: string,
+  options: ApplicationModelViewOptions<TInput, TOutput, TPrincipal>,
+): ApplicationQueryOperation<TInput, TOutput> {
+  const facet = getApplicationModelFacet<object, unknown, unknown, unknown>(model);
+  if (!facet) throw new Error('Application model views require a promoted application model.');
+  if (!/^[a-z][A-Za-z0-9]*$/.test(name)) throw new Error(`Application model view ${JSON.stringify(name)} must be a lowerCamelCase identifier.`);
+  const id = `${facet.name}.${name}`;
+  registerApplicationQuery(state, id, {
+    ...options,
+    reads: [model, ...(options.reads ?? [])],
+    modelOperation: { model, name },
+  });
+  return createApplicationQueryOperation<TInput, TOutput>({
+    apiVersion: 'applik8s.operation/v1alpha1',
+    kind: 'applicationOperation',
+    id,
+    model: facet.name,
+    name,
+    operation: 'query',
+    transport: 'query',
+  });
+}
+
+function kubernetesQueryAuthority<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal>(
+  state: ApplicationGraphState,
+  id: string,
+  dependency: ApplicationQueryReadDependency | undefined,
+  options: ApplicationKubernetesModelViewOptions<TInput, unknown, TOutput, TPrincipal>['kubernetes'],
+): ApplicationKubernetesQueryAuthorityContract {
+  if (!dependency || isRelationship(dependency)) {
+    throw new Error(`Application Kubernetes query ${id} must read a promoted Kubernetes model as its first dependency.`);
+  }
+  const model = getApplicationModelFacet<object, unknown, unknown, unknown>(dependency);
+  if (model?.native !== 'kubernetes-resource') {
+    throw new Error(`Application Kubernetes query ${id} must read a Kubernetes-backed model as its first dependency.`);
+  }
+  const node = state.graphNodes.find((candidate) => candidate.kind === 'crd' && candidate.name === model.name);
+  if (node?.kind !== 'crd') throw new Error(`Application Kubernetes query ${id} cannot resolve CRD graph metadata for ${model.name}.`);
+  const pageSize = positiveInteger(options.pageSize ?? 250, `${id}.kubernetes.pageSize`);
+  const maxPages = positiveInteger(options.maxPages ?? 100, `${id}.kubernetes.maxPages`);
+  const maxItems = positiveInteger(options.maxItems ?? 10_000, `${id}.kubernetes.maxItems`);
+  const namespaceResolver = typeof options.namespace === 'function'
+    ? serializeQueryCallback(id, 'namespace', options.namespace)
+    : undefined;
+  return {
+    kind: 'kubernetes-list-watch',
+    model: { nodeId: node.id },
+    resource: {
+      apiVersion: node.resource.apiVersion,
+      kind: node.resource.kind,
+      plural: node.resource.plural,
+      scope: node.resource.scope,
+    },
+    ...(typeof options.namespace === 'string' ? { namespace: options.namespace } : {}),
+    ...(namespaceResolver ? { namespaceResolver } : {}),
+    ...(options.labelSelector ? { labelSelector: serializeQueryCallback(id, 'labelSelector', options.labelSelector) } : {}),
+    ...(options.fieldSelector ? { fieldSelector: serializeQueryCallback(id, 'fieldSelector', options.fieldSelector) } : {}),
+    ...(options.filter ? { filter: serializeQueryCallback(id, 'filter', options.filter) } : {}),
+    ...(options.compare ? { compare: serializeQueryCallback(id, 'compare', options.compare) } : {}),
+    project: serializeQueryCallback(id, 'project', options.project),
+    ...(options.limit ? { limit: serializeQueryCallback(id, 'limit', options.limit) } : {}),
+    pageSize,
+    maxPages,
+    maxItems,
+  };
+}
+
+function serializeQueryCallback(id: string, property: string, callback: (...args: never[]) => unknown): ApplicationSerializedCallbackContract {
+  const serialized = serializeApplicationCallback({
+    registrar: 'query',
+    argumentIndex: 1,
+    property,
+    label: `Application query ${id} Kubernetes ${property}`,
+    callback,
+    allowDeferredResolution: true,
+  });
+  return {
+    source: serialized.source,
+    ...(serialized.dependencies ? { dependencies: serialized.dependencies } : {}),
+    ...(serialized.location ? { location: serialized.location } : {}),
+    ...(serialized.unresolved ? { unresolved: serialized.unresolved } : {}),
+  };
+}
+
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`Application query ${name} must be a positive integer.`);
+  return value;
+}
+
+function normalizeQueryReadDependency(state: ApplicationGraphState, dependency: ApplicationQueryReadDependency): ApplicationQueryReadDependency {
+  if (!isRelationship(dependency)) return dependency;
+  const source = canonicalApplicationModelName(state, dependency.source) ?? dependency.source;
+  const target = canonicalApplicationModelName(state, dependency.target) ?? dependency.target;
+  return source === dependency.source && target === dependency.target ? dependency : { ...dependency, source, target };
+}
+
+function canonicalApplicationModelName(state: ApplicationGraphState, value: string): string | undefined {
+  const direct = state.graphNodes.find((node) => (node.kind === 'model' || node.kind === 'crd') && node.name === value);
+  if (direct) return direct.name;
+  const native = state.graphNodes.find((node) => {
+    if (node.kind === 'model') return node.native?.artifact.name === value;
+    if (node.kind === 'crd') return node.resource.plural === value || node.resource.kind === value;
+    return false;
+  });
+  return native?.name;
 }
 
 function reactiveDatabaseRuntime(binding: ApplicationDatabaseBinding): {
@@ -160,9 +349,13 @@ function querySchema<TValue>(schema: Type<TValue>): ApplicationMessageContractSc
   return { kind: 'declared', runtime: 'arktype', jsonSchema: schema.toJsonSchema() as JsonObject };
 }
 
-function parseVersionedQueryId(id: string): { readonly name: string; readonly version: string } {
+function parseVersionedQueryId(id: string): { readonly name: string; readonly version: string; readonly publicId?: string } {
   const match = /^(?<name>[a-z][a-z0-9.-]*)\.(?<version>v[1-9][0-9]*)$/.exec(id);
-  if (!match?.groups) throw new Error(`Application query id ${JSON.stringify(id)} must end in a stable version such as cards.for-set.v1.`);
+  if (!match?.groups) {
+    const modelView = /^(?<model>[A-Z][A-Za-z0-9]*)\.(?<view>[a-z][A-Za-z0-9]*)$/.exec(id);
+    if (modelView?.groups) return { name: id, version: 'v1', publicId: id };
+    throw new Error(`Application query id ${JSON.stringify(id)} must end in a stable version such as cards.for-set.v1 or use the direct Model.view form.`);
+  }
   // typecast: the regex requires both named groups and the guard proves the groups object exists.
   return { name: match.groups.name as string, version: match.groups.version as string };
 }

@@ -1,4 +1,4 @@
-import { app, applicationGraphFor, Certificate, DnsPublication, ProjectionStore, stream } from '@applik8s/applik8s';
+import { app, ApplicationHost, applicationGraphFor, Certificate, DnsPublication, ProjectionStore, stream } from '@applik8s/applik8s';
 import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
@@ -9,6 +9,30 @@ const AccountChanged = stream('accounts.changed.v1', {
 });
 
 describe('v0.6 streams, subscriptions, and projections', () => {
+  it('binds an immutable Kubernetes application host with hydrateable service facts', () => {
+    const guestbook = app('hosted-guestbook', { namespace: 'guestbook' });
+    const host = guestbook.provide(ApplicationHost, ApplicationHost.kubernetes({ replicas: 2, port: 3000 }));
+    const exposure = guestbook.expose('web', {
+      service: host,
+      hostnames: ['guestbook.localhost'],
+      tls: { mode: 'disabled' },
+      dns: { mode: 'disabled' },
+    });
+    expect(host).toMatchObject({
+      kind: 'applicationHost',
+      service: { name: 'hosted-guestbook-web', namespace: 'guestbook', port: 3000 },
+      status: { ready: false },
+      image: { digest: 'sha256:pending-build' },
+      url: { internal: 'http://hosted-guestbook-web.guestbook.svc:3000' },
+    });
+    expect(exposure).toMatchObject({ publicUrl: 'http://guestbook.localhost', resourceName: 'web-ingress' });
+    const graph = applicationGraphFor(guestbook.composition);
+    expect(graph?.nodes.find((node) => node.kind === 'provider' && node.interface === 'ApplicationHost')).toMatchObject({
+      implementation: 'kubernetes-application-host',
+      config: { host: { kind: 'kubernetes-application-host', replicas: 2, port: 3000 } },
+    });
+  });
+
   it('exposes a generated query gateway through managed HTTPS without manually reconstructing its Service', () => {
     const entries = pgTable('guestbook_entries', {
       id: text('id').primaryKey(),

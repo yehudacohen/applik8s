@@ -9,6 +9,7 @@ export function canonicalApplicationCommandKey(value: ApplicationCommandKey): st
   return String(value);
 }
 
-export function applicationCommandScope(bindingId: string, model: string, targetKey: string, idempotencyKey: string): string {
-  return `sha256:${createHash('sha256').update(JSON.stringify([bindingId, model, targetKey, idempotencyKey])).digest('hex')}`;
+export function applicationCommandScope(bindingId: string, model: string, targetKey: string, idempotencyKey: string, contextDigest: string): string {
+  if (!contextDigest.trim()) throw new Error('Application command scope requires an admitted context digest.');
+  return `sha256:${createHash('sha256').update(JSON.stringify(['v2', bindingId, model, targetKey, idempotencyKey, contextDigest])).digest('hex')}`;
 }

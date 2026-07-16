@@ -6,6 +6,7 @@ import postgres from 'postgres';
 import type { ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationRuntimeModelContract } from './application-models.js';
 import type { ApplicationCommandObservation, ApplicationMessageEnvelope, ApplicationStateRevisionRef, CommandDefinition, EventDefinition } from './dsl.js';
 import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
+import { applicationModelChangeCommitScope } from './relational-runtime-contract.js';
 
 export { canonicalApplicationCommandKey } from './command-runtime-contract.js';
 
@@ -143,6 +144,9 @@ export async function executePostgresModelCommand<
   const recordedAt = execution.message.recordedAt ?? new Date().toISOString();
   const outcome: PostgresModelCommandResult<TSpec, TStatus, TOutput> | RejectedCommandOutcome = await retryPostgresCommandTransaction(() => sql.begin(async (transaction) => {
     await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [scope]);
+    if (execution.message.context?.digest) {
+      await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [applicationModelChangeCommitScope(execution.message.context.digest)]);
+    }
     await installCommandTrustedContext(transaction, execution.model, execution.message.context);
     const completedRows = await transaction.unsafe('SELECT result.output, result.error, result.model_revision, inbox.target_key FROM applik8s_command_results result JOIN applik8s_command_inbox inbox ON inbox.scope = result.scope WHERE result.scope = $1 LIMIT 1', [scope]);
     // typecast: the fixed projection comes from an Applik8s-owned command-results migration.
@@ -776,7 +780,13 @@ function nativeRowToProperties(model: ApplicationRuntimeModelContract, row: Nati
 }
 
 function commandScope(execution: Pick<PostgresModelCommandExecution<object, object, object, object>, 'bindingId' | 'model' | 'message'>): string {
-  return applicationCommandScope(execution.bindingId, execution.model.name, execution.message.targetKey, execution.message.idempotencyKey);
+  return applicationCommandScope(
+    execution.bindingId,
+    execution.model.name,
+    execution.message.targetKey,
+    execution.message.idempotencyKey,
+    execution.message.context?.digest ?? 'unscoped',
+  );
 }
 
 function commandTargetScope(bindingId: string, model: string, targetKey: string): string {

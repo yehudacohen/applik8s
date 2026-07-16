@@ -422,6 +422,8 @@ function providerInterfaces(): readonly ApplicationProviderInterfaceContract[] {
     { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'ProjectionStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'RequestIdentity', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   ];
 }
 

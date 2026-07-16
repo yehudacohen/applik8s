@@ -10,7 +10,28 @@ const applicationCallbackProperties: Readonly<Record<string, readonly string[]>>
 
 /** Preserves callback source provenance while esbuild evaluates an application entrypoint. */
 export function decorateApplicationCallbackArguments(node: ts.CallExpression, file: ts.SourceFile, sourceFile: string, visit: ts.Visitor): readonly ts.Expression[] | undefined {
+  if (ts.isIdentifier(node.expression) && node.expression.text === 'createApplik8sStart') {
+    return node.arguments.map((argument, index) => {
+      // typecast: the TypeScript visitor preserves expression arguments while recursively instrumenting their children.
+      const visited = ts.visitNode(argument, visit) as ts.Expression;
+      if (index !== 0 || !ts.isObjectLiteralExpression(visited)) return visited;
+      return decorateApplicationCallbackObject(visited, ['authenticate'], file, sourceFile, 'createApplik8sStart');
+    });
+  }
   if (!ts.isPropertyAccessExpression(node.expression)) return undefined;
+  if (
+    node.expression.name.text === 'from'
+    && ts.isIdentifier(node.expression.expression)
+    && node.expression.expression.text === 'RequestIdentity'
+  ) {
+    return node.arguments.map((argument, index) => {
+      // typecast: RequestIdentity.from's first argument is the authentication callback expression.
+      const visited = ts.visitNode(argument, visit) as ts.Expression;
+      return index === 0
+        ? decorateApplicationCallbackExpression(visited, file, sourceFile, 'RequestIdentity', 'authenticate')
+        : visited;
+    });
+  }
   const registrar = node.expression.name.text;
   if (registrar === 'task' || registrar === 'workflow') {
     return node.arguments.map((argument, index) => {

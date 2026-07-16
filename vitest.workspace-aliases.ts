@@ -19,6 +19,8 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/applik8s': fileURLToPath(new URL('./packages/applik8s/src/index.ts', import.meta.url)),
     '@applik8s/client': fileURLToPath(new URL('./packages/client/src/index.ts', import.meta.url)),
     '@applik8s/react': fileURLToPath(new URL('./packages/react/src/index.ts', import.meta.url)),
+    '@applik8s/vite/server': fileURLToPath(new URL('./packages/vite/src/server.ts', import.meta.url)),
+    '@applik8s/vite': fileURLToPath(new URL('./packages/vite/src/index.ts', import.meta.url)),
     '@applik8s/tanstack-start': fileURLToPath(new URL('./packages/tanstack-start/src/index.ts', import.meta.url)),
     '@applik8s/core': fileURLToPath(new URL('./packages/core/src/index.ts', import.meta.url)),
     '@applik8s/sdk/schema-runtime': fileURLToPath(new URL('./packages/sdk/src/schema-runtime.ts', import.meta.url)),

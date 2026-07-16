@@ -39,6 +39,7 @@ import { emitHandlerWitArtifact, emitRuntimeContractArtifact } from '../runtime-
 import { emitWasmComponentArtifact } from '../wasm-component/index.js';
 import type { TypeKroCompositionExport } from './entrypoint-discovery.js';
 import { discoverEntrypointExports, discoverExportedOperators } from './entrypoint-discovery.js';
+import { generatedApplicationHostResources, typeKroKubectlContextShell } from './application-support.js';
 import { generatedDispatcherEntrypoint } from './static-dispatcher.js';
 import { typeKroSchemaApiResources } from './typekro-api-resources.js';
 import { planTypeKroEmission, typeKroGeneratedResourceId, typeKroResourceFingerprint } from './typekro-emission-plan.js';
@@ -106,6 +107,15 @@ export interface CompileTypeKroCompositionResult {
   readonly diagnostics: readonly Diagnostic[];
 }
 
+export async function discoverApplicationGraph(entrypoint: string, compositionName?: string): Promise<Result<ApplicationGraph>> {
+  const discovered = await discoverEntrypointExports(entrypoint);
+  if (!discovered.ok) return discovered;
+  const selected = selectTypeKroComposition(discovered.value.typeKroCompositions, compositionName);
+  if (!selected.ok) return selected;
+  const graph = applicationGraphForComposition(selected.value);
+  if (graph) return { ok: true, value: graph };
+  return error('BUNDLE_INVALID', `TypeKro composition ${compositionName ?? selected.value.name ?? '<selected>'} does not expose an Applik8s ApplicationGraph.`);
+}
 export interface CompiledTypeKroComposition {
   readonly resources: readonly TypeKroCompositionResource[];
 }
@@ -343,6 +353,9 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const reactiveArtifacts = request.applicationGraph
       ? await emitGeneratedApplicationReactive({ graph: request.applicationGraph, outDir: join(request.outDir, 'reactive'), entrypoint: request.entrypoint })
       : [];
+    const hostResources = request.applicationGraph
+      ? await generatedApplicationHostResources({ graph: request.applicationGraph, entrypoint: request.entrypoint, outDir: join(request.outDir, 'application-host') })
+      : [];
     // typecast: generated processor resources are concrete Kubernetes JSON objects and are validated by the same serialization path as composition resources.
     const processorResources = processorArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated migration resources are concrete Kubernetes JSON objects and use the shared TypeKro serialization path.
@@ -351,7 +364,8 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const workflowResources = workflowArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated reactive resources are concrete Kubernetes JSON objects and use the shared TypeKro serialization path.
     const reactiveResources = reactiveArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
-    const generatedResources = [...migrationResources, ...processorResources, ...workflowResources, ...reactiveResources];
+    // typecast: generated host resources are concrete Kubernetes JSON objects and share the TypeKro emission contract.
+    const generatedResources = [...migrationResources, ...processorResources, ...workflowResources, ...reactiveResources, ...hostResources as unknown as readonly TypeKroCompositionResource[]];
     const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition, request.applicationGraph?.metadata);
     const factoryArtifacts = request.applicationGraph
       ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, generatedResources, request.applicationGraph.metadata.name)
@@ -1058,6 +1072,7 @@ function emitTypeKroApplyScript(resources: readonly TypeKroCompositionResource[]
     '',
     'SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"',
     `KUBECTL="${shDefault('KUBECTL', 'kubectl')}"`,
+    `KUBE_CONTEXT="${shDefault('APPLIK8S_KUBE_CONTEXT', '')}"`,
     `FIELD_MANAGER="${shDefault('APPLIK8S_FIELD_MANAGER', 'applik8s-typekro')}"`,
     `WAIT_TIMEOUT="${shDefault('APPLIK8S_WAIT_TIMEOUT', '180s')}"`,
     `APPLY_RETRY_SECONDS="${shDefault('APPLIK8S_APPLY_RETRY_SECONDS', '180')}"`,
@@ -1070,6 +1085,7 @@ function emitTypeKroApplyScript(resources: readonly TypeKroCompositionResource[]
     '  exit 1',
     'fi',
     '',
+    ...typeKroKubectlContextShell(),
     'is_kind() {',
     '  grep -Eq "^kind:[[:space:]]*$2[[:space:]]*$" "$1"',
     '}',
@@ -1083,14 +1099,14 @@ function emitTypeKroApplyScript(resources: readonly TypeKroCompositionResource[]
     '}',
     '',
     'apply_manifest() {',
-    '  "$KUBECTL" apply --server-side --field-manager="$FIELD_MANAGER" --filename "$1"',
+    '  kubectl_run apply --server-side --field-manager="$FIELD_MANAGER" --filename "$1"',
     '}',
     '',
     'apply_with_retry() {',
     '  deadline=$(( $(date +%s) + APPLY_RETRY_SECONDS ))',
     '  while :; do',
     '    if apply_manifest "$1"; then',
-    '      if deletion_timestamp=$("$KUBECTL" get --filename "$1" --output=jsonpath="{.metadata.deletionTimestamp}" 2>/dev/null); then',
+    '      if deletion_timestamp=$(kubectl_run get --filename "$1" --output=jsonpath="{.metadata.deletionTimestamp}" 2>/dev/null); then',
     '        if [ -z "$deletion_timestamp" ]; then',
     '          return 0',
     '        fi',
@@ -1109,7 +1125,7 @@ function emitTypeKroApplyScript(resources: readonly TypeKroCompositionResource[]
     '  group="$1"',
     '  kind="$2"',
     '  deadline=$(( $(date +%s) + APPLY_RETRY_SECONDS ))',
-    '  until "$KUBECTL" api-resources --api-group="$group" --no-headers 2>/dev/null | grep -Eq "[[:space:]]$kind$"; do',
+    '  until kubectl_run api-resources --api-group="$group" --no-headers 2>/dev/null | grep -Eq "[[:space:]]$kind$"; do',
     '    if [ "$(date +%s)" -ge "$deadline" ]; then',
     '      echo "Timed out waiting for TypeKro API resource $kind in group $group after $APPLY_RETRY_SECONDS seconds" >&2',
     '      return 1',
@@ -1133,7 +1149,7 @@ function emitTypeKroApplyScript(resources: readonly TypeKroCompositionResource[]
     '  [ -e "$manifest" ] || continue',
     '  if is_kind "$manifest" CustomResourceDefinition; then',
     '    apply_manifest "$manifest"',
-    '    "$KUBECTL" wait --for=condition=Established --timeout="$WAIT_TIMEOUT" --filename "$manifest"',
+    '    kubectl_run wait --for=condition=Established --timeout="$WAIT_TIMEOUT" --filename "$manifest"',
     '  fi',
     'done',
     '',

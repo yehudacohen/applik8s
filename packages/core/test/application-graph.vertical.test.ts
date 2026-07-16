@@ -104,6 +104,8 @@ describe('application graph substrate contract', () => {
       'CredentialStore',
       'WorkflowEngine',
       'ProjectionStore',
+      'ApplicationHost',
+      'RequestIdentity',
     ]);
     expect(isApplicationGraphNodeKind('job')).toBe(true);
     expect(isApplicationGraphNodeKind('workflow')).toBe(true);
@@ -475,6 +477,8 @@ describe('application graph substrate contract', () => {
       'CredentialStore:failClosedReserved',
       'WorkflowEngine:failClosedReserved',
       'ProjectionStore:failClosedReserved',
+      'ApplicationHost:failClosedReserved',
+      'RequestIdentity:failClosedReserved',
     ]);
     expect(contracts.flatMap(validateApplicationProviderInterfaceContract)).toEqual([]);
     expect(validateApplicationProviderInterfaceContract({ interface: 'Queue', surface: 'stablePublicApi', support: 'failClosedReserved', diagnostics: [] })).toEqual(expect.arrayContaining([
@@ -537,6 +541,8 @@ describe('application graph substrate contract', () => {
       CredentialStore: 'credentialStore',
       WorkflowEngine: 'workflowEngine',
       ProjectionStore: 'projectionStore',
+      ApplicationHost: 'applicationHost',
+      RequestIdentity: 'requestIdentity',
     };
     const requirements = applicationProviderInterfaceKinds.map((providerInterface) => ({
       id: `requirement.${providerInterface}`,
@@ -550,7 +556,7 @@ describe('application graph substrate contract', () => {
       },
     }) satisfies ApplicationProviderRequirement);
 
-    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['modelStore', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'projectionStore']);
+    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['modelStore', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'projectionStore', 'applicationHost', 'requestIdentity']);
     for (const requirement of requirements) {
       expect(requirement.diagnostics.missing).toContain(requirement.interface);
     }

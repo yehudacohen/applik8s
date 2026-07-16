@@ -28,6 +28,8 @@
       "@applik8s/applik8s/reactive-runtime": ["packages/applik8s/src/reactive-runtime.ts"],
       "@applik8s/client": ["packages/client/src/index.ts"],
       "@applik8s/react": ["packages/react/src/index.ts"],
+      "@applik8s/vite": ["packages/vite/src/index.ts"],
+      "@applik8s/vite/server": ["packages/vite/src/server.ts"],
       "@applik8s/tanstack-start": ["packages/tanstack-start/src/index.ts"],
       "@applik8s/sdk": ["packages/sdk/src/index.ts"],
       "@applik8s/sdk/schema-runtime": ["packages/sdk/src/schema-runtime.ts"],

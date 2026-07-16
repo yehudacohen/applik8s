@@ -423,6 +423,13 @@ export function recordApplicationNativeModelGraph<TTable extends AnyPgTable>(
       snapshot: { shape: 'identity-value-revision', revisionOptional: true },
       changes: { authority: 'postgres-change-log', rawWrites: 'explicit-invalidation-required' },
       relationships: model.relationships,
+      operations: [{
+        name: 'create',
+        operation: 'create',
+        transport: 'command',
+        publicId: `${model.name}.create`,
+        authorization: 'undeclared',
+      }],
     },
     runtime: { ...runtime, storageShape: 'native-relational' },
     generatedResources: providerResources.map((resource) => ({

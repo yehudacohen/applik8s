@@ -16,14 +16,15 @@ import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import type { ApplicationServerRuntimeIndex, ApplicationServerRuntimeResource } from './application-generated-runtime-sources.js';
 import { generatedApplicationAggregateSource, generatedValkeyIndexerSource } from './application-generated-runtime-sources.js';
 import { applicationConfigLabels, applicationExposureServiceName, applicationExposureServiceNamespace, applicationExposureServicePort, applicationExternalDnsAnnotations, applicationLegacyTlsMode, normalizeApplicationTlsIntent } from './application-exposure.js';
+import { recordApplicationCrdGraph } from './application-crd-graph.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, applicationGraphFromState, isApplicationGraph } from './application-graph-state.js';
 import { apiGroupForApiVersion, graphResourceId, kubernetesNameSegment, pascalCase, pluralizeKubernetesKind, unique } from './application-identifiers.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobPhaseStatusContract, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
 import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationRuntimeModelContract } from './application-models.js';
 import { applicationModelBinding, applicationModelMigrationPlan, applicationModelMigrationPreflightSql, applicationModelMigrationSql, applicationRuntimeModelContract, recordApplicationModelCommandGraph, recordApplicationModelGraph, recordApplicationNativeModelGraph, resolveApplicationModelStore } from './application-models.js';
 import { emitApplicationProjectionStoreResources } from './application-projection-store-resources.js';
-import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationPostgresModelStoreOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend } from './application-providers.js';
-import { applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHttpExposureImplementation, applicationModelStoreImplementation, applicationProjectionStoreImplementation, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, applicationTypedProviderContract, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, isIngressHttpExposureProvider, isValkeyIndexDefault, ModelStore } from './application-providers.js';
+import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationPostgresModelStoreOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend } from './application-providers.js';
+import { ApplicationHost, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationModelStoreImplementation, applicationProjectionStoreImplementation, applicationProviderImplementationName, applicationProviderInterface, applicationProviderTokenName, applicationTypedProviderContract, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, isIngressHttpExposureProvider, isValkeyIndexDefault, ModelStore } from './application-providers.js';
 import type { ApplicationRouteSourceLocation, ApplicationServerRouteSourceAnalysis, SerializedApplicationServerRouteWithDependencies } from './application-route-source.js';
 import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationRouteHandlerSource, normalizeSerializableFunctionSource, routeAnalysisCallsMethod, routeDynamicBindingAccesses, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 import { generatedApplicationRuntimeModuleBundle, generatedJobStatusRuntimeBundle } from './application-runtime-modules.js';
@@ -34,16 +35,19 @@ import { applicationStatusReconcilerName, emitApplicationGeneratedJobStatusRecon
 import type { ApplicationTaskBinding, ApplicationTaskHandler, ApplicationTaskOptions, ApplicationTaskReference, ApplicationWorkflowBinding, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference } from './application-workflows.js';
 import { type ApplicationWorkflowState, registerApplicationTask, registerApplicationWorkflow } from './application-workflows.js';
 import type { EntityDefinition, StreamDefinition, TaskDefinition, WorkflowDefinition } from './dsl.js';
-import { registerApplicationQuery, type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal } from './application-queries.js';
+import { serializeApplicationCallback } from './application-callback.js';
+import { registerApplicationModelView, registerApplicationQuery, type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal } from './application-queries.js';
 import { registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationSubscription, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationProjectionBinding, type ApplicationProjectionOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions } from './application-reactive.js';
-import { bindNativeApplicationModelCommands, getApplicationModelFacet, nativeApplicationModelCommandRegistrar, promoteDrizzleTable, promoteKubernetesResource, type PromotedDrizzleTable, type PromotedKubernetesResource, type PromoteDrizzleTableOptions } from './native-models.js';
+import { applicationModelViewRegistrar, bindApplicationModelViews, bindNativeApplicationModelCommands, nativeApplicationModelCommandRegistrar, promoteDrizzleTable, promoteKubernetesResource, type ApplicationKubernetesCreatePolicy, type PromotedDrizzleTable, type PromotedKubernetesResource, type PromoteDrizzleTableOptions } from './native-models.js';
 import type { ApplicationPostgresRlsPolicy } from './trusted-context.js';
 
 export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationCommandSubmissionAcknowledgement, ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandOptions, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
 export type { ApplicationGatewayAdmission, ApplicationGatewayBinding, ApplicationGatewayOptions, ApplicationProjectionBinding, ApplicationProjectionOptions, ApplicationStreamBinding, ApplicationStreamOptions, ApplicationSubscriptionBinding, ApplicationSubscriptionOptions } from './application-reactive.js';
-export type { ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalDnsPublicationProvider, ApplicationGeneratedModelStoreMigrationJobOptions, ApplicationHatchetWorkflowEngineProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationObjectStorageProvider, ApplicationPostgresModelStoreOptions, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationQueueProvider, ApplicationSecretProvider, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
-export { Certificate, CounterStore, CredentialStore, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, ProjectionStore, providers, Queue, Secret, WorkflowEngine } from './application-providers.js';
+export type { ApplicationKubernetesModelViewOptions, ApplicationModelViewOptions, ApplicationQueryAuthorizationRequest } from './application-queries.js';
+export type { ApplicationKubernetesCreatePlacement, ApplicationKubernetesCreatePolicy, ApplicationKubernetesCreateRequest } from './native-models.js';
+export type { ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalDnsPublicationProvider, ApplicationGeneratedModelStoreMigrationJobOptions, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationObjectStorageProvider, ApplicationPostgresModelStoreOptions, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationQueueProvider, ApplicationRequestAdmission, ApplicationRequestIdentityProvider, ApplicationRequestIdentityProviderToken, ApplicationSecretProvider, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
+export { ApplicationHost, Certificate, CounterStore, CredentialStore, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, ProjectionStore, providers, Queue, RequestIdentity, Secret, WorkflowEngine } from './application-providers.js';
 export { ApplicationDurableError, isApplicationDurableError } from './application-workflows.js';
 export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskOptions, ApplicationTaskReference, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference, ApplicationWorkflowResultOptions, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
 
@@ -155,6 +159,7 @@ export type ApplicationCrdOptions<TSpec extends object, TStatus extends object> 
     readonly context: import('./trusted-context.js').ApplicationTrustedContext<unknown>;
     readonly namespaceLabel: string;
   };
+  readonly create?: ApplicationKubernetesCreatePolicy<TSpec>;
 };
 
 export interface ApplicationJobOptions {
@@ -218,7 +223,7 @@ export interface ApplicationSecretBinding {
 
 export interface ApplicationExposureOptions {
   readonly namespace?: string;
-  readonly service?: string | ApplicationServerBinding | ApplicationGatewayBinding;
+  readonly service?: string | ApplicationServerBinding | ApplicationGatewayBinding | ApplicationHostBinding;
   readonly servicePort?: number;
   readonly hostnames?: readonly string[];
   readonly tls?: 'required' | 'optional' | 'disabled' | ApplicationTlsIntent;
@@ -480,7 +485,7 @@ export interface KubernetesApplicationBuilder extends KubernetesApplicationScope
   readonly operatorInstalls: readonly unknown[];
   readonly resources: readonly unknown[];
   resolveOperatorInstalls(options: { readonly manifests: readonly unknown[] }): Result<unknown>;
-  factory(name: string): unknown;
+  factory(name: string, options?: unknown): unknown;
 }
 
 export interface KubernetesApplicationFunction extends KubernetesApplicationCompositionFunction {
@@ -681,9 +686,9 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
       // typecast: builder forwards opaque manifest input to the underlying TypeKro composition resolver while preserving the public Result shape.
       return materialize().resolveOperatorInstalls(resolveOptions as never) as Result<unknown>;
     },
-    factory(factoryName: string) {
-      // typecast: builder.factory forwards dynamic factory names to TypeKro and returns an intentionally opaque inspection/deployment factory.
-      return materialize().factory(factoryName as never) as unknown;
+    factory(factoryName: string, factoryOptions?: unknown) {
+      // typecast: builder.factory forwards dynamic factory names/options to TypeKro and returns an intentionally opaque inspection/deployment factory.
+      return materialize().factory(factoryName as never, factoryOptions as never) as unknown;
     },
     api: http,
     http,
@@ -711,10 +716,22 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
     },
     crd<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, crdOptions: ApplicationCrdOptions<TSpec, TStatus>): PromotedKubernetesResource<TSpec, TStatus> {
       const resource = preview.crd(entity, crdOptions);
+      const previewViewRegistrar = applicationModelViewRegistrar(resource);
+      if (!previewViewRegistrar) throw new Error(`Kubernetes model ${entity.name} did not install its application view registrar.`);
+      const viewReplays: Parameters<typeof previewViewRegistrar>[] = [];
+      bindApplicationModelViews(resource, (viewName, viewOptions) => {
+        const operation = previewViewRegistrar(viewName, viewOptions);
+        viewReplays.push([viewName, viewOptions]);
+        invalidate();
+        return operation;
+      });
       // typecast: declaredResources stores heterogeneous entity-backed CRD definitions for later inferred app.http bindings.
       declaredResources[entity.name] = resource as unknown as AnyResourceDefinition;
       replays.push((scope) => {
-        scope.crd(entity, crdOptions);
+        const replayed = scope.crd(entity, crdOptions);
+        const registrar = applicationModelViewRegistrar(replayed);
+        if (!registrar) throw new Error(`Kubernetes model ${entity.name} did not install its replay view registrar.`);
+        for (const declaration of viewReplays) registrar(...declaration);
       });
       invalidate();
       return resource;
@@ -725,18 +742,30 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
         const previewModel = preview.model(entityOrName as TTable, nativeOptions);
         const previewRegistrar = nativeApplicationModelCommandRegistrar(previewModel);
         if (!previewRegistrar) throw new Error(`Native model ${previewModel.$model.name} did not install its application command registrar.`);
+        const previewViewRegistrar = applicationModelViewRegistrar(previewModel);
+        if (!previewViewRegistrar) throw new Error(`Native model ${previewModel.$model.name} did not install its application view registrar.`);
         const commandReplays: Parameters<typeof previewRegistrar>[] = [];
+        const viewReplays: Parameters<typeof previewViewRegistrar>[] = [];
         bindNativeApplicationModelCommands(previewModel, ((command: Parameters<typeof previewRegistrar>[0], commandOptions: Parameters<typeof previewRegistrar>[1], handler: Parameters<typeof previewRegistrar>[2]) => {
           const binding = previewRegistrar(command, commandOptions, handler);
           commandReplays.push([command, commandOptions, handler]);
           invalidate();
           return binding;
         }) as typeof previewRegistrar);
+        bindApplicationModelViews(previewModel, (viewName, viewOptions) => {
+          const operation = previewViewRegistrar(viewName, viewOptions);
+          viewReplays.push([viewName, viewOptions]);
+          invalidate();
+          return operation;
+        });
         replays.push((scope) => {
           const replayed = scope.model(entityOrName as TTable, nativeOptions);
           const registrar = nativeApplicationModelCommandRegistrar(replayed);
           if (!registrar) throw new Error(`Native model ${replayed.$model.name} did not install its replay command registrar.`);
           for (const declaration of commandReplays) registrar(...declaration);
+          const viewRegistrar = applicationModelViewRegistrar(replayed);
+          if (!viewRegistrar) throw new Error(`Native model ${replayed.$model.name} did not install its replay view registrar.`);
+          for (const declaration of viewReplays) viewRegistrar(...declaration);
         });
         invalidate();
         return previewModel;
@@ -879,9 +908,18 @@ function createKubernetesApplicationBuilder(name: string, options: KubernetesApp
       return binding;
     },
     provide<TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): ApplicationProviderBinding<TImplementation> {
-      const binding = preview.provide(token, implementation);
+      const normalizedImplementation = (
+        (token as unknown) === ApplicationHost
+        && options.namespace
+        && implementation
+        && typeof implementation === 'object'
+        && !Reflect.get(implementation, 'namespace')
+      )
+        ? { ...implementation, namespace: options.namespace } as TImplementation
+        : implementation;
+      const binding = preview.provide(token, normalizedImplementation);
       replays.push((scope) => {
-        scope.provide(token, implementation);
+        scope.provide(token, normalizedImplementation);
       });
       invalidate();
       return binding;
@@ -1058,7 +1096,14 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
   const provide = <TImplementation>(token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): ApplicationProviderBinding<TImplementation> => {
     applyApplicationProvider(state, token, implementation);
     recordApplicationProviderGraph(state, applicationProviderTokenName(token), 'provided', implementation, token.contract);
-    return { kind: 'applicationProvider', token, implementation };
+    if ((token as unknown) === ApplicationHost) {
+      return applicationHostBinding(
+        ApplicationHost,
+        implementation as unknown as ApplicationHostProvider,
+        definition.name,
+      ) as ApplicationProviderBinding<TImplementation>;
+    }
+    return { kind: 'applicationProvider', token, implementation } as ApplicationProviderBinding<TImplementation>;
   };
   const storage: ApplicationStorageRegistrar = {
     postgres(name, options = {}) {
@@ -1101,7 +1146,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     return definitionResource;
   };
   const crd = <TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options: ApplicationCrdOptions<TSpec, TStatus>): PromotedKubernetesResource<TSpec, TStatus> => {
-    const { access, ...crdOptions } = options;
+    const { access, create, ...crdOptions } = options;
     const definitionResource = baseSdk.crd({
       ...crdOptions,
       kind: options.kind ?? entity.name,
@@ -1113,9 +1158,11 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     const modelResource = promoteKubernetesResource(definitionResource, {
       name: entity.name,
       ...(access ? { access: { context: access.context.name, namespaceLabel: access.namespaceLabel } } : {}),
+      ...(create ? { create } : {}),
     });
     collectApplicationResources(state, { [entity.name]: modelResource });
     recordApplicationCrdGraph(state, entity.name, modelResource);
+    bindApplicationModelViews(modelResource, (viewName, viewOptions) => registerApplicationModelView(state, modelResource, viewName, viewOptions));
     return modelResource;
   };
   const reconcile = <TSpec extends object, TStatus extends object = Record<string, never>>(resource: ResourceDefinition<TSpec, TStatus>, handler: ApplicationReconcileHandler<TSpec, TStatus>, options: ApplicationReconcileOptions = {}): unknown => {
@@ -1162,6 +1209,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
         emitApplicationModelStoreResources(state, runtimeModel, databaseBinding.provider);
         recordApplicationNativeModelGraph(state, promoted.$model, databaseBinding.provider, runtimeModel, databaseBinding.migrations ? { artifact: databaseBinding.migrations.path, ...(databaseBinding.migrations.digest ? { digest: databaseBinding.migrations.digest } : {}) } : {});
         state.models[runtimeModel.name] = runtimeModel;
+        bindApplicationModelViews(promoted, (viewName, viewOptions) => registerApplicationModelView(state, promoted, viewName, viewOptions));
         bindNativeApplicationModelCommands(promoted, (command, commandOptions, handler) => recordApplicationModelCommandGraph(
           state,
           applicationNativeCommandModelBinding(promoted, runtimeModel),
@@ -1545,37 +1593,6 @@ function collectApplicationIndexes(state: ApplicationScopeState, indexes: Readon
   }
 }
 
-// typecast-boundary: literal discriminants preserve the normalized native Kubernetes graph contract across conditional object spreads.
-function recordApplicationCrdGraph(state: ApplicationScopeState, name: string, resource: Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'> & Partial<AnyResourceDefinition>): void {
-  const model = getApplicationModelFacet<object, string, never, never>(resource);
-  addApplicationGraphNode(state, {
-    id: applicationGraphNodeId('crd', name),
-    kind: 'crd',
-    name,
-    stability: 'stable',
-    materialization: 'kubernetes-crd',
-    resource: applicationResourceContract(resource),
-    ...(model?.native === 'kubernetes-resource' ? {
-      native: {
-        kind: 'kubernetes-resource' as const,
-        authority: 'kubernetes' as const,
-        artifact: { name: `${resource.apiVersion}/${resource.kind}` },
-        schemaAuthority: 'arktype' as const,
-        runtimeSchema: 'declared-arktype' as const,
-        nativeApi: 'preserved' as const,
-      },
-      common: {
-        identity: model.identity,
-        ...(model.revision ? { revision: model.revision } : {}),
-        snapshot: { shape: 'identity-value-revision' as const, revisionOptional: true as const },
-        changes: { authority: 'kubernetes-watch' as const, rawWrites: 'observed' as const },
-        relationships: model.relationships,
-        ...(model.access ? { access: { context: model.access.context, enforcement: 'kubernetes-namespace-label' as const, providerField: model.access.namespaceLabel } } : {}),
-      },
-    } : {}),
-  });
-}
-
 function emitApplicationConfig(state: ApplicationScopeState, name: string, options: ApplicationConfigOptions): ApplicationConfigBinding {
   const resourceName = options.configMapName ?? `${kubernetesNameSegment(name)}-config`;
   const key = options.key ?? kubernetesNameSegment(name);
@@ -1893,6 +1910,20 @@ function recordApplicationProviderGraph(state: ApplicationScopeState, tokenName:
   if (!providerInterface) {
     return;
   }
+  const requestIdentityAuthentication = tokenName === 'RequestIdentity'
+    && implementation
+    && typeof implementation === 'object'
+    && typeof Reflect.get(implementation, 'authenticate') === 'function'
+    ? serializeApplicationCallback({
+        registrar: 'RequestIdentity',
+        argumentIndex: 0,
+        property: 'authenticate',
+        label: 'RequestIdentity authentication',
+        // typecast: the provider guard above establishes the authentication callback shape consumed by serialization.
+        callback: Reflect.get(implementation, 'authenticate') as (...args: never[]) => unknown,
+        allowDeferredResolution: true,
+      })
+    : undefined;
   const nodeId = applicationProviderNodeId(providerInterface);
   addApplicationGraphNode(state, {
     id: nodeId,
@@ -1910,7 +1941,28 @@ function recordApplicationProviderGraph(state: ApplicationScopeState, tokenName:
         diagnostics: [],
       },
     } : {}),
-    config: { bindingKind, provider: applicationProviderImplementationName(implementation) },
+    config: {
+      bindingKind,
+      provider: applicationProviderImplementationName(implementation),
+      ...(requestIdentityAuthentication
+        ? {
+            // typecast: JSON round-tripping converts callback metadata to the graph's JsonValue representation.
+            identity: JSON.parse(JSON.stringify({
+              authenticationSource: requestIdentityAuthentication.source,
+              ...(requestIdentityAuthentication.dependencies ? { authenticationDependencies: requestIdentityAuthentication.dependencies } : {}),
+              ...(requestIdentityAuthentication.location ? { authenticationLocation: requestIdentityAuthentication.location } : {}),
+              ...(requestIdentityAuthentication.unresolved ? { authenticationUnresolved: requestIdentityAuthentication.unresolved } : {}),
+            })) as JsonValue,
+          }
+        : {}),
+      // typecast: JSON round-tripping proves the provider configuration is a graph-safe JsonValue.
+      ...(tokenName === 'ApplicationHost' && implementation && typeof implementation === 'object'
+        ? {
+            // typecast: the round-tripped provider object contains only JSON values accepted by the application graph.
+            host: JSON.parse(JSON.stringify(implementation)) as JsonValue,
+          }
+        : {}),
+    },
   });
 }
 
@@ -2074,10 +2126,6 @@ function recordApplicationAggregateGraph<TStats extends object, TEvent extends o
     flush: { everyMs: parseDurationMs(options.flush?.every ?? '2s'), ...(options.flush?.maxEvents ? { maxEvents: options.flush.maxEvents } : {}) },
   });
   addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: sourceNodeId }, relationship: 'reads' });
-}
-
-function applicationResourceContract(resource: Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>) {
-  return { apiVersion: resource.apiVersion, kind: resource.kind, plural: resource.plural, scope: resource.scope };
 }
 
 function applicationResourceRef(resource: Pick<AnyResourceDefinition, 'apiVersion' | 'kind'>): { readonly apiVersion: string; readonly kind: string } {

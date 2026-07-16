@@ -73,6 +73,9 @@ describe('v0.6 app-scoped native model promotion', () => {
     ]);
     expect(CatalogImport.on.reconcile).toBeTypeOf('function');
     expect(CardsForSet.id).toBe('cards.for-set.v1');
+    expect(CardsForSet.reads).toEqual([
+      expect.objectContaining({ source: 'Card', name: 'set', target: 'Set' }),
+    ]);
 
     const graph = applicationGraphFor(catalog.composition);
     expect(graph).toBeDefined();
@@ -91,7 +94,7 @@ describe('v0.6 app-scoped native model promotion', () => {
         identity: { fields: ['id'], encoding: 'scalar' },
         revision: { field: 'revision', authority: 'postgres-row' },
         changes: { authority: 'postgres-change-log', rawWrites: 'explicit-invalidation-required' },
-        relationships: [expect.objectContaining({ name: 'set', target: 'sets', integrity: 'foreign-key' })],
+        relationships: [expect.objectContaining({ name: 'set', target: 'Set', integrity: 'foreign-key' })],
       },
       runtime: expect.objectContaining({
         tableName: 'cards',
@@ -140,6 +143,36 @@ describe('v0.6 app-scoped native model promotion', () => {
     });
     expect(() => catalog.model(globals, { database: Database })).toThrow('must declare column organizationId');
     expect(() => catalog.model(globals, { database: Database, access: 'global' })).not.toThrow();
+  });
+
+  test('records fluent model-native views as direct query operations', () => {
+    const schema = catalogSchema();
+    const catalog = app('native-view-fixture');
+    const Database = catalog.database.postgres('catalog', { schema });
+    const BaseCard = catalog.model(schema.cards, { name: 'Card', database: Database });
+    const Card = BaseCard.view('published', {
+      input: type({ limit: 'number.integer >= 1' }),
+      output: type({ id: 'string', name: 'string' }).array(),
+      database: Database,
+      authorize: () => true,
+      run: async () => [],
+    });
+
+    expect(Card.published.operation).toMatchObject({
+      id: 'Card.published',
+      model: 'Card',
+      name: 'published',
+      operation: 'query',
+    });
+    expect(applicationGraphFor(catalog.composition)?.nodes.find((node) => node.kind === 'query' && node.publicId === 'Card.published')).toMatchObject({
+      name: 'Card.published',
+      version: 'v1',
+      modelOperation: {
+        model: { nodeId: 'model.card' },
+        name: 'published',
+        kind: 'view',
+      },
+    });
   });
 
   test('fails closed when multiple registered databases make promotion ambiguous', () => {

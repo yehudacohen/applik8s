@@ -54,17 +54,50 @@ describe('v0.6 relational runtime', () => {
       expect(context.database(database)).toBe(scoped);
       changes.invalidate(Card, { identity: 'card-1', revision: '2', changedFields: ['name', 'name'] });
     });
-    expect(executed).toHaveLength(2);
+    expect(executed).toHaveLength(3);
     const dialect = new PgDialect();
     const setContext = dialect.sqlToQuery(executed[0] as never);
     expect(setContext.sql).toBe('select set_config($1, $2, true)');
     expect(setContext.params).toEqual(['applik8s.context.organizationId', '00000000-0000-0000-0000-000000000001']);
-    const change = dialect.sqlToQuery(executed[1] as never);
+    const commitLock = dialect.sqlToQuery(executed[1] as never);
+    expect(commitLock.sql).toContain('pg_advisory_xact_lock');
+    expect(commitLock.params).toEqual([expect.stringMatching(/^applik8s:model-changes:v1:[a-f0-9]{64}$/)]);
+    const change = dialect.sqlToQuery(executed[2] as never);
     expect(change.sql).toContain('insert into applik8s_model_changes');
     expect(change.params).toEqual(expect.arrayContaining(['Card', 'invalidate', '"card-1"', '2', '["name"]', '2026-07-15T12:00:00.000Z']));
     const digest = change.params.find((value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
     expect(digest).toBeTypeOf('string');
     expect(change.params).not.toContain('00000000-0000-0000-0000-000000000001');
+  });
+
+  test('acquires the committed change frontier before evaluating a repeatable-read snapshot', async () => {
+    const { database } = fixture();
+    const executed: unknown[] = [];
+    let handlerExecuted = false;
+    const transaction = {
+      async execute(statement: unknown) {
+        executed.push(statement);
+        return executed.length === 4 ? [{ sequence: 7 }] : [];
+      },
+    };
+    const db = { async transaction<TResult>(handler: (tx: typeof transaction) => Promise<TResult>) { return handler(transaction); } };
+    const context = createApplicationRelationalContext({
+      databases: [{ binding: database, db: db as unknown as ApplicationDatabaseClient<typeof database.schema> }],
+      admittedContext: { values: { organizationId: 'organization-private' }, digestSecret: 'test-only-secret' },
+    });
+
+    const snapshot = await context.snapshot(database, () => {
+      handlerExecuted = true;
+      expect(executed).toHaveLength(3);
+      return 'snapshot-value';
+    });
+
+    const dialect = new PgDialect();
+    expect(dialect.sqlToQuery(executed[0] as never).sql).toContain('set transaction isolation level repeatable read read only');
+    expect(dialect.sqlToQuery(executed[1] as never).sql).toBe('select set_config($1, $2, true)');
+    expect(dialect.sqlToQuery(executed[2] as never).sql).toContain('pg_advisory_xact_lock');
+    expect(handlerExecuted).toBe(true);
+    expect(snapshot).toEqual({ value: 'snapshot-value', sequence: 7 });
   });
 
   test('computes retention floors inside the admitted context instead of leaking global sequence state', async () => {

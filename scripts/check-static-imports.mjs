@@ -25,7 +25,7 @@ function collectFiles(path) {
 
   const files = [];
   for (const entry of readdirSync(path)) {
-    if (entry === 'node_modules' || entry === 'dist') {
+    if (entry === 'node_modules' || entry === 'dist' || entry === '.applik8s' || entry === '.output') {
       continue;
     }
     files.push(...collectFiles(join(path, entry)));

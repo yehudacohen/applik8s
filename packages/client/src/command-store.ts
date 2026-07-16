@@ -15,6 +15,18 @@ export interface ApplicationCommandHandle<TOutput = unknown> {
   dispose(): void;
 }
 
+export class ApplicationCommandRejectedError extends Error {
+  readonly code = 'APPLIK8S_COMMAND_REJECTED';
+  constructor(
+    readonly command: string,
+    readonly commandId: string,
+    readonly rejection: { readonly name: string; readonly payload: unknown },
+  ) {
+    super(`Application command ${command} was rejected with ${rejection.name}.`);
+    this.name = 'ApplicationCommandRejectedError';
+  }
+}
+
 export interface ApplicationCommandClientOptions {
   readonly poll?: { readonly initialMs?: number; readonly maxMs?: number; readonly factor?: number };
   readonly id?: () => string;
@@ -51,12 +63,25 @@ export class ApplicationCommandClient {
     try {
       const submission = await this.transport.submit(command, input, { commandId, idempotencyKey: options.idempotencyKey ?? commandId, ...(options.expectedRevision ? { expectedRevision: options.expectedRevision } : {}), ...(options.signal ? { signal: options.signal } : {}) });
       this.#apply(entry, submission);
-      if (entry.state.durableResult === 'pending' || entry.state.durableResult === 'unknown') this.#schedule(entry);
+      if (requiresProgressPolling(entry.state)) this.#schedule(entry);
     } catch (error) {
       entry.state = { ...entry.state, phase: 'unknown', transport: 'failed', durableResult: 'unknown', error: error instanceof Error ? error : new Error(String(error)), revision: entry.state.revision + 1 };
       this.#notify(entry);
     }
     return handle;
+  }
+
+  async execute<TInput, TOutput = unknown>(
+    command: string,
+    input: TInput,
+    options: { readonly commandId?: string; readonly idempotencyKey?: string; readonly expectedRevision?: string; readonly signal?: AbortSignal } = {},
+  ): Promise<TOutput> {
+    const handle = await this.submit<TInput, TOutput>(command, input, options);
+    try {
+      return await waitForApplicationCommand(handle, options.signal);
+    } finally {
+      handle.dispose();
+    }
   }
 
   #handle<TOutput>(entry: CommandEntry<TOutput>): ApplicationCommandHandle<TOutput> {
@@ -78,7 +103,7 @@ export class ApplicationCommandClient {
     } finally {
       entry.controller = undefined;
     }
-    if (entry.state.durableResult === 'pending' || entry.state.durableResult === 'unknown') this.#schedule(entry);
+    if (requiresProgressPolling(entry.state)) this.#schedule(entry);
   }
 
   #apply(entry: CommandEntry, progress: ApplicationCommandProgress): void {
@@ -104,6 +129,58 @@ export class ApplicationCommandClient {
   #notify(entry: CommandEntry): void { for (const listener of entry.listeners) listener(); }
 }
 
+export function waitForApplicationCommand<TOutput>(handle: ApplicationCommandHandle<TOutput>, signal?: AbortSignal): Promise<TOutput> {
+  return new Promise<TOutput>((resolve, reject) => {
+    let unsubscribe: () => void = () => undefined;
+    const finish = () => {
+      const state = handle.getSnapshot();
+      if (state.durableResult === 'succeeded') {
+        unsubscribe();
+        signal?.removeEventListener('abort', aborted);
+        // typecast: the command protocol associates a succeeded durable result with this handle's declared output type.
+        resolve(state.output as TOutput);
+        return true;
+      }
+      if (state.durableResult === 'rejected') {
+        unsubscribe();
+        signal?.removeEventListener('abort', aborted);
+        reject(new ApplicationCommandRejectedError(state.command, state.commandId, state.rejection ?? { name: 'unknown', payload: null }));
+        return true;
+      }
+      if (state.transport === 'failed' && state.error) {
+        unsubscribe();
+        signal?.removeEventListener('abort', aborted);
+        reject(state.error);
+        return true;
+      }
+      if (state.phase === 'error' && state.error) {
+        unsubscribe();
+        signal?.removeEventListener('abort', aborted);
+        reject(state.error);
+        return true;
+      }
+      return false;
+    };
+    const aborted = () => {
+      unsubscribe();
+      reject(signal?.reason instanceof Error ? signal.reason : new Error('Application command wait was aborted.'));
+    };
+    if (signal?.aborted) {
+      aborted();
+      return;
+    }
+    unsubscribe = handle.subscribe(() => { finish(); });
+    signal?.addEventListener('abort', aborted, { once: true });
+    finish();
+  });
+}
+
 function pendingState<TOutput>(command: string, commandId: string): ApplicationCommandState<TOutput> {
   return { protocol: 'applik8s.command/v1alpha1', command, commandId, correlationId: commandId, phase: 'submitting', transport: 'submitting', durableResult: 'unknown', workflow: 'notStarted', reconciliation: 'notObserved', revision: 0 };
+}
+
+function requiresProgressPolling(state: Pick<ApplicationCommandState, 'durableResult' | 'reconciliation'>): boolean {
+  return state.durableResult === 'pending'
+    || state.durableResult === 'unknown'
+    || state.reconciliation === 'progressing';
 }

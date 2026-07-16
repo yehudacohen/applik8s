@@ -1,7 +1,7 @@
 import type { ApplicationGatewayBinding } from './application-reactive.js';
 import type { ApplicationDnsIntent, ApplicationExposureOptions, ApplicationServerBinding, ApplicationTlsIntent } from './application.js';
 import { kubernetesNameSegment } from './application-identifiers.js';
-import type { ApplicationDnsPublicationProvider } from './application-providers.js';
+import type { ApplicationDnsPublicationProvider, ApplicationHostBinding } from './application-providers.js';
 
 export type NormalizedApplicationTlsIntent =
   | { readonly mode: 'disabled' }
@@ -32,18 +32,24 @@ export function applicationExternalDnsAnnotations(provider: ApplicationDnsPublic
   return { [`${prefix}/hostname`]: hostnames.join(','), ...(intent.ttlSeconds === undefined ? {} : { [`${prefix}/ttl`]: String(intent.ttlSeconds) }) };
 }
 
-type ApplicationExposureService = string | ApplicationServerBinding | ApplicationGatewayBinding | undefined;
+type ApplicationExposureService = string | ApplicationServerBinding | ApplicationGatewayBinding | ApplicationHostBinding | undefined;
 
 export function applicationExposureServiceName(service: ApplicationExposureService): string | undefined {
-  return typeof service === 'string' ? service : service?.serviceName;
+  if (typeof service === 'string') return service;
+  if (service && 'kind' in service && service.kind === 'applicationHost') return service.service.name;
+  return service?.serviceName;
 }
 
 export function applicationExposureServiceNamespace(service: ApplicationExposureService): string | undefined {
-  return typeof service === 'string' ? undefined : service?.namespace;
+  if (typeof service === 'string') return undefined;
+  if (service && 'kind' in service && service.kind === 'applicationHost') return service.service.namespace;
+  return service?.namespace;
 }
 
 export function applicationExposureServicePort(service: ApplicationExposureService): number | undefined {
-  return typeof service === 'string' || !service || !('kind' in service) || service.kind !== 'applicationGateway' ? undefined : service.port;
+  if (typeof service === 'string' || !service || !('kind' in service)) return undefined;
+  if (service.kind === 'applicationHost') return service.service.port;
+  return service.kind === 'applicationGateway' ? service.port : undefined;
 }
 
 export function applicationConfigLabels(name: string, component: 'config' | 'secret' | 'exposure'): Readonly<Record<string, string>> {

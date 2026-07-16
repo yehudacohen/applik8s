@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const root = resolve(process.cwd());
 const buildRoot = join(root, '.package-build');
-const packages = ['applik8s', 'client', 'react', 'tanstack-start', 'core', 'sdk', 'compiler', 'runtime-contract', 'runtime', 'testing', 'typekro-adapter', 'typetainer'];
+const packages = ['applik8s', 'client', 'react', 'vite', 'tanstack-start', 'core', 'sdk', 'compiler', 'runtime-contract', 'runtime', 'testing', 'typekro-adapter', 'typetainer'];
 
 await rm(buildRoot, { recursive: true, force: true });
 await execFileAsync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '--project', join(root, 'tsconfig.json'), '--rootDir', root, '--outDir', buildRoot, '--declaration', '--declarationMap', 'false', '--sourceMap', 'false', '--noEmit', 'false'], {

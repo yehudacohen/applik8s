@@ -1,0 +1,15 @@
+{
+  "name": "@applik8s/example-guestbook-start",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*"
+  },
+  "scripts": {
+    "dev": "vite dev --port 3000",
+    "generate-routes": "tsr generate",
+    "build": "vite build",
+    "deploy:local": "applik8s deploy src/application.ts --context orbstack",
+    "preview": "vite preview"
+  }
+}

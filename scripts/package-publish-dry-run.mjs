@@ -13,6 +13,7 @@ const publishablePackages = [
   'packages/applik8s',
   'packages/client',
   'packages/react',
+  'packages/vite',
   'packages/tanstack-start',
   'packages/core',
   'packages/sdk',

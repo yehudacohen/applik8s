@@ -22,7 +22,11 @@
       "vitest.e2e.config.ts",
       "!node_modules",
       "!dist",
-      "!packages/**/dist"
+      "!packages/**/dist",
+      "!examples/**/.applik8s",
+      "!examples/**/.output",
+      "!examples/**/dist",
+      "!examples/**/routeTree.gen.ts"
     ]
   }
 }

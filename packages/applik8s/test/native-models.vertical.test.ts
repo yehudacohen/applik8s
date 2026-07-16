@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest';
 import { createTableRelationsHelpers, eq, extractTablesRelationalConfig, relations } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/pg-proxy';
 import { alias, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { getApplicationOperationContract } from '@applik8s/client';
 import { getApplicationModelFacet, isPromotedApplicationModel, modelReferenceContract, promoteDrizzleTable } from '../src/native-models.js';
 
 const sets = pgTable('sets', {
@@ -32,8 +33,15 @@ describe('native Drizzle application models', () => {
     expect(Card).toBe(cards);
     expect(Object.keys(Card)).toEqual(keysBefore);
     expect(Object.prototype.propertyIsEnumerable.call(Card, '$model')).toBe(false);
+    expect(Object.prototype.propertyIsEnumerable.call(Card, 'create')).toBe(false);
     expect(isPromotedApplicationModel(Card)).toBe(true);
     expect(getApplicationModelFacet(Card)).toBe(Card.$model);
+    expect(getApplicationOperationContract(Card.create)).toMatchObject({
+      id: 'Card.create',
+      model: 'Card',
+      operation: 'create',
+      transport: 'command',
+    });
 
     const db = drizzle(async () => ({ rows: [] }), { schema });
     const query = db.select().from(Card).where(eq(Card.setId, '00000000-0000-0000-0000-000000000001')).toSQL();
@@ -74,14 +82,14 @@ describe('native Drizzle application models', () => {
       {
         source: 'Card',
         name: 'set',
-        target: 'sets',
+        target: 'Set',
         cardinality: 'one',
         integrity: 'foreign-key',
         fields: ['setId'],
         references: ['id'],
       },
     ]);
-    expect(SetModel.$model.relationships[0]).toMatchObject({ source: 'Set', name: 'cards', target: 'cards', cardinality: 'many', integrity: 'relation-only' });
+    expect(SetModel.$model.relationships[0]).toMatchObject({ source: 'Set', name: 'cards', target: 'Card', cardinality: 'many', integrity: 'relation-only' });
 
     const ref = SetModel.$model.ref();
     expect(ref('00000000-0000-0000-0000-000000000001')).toBe('00000000-0000-0000-0000-000000000001');

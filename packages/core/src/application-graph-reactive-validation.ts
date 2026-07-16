@@ -32,7 +32,11 @@ function queryMessages(node: ApplicationQueryNode, graph: ApplicationGraph): rea
   for (const read of node.reads) if (!ids.has(read.model.nodeId)) messages.push(`Application query ${node.id} reads missing model ${read.model.nodeId}.`);
   if (node.budgets.timeoutMs < 1 || node.budgets.maxResultBytes < 1 || node.budgets.maxRows < 1) messages.push(`Application query ${node.id} budgets must be positive.`);
   if (!node.authorizationSource?.trim() || !node.handlerSource?.trim()) messages.push(`Application query ${node.id} must retain serializable authorization and handler callbacks.`);
-  if (node.snapshotResume === 'resumableInvalidation' && !node.database) messages.push(`Application query ${node.id} promises resumable invalidation without a PostgreSQL database runtime.`);
+  if (Boolean(node.database) === Boolean(node.kubernetes)) messages.push(`Application query ${node.id} must declare exactly one PostgreSQL or Kubernetes snapshot authority.`);
+  if (node.snapshotResume === 'resumableInvalidation' && !node.database && !node.kubernetes) messages.push(`Application query ${node.id} promises resumable invalidation without a provider runtime.`);
+  if (node.kubernetes && (!node.kubernetes.project.source.trim() || node.kubernetes.pageSize < 1 || node.kubernetes.maxPages < 1 || node.kubernetes.maxItems < 1)) {
+    messages.push(`Application query ${node.id} has an incomplete or unbounded Kubernetes snapshot/watch authority.`);
+  }
   return messages;
 }
 

@@ -212,7 +212,7 @@ process.once('SIGTERM', () => { void shutdown(); }); process.once('SIGINT', () =
 }
 
 function generatedQueryBinding(query: ApplicationQueryNode, modelNames: readonly string[]): string {
-  const id = `${query.name}.${query.version}`;
+  const id = query.publicId ?? `${query.name}.${query.version}`;
   const database = query.database;
   if (!database) throw new Error(`Generated query ${query.id} has no database runtime.`);
   const contexts = query.trustedContext.map((name) => {
@@ -220,7 +220,7 @@ function generatedQueryBinding(query: ApplicationQueryNode, modelNames: readonly
     if (!access) throw new Error(`Generated query ${query.id} trusted context ${name} has no serializable database access schema.`);
     return `{ kind: 'applicationTrustedContext', name: ${JSON.stringify(name)}, schema: schema(${JSON.stringify(access.contextSchema)}, ${JSON.stringify(name)}), contract: { source: 'identity-provider', trust: 'server-admitted', jsonSchema: ${JSON.stringify(access.contextSchema)} } }`;
   });
-  return `{ kind: 'applicationQuery', id: ${JSON.stringify(id)}, name: ${JSON.stringify(query.name)}, version: ${JSON.stringify(query.version)}, input: schema(${JSON.stringify(query.input.jsonSchema)}, ${JSON.stringify(`${id}.input`)}), output: schema(${JSON.stringify(query.output.jsonSchema)}, ${JSON.stringify(`${id}.output`)}), database: ${databaseVariable(database.name)}Binding, trustedContext: [${contexts.join(', ')}], reads: ${JSON.stringify(modelNames.map((name) => ({ $model: { name } })))}, budgets: ${JSON.stringify(query.budgets)}, authorize: async (principal, input) => ${callbackVariable(query.id, 'authorize')}({ principal, input }), run: async (context, principal, input) => ${callbackVariable(query.id, 'run')}({ context, principal, input }) }`;
+  return `{ kind: 'applicationQuery', id: ${JSON.stringify(id)}, name: ${JSON.stringify(query.name)}, version: ${JSON.stringify(query.version)}, input: schema(${JSON.stringify(query.input.jsonSchema)}, ${JSON.stringify(`${id}.input`)}), output: schema(${JSON.stringify(query.output.jsonSchema)}, ${JSON.stringify(`${id}.output`)}), database: ${databaseVariable(database.name)}Binding, trustedContext: [${contexts.join(', ')}], reads: ${JSON.stringify(modelNames.map((name) => ({ $model: { name } })))}, budgets: ${JSON.stringify(query.budgets)}, authorize: async (principal, input, context = {}) => ${callbackVariable(query.id, 'authorize')}({ principal, context, input }), run: async (context, principal, input) => ${callbackVariable(query.id, 'run')}({ context, principal, input }) }`;
 }
 
 function generatedCommandGateway(commands: readonly GatewayCommandContract[], eventLog: ApplicationProviderNode): string {
@@ -396,11 +396,29 @@ function databaseBindingSource(database: ApplicationReactiveDatabaseRuntimeContr
 
 function graphReadNames(graph: ApplicationGraph, query: ApplicationQueryNode): readonly string[] {
   const nodes = graphNodes(graph);
-  return query.reads.map((read) => {
+  const names = new Set<string>();
+  for (const read of query.reads) {
     const node = nodes.get(read.model.nodeId);
     if (node?.kind !== 'model' && node?.kind !== 'crd') throw new Error(`Generated query ${query.id} references missing readable model ${read.model.nodeId}.`);
-    return node.name;
-  }).sort();
+    names.add(node.name);
+    if (!read.relationship) continue;
+    const relationships = node.common?.relationships ?? [];
+    const relationship = relationships.find((candidate) => candidate.name === read.relationship);
+    if (!relationship) throw new Error(`Generated query ${query.id} references missing relationship ${node.name}.${read.relationship}.`);
+    names.add(canonicalGraphModelName(graph, relationship.target));
+  }
+  return [...names].sort();
+}
+
+function canonicalGraphModelName(graph: ApplicationGraph, value: string): string {
+  const direct = graph.nodes.find((node) => (node.kind === 'model' || node.kind === 'crd') && node.name === value);
+  if (direct) return direct.name;
+  const native = graph.nodes.find((node) => {
+    if (node.kind === 'model') return node.native?.artifact.name === value;
+    if (node.kind === 'crd') return node.resource.plural === value || node.resource.kind === value;
+    return false;
+  });
+  return native?.name ?? value;
 }
 
 function graphNodes(graph: ApplicationGraph): ReadonlyMap<string, ApplicationGraph['nodes'][number]> { return new Map(graph.nodes.map((node) => [node.id, node])); }
