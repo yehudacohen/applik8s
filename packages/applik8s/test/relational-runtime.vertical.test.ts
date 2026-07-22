@@ -30,6 +30,7 @@ describe('v0.6 relational runtime', () => {
     const { Card, database } = fixture();
     const migration = applicationRelationalFrameworkMigrationSql(database, [Card]);
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS applik8s_model_changes');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS applik8s_public_stream_retention_floors');
     expect(migration).toContain('ALTER TABLE "cards" ENABLE ROW LEVEL SECURITY');
     expect(migration).toContain('ALTER TABLE "cards" FORCE ROW LEVEL SECURITY');
     expect(migration).toContain('"organization_id"::text = current_setting(\'applik8s.context.organizationId\', true)');
@@ -68,6 +69,55 @@ describe('v0.6 relational runtime', () => {
     const digest = change.params.find((value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
     expect(digest).toBeTypeOf('string');
     expect(change.params).not.toContain('00000000-0000-0000-0000-000000000001');
+  });
+
+  test('scopes live-query changes to data isolation rather than the writing actor', async () => {
+    const { Card, database } = fixture();
+    const digestFor = async (
+      binding: ApplicationDatabaseBinding,
+      values: Readonly<Record<string, unknown>>,
+    ): Promise<unknown> => {
+      const executed: unknown[] = [];
+      const transaction = { async execute(statement: unknown) { executed.push(statement); return []; } };
+      const db = { async transaction<TResult>(handler: (tx: typeof transaction) => Promise<TResult>) { return handler(transaction); } };
+      const context = createApplicationRelationalContext({
+        databases: [{ binding, db: db as unknown as ApplicationDatabaseClient<Readonly<Record<string, unknown>>> }],
+        admittedContext: { values, digestSecret: 'test-only-secret' },
+      });
+      await context.transaction(binding, async ({ changes }) => changes.invalidate(Card));
+      const statement = new PgDialect().sqlToQuery(executed.at(-1) as never);
+      return statement.params.find((value) => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
+    };
+
+    const { access: _access, ...globalDatabase } = database;
+    const userChange = await digestFor(globalDatabase, {
+      'applik8s.dev/principal': { id: 'user-1', claims: { role: 'user' } },
+      'applik8s.dev/authorization-version': 'user-policy-4',
+    });
+    const workerChange = await digestFor(globalDatabase, {
+      'applik8s.dev/principal': { id: 'worker-1', claims: { role: 'media-worker' } },
+      'applik8s.dev/authorization-version': 'worker-policy-9',
+      executionAuthority: 'workflow',
+    });
+    expect(workerChange).toBe(userChange);
+
+    const firstTenantActor = await digestFor(database, {
+      organizationId: 'organization-1',
+      'applik8s.dev/principal': { id: 'user-1' },
+      'applik8s.dev/authorization-version': 'user-policy-4',
+    });
+    const sameTenantWorker = await digestFor(database, {
+      organizationId: 'organization-1',
+      'applik8s.dev/principal': { id: 'worker-1' },
+      'applik8s.dev/authorization-version': 'worker-policy-9',
+    });
+    const otherTenant = await digestFor(database, {
+      organizationId: 'organization-2',
+      'applik8s.dev/principal': { id: 'user-1' },
+      'applik8s.dev/authorization-version': 'user-policy-4',
+    });
+    expect(sameTenantWorker).toBe(firstTenantActor);
+    expect(otherTenant).not.toBe(firstTenantActor);
   });
 
   test('acquires the committed change frontier before evaluating a repeatable-read snapshot', async () => {

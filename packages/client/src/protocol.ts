@@ -47,16 +47,43 @@ export interface ApplicationQueryTransport {
   subscribe<TInput>(query: string, input: TInput, cursor: string, options: { readonly signal: AbortSignal; readonly onEvent: (event: ApplicationQueryEvent) => void; readonly onError: (error: Error) => void }): void | Promise<void>;
 }
 
+/** One logical query subscription carried by the shared browser SSE stream. */
+export interface ApplicationQueryMultiplexSubscription {
+  readonly id: string;
+  readonly query: string;
+  readonly input: unknown;
+  readonly cursor: string;
+}
+
+/** Wire frames emitted by the bounded query-multiplex endpoint. */
+export type ApplicationQueryMultiplexFrame = ApplicationQueryMultiplexEventFrame | ApplicationQueryMultiplexErrorFrame;
+
+export interface ApplicationQueryMultiplexEventFrame {
+  readonly protocol: 'applik8s.query-multiplex/v1alpha1';
+  readonly kind: 'event';
+  readonly subscriptionId: string;
+  readonly event: ApplicationQueryEvent;
+}
+
+export interface ApplicationQueryMultiplexErrorFrame {
+  readonly protocol: 'applik8s.query-multiplex/v1alpha1';
+  readonly kind: 'error';
+  readonly subscriptionId: string;
+  readonly error: 'forbidden' | 'subscription_limit' | 'projection_unavailable' | 'invalid_request' | 'not_found' | 'internal_error';
+  readonly retryAfterSeconds?: number;
+}
+
 export interface ApplicationCommandProgress {
   readonly protocol: 'applik8s.command/v1alpha1';
   readonly command: string;
   readonly commandId: string;
   readonly correlationId: string;
   readonly transport: 'idle' | 'submitting' | 'acknowledged' | 'failed';
-  readonly durableResult: 'unknown' | 'pending' | 'succeeded' | 'rejected';
+  readonly durableResult: 'unknown' | 'pending' | 'succeeded' | 'rejected' | 'failed';
   readonly progressCursor?: string;
   readonly output?: unknown;
   readonly rejection?: { readonly name: string; readonly payload: unknown };
+  readonly failure?: { readonly code: 'processing_failed'; readonly attempts?: number };
   readonly modelRevision?: string;
   readonly workflow?: 'notStarted' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled';
   readonly reconciliation?: 'notObserved' | 'progressing' | 'ready' | 'failed';

@@ -1,6 +1,6 @@
 // typecast-file-boundary: this live test restores Drizzle generics after connecting through PostgreSQL's untyped wire protocol.
 import type { ApplicationDatabaseBinding, ApplicationDatabaseClient } from '@applik8s/applik8s';
-import { applicationAdmittedContextDigest, applicationRelationalFrameworkMigrationSql, createApplicationRelationalContext, postgres as postgresAccess, promoteDrizzleTable, trustedContext } from '@applik8s/applik8s';
+import { applicationRelationalChangeScopeDigest, applicationRelationalChangeScopes, applicationRelationalFrameworkMigrationSql, createApplicationRelationalContext, postgres as postgresAccess, promoteDrizzleTable, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { eq } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
@@ -83,7 +83,7 @@ describe.runIf(databaseUrl)('v0.6 real PostgreSQL relational authority', () => {
   test('does not miss a late commit whose change sequence was allocated before a concurrent commit', async () => {
     const context = relationalContext(org1);
     const admitted = { values: { organizationId: org1 }, digestSecret: 'v06-live-context-digest-secret' } as const;
-    const digest = applicationAdmittedContextDigest(admitted);
+    const digest = applicationRelationalChangeScopeDigest(applicationRelationalChangeScopes(admitted), 'organizationId');
     const firstId = '10000000-0000-0000-0000-000000000010';
     const secondId = '10000000-0000-0000-0000-000000000011';
     let releaseFirst: (() => void) | undefined;

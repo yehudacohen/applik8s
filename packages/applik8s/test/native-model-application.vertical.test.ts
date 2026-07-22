@@ -1,10 +1,11 @@
 // typecast-file-boundary: negative fixtures cross overload boundaries deliberately to assert fail-closed diagnostics.
-import { app, applicationGraphFor, postgres, trustedContext } from '@applik8s/applik8s';
+import { app, applicationGraphFor, applicationModelFacet, postgres, trustedContext } from '@applik8s/applik8s';
 import { command, entity, event, type } from '@applik8s/applik8s/dsl';
-import { serializeApplicationGraph, validateApplicationGraphStructure } from '@applik8s/core';
+import { authenticatedPrincipalId } from '@applik8s/applik8s/drizzle';
+import { serializeApplicationGraph, validateApplicationGraphStructure, type ApplicationCommandNode } from '@applik8s/core';
 import { eq, relations } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, expectTypeOf, test } from 'vitest';
 
 function catalogSchema() {
   const sets = pgTable('sets', {
@@ -26,6 +27,27 @@ function catalogSchema() {
 }
 
 describe('v0.6 app-scoped native model promotion', () => {
+  test('derives a defaulted scalar identity from the admitted principal without an undefined command key', () => {
+    const accounts = pgTable('principal_accounts', {
+      id: text('id').default(authenticatedPrincipalId).primaryKey(),
+      handle: text('handle').notNull(),
+      revision: text('revision').notNull().default(''),
+    });
+    const principalApp = app('principal-model', { namespace: 'principal-system' });
+    const Database = principalApp.database.postgres('principal', { schema: { accounts }, migrations: { path: './drizzle' } });
+    const Account = principalApp.model(accounts, { name: 'Account', database: Database });
+    const graph = applicationGraphFor(principalApp.composition);
+    const create = graph?.nodes.find((node): node is ApplicationCommandNode => node.kind === 'command' && node.name === 'models.Account.create.v1');
+    expect(create?.contract.input.jsonSchema.required).toEqual(['handle']);
+    const handler = graph?.nodes.find((node) => node.kind === 'commandHandler' && node.command.nodeId === create?.id);
+    expect(handler).toMatchObject({
+      key: { kind: 'function', source: expect.stringContaining('context?.principal?.id') },
+      missing: 'initialize',
+    });
+    expect(handler && 'initializeSource' in handler ? handler.initializeSource : undefined).toContain('targetKey');
+    expect(Account.create).toBeTypeOf('function');
+  });
+
   test('registers a native table, provider, relationship, access authority, and serializable common model contract', () => {
     const schema = catalogSchema();
     const OrganizationId = trustedContext('organizationId', { schema: type('string') });
@@ -39,26 +61,27 @@ describe('v0.6 app-scoped native model promotion', () => {
     const Card = catalog.model(schema.cards, { name: 'Card', database: Database });
     const RenameCard = command('cards.rename.v1', { input: type({ cardId: 'string', name: 'string', expectedRevision: 'string' }), output: type({ changed: 'boolean', revision: 'string' }), errors: { revisionConflict: type({ expectedRevision: 'string', actualRevision: 'string | null' }) } });
     const CardChanged = event('cards.changed.v1', { payload: type({ cardId: 'string', revision: 'string' }) });
-    Card.$model.on.command(RenameCard, {
+    Card.command('rename', RenameCard, {
       key: ({ cardId }) => cardId,
       history: true,
       events: [CardChanged],
+      transaction: { models: [SetModel] },
     }, async (card, input, context) => {
       const updated = await context.update(card, { name: input.name }, { ifRevision: input.expectedRevision });
       context.emit(CardChanged, { cardId: card.id, revision: updated.value.revision ?? input.expectedRevision });
       return { changed: updated.changed, revision: updated.value.revision ?? input.expectedRevision };
     });
     const CatalogImport = catalog.crd(entity('CatalogImport', {
-      spec: type({ setId: SetModel.$model.ref(), sourceUrl: 'string' }),
+      spec: type({ setId: SetModel.ref(), sourceUrl: 'string' }),
       status: type({ phase: "'Pending' | 'Completed'" }),
     }), { apiVersion: 'catalog.example/v1alpha1' });
-    const PublicCard = Card.$model.schema.select.pick('id', 'setId', 'name');
+    const PublicCard = Card.schema.select.pick('id', 'setId', 'name');
     const CardsForSet = catalog.query('cards.for-set.v1', {
-      input: type({ setId: SetModel.$model.ref() }),
+      input: type({ setId: SetModel.ref() }),
       output: PublicCard.array(),
       database: Database,
       context: [OrganizationId],
-      reads: [Card.$model.relations.set as NonNullable<typeof Card.$model.relations.set>],
+      reads: [Card.relations.set as NonNullable<typeof Card.relations.set>],
       authorize: ({ principal, input }) => principal.can?.('read', SetModel, input.setId) ?? false,
       run: async ({ context, input }) => {
         const db = context.database(Database);
@@ -67,7 +90,7 @@ describe('v0.6 app-scoped native model promotion', () => {
     });
     expect(SetModel).toBe(schema.sets);
     expect(Card).toBe(schema.cards);
-    expect(Card.$model.schema.select).toBeTypeOf('function');
+    expect(Card.schema.select).toBeTypeOf('function');
     expect(CatalogImport.$model.relationships).toEqual([
       { source: 'CatalogImport', name: 'setId', target: 'Set', cardinality: 'one', integrity: 'reconcile-checked', fields: ['setId'], references: ['id'] },
     ]);
@@ -106,7 +129,11 @@ describe('v0.6 app-scoped native model promotion', () => {
         }),
       }),
     });
-    expect(graph?.nodes.find((node) => node.kind === 'commandHandler' && node.name === 'Card-cards.rename.v1')).toMatchObject({ model: { nodeId: 'model.card' }, effectBoundary: 'transactionSafeOnly' });
+    expect(graph?.nodes.find((node) => node.kind === 'commandHandler' && node.name === 'Card-cards.rename.v1')).toMatchObject({
+      model: { nodeId: 'model.card' },
+      effectBoundary: 'transactionSafeOnly',
+      transaction: { models: [{ nodeId: 'model.card' }, { nodeId: 'model.set' }] },
+    });
     expect(graph?.nodes.find((node) => node.kind === 'processor' && node.name === 'Card-commands')).toBeDefined();
     expect(graph?.nodes.find((node) => node.kind === 'crd' && node.name === 'CatalogImport')).toMatchObject({
       native: { kind: 'kubernetes-resource', authority: 'kubernetes', nativeApi: 'preserved' },
@@ -130,6 +157,9 @@ describe('v0.6 app-scoped native model promotion', () => {
     expect(serialized).toContain('"native":{"artifact":{"database":"catalog","migrations":{"digest":"sha256:catalog","path":"./drizzle"},"name":"cards"}');
     expect(serialized).not.toContain('organizationId":{"kind"');
     expect(serialized).not.toContain('drizzle-arktype');
+    const resourceGraph = catalog.composition.toYaml();
+    expect(resourceGraph.match(/\n\s+kind: Cluster\b/g)).toHaveLength(1);
+    expect(resourceGraph).toContain('database: catalog');
   });
 
   test('fails closed when required provider-wide context cannot be enforced', () => {
@@ -173,6 +203,282 @@ describe('v0.6 app-scoped native model promotion', () => {
         kind: 'view',
       },
     });
+  });
+
+  test('records fluent model-native commands as directly callable operations', () => {
+    const schema = catalogSchema();
+    const catalog = app('native-command-fixture');
+    const Database = catalog.database.postgres('catalog', { schema });
+    const BaseCard = catalog.model(schema.cards, { name: 'Card', database: Database });
+    const RenameCard = command('cards.rename.v1', {
+      input: type({ cardId: 'string', name: 'string' }),
+      output: type({ changed: 'boolean' }),
+    });
+    const Card = BaseCard.command('rename', RenameCard, {
+      key: ({ cardId }) => cardId,
+    }, async (card, input) => ({ changed: card.value.name !== input.name }));
+
+    expect(Card.rename.operation).toMatchObject({ id: 'cards.rename.v1', model: 'Card', name: 'rename', transport: 'command' });
+    expect(applicationGraphFor(catalog.composition)?.nodes.find((node) => node.kind === 'model' && node.name === 'Card')).toMatchObject({
+      common: {
+        operations: expect.arrayContaining([
+          expect.objectContaining({ name: 'rename', publicId: 'cards.rename.v1', authorization: 'application-defined' }),
+        ]),
+      },
+    });
+  });
+
+  test('derives durable CRUD operations and typed committed lifecycle events directly from the model', () => {
+    const schema = catalogSchema();
+    const catalog = app('native-create-lifecycle');
+    const Database = catalog.database.postgres('catalog', { schema });
+    const Card = catalog.model(schema.cards, { name: 'Card', database: Database });
+    const Initialized = Card.on.create('initialize-card', {
+      processor: { replicas: 1, concurrency: 4 },
+      retry: { maxAttempts: 4, initialDelayMs: 100, maxDelayMs: 2_000, deadLetter: true },
+      budgets: { timeoutMs: 2_000, maxInputBytes: 32_000 },
+    }, async (created) => {
+      expectTypeOf(created.operation).toEqualTypeOf<'create'>();
+      expectTypeOf(created.identity).toEqualTypeOf<string>();
+      expectTypeOf(created.value.name).toEqualTypeOf<string>();
+    });
+    const Reindexed = Card.on.update('reindex-card', {
+      processor: { replicas: 1, concurrency: 4 },
+      budgets: { timeoutMs: 2_000, maxInputBytes: 32_000 },
+    }, async (updated) => {
+      expectTypeOf(updated.operation).toEqualTypeOf<'update'>();
+      expectTypeOf(updated.identity).toEqualTypeOf<string>();
+      expectTypeOf(updated.previous.name).toEqualTypeOf<string>();
+      expectTypeOf(updated.current.name).toEqualTypeOf<string>();
+    });
+    const Removed = Card.on.delete('remove-card-index', {
+      processor: { replicas: 1, concurrency: 4 },
+      budgets: { timeoutMs: 2_000, maxInputBytes: 32_000 },
+    }, async (deleted) => {
+      expectTypeOf(deleted.operation).toEqualTypeOf<'delete'>();
+      expectTypeOf(deleted.identity).toEqualTypeOf<string>();
+      expectTypeOf(deleted.previous.name).toEqualTypeOf<string>();
+      expectTypeOf(deleted.tombstone.deleted).toEqualTypeOf<true>();
+    });
+    const Gateway = catalog.gateway('card-writes', {
+      commands: [Card.create, Card.update, Card.delete],
+      authorizeCommand: () => true,
+    });
+
+    expect(Initialized.kind).toBe('applicationStreamProcessor');
+    expect(Reindexed.kind).toBe('applicationStreamProcessor');
+    expect(Removed.kind).toBe('applicationStreamProcessor');
+    expect(Gateway.commands).toHaveLength(3);
+    expect(Gateway.commands[0]).toMatchObject({ command: 'models.Card.create.v1', model: 'Card' });
+    expect(Gateway.commands[1]).toMatchObject({ command: 'models.Card.update.v1', model: 'Card' });
+    expect(Gateway.commands[2]).toMatchObject({ command: 'models.Card.delete.v1', model: 'Card' });
+    const graph = applicationGraphFor(catalog.composition);
+    expect(graph?.nodes.find((node) => node.kind === 'model' && node.name === 'Card')).toMatchObject({
+      common: { operations: expect.arrayContaining([expect.objectContaining({ name: 'create', publicId: 'models.Card.create.v1' })]) },
+    });
+    expect(graph?.nodes.find((node) => node.kind === 'command' && node.name === 'models.Card.create.v1')).toBeDefined();
+    expect(graph?.nodes.find((node) => node.kind === 'event' && node.name === 'models.Card.created.v1')).toBeDefined();
+    expect(graph?.nodes.find((node) => node.kind === 'event' && node.name === 'models.Card.updated.v1')).toBeDefined();
+    expect(graph?.nodes.find((node) => node.kind === 'event' && node.name === 'models.Card.deleted.v1')).toBeDefined();
+    expect(graph?.nodes.find((node) => node.kind === 'stream' && node.name === 'models.Card.created')).toBeDefined();
+    expect(graph?.nodes.find((node) => node.kind === 'streamProcessor' && node.name === 'initialize-card')).toMatchObject({
+      source: { nodeId: 'stream.models.card.created.v1' },
+    });
+    expect(graph?.nodes.find((node) => node.kind === 'streamProcessor' && node.name === 'reindex-card')).toMatchObject({
+      source: { nodeId: 'stream.models.card.updated.v1' },
+    });
+    expect(graph?.nodes.find((node) => node.kind === 'streamProcessor' && node.name === 'remove-card-index')).toMatchObject({
+      source: { nodeId: 'stream.models.card.deleted.v1' },
+    });
+  });
+
+  test('attaches transaction-authoritative policy to direct CRUD without creating a parallel action', () => {
+    const schema = catalogSchema();
+    const notifications = pgTable('notifications', {
+      id: uuid('id').primaryKey(),
+      cardId: uuid('card_id').notNull(),
+      message: text('message').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const catalog = app('native-create-policy');
+    const Database = catalog.database.postgres('catalog', { schema: { ...schema, notifications } });
+    const SetModel = catalog.model(schema.sets, { name: 'Set', database: Database });
+    const Card = catalog.model(schema.cards, { name: 'Card', database: Database });
+    const Notification = catalog.model(notifications, { name: 'Notification', database: Database });
+    const CreateNotification = Notification.create;
+    const CardAccepted = event('cards.accepted.v1', { payload: type({ cardId: 'string', setId: 'string' }) });
+
+    Card.create.beforeCommit({
+      events: [CardAccepted],
+      transaction: { models: [Card, SetModel], commands: [CreateNotification] },
+      history: true,
+    }, async (card, input, context) => {
+      const _typedName: string = card.value.name;
+      const _typedSetId: string = input.setId;
+      void _typedName;
+      void _typedSetId;
+      const set = await context.models.Set?.get({ id: input.setId });
+      if (!set) throw new Error('A card requires an existing set.');
+      await context.models.Card?.get({ id: input.id });
+      await context.models.Card?.query({ where: { setId: input.setId }, limit: 25 });
+      context.emit(CardAccepted, { cardId: input.id, setId: input.setId });
+      context.send(CreateNotification, {
+        id: context.id('notification'),
+        cardId: input.id,
+        message: `Card ${input.name} was accepted`,
+        revision: context.id('notification-revision'),
+      }, { targetKey: input.id });
+    });
+
+    const graph = applicationGraphFor(catalog.composition);
+    const handler = graph?.nodes.find((node) => node.kind === 'commandHandler' && node.name === 'Card-models.Card.create.v1');
+    expect(handler).toMatchObject({
+      transaction: {
+        models: [{ nodeId: 'model.card' }, { nodeId: 'model.set' }],
+        selfRead: true,
+        outbox: [{ nodeId: 'event.cards.accepted.v1' }, { nodeId: 'event.models.card.created.v1' }],
+        commands: [{ nodeId: 'command.models.notification.create.v1' }],
+      },
+      commandBindings: [{ identifier: 'CreateNotification', command: { nodeId: 'command.models.notification.create.v1' } }],
+    });
+    expect(handler && handler.kind === 'commandHandler' ? handler.handlerSource : '').toContain('CardAccepted');
+    expect(graph?.nodes.filter((node) => node.kind === 'commandHandler' && node.name === 'Card-models.Card.create.v1')).toHaveLength(1);
+    expect(graph?.nodes.find((node) => node.kind === 'model' && node.name === 'Card')).toMatchObject({
+      common: { operations: expect.arrayContaining([expect.objectContaining({ name: 'create', operation: 'create' })]) },
+    });
+    expect(() => Card.create.beforeCommit({}, async () => undefined)).toThrow('may be declared only once');
+  });
+
+  test('binds CRUD and lifecycle behavior through the symbol API when native columns collide', () => {
+    const records = pgTable('colliding_application_records', {
+      id: uuid('id').primaryKey(),
+      create: text('create').notNull(),
+      on: text('on').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('native-collision-fixture');
+    const Database = application.database.postgres('catalog', { schema: { records } });
+    const RecordModel = application.model(records, { name: 'RecordModel', database: Database });
+    const modelApi = RecordModel[applicationModelFacet].api;
+    const processor = modelApi.on.create('initialize-colliding-record', {}, async (created) => {
+      void created.value.create;
+      void created.value.on;
+    });
+    const Gateway = application.gateway('colliding-record-writes', {
+      commands: [modelApi.create, modelApi.update, modelApi.delete],
+      authorizeCommand: () => true,
+    });
+
+    expect(RecordModel.create).toBe(records.create);
+    expect(RecordModel.on).toBe(records.on);
+    expect(processor.kind).toBe('applicationStreamProcessor');
+    expect(Gateway.commands.map((binding) => binding.command)).toEqual([
+      'models.RecordModel.create.v1',
+      'models.RecordModel.update.v1',
+      'models.RecordModel.delete.v1',
+    ]);
+    expect(applicationGraphFor(application.composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'streamProcessor.initialize-colliding-record' }),
+      expect.objectContaining({ id: 'command.models.record-model.create.v1' }),
+    ]));
+  });
+
+  test('materializes direct typed Kubernetes create, update, and delete handlers as app-owned operators', () => {
+    const catalog = app('native-kubernetes-lifecycle', { namespace: 'catalog-system' });
+    const Policy = catalog.crd(entity('ModerationPolicy', {
+      spec: type({ maxRisk: 'number', blockedTerms: 'string[]' }),
+      status: type({ 'phase?': "'Ready' | 'Invalid'" }),
+    }), { apiVersion: 'catalog.example/v1alpha1' });
+
+    const initialized = Policy.on.create('initialize-policy', { namespace: 'catalog-system' }, async (policy) => {
+      expectTypeOf(policy.spec.maxRisk).toEqualTypeOf<number>();
+      policy.status.phase = policy.spec.maxRisk <= 1 ? 'Ready' : 'Invalid';
+    });
+    const reapplied = Policy.on.update('reapply-policy', { namespace: 'catalog-system' }, async (policy) => {
+      expectTypeOf(policy.spec.blockedTerms).toEqualTypeOf<string[]>();
+      policy.status.phase = policy.spec.maxRisk >= 0 ? 'Ready' : 'Invalid';
+    });
+    const removed = Policy.on.delete('remove-policy', { namespace: 'catalog-system' }, async (policy) => {
+      expectTypeOf(policy.metadata.name).toEqualTypeOf<string>();
+    });
+
+    expect(initialized.operatorName).toBe('initialize-policy');
+    expect(reapplied.operatorName).toBe('reapply-policy');
+    expect(removed.operatorName).toBe('remove-policy');
+    expect(applicationGraphFor(catalog.composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'operator.initialize-policy', kind: 'operator', name: 'initialize-policy' }),
+      expect.objectContaining({ id: 'operator.reapply-policy', kind: 'operator', name: 'reapply-policy' }),
+      expect.objectContaining({ id: 'operator.remove-policy', kind: 'operator', name: 'remove-policy' }),
+    ]));
+  });
+
+  test('preserves an installation-derived namespace for Kubernetes query execution and RBAC lowering', () => {
+    const catalog = app('native-kubernetes-query', {
+      controlPlaneNamespace: 'catalog-control',
+      apiVersion: 'applications.catalog.example/v1alpha1',
+      kind: 'CatalogInstallation',
+      spec: type({ name: 'string' }),
+      status: type({ ready: 'boolean' }),
+      namespace: (spec) => spec.name,
+    });
+    const Policy = catalog.crd(entity('ModerationPolicy', {
+      spec: type({ maxRisk: 'number' }),
+      status: type({ 'phase?': "'Ready' | 'Invalid'" }),
+    }), { apiVersion: 'catalog.example/v1alpha1' });
+    Policy.view('current', {
+      input: type({}),
+      output: type({ name: 'string', maxRisk: 'number' }).array(),
+      authorize: () => true,
+      kubernetes: {
+        namespace: catalog.installation.spec.name,
+        fieldSelector: () => 'metadata.name=default',
+        project: ({ value }) => ({ name: value.metadata.name, maxRisk: value.spec.maxRisk }),
+        limit: () => 1,
+      },
+      budgets: { timeoutMs: 2_000, maxRows: 1, maxResultBytes: 16_000 },
+    });
+
+    expect(applicationGraphFor(catalog.composition)?.nodes.find((node) => node.kind === 'query' && node.name === 'ModerationPolicy.current')).toMatchObject({
+      kubernetes: {
+        namespace: '${schema.spec.name}',
+        resource: { plural: 'moderationpolicies', scope: 'Namespaced' },
+      },
+    });
+  });
+
+  test('derives one direct exceptional action and its typed completion stream from one declaration', () => {
+    const schema = catalogSchema();
+    const catalog = app('native-action-fixture');
+    const Database = catalog.database.postgres('catalog', { schema });
+    const BaseCard = catalog.model(schema.cards, { name: 'Card', database: Database });
+    const ArchiveCard = command('cards.archive.v1', {
+      input: type({ cardId: 'string' }),
+      output: type({ archived: 'boolean' }),
+    });
+    const Card = BaseCard.action('archive', ArchiveCard, {
+      key: ({ cardId }) => cardId,
+    }, async () => ({ archived: true }));
+    const completed = Card.on.archive('record-card-archive', {
+      budgets: { timeoutMs: 2_000 },
+    }, async (archived, context) => {
+      expectTypeOf(archived.operation).toEqualTypeOf<'archive'>();
+      expectTypeOf(archived.previous.name).toEqualTypeOf<string>();
+      expectTypeOf(archived.current.name).toEqualTypeOf<string>();
+      expectTypeOf(archived.result.archived).toEqualTypeOf<boolean>();
+      expectTypeOf(context.idempotencyKey).toEqualTypeOf<string>();
+    });
+
+    expect(Card.archive.operation).toMatchObject({ id: 'cards.archive.v1', model: 'Card', name: 'archive', transport: 'command' });
+    expect(completed.source.definition).toMatchObject({ id: 'models.Card.archive.completed.v1' });
+    expect(applicationGraphFor(catalog.composition)?.nodes.find((node) => node.kind === 'model' && node.name === 'Card')).toMatchObject({
+      common: { operations: expect.arrayContaining([expect.objectContaining({ name: 'archive', publicId: 'cards.archive.v1' })]) },
+    });
+    expect(applicationGraphFor(catalog.composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'event.models.card.archive.completed.v1', kind: 'event' }),
+      expect.objectContaining({ id: 'stream.models.card.archive.completed.v1', kind: 'stream' }),
+      expect.objectContaining({ id: 'streamProcessor.record-card-archive', kind: 'streamProcessor' }),
+    ]));
+    expect(applicationGraphFor(catalog.composition)?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['Model.action', 'Model.on.action', 'Model.command']));
   });
 
   test('fails closed when multiple registered databases make promotion ambiguous', () => {

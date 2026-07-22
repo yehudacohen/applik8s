@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { queryInputKey, type ApplicationQueryEvent, type ApplicationQuerySnapshot } from '@applik8s/client';
+import { queryInputKey, type ApplicationQueryEvent, type ApplicationQueryMultiplexErrorFrame, type ApplicationQueryMultiplexFrame, type ApplicationQueryMultiplexSubscription, type ApplicationQuerySnapshot } from '@applik8s/client';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { validateQueryInput, validateQueryOutput } from './application-query-runtime.js';
 import { applicationAdmittedContextDigest, type ApplicationAdmittedContext, type ApplicationRelationalContext } from './relational-runtime.js';
@@ -14,7 +14,7 @@ export interface ApplicationGatewayIdentity<TPrincipal extends ApplicationQueryP
 
 export interface ApplicationQueryGatewayOptions<TRequest, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly queries: readonly ApplicationQueryBinding<unknown, unknown, TPrincipal>[];
-  readonly authenticate: (request: TRequest) => ApplicationGatewayIdentity<TPrincipal> | Promise<ApplicationGatewayIdentity<TPrincipal>>;
+  readonly authenticate: (request: TRequest, query: ApplicationQueryBinding<unknown, unknown, TPrincipal>, input: unknown) => ApplicationGatewayIdentity<TPrincipal> | Promise<ApplicationGatewayIdentity<TPrincipal>>;
   readonly context: (identity: ApplicationGatewayIdentity<TPrincipal>) => ApplicationRelationalContext;
   readonly cursorSecret: string;
   readonly cursorTtlSeconds?: number;
@@ -71,15 +71,19 @@ export interface ApplicationQueryGateway<TRequest> {
 export interface ApplicationQueryGatewayHttpOptions {
   readonly basePath?: string;
   readonly maxRequestBytes?: number;
+  /** Maximum logical subscriptions admitted through one physical SSE response. */
+  readonly maxMultiplexSubscriptions?: number;
 }
 
 interface CursorPayload {
-  readonly version: 1;
+  readonly version: 2;
   readonly query: string;
   readonly inputKey: string;
-  readonly contextDigest: string;
-  readonly authorizationVersion: string;
+  readonly contextBinding: string;
+  readonly authorizationBinding: string;
   readonly sequence: number;
+  /** Provider checkpoint/generation bound into the HMAC for non-relational snapshot authorities. */
+  readonly providerRevision?: string;
   readonly expiresAt: number;
 }
 
@@ -104,24 +108,32 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
     async snapshot<TValue>(request: TRequest, queryId: string, rawInput: unknown): Promise<ApplicationQuerySnapshot<TValue>> {
       const query = requiredQuery(queries, queryId);
       const input = validateQueryInput(query, rawInput);
-      const identity = await admittedIdentity(options, request, query);
+      const identity = await admittedIdentity(options, request, query, input);
       if (!await query.authorize(identity.principal, input, identity.admittedContext.values)) {
         options.audit?.({ event: 'authorization-denied', query: query.id, principal: identity.principal.id });
         throw new ApplicationQueryAuthorizationError(query.id);
       }
       if (!query.database) throw new Error(`Application query ${query.id} has no snapshot authority. Bind its first implementation to a registered database or declare reset-only provider behavior.`);
       const context = options.context(identity);
-      const result = await withTimeout(context.snapshot(query.database, () => query.run(context, identity.principal, input)), query.budgets.timeoutMs, `Application query ${query.id} exceeded its ${query.budgets.timeoutMs}ms execution budget.`);
-      const output = validateQueryOutput(query, result.value);
+      const result = await withTimeout(context.snapshot(query.database, async () => {
+        if (!query.sourceRuntime) return query.run(context, identity.principal, input);
+        return query.sourceRuntime.snapshot(async (source) => query.run(context, identity.principal, input, source));
+      }), query.budgets.timeoutMs, `Application query ${query.id} exceeded its ${query.budgets.timeoutMs}ms execution budget.`);
+      const providerSnapshot = query.sourceRuntime
+        ? result.value as { readonly value: unknown; readonly revision: string }
+        : undefined;
+      const resultValue = providerSnapshot?.value ?? result.value;
+      const output = validateQueryOutput(query, resultValue);
       enforceResultBudget(query, output);
       const inputKey = queryInputKey(input);
       const cursor = encodeCursor(options.cursorSecret, {
-        version: 1,
+        version: 2,
         query: query.id,
         inputKey,
-        contextDigest: applicationAdmittedContextDigest(identity.admittedContext),
-        authorizationVersion: identity.authorizationVersion,
+        contextBinding: cursorBinding(options.cursorSecret, 'context', applicationAdmittedContextDigest(identity.admittedContext)),
+        authorizationBinding: cursorBinding(options.cursorSecret, 'authorization', identity.authorizationVersion),
         sequence: result.sequence,
+        ...(providerSnapshot ? { providerRevision: providerSnapshot.revision } : {}),
         expiresAt: now().getTime() + cursorTtlSeconds * 1_000,
       });
       const snapshot = {
@@ -140,7 +152,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
     async *subscribe(request: TRequest, queryId: string, rawInput: unknown, encoded: string, subscribeOptions: { readonly signal?: AbortSignal } = {}): AsyncIterable<ApplicationQueryEvent> {
       const query = requiredQuery(queries, queryId);
       const input = validateQueryInput(query, rawInput);
-      const identity = await admittedIdentity(options, request, query);
+      const identity = await admittedIdentity(options, request, query, input);
       if (!await query.authorize(identity.principal, input, identity.admittedContext.values)) {
         options.audit?.({ event: 'authorization-denied', query: query.id, principal: identity.principal.id });
         throw new ApplicationQueryAuthorizationError(query.id);
@@ -173,28 +185,40 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       const started = now().getTime();
       let lastHeartbeat = started;
       while (!subscribeOptions.signal?.aborted && now().getTime() - started < maxSessionMs) {
-        const currentIdentity = await admittedIdentity(options, request, query);
+        const currentIdentity = await admittedIdentity(options, request, query, input);
         if (currentIdentity.authorizationVersion !== identity.authorizationVersion || applicationAdmittedContextDigest(currentIdentity.admittedContext) !== applicationAdmittedContextDigest(identity.admittedContext) || !await query.authorize(currentIdentity.principal, input, currentIdentity.admittedContext.values)) {
           options.audit?.({ event: 'subscription-reset', query: query.id, principal: identity.principal.id, reason: 'authorizationChanged' });
           yield resetEvent(query.id, 'authorizationChanged', now());
           return;
         }
-        const page = await context.changes(query.database, cursor.sequence, changePageSize);
+        const [page, providerRevision] = await Promise.all([
+          context.changes(query.database, cursor.sequence, changePageSize),
+          query.sourceRuntime?.revision(),
+        ]);
         if (cursor.sequence > 0 && page.retentionFloor > cursor.sequence + 1) {
           yield resetEvent(query.id, 'retentionGap', now());
           return;
         }
-        if (page.items.length > 0) {
+        const providerChanged = providerRevision !== undefined && providerRevision !== cursor.providerRevision;
+        if (page.items.length > 0 || providerChanged) {
           const sequence = page.items[page.items.length - 1]?.sequence ?? cursor.sequence;
-          cursor = { ...cursor, sequence, expiresAt: now().getTime() + cursorTtlSeconds * 1_000 };
+          cursor = {
+            ...cursor,
+            sequence,
+            ...(providerRevision === undefined ? {} : { providerRevision }),
+            expiresAt: now().getTime() + cursorTtlSeconds * 1_000,
+          };
           const nextCursor = encodeCursor(options.cursorSecret, cursor);
           const relevant = page.items.filter((change) => relevantModels.has(change.model));
           if (relevant.some((change) => change.operation === 'reset')) {
             yield resetEvent(query.id, 'providerReset', now());
             return;
           }
-          if (relevant.length > 0) {
-            yield { kind: 'invalidate', protocol: 'applik8s.query/v1alpha1', id: `${query.id}:${sequence}`, sequence, query: query.id, cursor: nextCursor, models: [...new Set(relevant.map((change) => change.model))].sort() };
+          if (relevant.length > 0 || providerChanged) {
+            const changedModels = providerChanged
+              ? [...new Set([...relevantModels, ...relevant.map((change) => change.model)])].sort()
+              : [...new Set(relevant.map((change) => change.model))].sort();
+            yield { kind: 'invalidate', protocol: 'applik8s.query/v1alpha1', id: providerRevision ? `${query.id}:${sequence}:${providerRevision}` : `${query.id}:${sequence}`, sequence, query: query.id, cursor: nextCursor, models: changedModels };
           } else {
             yield { kind: 'keepalive', protocol: 'applik8s.query/v1alpha1', id: `${query.id}:advance:${sequence}`, sequence, query: query.id, cursor: nextCursor };
           }
@@ -235,25 +259,38 @@ export class ApplicationQuerySubscriptionLimitError extends Error {
 export function createApplicationQueryGatewayHttpHandler(gateway: ApplicationQueryGateway<Request>, options: ApplicationQueryGatewayHttpOptions = {}): (request: Request) => Promise<Response> {
   const basePath = `/${(options.basePath ?? 'queries').replace(/^\/+|\/+$/g, '')}/`;
   const maxRequestBytes = options.maxRequestBytes ?? 1024 * 1024;
+  const maxMultiplexSubscriptions = options.maxMultiplexSubscriptions ?? 100;
+  if (!Number.isSafeInteger(maxMultiplexSubscriptions) || maxMultiplexSubscriptions < 1 || maxMultiplexSubscriptions > 1_000) {
+    throw new Error('Application query gateway maxMultiplexSubscriptions must be between 1 and 1000.');
+  }
   return async (request) => {
     try {
       if (request.method !== 'POST') return jsonResponse({ error: 'method_not_allowed' }, 405, { allow: 'POST' });
       const url = new URL(request.url);
       if (!url.pathname.startsWith(basePath)) return jsonResponse({ error: 'not_found' }, 404);
       const tail = url.pathname.slice(basePath.length).split('/').filter(Boolean);
+      const multiplex = tail.length === 1 && tail[0] === 'multiplex';
       const query = tail[0] ? decodeURIComponent(tail[0]) : undefined;
       const operation = tail[1];
-      if (!query || (operation !== 'snapshot' && operation !== 'subscribe') || tail.length !== 2) return jsonResponse({ error: 'not_found' }, 404);
+      if (!multiplex && (!query || (operation !== 'snapshot' && operation !== 'subscribe') || tail.length !== 2)) return jsonResponse({ error: 'not_found' }, 404);
       const contentLength = Number(request.headers.get('content-length') ?? 0);
       if (contentLength > maxRequestBytes) return jsonResponse({ error: 'request_too_large' }, 413);
       const bodyText = await request.text();
       if (new TextEncoder().encode(bodyText).byteLength > maxRequestBytes) return jsonResponse({ error: 'request_too_large' }, 413);
-      let body: { readonly input?: unknown; readonly cursor?: unknown };
-      try { body = JSON.parse(bodyText) as { readonly input?: unknown; readonly cursor?: unknown }; } catch { return jsonResponse({ error: 'invalid_json' }, 400); }
+      let body: unknown;
+      try { body = JSON.parse(bodyText) as unknown; } catch { return jsonResponse({ error: 'invalid_json' }, 400); }
+      if (multiplex) {
+        const subscriptions = validateMultiplexSubscriptions(body, maxMultiplexSubscriptions);
+        if (!subscriptions) return jsonResponse({ error: 'invalid_subscriptions' }, 400);
+        return multiplexQueryResponse(gateway, request, subscriptions);
+      }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonResponse({ error: 'invalid_request' }, 400);
+      if (!query) return jsonResponse({ error: 'not_found' }, 404);
       if (!('input' in body)) return jsonResponse({ error: 'missing_input' }, 400);
       if (operation === 'snapshot') return jsonResponse(await gateway.snapshot(request, query, body.input), 200);
-      if (typeof body.cursor !== 'string') return jsonResponse({ error: 'missing_cursor' }, 400);
-      const iterator = gateway.subscribe(request, query, body.input, body.cursor, { signal: request.signal })[Symbol.asyncIterator]();
+      const cursor = Reflect.get(body, 'cursor');
+      if (typeof cursor !== 'string') return jsonResponse({ error: 'missing_cursor' }, 400);
+      const iterator = gateway.subscribe(request, query, body.input, cursor, { signal: request.signal })[Symbol.asyncIterator]();
       const encoder = new TextEncoder();
       const stream = new ReadableStream<Uint8Array>({
         async start(controller) {
@@ -276,6 +313,9 @@ export function createApplicationQueryGatewayHttpHandler(gateway: ApplicationQue
     } catch (error) {
       if (error instanceof ApplicationQueryAuthorizationError) return jsonResponse({ error: 'forbidden' }, 403);
       if (error instanceof ApplicationQuerySubscriptionLimitError) return jsonResponse({ error: 'subscription_limit' }, 429, { 'retry-after': '5' });
+      if (isProjectionUnavailableError(error)) {
+        return jsonResponse({ error: 'projection_unavailable' }, 503, { 'retry-after': '5' });
+      }
       const message = error instanceof Error ? error.message : String(error);
       if (/Unknown application query/.test(message)) return jsonResponse({ error: 'not_found' }, 404);
       if (/validation failed|requires trusted context|identity provider returned/.test(message)) return jsonResponse({ error: 'invalid_request' }, 400);
@@ -284,8 +324,109 @@ export function createApplicationQueryGatewayHttpHandler(gateway: ApplicationQue
   };
 }
 
-async function admittedIdentity<TRequest, TPrincipal extends ApplicationQueryPrincipal>(options: ApplicationQueryGatewayOptions<TRequest, TPrincipal>, request: TRequest, query: ApplicationQueryBinding<unknown, unknown, TPrincipal>): Promise<ApplicationGatewayIdentity<TPrincipal>> {
-  const identity = await options.authenticate(request);
+function validateMultiplexSubscriptions(value: unknown, maximum: number): readonly ApplicationQueryMultiplexSubscription[] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = Reflect.get(value, 'subscriptions');
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > maximum) return undefined;
+  const ids = new Set<string>();
+  const subscriptions: ApplicationQueryMultiplexSubscription[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return undefined;
+    const id = Reflect.get(item, 'id');
+    const query = Reflect.get(item, 'query');
+    const cursor = Reflect.get(item, 'cursor');
+    if (typeof id !== 'string' || id.length < 1 || id.length > 128 || ids.has(id)) return undefined;
+    if (typeof query !== 'string' || query.length < 1 || query.length > 512) return undefined;
+    if (typeof cursor !== 'string' || cursor.length < 1 || cursor.length > 16 * 1024) return undefined;
+    if (!Reflect.has(item, 'input')) return undefined;
+    ids.add(id);
+    subscriptions.push({ id, query, cursor, input: Reflect.get(item, 'input') });
+  }
+  return subscriptions;
+}
+
+function multiplexQueryResponse(
+  gateway: ApplicationQueryGateway<Request>,
+  request: Request,
+  subscriptions: readonly ApplicationQueryMultiplexSubscription[],
+): Response {
+  const abort = new AbortController();
+  const abortFromRequest = () => abort.abort();
+  request.signal.addEventListener('abort', abortFromRequest, { once: true });
+  const iterators = subscriptions.map((subscription) => ({
+    subscription,
+    iterator: gateway.subscribe(request, subscription.query, subscription.input, subscription.cursor, { signal: abort.signal })[Symbol.asyncIterator](),
+  }));
+  const encoder = new TextEncoder();
+  let closed = false;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const enqueue = (frame: ApplicationQueryMultiplexFrame) => {
+        if (!closed && !abort.signal.aborted) controller.enqueue(encoder.encode(`data: ${JSON.stringify(frame)}\n\n`));
+      };
+      const pumps = iterators.map(async ({ subscription, iterator }) => {
+        try {
+          while (!abort.signal.aborted) {
+            const next = await iterator.next();
+            if (next.done) break;
+            enqueue({
+              protocol: 'applik8s.query-multiplex/v1alpha1',
+              kind: 'event',
+              subscriptionId: subscription.id,
+              event: next.value,
+            });
+          }
+        } catch (error) {
+          if (!abort.signal.aborted) enqueue(multiplexErrorFrame(subscription.id, error));
+        } finally {
+          await iterator.return?.().catch(() => undefined);
+        }
+      });
+      void Promise.all(pumps).then(() => {
+        if (closed) return;
+        closed = true;
+        request.signal.removeEventListener('abort', abortFromRequest);
+        controller.close();
+      }).catch((error: unknown) => {
+        if (closed) return;
+        closed = true;
+        request.signal.removeEventListener('abort', abortFromRequest);
+        controller.error(error);
+      });
+    },
+    async cancel() {
+      if (closed) return;
+      closed = true;
+      request.signal.removeEventListener('abort', abortFromRequest);
+      abort.abort();
+      await Promise.allSettled(iterators.map(({ iterator }) => iterator.return?.()));
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store, no-transform', connection: 'keep-alive', 'x-content-type-options': 'nosniff' },
+  });
+}
+
+function multiplexErrorFrame(subscriptionId: string, error: unknown): ApplicationQueryMultiplexErrorFrame {
+  if (error instanceof ApplicationQueryAuthorizationError) return { protocol: 'applik8s.query-multiplex/v1alpha1', kind: 'error', subscriptionId, error: 'forbidden' };
+  if (error instanceof ApplicationQuerySubscriptionLimitError) return { protocol: 'applik8s.query-multiplex/v1alpha1', kind: 'error', subscriptionId, error: 'subscription_limit', retryAfterSeconds: 5 };
+  if (isProjectionUnavailableError(error)) return { protocol: 'applik8s.query-multiplex/v1alpha1', kind: 'error', subscriptionId, error: 'projection_unavailable', retryAfterSeconds: 5 };
+  const message = error instanceof Error ? error.message : String(error);
+  if (/Unknown application query/.test(message)) return { protocol: 'applik8s.query-multiplex/v1alpha1', kind: 'error', subscriptionId, error: 'not_found' };
+  if (/validation failed|requires trusted context|identity provider returned/.test(message)) return { protocol: 'applik8s.query-multiplex/v1alpha1', kind: 'error', subscriptionId, error: 'invalid_request' };
+  return { protocol: 'applik8s.query-multiplex/v1alpha1', kind: 'error', subscriptionId, error: 'internal_error' };
+}
+
+function isProjectionUnavailableError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const code = Reflect.get(error, 'code');
+  return code === 'APPLIK8S_ONLINE_PROJECTION_UNAVAILABLE'
+    || code === 'APPLIK8S_ANALYTICAL_PROJECTION_NOT_CONFIGURED';
+}
+
+async function admittedIdentity<TRequest, TPrincipal extends ApplicationQueryPrincipal>(options: ApplicationQueryGatewayOptions<TRequest, TPrincipal>, request: TRequest, query: ApplicationQueryBinding<unknown, unknown, TPrincipal>, input: unknown): Promise<ApplicationGatewayIdentity<TPrincipal>> {
+  const identity = await options.authenticate(request, query, input);
   if (!identity.principal.id || !identity.authorizationVersion) throw new Error('Application query gateway identity provider returned an incomplete principal or authorization version.');
   for (const context of query.trustedContext) {
     const value = identity.admittedContext.values[context.name];
@@ -337,14 +478,18 @@ function decodeCursor(secret: string, cursor: string, expected: { readonly query
   if (supplied.length !== calculated.length || !timingSafeEqual(supplied, calculated)) throw new CursorValidationError('cursorInvalid');
   let payload: CursorPayload;
   try { payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as CursorPayload; } catch { throw new CursorValidationError('cursorInvalid'); }
-  if (payload.version !== 1 || !Number.isSafeInteger(payload.sequence) || payload.sequence < 0) throw new CursorValidationError('cursorInvalid');
+  if (payload.version !== 2 || !Number.isSafeInteger(payload.sequence) || payload.sequence < 0 || !opaqueCursorField(payload.contextBinding) || !opaqueCursorField(payload.authorizationBinding)) throw new CursorValidationError('cursorInvalid');
+  if (payload.providerRevision !== undefined && (typeof payload.providerRevision !== 'string' || payload.providerRevision.length < 1 || payload.providerRevision.length > 512)) throw new CursorValidationError('cursorInvalid');
   if (payload.query !== expected.query) throw new CursorValidationError('queryVersionChanged');
   if (payload.inputKey !== expected.inputKey) throw new CursorValidationError('cursorInvalid');
-  if (payload.contextDigest !== expected.contextDigest) throw new CursorValidationError('contextChanged');
-  if (payload.authorizationVersion !== expected.authorizationVersion) throw new CursorValidationError('authorizationChanged');
+  if (payload.contextBinding !== cursorBinding(secret, 'context', expected.contextDigest)) throw new CursorValidationError('contextChanged');
+  if (payload.authorizationBinding !== cursorBinding(secret, 'authorization', expected.authorizationVersion)) throw new CursorValidationError('authorizationChanged');
   if (payload.expiresAt < expected.now) throw new CursorValidationError('cursorExpired');
   return payload;
 }
+
+function cursorBinding(secret: string, domain: 'authorization' | 'context', value: string): string { return createHmac('sha256', secret).update(`applik8s.query-cursor.${domain}\0`).update(value).digest('base64url'); }
+function opaqueCursorField(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value); }
 
 class CursorValidationError extends Error {
   constructor(readonly reason: Extract<ApplicationQueryEvent, { kind: 'reset' }>['reason']) { super(reason); }

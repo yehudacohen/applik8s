@@ -872,6 +872,63 @@ export const imagePipeline = sdk.operator({
     }
   }, 120_000);
 
+  it('emits an installable application definition without fabricating an invalid empty instance', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-installable-application-'));
+    try {
+      const entrypoint = join(dir, 'application.ts');
+      await writeFile(entrypoint, `
+import { app } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { namespace } from 'typekro/kubernetes';
+const platform = app('installable-proof', {
+  namespace: 'installable-proof',
+  controlPlaneNamespace: 'applications-system',
+  apiVersion: 'applications.example.test/v1alpha1',
+  kind: 'ProofInstallation',
+  spec: type({ hostname: 'string' }),
+  status: type({ ready: 'boolean' }),
+});
+platform.infra(() => namespace({ metadata: { name: 'installable-proof' } }));
+export const installableProof = platform;
+`);
+      const result = await compileTypeKroComposition({
+        entrypoint,
+        compositionName: 'installableProof',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.7.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.artifacts.resources).toContainEqual(expect.objectContaining({
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: expect.objectContaining({ name: 'installable-proof' }),
+      }));
+      const definition = result.value.artifacts.resources.find((resource) => resource.kind === 'ResourceGraphDefinition' && resource.metadata.name === 'installable-proof');
+      // TypeKro 0.28 hoists owned Namespaces out of the RGD so an instance can
+      // never finalizer-deadlock inside the Namespace it owns. Applik8s runtime
+      // preparation creates the application Namespace before applying an
+      // installation instance.
+      expect(definition?.spec).toMatchObject({
+        resources: [expect.objectContaining({
+          id: 'applik8sInstallationContract',
+          template: expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'installable-proof-installation-contract' }) }),
+        })],
+      });
+      const definitionResources = definition?.spec && typeof definition.spec === 'object' ? Reflect.get(definition.spec, 'resources') : undefined;
+      expect(definitionResources).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ template: expect.objectContaining({ kind: 'Namespace' }) }),
+      ]));
+      expect(definition?.spec).toMatchObject({ schema: { status: { ready: ['$', '{false}'].join('') } } });
+      expect(result.value.artifacts.instanceYamlPaths).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('compiles the public GuestBook profile with managed Certificate, DNS intent, and HTTPS URL projection', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-guestbook-public-'));
     const previous = {
@@ -1063,6 +1120,7 @@ export const commandStack = platform.composition;
       expect(result.value.artifacts.processorArtifacts).toHaveLength(1);
       const artifact = result.value.artifacts.processorArtifacts[0];
       expect(artifact).toMatchObject({ name: 'account-commands', digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) });
+      expect(artifact?.container).toMatchObject({ image: expect.stringMatching(/^applik8s\/command-artifact-platform-command-processor-account-commands:sha-[0-9a-f]{64}$/), baseImage: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2', entrypoint: '/app/processor.mjs' });
       expect(artifact?.sizeBytes).toBeGreaterThan(0);
       expect(artifact?.sizeBytes).toBeLessThan(900_000);
       const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
@@ -1075,19 +1133,28 @@ export const commandStack = platform.composition;
       expect(source).toContain('account.reindex');
       expect(logicalSource).toContain('applik8s-command-outbox-relayed');
       expect(logicalSource).toContain('applik8s-command-processor-observation');
+      expect(logicalSource).toContain('recordTerminalFailure');
+      expect(logicalSource).toContain('applik8s-command-terminal-recorder-missing');
+      expect(logicalSource).toContain('applik8s-command-processor-startup-wait');
+      expect(logicalSource).toContain('applik8s-processor-startup-timeout');
+      expect(logicalSource).toContain('PostgreSQL');
+      expect(logicalSource).toContain('JetStream event log');
+      expect(logicalSource).toContain('JetStream command consumer');
       expect(logicalSource).toContain('applik8s-command-processor-draining');
       expect(logicalSource).toContain('applik8s-command-processor-drain-failure');
       expect(logicalSource).toContain('applik8s-processor-ready');
       expect(logicalSource).toContain('oldest_pending_seconds');
       expect(logicalSource).toContain('consumerLag');
-      expect(source).toContain('nats://applik8s-events.commands.svc:4222');
+      expect(source).toContain('APPLIK8S_NATS_SERVERS');
+      expect(logicalSource).toContain('APPLIK8S_PROCESSOR_CONCURRENCY');
+      expect(JSON.stringify(artifact?.resources)).toContain('nats://applik8s-events.commands.svc:4222');
       expect(source).toContain('jsonSchema');
       expect(source).toMatch(/\.models\s*\.Audit/);
       expect(source).not.toContain('npm install');
       expect(source).not.toContain('bun install');
       expect(Math.max(...source.split('\n').map((line) => line.length))).toBeLessThan(1_000);
       await expect(execFileAsync(process.execPath, [artifact?.sourcePath ?? ''], {
-        env: { ...process.env, DATABASE_URL: 'postgres://invalid:invalid@127.0.0.1:1/invalid' },
+        env: { ...process.env, DATABASE_URL: 'postgres://invalid:invalid@127.0.0.1:1/invalid', APPLIK8S_NATS_SERVERS: '["nats://127.0.0.1:1"]', APPLIK8S_PROCESSOR_CONCURRENCY: '4' },
         timeout: 5_000,
       })).rejects.toMatchObject({
         stderr: expect.not.stringContaining('Dynamic require of'),
@@ -1097,9 +1164,14 @@ export const commandStack = platform.composition;
         spec: {
           guarantees: { delivery: 'atLeastOnce', authority: 'postgresInboxAndDeclaredOrdering', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
           capacity: { replicas: 2, concurrencyPerReplica: 4, maximumInFlight: 8, maxAckPending: 12, requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } },
-          runtime: { packageManagerAtStartup: false, image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2' },
+          runtime: { packageManagerAtStartup: false, distribution: 'ociImage', image: artifact?.container.image, baseImage: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2' },
+          container: expect.objectContaining({ image: artifact?.container.image, contextPath: artifact?.container.contextPath }),
         },
       });
+      // Empty NetworkPolicy rule arrays are semantically redundant and the API server
+      // normalizes them away. Emitting one makes KRO observe a mutation after every SSA,
+      // so it can never leave its reconciliation barrier and project root status.
+      expect(JSON.stringify(result.value.artifacts.resources)).not.toContain('"ingress":[]');
       expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
         expect.objectContaining({
           apiVersion: 'kro.run/v1alpha1',
@@ -1115,13 +1187,12 @@ export const commandStack = platform.composition;
             ]),
           }),
         }),
-        expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'account-commands-source', namespace: 'commands' }) }),
         expect.objectContaining({ apiVersion: 'jetstream.nats.io/v1beta2', kind: 'Stream', metadata: expect.objectContaining({ name: 'applik8s-events', namespace: 'commands' }), spec: expect.objectContaining({ name: 'APPLIK8S_EVENTS', subjects: ['applik8s.>'], duplicateWindow: '2m' }) }),
         expect.objectContaining({
           apiVersion: 'networking.k8s.io/v1',
           kind: 'NetworkPolicy',
           metadata: expect.objectContaining({ name: 'account-commands', namespace: 'commands' }),
-          spec: expect.objectContaining({ policyTypes: ['Ingress', 'Egress'], ingress: [], egress: expect.arrayContaining([expect.objectContaining({ ports: expect.arrayContaining([expect.objectContaining({ port: 4222 }), expect.objectContaining({ port: 5432 })]) })]) }),
+          spec: expect.objectContaining({ policyTypes: ['Ingress', 'Egress'], egress: expect.arrayContaining([expect.objectContaining({ ports: expect.arrayContaining([expect.objectContaining({ port: 4222 }), expect.objectContaining({ port: 5432 })]) })]) }),
         }),
         expect.objectContaining({
           apiVersion: 'apps/v1',
@@ -1129,7 +1200,7 @@ export const commandStack = platform.composition;
           metadata: expect.objectContaining({ name: 'account-commands', namespace: 'commands' }),
           spec: expect.objectContaining({
             replicas: 2,
-            strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } },
+            strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
             template: expect.objectContaining({ spec: expect.objectContaining({
               automountServiceAccountToken: false,
               nodeSelector: { 'kubernetes.io/os': 'linux' },
@@ -1137,11 +1208,14 @@ export const commandStack = platform.composition;
               securityContext: expect.objectContaining({ runAsNonRoot: true, seccompProfile: { type: 'RuntimeDefault' } }),
               containers: [expect.objectContaining({
                 name: 'processor',
-                image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2',
+                image: artifact?.container.image,
                 imagePullPolicy: 'IfNotPresent',
                 securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
                 resources: { requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } },
-                env: expect.arrayContaining([{ name: 'APPLIK8S_NATS_TOKEN', valueFrom: { secretKeyRef: { name: 'nats-auth', key: 'token', optional: false } } }]),
+                env: expect.arrayContaining([
+                  { name: 'APPLIK8S_PROCESSOR_CONCURRENCY', value: '4' },
+                  { name: 'APPLIK8S_NATS_TOKEN', valueFrom: { secretKeyRef: { name: 'nats-auth', key: 'token', optional: false } } },
+                ]),
               })],
             }) }),
           }),
@@ -1219,7 +1293,7 @@ export const notesModelApp = sdk.kubernetesComposition({
       expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
         expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'notes-db', namespace: 'notes' }) }),
         expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', metadata: expect.objectContaining({ name: 'notes-model-migration', namespace: 'notes' }) }),
-        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'notes-model-store', namespace: 'notes' }) }),
+        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'note-model-store', namespace: 'notes' }) }),
       ]));
       expect(result.value.artifacts.resources).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ apiVersion: 'v1', kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }),
@@ -1841,6 +1915,7 @@ export const imagePipeline = sdk.operator({
         seccompProfile: { type: 'RuntimeDefault' },
       });
       expect(deployment.spec.template.spec.volumes).toEqual([{ name: 'tmp', emptyDir: {} }]);
+      expect(deployment.spec.template.spec.terminationGracePeriodSeconds).toBe(45);
       expect(container.image).toMatch(/^applik8s\/image-pipeline-operator:[a-f0-9]{12}$/);
       expect(container.securityContext).toEqual({
         allowPrivilegeEscalation: false,
@@ -1869,6 +1944,10 @@ export const imagePipeline = sdk.operator({
       expect(container.livenessProbe).toMatchObject({ initialDelaySeconds: 60, failureThreshold: 12, periodSeconds: 10, timeoutSeconds: 5 });
       expect(container.readinessProbe.httpGet).toEqual({ path: '/readyz', port: 'health' });
       expect(container.readinessProbe).toMatchObject({ initialDelaySeconds: 1, failureThreshold: 12, periodSeconds: 5, timeoutSeconds: 5 });
+      expect(container.resources).toEqual({
+        requests: { cpu: '100m', memory: '128Mi' },
+        limits: { cpu: '1', memory: '1Gi' },
+      });
       expect(result.value.manifest.spec.bundle.artifacts).toContainEqual(expect.objectContaining({ kind: 'javascript-source-map', path: result.value.artifacts.sourceMapPath }));
       expect(result.value.manifest.spec.bundle.artifacts).toContainEqual(expect.objectContaining({ kind: 'esbuild-metafile' }));
       const dockerfile = await readFile(result.value.artifacts.generatedImageDockerfilePath ?? '', 'utf8');

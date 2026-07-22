@@ -74,7 +74,7 @@ const dimensions: readonly Dimension[] = [
     check('event-log-required', candidate.providerRequirements.some((requirement) => requirement.interface === 'EventLog' && requirement.required), 'Generated processor has a required EventLog binding.'),
   ),
   dimension('Generated runtime safety', true,
-    check('bounded-processor', processor?.kind === 'processor' && processor.deployment.concurrency > 0 && processor.deployment.maxAckPending >= processor.deployment.concurrency, 'Processor concurrency and acknowledgement window are explicit and bounded.'),
+    check('bounded-processor', processor?.kind === 'processor' && typeof processor.deployment.concurrency === 'number' && typeof processor.deployment.maxAckPending === 'number' && processor.deployment.concurrency > 0 && processor.deployment.maxAckPending >= processor.deployment.concurrency, 'Processor concurrency and acknowledgement window are explicit and bounded.'),
     check('generated-resources', processor?.kind === 'processor' && ['Deployment', 'Consumer'].every((kind) => processor.generatedResources?.some((resource) => resource.resource?.kind === kind) === true), 'Processor Deployment and JetStream Consumer are represented in the graph.'),
   ),
   dimension('Rust host quality', true,

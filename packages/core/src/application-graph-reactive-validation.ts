@@ -37,6 +37,11 @@ function queryMessages(node: ApplicationQueryNode, graph: ApplicationGraph): rea
   if (node.kubernetes && (!node.kubernetes.project.source.trim() || node.kubernetes.pageSize < 1 || node.kubernetes.maxPages < 1 || node.kubernetes.maxItems < 1)) {
     messages.push(`Application query ${node.id} has an incomplete or unbounded Kubernetes snapshot/watch authority.`);
   }
+  if (node.projection) {
+    const projection = graph.nodes.find((candidate) => candidate.id === node.projection?.nodeId);
+    if (projection?.kind !== 'projection' || projection.storage !== node.projection.storage) messages.push(`Application query ${node.id} references an incompatible projection authority ${node.projection.nodeId}.`);
+    if (!node.database) messages.push(`Application query ${node.id} projection authority must retain its source database for authorization and invalidation sequencing.`);
+  }
   return messages;
 }
 
@@ -77,5 +82,18 @@ function projectionMessages(node: ApplicationProjectionNode, graph: ApplicationG
   if (source?.kind !== 'stream') messages.push(`Application projection ${node.id} must consume a replayable stream.`);
   if (!node.handlerSource.trim()) messages.push(`Application projection ${node.id} must retain a serializable projector.`);
   if (node.checkpoint !== 'idempotent') messages.push(`Application projection ${node.id} uses a checkpoint mode not implemented by the v0.6 ClickHouse runtime.`);
+  if (node.storage === 'online') {
+    if (!node.online) messages.push(`Application online projection ${node.id} is missing its provider-neutral online contract.`);
+    else {
+      if (node.online.retention.maxItemsPerPartition < 1 || node.online.retention.maxPartitions < 1) messages.push(`Application online projection ${node.id} must declare positive item and partition bounds.`);
+      if (node.online.retention.maxAgeSeconds !== undefined && node.online.scoreUnit !== 'epochMilliseconds') messages.push(`Application online projection ${node.id} age retention requires epoch-millisecond scores.`);
+      const rebuildSource = node.online.rebuild.source ? graph.nodes.find((candidate) => candidate.id === node.online?.rebuild.source?.nodeId) : undefined;
+      if (node.online.rebuild.source && (rebuildSource?.kind !== 'model' || rebuildSource.runtime?.provider !== 'postgres' || !rebuildSource.runtime.nativeRelational)) {
+        messages.push(`Application online projection ${node.id} authoritative rebuild source must be a promoted native PostgreSQL model.`);
+      }
+      if (node.online.rebuild.source && !node.online.rebuild.mapSource?.trim()) messages.push(`Application online projection ${node.id} authoritative rebuild source must declare a snapshot mapper.`);
+      if (!node.online.rebuild.source && node.online.rebuild.mapSource) messages.push(`Application online projection ${node.id} declares a snapshot mapper without an authoritative source.`);
+    }
+  }
   return messages;
 }

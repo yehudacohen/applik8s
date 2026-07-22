@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ApplicationGraph, ApplicationModelNode } from '@applik8s/core';
@@ -17,12 +17,39 @@ describe('native relational migration lowering', () => {
     const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
     expect(source).toContain('pg_advisory_lock');
     expect(source).toContain('applik8s_migration_history');
+    expect(source).toContain("migration_kind = 'application'");
+    expect(source).toContain("migration_key = '0001_cards.sql'");
+    expect(source).toContain('RAISE EXCEPTION USING MESSAGE');
+    expect(source).not.toContain('\\quit 3');
+    expect(source).toContain('applik8s framework migration already applied');
     expect(source).toContain('CREATE TABLE cards');
     expect(source).toContain('CREATE TABLE IF NOT EXISTS applik8s_model_changes');
+    expect(source).toContain('CREATE TABLE IF NOT EXISTS applik8s_public_stream_retention_floors');
     expect(source).toContain('ALTER TABLE "cards" FORCE ROW LEVEL SECURITY');
     expect(source).toContain('"organization_id"::text = current_setting(\'applik8s.context.organizationId\', true)');
-    expect(artifact?.resources.map((resource) => resource.kind)).toEqual(['ConfigMap', 'Job']);
-    expect(artifact?.resources[1]).toMatchObject({ spec: { template: { spec: { containers: [{ env: expect.arrayContaining([{ name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: 'catalog-app', key: 'uri' } } }]) }] } } } });
+    expect(artifact?.container).toMatchObject({
+      image: expect.stringMatching(/^applik8s\/catalog-migration-catalog-catalog-migration-[0-9a-f]{12}:sha-[0-9a-f]{64}$/),
+      baseImage: 'postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193',
+      entrypoint: '/migrations/migration.sql',
+      command: ['sh', '-c', expect.stringContaining('database did not become ready within 600 seconds')],
+    });
+    expect(artifact?.name).toMatch(/^catalog-catalog-migration-[0-9a-f]{12}$/);
+    expect(artifact?.name).not.toContain(artifact?.digest.slice('sha256:'.length, 'sha256:'.length + 12));
+    await expect(readFile(artifact?.container.dockerfilePath ?? '', 'utf8')).resolves.toContain(
+      `COPY --chown=1000:1000 ${artifact?.name}.sql /migrations/migration.sql`,
+    );
+    expect(artifact?.resources.map((resource) => resource.kind)).toEqual(['Job']);
+    expect(artifact?.resources[0]).toMatchObject({ spec: { template: { spec: {
+      automountServiceAccountToken: false,
+      terminationGracePeriodSeconds: 30,
+      containers: [{
+        image: artifact?.container.image,
+        env: expect.arrayContaining([{ name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: 'catalog-app', key: 'uri' } } }]),
+        resources: { requests: { cpu: '100m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } },
+      }],
+    } } } });
+    expect(artifact?.resources[0]?.spec).not.toHaveProperty('ttlSecondsAfterFinished');
+    expect(JSON.stringify(artifact?.resources)).not.toContain('configMap');
   });
 
   it('fails closed when a declared immutable digest does not match', async () => {

@@ -1,5 +1,7 @@
 {
-  "packages/applik8s/src/application.ts": 3450,
+  "packages/applik8s/src/application.ts": 3200,
+  "packages/applik8s/src/application-server-routing.ts": 250,
+  "packages/applik8s/src/application-events.ts": 80,
   "packages/applik8s/src/application-server-bundle.ts": 725,
   "packages/applik8s/src/application-exposure.ts": 80,
   "packages/core/src/application-graph.ts": 3000,

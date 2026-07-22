@@ -178,7 +178,7 @@ function cursorForRequest<TPrincipal extends ApplicationQueryPrincipal>(secret: 
   return cursor;
 }
 
-function retentionGap(sequence: number, page: ApplicationReplayPage<object>): boolean { return sequence > 0 && page.retentionFloor > sequence + 1; }
+function retentionGap(sequence: number, page: ApplicationReplayPage<object>): boolean { return sequence > 0 && page.retentionFloor > sequence; }
 function advanceCursor(cursor: StreamCursor, sequence: number, now: number, ttlSeconds: number): StreamCursor { return { ...cursor, sequence, expiresAt: now + ttlSeconds * 1_000 }; }
 function sameIdentity<TPrincipal extends ApplicationQueryPrincipal>(left: ApplicationStreamSubscriptionIdentity<TPrincipal>, right: ApplicationStreamSubscriptionIdentity<TPrincipal>): boolean { return left.principal.id === right.principal.id && left.authorizationVersion === right.authorizationVersion && left.contextDigest === right.contextDigest; }
 function sameIdentityCursor<TPrincipal extends ApplicationQueryPrincipal>(cursor: StreamCursor, identity: ApplicationStreamSubscriptionIdentity<TPrincipal>): boolean { return cursor.principalId === identity.principal.id && cursor.authorizationVersion === identity.authorizationVersion && cursor.contextDigest === identity.contextDigest; }

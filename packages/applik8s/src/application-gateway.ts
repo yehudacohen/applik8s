@@ -1,8 +1,10 @@
 import type { ApplicationCommandGatewayOptions } from './command-gateway.js';
 import { createApplicationCommandGateway } from './command-gateway.js';
 import type { ApplicationRequestIdentityProvider } from './application-providers.js';
+import { createApplicationObjectStorageGateway, type ApplicationObjectStoreGatewayBinding } from './application-object-storage-gateway.js';
 import type { ApplicationQueryGatewayOptions } from './query-gateway.js';
 import { createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationSubscriptionLimiter } from './query-gateway.js';
+import { applicationRequestContextValues } from './command-principal.js';
 import { applicationAdmittedContextDigest } from './relational-runtime.js';
 import type { ApplicationStreamSubscriptionGatewayOptions } from './stream-subscription-gateway.js';
 import { createApplicationStreamSubscriptionGateway } from './stream-subscription-gateway.js';
@@ -14,6 +16,7 @@ export interface ApplicationFetchGatewayOptions {
   readonly query?: Omit<ApplicationQueryGatewayOptions<Request>, 'authenticate' | 'cursorSecret' | 'subscriptionLimiter'>;
   readonly command?: Omit<ApplicationCommandGatewayOptions, 'authenticate' | 'cursorSecret'>;
   readonly streams?: Omit<ApplicationStreamSubscriptionGatewayOptions, 'authenticate' | 'cursorSecret' | 'subscriptionLimiter'>;
+  readonly objects?: readonly ApplicationObjectStoreGatewayBinding[];
   readonly subscriptionLimits?: { readonly perPrincipal?: number; readonly total?: number };
   readonly ready?: readonly (() => void | Promise<void>)[];
 }
@@ -49,7 +52,10 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
           const admission = await admitted(options.identity, request);
           return {
             principal: admission.principal,
-            admittedContext: { values: admission.trustedContext, digestSecret: options.cursorSecret },
+            admittedContext: {
+              values: applicationRequestContextValues(admission.principal, admission.authorizationVersion, admission.trustedContext),
+              digestSecret: options.cursorSecret,
+            },
             authorizationVersion: admission.authorizationVersion,
           };
         },
@@ -76,12 +82,15 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
             principal: admission.principal,
             authorizationVersion: admission.authorizationVersion,
             contextDigest: applicationAdmittedContextDigest({
-              values: admission.trustedContext,
+              values: applicationRequestContextValues(admission.principal, admission.authorizationVersion, admission.trustedContext),
               digestSecret: options.cursorSecret,
             }),
           };
         },
       })
+    : undefined;
+  const objectGateway = options.objects?.length
+    ? createApplicationObjectStorageGateway({ identity: options.identity, cursorSecret: options.cursorSecret, stores: options.objects, basePath })
     : undefined;
   let stopping = false;
 
@@ -100,6 +109,8 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
         }
       }
       if (!url.pathname.startsWith(`${basePath}/`)) return json({ error: 'not_found' }, 404);
+      const objectResponse = await objectGateway?.handle(request.clone());
+      if (objectResponse) return objectResponse;
       const internal = withInternalPath(request, url.pathname.slice(basePath.length));
       const commandResponse = await commandGateway?.handle(internal.clone());
       if (commandResponse) return commandResponse;

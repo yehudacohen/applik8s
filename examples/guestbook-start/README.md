@@ -3,7 +3,7 @@
 This is the v0.6 application shape:
 
 - one shared application/model declaration is imported by operators and routes;
-- `ApplicationHost.kubernetes()` hosts the Start artifact as part of the application graph;
+- `ApplicationHost.kubernetes()` hosts the web artifact as part of the application graph;
 - the browser receives a generated facade for the same `./application` module specifier;
 - `GuestBookEntry.create.useMutation()` is callable and preserves transport, durable-result, and observation state separately;
 - published entries use the framework query/SSE client rather than operator-rendered HTML;
@@ -17,7 +17,7 @@ explicit step:
 bun run deploy:local
 ```
 
-That command builds the Start artifact, compiles the complete TypeKro graph, builds generated
+That command builds the web artifact, compiles the complete TypeKro graph, builds generated
 operator images in the local container engine, and applies the root instance to the explicitly named
 `orbstack` context.
 

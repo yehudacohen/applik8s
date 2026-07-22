@@ -18,18 +18,18 @@ import { sdk } from '@applik8s/applik8s/operator';
 import { type } from '@applik8s/applik8s/dsl';
 
 const Work = sdk.crd({
-  name: 'Work',
   apiVersion: 'hello.applik8s.dev/v1alpha1',
-  names: { plural: 'works', singular: 'work', kind: 'Work' },
+  kind: 'Work',
+  plural: 'works',
   spec: type({ message: 'string' }),
-  status: type({ phase: "('Pending' | 'Ready' | 'Failed')?" }),
+  status: type({ "phase?": "'Pending' | 'Ready' | 'Failed'" }),
 });
 
-Work.on.reconcile(async (work) => {
+const ready = Work.on.reconcile(async (work) => {
   work.status.phase = 'Ready';
 });
 
-export default sdk.operator({ name: 'hello-applik8s', resources: { Work } });
+export default sdk.operator({ name: 'hello-applik8s', resources: { Work }, handlers: [ready] });
 ```
 
 Compile it with the package executable:

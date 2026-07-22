@@ -18,9 +18,12 @@ const Database = catalog.database.postgres('catalog', {
 const Card = catalog.model(cards, { name: 'Card', database: Database });
 ```
 
-`Card === cards`: promotion uses one non-enumerable, immutable `$model` facet. Drizzle table/column
+`Card === cards`: promotion preserves the original Drizzle table object. Ordinary application code uses
+direct `Card.schema`, `Card.ref()`, `Card.create/update/delete`, `Card.on.create/update/delete`, relations,
+and named views. A non-enumerable, immutable `$model` facet remains only for reflection and migration
+compatibility. Drizzle table/column
 identity, relation inference, Drizzle Kit discovery, aliases, native queries, and migrations remain
-unchanged. `$model.schema.select`, `.insert`, and `.update` are derived ArkType views. They are runtime
+unchanged. `Card.schema.select`, `.insert`, and `.update` are derived ArkType views. They are runtime
 boundaries, not a second persistence schema. A `$model` column collision, composite identity, ambiguous
 database, unsupported custom schema, or incompatible revision/access column fails before deployment.
 
@@ -32,7 +35,7 @@ ordinary application data. There is no automatic JSONB-to-relational migration.
 
 Drizzle foreign keys and relations remain authoritative. Applik8s normalizes enough metadata for graph
 edges, command participants, invalidation, projections, and diagnostics; it does not create a universal
-relationship query language. `OtherModel.$model.ref()` is an ArkType-compatible identity schema for
+relationship query language. `OtherModel.ref()` is an ArkType-compatible identity schema for
 ArkType/CRD fields. A cross-provider reference is recorded as `reconcile-checked`, never as a foreign
 key or cross-provider transaction.
 
@@ -54,10 +57,46 @@ transaction-local context. Durable commands, emitted commands/events, tasks, wor
 subscriptions carry the admitted context or its server-held digest. Administrative/global tables require
 an explicit `access: 'global'` opt-out and should be audited by the application.
 
-## Observable writes and revisions
+## Direct mutations, committed lifecycle events, and revisions
+
+Conventional model behavior is available from the declaration alone:
+
+```ts
+Post.create.beforeCommit({
+  transaction: { models: [Account] },
+  events: [PostPublished],
+}, async (post, input, context) => {
+  // Transaction-authoritative authorization, validation, derivation, and outbox work.
+});
+
+Post.on.create('fan-out-post', processorOptions, async (created, context) => {
+  // Retryable post-commit processing of the typed committed snapshot.
+});
+
+await Post.create(input);
+await Post.update({ identity: postId, patch });
+await Post.delete({ identity: postId });
+```
+
+`beforeCommit` runs inside the authoritative PostgreSQL transaction and cannot perform external effects.
+`on.create/update/delete` consumes the same versioned transactional outbox used by explicit domain events;
+it inherits replay, stable event idempotency, bounded concurrency, retry, and dead-letter behavior. Essential
+initialization belongs in database defaults or `beforeCommit`, never in a fallible post-commit handler.
+No `.actions({...})`, command registry, `$model` lookup, or second row schema is required. Exceptional
+non-CRUD operations may still be declared once as a direct typed model method. That one declaration derives
+both `Model.<verb>(input)` and `Model.on.<verb>(...)`; the completion handler receives typed previous/current
+snapshots, the committed result, identity, and revision through the same outbox and processor runtime.
+Legacy `$model.on.command(...)`, `$model.on.action(...)`, and generic command registration spellings are
+compatibility-only and are scheduled for removal at 1.0 after the v0.7 migration window.
+
+Processor context—not the domain payload—carries transport identity: stream version and sequence, stable
+event idempotency, the opaque admitted-context digest, the gateway-established principal, and admitted
+trusted values with reserved identity keys removed. Raw trusted values are hydrated only for generated
+server-side processors; public replay and SSE consumers never receive them.
 
 Normal Drizzle reads remain normal. Writes that must drive durable results or live invalidation use a
-revision-safe model command or `context.transaction(Database, ({ db, changes }) => ...)`. The existing
+direct revision-safe model mutation, an exceptional named operation, or
+`context.transaction(Database, ({ db, changes }) => ...)`. The existing
 transaction kernel atomically owns domain rows, command inbox/result/history, transitions, event and
 command outboxes, and generic model changes. Duplicate delivery returns the recorded result; stale
 revisions become a durable conflict; handler failure rolls everything back; cross-database atomic work
@@ -80,8 +119,12 @@ same immutable digest or publish a corrective migration.
 
 ## Public queries, cursors, and reset
 
-`app.query('name.v1', ...)` declares ArkType input/output, application authorization, trusted-context
-requirements, read dependencies, and hard time/result/row budgets. Query code uses normal Drizzle.
+The ordinary model-native form is `Model.view('name', ...)`; it installs a typed direct operation such as
+`Post.timeline(input)` while still declaring ArkType input/output, application authorization,
+trusted-context requirements, read dependencies, and hard time/result/row budgets. `app.query('name.v1',
+...)` remains the explicit versioned form for a query that is not naturally owned by one model. Query
+code uses normal Drizzle, and the gateway accepts direct operations rather than requiring `$model`
+lookups or manually repeated identifiers.
 The first implementation is authoritative snapshot plus invalidation/requery, not inferred SQL deltas.
 
 The HTTP/SSE gateway authenticates each request, admits context, invokes application authorization,
@@ -98,9 +141,10 @@ scoped replay. PostgreSQL is the durable authority; JetStream remains at-least-o
 ## React and TanStack Start
 
 `@applik8s/client` contains the browser-safe store and HTTP/SSE transport. `@applik8s/react` uses
-`useSyncExternalStore` and has no router dependency. `@applik8s/tanstack-start` preloads a request-scoped
-client and serializes hydration snapshots so the browser does not repeat the initial fetch. The same
-client, provider, and hook work under React Router. Transport acknowledgement, durable result, model
+`useSyncExternalStore` and has no router dependency. `@applik8s/tanstack-start` is only the Nitro/Vite
+adapter; a normal Start route loader calls `Post.timeline(input).snapshot()`, serializes that snapshot,
+and hydrates the shared React store without a duplicate fetch. The same client, provider, and hook work
+under React Router or another Vite host. Transport acknowledgement, durable result, model
 revision, workflow progress, and Kubernetes reconciliation are separate fields; never present broker
 acknowledgement as completed domain or reconciliation work.
 
@@ -110,6 +154,11 @@ acknowledgement as completed domain or reconciliation work.
 stable event ID plus row index makes writes idempotent, checkpoints are explicit, lag is measurable, and
 reset performs a full replay. PostgreSQL/outbox remains authoritative; no exactly-once claim crosses
 PostgreSQL, transport, and ClickHouse. TypeKro provisions or binds the ClickHouse operator and cluster.
+
+See [`../examples/chirp-start`](../examples/chirp-start) for the combined shape: direct `Post.create`
+and `Post.homeTimeline` operations, typed committed lifecycle processing, a domain event promoted into a durable stream, resumable UI
+invalidation, rebuildable fanout and hourly analytical projections, a workflow, and a Kubernetes policy
+operator in one application graph.
 
 ## Troubleshooting checklist
 
@@ -125,4 +174,3 @@ PostgreSQL, transport, and ClickHouse. TypeKro provisions or binds the ClickHous
 - Outbox lag: inspect unpublished rows and transport health; durable rows remain replayable.
 - Direct write absent from UI: emit explicit invalidation/reset or move the write into an observable
   transaction. This is expected, not eventual CDC.
-

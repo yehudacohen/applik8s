@@ -60,9 +60,39 @@ function compareStrings(left: string, right: string): number {
 function stableJsonStringify(value: unknown): string {
   if (value === undefined) return 'null';
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  const reference = serializedApplicationGraphReference(value);
+  if (reference !== undefined) return JSON.stringify(reference);
   if (Array.isArray(value)) return `[${value.map(stableJsonStringify).join(',')}]`;
   const entries = Object.entries(value)
     .filter(([, entryValue]) => entryValue !== undefined)
     .sort(([leftKey], [rightKey]) => compareStrings(leftKey, rightKey));
   return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableJsonStringify(entryValue)}`).join(',')}}`;
+}
+
+/**
+ * Application graphs are durable compiler inputs, so opaque provider objects
+ * must cross their JSON boundary as portable expressions rather than `{}`.
+ * The symbols form TypeKro's public reference protocol; no TypeKro runtime
+ * dependency is required here.
+ */
+function serializedApplicationGraphReference(value: object): string | undefined {
+  if (Reflect.get(value, Symbol.for('TypeKro.KubernetesRef')) === true) {
+    const resourceId = Reflect.get(value, 'resourceId');
+    const fieldPath = Reflect.get(value, 'fieldPath');
+    if (resourceId === '__schema__' && nonEmptyString(fieldPath)) return `\${schema.${fieldPath}}`;
+    if (nonEmptyString(resourceId) && nonEmptyString(fieldPath)) return `\${${resourceId}.${fieldPath}}`;
+  }
+  const expression = Reflect.get(value, 'expression');
+  const keys = Object.keys(value);
+  if (nonEmptyString(expression) && (
+    Reflect.get(value, Symbol.for('TypeKro.CelExpression')) === true
+    || keys.every((key) => key === 'expression' || key === '__isTemplate')
+  )) {
+    return `\${${expression}}`;
+  }
+  return undefined;
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
 }

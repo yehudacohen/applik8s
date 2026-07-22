@@ -1,0 +1,51 @@
+import { readFile } from 'node:fs/promises';
+import { describe, expect, it } from 'vitest';
+import { instrumentApplicationCallbackRegistrations } from '../src/pipeline/entrypoint-discovery.js';
+
+describe('application callback discovery instrumentation', () => {
+  it('preserves stream.process handler source without capturing the transpiler Symbol', () => {
+    const source = `
+const reconcileSchedule = async (_changed, context) => {
+  await context.schedules.run.reconcile({ state: 'present' });
+};
+
+AutomationScheduleChanged.process('automation-schedule', {
+  schedules: { run: ExecuteAutomationRun },
+}, async (changed, context) => reconcileSchedule(changed, context));
+`;
+
+    const instrumented = instrumentApplicationCallbackRegistrations(source, '/workspace/src/streams/automation.ts');
+
+    expect(instrumented).toContain('Symbol.for("applik8s.applicationCallbackSource")');
+    expect(instrumented).toContain('registrar: "stream.process"');
+    expect(instrumented).toContain('property: "handler"');
+    expect(instrumented).toContain('source: "async (changed, context) => reconcileSchedule(changed, context)"');
+  });
+
+  it('records the defining module for an imported RequestIdentity callback', async () => {
+    const application = new URL('./fixtures/callback-provenance/app.ts', import.meta.url).pathname;
+    const identity = new URL('./fixtures/callback-provenance/identity.ts', import.meta.url).pathname;
+    const instrumented = instrumentApplicationCallbackRegistrations(await readFile(application, 'utf8'), application);
+
+    expect(instrumented).toContain(`file: ${JSON.stringify(identity)}`);
+    expect(instrumented).toContain('registrar: "RequestIdentity"');
+    expect(instrumented).toContain('property: "authenticate"');
+  });
+
+  it('preserves imported identity and authorization readiness callback provenance', () => {
+    const source = `
+import { authenticate, decide, identityReady, authorizationReady } from './identity';
+
+RequestIdentity.from(authenticate, { ready: identityReady });
+Authorization.from(decide, { ready: authorizationReady });
+`;
+    const sourceFile = '/workspace/src/app.ts';
+    const instrumented = instrumentApplicationCallbackRegistrations(source, sourceFile);
+
+    expect(instrumented).toContain('registrar: "RequestIdentity"');
+    expect(instrumented).toContain('property: "ready"');
+    expect(instrumented).toContain('registrar: "Authorization"');
+    expect(instrumented).toContain('property: "decide"');
+    expect(instrumented.match(/property: "ready"/g)).toHaveLength(2);
+  });
+});

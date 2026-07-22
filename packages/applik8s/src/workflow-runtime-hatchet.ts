@@ -1,11 +1,14 @@
-import { HatchetClient, type JsonObject, Priority } from '@hatchet-dev/typescript-sdk/v1';
+// typecast-file-boundary: Hatchet SDK responses are checked at the provider adapter before conversion into provider-neutral workflow receipts.
+import { createHash } from 'node:crypto';
+import { HatchetClient, type JsonObject, Priority } from '@hatchet-dev/typescript-sdk/v1/index.js';
 
 import type { ApplicationHatchetWorkflowEngineProvider } from './application-providers.js';
-import { ApplicationDurableError, type ApplicationWorkflowInvocationMetadata, ApplicationWorkflowObservationError, type ApplicationWorkflowResultOptions, type ApplicationWorkflowRun, type ApplicationWorkflowRuntime } from './workflow-runtime.js';
+import { ApplicationDurableError, type ApplicationWorkflowInvocationMetadata, ApplicationWorkflowObservationError, type ApplicationWorkflowResultOptions, type ApplicationWorkflowRun, type ApplicationWorkflowRuntime, type ApplicationWorkflowScheduleResult, type ApplicationWorkflowScheduleSpec } from './workflow-runtime.js';
+import { abortableHatchetDelay, boundedHatchetOperation, defaultHatchetOperationTimeoutMs, hatchetProviderStatusCode, positiveHatchetDuration, sanitizedHatchetProviderError, throwIfHatchetAborted } from './workflow-runtime-hatchet-operation.js';
+import { boundedCronExpression, boundedJsonObject, boundedScheduleString, canonicalJson } from './workflow-runtime-hatchet-values.js';
 
 const durableErrorMarker = 'applik8s-durable-error:';
 const defaultResultTimeoutMs = 24 * 60 * 60 * 1_000;
-const defaultCancelTimeoutMs = 30_000;
 const maximumConsecutiveReadFailures = 5;
 
 export function createHatchetWorkflowRuntime(provider: ApplicationHatchetWorkflowEngineProvider): ApplicationWorkflowRuntime {
@@ -19,61 +22,163 @@ export function createHatchetWorkflowRuntime(provider: ApplicationHatchetWorkflo
     ...(apiUrl ? { api_url: apiUrl } : {}),
     ...(provider.tls !== true ? { tls_config: { tls_strategy: 'none' as const } } : {}), // typecast: retain Hatchet's literal TLS strategy discriminant.
   });
+  return createHatchetWorkflowRuntimeFromClient(client);
+}
+
+/** Provider-adapter test seam; application code selects Hatchet through WorkflowEngine bindings. */
+export function createHatchetWorkflowRuntimeFromClient(client: HatchetClient): ApplicationWorkflowRuntime {
   return {
     async run<TInput extends object, TOutput extends object>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions) {
       // typecast: schema-validated application input satisfies Hatchet's JSON object transport boundary.
-      const reference = await client.runNoWait<JsonObject, JsonObject>(contract, input as JsonObject, hatchetRunOptions(metadata));
-      return waitForHatchetResult<TOutput>(client, await reference.runId, result);
+      const reference = await boundedHatchetOperation(
+        () => client.runNoWait<JsonObject, JsonObject>(contract, input as JsonObject, hatchetRunOptions(metadata)),
+        contract,
+        'start',
+        { timeoutMs: defaultHatchetOperationTimeoutMs },
+      );
+      const id = await boundedHatchetOperation(() => Promise.resolve(reference.runId), contract, 'resolve run id', { timeoutMs: defaultHatchetOperationTimeoutMs });
+      return waitForHatchetResult<TOutput>(client, id, result);
     },
     async start<TInput extends object, TOutput extends object>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata) {
       // typecast: schema-validated application input satisfies Hatchet's JSON object transport boundary.
-      const reference = await client.runNoWait<JsonObject, JsonObject>(contract, input as JsonObject, hatchetRunOptions(metadata));
-      const id = await reference.runId;
+      const reference = await boundedHatchetOperation(
+        () => client.runNoWait<JsonObject, JsonObject>(contract, input as JsonObject, hatchetRunOptions(metadata)),
+        contract,
+        'start',
+        { timeoutMs: defaultHatchetOperationTimeoutMs },
+      );
+      const id = await boundedHatchetOperation(() => Promise.resolve(reference.runId), contract, 'resolve run id', { timeoutMs: defaultHatchetOperationTimeoutMs });
       return {
         id,
         result: (options) => waitForHatchetResult<TOutput>(client, id, options),
         cancel: async (options) => {
-          await boundedOperation(client.runs.cancel({ ids: [id] }), id, 'cancel', {
+          await boundedHatchetOperation(() => client.runs.cancel({ ids: [id] }), id, 'cancel', {
             ...options,
-            timeoutMs: options?.timeoutMs ?? defaultCancelTimeoutMs,
+            timeoutMs: options?.timeoutMs ?? defaultHatchetOperationTimeoutMs,
           });
         },
       } satisfies ApplicationWorkflowRun<TOutput>;
     },
     async schedule(contract, input, at, metadata) {
       const declaration = client.workflow({ name: contract });
-      const scheduled = await declaration.schedule(at, input, hatchetRunOptions(metadata));
+      const scheduled = await boundedHatchetOperation(
+        () => declaration.schedule(at, input, hatchetRunOptions(metadata)),
+        contract,
+        'schedule',
+        { timeoutMs: defaultHatchetOperationTimeoutMs },
+      );
       const id = Reflect.get(scheduled, 'metadata')?.id ?? Reflect.get(scheduled, 'id');
       return { id: typeof id === 'string' ? id : `${contract}:${at.toISOString()}` };
     },
+    async reconcileSchedule(contract, schedule, metadata) {
+      return reconcileHatchetWorkflowSchedule(client, contract, schedule, metadata);
+    },
     async signal(contract, runId, signal, payload, metadata) {
-      await client.events.push(`${contract}.${signal}`, payload, {
-        scope: runId,
-        additionalMetadata: applicationMetadata(metadata),
-      });
+      await boundedHatchetOperation(
+        () => client.events.push(`${contract}.${signal}`, payload, {
+          scope: runId,
+          additionalMetadata: applicationMetadata(metadata),
+        }),
+        runId,
+        'signal',
+        { timeoutMs: defaultHatchetOperationTimeoutMs },
+      );
     },
   };
 }
 
+interface HatchetCronRecord {
+  readonly metadata: { readonly id: string };
+  readonly name?: string;
+  readonly cron: string;
+  readonly enabled: boolean;
+  readonly additionalMetadata?: Readonly<Record<string, unknown>>;
+}
+
+interface HatchetCronBoundary {
+  readonly cron: {
+    list(query: { readonly workflow?: string; readonly cronName?: string; readonly limit?: number; readonly offset?: number }): Promise<{ readonly rows?: readonly HatchetCronRecord[] }>;
+    create(workflow: string, input: { readonly name: string; readonly expression: string; readonly input: object; readonly additionalMetadata?: Readonly<Record<string, string>>; readonly priority?: number }): Promise<HatchetCronRecord>;
+    delete(cron: string | HatchetCronRecord): Promise<void>;
+  };
+}
+
+const maximumSchedulesPerIdentity = 16;
+const scheduleFingerprintKey = 'applik8s.schedule.fingerprint';
+const scheduleRevisionKey = 'applik8s.schedule.revision';
+
+/** Exported as a provider-contract test seam; applications use the WorkflowEngine abstraction. */
+export async function reconcileHatchetWorkflowSchedule<TInput extends object>(
+  client: HatchetCronBoundary,
+  contract: string,
+  schedule: ApplicationWorkflowScheduleSpec<TInput>,
+  metadata?: ApplicationWorkflowInvocationMetadata,
+): Promise<ApplicationWorkflowScheduleResult> {
+  const id = boundedScheduleString(schedule.id, 'id', 200);
+  const revision = boundedScheduleString(schedule.revision, 'revision', 500);
+  if (typeof schedule.enabled !== 'boolean') throw new Error('applik8s-workflow-schedule-enabled-invalid');
+  const expression = schedule.enabled ? boundedCronExpression(schedule.expression) : schedule.expression;
+  const encodedInput = boundedJsonObject(schedule.input, 'input', 64 * 1_024);
+  const fingerprint = createHash('sha256').update(canonicalJson({ contract, expression, input: encodedInput, revision })).digest('hex');
+  const listed = await boundedHatchetOperation(
+    () => client.cron.list({ workflow: contract, cronName: id, limit: maximumSchedulesPerIdentity + 1, offset: 0 }),
+    id,
+    'list recurring schedule',
+    { timeoutMs: defaultHatchetOperationTimeoutMs },
+  );
+  const rows = (listed.rows ?? []).filter((row) => row.name === id);
+  if (rows.length > maximumSchedulesPerIdentity) throw new Error(`applik8s-workflow-schedule-duplicates-exceeded: ${id}`);
+  const matching = rows.length === 1
+    && rows[0]?.enabled === true
+    && rows[0]?.cron === expression
+    && rows[0]?.additionalMetadata?.[scheduleFingerprintKey] === fingerprint;
+  if (schedule.enabled && matching) {
+    const row = rows[0] as HatchetCronRecord;
+    return { id, revision, state: 'unchanged', providerId: row.metadata.id };
+  }
+  await Promise.all(rows.map((row) => boundedHatchetOperation(() => client.cron.delete(row), id, 'remove recurring schedule', { timeoutMs: defaultHatchetOperationTimeoutMs })));
+  if (!schedule.enabled) return { id, revision, state: rows.length > 0 ? 'removed' : 'unchanged' };
+  const created = await boundedHatchetOperation(() => client.cron.create(contract, {
+    name: id,
+    expression,
+    input: encodedInput,
+    additionalMetadata: {
+      ...applicationMetadata(metadata),
+      [scheduleRevisionKey]: revision,
+      [scheduleFingerprintKey]: fingerprint,
+    },
+    ...(metadata?.priority ? { priority: metadata.priority === 'high' ? Priority.HIGH : metadata.priority === 'low' ? Priority.LOW : Priority.MEDIUM } : {}),
+  }), id, 'create recurring schedule', { timeoutMs: defaultHatchetOperationTimeoutMs });
+  return { id, revision, state: 'created', providerId: created.metadata.id };
+}
+
 export async function waitForHatchetResult<TOutput extends object>(client: Pick<HatchetClient, 'runs'>, id: string, options: ApplicationWorkflowResultOptions = {}): Promise<TOutput> {
-  const timeoutMs = positiveDuration(options.timeoutMs ?? defaultResultTimeoutMs, 'result timeoutMs');
-  const pollIntervalMs = positiveDuration(options.pollIntervalMs ?? 250, 'result pollIntervalMs');
+  const timeoutMs = positiveHatchetDuration(options.timeoutMs ?? defaultResultTimeoutMs, 'result timeoutMs');
+  const pollIntervalMs = positiveHatchetDuration(options.pollIntervalMs ?? 250, 'result pollIntervalMs');
   const deadline = Date.now() + timeoutMs;
   let consecutiveReadFailures = 0;
   for (;;) {
-    throwIfAborted(options.signal, id);
+    throwIfHatchetAborted(options.signal, id);
     if (Date.now() >= deadline) throw new ApplicationWorkflowObservationError('timeout', id, `Timed out waiting ${timeoutMs}ms for workflow ${id}.`);
     let details: Awaited<ReturnType<typeof client.runs.get>>;
     try {
-      details = await boundedOperation(client.runs.get(id), id, 'observe', { ...(options.signal ? { signal: options.signal } : {}), timeoutMs: Math.max(1, deadline - Date.now()) });
+      details = await boundedHatchetOperation(() => client.runs.get(id), id, 'observe', { ...(options.signal ? { signal: options.signal } : {}), timeoutMs: Math.max(1, deadline - Date.now()) });
       consecutiveReadFailures = 0;
     } catch (error) {
       if (error instanceof ApplicationWorkflowObservationError && (error.failure === 'aborted' || error.failure === 'timeout')) throw error;
+      if (hatchetProviderStatusCode(error) === 404) {
+        // Hatchet can acknowledge run creation before its read model exposes
+        // the run. Treat that bounded visibility window as pending instead of
+        // declaring the provider unavailable after five fast polls.
+        consecutiveReadFailures = 0;
+        await abortableHatchetDelay(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())), options.signal, id);
+        continue;
+      }
       consecutiveReadFailures += 1;
       if (consecutiveReadFailures >= maximumConsecutiveReadFailures) {
-        throw new ApplicationWorkflowObservationError('providerUnavailable', id, `Unable to observe workflow ${id} after ${consecutiveReadFailures} consecutive provider errors.`, { cause: error });
+        throw new ApplicationWorkflowObservationError('providerUnavailable', id, `Unable to observe workflow ${id} after ${consecutiveReadFailures} consecutive provider errors.`, { cause: sanitizedHatchetProviderError(error) });
       }
-      await abortableDelay(Math.min(pollIntervalMs * consecutiveReadFailures, Math.max(1, deadline - Date.now())), options.signal, id);
+      await abortableHatchetDelay(Math.min(pollIntervalMs * consecutiveReadFailures, Math.max(1, deadline - Date.now())), options.signal, id);
       continue;
     }
     if (details.run.status === 'COMPLETED') {
@@ -86,7 +191,7 @@ export async function waitForHatchetResult<TOutput extends object>(client: Pick<
       throw new ApplicationWorkflowObservationError('failed', id, `Hatchet workflow ${id} failed: ${details.run.errorMessage ?? 'no error message'}`);
     }
     if (details.run.status === 'CANCELLED') throw new ApplicationWorkflowObservationError('cancelled', id, `Hatchet workflow ${id} was cancelled.`);
-    await abortableDelay(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())), options.signal, id);
+    await abortableHatchetDelay(Math.min(pollIntervalMs, Math.max(1, deadline - Date.now())), options.signal, id);
   }
 }
 
@@ -107,47 +212,6 @@ export function durableErrorFromMessage(message: unknown): ApplicationDurableErr
   } catch {
     return undefined;
   }
-}
-
-async function boundedOperation<T>(operation: Promise<T>, id: string, action: string, options: Omit<ApplicationWorkflowResultOptions, 'pollIntervalMs'>): Promise<T> {
-  const timeoutMs = positiveDuration(options.timeoutMs ?? defaultCancelTimeoutMs, `${action} timeoutMs`);
-  throwIfAborted(options.signal, id);
-  return new Promise<T>((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new ApplicationWorkflowObservationError('timeout', id, `Timed out after ${timeoutMs}ms while attempting to ${action} workflow ${id}.`)), timeoutMs);
-    const abort = () => {
-      clearTimeout(timeout);
-      reject(new ApplicationWorkflowObservationError('aborted', id, `Observation of workflow ${id} was aborted.`));
-    };
-    options.signal?.addEventListener('abort', abort, { once: true });
-    operation.then(resolve, reject).finally(() => {
-      clearTimeout(timeout);
-      options.signal?.removeEventListener('abort', abort);
-    });
-  });
-}
-
-function abortableDelay(durationMs: number, signal: AbortSignal | undefined, id: string): Promise<void> {
-  throwIfAborted(signal, id);
-  let abort: (() => void) | undefined;
-  return new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, durationMs);
-    abort = () => {
-      clearTimeout(timeout);
-      reject(new ApplicationWorkflowObservationError('aborted', id, `Observation of workflow ${id} was aborted.`));
-    };
-    signal?.addEventListener('abort', abort, { once: true });
-  }).finally(() => {
-    if (abort) signal?.removeEventListener('abort', abort);
-  });
-}
-
-function throwIfAborted(signal: AbortSignal | undefined, id: string): void {
-  if (signal?.aborted) throw new ApplicationWorkflowObservationError('aborted', id, `Observation of workflow ${id} was aborted.`);
-}
-
-function positiveDuration(value: number, label: string): number {
-  if (!Number.isFinite(value) || value <= 0) throw new Error(`${label} must be a positive finite number.`);
-  return Math.round(value);
 }
 
 function hatchetRunOptions(metadata: ApplicationWorkflowInvocationMetadata | undefined): { readonly additionalMetadata?: Record<string, string>; readonly priority?: Priority; readonly childKey?: string } {

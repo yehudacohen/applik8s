@@ -164,7 +164,7 @@ function imageRefString(ref) {
 }
 
 async function packCandidatePackages() {
-  const packageDirs = ['core', 'runtime-contract', 'typetainer', 'sdk', 'compiler', 'testing', 'runtime', 'typekro-adapter', 'client', 'react', 'vite', 'tanstack-start', 'applik8s'];
+  const packageDirs = ['core', 'runtime-contract', 'typetainer', 'sdk', 'compiler', 'testing', 'runtime', 'typekro-adapter', 'client', 'react', 'server', 'vite', 'tanstack-start', 'applik8s'];
   const packDir = join(workDir, 'packs');
   const npmCache = join(workDir, 'npm-cache');
   await mkdir(packDir, { recursive: true });

@@ -4,7 +4,7 @@ import { createTableRelationsHelpers, eq, extractTablesRelationalConfig, relatio
 import { drizzle } from 'drizzle-orm/pg-proxy';
 import { alias, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { getApplicationOperationContract } from '@applik8s/client';
-import { getApplicationModelFacet, isPromotedApplicationModel, modelReferenceContract, promoteDrizzleTable } from '../src/native-models.js';
+import { applicationModelFacet, getApplicationModelFacet, isPromotedApplicationModel, modelReferenceContract, promoteDrizzleTable } from '../src/native-models.js';
 
 const sets = pgTable('sets', {
   id: uuid('id').primaryKey(),
@@ -120,5 +120,53 @@ describe('native Drizzle application models', () => {
     const rebound = pgTable('rebound', { id: text('id').primaryKey(), revision: text('revision').notNull() });
     promoteDrizzleTable(rebound, { name: 'First', database: 'one' });
     expect(() => promoteDrizzleTable(rebound, { name: 'Second', database: 'two' })).toThrow('already promoted');
+  });
+
+  test('requires facade-safe public model names independently of physical table names', () => {
+    const dashed = pgTable('guest-book-entries', { id: text('id').primaryKey(), revision: text('revision').notNull() });
+    expect(() => promoteDrizzleTable(dashed)).toThrow('must be a valid JavaScript identifier');
+    expect(promoteDrizzleTable(dashed, { name: 'GuestBookEntry' }).$model.name).toBe('GuestBookEntry');
+  });
+
+  test('preserves colliding Drizzle columns and exposes the complete API through the symbol facet', () => {
+    const colliding = pgTable('colliding_models', {
+      id: text('id').primaryKey(),
+      create: text('create').notNull(),
+      on: text('on').notNull(),
+      $model: text('model').notNull(),
+      schema: text('schema').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const nativeMembers = {
+      create: colliding.create,
+      on: colliding.on,
+      $model: colliding.$model,
+      schema: colliding.schema,
+    };
+
+    const Model = promoteDrizzleTable(colliding, { name: 'CollidingModel' });
+    expect(Model).toBe(colliding);
+    expect(Model.create).toBe(nativeMembers.create);
+    expect(Model.on).toBe(nativeMembers.on);
+    expect(Model.$model).toBe(nativeMembers.$model);
+    expect(Model.schema).toBe(nativeMembers.schema);
+
+    const facet = Model[applicationModelFacet];
+    expect(facet.directMemberCollisions).toEqual(expect.arrayContaining(['create', 'on', '$model', 'schema']));
+    expect(getApplicationModelFacet(Model)).toBe(facet);
+    expect(getApplicationOperationContract(facet.api.create)).toMatchObject({
+      id: 'CollidingModel.create',
+      model: 'CollidingModel',
+      operation: 'create',
+    });
+    expect(facet.api.on.create).toBeTypeOf('function');
+    expect(facet.schema.select({
+      id: 'model-1',
+      create: 'native-create-column',
+      on: 'native-on-column',
+      $model: 'native-model-column',
+      schema: 'native-schema-column',
+      revision: '1',
+    })).not.toHaveProperty('summary');
   });
 });

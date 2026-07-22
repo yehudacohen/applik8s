@@ -1,5 +1,5 @@
 // typecast-file-boundary: protocol doubles construct narrowed command states to exercise client transitions.
-import { ApplicationCommandClient, ApplicationCommandRejectedError, createHttpApplicationCommandTransport, type ApplicationCommandProgress, type ApplicationCommandTransport } from '@applik8s/client';
+import { ApplicationCommandClient, ApplicationCommandFailedError, ApplicationCommandRejectedError, createHttpApplicationCommandTransport, type ApplicationCommandProgress, type ApplicationCommandTransport } from '@applik8s/client';
 import { describe, expect, it, vi } from 'vitest';
 
 describe('browser-safe durable command client', () => {
@@ -58,6 +58,25 @@ describe('browser-safe durable command client', () => {
     };
     const client = new ApplicationCommandClient(transport, { id: () => 'rejected-1' });
     await expect(client.execute('GuestBookEntry.create', { message: 'hello' })).rejects.toBeInstanceOf(ApplicationCommandRejectedError);
+  });
+
+  it('rejects execute with a distinct redacted terminal processing failure', async () => {
+    const transport: ApplicationCommandTransport = {
+      async submit(command, _input, options) {
+        return { protocol: 'applik8s.command/v1alpha1', command, commandId: options.commandId, correlationId: options.commandId, transport: 'acknowledged', durableResult: 'pending', progressCursor: 'failed', workflow: 'notStarted', reconciliation: 'notObserved' };
+      },
+      async progress(command) {
+        return { protocol: 'applik8s.command/v1alpha1', command, commandId: 'failed-1', correlationId: 'failed-1', transport: 'acknowledged', durableResult: 'failed', failure: { code: 'processing_failed', attempts: 5 }, workflow: 'notStarted', reconciliation: 'failed' };
+      },
+    };
+    const client = new ApplicationCommandClient(transport, { id: () => 'failed-1' });
+    const execution = client.execute('GuestBookEntry.create', { message: 'hello' });
+    await expect(execution).rejects.toBeInstanceOf(ApplicationCommandFailedError);
+    await expect(execution).rejects.toMatchObject({
+      name: 'ApplicationCommandFailedError',
+      code: 'APPLIK8S_COMMAND_FAILED',
+      failure: { code: 'processing_failed', attempts: 5 },
+    });
   });
 });
 

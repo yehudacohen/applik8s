@@ -52,13 +52,119 @@ const result = await run.result({ signal: controller.signal, timeoutMs: 30_000 }
 
 Task aliases, child-workflow aliases, signal names, signal payloads, and named durable errors are inferred from the declarations supplied to `app.workflow`. Generated workers validate named error payloads before recording them; callers receive an `ApplicationDurableError` with a typed `{ name, payload }` descriptor. Result observation is always abortable and deadline-bounded, and repeated provider read failures terminate with a structured observation error.
 
+## Declared canonical state access
+
+A task does not receive database, JetStream, gateway, or identity-provider credentials. Inject the smallest canonical operations and bounded views it needs. Both use one compiler-captured service principal; the handler can invoke only the aliases in its declaration and cannot manufacture another identity.
+
+```ts
+const executeAutomation = chirp.task(ExecuteAutomation, {
+  operations: {
+    createRun: AutomationRun.create,
+    publish: Post.create,
+    updateRun: AutomationRun.update,
+  },
+  queries: {
+    safety: AutomationControl.current,
+    context: Post.homeTimeline,
+  },
+  principal: (input) => ({
+    id: input.accountId,
+    claims: { role: 'automation-worker', automationId: input.automationId },
+    authorizationVersion: 'automation-v1',
+  }),
+}, async (input, context) => {
+  const safety = await context.queries.safety({});
+  if (!safety.enabled) throw new Error('Automated publication is disabled.');
+  const recent = await context.queries.context({ viewerId: input.accountId, limit: 20 });
+  const run = await context.operations.createRun({ id: context.invocationId, automationId: input.automationId });
+  // Generate and moderate from bounded `recent`, then use ordinary Post.create.
+  return { runId: run.identity };
+});
+```
+
+Declared operations publish the ordinary versioned command envelope, wait for its durable PostgreSQL result, and retain context-scoped idempotency. Declared queries call the ordinary generated query gateway and therefore retain input/output schemas, application authorization, authoritative snapshot semantics, row/byte/time limits, and provider behavior. Their short-lived internal admission is HMAC-bound to the worker's gateway audience, query, snapshot operation, concrete input, and service principal. The same namespace-scoped Secret establishes both effect authorities; it is mounted into the generated worker and never exposed to handler code.
+
+Recurring schedules are desired state, not an ambient Hatchet client call. A committed event processor receives only its declared schedule aliases and reconciles one deterministic identity with a revision:
+
+```ts
+AutomationScheduleChanged.process('reconcile-automation-schedules', {
+  schedules: { execute: executeAutomation },
+  retry: { maxAttempts: 12, initialDelayMs: 500, maxDelayMs: 60_000 },
+  budgets: { timeoutMs: 30_000, maxInputBytes: 64 * 1024 },
+}, async (changed, context) => {
+  await context.schedules.execute.reconcile({
+    id: `automation-${changed.automationId}`,
+    expression: changed.schedule,
+    revision: String(context.event.sequence),
+    enabled: changed.state === 'active',
+    input: { automationId: changed.automationId },
+  });
+});
+```
+
+The provider adapter converges create, unchanged, replacement, suspension/deletion, and retry behavior under the processor deadline. Application code names no Hatchet API.
+
+## Authoritative online-projection rebuilds
+
+A generation-scoped online projection may name a promoted PostgreSQL model as its canonical rebuild source.
+The model mapper produces the same typed stream payload consumed by the ordinary projection mapper, so
+recovery does not introduce a second row schema or a provider-specific bulk-load API:
+
+```ts
+const HomeTimeline = PostTimelineChanged.project('home-timeline', {
+  store: IndexStore,
+  output: TimelineChange,
+  map: change => change,
+  partitionBy: change => change.authorId,
+  key: change => change.postId,
+  score: change => Date.parse(change.publishedAt),
+  value: change => change,
+  retention: { maxItemsPerPartition: 2_000 },
+  generationScoped: true,
+  rebuild: {
+    source: Post,
+    checkpoint: 'durable',
+    map: post => post.deletedAt === null
+      ? [{ operation: 'upsert', postId: post.id, authorId: post.authorId, publishedAt: post.publishedAt }]
+      : [],
+  },
+});
+
+const buildGeneration = application.task(BuildGeneration, {
+  projections: {
+    homeTimeline: {
+      projection: HomeTimeline,
+      artifacts: ProjectionArtifacts,
+      bounds: { batchSize: 500, maxSegments: 20_000, maxEvents: 10_000_000 },
+    },
+  },
+  idempotencyKey: input => input.generation,
+}, async (input, context) => context.projections.homeTimeline.rebuild(input));
+```
+
+The generated worker reads the promoted model and committed public-stream watermark from one bounded
+PostgreSQL `REPEATABLE READ READ ONLY` MVCC snapshot. Model commands serialize stream-sequence allocation
+with commit, so a command excluded from that snapshot is guaranteed to appear after the captured watermark;
+the potentially long scan does not hold the commit lock or stall foreground publishing. The worker writes
+checksummed immutable segments and a manifest to the declared object store, loads an inactive Valkey
+generation, catches up retained events after the captured watermark, and atomically publishes only when the
+candidate reaches the active projection checkpoint.
+
+The generation id is an immutable recovery identity. A retry validates the manifest scope, definition
+digest, segment references, SHA-256 checksums, counts, and partitions before resuming; it does not rescan
+authority after a complete manifest exists. Repeating an already-published generation returns the validated
+result without rewriting the projection. A changed mapper or bound must use a new generation, partial
+artifacts with different content fail closed, and a retention gap never publishes a partial candidate.
+The previous generation and its evidence remain until an explicit retirement operation, providing a bounded
+rollback window rather than an implicit garbage-collection promise.
+
 ## Generated runtime and infrastructure
 
-Each worker group lowers to a self-contained, minified Node bundle stored as gzip `ConfigMap.binaryData`, an init container that unpacks it, a Deployment with health and graceful drain behavior, a disruption budget, and a NetworkPolicy. There is no startup package installation. The pinned Hatchet SDK is bundled; its heartbeat is adapted to an in-process implementation so the single-file bundle does not depend on sibling worker files.
+Each worker group lowers to a self-contained, minified Node bundle in an immutable OCI build context, a Deployment with health and graceful drain behavior, a disruption budget, and a NetworkPolicy. TypeKro's `container()` boundary builds the content-tagged image before deployment. There is no source ConfigMap, unpack init container, or startup package installation. The pinned Hatchet SDK is bundled; its heartbeat is adapted to an in-process implementation so the single-file bundle does not depend on sibling worker files.
 
 Task workers allow outbound egress by default because tasks are the external-effect boundary. Set `worker.egress: 'sameNamespace'` only when every effect endpoint is deliberately namespace-local. Ingress remains restricted to the worker health port.
 
-Provisioned Hatchet uses the chart-owned `<name>-client-config` worker token. Users supply a separate external admin Secret with `adminEmail` and `adminPassword`. An external Hatchet installation may instead declare `workerTokenSecret`, `hostPort`, and `apiUrl` with `provision: false`.
+Provisioned Hatchet uses the chart-owned `hatchet-client-config` worker token. Users supply a separate external admin Secret with `adminEmail` and `adminPassword`. An external Hatchet installation may instead declare `workerTokenSecret`, `hostPort`, and `apiUrl` with `provision: false`.
 
 ## Supported v0.5 lifecycle
 

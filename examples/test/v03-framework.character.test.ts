@@ -421,9 +421,12 @@ function providerInterfaces(): readonly ApplicationProviderInterfaceContract[] {
     { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'StructuredGeneration', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'ProjectionStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'ContainerRegistry', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'RequestIdentity', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'Authorization', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   ];
 }
 

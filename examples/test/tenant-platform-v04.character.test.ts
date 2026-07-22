@@ -8,14 +8,17 @@ describe('Tenant Platform v0.4 longitudinal benchmark', () => {
     const example = createTenantPlatformV04Example({ namespace: 'tenant-v04' });
     const graph = applicationGraphFor(example.composition);
 
-    expect(example.commands?.renameAccount).toMatchObject({
-      kind: 'applicationModelCommand',
-      command: 'tenant-account.rename.v1',
+    expect(example.commands?.renameAccount).toEqual(expect.any(Function));
+    expect(example.commands?.renameAccount.operation).toEqual({
+      apiVersion: 'applik8s.operation/v1alpha1',
+      kind: 'applicationOperation',
+      id: 'tenant-account.rename.v1',
       model: 'Account',
-      processor: 'Account-commands',
-      send: expect.any(Function),
-      execute: expect.any(Function),
+      name: 'rename',
+      operation: 'custom',
+      transport: 'command',
     });
+    expect(example.commands?.renameAccount.useMutation).toEqual(expect.any(Function));
     expect(graph?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'command', name: 'tenant-account.rename.v1' }),
       expect.objectContaining({ kind: 'event', name: 'tenant-account.changed.v1' }),

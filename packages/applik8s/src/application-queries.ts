@@ -14,6 +14,7 @@ import type { ApplicationRelationalContext } from './relational-runtime.js';
 import type { ApplicationTrustedContext } from './trusted-context.js';
 import { serializeApplicationCallback } from './application-callback.js';
 import { createApplicationQueryOperation, type ApplicationQueryOperation } from '@applik8s/client';
+import { applicationTypeKroSerializedValue } from './application-typekro-values.js';
 
 export interface ApplicationQueryPrincipal {
   readonly id: string;
@@ -22,6 +23,91 @@ export interface ApplicationQueryPrincipal {
 }
 
 export type ApplicationQueryReadDependency = object | ApplicationModelRelationshipContract;
+
+/** Structural declaration boundary implemented by online projection bindings without leaking Valkey. */
+export interface ApplicationOnlineProjectionQueryBinding<TValue extends object = object> {
+  readonly kind: 'applicationProjection';
+  readonly storage: 'online';
+  readonly name: string;
+  readonly output: Type<TValue> | import('@applik8s/sdk').SchemaInput<TValue>;
+  readonly source: { readonly database: ApplicationDatabaseBinding };
+}
+
+/** Structural declaration boundary implemented by analytical projection bindings without leaking ClickHouse. */
+export interface ApplicationAnalyticalProjectionQueryBinding<TValue extends object = object> {
+  readonly kind: 'applicationProjection';
+  readonly storage: 'analytical';
+  readonly name: string;
+  readonly output: Type<TValue> | import('@applik8s/sdk').SchemaInput<TValue>;
+  readonly source: { readonly database: ApplicationDatabaseBinding };
+}
+
+/** Provider-neutral source available to a projection-backed view callback. */
+export interface ApplicationOnlineQuerySource<TValue extends object> {
+  page(options: ApplicationOnlineQueryPageOptions): Promise<{
+    readonly items: readonly TValue[];
+    readonly cursor?: string;
+    readonly projection: { readonly generation: string; readonly eventWatermark: string; readonly rebuilding: boolean; readonly degraded: boolean };
+  }>;
+}
+
+/** One partition or a bounded merge of partitions; exactly one selector is accepted at runtime. */
+export type ApplicationOnlineQueryPageOptions =
+  | { readonly partition: string; readonly partitions?: never; readonly limit: number; readonly cursor?: string }
+  | { readonly partition?: never; readonly partitions: readonly string[]; readonly limit: number; readonly cursor?: string };
+
+/** Runtime-only consistency controls supplied by the selected online provider adapter. */
+export interface ApplicationOnlineQueryRuntimeSource<TValue extends object> extends ApplicationOnlineQuerySource<TValue> {
+  revision(): Promise<string>;
+  snapshot<TResult>(operation: (source: ApplicationOnlineQuerySource<TValue>) => Promise<TResult>): Promise<{ readonly value: TResult; readonly revision: string }>;
+}
+
+export type ApplicationAnalyticalMeasure<TValue extends object> =
+  | { readonly operation: 'count'; readonly field?: keyof TValue & string }
+  | { readonly operation: 'sum' | 'min' | 'max' | 'average'; readonly field: keyof TValue & string };
+
+export type ApplicationAnalyticalAggregateRow<
+  TValue extends object,
+  TDimensions extends readonly (keyof TValue & string)[],
+  TMeasures extends Readonly<Record<string, ApplicationAnalyticalMeasure<TValue>>>,
+> = Pick<TValue, TDimensions[number]> & { readonly [TName in keyof TMeasures]: number };
+
+/** Provider-neutral, bounded analytical source available inside a projection-backed view. */
+export interface ApplicationAnalyticalQuerySource<TValue extends object> {
+  aggregate<
+    const TDimensions extends readonly (keyof TValue & string)[],
+    const TMeasures extends Readonly<Record<string, ApplicationAnalyticalMeasure<TValue>>>,
+  >(options: {
+    readonly dimensions: TDimensions;
+    readonly measures: TMeasures;
+    readonly orderBy?: readonly { readonly field: TDimensions[number] | (keyof TMeasures & string); readonly direction: 'asc' | 'desc' }[];
+    readonly limit: number;
+  }): Promise<{
+    readonly items: readonly ApplicationAnalyticalAggregateRow<TValue, TDimensions, TMeasures>[];
+    readonly projection: { readonly revision: string; readonly degraded: boolean };
+  }>;
+}
+
+/** Runtime-only consistency controls supplied by the selected analytical provider adapter. */
+export interface ApplicationAnalyticalQueryRuntimeSource<TValue extends object> extends ApplicationAnalyticalQuerySource<TValue> {
+  revision(): Promise<string>;
+  snapshot<TResult>(operation: (source: ApplicationAnalyticalQuerySource<TValue>) => Promise<TResult>): Promise<{ readonly value: TResult; readonly revision: string }>;
+}
+
+export type ApplicationProjectionQuerySource<TValue extends object> = ApplicationOnlineQuerySource<TValue> | ApplicationAnalyticalQuerySource<TValue>;
+export type ApplicationProjectionQueryRuntimeSource<TValue extends object> = ApplicationOnlineQueryRuntimeSource<TValue> | ApplicationAnalyticalQueryRuntimeSource<TValue>;
+export type ApplicationQuerySourceBinding = ApplicationOnlineProjectionQueryBinding<object> | ApplicationAnalyticalProjectionQueryBinding<object>;
+type ApplicationQuerySourceValue<TSource> = TSource extends ApplicationOnlineProjectionQueryBinding<infer TValue> | ApplicationAnalyticalProjectionQueryBinding<infer TValue> ? TValue : never;
+type ApplicationQuerySourceForBinding<TSource> = TSource extends ApplicationOnlineProjectionQueryBinding<object>
+  ? ApplicationOnlineQuerySource<ApplicationQuerySourceValue<TSource>>
+  : TSource extends ApplicationAnalyticalProjectionQueryBinding<object>
+    ? ApplicationAnalyticalQuerySource<ApplicationQuerySourceValue<TSource>>
+    : never;
+type ApplicationQueryRunRequest<TInput, TPrincipal extends ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined> = {
+  readonly context: ApplicationRelationalContext;
+  readonly principal: TPrincipal;
+  readonly input: TInput;
+} & (TSource extends ApplicationQuerySourceBinding ? { readonly source: ApplicationQuerySourceForBinding<TSource> } : unknown);
 
 export interface ApplicationQueryAuthorizationRequest<TInput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly principal: TPrincipal;
@@ -54,14 +140,15 @@ export interface ApplicationKubernetesModelViewOptions<TInput, TObject, TOutput,
   };
 }
 
-export interface ApplicationQueryOptions<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
+export interface ApplicationQueryOptions<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined> {
   readonly input: Type<TInput>;
   readonly output: Type<TOutput>;
   readonly database?: ApplicationDatabaseBinding;
+  readonly source?: TSource;
   readonly context?: readonly ApplicationTrustedContext<unknown>[];
   readonly reads: readonly ApplicationQueryReadDependency[];
   readonly authorize: (request: ApplicationQueryAuthorizationRequest<TInput, TPrincipal>) => boolean | Promise<boolean>;
-  readonly run?: (request: { readonly context: ApplicationRelationalContext; readonly principal: TPrincipal; readonly input: TInput }) => TOutput | Promise<TOutput>;
+  readonly run?: (request: ApplicationQueryRunRequest<TInput, TPrincipal, TSource>) => TOutput | Promise<TOutput>;
   readonly kubernetes?: ApplicationKubernetesModelViewOptions<TInput, unknown, TOutput, TPrincipal>['kubernetes'];
   readonly budgets?: {
     readonly timeoutMs?: number;
@@ -75,12 +162,12 @@ export interface ApplicationQueryOptions<TInput, TOutput, TPrincipal extends App
   };
 }
 
-export type ApplicationModelViewOptions<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> =
-  Omit<ApplicationQueryOptions<TInput, TOutput, TPrincipal>, 'reads' | 'modelOperation'> & {
+export type ApplicationModelViewOptions<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined> =
+  Omit<ApplicationQueryOptions<TInput, TOutput, TPrincipal, TSource>, 'reads' | 'modelOperation'> & {
     readonly reads?: readonly ApplicationQueryReadDependency[];
   };
 
-export interface ApplicationQueryBinding<TInput = unknown, TOutput = unknown, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
+export interface ApplicationQueryBinding<TInput = unknown, TOutput = unknown, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined> {
   readonly kind: 'applicationQuery';
   readonly id: string;
   readonly name: string;
@@ -88,6 +175,9 @@ export interface ApplicationQueryBinding<TInput = unknown, TOutput = unknown, TP
   readonly input: Type<TInput>;
   readonly output: Type<TOutput>;
   readonly database?: ApplicationDatabaseBinding;
+  readonly source?: TSource;
+  /** Generated provider adapter; authoring bindings intentionally do not carry connections. */
+  readonly sourceRuntime?: ApplicationProjectionQueryRuntimeSource<object>;
   readonly trustedContext: readonly ApplicationTrustedContext<unknown>[];
   readonly reads: readonly ApplicationQueryReadDependency[];
   readonly budgets: {
@@ -97,19 +187,31 @@ export interface ApplicationQueryBinding<TInput = unknown, TOutput = unknown, TP
   };
   readonly kubernetes?: ApplicationKubernetesQueryAuthorityContract;
   authorize(principal: TPrincipal, input: TInput, context?: Readonly<Record<string, unknown>>): Promise<boolean>;
-  run(context: ApplicationRelationalContext, principal: TPrincipal, input: TInput): Promise<TOutput>;
+  run(context: ApplicationRelationalContext, principal: TPrincipal, input: TInput, source?: ApplicationProjectionQuerySource<object>): Promise<TOutput>;
 }
 
-export function registerApplicationQuery<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal>(state: ApplicationGraphState, id: string, options: ApplicationQueryOptions<TInput, TOutput, TPrincipal>): ApplicationQueryBinding<TInput, TOutput, TPrincipal> {
+const applicationQueryOperationBindings = new WeakMap<object, ApplicationQueryBinding>();
+
+export function applicationQueryBindingForOperation(value: unknown): ApplicationQueryBinding | undefined {
+  return (typeof value === 'object' || typeof value === 'function') && value !== null
+    ? applicationQueryOperationBindings.get(value)
+    : undefined;
+}
+
+export function registerApplicationQuery<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined>(state: ApplicationGraphState, id: string, options: ApplicationQueryOptions<TInput, TOutput, TPrincipal, TSource>): ApplicationQueryBinding<TInput, TOutput, TPrincipal, TSource> {
   const parsed = parseVersionedQueryId(id);
   const nodeId = `query.${id}`;
   if (state.graphNodes.some((node) => node.id === nodeId)) throw new Error(`Application query ${id} is already registered.`);
   if (options.reads.length === 0) throw new Error(`Application query ${id} must declare at least one model or relationship read dependency.`);
-  if (Boolean(options.database) === Boolean(options.kubernetes)) {
-    throw new Error(`Application query ${id} must declare exactly one PostgreSQL or Kubernetes snapshot authority.`);
+  const source = options.source;
+  const authorityCount = Number(Boolean(options.database && !source)) + Number(Boolean(options.kubernetes)) + Number(Boolean(source));
+  if (authorityCount !== 1) {
+    throw new Error(`Application query ${id} must declare exactly one PostgreSQL, Kubernetes, or projection snapshot authority.`);
   }
-  if (options.database && !options.run) throw new Error(`Application query ${id} requires run() for its PostgreSQL snapshot authority.`);
+  if ((options.database || source) && !options.run) throw new Error(`Application query ${id} requires run() for its PostgreSQL or projection snapshot authority.`);
   if (options.kubernetes && options.run) throw new Error(`Application query ${id} must use declarative kubernetes projection callbacks instead of run().`);
+  const projection = source ? projectionQueryAuthority(state, id, source) : undefined;
+  const database = source?.source.database ?? options.database;
   const normalizedDependencies = options.reads.map((dependency) => normalizeQueryReadDependency(state, dependency));
   const reads = normalizedDependencies.map((dependency) => queryReadContract(state, dependency, id));
   const budgets = {
@@ -118,12 +220,13 @@ export function registerApplicationQuery<TInput, TOutput, TPrincipal extends App
     maxRows: options.budgets?.maxRows ?? 1_000,
   };
   if (budgets.timeoutMs < 1 || budgets.maxResultBytes < 1 || budgets.maxRows < 1) throw new Error(`Application query ${id} budgets must be positive and bounded.`);
+  const registrar = options.modelOperation ? 'view' : 'query';
   // typecast: callback serialization erases only generic parameter names; runtime schemas remain authoritative for their values.
-  const authorization = serializeApplicationCallback({ registrar: 'query', argumentIndex: 1, property: 'authorize', label: `Application query ${id} authorization`, callback: options.authorize as (...args: never[]) => unknown, allowDeferredResolution: true });
+  const authorization = serializeApplicationCallback({ registrar, argumentIndex: 1, property: 'authorize', label: `Application query ${id} authorization`, callback: options.authorize as (...args: never[]) => unknown, allowDeferredResolution: true });
   // typecast: callback serialization preserves executable source while the query binding validates input and output at runtime.
   const handler = options.run
     ? serializeApplicationCallback({
-        registrar: 'query',
+        registrar,
         argumentIndex: 1,
         property: 'run',
         label: `Application query ${id} handler`,
@@ -155,11 +258,12 @@ export function registerApplicationQuery<TInput, TOutput, TPrincipal extends App
     authorization: 'application-defined',
     trustedContext: (options.context ?? []).map((context) => context.name).sort(),
     budgets,
-    snapshotResume: options.database || kubernetes ? 'resumableInvalidation' : 'resetOnly',
+    snapshotResume: database || kubernetes ? 'resumableInvalidation' : 'resetOnly',
     incremental: 'invalidation-requery',
     cursor: 'opaque-query-version-context-scoped',
-    ...(options.database ? { database: reactiveDatabaseRuntime(options.database) } : {}),
+    ...(database ? { database: reactiveDatabaseRuntime(database) } : {}),
     ...(kubernetes ? { kubernetes } : {}),
+    ...(projection ? { projection } : {}),
     authorizationSource: authorization.source,
     ...(authorization.dependencies ? { authorizationDependencies: authorization.dependencies } : {}),
     ...(authorization.location ? { authorizationLocation: authorization.location } : {}),
@@ -177,7 +281,8 @@ export function registerApplicationQuery<TInput, TOutput, TPrincipal extends App
     version: parsed.version,
     input: options.input,
     output: options.output,
-    ...(options.database ? { database: options.database } : {}),
+    ...(database ? { database } : {}),
+    ...(source ? { source } : {}),
     ...(kubernetes ? { kubernetes } : {}),
     trustedContext: options.context ?? [],
     reads: normalizedDependencies,
@@ -185,29 +290,31 @@ export function registerApplicationQuery<TInput, TOutput, TPrincipal extends App
     async authorize(principal, input, context = {}) {
       return options.authorize({ principal, context, input });
     },
-    async run(context, principal, input) {
+    async run(context, principal, input, runtimeSource) {
       if (!options.run) throw new Error(`Application query ${id} executes through its Kubernetes snapshot/watch authority.`);
-      return options.run({ context, principal, input });
+      if (source && !runtimeSource) throw new Error(`Application query ${id} requires its generated projection source runtime.`);
+      // typecast: the source discriminant above supplies the provider-neutral projection source only for projection-backed options.
+      return options.run({ context, principal, input, ...(source ? { source: runtimeSource } : {}) } as ApplicationQueryRunRequest<TInput, TPrincipal, TSource>);
     },
   };
 }
 
-export function registerApplicationModelView<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal>(
+export function registerApplicationModelView<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined>(
   state: ApplicationGraphState,
   model: object,
   name: string,
-  options: ApplicationModelViewOptions<TInput, TOutput, TPrincipal>,
+  options: ApplicationModelViewOptions<TInput, TOutput, TPrincipal, TSource>,
 ): ApplicationQueryOperation<TInput, TOutput> {
   const facet = getApplicationModelFacet<object, unknown, unknown, unknown>(model);
   if (!facet) throw new Error('Application model views require a promoted application model.');
   if (!/^[a-z][A-Za-z0-9]*$/.test(name)) throw new Error(`Application model view ${JSON.stringify(name)} must be a lowerCamelCase identifier.`);
   const id = `${facet.name}.${name}`;
-  registerApplicationQuery(state, id, {
+  const binding = registerApplicationQuery(state, id, {
     ...options,
     reads: [model, ...(options.reads ?? [])],
     modelOperation: { model, name },
   });
-  return createApplicationQueryOperation<TInput, TOutput>({
+  const operation = createApplicationQueryOperation<TInput, TOutput>({
     apiVersion: 'applik8s.operation/v1alpha1',
     kind: 'applicationOperation',
     id,
@@ -216,6 +323,22 @@ export function registerApplicationModelView<TInput, TOutput, TPrincipal extends
     operation: 'query',
     transport: 'query',
   });
+  // typecast: the operation's generic input/output pair comes from the same binding schemas and the private registry intentionally erases only those generics.
+  applicationQueryOperationBindings.set(operation, binding as ApplicationQueryBinding);
+  return operation;
+}
+
+function projectionQueryAuthority(state: ApplicationGraphState, id: string, source: ApplicationQuerySourceBinding): { readonly nodeId: string; readonly storage: 'online' | 'analytical' } {
+  const nodeId = `projection.${reactiveName(source.name)}`;
+  const node = state.graphNodes.find((candidate) => candidate.id === nodeId);
+  if (node && (node.kind !== 'projection' || node.storage !== source.storage)) {
+    throw new Error(`Application query ${id} references incompatible projection ${source.name}.`);
+  }
+  // Composition materialization replays registrars grouped by resource type,
+  // so a view may be replayed before its already-declared projection. Keep the
+  // deterministic reference here and let whole-graph validation prove that the
+  // compatible projection exists after every registrar has run.
+  return { nodeId, storage: source.storage };
 }
 
 function kubernetesQueryAuthority<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal>(
@@ -239,6 +362,9 @@ function kubernetesQueryAuthority<TInput, TOutput, TPrincipal extends Applicatio
   const namespaceResolver = typeof options.namespace === 'function'
     ? serializeQueryCallback(id, 'namespace', options.namespace)
     : undefined;
+  const namespace = options.namespace === undefined || typeof options.namespace === 'function'
+    ? undefined
+    : applicationTypeKroSerializedValue(options.namespace);
   return {
     kind: 'kubernetes-list-watch',
     model: { nodeId: node.id },
@@ -248,7 +374,7 @@ function kubernetesQueryAuthority<TInput, TOutput, TPrincipal extends Applicatio
       plural: node.resource.plural,
       scope: node.resource.scope,
     },
-    ...(typeof options.namespace === 'string' ? { namespace: options.namespace } : {}),
+    ...(namespace ? { namespace } : {}),
     ...(namespaceResolver ? { namespaceResolver } : {}),
     ...(options.labelSelector ? { labelSelector: serializeQueryCallback(id, 'labelSelector', options.labelSelector) } : {}),
     ...(options.fieldSelector ? { fieldSelector: serializeQueryCallback(id, 'fieldSelector', options.fieldSelector) } : {}),
@@ -316,9 +442,9 @@ function reactiveDatabaseRuntime(binding: ApplicationDatabaseBinding): {
   return {
     name: binding.name,
     connectionEnvName: `APPLIK8S_DATABASE_${reactiveName(binding.name).replace(/[^A-Z0-9_a-z]+/g, '_').toUpperCase()}_URL`,
-    secretName: secret.name ?? `${clusterName}-app`,
-    secretKey: provider.connectionSecretKey ?? 'uri',
-    ...(secret.namespace ?? provider.namespace ? { secretNamespace: secret.namespace ?? provider.namespace } : {}),
+    secretName: applicationTypeKroSerializedValue(secret.name ?? `${clusterName}-app`),
+    secretKey: applicationTypeKroSerializedValue(provider.connectionSecretKey ?? 'uri'),
+    ...(secret.namespace ?? provider.namespace ? { secretNamespace: applicationTypeKroSerializedValue(secret.namespace ?? provider.namespace) } : {}),
     ...(binding.access ? { access: { context: binding.access.context.name, contextSchema: binding.access.context.contract.jsonSchema, setting: binding.access.setting, column: binding.access.column } } : {}),
   };
 }

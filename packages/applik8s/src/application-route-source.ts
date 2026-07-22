@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transformSync } from 'esbuild';
-
+import { blockCommentEnd, escapeRegExp, isDeclarationIdentifier, isRegexLiteralStart, lineCommentEnd, nextNonWhitespace, previousNonWhitespace, regexLiteralEnd, unique } from './application-route-source-utilities.js';
 export interface ApplicationRouteSourceLocation {
   readonly file: string;
   readonly line: number;
@@ -71,6 +71,10 @@ export function applicationCommandSourceViolations(source: string, kind: 'key' |
   for (const name of nondeterministicGlobals) {
     if (free.has(name)) add(name, 'nondeterminism');
   }
+  // Constructor calls are not ordinary function-call tokens in the lightweight
+  // route analyzer, so reject the ambient Date constructor explicitly unless a
+  // handler-local binding deliberately shadows it.
+  if (!analysis.declaredIdentifiers.has('Date') && /\b(?:new\s+Date\s*\(|Date\s*\.)/.test(analysis.strippedSource)) add('Date', 'nondeterminism');
   if (analysis.memberCalls.some((call) => call.objectName === 'Math' && call.methodName === 'random')) add('Math.random', 'nondeterminism');
 
   if (kind === 'handler' || kind === 'initialize') {
@@ -138,18 +142,27 @@ export function unsupportedRouteFreeIdentifiers(analysis: ApplicationServerRoute
     ...analysis.declaredIdentifiers,
     'Array',
     'AbortController',
+    'AbortSignal',
     'Boolean',
     'Date',
     'Error',
     'Headers',
     'JSON',
+    'Map',
     'Math',
     'Number',
     'Object',
     'Promise',
     'RegExp',
+    'Reflect',
     'Response',
+    'Set',
     'String',
+		'TextDecoder',
+		'TextEncoder',
+		'Uint8Array',
+    'WeakMap',
+    'WeakSet',
     'any',
     'boolean',
     'URL',
@@ -207,7 +220,7 @@ export function applicationRouteSourceDependencies(route: ApplicationRouteSource
 
 function resolveApplicationRouteSourceDependencies(file: string, unsupported: readonly string[], bindingNames: ReadonlySet<string>): ApplicationRouteSourceDependencies | undefined {
   const fileSource = readFileSync(file, 'utf8');
-  const topLevelBindings = applicationRouteTopLevelBindings(fileSource, bindingNames);
+  const topLevelBindings = applicationRouteTopLevelBindings(fileSource, bindingNames, file);
   const included = new Map<string, ApplicationRouteTopLevelBinding>();
   const unresolved = new Set<string>();
   const queue = [...unsupported];
@@ -231,7 +244,12 @@ function resolveApplicationRouteSourceDependencies(file: string, unsupported: re
       }
     }
   }
-  if (unresolved.size > 0) return undefined;
+  if (unresolved.size > 0) {
+    if (process.env.APPLIK8S_DEBUG_CALLBACK_DEPENDENCIES === '1') {
+      console.error(JSON.stringify({ component: 'application-callback-dependencies', file, unsupported, bindings: [...topLevelBindings.keys()], included: [...included.keys()], unresolved: [...unresolved] }));
+    }
+    return undefined;
+  }
   const ordered = [...new Map([...included.values()].map((binding) => [`${binding.kind}:${binding.position}:${binding.source}`, binding])).values()].sort((left, right) => left.position - right.position);
   const imports = ordered.filter((binding) => binding.kind === 'import').map((binding) => binding.source);
   const declarations = ordered.filter((binding) => binding.kind === 'declaration').map((binding) => binding.source);
@@ -427,7 +445,13 @@ function routeFreeIdentifiers(source: string, declared: ReadonlySet<string>): re
   return [...unsupported].sort();
 }
 
-function applicationRouteTopLevelBindings(source: string, bindingNames: ReadonlySet<string>): ReadonlyMap<string, ApplicationRouteTopLevelBinding> {
+function applicationRouteTopLevelBindings(source: string, bindingNames: ReadonlySet<string>, file: string): ReadonlyMap<string, ApplicationRouteTopLevelBinding> {
+  // Parse the transpiled module rather than individual declaration substrings.
+  // A substring scanner cannot reliably distinguish a function body from an
+  // object default (`options = {}`) or an object-shaped return type. Module-
+  // level transpilation strips type-only identifiers and preserves executable
+  // imports/declarations for the generated runtime dependency bundle.
+  source = transpileApplicationRouteModuleForDependencies(source, file);
   const bindings = new Map<string, ApplicationRouteTopLevelBinding>();
   let index = 0;
   let depth = 0;
@@ -475,7 +499,7 @@ function applicationRouteTopLevelBindings(source: string, bindingNames: Readonly
       const declaration = topLevelDeclarationBindingAt(source, index, bindingNames);
       if (declaration) {
         for (const name of declaration.names) {
-          bindings.set(name, { name, source: declaration.source, analysisSource: transpileRouteDependencySourceForAnalysis(declaration.source), kind: 'declaration', position: index });
+          bindings.set(name, { name, source: declaration.source, analysisSource: declaration.source, kind: 'declaration', position: index });
         }
         index = declaration.end;
         continue;
@@ -486,9 +510,9 @@ function applicationRouteTopLevelBindings(source: string, bindingNames: Readonly
   return bindings;
 }
 
-function transpileRouteDependencySourceForAnalysis(source: string): string {
+function transpileApplicationRouteModuleForDependencies(source: string, file: string): string {
   try {
-    return transformSync(source, { loader: 'ts', format: 'esm', target: 'node22' }).code;
+    return transformSync(source, { loader: file.endsWith('.tsx') || file.endsWith('.jsx') ? 'tsx' : file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.cjs') ? 'js' : 'ts', format: 'esm', target: 'node22' }).code;
   } catch (_error) {
     return source;
   }
@@ -510,7 +534,9 @@ function topLevelDeclarationBindingAt(source: string, index: number, bindingName
   const snippet = source.slice(index);
   const functionMatch = snippet.match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b/);
   if (functionMatch) {
-    const open = source.indexOf('{', index + functionMatch[0].length);
+    const parameterOpen = source.indexOf('(', index + functionMatch[0].length);
+    const parameterClose = parameterOpen >= 0 ? matchingDelimiter(source, parameterOpen, '(', ')') : undefined;
+    const open = parameterClose === undefined ? -1 : source.indexOf('{', parameterClose + 1);
     const close = open >= 0 ? matchingDelimiter(source, open, '{', '}') : undefined;
     const end = close === undefined ? statementSourceEnd(source, index) : close + 1;
     const names = [functionMatch[1] ?? ''].filter((name) => name && !bindingNames.has(name));
@@ -558,15 +584,14 @@ function importedLocalNames(source: string): readonly string[] {
 }
 
 function variableDeclarationNames(source: string): readonly string[] {
-  const names: string[] = [];
+  const names = new Set<string>();
   const body = source.replace(/^(?:const|let|var)\s+/, '').replace(/;\s*$/, '');
   for (const part of splitTopLevelArguments(body)) {
-    const name = part.trim().match(/^([A-Za-z_$][\w$]*)\b/)?.[1];
-    if (name) {
-      names.push(name);
-    }
+    const declaration = part.trim();
+    const assignment = topLevelCharacterIndex(declaration, '=');
+    addBindingPatternIdentifiers(names, assignment >= 0 ? declaration.slice(0, assignment) : declaration);
   }
-  return names;
+  return [...names];
 }
 
 function statementSourceEnd(source: string, start: number): number {
@@ -790,15 +815,7 @@ function stripCommentsAndStrings(source: string): string {
 function declaredRouteIdentifiers(source: string): ReadonlySet<string> {
   const declared = new Set<string>();
   addParameterIdentifiers(declared, leadingRouteParameterList(source));
-  for (const match of source.matchAll(/\(([^)]*)\)\s*=>/g)) {
-    addParameterIdentifiers(declared, match[1] ?? '');
-  }
-  for (const match of source.matchAll(/\(\s*([A-Za-z_$][\w$]*)\s*\)\s*=>/g)) {
-    declared.add(match[1] ?? '');
-  }
-  for (const match of source.matchAll(/\b([A-Za-z_$][\w$]*)\s*=>/g)) {
-    declared.add(match[1] ?? '');
-  }
+  addArrowParameterIdentifiers(declared, source);
   for (const match of source.matchAll(/\b(?:const|let|var)\s+/g)) {
     const start = match.index ?? 0;
     const end = statementSourceEnd(source, start);
@@ -815,6 +832,35 @@ function declaredRouteIdentifiers(source: string): ReadonlySet<string> {
   }
   declared.delete('');
   return declared;
+}
+
+function addArrowParameterIdentifiers(declared: Set<string>, source: string): void {
+  for (const arrow of source.matchAll(/=>/g)) {
+    let end = (arrow.index ?? 0) - 1;
+    while (end >= 0 && /\s/.test(source[end] ?? '')) end -= 1;
+    if (end < 0) continue;
+    if (source[end] === ')') {
+      const open = matchingOpeningDelimiter(source, end, '(', ')');
+      if (open !== undefined) addParameterIdentifiers(declared, source.slice(open + 1, end));
+      continue;
+    }
+    const prefix = source.slice(0, end + 1);
+    const name = prefix.match(/([A-Za-z_$][\w$]*)$/)?.[1];
+    if (name) declared.add(name);
+  }
+}
+
+function matchingOpeningDelimiter(source: string, closeIndex: number, open: string, close: string): number | undefined {
+  let depth = 0;
+  for (let index = closeIndex; index >= 0; index -= 1) {
+    const character = source[index];
+    if (character === close) depth += 1;
+    else if (character === open) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return undefined;
 }
 
 function leadingRouteParameterList(source: string): string {
@@ -1102,78 +1148,4 @@ function templateExpressionSourceEnd(source: string, start: number): number {
     index += 1;
   }
   return source.length;
-}
-
-function lineCommentEnd(source: string, start: number): number {
-  const end = source.indexOf('\n', start + 2);
-  return end < 0 ? source.length : end + 1;
-}
-
-function blockCommentEnd(source: string, start: number): number {
-  const end = source.indexOf('*/', start + 2);
-  return end < 0 ? source.length : end + 2;
-}
-
-function regexLiteralEnd(source: string, start: number): number {
-  let index = start + 1;
-  let inCharacterClass = false;
-  while (index < source.length) {
-    const character = source[index];
-    if (character === '\\') {
-      index += 2;
-      continue;
-    }
-    if (character === '[') {
-      inCharacterClass = true;
-    } else if (character === ']') {
-      inCharacterClass = false;
-    } else if (character === '/' && !inCharacterClass) {
-      index += 1;
-      while (index < source.length && /[a-z]/i.test(source[index] ?? '')) {
-        index += 1;
-      }
-      return index;
-    } else if (character === '\n' || character === '\r') {
-      return start + 1;
-    }
-    index += 1;
-  }
-  return source.length;
-}
-
-function isRegexLiteralStart(source: string, index: number): boolean {
-  const previous = previousNonWhitespace(source, index);
-  if (previous === undefined || ['(', ',', '=', ':', '[', '{', '!', '?', ';', '&', '|'].includes(previous)) return true;
-  return /(?:^|[^\w$])(?:return|throw|case|delete|typeof|void|yield|await)\s*$/.test(source.slice(0, index));
-}
-
-function previousNonWhitespace(source: string, index: number): string | undefined {
-  for (let position = index - 1; position >= 0; position -= 1) {
-    if (!/\s/.test(source[position] ?? '')) {
-      return source[position];
-    }
-  }
-  return undefined;
-}
-
-function nextNonWhitespace(source: string, index: number): string | undefined {
-  for (let position = index; position < source.length; position += 1) {
-    if (!/\s/.test(source[position] ?? '')) {
-      return source[position];
-    }
-  }
-  return undefined;
-}
-
-function isDeclarationIdentifier(source: string, index: number, name: string): boolean {
-  const prefix = source.slice(Math.max(0, index - 32), index);
-  return /(?:const|let|var|function)\s+$/.test(prefix) || /catch\s*\(\s*$/.test(prefix) || /for\s*\(\s*(?:const|let|var)\s+$/.test(prefix) || prefix.endsWith(`${name}.`);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function unique<T>(values: readonly T[]): T[] {
-  return [...new Set(values)];
 }

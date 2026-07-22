@@ -83,7 +83,7 @@ function handlerSourceMetadataPlugin(): Plugin {
       buildContext.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, async (args) => {
         if (args.namespace !== 'file' || args.path.includes('/node_modules/')) return undefined;
         const source = await readFile(args.path, 'utf8');
-        const instrumented = instrumentHandlerRegistrations(source, args.path);
+        const instrumented = instrumentApplicationCallbackRegistrations(source, args.path);
         if (instrumented === source) return undefined;
         const extension = extname(args.path);
         const loader = extension === '.tsx' ? 'tsx' : extension === '.jsx' ? 'jsx' : extension === '.js' || extension === '.mjs' || extension === '.cjs' ? 'js' : 'ts';
@@ -93,7 +93,12 @@ function handlerSourceMetadataPlugin(): Plugin {
   };
 }
 
-function instrumentHandlerRegistrations(source: string, sourceFile: string): string {
+/**
+ * Instruments every callback-bearing authoring registrar before discovery
+ * evaluates the entrypoint. Exported for a focused compiler regression test;
+ * this remains an internal pipeline contract rather than public API.
+ */
+export function instrumentApplicationCallbackRegistrations(source: string, sourceFile: string): string {
   const file = ts.createSourceFile(sourceFile, source, ts.ScriptTarget.Latest, true, sourceFile.endsWith('.tsx') ? ts.ScriptKind.TSX : sourceFile.endsWith('.jsx') ? ts.ScriptKind.JSX : sourceFile.endsWith('.js') || sourceFile.endsWith('.mjs') || sourceFile.endsWith('.cjs') ? ts.ScriptKind.JS : ts.ScriptKind.TS);
   let changed = false;
   const transformer: ts.TransformerFactory<ts.SourceFile> = (context) => {

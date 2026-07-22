@@ -1,8 +1,10 @@
-import { singleton } from 'typekro';
-import { DEFAULT_CLICKHOUSE_REPO_NAME, DEFAULT_CLICKHOUSE_REPO_URL, clickHouseCluster, clickhouseHelmRepositoryBootstrap, clickhouseOperatorBootstrap } from 'typekro/clickhouse';
+// typecast-file-boundary: Provider resource factories bridge validated application contracts into provider-specific TypeKro input shapes.
+import { Cel, singleton } from 'typekro';
+import { clickHouseInstallation, clickhouseHelmRepositoryBootstrap, clickhouseOperatorBootstrap, DEFAULT_CLICKHOUSE_REPO_NAME, DEFAULT_CLICKHOUSE_REPO_URL } from 'typekro/clickhouse';
 import { networkPolicy } from 'typekro/kubernetes';
 import { graphResourceId, kubernetesNameSegment } from './application-identifiers.js';
 import { applicationProjectionStoreImplementation } from './application-providers.js';
+import { applicationTypeKroExpressionValue, applicationTypeKroString, applicationTypeKroValueIdentity, applyApplicationTypeKroIncludeWhen } from './application-typekro-values.js';
 
 export interface ApplicationProjectionStoreResourceState {
   readonly emittedProjectionStores: Set<string>;
@@ -13,8 +15,9 @@ export function emitApplicationProjectionStoreResources(state: ApplicationProjec
   const projection = applicationProjectionStoreImplementation(provider);
   if (!projection || projection.provision === false) return;
   const name = projection.name ?? 'applik8s-analytics';
-  const namespace = projection.namespace ?? 'applik8s-analytics';
-  const key = `${namespace}:${name}`;
+  const namespace = applicationTypeKroString(projection.namespace ?? 'applik8s-analytics');
+  const provisioned = applicationProviderCondition(projection.enabled, projection.provision);
+  const key = `${applicationTypeKroValueIdentity(namespace)}:${name}`;
   if (state.emittedProjectionStores.has(key)) return;
   state.emittedProjectionStores.add(key);
   // Materialize the nested repository singleton explicitly. Wrapping the
@@ -79,13 +82,17 @@ export function emitApplicationProjectionStoreResources(state: ApplicationProjec
       },
     },
   });
-  clickHouseCluster({
+  const installation = clickHouseInstallation({
+    id: graphResourceId(name, 'clickhouseCluster'),
     name,
     namespace,
     version: projection.version ?? '25.12.5',
+    shards: 1,
+    replicas: 1,
     storage: { size: projection.storageSize ?? '10Gi', ...(projection.storageClassName ? { storageClassName: projection.storageClassName } : {}) },
   });
-  networkPolicy({
+  applyApplicationTypeKroIncludeWhen(installation, provisioned);
+  const clientAccess = networkPolicy({
     id: graphResourceId(name, 'clickhouseClientAccess'),
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
@@ -104,4 +111,15 @@ export function emitApplicationProjectionStoreResources(state: ApplicationProjec
       } as never],
     },
   });
+  applyApplicationTypeKroIncludeWhen(clientAccess, provisioned);
+}
+
+function applicationProviderCondition(enabled: boolean | undefined, provision: boolean | undefined): boolean {
+  if (enabled === false || provision === false) return false;
+  const enabledExpression = applicationTypeKroExpressionValue(enabled);
+  const provisionExpression = applicationTypeKroExpressionValue(provision);
+  if (enabledExpression && provisionExpression) {
+    return Cel.expr<boolean>(`(${enabledExpression}) && (${provisionExpression})`);
+  }
+  return (enabledExpression ? enabled : provisionExpression ? provision : true) as boolean;
 }

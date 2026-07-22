@@ -325,6 +325,9 @@ function createEventSources<TSpec extends object, TStatus extends object, TCapab
   return {
     context: {
       reconcile: (handler: StoredHandler) => handlers.register('reconcile', 'context', handler),
+      create: (handler: StoredHandler) => handlers.register('created', 'context', handler),
+      update: (handler: StoredHandler) => handlers.register('updated', 'context', handler),
+      delete: (handler: StoredHandler) => handlers.register('deleted', 'context', handler),
       created: (handler: StoredHandler) => handlers.register('created', 'context', handler),
       updated: (handler: StoredHandler) => handlers.register('updated', 'context', handler),
       deleted: (handler: StoredHandler) => handlers.register('deleted', 'context', handler),
@@ -332,6 +335,9 @@ function createEventSources<TSpec extends object, TStatus extends object, TCapab
       statusChanged: (handler: StoredHandler) => handlers.register('statusChanged', 'context', handler),
     },
     reconcile: (handler: StoredHandler) => handlers.register('reconcile', 'proxy', handler),
+    create: (handler: StoredHandler) => handlers.register('created', 'proxy', handler),
+    update: (handler: StoredHandler) => handlers.register('updated', 'proxy', handler),
+    delete: (handler: StoredHandler) => handlers.register('deleted', 'proxy', handler),
     created: (handler: StoredHandler) => handlers.register('created', 'proxy', handler),
     updated: (handler: StoredHandler) => handlers.register('updated', 'proxy', handler),
     deleted: (handler: StoredHandler) => handlers.register('deleted', 'proxy', handler),

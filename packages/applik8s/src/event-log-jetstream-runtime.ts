@@ -1,4 +1,6 @@
-import { connect, type JetStreamClient, type JetStreamManager, type NatsConnection, StringCodec } from 'nats';
+import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from '@nats-io/jetstream';
+import type { NatsConnection } from '@nats-io/nats-core';
+import { connect } from '@nats-io/transport-node';
 import postgres from 'postgres';
 import type { ApplicationMessageEnvelope } from './dsl.js';
 
@@ -76,7 +78,7 @@ export interface PostgresOutboxLag {
   readonly oldestPendingSeconds: number;
 }
 
-const stringCodec = StringCodec();
+const textEncoder = new TextEncoder();
 
 export function createJetStreamEventLog(options: JetStreamEventLogOptions): ApplicationEventLogPublisher {
   let connection: NatsConnection | undefined;
@@ -94,8 +96,8 @@ export function createJetStreamEventLog(options: JetStreamEventLogOptions): Appl
       ...(options.user ? { user: options.user } : {}),
       ...(options.pass ? { pass: options.pass } : {}),
     });
-    jetStream = connection.jetstream();
-    manager = await connection.jetstreamManager();
+    jetStream = jetstream(connection);
+    manager = await jetstreamManager(connection);
     return { connection, jetStream, manager };
   };
   return {
@@ -110,7 +112,7 @@ export function createJetStreamEventLog(options: JetStreamEventLogOptions): Appl
     async publish(envelope, channel = 'events') {
       const runtime = await connected();
       const subject = eventLogSubject(options.subjectPrefix, envelope, channel);
-      const acknowledgement = await runtime.jetStream.publish(subject, stringCodec.encode(JSON.stringify(envelope)), { msgID: envelope.id });
+      const acknowledgement = await runtime.jetStream.publish(subject, textEncoder.encode(JSON.stringify(envelope)), { msgID: envelope.id });
       if (acknowledgement.stream !== options.stream) {
         throw new Error(`applik8s-eventlog-stream-mismatch: Subject ${subject} was acknowledged by ${acknowledgement.stream}, expected ${options.stream}.`);
       }

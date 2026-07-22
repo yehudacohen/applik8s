@@ -2,7 +2,7 @@ import type { ApplicationCommandProgress, ApplicationCommandTransport } from './
 
 export interface ApplicationCommandState<TOutput = unknown> extends Omit<ApplicationCommandProgress, 'output'> {
   readonly output?: TOutput;
-  readonly phase: 'submitting' | 'pending' | 'succeeded' | 'rejected' | 'unknown' | 'error';
+  readonly phase: 'submitting' | 'pending' | 'succeeded' | 'rejected' | 'failed' | 'unknown' | 'error';
   readonly error?: Error;
   readonly revision: number;
 }
@@ -24,6 +24,18 @@ export class ApplicationCommandRejectedError extends Error {
   ) {
     super(`Application command ${command} was rejected with ${rejection.name}.`);
     this.name = 'ApplicationCommandRejectedError';
+  }
+}
+
+export class ApplicationCommandFailedError extends Error {
+  readonly code = 'APPLIK8S_COMMAND_FAILED';
+  constructor(
+    readonly command: string,
+    readonly commandId: string,
+    readonly failure: { readonly code: 'processing_failed'; readonly attempts?: number },
+  ) {
+    super(`Application command ${command} failed after exhausting bounded processing attempts.`);
+    this.name = 'ApplicationCommandFailedError';
   }
 }
 
@@ -108,7 +120,7 @@ export class ApplicationCommandClient {
 
   #apply(entry: CommandEntry, progress: ApplicationCommandProgress): void {
     if (progress.command !== entry.command || progress.commandId !== entry.commandId) throw new Error('Application command progress identity does not match the tracked command.');
-    const phase = progress.durableResult === 'succeeded' ? 'succeeded' : progress.durableResult === 'rejected' ? 'rejected' : progress.durableResult === 'pending' ? 'pending' : 'unknown';
+    const phase = progress.durableResult === 'succeeded' ? 'succeeded' : progress.durableResult === 'rejected' ? 'rejected' : progress.durableResult === 'failed' ? 'failed' : progress.durableResult === 'pending' ? 'pending' : 'unknown';
     entry.state = { ...progress, phase, revision: entry.state.revision + 1 };
     entry.attempt = phase === 'pending' ? entry.attempt : 0;
     this.#notify(entry);
@@ -145,6 +157,12 @@ export function waitForApplicationCommand<TOutput>(handle: ApplicationCommandHan
         unsubscribe();
         signal?.removeEventListener('abort', aborted);
         reject(new ApplicationCommandRejectedError(state.command, state.commandId, state.rejection ?? { name: 'unknown', payload: null }));
+        return true;
+      }
+      if (state.durableResult === 'failed') {
+        unsubscribe();
+        signal?.removeEventListener('abort', aborted);
+        reject(new ApplicationCommandFailedError(state.command, state.commandId, state.failure ?? { code: 'processing_failed' }));
         return true;
       }
       if (state.transport === 'failed' && state.error) {

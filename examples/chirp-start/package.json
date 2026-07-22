@@ -1,0 +1,30 @@
+{
+  "name": "@applik8s/example-chirp-start",
+  "private": true,
+  "type": "module",
+  "imports": { "#/*": "./src/*" },
+  "scripts": {
+    "dev": "vite dev --port 3010",
+    "generate-routes": "tsr generate",
+    "build": "vite build",
+    "deploy:local": "bun run --cwd ../.. build:packages && bun run ../../packages/applik8s/src/bin.ts deploy src/application.ts --context orbstack --instance kubernetes/chirp.example.yaml --migrate-kro-owned-provider-data --confirm-legacy-typekro-node-fetch-manager",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@applik8s/applik8s": "workspace:*",
+    "@applik8s/react": "workspace:*",
+    "@applik8s/tanstack-start": "workspace:*",
+    "@tanstack/react-router": "^1.170.18",
+    "@tanstack/react-start": "^1.168.28",
+    "arktype": "^2.2.1",
+    "drizzle-orm": "^0.45.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typekro": "^0.28.1"
+  },
+  "devDependencies": {
+    "@tanstack/router-cli": "^1.167.19",
+    "@vitejs/plugin-react": "^6.0.3",
+    "vite": "^8.1.5"
+  }
+}

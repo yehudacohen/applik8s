@@ -8,7 +8,21 @@ import type { RuntimeAdapterRequirement, RuntimeConfig } from './runtime.js';
 import type { RuntimePayloadSchemaDigests } from './schema.js';
 
 export interface OperatorDefinition<TCapabilities extends CapabilityClientSet = CapabilityClientSet, TResources extends Readonly<Record<string, AnyResourceDefinition<TCapabilities>>> = Readonly<Record<string, AnyResourceDefinition<TCapabilities>>>> { readonly name: OperatorName; readonly resources: TResources; readonly reads?: Readonly<Record<string, AnyKubernetesReadResourceDefinition>>; readonly handlers: readonly HandlerRegistrationForResources<TResources, TCapabilities>[]; readonly secondaryWatches?: readonly SecondaryWatchRegistration[]; readonly capabilities?: Readonly<Record<keyof TCapabilities & string, CapabilityDescriptor>>; readonly permissions?: readonly PermissionRule[]; readonly deployment?: OperatorDeploymentOptions; readonly runtime?: RuntimeConfig; readonly trustLevel: HandlerTrustLevel; readonly effects?: EffectPolicy; readonly lifecycle?: OperatorLifecycleContract; }
-export interface OperatorDeploymentOptions { readonly namespace?: NamespaceName; readonly replicas?: number; readonly scope?: ResourceScope; readonly serviceAccountName?: KubernetesName; readonly labels?: Readonly<Record<string, string>>; readonly annotations?: Readonly<Record<string, string>>; }
+export interface OperatorDeploymentOptions {
+  readonly namespace?: NamespaceName;
+  readonly replicas?: number;
+  readonly scope?: ResourceScope;
+  readonly serviceAccountName?: KubernetesName;
+  readonly labels?: Readonly<Record<string, string>>;
+  readonly annotations?: Readonly<Record<string, string>>;
+  /** Bounded operator-host capacity; defaults remain suitable for small clusters. */
+  readonly resources?: {
+    readonly requests?: { readonly cpu?: string; readonly memory?: string };
+    readonly limits?: { readonly cpu?: string; readonly memory?: string };
+  };
+  /** Grace available for in-flight reconcile cancellation and Lease release. */
+  readonly terminationGracePeriodSeconds?: number;
+}
 export interface OperatorManifest { readonly apiVersion: OperatorManifestVersion; readonly kind: 'OperatorBundle'; readonly metadata: OperatorManifestMetadata; readonly spec: OperatorManifestSpec; }
 export interface OperatorManifestMetadata { readonly name: OperatorName; readonly labels?: Readonly<Record<string, string>>; readonly annotations?: Readonly<Record<string, string>>; }
 export interface OperatorManifestSpec { readonly handlerAbi: HandlerAbiVersion; readonly payloadSchemaDigests: RuntimePayloadSchemaDigests; readonly requiresRuntime: SemverRange; readonly handlerArtifact: HandlerArtifact; readonly adapterRequirements?: RuntimeAdapterRequirement; readonly handlerExports: readonly HandlerExport[]; readonly ownedCrds: readonly OwnedCrd[]; readonly readResources?: readonly ReadResource[]; readonly watches: readonly WatchRegistration[]; readonly secondaryWatches?: readonly SecondaryWatchRegistration[]; readonly permissions: readonly PermissionRule[]; readonly capabilities?: Readonly<Record<string, CapabilityDescriptor>>; /** Installation overlay; never part of handler input or portable bundle authoring. */ readonly kubernetesConnectionBindings?: Readonly<Record<string, KubernetesConnectionBinding>>; readonly security: OperatorSecurityContract; readonly lifecycle: OperatorLifecycleContract; readonly runtime?: RuntimeConfig; readonly container?: ContainerRecipe; readonly bundle: BundleMetadata; }

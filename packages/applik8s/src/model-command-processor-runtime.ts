@@ -9,6 +9,8 @@ export interface ApplicationCommandProcessorBinding {
   readonly bindingId: string;
   readonly contract: { readonly name: string; readonly version: string };
   execute(input: object, delivery: ApplicationModelCommandDeliveryOptions): Promise<unknown>;
+  /** Compiler-generated durable terminal-result recorder. */
+  recordTerminalFailure?(input: object, delivery: ApplicationModelCommandDeliveryOptions, failure: { readonly code: 'processing_failed'; readonly attempts: number }): Promise<void>;
 }
 
 export interface JetStreamCommandProcessorOptions {
@@ -45,21 +47,28 @@ export async function startJetStreamCommandProcessor(options: JetStreamCommandPr
     ...(options.user ? { user: options.user } : {}),
     ...(options.pass ? { pass: options.pass } : {}),
   });
-  const jetStream = connection.jetstream();
-  const consumer = await jetStream.consumers.get(options.stream, options.consumer);
-  const messages = await consumer.consume({
-    max_messages: Math.max(1, options.concurrency ?? 1),
-    abort_on_missing_resource: false,
-  });
-  const closed = consumeJetStreamCommandMessages(messages, connection, jetStream, options);
-  return {
-    closed,
-    async drain() {
-      await messages.close();
-      await closed;
-      await connection.drain();
-    },
-  };
+  try {
+    const jetStream = connection.jetstream();
+    const consumer = await jetStream.consumers.get(options.stream, options.consumer);
+    const messages = await consumer.consume({
+      max_messages: Math.max(1, options.concurrency ?? 1),
+      abort_on_missing_resource: false,
+    });
+    const closed = consumeJetStreamCommandMessages(messages, connection, jetStream, options);
+    return {
+      closed,
+      async drain() {
+        await messages.close();
+        await closed;
+        await connection.drain();
+      },
+    };
+  } catch (cause) {
+    // A generated worker may retry while JetStream infrastructure is still
+    // converging. Never leak the connection opened by a failed consumer setup.
+    if (!connection.isClosed()) await connection.close();
+    throw cause;
+  }
 }
 
 export async function handleJetStreamCommandMessage(
@@ -84,21 +93,22 @@ export async function handleJetStreamCommandMessage(
   }
 
   const deliveryCount = Math.max(1, message.info.deliveryCount);
+  const delivery: ApplicationModelCommandDeliveryOptions = {
+    id: envelope.id,
+    ...(envelope.tenant ? { tenant: envelope.tenant } : {}),
+    ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
+    ...(envelope.causationId ? { causationId: envelope.causationId } : {}),
+    ...(envelope.traceparent ? { traceparent: envelope.traceparent } : {}),
+    attempt: deliveryCount,
+    recordedAt: envelope.recordedAt,
+    ...(envelope.expectedRevision ? { expectedRevision: envelope.expectedRevision } : {}),
+    ...(envelope.trustedContext ? { context: envelope.trustedContext } : {}),
+    ...(envelope.routing?.targetKey ? { targetKey: envelope.routing.targetKey } : {}),
+    ...(envelope.routing?.idempotencyKey ? { idempotencyKey: envelope.routing.idempotencyKey } : {}),
+    ...(options.databaseUrl ? { databaseUrl: options.databaseUrl } : {}),
+  };
   try {
-    const result = await binding.execute(envelope.payload, {
-      id: envelope.id,
-      ...(envelope.tenant ? { tenant: envelope.tenant } : {}),
-      ...(envelope.correlationId ? { correlationId: envelope.correlationId } : {}),
-      ...(envelope.causationId ? { causationId: envelope.causationId } : {}),
-      ...(envelope.traceparent ? { traceparent: envelope.traceparent } : {}),
-      attempt: deliveryCount,
-      recordedAt: envelope.recordedAt,
-      ...(envelope.expectedRevision ? { expectedRevision: envelope.expectedRevision } : {}),
-      ...(envelope.trustedContext ? { context: envelope.trustedContext } : {}),
-      ...(envelope.routing?.targetKey ? { targetKey: envelope.routing.targetKey } : {}),
-      ...(envelope.routing?.idempotencyKey ? { idempotencyKey: envelope.routing.idempotencyKey } : {}),
-      ...(options.databaseUrl ? { databaseUrl: options.databaseUrl } : {}),
-    });
+    const result = await binding.execute(envelope.payload, delivery);
     message.ack();
     processorLog(options, 'applik8s-command-processed', {
       messageId: envelope.id,
@@ -121,6 +131,10 @@ export async function handleJetStreamCommandMessage(
       return 'retried';
     }
     await publishDeadLetter(jetStream, options.subjectPrefix, binding.bindingId, envelope, error);
+    if (!binding.recordTerminalFailure) {
+      throw new Error(`applik8s-command-terminal-recorder-missing: Binding ${binding.bindingId} cannot durably record exhausted delivery ${envelope.id}.`);
+    }
+    await binding.recordTerminalFailure(envelope.payload, delivery, { code: 'processing_failed', attempts: deliveryCount });
     message.term('applik8s command attempts exhausted');
     processorLog(options, 'applik8s-command-dead-lettered', { messageId: envelope.id, binding: binding.bindingId, attempt: deliveryCount, error: safeErrorMessage(error) });
     return 'terminated';
@@ -185,6 +199,7 @@ function validateProcessorBindings(bindings: readonly ApplicationCommandProcesso
     const contract = `${binding.contract.name}:${binding.contract.version}`;
     if (contracts.has(contract)) throw new Error(`applik8s-command-processor-ambiguous: Multiple bindings consume ${contract}.`);
     contracts.add(contract);
+    if (!binding.recordTerminalFailure) throw new Error(`applik8s-command-processor-terminal-recorder-missing: Binding ${binding.bindingId} requires a durable terminal-failure recorder.`);
   }
   if (bindings.length === 0) throw new Error('applik8s-command-processor-empty: A processor requires at least one command binding.');
 }

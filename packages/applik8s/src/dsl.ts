@@ -110,6 +110,8 @@ export interface ApplicationMessageEnvelope<TPayload extends object> {
   readonly trustedContext?: {
     readonly values: Readonly<Record<string, JsonValue>>;
     readonly digest: string;
+    /** Opaque data-isolation scopes computed by the secret-holding admission boundary. */
+    readonly changeScopes?: Readonly<Record<string, string>>;
   };
 }
 

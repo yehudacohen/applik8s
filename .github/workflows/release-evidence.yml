@@ -115,12 +115,18 @@ jobs:
 
       - name: Run v0.6 live prerelease gates
         if: ${{ inputs.release_line == 'v0.6' && inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
-        run: bun run test:v06:datastores-live && bun run test:v06:live && bun run scripts/check-v06-scorecard.ts --require-live
+        run: bun run test:v06:full-live
+        env:
+          APPLIK8S_E2E_CONTEXT: ${{ vars.APPLIK8S_E2E_CONTEXT }}
+
+      - name: Record complete v0.6 exact-commit live evidence
+        if: ${{ inputs.release_line == 'v0.6' && inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
+        run: bun run scripts/write-v06-release-attestation.mjs --out dist/applik8s-v0.6-live-evidence.json
         env:
           APPLIK8S_E2E_CONTEXT: ${{ vars.APPLIK8S_E2E_CONTEXT }}
 
       - name: Record exact-commit live evidence
-        if: ${{ inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
+        if: ${{ inputs.release_line != 'v0.6' && inputs.run_live_e2e == 'true' && inputs.live_attestation_b64 == '' }}
         run: |
           node -e 'const fs=require("node:fs"); const line=process.env.RELEASE_LINE; const lane=line.replace(".",""); fs.mkdirSync("dist",{recursive:true}); fs.writeFileSync(`dist/applik8s-${line}-live-evidence.json`, JSON.stringify({schemaVersion:1,releaseLine:line,commit:process.env.GITHUB_SHA,execution:`${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,context:process.env.APPLIK8S_E2E_CONTEXT,suite:`check:${lane}:prerelease`,generatedAt:new Date().toISOString()},null,2)+"\n")'
         env:

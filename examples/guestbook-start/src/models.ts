@@ -1,13 +1,16 @@
 import { entity } from '@applik8s/applik8s/dsl';
+import type { ApplicationResourceObject } from '@applik8s/applik8s';
 import { type } from 'arktype';
 import { app } from './app';
 
-export interface PublishedGuestBookEntry {
-  readonly id: string;
-  readonly author: string;
-  readonly message: string;
-  readonly publishedAt: string;
-}
+const PublishedGuestBookEntry = type({
+  id: 'string',
+  author: 'string',
+  message: 'string',
+  publishedAt: 'string',
+});
+
+export type PublishedGuestBookEntry = typeof PublishedGuestBookEntry.infer;
 
 export const GuestBookEntity = entity('GuestBook', {
   spec: type({ title: 'string', 'description?': 'string' }),
@@ -52,13 +55,9 @@ const GuestBookEntryResource = app.crd(GuestBookEntryEntity, {
   },
 });
 
-export const GuestBookEntry = GuestBookEntryResource.view<
-  'published',
-  { readonly guestbook: string; readonly limit?: number },
-  readonly PublishedGuestBookEntry[]
->('published', {
+export const GuestBookEntry = GuestBookEntryResource.view('published', {
   input: type({ guestbook: 'string', 'limit?': 'number' }),
-  output: type({ id: 'string', author: 'string', message: 'string', publishedAt: 'string' }).array(),
+  output: PublishedGuestBookEntry.array(),
   authorize: ({ principal, context, input }) =>
     principal.id.length > 0 && context.guestbook === input.guestbook,
   kubernetes: {
@@ -81,7 +80,7 @@ export const GuestBookEntry = GuestBookEntryResource.view<
   budgets: { maxRows: 50 },
 });
 
-app.reconcile(GuestBookEntry, async (entry) => {
+const publishGuestBookEntry = async (entry: ApplicationResourceObject<typeof GuestBookEntry>) => {
   const normalized = entry.spec.message.trim().replace(/\s+/g, ' ');
   if (/https?:\/\//i.test(normalized)) {
     if (entry.status.phase === 'Rejected' && entry.status.reason === 'Links are disabled for this GuestBook.') return;
@@ -95,4 +94,8 @@ app.reconcile(GuestBookEntry, async (entry) => {
   entry.status.phase = 'Published';
   entry.status.publishedAt = new Date().toISOString();
   entry.status.fingerprint = fingerprint;
-}, { namespace: process.env.APPLIK8S_NAMESPACE ?? 'guestbook' });
+};
+
+const guestBookNamespace = process.env.APPLIK8S_NAMESPACE ?? 'guestbook';
+GuestBookEntry.on.create('publish-new-guestbook-entry', { namespace: guestBookNamespace }, publishGuestBookEntry);
+GuestBookEntry.on.update('republish-guestbook-entry', { namespace: guestBookNamespace }, publishGuestBookEntry);

@@ -36,7 +36,7 @@ describe.runIf(endpoint)('v0.6 real ClickHouse projection authority', () => {
     const result = await runApplicationProjection({
       projection,
       streamName,
-      source: { async read(afterSequence) { const items = events.filter((event) => event.sequence > afterSequence); return { items, nextSequence: items.at(-1)?.sequence ?? afterSequence, exhausted: true, retentionFloor: 1 }; } },
+      source: { async read(afterSequence) { const items = events.filter((event) => event.sequence > afterSequence); return { items, nextSequence: items.at(-1)?.sequence ?? afterSequence, exhausted: true, retentionFloor: 0 }; } },
       store,
       project: (payload, event) => ({ eventId: event.id, accountId: payload.accountId, balance: payload.balance, active: true }),
     });

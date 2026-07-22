@@ -1,7 +1,7 @@
 // typecast-file-boundary: router adapters expose distinct context generics reconciled only inside this portability fixture.
 import { ApplicationQueryClient, queryInputKey, type ApplicationQuerySnapshot, type ApplicationQueryTransport } from '@applik8s/client';
 import { ApplicationQueryClientProvider, useApplicationQuery } from '@applik8s/react';
-import { hydrateApplicationQueries, preloadApplicationQuery, type ApplicationQueryLoaderResult } from '@applik8s/tanstack-start';
+import { hydrateApplicationQueries, preloadApplicationQuery, type ApplicationQueryLoaderResult } from '@applik8s/client';
 import { createMemoryHistory, createRootRouteWithContext, createRoute, createRouter } from '@tanstack/react-router';
 import { createElement } from 'react';
 import { renderToString } from 'react-dom/server';

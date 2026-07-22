@@ -21,6 +21,4 @@ cd "$ROOT"
 APPLIK8S_V06_CLICKHOUSE_ENDPOINT="http://127.0.0.1:$PORT" TYPEKRO_LOG_LEVEL=fatal \
   bunx vitest run packages/applik8s/test/projection-clickhouse-live.vertical.test.ts
 
-EVIDENCE_DIR="$ROOT/.applik8s-tmp/evidence/v0.6"
-mkdir -p "$EVIDENCE_DIR"
-APPLIK8S_EVIDENCE_PATH="$EVIDENCE_DIR/clickhouse.json" bun -e 'await Bun.write(process.env.APPLIK8S_EVIDENCE_PATH, JSON.stringify({ schemaVersion: 1, suite: "clickhouse", completedAt: new Date().toISOString(), environment: { provider: "clickhouse", image: "clickhouse/clickhouse-server:25.12.5", isolation: "local-ephemeral-container" }, assertions: ["prepare", "idempotent-write", "checkpoint-resume", "full-rebuild"] }, null, 2) + "\n")'
+bun run scripts/write-v06-datastore-evidence.ts clickhouse

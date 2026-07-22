@@ -3,6 +3,9 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationEventNode, ApplicationGraph, ApplicationModelNode, ApplicationProcessorNode, ApplicationProviderNode } from '@applik8s/core';
 import { build } from 'esbuild';
+import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
+import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
+import { applicationGraphStringValue } from '../application-installation-values.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import { generatedProcessorCapacity, generatedProcessorDisruptionResource, generatedProcessorPodScheduling } from './capacity.js';
 
@@ -16,6 +19,7 @@ export interface GeneratedApplicationProcessorArtifact {
   readonly metafilePath: string;
   readonly digest: string;
   readonly sizeBytes: number;
+  readonly container: GeneratedApplicationContainerArtifact;
   readonly resources: readonly GeneratedApplicationProcessorResource[];
 }
 
@@ -68,6 +72,7 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
     minify: true,
     lineLimit: 120,
     sourcemap: 'external',
+    sourcesContent: false,
     metafile: true,
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
     supported: { 'template-literal': false },
@@ -75,11 +80,19 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
   });
   const source = await readFile(sourcePath, 'utf8');
   const sizeBytes = Buffer.byteLength(source);
-  if (sizeBytes > 900_000) {
-    throw new Error(`Generated command processor ${processor.name} is ${sizeBytes} bytes and exceeds the safe ConfigMap runtime-bundle limit. Use an explicit processor image override until OCI processor artifacts are implemented.`);
-  }
   const digest = `sha256:${createHash('sha256').update(source).digest('hex')}`;
-  const resources = processorResources(contract, source, digest);
+  const container = await emitGeneratedApplicationContainer({
+    graphName: graph.metadata.name,
+    workloadName: name,
+    role: 'command-processor',
+    artifactDir: processorDir,
+    sourcePath,
+    sourceMapPath,
+    entrypoint: '/app/processor.mjs',
+    baseImage: processor.runtimeImage ?? DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE,
+    sourceDigest: digest,
+  });
+  const resources = processorResources(contract, container.image, digest);
   const manifest = {
     apiVersion: 'applik8s.processor/v1alpha1',
     kind: 'GeneratedCommandProcessor',
@@ -88,7 +101,8 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
       graph: graph.metadata.name,
       processor: processor.id,
       handlers: contract.handlers.map((handler) => handler.node.id),
-      runtime: { entrypoint: sourcePath, sourceMap: sourceMapPath, digest, sizeBytes, packageManagerAtStartup: false, image: processor.runtimeImage ?? DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE },
+      runtime: { entrypoint: sourcePath, sourceMap: sourceMapPath, digest, sizeBytes, distribution: 'ociImage', packageManagerAtStartup: false, image: container.image, baseImage: container.baseImage },
+      container,
       resources: resources.map((resource) => ({ apiVersion: resource.apiVersion, kind: resource.kind, metadata: resource.metadata })),
       guarantees: { delivery: 'atLeastOnce', authority: 'postgresInboxAndDeclaredOrdering', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
       capacity: generatedProcessorCapacity(processor),
@@ -96,7 +110,7 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
   };
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
-  return { name, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, resources };
+  return { name, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
 }
 
 interface ProcessorContract {
@@ -159,14 +173,15 @@ function processorContract(graph: ApplicationGraph, processor: ApplicationProces
     return { node, model: model as ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> }, models, command: commandNode.contract, events, commands };
   });
   const config = provider.config ?? {};
-  const namespace = handlers[0]?.model.runtime.secretNamespace || stringConfig(config.namespace) || undefined;
+  const namespace = applicationGraphStringValue(handlers[0]?.model.runtime.secretNamespace) || applicationGraphStringValue(config.namespace) || undefined;
   const serviceName = stringConfig(config.name) || 'applik8s-events';
   const configuredServers = Array.isArray(config.servers) ? config.servers.filter((value): value is string => typeof value === 'string') : [];
   const runtimeBinding = graph.providerBindings.find((binding) => graph.providerRequirements.some((requirement) => requirement.id === binding.requirement && requirement.consumer.nodeId === processor.id));
   const secretRef = runtimeBinding?.runtime.secretRefs?.[0];
+  const secretNamespace = applicationGraphStringValue(secretRef?.namespace);
   const processorNamespace = namespace ?? 'default';
-  if (secretRef?.namespace && secretRef.namespace !== processorNamespace) {
-    throw new Error(`Generated processor ${processor.id} cannot read EventLog Secret ${secretRef.namespace}/${secretRef.name} from namespace ${processorNamespace}. Kubernetes Secret env references must be in the processor namespace.`);
+  if (secretNamespace && secretNamespace !== processorNamespace) {
+    throw new Error(`Generated processor ${processor.id} cannot read EventLog Secret ${secretNamespace}/${secretRef?.name} from namespace ${processorNamespace}. Kubernetes Secret env references must be in the processor namespace.`);
   }
   const configuredAuthMode = stringConfig(config.authMode);
   if (configuredAuthMode && configuredAuthMode !== 'token' && configuredAuthMode !== 'userPassword') {
@@ -177,14 +192,14 @@ function processorContract(graph: ApplicationGraph, processor: ApplicationProces
     processor,
     provider,
     ...(namespace ? { namespace } : {}),
-    servers: configuredServers.length > 0 ? configuredServers : [`nats://${serviceName}${stringConfig(config.namespace) ? `.${stringConfig(config.namespace)}` : ''}.svc:4222`],
+    servers: configuredServers.length > 0 ? configuredServers : [`nats://${serviceName}${applicationGraphStringValue(config.namespace) ? `.${applicationGraphStringValue(config.namespace)}` : ''}.svc:4222`],
     stream: stringConfig(config.stream) || 'APPLIK8S_EVENTS',
     streamResourceName: kubernetesName(serviceName),
     provisionStream: ownsStream && config.provision !== false,
     streamReplicas: numberConfig(config.replicas, 1),
     subjectPrefix: stringConfig(config.subjectPrefix) || 'applik8s',
     consumer: kubernetesName(processor.name),
-    ...(secretRef?.name ? { connectionSecret: { name: secretRef.name, ...(secretRef.namespace ? { namespace: secretRef.namespace } : {}), authMode, tokenKey: stringConfig(config.tokenKey) || 'token', userKey: stringConfig(config.userKey) || 'user', passwordKey: stringConfig(config.passwordKey) || 'password' } } : {}),
+    ...(secretRef?.name ? { connectionSecret: { name: secretRef.name, ...(secretNamespace ? { namespace: secretNamespace } : {}), authMode, tokenKey: stringConfig(config.tokenKey) || 'token', userKey: stringConfig(config.userKey) || 'user', passwordKey: stringConfig(config.passwordKey) || 'password' } } : {}),
     retention: {
       bindingIds: handlers.map((handler) => handler.node.name),
       auditWindowSeconds: Math.max(...handlers.map((handler) => handler.node.retention.auditWindowSeconds)),
@@ -200,35 +215,70 @@ function generatedProcessorSource(contract: ProcessorContract): string {
   const bindingSources = contract.handlers.map((handler) => generatedBindingSource(handler)).join(',\n');
   return `
 import { rm, writeFile } from 'node:fs/promises';
-import { canonicalApplicationCommandKey, cleanupPostgresCommandData, createJetStreamEventLog, executePostgresModelCommand, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox, startJetStreamCommandProcessor } from '@applik8s/applik8s/processor-runtime';
+import { canonicalApplicationCommandKey, cleanupPostgresCommandData, createJetStreamEventLog, executePostgresModelCommand, observePostgresOutboxLag, recordPostgresModelCommandTerminalFailure, relayPostgresCommandOutbox, relayPostgresEventOutbox, startJetStreamCommandProcessor } from '@applik8s/applik8s/processor-runtime';
+
+function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
+function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(name + ' must be an integer between ' + minimum + ' and ' + maximum + '.'); return value; }
+const eventLogServers = JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS'));
+if (!Array.isArray(eventLogServers) || eventLogServers.some((server) => typeof server !== 'string' || server.length === 0)) throw new Error('APPLIK8S_NATS_SERVERS must be a JSON array of non-empty URLs.');
+const processorConcurrency = requiredIntegerEnv('APPLIK8S_PROCESSOR_CONCURRENCY', 1, 64);
 
 const bindings = [
 ${bindingSources}
 ];
 
-const processor = await startJetStreamCommandProcessor({
-  servers: ${JSON.stringify(contract.servers)},
+const heartbeatPath = '/tmp/applik8s-processor-heartbeat';
+await writeFile(heartbeatPath, String(Date.now()));
+async function retryStartup(dependency, operation, timeoutMs = 600_000) {
+  const startedAt = Date.now();
+  let delayMs = 250;
+  let attempt = 0;
+  while (true) {
+    attempt += 1;
+    try {
+      return await operation();
+    } catch (error) {
+      if (Date.now() - startedAt >= timeoutMs) throw new Error('applik8s-processor-startup-timeout: ' + dependency + ' was not ready after ' + attempt + ' attempts', { cause: error });
+      console.error(JSON.stringify({ event: 'applik8s-command-processor-startup-wait', dependency, attempt, error: error instanceof Error ? error.message : String(error) }));
+      await writeFile(heartbeatPath, String(Date.now()));
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      delayMs = Math.min(5_000, delayMs * 2);
+    }
+  }
+}
+
+await retryStartup('PostgreSQL', () => observePostgresOutboxLag(process.env.DATABASE_URL));
+const eventLog = await retryStartup('JetStream event log', async () => {
+  const candidate = createJetStreamEventLog({
+    servers: eventLogServers,
+    stream: ${JSON.stringify(contract.stream)},
+    subjectPrefix: ${JSON.stringify(contract.subjectPrefix)},
+    connectionName: ${JSON.stringify(`applik8s-${contract.consumer}-outbox`)},
+    token: process.env.APPLIK8S_NATS_TOKEN,
+    user: process.env.APPLIK8S_NATS_USER,
+    pass: process.env.APPLIK8S_NATS_PASSWORD,
+  });
+  try {
+    await candidate.verify();
+    return candidate;
+  } catch (error) {
+    await candidate.drain().catch(() => undefined);
+    throw error;
+  }
+});
+const processor = await retryStartup('JetStream command consumer', () => startJetStreamCommandProcessor({
+  servers: eventLogServers,
   stream: ${JSON.stringify(contract.stream)},
   consumer: ${JSON.stringify(contract.consumer)},
   subjectPrefix: ${JSON.stringify(contract.subjectPrefix)},
   bindings,
-  concurrency: ${contract.processor.deployment.concurrency},
+  concurrency: processorConcurrency,
   databaseUrl: process.env.DATABASE_URL,
   token: process.env.APPLIK8S_NATS_TOKEN,
   user: process.env.APPLIK8S_NATS_USER,
   pass: process.env.APPLIK8S_NATS_PASSWORD,
   logger: (record) => console.log(JSON.stringify(record)),
-});
-const eventLog = createJetStreamEventLog({
-  servers: ${JSON.stringify(contract.servers)},
-  stream: ${JSON.stringify(contract.stream)},
-  subjectPrefix: ${JSON.stringify(contract.subjectPrefix)},
-  connectionName: ${JSON.stringify(`applik8s-${contract.consumer}-outbox`)},
-  token: process.env.APPLIK8S_NATS_TOKEN,
-  user: process.env.APPLIK8S_NATS_USER,
-  pass: process.env.APPLIK8S_NATS_PASSWORD,
-});
-await eventLog.verify();
+}));
 let relayStopping = false;
 let lastCleanupAt = 0;
 const relayClosed = (async () => {
@@ -249,12 +299,12 @@ const relayClosed = (async () => {
     } catch (error) {
       console.error(JSON.stringify({ event: 'applik8s-event-outbox-relay-failure', error: error instanceof Error ? error.message : String(error) }));
     }
-    await writeFile('/tmp/applik8s-processor-heartbeat', String(Date.now()));
+    await writeFile(heartbeatPath, String(Date.now()));
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 })();
 await writeFile('/tmp/applik8s-processor-ready', 'ready\\n');
-await writeFile('/tmp/applik8s-processor-heartbeat', String(Date.now()));
+await writeFile(heartbeatPath, String(Date.now()));
 let draining = false;
 const drain = async (signal) => {
   if (draining) return;
@@ -303,6 +353,7 @@ function generatedBindingSource(handler: ProcessorContract['handlers'][number]):
         schemas: ${JSON.stringify({ input: handler.command.input.jsonSchema, output: handler.command.output.jsonSchema, errors: Object.fromEntries(handler.command.errors.map((error) => [error.name, error.schema.jsonSchema])), events: Object.fromEntries(handler.events.map((event) => [event.definition.id, event.schema])), commands: Object.fromEntries(handler.commands.map((command) => [command.definition.id, command.schema])) })},
         model: ${JSON.stringify(handler.model.runtime)},
         models: ${JSON.stringify(handler.models.map((model) => model.runtime))},
+        selfRead: ${String(handler.node.transaction.selfRead === true)},
         historyModels: ${JSON.stringify(handler.node.transaction.history.map((reference) => handler.models.find((model) => model.id === reference.nodeId)?.name).filter(Boolean))},
         retry: ${JSON.stringify(handler.node.retry)},
         message: { ...delivery, input, targetKey, idempotencyKey },
@@ -316,16 +367,28 @@ function generatedBindingSource(handler: ProcessorContract['handlers'][number]):
         databaseUrl: delivery.databaseUrl,
       });
     },
+    async recordTerminalFailure(input, delivery, failure) {
+      const targetKey = delivery.targetKey ?? canonicalApplicationCommandKey((${keySource})(input));
+      const idempotencyKey = delivery.idempotencyKey ?? ${idempotencySource ? `(${idempotencySource})(input)` : 'delivery.id'};
+      return recordPostgresModelCommandTerminalFailure({
+        bindingId: ${JSON.stringify(handler.node.name)},
+        model: ${JSON.stringify(handler.model.runtime)},
+        message: { ...delivery, input, targetKey, idempotencyKey },
+        databaseUrl: delivery.databaseUrl,
+      }, failure);
+    },
   }`;
 }
 
-function processorResources(contract: ProcessorContract, source: string, digest: string): readonly GeneratedApplicationProcessorResource[] {
+function processorResources(contract: ProcessorContract, image: string, digest: string): readonly GeneratedApplicationProcessorResource[] {
   const labels = { 'app.kubernetes.io/name': contract.consumer, 'app.kubernetes.io/component': 'command-processor', 'app.kubernetes.io/managed-by': 'applik8s' };
   const metadata = { name: contract.consumer, ...(contract.namespace ? { namespace: contract.namespace } : {}), labels };
   const model = contract.handlers[0]?.model.runtime;
   if (!model) throw new Error(`Generated processor ${contract.processor.id} has no model runtime.`);
   const env: unknown[] = [
     { name: 'NODE_OPTIONS', value: '--enable-source-maps' },
+    { name: 'APPLIK8S_NATS_SERVERS', value: JSON.stringify(contract.servers) },
+    { name: 'APPLIK8S_PROCESSOR_CONCURRENCY', value: processorEnvironmentInteger(contract.processor.deployment.concurrency) },
     { name: model.connectionEnvName, valueFrom: { secretKeyRef: { name: model.secretName, key: model.secretKey } } },
   ];
   if (model.connectionEnvName !== 'DATABASE_URL') env.push({ name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: model.secretName, key: model.secretKey } } });
@@ -342,7 +405,6 @@ function processorResources(contract: ProcessorContract, source: string, digest:
   const filterSubjects = contract.handlers.map((handler) => `${contract.subjectPrefix}.commands.${subjectToken(handler.command.name)}.${subjectToken(handler.command.version)}.>`);
   const disruptionResource = generatedProcessorDisruptionResource(contract.processor, metadata, labels);
   return [
-    { apiVersion: 'v1', kind: 'ConfigMap', metadata: { ...metadata, name: `${contract.consumer}-source`, annotations: { 'applik8s.dev/runtime-digest': digest } }, data: { 'processor.mjs': source } },
     ...(contract.provisionStream ? [{
       apiVersion: 'jetstream.nats.io/v1beta2',
       kind: 'Stream',
@@ -380,7 +442,6 @@ function processorResources(contract: ProcessorContract, source: string, digest:
       spec: {
         podSelector: { matchLabels: labels },
         policyTypes: ['Ingress', 'Egress'],
-        ingress: [],
         egress: [
           {
             to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' } }, podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } } }],
@@ -398,7 +459,7 @@ function processorResources(contract: ProcessorContract, source: string, digest:
         replicas: contract.processor.deployment.replicas,
         progressDeadlineSeconds: 600,
         revisionHistoryLimit: 3,
-        strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } },
+        strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
         selector: { matchLabels: labels },
         template: {
           metadata: { labels, annotations: { 'applik8s.dev/runtime-digest': digest } },
@@ -416,7 +477,7 @@ function processorResources(contract: ProcessorContract, source: string, digest:
             },
             containers: [{
               name: 'processor',
-              image: contract.processor.runtimeImage ?? DEFAULT_GENERATED_PROCESSOR_RUNTIME_IMAGE,
+              image,
               imagePullPolicy: 'IfNotPresent',
               command: ['node', '/app/processor.mjs'],
               env,
@@ -424,9 +485,9 @@ function processorResources(contract: ProcessorContract, source: string, digest:
               resources: contract.processor.deployment.resources,
               readinessProbe: { exec: { command: ['test', '-f', '/tmp/applik8s-processor-ready'] }, periodSeconds: 5, timeoutSeconds: 2, failureThreshold: 3 },
               livenessProbe: { exec: { command: ['node', '-e', "const { mtimeMs } = require('node:fs').statSync('/tmp/applik8s-processor-heartbeat'); process.exit(Date.now() - mtimeMs < 60000 ? 0 : 1)"] }, periodSeconds: 20, timeoutSeconds: 2, failureThreshold: 3 },
-              volumeMounts: [{ name: 'source', mountPath: '/app', readOnly: true }, { name: 'tmp', mountPath: '/tmp' }],
+              volumeMounts: [{ name: 'tmp', mountPath: '/tmp' }],
             }],
-            volumes: [{ name: 'source', configMap: { name: `${contract.consumer}-source` } }, { name: 'tmp', emptyDir: { sizeLimit: '16Mi' } }],
+            volumes: [{ name: 'tmp', emptyDir: { sizeLimit: '16Mi' } }],
           },
         },
       },
@@ -456,6 +517,13 @@ function stringConfig(value: unknown): string {
 
 function numberConfig(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? value : fallback;
+}
+
+function processorEnvironmentInteger(value: number | string): string {
+  if (typeof value === 'number') return String(value);
+  const expression = /^\$\{(.+)\}$/.exec(value)?.[1];
+  if (!expression) throw new Error(`Processor capacity must be an integer or serialized installation expression, received ${JSON.stringify(value)}.`);
+  return `\${string(${expression})}`;
 }
 
 function kubernetesName(value: string): string {

@@ -6,7 +6,9 @@ import type { V1CustomResourceColumnDefinition } from '@kubernetes/client-node/d
 import type { V1CustomResourceDefinition } from '@kubernetes/client-node/dist/gen/models/V1CustomResourceDefinition.js';
 import type { V1Deployment } from '@kubernetes/client-node/dist/gen/models/V1Deployment.js';
 import type { V1JSONSchemaProps } from '@kubernetes/client-node/dist/gen/models/V1JSONSchemaProps.js';
+import type { V1NetworkPolicy } from '@kubernetes/client-node/dist/gen/models/V1NetworkPolicy.js';
 import type { V1ObjectMeta } from '@kubernetes/client-node/dist/gen/models/V1ObjectMeta.js';
+import type { V1PodDisruptionBudget } from '@kubernetes/client-node/dist/gen/models/V1PodDisruptionBudget.js';
 import type { V1PolicyRule } from '@kubernetes/client-node/dist/gen/models/V1PolicyRule.js';
 import type { V1Role } from '@kubernetes/client-node/dist/gen/models/V1Role.js';
 import type { V1RoleBinding } from '@kubernetes/client-node/dist/gen/models/V1RoleBinding.js';
@@ -58,7 +60,9 @@ export async function emitOperatorKubernetesYaml(request: KubernetesYamlRequest)
         roleDocument(request.operator.name, namespacedPermissions, namespace, request.manifest, clusterRbac ? 'connection-secrets' : 'controller'),
         roleBindingDocument(request.operator.name, serviceAccountName, namespace, request.manifest, clusterRbac ? 'connection-secrets' : 'controller'),
       ] : []),
-      deploymentDocument(request.manifest, serviceAccountName, image, namespace, request.operator.deployment?.replicas),
+      deploymentDocument(request.manifest, serviceAccountName, image, namespace, request.operator.deployment),
+      operatorNetworkPolicyDocument(request.manifest, namespace),
+      ...((request.operator.deployment?.replicas ?? 1) > 1 ? [operatorPodDisruptionBudgetDocument(request.manifest, namespace)] : []),
     ];
     const validation = validateGeneratedKubernetesDocuments(documents);
     if (!validation.ok) {
@@ -115,7 +119,7 @@ async function replaceDirectory(stagingDirectory: string, destination: string): 
 
 export type V1ClusterRole = Omit<V1Role, 'kind' | 'metadata'> & { readonly kind: 'ClusterRole'; readonly metadata: V1ObjectMeta };
 export type V1ClusterRoleBinding = Omit<V1RoleBinding, 'kind' | 'metadata' | 'roleRef'> & { readonly kind: 'ClusterRoleBinding'; readonly metadata: V1ObjectMeta; readonly roleRef: V1RoleBinding['roleRef'] };
-export type KubernetesDocument = V1CustomResourceDefinition | V1ServiceAccount | V1Role | V1RoleBinding | V1ClusterRole | V1ClusterRoleBinding | V1Deployment;
+export type KubernetesDocument = V1CustomResourceDefinition | V1ServiceAccount | V1Role | V1RoleBinding | V1ClusterRole | V1ClusterRoleBinding | V1Deployment | V1NetworkPolicy | V1PodDisruptionBudget;
 
 export function validateGeneratedKubernetesDocuments(documents: readonly KubernetesDocument[]): Result<readonly Diagnostic[]> {
   const diagnostics: Diagnostic[] = [];
@@ -403,18 +407,32 @@ function rbacBindingDocument(operatorName: string, serviceAccountName: string, n
   return roleBindingDocument(operatorName, serviceAccountName, namespace, manifest);
 }
 
-function deploymentDocument(manifest: OperatorManifest, serviceAccountName: string, image: string, namespace: string | undefined, replicas?: number): V1Deployment {
+function deploymentDocument(manifest: OperatorManifest, serviceAccountName: string, image: string, namespace: string | undefined, deployment?: OperatorDefinition['deployment']): V1Deployment {
+  const configuredResources = deployment?.resources;
+  const resources = {
+    requests: { cpu: '100m', memory: '128Mi', ...configuredResources?.requests },
+    // ComponentizeJS handlers execute inside Wasmtime and can transiently
+    // exceed 512Mi while instantiating an otherwise small JavaScript bundle.
+    // Keep the request modest, but make the safe default limit reflect the
+    // measured runtime envelope. Authors can still tighten it explicitly.
+    limits: { cpu: '1', memory: '1Gi', ...configuredResources?.limits },
+  };
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
     metadata: metadata(manifest.metadata.name, namespace, manifest),
     spec: {
-      replicas: replicas ?? 1,
+      replicas: deployment?.replicas ?? 1,
       selector: { matchLabels: appLabels(manifest.metadata.name) },
+      // Operators must remain updatable on bounded single-node clusters. The
+      // default 25% surge rounds up to an extra Pod even for one replica and
+      // can deadlock a rollout precisely when the cluster is under pressure.
+      strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
       template: {
         metadata: { labels: appLabels(manifest.metadata.name), annotations: auditAnnotations(manifest) },
         spec: {
           serviceAccountName,
+          terminationGracePeriodSeconds: deployment?.terminationGracePeriodSeconds ?? 45,
           securityContext: {
             runAsNonRoot: true,
             runAsUser: 65532,
@@ -454,11 +472,37 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
                 periodSeconds: 5,
                 timeoutSeconds: 5,
               },
+              resources,
             },
           ],
           volumes: [{ name: 'tmp', emptyDir: {} }],
         },
       },
+    },
+  };
+}
+
+function operatorNetworkPolicyDocument(manifest: OperatorManifest, namespace: string | undefined): V1NetworkPolicy {
+  return {
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'NetworkPolicy',
+    metadata: metadata(manifest.metadata.name, namespace, manifest),
+    spec: {
+      podSelector: { matchLabels: appLabels(manifest.metadata.name) },
+      policyTypes: ['Ingress'],
+      ingress: [{ ports: [{ protocol: 'TCP', port: 8080 }] }],
+    },
+  };
+}
+
+function operatorPodDisruptionBudgetDocument(manifest: OperatorManifest, namespace: string | undefined): V1PodDisruptionBudget {
+  return {
+    apiVersion: 'policy/v1',
+    kind: 'PodDisruptionBudget',
+    metadata: metadata(manifest.metadata.name, namespace, manifest),
+    spec: {
+      maxUnavailable: 1,
+      selector: { matchLabels: appLabels(manifest.metadata.name) },
     },
   };
 }
@@ -471,6 +515,18 @@ function validateDeploymentOperationalSafety(operator: OperatorDefinition, manif
   }
   if (leaderElection?.enabled && !operator.deployment?.namespace && !leaderElection.leaseNamespace) {
     throw new Error('deployment.namespace or runtime.leaderElection.leaseNamespace is required for leader-elected operator deployments.');
+  }
+  const terminationGracePeriodSeconds = operator.deployment?.terminationGracePeriodSeconds;
+  if (terminationGracePeriodSeconds !== undefined && (!Number.isInteger(terminationGracePeriodSeconds) || terminationGracePeriodSeconds < 1 || terminationGracePeriodSeconds > 600)) {
+    throw new Error('deployment.terminationGracePeriodSeconds must be an integer between 1 and 600.');
+  }
+  for (const [path, value] of Object.entries({
+    'resources.requests.cpu': operator.deployment?.resources?.requests?.cpu,
+    'resources.requests.memory': operator.deployment?.resources?.requests?.memory,
+    'resources.limits.cpu': operator.deployment?.resources?.limits?.cpu,
+    'resources.limits.memory': operator.deployment?.resources?.limits?.memory,
+  })) {
+    if (value !== undefined && !value.trim()) throw new Error(`deployment.${path} must not be empty.`);
   }
   const unsupportedConcurrency = unsupportedRuntimeConcurrency(manifest.spec.runtime?.concurrency);
   if (unsupportedConcurrency) {

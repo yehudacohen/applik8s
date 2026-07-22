@@ -207,6 +207,37 @@ describe('schema runtime', () => {
     if (!invalid.ok) expect(invalid.error.message).toContain('must match pattern');
   });
 
+  it('normalizes compiler-emitted nullable shapes and enforces scalar and collection bounds', () => {
+    const schema = toRuntimeSchema<{ readonly limit: number; readonly label: string; readonly tags: readonly string[]; readonly optional: string | null }>({
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: 'GeneratedBoundedQuery' },
+      schema: {
+        $schema: 'https://json-schema.org/draft/2020-12/schema',
+        type: 'object',
+        required: ['label', 'limit', 'optional', 'tags'],
+        properties: {
+          limit: { type: 'integer', minimum: 1, maximum: 100 },
+          label: { type: 'string', minLength: 2, maxLength: 8 },
+          tags: { type: 'array', minItems: 1, maxItems: 2, uniqueItems: true, items: { type: 'string' } },
+          optional: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        },
+      },
+    });
+
+    expect(schema.validate({ limit: 20, label: 'chirp', tags: ['live'], optional: null }).ok).toBe(true);
+    for (const value of [
+      { limit: 0, label: 'chirp', tags: ['live'], optional: null },
+      { limit: 20, label: 'x', tags: ['live'], optional: null },
+      { limit: 20, label: 'chirp', tags: ['live', 'live'], optional: null },
+    ]) expect(schema.validate(value).ok).toBe(false);
+
+    const emitted = schema.emitJsonSchema();
+    expect(emitted.ok).toBe(true);
+    if (emitted.ok) expect(emitted.value.schema).toMatchObject({
+      properties: { optional: { type: 'string', nullable: true } },
+    });
+  });
+
   it('fails closed for unsupported composition inside map schemas', () => {
     const schema = toRuntimeSchema<MapSpec>({
       kind: 'jsonSchema',

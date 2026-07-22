@@ -11,6 +11,7 @@ export interface ApplicationWorkflowInvocationMetadata {
   readonly trustedContext?: {
     readonly values: Readonly<Record<string, import('@applik8s/core').JsonValue>>;
     readonly digest: string;
+    readonly changeScopes?: Readonly<Record<string, string>>;
   };
 }
 
@@ -67,10 +68,28 @@ export interface ApplicationWorkflowRun<
   cancel(options?: Omit<ApplicationWorkflowResultOptions, 'pollIntervalMs'>): Promise<void>;
 }
 
+export interface ApplicationWorkflowScheduleSpec<TInput extends object> {
+  /** Stable application-owned identity; provider IDs remain implementation details. */
+  readonly id: string;
+  readonly expression: string;
+  readonly revision: string;
+  readonly enabled: boolean;
+  readonly input: TInput;
+}
+
+export interface ApplicationWorkflowScheduleResult {
+  readonly id: string;
+  readonly revision: string;
+  readonly state: 'created' | 'unchanged' | 'removed';
+  readonly providerId?: string;
+}
+
 export interface ApplicationWorkflowRuntime {
   run<TInput extends object, TOutput extends object>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
   start<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput, TErrors>>;
   schedule<TInput extends object>(contract: string, input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata): Promise<{ readonly id: string }>;
+  /** Converges one application-owned recurring schedule without exposing provider APIs to domain code. */
+  reconcileSchedule<TInput extends object>(contract: string, schedule: ApplicationWorkflowScheduleSpec<TInput>, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowScheduleResult>;
   signal<TPayload extends object>(contract: string, runId: string, signal: string, payload: TPayload, metadata?: ApplicationWorkflowInvocationMetadata): Promise<void>;
 }
 

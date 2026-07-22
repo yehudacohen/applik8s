@@ -1,5 +1,5 @@
 import { HeadContent, Outlet, Scripts, createRootRoute } from '@tanstack/react-router';
-import { Applik8sStartProvider } from '@applik8s/tanstack-start/react';
+import { Applik8sProvider } from '@applik8s/react';
 import type { ReactNode } from 'react';
 import '../styles.css';
 
@@ -17,9 +17,9 @@ export const Route = createRootRoute({
 function Root() {
   return (
     <Document>
-      <Applik8sStartProvider>
+      <Applik8sProvider>
         <Outlet />
-      </Applik8sStartProvider>
+      </Applik8sProvider>
     </Document>
   );
 }

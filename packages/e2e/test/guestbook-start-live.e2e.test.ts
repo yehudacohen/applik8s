@@ -1,8 +1,17 @@
+// typecast-file-boundary: Live E2E fixtures decode generated manifests and Kubernetes responses to assert external runtime behavior.
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, expect, it } from 'vitest';
+import {
+  collectV06ClusterIdentity,
+  collectV06GitIdentity,
+  createV06AssertionEvidence,
+  discardV06Evidence,
+  writeV06EvidenceReceipt,
+} from '../../../scripts/v06-evidence';
 import {
   assertExpectedKubectlContext,
   describeLive,
@@ -12,70 +21,76 @@ import {
   sleep,
 } from './live-e2e-helpers';
 
-const applicationName = process.env.APPLIK8S_E2E_GUESTBOOK_NAME ?? `guestbook-start-live-${process.pid}`;
+// KRO deliberately retains generated CRDs active for safe reuse. Keep the
+// disposable live API identity stable so repeated runs reuse one contract
+// instead of leaking a new PID-shaped CRD on every invocation.
+const applicationName = process.env.APPLIK8S_E2E_GUESTBOOK_NAME ?? 'guestbook-start-live';
 const namespace = process.env.APPLIK8S_E2E_GUESTBOOK_NAMESPACE ?? `applik8s-v06-guestbook-${process.pid}`;
+const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
 const exampleRoot = join(process.cwd(), 'examples/guestbook-start');
-const applicationEntrypoint = join(exampleRoot, 'src/application.ts');
 const hostName = `${applicationName}-web`;
-const operatorName = 'guest-book-entry-controller';
-const cursorSecretName = `${hostName}-gateway-cursor`;
+const operatorNames = ['publish-new-guestbook-entry', 'republish-guestbook-entry'] as const;
 const publishedMessage = `Generated GuestBook golden path ${Date.now()}`;
 const restartMessage = `Restart-resumed GuestBook golden path ${Date.now()}`;
 
-let composition: DeletableComposition | undefined;
-let instanceApplied = false;
+let deploymentAttempted = false;
 let proofComplete = false;
-let emptyCrdRecoveryUsed = false;
+let tempDir: string | undefined;
+const evidencePath = join(process.cwd(), '.applik8s-tmp/evidence/v0.6/guestbook-start.json');
+const evidenceRunId = randomUUID();
+const evidenceStartedAt = new Date().toISOString();
 
 describeLive('v0.6 GuestBook Start golden path on OrbStack', () => {
   beforeAll(async () => {
+    await discardV06Evidence(evidencePath);
     await assertExpectedKubectlContext();
     await kubectl(['get', 'crd/resourcegraphdefinitions.kro.run']);
     process.env.APPLIK8S_APPLICATION_NAME = applicationName;
     process.env.APPLIK8S_NAMESPACE = namespace;
     await exec('bun', ['run', 'build:packages'], process.cwd());
-    const moduleUrl = `${pathToFileURL(applicationEntrypoint).href}?live=${Date.now()}`;
-    // static-import-exception: environment-scoped loading is required; typecast: the repository fixture is narrowed to its lifecycle-only export.
-    const loaded = await import(/* @vite-ignore */ moduleUrl) as {
-      readonly app?: { readonly composition?: DeletableComposition };
-    };
-    composition = loaded.app?.composition;
-    if (!composition) throw new Error('GuestBook Start example did not expose its TypeKro composition.');
-    await exec('bun', ['run', 'deploy:local'], exampleRoot);
-    instanceApplied = true;
-  }, 600_000);
+    tempDir = await mkdtemp(join(tmpdir(), 'applik8s-guestbook-start-live-'));
+    const instancePath = join(tempDir, 'guestbook.yaml');
+    await writeFile(instancePath, `apiVersion: ${applicationName}.applik8s.dev/v1alpha1
+kind: ${pascalCase(applicationName)}
+metadata:
+  name: ${applicationName}
+  namespace: ${namespace}
+spec: {}
+`);
+    deploymentAttempted = true;
+    await exec('bun', [
+      'run', '../../packages/applik8s/src/bin.ts', 'deploy', 'src/application.ts',
+      '--context', context, '--instance', instancePath,
+    ], exampleRoot);
+  }, 1_200_000);
 
   afterAll(async () => {
     let cleanupFailure: unknown;
     try {
-      await deleteApplicationThroughTypeKro();
-      await ensureGeneratedCrdDeletionCompletes();
-      await kubectl([
-        'delete',
-        'guestbookentries.guestbook.applik8s.dev',
-        '--all',
-        '--namespace',
-        namespace,
-        '--ignore-not-found=true',
-        '--wait=true',
-        '--timeout=60s',
-      ]);
-      await kubectl([
-        'delete',
-        `secret/${cursorSecretName}`,
-        '--namespace',
-        namespace,
-        '--ignore-not-found=true',
-        '--wait=true',
-        '--timeout=60s',
-      ]);
-      await deleteNamespaceAndWait();
+      if (deploymentAttempted && await access(join(exampleRoot, '.applik8s/deploy/typekro/typekro-composition.json')).then(() => true).catch(() => false)) {
+        // Runtime-created domain fixtures are not graph children. Remove them
+        // before asking TypeKro to retire the generated API and installation;
+        // all Application/root, RGD, CRD, and Namespace ownership remains with
+        // the Applik8s CLI and TypeKro factories.
+        await kubectl([
+          'delete', 'guestbookentries.guestbook.applik8s.dev', '--all',
+          '--namespace', namespace, '--ignore-not-found=true', '--wait=true', '--timeout=60s',
+        ]);
+        await exec('bun', [
+          'run', '../../packages/applik8s/src/bin.ts', 'delete', 'src/application.ts',
+          '--context', context,
+        ], exampleRoot);
+        await expect(kubectl(['get', `namespace/${namespace}`])).rejects.toThrow();
+        await expect(kubectl(['get', `resourcegraphdefinition/${applicationName}`])).rejects.toThrow();
+        await assertRetainedGeneratedCrdIsEmpty();
+      }
       if (proofComplete) await writeEvidenceReceipt();
     } catch (cause) {
       cleanupFailure = cause;
     } finally {
       delete process.env.APPLIK8S_APPLICATION_NAME;
       delete process.env.APPLIK8S_NAMESPACE;
+      if (tempDir && process.env.APPLIK8S_KEEP_TMP !== '1') await rm(tempDir, { recursive: true, force: true });
     }
     if (cleanupFailure) throw cleanupFailure;
   }, 720_000);
@@ -83,7 +98,7 @@ describeLive('v0.6 GuestBook Start golden path on OrbStack', () => {
   it('runs browser-shaped commands through Kubernetes reconciliation and resumable invalidation', async () => {
     try {
       await waitForDeployment(hostName, 600_000);
-      await waitForDeployment(operatorName, 600_000);
+      await Promise.all(operatorNames.map((name) => waitForDeployment(name, 600_000)));
       let forward = await startPortForward(`service/${hostName}`, 3000);
       try {
         await expect(waitForJson(
@@ -124,7 +139,7 @@ describeLive('v0.6 GuestBook Start golden path on OrbStack', () => {
         const beforeRestart = await snapshot(forward.endpoint);
         await forward.close();
         await restartDeployment(hostName);
-        await restartDeployment(operatorName);
+        await Promise.all(operatorNames.map(restartDeployment));
         forward = await startPortForward(`service/${hostName}`, 3000);
         await waitForJson(
           `${forward.endpoint}/__applik8s/v1/readyz`,
@@ -147,24 +162,12 @@ describeLive('v0.6 GuestBook Start golden path on OrbStack', () => {
         kubectl(['get', 'pods,deployments,services,guestbookentries', '--namespace', namespace, '--output=wide']),
         kubectl(['get', 'events', '--namespace', namespace, '--sort-by=.lastTimestamp']),
         kubectl(['logs', '--namespace', namespace, `deployment/${hostName}`, '--all-containers=true', '--tail=500']),
-        kubectl(['logs', '--namespace', namespace, `deployment/${operatorName}`, '--all-containers=true', '--tail=500']),
+        ...operatorNames.map((name) => kubectl(['logs', '--namespace', namespace, `deployment/${name}`, '--all-containers=true', '--tail=500'])),
       ]);
       throw new Error(`${cause instanceof Error ? cause.message : String(cause)}\n${diagnostics.map(formatSettledOutput).join('\n')}`);
     }
   }, 900_000);
 });
-
-interface DeletableComposition {
-  factory(mode: 'kro', options: {
-    readonly namespace: string;
-    readonly waitForReady: boolean;
-    readonly timeout: number;
-  }): {
-    getInstances(): Promise<readonly { readonly metadata?: { readonly name?: string } }[]>;
-    deleteInstance(name: string): Promise<void>;
-    dispose(): Promise<void>;
-  };
-}
 
 interface PortForward {
   readonly endpoint: string;
@@ -423,96 +426,68 @@ async function startPortForward(resource: string, remotePort: number): Promise<P
   throw new Error(`Timed out starting port-forward for ${resource}: ${output}`);
 }
 
-async function deleteApplicationThroughTypeKro(): Promise<void> {
-  if (!composition || !instanceApplied) return;
-  const factory = composition.factory('kro', {
-    namespace,
-    waitForReady: true,
-    timeout: 600_000,
-  });
-  try {
-    const names = (await factory.getInstances())
-      .map((instance) => instance.metadata?.name)
-      .filter((name): name is string => Boolean(name));
-    if (!names.includes(applicationName)) {
-      throw new Error(`Expected GuestBook TypeKro instance ${namespace}/${applicationName}, found ${JSON.stringify(names)}.`);
-    }
-    await factory.deleteInstance(applicationName);
-    instanceApplied = false;
-  } finally {
-    await factory.dispose();
-  }
-}
-
-async function deleteNamespaceAndWait(): Promise<void> {
-  if (!namespace.startsWith('applik8s-v06-guestbook-')) {
-    throw new Error(`Refusing cleanup for non-disposable GuestBook namespace ${namespace}.`);
-  }
-  await kubectl(['delete', `namespace/${namespace}`, '--ignore-not-found=true', '--wait=true', '--timeout=300s']);
-}
-
-async function ensureGeneratedCrdDeletionCompletes(): Promise<void> {
-  const plural = `${applicationName.toLowerCase().replaceAll(/[^a-z0-9]/g, '')}s`;
-  const crdName = `${plural}.${applicationName}.applik8s.dev`;
-  const started = Date.now();
-  let crd: Record<string, unknown> | undefined;
-  while (Date.now() - started < 30_000) {
-    try {
-      // typecast: the generated CRD response is narrowed to deletion metadata before any recovery action.
-      crd = JSON.parse((await kubectl(['get', `crd/${crdName}`, '--output=json'])).stdout) as Record<string, unknown>;
-    } catch {
-      return;
-    }
-    await sleep(1_000);
-  }
-  const metadata = crd?.metadata;
-  if (!metadata || typeof metadata !== 'object' || typeof Reflect.get(metadata, 'deletionTimestamp') !== 'string') {
-    throw new Error(`Generated GuestBook CRD ${crdName} remained after TypeKro cleanup without a deletion timestamp.`);
-  }
-  const rgdStillExists = await kubectl(['get', `resourcegraphdefinition.kro.run/${applicationName}`, '--output=name'])
-    .then(() => true, () => false);
-  if (rgdStillExists) throw new Error(`Refusing GuestBook CRD recovery while ResourceGraphDefinition/${applicationName} still exists.`);
-  const remainingInstances = (await kubectl(['get', crdName, '--all-namespaces', '--output=name'])).stdout.trim();
-  if (remainingInstances) throw new Error(`Refusing GuestBook CRD recovery because instances still exist: ${remainingInstances}`);
-  await kubectl(['patch', `crd/${crdName}`, '--type=merge', '--patch', '{"metadata":{"finalizers":[]}}']);
-  await kubectl(['wait', '--for=delete', `crd/${crdName}`, '--timeout=60s']);
-  emptyCrdRecoveryUsed = true;
-}
-
 async function writeEvidenceReceipt(): Promise<void> {
-  const directory = join(process.cwd(), '.applik8s-tmp/evidence/v0.6');
-  await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, 'guestbook-start.json'), `${JSON.stringify({
-    schemaVersion: 1,
+  const completedAt = new Date().toISOString();
+  const assertions = [
+    'vite-application-build',
+    'application-host-ready',
+    'operator-ready',
+    'browser-command-submit',
+    'kubernetes-create',
+    'operator-publish',
+    'operator-reject',
+    'sse-invalidation',
+    'authoritative-requery',
+    'ssr-render',
+    'restart-resume',
+    'cli-typekro-delete',
+    'runtime-created-data-cleanup',
+    'generated-crd-retained-empty-for-reuse',
+    'namespace-removed',
+  ];
+  await writeV06EvidenceReceipt(evidencePath, {
     suite: 'guestbook-start',
-    completedAt: new Date().toISOString(),
+    run: { id: evidenceRunId, startedAt: evidenceStartedAt, completedAt },
+    candidate: {
+      git: await collectV06GitIdentity(),
+      cluster: await collectV06ClusterIdentity(context),
+    },
     environment: {
-      context: process.env.APPLIK8S_E2E_CONTEXT ?? 'unknown',
+      context,
       namespace,
       application: applicationName,
     },
-    assertions: [
-      'vite-application-build',
-      'application-host-ready',
-      'operator-ready',
-      'browser-command-submit',
-      'kubernetes-create',
-      'operator-publish',
-      'operator-reject',
-      'sse-invalidation',
-      'authoritative-requery',
-      'ssr-render',
-      'restart-resume',
-      'factory-delete',
-      'runtime-created-data-cleanup',
-      'namespace-removed',
-      ...(emptyCrdRecoveryUsed ? ['orbstack-empty-crd-finalizer-recovery'] : []),
-    ],
-  }, null, 2)}\n`);
+    assertionEvidence: createV06AssertionEvidence(
+      assertions.map((assertion) => ({ assertion, test: 'GuestBook Start live lifecycle', observedAt: completedAt })),
+      evidenceRunId,
+    ),
+  });
 }
 
 function isCreatedOutput(value: unknown): value is CreatedEntry['output'] {
   if (!value || typeof value !== 'object') return false;
   const identity = Reflect.get(value, 'identity');
   return typeof identity === 'string' && identity.length > 0;
+}
+
+async function assertRetainedGeneratedCrdIsEmpty(): Promise<void> {
+  const plural = `${applicationName.toLowerCase().replaceAll(/[^a-z0-9]/g, '')}s`;
+  const crdName = `${plural}.${applicationName}.applik8s.dev`;
+  const crd = JSON.parse((await kubectl(['get', `crd/${crdName}`, '--output=json'])).stdout) as {
+    readonly metadata?: { readonly labels?: Readonly<Record<string, string>>; readonly deletionTimestamp?: string };
+  };
+  expect(crd.metadata?.deletionTimestamp).toBeUndefined();
+  expect(crd.metadata?.labels).toMatchObject({
+    'kro.run/owned': 'true',
+    'kro.run/resource-graph-definition-name': applicationName,
+  });
+  expect((await kubectl(['get', crdName, '--all-namespaces', '--output=name'])).stdout.trim()).toBe('');
+}
+
+function pascalCase(value: string): string {
+  return value
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`)
+    .join('');
 }

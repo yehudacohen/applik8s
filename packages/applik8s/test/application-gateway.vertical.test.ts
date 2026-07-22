@@ -1,5 +1,7 @@
 import {
   createApplicationFetchGateway,
+  applicationAdmittedContextDigest,
+  applicationRequestContextValues,
   RequestIdentity,
   type ApplicationQueryBinding,
   type ApplicationRelationalContext,
@@ -34,7 +36,13 @@ describe('framework-neutral application gateway', () => {
       query: {
         // typecast: the gateway intentionally erases this fixture's concrete query payload while its ArkType schemas remain authoritative.
         queries: [query as ApplicationQueryBinding<unknown, unknown>],
-        context: () => relationalContext(),
+        context: (requestIdentity) => {
+          expect(applicationAdmittedContextDigest(requestIdentity.admittedContext)).toBe(applicationAdmittedContextDigest({
+            values: applicationRequestContextValues({ id: 'author' }, 'membership-1', { guestbook: 'main' }),
+            digestSecret: 'framework-neutral-cursor-secret-with-32-characters',
+          }));
+          return relationalContext();
+        },
       },
     });
     const response = await gateway.handle(new Request(

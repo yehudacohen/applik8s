@@ -10,15 +10,22 @@ Reconciliation TypeScript becomes WASM component logic evaluated by Kubernetes e
 
 v0.6 lets one Drizzle table remain the relational schema authority while gaining derived ArkType contracts and a common Applik8s model facet. Applications can declare trusted context, PostgreSQL RLS, bounded queries, durable replayable streams, ClickHouse projections, authenticated subscriptions, and browser stores from the same inspectable application graph. Generated migrations, gateways, projection workers, provider infrastructure, RBAC, and network policy remain explicit deployment artifacts.
 
-The flagship full-stack path is framework-neutral beneath its first TanStack Start adapter:
+The full-stack path is framework-neutral beneath its first TanStack Start adapter:
 `@applik8s/vite` generates browser/server facades and a Fetch-compatible gateway,
 `GuestBookEntry.create(...)` and named views share one authored model contract, and
-`ApplicationHost.kubernetes(...)` builds the immutable Start artifact into the TypeKro-managed
+`ApplicationHost.kubernetes(...)` builds the immutable web artifact into the TypeKro-managed
 application. The operator updates domain status; React renders authoritative query results after
 resumable SSE invalidation.
 
+Start with [`examples/guestbook-start`](examples/guestbook-start) for the smallest complete application.
+Then inspect [`examples/chirp-start`](examples/chirp-start), the realistic flagship: native relational
+models and relations, direct commands/views, durable JetStream events, rebuildable ClickHouse facts and
+hourly analytics, Hatchet moderation, a Kubernetes policy operator, SSR/SSE, hosting, and
+optional managed TLS/DNS in one application graph.
+
 ```sh
 bun run build:v06-generated-proof
+bun run check:v06:chirp-build
 bun run check:v06:prerelease:orbstack
 ```
 
@@ -37,7 +44,7 @@ See [`docs/workflows.md`](docs/workflows.md) for workflow semantics, [`docs/kube
 
 ## v0.4 Flagship: Durable Tenant Behavior
 
-v0.4 adds typed, durable application behavior to the v0.3 application substrate. `examples/tenant-platform.ts` now has an opt-in v0.4 slice where one `Model.on.command()` declaration infers PostgreSQL inbox/result/history/outbox semantics, a generated processor, NATS JetStream Stream and Consumer resources, retry/dead-letter behavior, and TypeKro-owned lifecycle.
+v0.4 added typed, durable application behavior to the v0.3 application substrate. The current model API derives `Model.create`, `Model.update`, `Model.delete`, and typed committed lifecycle handlers from a promoted Drizzle table; exceptional domain operations use one `Model.action(...)` declaration. These lower to PostgreSQL inbox/result/history/outbox semantics, generated processors, NATS JetStream resources, retry/dead-letter behavior, and TypeKro-owned lifecycle. The older Tenant Platform evidence retains its compatibility command spelling to reproduce the original v0.4 artifact.
 
 PostgreSQL is authoritative for keyed serialization, idempotency, durable results, model revisions, history, and outboxes. JetStream is acknowledged at-least-once transport; a broker acknowledgement is not a completed command result. Command handlers cannot perform HTTP, object storage, workflow, or other external effects while model locks are held.
 

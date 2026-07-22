@@ -10,7 +10,7 @@ describe('authenticated public stream subscriptions', () => {
       items: [{ id: 'event-1', stream: { name: 'cards.changed', version: 'v1' }, sequence: 1, partitionKey: 'card-1', recordedAt: '2026-07-15T00:00:00.000Z', payload: { cardId: 'card-1' } }],
       nextSequence: 1,
       exhausted: true,
-      retentionFloor: 1,
+      retentionFloor: 0,
     }));
     const gateway = fixture({ read, close });
 
@@ -30,7 +30,7 @@ describe('authenticated public stream subscriptions', () => {
 
   test('fails closed on retention gaps, cursor transfer, and changed authorization', async () => {
     const page = { items: [], nextSequence: 4, exhausted: true, retentionFloor: 8 } satisfies ApplicationReplayPage<object>;
-    const first = fixture({ async read() { return { ...page, nextSequence: 4, retentionFloor: 1 }; } });
+    const first = fixture({ async read() { return { ...page, nextSequence: 4, retentionFloor: 0 }; } });
     const response = await first.handle(request('/streams/card-events/replay', {}));
     // typecast: the response is the versioned public stream replay envelope.
     const cursor = (await response?.json() as { readonly cursor: string }).cursor;
@@ -61,6 +61,9 @@ function fixture(source: { read(after: number, limit: number): Promise<Applicati
         database: {} as never,
         partition: () => 'unused',
         authorize: async () => true,
+        project: () => { throw new Error('not used by replay fixture'); },
+        subscribe: () => { throw new Error('not used by replay fixture'); },
+        process: () => { throw new Error('not used by replay fixture'); },
       },
       authorize: async () => options.authorize ?? true,
       open: () => source,

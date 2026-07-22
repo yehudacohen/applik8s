@@ -1,5 +1,10 @@
 # RFP: Native-First Application Models and Live Relational Queries
 
+> Historical proposal. The accepted model lifecycle and action vocabulary is documented in
+> [`native-models-and-live-queries.md`](native-models-and-live-queries.md) and [`commands.md`](commands.md).
+> Code sketches below that use `Model.on.command(...)` describe the superseded compatibility surface, not
+> the ordinary API.
+
 **Status:** Proposed
 
 **Audience:** Applik8s maintainers and implementing agents

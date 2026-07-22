@@ -14,10 +14,17 @@ export interface ApplicationFacadeModelManifest {
   readonly operations: readonly ApplicationFacadeOperationManifest[];
 }
 
+export interface ApplicationFacadeObjectStoreManifest {
+  readonly name: string;
+  readonly exportName: string;
+  readonly operations: readonly ApplicationFacadeOperationManifest[];
+}
+
 export interface ApplicationFacadeManifest {
   readonly apiVersion: 'applik8s.facade/v1alpha1';
   readonly application: string;
   readonly models: readonly ApplicationFacadeModelManifest[];
+  readonly objectStores: readonly ApplicationFacadeObjectStoreManifest[];
 }
 
 /** Produces the environment-neutral public operation manifest consumed by Vite and framework adapters. */
@@ -57,30 +64,58 @@ export function applicationFacadeManifest(graph: ApplicationGraph): ApplicationF
     });
     models.set(modelName, operations);
   }
+  const modelManifests = [...models.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([name, operations]) => ({
+      name,
+      operations: [...operations.values()].sort((left, right) => left.name.localeCompare(right.name)),
+    }));
+  const modelNames = new Set(modelManifests.map((model) => model.name));
+  const objectStores = graph.nodes
+    .filter((node) => node.kind === 'objectStore')
+    .map((node): ApplicationFacadeObjectStoreManifest => {
+      const exportName = javascriptExportName(node.name);
+      if (modelNames.has(exportName)) throw new Error(`Application object store ${node.name} conflicts with model facade export ${exportName}. Rename the logical store.`);
+      return {
+        name: node.name,
+        exportName,
+        operations: ['createUpload', 'completeUpload', 'createDownload'].map((name) => ({
+          id: `objectStore.${node.name}.${name}`,
+          name,
+          operation: 'custom',
+          transport: 'runtime',
+        })),
+      };
+    })
+    .sort((left, right) => left.exportName.localeCompare(right.exportName));
+  if (new Set(objectStores.map((store) => store.exportName)).size !== objectStores.length) {
+    throw new Error('Application logical object stores must have distinct JavaScript facade export names.');
+  }
   return {
     apiVersion: 'applik8s.facade/v1alpha1',
     application: graph.metadata.name,
-    models: [...models.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, operations]) => ({
-        name,
-        operations: [...operations.values()].sort((left, right) => left.name.localeCompare(right.name)),
-      })),
+    models: modelManifests,
+    objectStores,
   };
 }
 
-export function generatedApplicationFacadeSource(manifest: ApplicationFacadeManifest, target: 'browser' | 'server'): string {
+export function generatedApplicationFacadeSource(manifest: ApplicationFacadeManifest, target: 'browser' | 'server', options: { readonly browserBaseUrl?: string } = {}): string {
   const hasQueries = manifest.models.some((model) => model.operations.some((operation) => operation.transport === 'query'));
-  const imports = ['createApplicationMutationOperation', ...(target === 'browser' && hasQueries ? ['createApplicationQueryOperation'] : [])];
+  const imports = ['createApplicationMutationOperation', ...(manifest.objectStores.length > 0 ? ['createApplicationRuntimeOperation'] : []), ...(target === 'browser' && hasQueries ? ['createApplicationQueryOperation'] : []), ...(target === 'browser' && options.browserBaseUrl ? ['configureDefaultApplicationBrowserRuntime'] : [])];
   const lines = [
     `import { ${imports.sort().join(', ')} } from '@applik8s/client';`,
     ...(target === 'server' && hasQueries
-      ? ["import { createApplik8sServerQueryOperation } from '@applik8s/vite/server';"]
+      ? ["import { createApplik8sServerQueryOperation } from '@applik8s/server';"]
       : []),
   ];
+  if (target === 'browser' && options.browserBaseUrl) lines.push(`configureDefaultApplicationBrowserRuntime({ baseUrl: ${JSON.stringify(options.browserBaseUrl)} });`);
   for (const model of manifest.models) {
     const operations = model.operations.map((operation) => `${JSON.stringify(operation.name)}: ${operationSource(model.name, operation, target)}`);
     lines.push(`export const ${model.name} = Object.freeze({ name: ${JSON.stringify(model.name)}${operations.length > 0 ? `, ${operations.join(', ')}` : ''} });`);
+  }
+  for (const store of manifest.objectStores) {
+    const operations = store.operations.map((operation) => `${JSON.stringify(operation.name)}: ${operationSource(store.name, operation, target)}`);
+    lines.push(`export const ${store.exportName} = Object.freeze({ name: ${JSON.stringify(store.name)}, ${operations.join(', ')} });`);
   }
   return `${lines.join('\n')}\n`;
 }
@@ -100,5 +135,12 @@ function operationSource(model: string, operation: ApplicationFacadeOperationMan
       ? `createApplik8sServerQueryOperation(${contract})`
       : `createApplicationQueryOperation(${contract})`;
   }
+  if (operation.transport === 'runtime') return `createApplicationRuntimeOperation(${contract})`;
   return `createApplicationMutationOperation(${contract})`;
+}
+
+function javascriptExportName(value: string): string {
+  const name = value.split(/[^A-Za-z0-9_$]+/).filter(Boolean).map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`).join('');
+  if (!/^[$A-Z_a-z][$\w]*$/.test(name)) throw new Error(`Application logical object store ${JSON.stringify(value)} cannot be represented as a JavaScript facade export.`);
+  return name;
 }

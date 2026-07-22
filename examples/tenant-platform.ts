@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { type ApplicationModelBinding, type ApplicationModelCommandBinding, type ApplicationV03PressureTestContract, app, applicationGraphFor, DnsPublication, type KubernetesApplicationBuilder, sdk, WorkflowEngine } from '@applik8s/applik8s';
+import { type ApplicationModelBinding, type ApplicationV03PressureTestContract, app, applicationGraphFor, DnsPublication, type KubernetesApplicationBuilder, sdk, WorkflowEngine } from '@applik8s/applik8s';
+import type { ApplicationMutationOperation } from '@applik8s/client';
 import { dns, externalDnsPublicationMetadata, externalDnsPublicationName } from '@applik8s/applik8s/dns';
 import { command, entity, event, task, type, workflow } from '@applik8s/applik8s/dsl';
 import { type ApplicationDurableStatusOwnershipContract, type ApplicationProviderCompatibilityMatrixContract, type ApplicationProviderInterfaceContract, serializeApplicationGraph } from '@applik8s/core';
@@ -239,7 +240,7 @@ export interface TenantPlatformExample {
     readonly UsageSample: ApplicationModelBinding<UsageSampleSpec, UsageSampleStatus>;
   };
   readonly commands?: {
-    readonly renameAccount: ApplicationModelCommandBinding<RenameTenantAccountInput, RenameTenantAccountOutput, AccountSpec, AccountStatus>;
+    readonly renameAccount: ApplicationMutationOperation<RenameTenantAccountInput, RenameTenantAccountOutput>;
   };
 }
 
@@ -322,7 +323,7 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
       retention: { mode: 'ttl', ttlSeconds: 60 * 60 * 24 * 14 },
     },
   });
-  const renameAccount = config.durableBehavior ? Account.on.command(RenameTenantAccount, {
+  const AccountWithRename = config.durableBehavior ? Account.action('rename', RenameTenantAccount, {
     key: ({ accountId }) => accountId,
     ordering: 'serial',
     processor: { replicas: 2, concurrency: 4 },
@@ -335,6 +336,7 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
     context.emit(TenantAccountChanged, { tenant: input.tenant, accountId: input.accountId, displayName: input.displayName });
     return { changed, displayName: input.displayName };
   }) : undefined;
+  const renameAccount = AccountWithRename?.rename;
 
   if (config.durableWorkflows) {
     tenantPlatform.provide(DnsPublication, DnsPublication.externalDns());
@@ -598,9 +600,12 @@ function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfa
       { interface: 'Certificate', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'StructuredGeneration', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'ProjectionStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'ContainerRegistry', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'RequestIdentity', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'Authorization', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     ];
 }
 

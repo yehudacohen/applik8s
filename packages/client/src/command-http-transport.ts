@@ -1,4 +1,5 @@
 import type { ApplicationCommandProgress, ApplicationCommandSubmission, ApplicationCommandTransport } from './protocol.js';
+import { boundFetch } from './bound-fetch.js';
 
 export interface HttpApplicationCommandTransportOptions {
   readonly baseUrl?: string;
@@ -10,7 +11,7 @@ export interface HttpApplicationCommandTransportOptions {
 
 // typecast-boundary: bounded JSON responses are validated against the versioned command protocol before exposure to callers.
 export function createHttpApplicationCommandTransport(options: HttpApplicationCommandTransportOptions = {}): ApplicationCommandTransport {
-  const request = options.fetch ?? globalThis.fetch;
+  const request = boundFetch(options.fetch);
   const baseUrl = (options.baseUrl ?? '').replace(/\/$/, '');
   const maxResponseBytes = options.maxResponseBytes ?? 256 * 1024;
   const send = async (command: string, operation: 'submit' | 'progress', body: unknown, signal?: AbortSignal): Promise<ApplicationCommandProgress> => {
@@ -31,8 +32,9 @@ export function createHttpApplicationCommandTransport(options: HttpApplicationCo
 }
 
 function validateProgress(progress: ApplicationCommandProgress, command: string): void {
-  if (progress.protocol !== 'applik8s.command/v1alpha1' || progress.command !== command || !progress.commandId || !progress.correlationId || !['idle', 'submitting', 'acknowledged', 'failed'].includes(progress.transport) || !['unknown', 'pending', 'succeeded', 'rejected'].includes(progress.durableResult)) throw new Error(`Command response for ${command} violates the Applik8s command protocol.`);
+  if (progress.protocol !== 'applik8s.command/v1alpha1' || progress.command !== command || !progress.commandId || !progress.correlationId || !['idle', 'submitting', 'acknowledged', 'failed'].includes(progress.transport) || !['unknown', 'pending', 'succeeded', 'rejected', 'failed'].includes(progress.durableResult)) throw new Error(`Command response for ${command} violates the Applik8s command protocol.`);
   if (progress.durableResult === 'rejected' && !progress.rejection) throw new Error(`Rejected command response for ${command} omits its declared rejection.`);
+  if (progress.durableResult === 'failed' && progress.failure?.code !== 'processing_failed') throw new Error(`Failed command response for ${command} omits its safe terminal failure.`);
 }
 
 async function resolvedHeaders(headers: HttpApplicationCommandTransportOptions['headers']): Promise<Readonly<Record<string, string>>> { if (!headers) return {}; return typeof headers === 'function' ? headers() : headers; }

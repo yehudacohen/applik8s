@@ -1,6 +1,10 @@
+// typecast-file-boundary: Processor policies normalize recursively serialized graph values after explicit shape validation.
 import type { ApplicationProcessorDeploymentContract } from '@applik8s/core';
+import { applicationTypeKroExpressionValue } from './application-typekro-values.js';
 
 export interface ApplicationProcessorOptions {
+  /** Co-locate compatible command handlers in one generated consumer and Deployment. */
+  readonly group?: string;
   /** Override the digest-pinned Node runtime image used by the inferred processor. */
   readonly image?: string;
   /** Number of processor pods. Bounded to 1..32. */
@@ -32,12 +36,16 @@ export function normalizeApplicationProcessorOptions(owner: string, options?: Ap
   readonly image?: string;
   readonly deployment: ApplicationProcessorDeploymentContract;
 } {
+  if (options?.group !== undefined && !/^[a-z0-9](?:[a-z0-9.-]{0,61}[a-z0-9])?$/.test(options.group)) {
+    throw new Error(`${owner} processor.group must be a valid lowercase Kubernetes name.`);
+  }
   const image = options?.image?.trim();
   if (options?.image !== undefined && !image) throw new Error(`${owner} processor.image must be a non-empty OCI image reference.`);
-  const replicas = boundedInteger(owner, 'processor.replicas', options?.replicas ?? inherited.replicas, 1, 32);
-  const concurrency = boundedInteger(owner, 'processor.concurrency', options?.concurrency ?? inherited.concurrency, 1, 64);
+  const replicas = boundedIntegerOrExpression(owner, 'processor.replicas', options?.replicas ?? inherited.replicas, 1, 32);
+  const concurrency = boundedIntegerOrExpression(owner, 'processor.concurrency', options?.concurrency ?? inherited.concurrency, 1, 64);
   const capacityChanged = options?.replicas !== undefined || options?.concurrency !== undefined;
-  const maxAckPending = boundedInteger(owner, 'processor.maxAckPending', options?.maxAckPending ?? (capacityChanged ? replicas * concurrency : inherited.maxAckPending), replicas * concurrency, 65_536);
+  const minimumDeliveryWindow = multipliedIntegerExpression(replicas, concurrency);
+  const maxAckPending = boundedIntegerOrExpression(owner, 'processor.maxAckPending', options?.maxAckPending ?? (capacityChanged ? minimumDeliveryWindow : inherited.maxAckPending), typeof minimumDeliveryWindow === 'number' ? minimumDeliveryWindow : 1, 65_536);
   const disruption = options?.disruption ?? (options?.replicas === undefined ? inherited.disruption : normalizeDisruption(owner, replicas, undefined));
   const nodeSelector = options?.nodeSelector ? normalizeNodeSelector(owner, options.nodeSelector) : inherited.nodeSelector;
   return {
@@ -71,18 +79,51 @@ function boundedInteger(owner: string, field: string, value: number, minimum: nu
   return value;
 }
 
-function resourceQuantity(owner: string, field: string, value: string): string {
+function boundedIntegerOrExpression(
+  owner: string,
+  field: string,
+  value: number | `\${${string}}`,
+  minimum: number,
+  maximum: number,
+): number | `\${${string}}` {
+  const expression = applicationTypeKroExpressionValue(value);
+  if (expression) return `\${${expression}}`;
+  if (typeof value === 'string' && /^\$\{.+\}$/.test(value)) return value as `\${${string}}`;
+  return boundedInteger(owner, field, value as number, minimum, maximum);
+}
+
+function multipliedIntegerExpression(
+  left: number | `\${${string}}`,
+  right: number | `\${${string}}`,
+): number | `\${${string}}` {
+  if (typeof left === 'number' && typeof right === 'number') return left * right;
+  return `\${(${integerExpression(left)}) * (${integerExpression(right)})}`;
+}
+
+function integerExpression(value: number | `\${${string}}`): string {
+  if (typeof value === 'number') return String(value);
+  const expression = /^\$\{(.+)\}$/.exec(value)?.[1];
+  if (!expression) throw new Error(`Expected a serialized installation integer expression, received ${JSON.stringify(value)}.`);
+  return expression;
+}
+
+function resourceQuantity(owner: string, field: string, value: string): string | `\${${string}}` {
+  const expression = applicationTypeKroExpressionValue(value);
+  if (expression) return `\${${expression}}`;
   if (typeof value !== 'string') throw new Error(`${owner} ${field} must be a non-empty Kubernetes resource quantity.`);
   const normalized = value.trim();
   if (!/^[+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+|[numkKMGTP]i?)?$/.test(normalized)) throw new Error(`${owner} ${field} must be a non-empty Kubernetes resource quantity.`);
   return normalized;
 }
 
-function normalizeDisruption(owner: string, replicas: number, value: ApplicationProcessorOptions['disruption']): ApplicationProcessorDeploymentContract['disruption'] {
-  if (!value) return replicas > 1 ? { maxUnavailable: 1 } : { disabled: true };
+function normalizeDisruption(owner: string, replicas: number | `\${${string}}`, value: ApplicationProcessorOptions['disruption']): ApplicationProcessorDeploymentContract['disruption'] {
+  if (!value) return typeof replicas === 'number'
+    ? (replicas > 1 ? { maxUnavailable: 1 } : { disabled: true })
+    : { maxUnavailable: `\${(${integerExpression(replicas)}) > 1 ? 1 : 0}` };
   if ('disabled' in value) return { disabled: true };
-  if ('maxUnavailable' in value) return { maxUnavailable: boundedInteger(owner, 'processor.disruption.maxUnavailable', value.maxUnavailable, 0, Math.max(0, replicas - 1)) };
-  return { minAvailable: boundedInteger(owner, 'processor.disruption.minAvailable', value.minAvailable, 1, replicas) };
+  const maximum = typeof replicas === 'number' ? replicas : 32;
+  if ('maxUnavailable' in value) return { maxUnavailable: boundedInteger(owner, 'processor.disruption.maxUnavailable', value.maxUnavailable, 0, Math.max(0, maximum - 1)) };
+  return { minAvailable: boundedInteger(owner, 'processor.disruption.minAvailable', value.minAvailable, 1, maximum) };
 }
 
 function normalizeNodeSelector(owner: string, selector: Readonly<Record<string, string>>): Readonly<Record<string, string>> {

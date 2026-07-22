@@ -1,0 +1,6 @@
+apiVersion: guestbook-start.applik8s.dev/v1alpha1
+kind: GuestbookStart
+metadata:
+  name: guestbook-start
+  namespace: guestbook
+spec: {}

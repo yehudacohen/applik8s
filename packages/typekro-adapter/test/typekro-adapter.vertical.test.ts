@@ -1,3 +1,4 @@
+// typecast-file-boundary: Adapter tests inspect TypeKro's proxy/resource internals and intentionally invalid serialized fixtures at the integration seam.
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,6 +36,9 @@ interface ArkConfigSpec {
 interface OperatorContainerProjection {
   readonly ports?: readonly JsonObject[];
   readonly env?: readonly JsonObject[];
+  readonly resources?: JsonObject;
+  readonly securityContext?: JsonObject;
+  readonly volumeMounts?: readonly JsonObject[];
   readonly startupProbe?: { readonly httpGet?: JsonObject };
   readonly livenessProbe?: { readonly httpGet?: JsonObject };
   readonly readinessProbe?: { readonly httpGet?: JsonObject };
@@ -258,13 +262,24 @@ describe('TypeKro adapter operation targets', () => {
       replayArtifacts: { enabled: true, directory: '/tmp/applik8s-replay' },
     });
 
-    const result = asComposition(operator, manifest, { compositionName: 'image-pipeline', defaultNamespace: 'media-system' });
+    const configuredOperator: OperatorDefinition = {
+      ...operator,
+      deployment: {
+        ...operator.deployment,
+        terminationGracePeriodSeconds: 75,
+        resources: {
+          requests: { cpu: '250m', memory: '192Mi' },
+          limits: { cpu: '1500m', memory: '768Mi' },
+        },
+      },
+    };
+    const result = asComposition(configuredOperator, manifest, { compositionName: 'image-pipeline', defaultNamespace: 'media-system' });
 
     expect(result.ok).toBe(true);
     if (result.ok) {
       const deployment = result.value.resources.find((resource) => resource.kind === 'Deployment');
       // typecast: TypeKro composition resources are intentionally erased to JSON objects; this test asserts the generated Deployment shape.
-      const deploymentSpec = deployment?.spec as { readonly template?: { readonly spec?: { readonly containers?: readonly OperatorContainerProjection[] } } } | undefined;
+      const deploymentSpec = deployment?.spec as { readonly strategy?: JsonObject; readonly template?: { readonly spec?: { readonly terminationGracePeriodSeconds?: number; readonly securityContext?: JsonObject; readonly volumes?: readonly JsonObject[]; readonly containers?: readonly OperatorContainerProjection[] } } } | undefined;
       const container = deploymentSpec?.template?.spec?.containers?.[0];
 
       expect(container?.ports).toContainEqual({ name: 'health', containerPort: 8080 });
@@ -282,6 +297,17 @@ describe('TypeKro adapter operation targets', () => {
       expect(container?.livenessProbe).toMatchObject({ initialDelaySeconds: 60, failureThreshold: 12, periodSeconds: 10, timeoutSeconds: 5 });
       expect(container?.readinessProbe?.httpGet).toEqual({ path: '/readyz', port: 'health' });
       expect(container?.readinessProbe).toMatchObject({ initialDelaySeconds: 1, failureThreshold: 12, periodSeconds: 5, timeoutSeconds: 5 });
+      expect(container?.resources).toEqual({ requests: { cpu: '250m', memory: '192Mi' }, limits: { cpu: '1500m', memory: '768Mi' } });
+      expect(container?.securityContext).toEqual({ allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } });
+      expect(container?.volumeMounts).toContainEqual({ name: 'tmp', mountPath: '/tmp' });
+      expect(deploymentSpec?.strategy).toEqual({ type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } });
+      expect(deploymentSpec?.template?.spec?.terminationGracePeriodSeconds).toBe(75);
+      expect(deploymentSpec?.template?.spec?.securityContext).toEqual({ runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, seccompProfile: { type: 'RuntimeDefault' } });
+      expect(deploymentSpec?.template?.spec?.volumes).toContainEqual({ name: 'tmp', emptyDir: {} });
+      const networkPolicy = result.value.resources.find((resource) => resource.kind === 'NetworkPolicy');
+      expect(networkPolicy).toMatchObject({ apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: { name: 'image-pipeline' } });
+      expect(String(networkPolicy?.metadata.namespace)).toContain('schema.spec.namespace');
+      expect(result.value.resources).toContainEqual(expect.objectContaining({ apiVersion: 'policy/v1', kind: 'PodDisruptionBudget', spec: expect.objectContaining({ maxUnavailable: 1 }) }));
     }
   });
 
@@ -367,6 +393,7 @@ describe('TypeKro adapter operation targets', () => {
       expect(deploymentSpec?.template?.spec?.containers?.[0]?.env).toContainEqual({ name: 'APPLIK8S_LEADER_ELECTION_IDENTITY', valueFrom: { fieldRef: { fieldPath: 'metadata.name' } } });
       expect(role?.rules).toContainEqual({ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['get', 'update', 'patch'], resourceNames: ['image-pipeline'] });
       expect(role?.rules).toContainEqual({ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['create'] });
+      expect(result.value.resources).toContainEqual(expect.objectContaining({ apiVersion: 'policy/v1', kind: 'PodDisruptionBudget', spec: expect.objectContaining({ maxUnavailable: 1 }) }));
     }
   });
 
@@ -1049,7 +1076,12 @@ describe('TypeKro adapter operation targets', () => {
       status: arkType({ ready: 'boolean' }),
     };
     const composition = typeKro.kubernetesComposition(mediaStackDefinition, (spec) => {
-      const pipeline = imagePipeline({ namespace: spec.namespace, replicas: 1 });
+      const pipeline = imagePipeline({
+        namespace: spec.namespace,
+        replicas: 1,
+        terminationGracePeriodSeconds: 90,
+        resources: { requests: { cpu: '300m', memory: '256Mi' }, limits: { cpu: '2', memory: '1Gi' } },
+      });
       const imageJob = pipeline.imageJob;
       if (!imageJob) {
         throw new Error('Expected imageJob factory alias.');
@@ -1073,6 +1105,10 @@ describe('TypeKro adapter operation targets', () => {
     if (resolved.ok) {
       expect(resolved.value.operatorInstalls).toHaveLength(1);
       expect(resolved.value.resources.some((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'image-pipeline')).toBe(true);
+      const deployment = resolved.value.resources.find((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'image-pipeline');
+      const deploymentSpec = deployment?.spec as { readonly template?: { readonly spec?: { readonly terminationGracePeriodSeconds?: number; readonly containers?: readonly OperatorContainerProjection[] } } } | undefined;
+      expect(deploymentSpec?.template?.spec?.terminationGracePeriodSeconds).toBe(90);
+      expect(deploymentSpec?.template?.spec?.containers?.[0]?.resources).toEqual({ requests: { cpu: '300m', memory: '256Mi' }, limits: { cpu: '2', memory: '1Gi' } });
       expect(resolved.value.resources.some((resource) => resource.kind === 'CustomResourceDefinition')).toBe(true);
       expect(resolved.value.resources.some((resource) => resource.kind === 'ImageJob' && resource.metadata.name === 'hero')).toBe(true);
       expect(resolved.value.resources.some((resource) => resource.kind === 'ImageJob' && resource.metadata.name === 'thumbnail')).toBe(true);
@@ -1338,7 +1374,10 @@ describe('TypeKro adapter operation targets', () => {
       expect(compiled.value.artifacts.operatorArtifacts).toHaveLength(1);
       expect(compiled.value.artifacts.operatorArtifacts[0]?.operatorName).toBe('auto-image-pipeline');
       expect(compiled.value.artifacts.resourceYamlPaths.length).toBeGreaterThan(0);
-      expect(compiled.value.artifacts.instanceYamlPaths).toHaveLength(1);
+      // TypeKro 0.27+ fails closed rather than inventing an invalid spec: {} instance when the
+      // composition schema has required fields. Concrete resources captured from the authored
+      // composition are still emitted and applied, but callers must supply an explicit instance.
+      expect(compiled.value.artifacts.instanceYamlPaths).toEqual([]);
       expect(compiled.value.artifacts.applyScriptPath).toBe(join(dir, 'dist', 'typekro', 'apply.sh'));
 
       const compositionManifest = compiled.value.artifacts.manifest;
@@ -1371,9 +1410,7 @@ describe('TypeKro adapter operation targets', () => {
       expect(applyScript).toContain('Applying TypeKro stack instances');
       const firstResourceYaml = await readFile(compiled.value.artifacts.resourceYamlPaths[0] ?? '', 'utf8');
       expect(firstResourceYaml).toContain('apiVersion:');
-      const instanceYaml = await readFile(compiled.value.artifacts.instanceYamlPaths[0] ?? '', 'utf8');
-      expect(instanceYaml).toContain('kind: AutoMediaStack');
-      expect(instanceYaml).toContain('spec: {}');
+      expect(combinedYaml).not.toContain('kind: AutoMediaStack\nmetadata:\n  name: auto-media-stack\nspec: {}');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

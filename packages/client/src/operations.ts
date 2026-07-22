@@ -1,5 +1,10 @@
 // typecast-file-boundary: operation decorators preserve generic input/output associations while installing runtime metadata on callable functions.
 import type { ApplicationQuerySnapshot } from './protocol.js';
+import { ApplicationCommandClient } from './command-store.js';
+import { createHttpApplicationCommandTransport } from './command-http-transport.js';
+import { createHttpApplicationQueryTransport } from './http-transport.js';
+import { createHttpApplicationRuntimeTransport } from './runtime-http-transport.js';
+import { ApplicationQueryClient } from './store.js';
 
 export const applicationOperationContract = Symbol.for('@applik8s/application-operation');
 
@@ -21,7 +26,7 @@ export interface ApplicationMutationState<TInput, TOutput> {
   readonly error: Error | undefined;
   readonly submittedAt: number | undefined;
   readonly transport: 'idle' | 'submitting' | 'acknowledged' | 'failed';
-  readonly durableResult: 'unknown' | 'pending' | 'succeeded' | 'rejected';
+  readonly durableResult: 'unknown' | 'pending' | 'succeeded' | 'rejected' | 'failed';
   readonly observation:
     | { readonly state: 'notDeclared' }
     | { readonly state: 'pending'; readonly identity?: unknown }
@@ -98,43 +103,43 @@ export type ApplicationQueryHook = <TInput, TValue>(
   suspense: boolean,
 ) => ApplicationQueryOperationState<TValue> | ApplicationQuerySuspenseResult<TValue>;
 
-let installedMutationHook: ApplicationMutationHook | undefined;
-let installedQueryHook: ApplicationQueryHook | undefined;
-let installedRuntime: ApplicationOperationRuntime | undefined;
-let installedRuntimeResolver: (() => ApplicationOperationRuntime | undefined) | undefined;
+const installedMutationHooks: ApplicationMutationHook[] = [];
+const installedQueryHooks: ApplicationQueryHook[] = [];
+const installedRuntimes: ApplicationOperationRuntime[] = [];
+const installedRuntimeResolvers: Array<() => ApplicationOperationRuntime | undefined> = [];
+let defaultBrowserRuntime: ApplicationOperationRuntime | undefined;
+let defaultBrowserBaseUrl = '/__applik8s/v1';
+
+/** Configures the authority used by direct browser operations and pre-React route loaders. Call during application bootstrap. */
+export function configureDefaultApplicationBrowserRuntime(options: { readonly baseUrl: string }): void {
+  const baseUrl = options.baseUrl.trim().replace(/\/$/, '');
+  if (!baseUrl) throw new Error('Default application browser runtime baseUrl must not be empty.');
+  if (defaultBrowserRuntime && baseUrl !== defaultBrowserBaseUrl) {
+    throw new Error('Default application browser runtime was already used and cannot change authority. Configure it before invoking an operation or route loader.');
+  }
+  defaultBrowserBaseUrl = baseUrl;
+}
 
 export function installApplicationMutationHook(hook: ApplicationMutationHook): () => void {
-  const previous = installedMutationHook;
-  installedMutationHook = hook;
-  return () => {
-    if (installedMutationHook === hook) installedMutationHook = previous;
-  };
+  installedMutationHooks.push(hook);
+  return removableInstallation(installedMutationHooks, hook);
 }
 
 export function installApplicationQueryHook(hook: ApplicationQueryHook): () => void {
-  const previous = installedQueryHook;
-  installedQueryHook = hook;
-  return () => {
-    if (installedQueryHook === hook) installedQueryHook = previous;
-  };
+  installedQueryHooks.push(hook);
+  return removableInstallation(installedQueryHooks, hook);
 }
 
 export function installApplicationOperationRuntime(runtime: ApplicationOperationRuntime): () => void {
-  const previous = installedRuntime;
-  installedRuntime = runtime;
-  return () => {
-    if (installedRuntime === runtime) installedRuntime = previous;
-  };
+  installedRuntimes.push(runtime);
+  return removableInstallation(installedRuntimes, runtime);
 }
 
 export function installApplicationOperationRuntimeResolver(
   resolver: () => ApplicationOperationRuntime | undefined,
 ): () => void {
-  const previous = installedRuntimeResolver;
-  installedRuntimeResolver = resolver;
-  return () => {
-    if (installedRuntimeResolver === resolver) installedRuntimeResolver = previous;
-  };
+  installedRuntimeResolvers.push(resolver);
+  return removableInstallation(installedRuntimeResolvers, resolver);
 }
 
 export function createApplicationMutationOperation<TInput, TOutput>(
@@ -143,13 +148,34 @@ export function createApplicationMutationOperation<TInput, TOutput>(
 ): ApplicationMutationOperation<TInput, TOutput> {
   const callable = ((input: TInput) => {
     if (invoke) return invoke(input);
-    const runtime = installedRuntimeResolver?.() ?? installedRuntime;
+    const runtime = currentOperationRuntime();
     if (!runtime) {
       throw new Error(`Application operation ${contract.id} has no active runtime. Install a request, browser, handler, command-processor, or deterministic test runtime before invoking it.`);
     }
     return runtime.execute<TInput, TOutput>(contract, input);
   }) as ApplicationMutationOperation<TInput, TOutput>;
   return decorateApplicationMutationOperation(callable, contract);
+}
+
+/** Creates a direct callable whose authority is an authenticated server runtime rather than a durable command processor. */
+export function createApplicationRuntimeOperation<TInput, TOutput>(
+  contract: ApplicationOperationContract,
+  invoke?: (input: TInput) => Promise<TOutput>,
+): ApplicationOperation<TInput, TOutput> {
+  assertApplicationOperationContract(contract);
+  if (contract.transport !== 'runtime') throw new Error(`Application runtime operation ${contract.id} must use runtime transport.`);
+  const callable = ((input: TInput) => {
+    if (invoke) return invoke(input);
+    const runtime = currentOperationRuntime();
+    if (!runtime) throw new Error(`Application runtime operation ${contract.id} has no active authenticated runtime.`);
+    return runtime.execute<TInput, TOutput>(contract, input);
+  }) as ApplicationOperation<TInput, TOutput>;
+  const frozen = Object.freeze({ ...contract });
+  Object.defineProperties(callable, {
+    [applicationOperationContract]: { value: frozen, enumerable: false },
+    operation: { value: frozen, enumerable: false },
+  });
+  return callable;
 }
 
 export function createApplicationQueryOperation<TInput, TValue>(
@@ -167,7 +193,7 @@ export function createApplicationQueryOperation<TInput, TValue>(
     input,
     async snapshot(): Promise<ApplicationQuerySnapshot<TValue>> {
       if (authority) return authority.snapshot(contract, input);
-      const runtime = installedRuntimeResolver?.() ?? installedRuntime;
+      const runtime = currentOperationRuntime();
       if (!runtime?.snapshotQuery) {
         throw new Error(`Application query ${contract.id} has no active query runtime. Install a request, browser, or deterministic test runtime before preloading it.`);
       }
@@ -177,16 +203,18 @@ export function createApplicationQueryOperation<TInput, TValue>(
       return (await this.snapshot()).value;
     },
     useQuery(): ApplicationQueryOperationState<TValue> {
-      if (!installedQueryHook) {
+      const hook = installedQueryHooks.at(-1);
+      if (!hook) {
         throw new Error(`Application query ${contract.id} requires a React query adapter. Import @applik8s/react before calling useQuery().`);
       }
-      return installedQueryHook<TInput, TValue>(contract, input, false) as ApplicationQueryOperationState<TValue>;
+      return hook<TInput, TValue>(contract, input, false) as ApplicationQueryOperationState<TValue>;
     },
     useSuspenseQuery(): ApplicationQuerySuspenseResult<TValue> {
-      if (!installedQueryHook) {
+      const hook = installedQueryHooks.at(-1);
+      if (!hook) {
         throw new Error(`Application query ${contract.id} requires a React query adapter. Import @applik8s/react before calling useSuspenseQuery().`);
       }
-      return installedQueryHook<TInput, TValue>(contract, input, true) as ApplicationQuerySuspenseResult<TValue>;
+      return hook<TInput, TValue>(contract, input, true) as ApplicationQuerySuspenseResult<TValue>;
     },
   })) as ApplicationQueryOperation<TInput, TValue>;
   const frozen = Object.freeze({ ...contract });
@@ -233,10 +261,11 @@ export function decorateApplicationMutationOperation<TInput, TOutput>(
     operation: { value: frozen, enumerable: false },
     useMutation: {
       value: (options?: ApplicationMutationHookOptions<TInput>) => {
-        if (!installedMutationHook) {
+        const hook = installedMutationHooks.at(-1);
+        if (!hook) {
           throw new Error(`Application operation ${contract.id} requires a React mutation adapter. Import @applik8s/react before calling useMutation().`);
         }
-        return installedMutationHook<TInput, TOutput>(contract, options);
+        return hook<TInput, TOutput>(contract, options);
       },
       enumerable: false,
     },
@@ -251,7 +280,51 @@ export function getApplicationOperationContract(value: unknown): ApplicationOper
 
 function assertApplicationOperationContract(contract: ApplicationOperationContract): void {
   if (!contract.id || !contract.model || !contract.name) throw new Error('Application operations require stable id, model, and name values.');
-  if (contract.id !== `${contract.model}.${contract.name}`) {
-    throw new Error(`Application operation id ${contract.id} must equal ${contract.model}.${contract.name}.`);
+  if (/\s/.test(contract.id)) throw new Error(`Application operation id ${contract.id} must not contain whitespace.`);
+}
+
+function currentOperationRuntime(): ApplicationOperationRuntime | undefined {
+  for (let index = installedRuntimeResolvers.length - 1; index >= 0; index -= 1) {
+    const runtime = installedRuntimeResolvers[index]?.();
+    if (runtime) return runtime;
   }
+  if (installedRuntimes.length > 1) {
+    throw new Error(
+      'Application operation runtime is ambiguous because multiple browser authorities are active. '
+      + 'Use the React-bound useMutation()/useQuery() operation or remove the overlapping provider.',
+    );
+  }
+  return installedRuntimes.at(-1) ?? browserOperationRuntime();
+}
+
+function browserOperationRuntime(): ApplicationOperationRuntime | undefined {
+  if (typeof window === 'undefined') return undefined;
+  if (defaultBrowserRuntime) return defaultBrowserRuntime;
+  const commandClient = new ApplicationCommandClient(createHttpApplicationCommandTransport({ baseUrl: defaultBrowserBaseUrl }));
+  const queryClient = new ApplicationQueryClient(createHttpApplicationQueryTransport({ baseUrl: defaultBrowserBaseUrl }));
+  const runtimeClient = createHttpApplicationRuntimeTransport({ baseUrl: defaultBrowserBaseUrl });
+  defaultBrowserRuntime = {
+    execute(operation, input) {
+      if (operation.transport === 'command') return commandClient.execute(operation.id, input);
+      if (operation.transport === 'runtime') return runtimeClient.execute(operation, input);
+      throw new Error(`Default browser operation ${operation.id} cannot execute ${operation.transport} through a mutation transport.`);
+    },
+    async snapshotQuery<TInput, TValue>(operation: ApplicationOperationContract, input: TInput): Promise<ApplicationQuerySnapshot<TValue>> {
+      if (operation.transport !== 'query') throw new Error(`Default browser preload ${operation.id} cannot execute ${operation.transport} through the query transport.`);
+      const snapshot = await queryClient.transport.snapshot<TInput, TValue>(operation.id, input);
+      queryClient.hydrate([snapshot]);
+      return snapshot;
+    },
+  };
+  return defaultBrowserRuntime;
+}
+
+function removableInstallation<T>(installations: T[], value: T): () => void {
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    const index = installations.lastIndexOf(value);
+    if (index >= 0) installations.splice(index, 1);
+  };
 }

@@ -3,17 +3,17 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { publishablePackageNames } from './publishable-packages.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(process.cwd());
 const manifest = JSON.parse(await readFile(join(root, 'packages/applik8s/package.json'), 'utf8'));
 const baseline = JSON.parse(await readFile(join(root, 'security/npm-audit-baseline.json'), 'utf8'));
 const workDir = await mkdtemp(join(tmpdir(), 'applik8s-npm-audit-'));
-const publishablePackageDirs = ['applik8s', 'core', 'sdk', 'compiler', 'runtime-contract', 'runtime', 'testing', 'typekro-adapter', 'typetainer'];
 
 try {
   const dependencies = {};
-  for (const packageDir of publishablePackageDirs) {
+  for (const packageDir of publishablePackageNames) {
     const packageManifest = JSON.parse(await readFile(join(root, 'packages', packageDir, 'package.json'), 'utf8'));
     for (const [name, range] of Object.entries(packageManifest.dependencies ?? {})) {
       if (name.startsWith('@applik8s/')) continue;

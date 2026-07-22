@@ -1,3 +1,4 @@
+// typecast-file-boundary: vertical fixtures intentionally inspect erased command metadata after asserting its discriminators.
 import { app, applicationGraphFor, command, defineApplicationProvider, EventLog, event, ModelStore } from '@applik8s/applik8s';
 import { entity, type } from '@applik8s/applik8s/dsl';
 import { canonicalApplicationCommandKey } from '@applik8s/applik8s/processor-runtime';
@@ -33,6 +34,42 @@ describe('v0.4 application behavior contracts', () => {
     expect(canonicalApplicationCommandKey('account-1')).toBe('account-1');
     expect(canonicalApplicationCommandKey(42)).toBe('42');
     expect(canonicalApplicationCommandKey({ tenant: 'tenant-a', accountId: 'account-1' })).toBe('accountId=account-1&tenant=tenant-a');
+  });
+
+  it('installs typed named actions directly on schema-backed models', () => {
+    const platform = app('direct-action-platform');
+    platform.storage.postgres('action-db', { database: 'direct_actions' });
+    const Account = platform.model(AccountEntity, { schema: { transactions: 'required' } });
+    const AccountWithRename = Account.action('rename', RenameAccount, {
+      key: ({ accountId }) => accountId,
+      idempotencyKey: ({ requestId }) => requestId,
+      missing: 'reject',
+    }, async (account, input) => {
+      account.patch({ spec: { displayName: input.displayName } });
+      return { changed: true, displayName: input.displayName };
+    });
+
+    expect(AccountWithRename).toBe(Account);
+    expect(AccountWithRename.rename).toEqual(expect.any(Function));
+    expect(AccountWithRename.rename.operation).toEqual({
+      apiVersion: 'applik8s.operation/v1alpha1',
+      kind: 'applicationOperation',
+      id: 'account.rename.v1',
+      model: 'Account',
+      name: 'rename',
+      operation: 'custom',
+      transport: 'command',
+    });
+    expect(applicationGraphFor(platform.composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'model',
+        name: 'Account',
+        common: expect.objectContaining({
+          operations: expect.arrayContaining([expect.objectContaining({ name: 'rename', publicId: 'account.rename.v1' })]),
+        }),
+      }),
+    ]));
+    expect(() => Account.action('create', ReindexAccount, { key: ({ accountId }) => accountId }, async () => ({ accepted: true }))).toThrow(/cannot replace an existing model member/);
   });
 
   it('records inert commands, committed events, handlers, transaction participants, and inferred processors', () => {
@@ -99,6 +136,58 @@ describe('v0.4 application behavior contracts', () => {
     })).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: expect.stringContaining('must retain structural source enforcement') }),
     ]));
+  });
+
+  it('co-locates compatible model commands in one explicitly named bounded processor', () => {
+    const platform = app('grouped-command-platform', { namespace: 'platform' });
+    platform.storage.postgres('command-db', { database: 'grouped_commands' });
+    const Account = platform.model(AccountEntity, { schema: { transactions: 'required' } });
+    const Audit = platform.model(AuditEntity, { schema: { transactions: 'required' } });
+    const processor = { group: 'domain-commands', replicas: 1, concurrency: 16 } as const;
+    Account.on.command(RenameAccount, { key: ({ accountId }) => accountId, processor }, async (_account, input) => ({ changed: false, displayName: input.displayName }));
+    Audit.on.command(ReindexAccount, { key: ({ accountId }) => accountId, processor }, async () => ({ accepted: true }));
+
+    const processors = applicationGraphFor(platform.composition)?.nodes.filter((node) => node.kind === 'processor');
+    expect(processors).toEqual([
+      expect.objectContaining({
+        name: 'domain-commands',
+        deployment: expect.objectContaining({ replicas: 1, concurrency: 16, maxAckPending: 16 }),
+        handlers: expect.arrayContaining([
+          { nodeId: 'command-handler.account-account.rename.v1' },
+          { nodeId: 'command-handler.audit-account.reindex.v1' },
+        ]),
+      }),
+    ]);
+  });
+
+  it('preserves typed installation capacity in the generated command processor contract', () => {
+    const platform = app('profiled-command-platform', {
+      apiVersion: 'applications.example.test/v1alpha1',
+      kind: 'ProfiledCommandPlatform',
+      spec: type({ profile: "'starter' | 'dedicated'" }),
+      status: type({ ready: 'boolean' }),
+      namespace: () => 'platform',
+    });
+    platform.storage.postgres('command-db', { database: 'profiled_commands' });
+    const Account = platform.model(AccountEntity, { schema: { transactions: 'required' } });
+    const replicas = platform.select(platform.installation.spec.profile, { starter: 1, dedicated: 3, default: 1 });
+    const concurrency = platform.select(platform.installation.spec.profile, { starter: 8, dedicated: 32, default: 8 });
+    const memory = platform.select(platform.installation.spec.profile, { starter: '128Mi', dedicated: '512Mi', default: '128Mi' });
+    Account.on.command(RenameAccount, {
+      key: ({ accountId }) => accountId,
+      processor: { replicas, concurrency, resources: { requests: { memory } } },
+    }, async (_account, input) => ({ changed: false, displayName: input.displayName }));
+
+    const processor = applicationGraphFor(platform.composition)?.nodes.find((node) => node.kind === 'processor');
+    expect(processor).toMatchObject({
+      kind: 'processor',
+      deployment: {
+        replicas: expect.stringMatching(/^\$\{schema\.spec\.profile/),
+        concurrency: expect.stringMatching(/^\$\{schema\.spec\.profile/),
+        maxAckPending: expect.stringMatching(/^\$\{\(.+\) \* \(.+\)\}$/),
+        resources: { requests: { memory: expect.stringMatching(/^\$\{schema\.spec\.profile/) } },
+      },
+    });
   });
 
   it('enforces the versioned input schema before key calculation, broker publication, or database access', async () => {
@@ -211,6 +300,7 @@ describe('v0.4 application behavior contracts', () => {
     const platformWithInvalidProcessorImage = app('invalid-processor-image-platform');
     const InvalidProcessorAccount = platformWithInvalidProcessorImage.model(AccountEntity, { schema: { transactions: 'required' } });
     expect(() => InvalidProcessorAccount.on.command(RenameAccount, { key: ({ accountId }) => accountId, processor: { image: '   ' } }, handler)).toThrow(/processor.image must be a non-empty OCI image reference/);
+    expect(() => InvalidProcessorAccount.on.command(ReindexAccount, { key: ({ accountId }) => accountId, processor: { group: 'Not Valid' } }, async () => ({ accepted: true }))).toThrow(/processor.group must be a valid lowercase Kubernetes name/);
 
     const platformWithInvalidCapacity = app('invalid-processor-capacity-platform');
     const InvalidCapacityAccount = platformWithInvalidCapacity.model(AccountEntity, { schema: { transactions: 'required' } });
@@ -244,8 +334,8 @@ describe('v0.4 application behavior contracts', () => {
       {
         name: 'wall-clock-construction',
         handler: async (_account, input) => {
-          new Date();
-          return { changed: false, displayName: input.displayName };
+          const observedAt = new Date();
+          return { changed: observedAt.getTime() > 0, displayName: input.displayName };
         },
       },
       {

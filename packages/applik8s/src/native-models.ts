@@ -1,15 +1,19 @@
-import type { JsonValue, ResourceDefinition, ResourceInstanceInput, ResourceObject, RuntimeSchema } from '@applik8s/core';
+// typecast-file-boundary: Drizzle table identity and schema-normalized registries preserve generics that must be restored after runtime identity checks.
+import type { JsonObject, JsonValue, ResourceDefinition, ResourceInstanceInput, ResourceObject, RuntimeSchema } from '@applik8s/core';
 import { createApplicationMutationOperation, decorateApplicationMutationOperation, type ApplicationMutationOperation, type ApplicationQueryOperation } from '@applik8s/client';
+import { normalizeSchema } from '@applik8s/sdk';
 import { type as arkType, type Type } from 'arktype';
 import { createInsertSchema, createSelectSchema, createUpdateSchema } from 'drizzle-arktype';
 import { createTableRelationsHelpers, extractTablesRelationalConfig, getTableColumns, getTableName, isTable, Many, normalizeRelation, One, type InferInsertModel, type InferSelectModel, type Relation, type Relations, type Table } from 'drizzle-orm';
 import { getTableConfig, type AnyPgTable } from 'drizzle-orm/pg-core';
-import type { ApplicationModelCommandBinding, ApplicationModelCommandHandler, ApplicationModelCommandOptions } from './application-models.js';
-import type { ApplicationKubernetesModelViewOptions, ApplicationModelViewOptions, ApplicationQueryPrincipal } from './application-queries.js';
-import type { CommandDefinition } from './dsl.js';
+import type { ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandHandler, ApplicationModelCommandOptions } from './application-models.js';
+import type { ApplicationKubernetesModelViewOptions, ApplicationModelViewOptions, ApplicationQueryPrincipal, ApplicationQuerySourceBinding } from './application-queries.js';
+import type { ApplicationStreamProcessContext, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding } from './application-reactive.js';
+import type { ApplicationReconcileHandler, ApplicationReconcileOptions, ApplicationResourceControllerBinding } from './application-events.js';
+import { event, type CommandDefinition, type EventDefinition } from './dsl.js';
+import { applicationModelFacet, getRequiredDrizzleApplicationModelFacet } from './native-model-runtime.js';
 
-/** Stable runtime metadata key for native objects promoted into the Applik8s model graph. */
-export const applicationModelFacet = Symbol.for('@applik8s/model-facet');
+export { applicationModelFacet, getRequiredDrizzleApplicationModelFacet } from './native-model-runtime.js';
 
 /** Stable runtime metadata key carried by ArkType identity-reference schemas. */
 export const applicationModelReference = Symbol.for('@applik8s/model-reference');
@@ -19,6 +23,143 @@ export interface ApplicationModelSnapshot<TValue, TIdentity = string> {
   readonly value: TValue;
   readonly revision?: string;
 }
+
+/** A committed relational insert delivered from the model's transactional outbox. */
+export interface ApplicationModelCreateEvent<TValue, TIdentity = string> {
+  readonly operation: 'create';
+  readonly identity: TIdentity;
+  readonly value: TValue;
+  /** Present when the authoritative store exposes the committed revision in the event payload. */
+  readonly revision?: string;
+}
+
+export interface ApplicationModelUpdateInput<TUpdate, TIdentity = string> {
+  readonly identity: TIdentity;
+  readonly patch: TUpdate;
+}
+
+export interface ApplicationModelDeleteInput<TIdentity = string> {
+  readonly identity: TIdentity;
+}
+
+/** A committed relational update delivered from the model's transactional outbox. */
+export interface ApplicationModelUpdateEvent<TValue, TIdentity = string> {
+  readonly operation: 'update';
+  readonly identity: TIdentity;
+  readonly previous: TValue;
+  readonly current: TValue;
+  readonly revision?: string;
+}
+
+export interface ApplicationModelDeleteEvent<TValue, TIdentity = string> {
+  readonly operation: 'delete';
+  readonly identity: TIdentity;
+  readonly previous: TValue;
+  readonly tombstone: { readonly identity: TIdentity; readonly deleted: true };
+  readonly revision?: string;
+}
+
+/** A committed exceptional model operation delivered through the same outbox as lifecycle events. */
+export interface ApplicationModelActionCompletedEvent<TName extends string, TValue, TOutput, TIdentity = string> {
+  readonly operation: TName;
+  readonly identity: TIdentity;
+  readonly previous: TValue;
+  readonly current: TValue;
+  readonly result: TOutput;
+  readonly revision?: string;
+}
+
+export type ApplicationModelCreateEventHandler<TValue, TIdentity = string> = (
+  created: ApplicationModelCreateEvent<TValue, TIdentity>,
+  context: ApplicationStreamProcessContext,
+) => void | Promise<void>;
+
+export type ApplicationModelUpdateEventHandler<TValue, TIdentity = string> = (
+  updated: ApplicationModelUpdateEvent<TValue, TIdentity>,
+  context: ApplicationStreamProcessContext,
+) => void | Promise<void>;
+
+export type ApplicationModelDeleteEventHandler<TValue, TIdentity = string> = (
+  deleted: ApplicationModelDeleteEvent<TValue, TIdentity>,
+  context: ApplicationStreamProcessContext,
+) => void | Promise<void>;
+
+/**
+ * Transaction-time customization for a conventional model mutation.
+ *
+ * The framework still owns the mutation contract, durable result, lifecycle
+ * event, and return value. This hook exists only for invariants that must be
+ * checked or derived while the authoritative row is locked. External effects
+ * remain forbidden and must be emitted through the declared outbox.
+ */
+export type ApplicationModelBeforeCommitHandler<
+  TValue extends object,
+  TInput extends object,
+> = (
+  model: ApplicationModelCommandHandler<TValue, Record<string, never>, TInput, object> extends (
+    model: infer TModel,
+    input: TInput,
+    context: infer _TContext,
+  ) => unknown ? TModel : never,
+  input: TInput,
+  context: ApplicationModelCommandHandler<TValue, Record<string, never>, TInput, object> extends (
+    model: infer _TModel,
+    input: TInput,
+    context: infer TContext,
+  ) => unknown ? TContext : never,
+) => void | Promise<void>;
+
+export type ApplicationModelBeforeCommitOptions<TInput extends object, TValue extends object> = Omit<
+  ApplicationModelCommandOptions<TInput, TValue>,
+  'key' | 'missing' | 'publicName' | '__operation' | '__generatedSources'
+>;
+
+export interface ApplicationModelMutationOperation<
+  TInput extends object,
+  TOutput,
+  TValue extends object,
+> extends ApplicationMutationOperation<TInput, TOutput> {
+  /**
+   * Adds one transaction-authoritative policy hook without changing the
+   * conventional create/update/delete public operation or its event stream.
+   */
+  beforeCommit(
+    options: ApplicationModelBeforeCommitOptions<TInput, TValue>,
+    handler: ApplicationModelBeforeCommitHandler<TValue, TInput>,
+  ): ApplicationModelMutationOperation<TInput, TOutput, TValue>;
+}
+
+export interface ApplicationModelLifecycleRegistrar<TValue, TIdentity = string> {
+  create(
+    name: string,
+    options: ApplicationStreamProcessOptions,
+    handler: ApplicationModelCreateEventHandler<TValue, TIdentity>,
+  ): ApplicationStreamProcessorBinding<ApplicationModelCreateEvent<TValue, TIdentity>>;
+  update(
+    name: string,
+    options: ApplicationStreamProcessOptions,
+    handler: ApplicationModelUpdateEventHandler<TValue, TIdentity>,
+  ): ApplicationStreamProcessorBinding<ApplicationModelUpdateEvent<TValue, TIdentity>>;
+  delete(
+    name: string,
+    options: ApplicationStreamProcessOptions,
+    handler: ApplicationModelDeleteEventHandler<TValue, TIdentity>,
+  ): ApplicationStreamProcessorBinding<ApplicationModelDeleteEvent<TValue, TIdentity>>;
+}
+
+export type ApplicationModelActionCompletedRegistrar<
+  TName extends string,
+  TValue,
+  TOutput,
+  TIdentity = string,
+> = (
+  name: string,
+  options: ApplicationStreamProcessOptions,
+  handler: (
+    completed: ApplicationModelActionCompletedEvent<TName, TValue, TOutput, TIdentity>,
+    context: ApplicationStreamProcessContext,
+  ) => void | Promise<void>,
+) => ApplicationStreamProcessorBinding<ApplicationModelActionCompletedEvent<TName, TValue, TOutput, TIdentity>>;
 
 export interface ApplicationModelIdentityContract {
   readonly fields: readonly string[];
@@ -92,24 +233,65 @@ export interface DrizzleApplicationModelFacet<TTable extends AnyPgTable, TIdenti
     readonly name: string;
     readonly schema?: string;
   };
+  /**
+   * Native table members that prevented installation of the corresponding
+   * direct convenience member. The Drizzle member always wins; `api` is the
+   * collision-safe symbol-backed escape hatch.
+   */
+  readonly directMemberCollisions: readonly string[];
+  readonly api: DrizzleApplicationModelApi<TTable, TIdentity>;
   readonly on: {
     command<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
       command: CommandDefinition<TInput, TOutput, TErrors>,
       options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
       handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
     ): ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>>;
+    action<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+      action: CommandDefinition<TInput, TOutput, TErrors>,
+      options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+      handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
+    ): ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>>;
   };
 }
 
-export type PromotedDrizzleTable<TTable extends AnyPgTable, TIdentity = ConventionalTableIdentity<TTable>> = TTable & {
-  readonly $model: DrizzleApplicationModelFacet<TTable, TIdentity>;
-  readonly [applicationModelFacet]: DrizzleApplicationModelFacet<TTable, TIdentity>;
-  readonly create: ApplicationMutationOperation<InferInsertModel<TTable>, ApplicationModelSnapshot<InferSelectModel<TTable>, TIdentity>>;
-  view<const TName extends string, TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(
+export interface DrizzleApplicationModelApi<
+  TTable extends AnyPgTable,
+  TIdentity = ConventionalTableIdentity<TTable>,
+> {
+  readonly create: ApplicationModelMutationOperation<InferInsertModel<TTable>, ApplicationModelSnapshot<InferSelectModel<TTable>, TIdentity>, InferSelectModel<TTable>>;
+  readonly update: ApplicationModelMutationOperation<ApplicationModelUpdateInput<Partial<InferInsertModel<TTable>>, TIdentity>, ApplicationModelSnapshot<InferSelectModel<TTable>, TIdentity>, InferSelectModel<TTable>>;
+  readonly delete: ApplicationModelMutationOperation<ApplicationModelDeleteInput<TIdentity>, ApplicationModelDeleteEvent<InferSelectModel<TTable>, TIdentity>['tombstone'], InferSelectModel<TTable>>;
+  readonly on: ApplicationModelLifecycleRegistrar<InferSelectModel<TTable>, TIdentity>;
+  view<const TName extends string, TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined>(
     name: TName,
-    options: ApplicationModelViewOptions<TInput, TOutput, TPrincipal>,
+    options: ApplicationModelViewOptions<TInput, TOutput, TPrincipal, TSource>,
   ): PromotedDrizzleTable<TTable, TIdentity> & Readonly<Record<TName, ApplicationQueryOperation<TInput, TOutput>>>;
-};
+  command<const TName extends string, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+    name: TName,
+    command: CommandDefinition<TInput, TOutput, TErrors>,
+    options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+    handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
+  ): PromotedDrizzleTable<TTable, TIdentity> & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>>;
+  action<const TName extends string, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+    name: TName,
+    action: CommandDefinition<TInput, TOutput, TErrors>,
+    options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+    handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
+  ): PromotedDrizzleTable<TTable, TIdentity>
+    & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>>
+    & { readonly on: ApplicationModelLifecycleRegistrar<InferSelectModel<TTable>, TIdentity> & Readonly<Record<TName, ApplicationModelActionCompletedRegistrar<TName, InferSelectModel<TTable>, TOutput, TIdentity>>> };
+}
+
+type DrizzleApplicationModelDirectMembers<TTable extends AnyPgTable, TIdentity> = {
+  readonly $model: DrizzleApplicationModelFacet<TTable, TIdentity>;
+  readonly schema: DrizzleApplicationModelFacet<TTable, TIdentity>['schema'];
+  readonly relations: DrizzleApplicationModelFacet<TTable, TIdentity>['relations'];
+  ref(): ApplicationModelReferenceSchema<TIdentity>;
+} & DrizzleApplicationModelApi<TTable, TIdentity>;
+
+export type PromotedDrizzleTable<TTable extends AnyPgTable, TIdentity = ConventionalTableIdentity<TTable>> = TTable & {
+  readonly [applicationModelFacet]: DrizzleApplicationModelFacet<TTable, TIdentity>;
+} & Omit<DrizzleApplicationModelDirectMembers<TTable, TIdentity>, keyof TTable>;
 
 export interface PromoteDrizzleTableOptions<TTable extends AnyPgTable> {
   readonly name?: string;
@@ -120,10 +302,74 @@ export interface PromoteDrizzleTableOptions<TTable extends AnyPgTable> {
 }
 
 type NativeModelCommandRegistrar = (command: CommandDefinition<object, object, Readonly<Record<string, object>>>, options: ApplicationModelCommandOptions<object, object>, handler: ApplicationModelCommandHandler<object, Record<string, never>, object, object, Readonly<Record<string, object>>>) => ApplicationModelCommandBinding<object, object, object, Record<string, never>>;
-type ApplicationModelViewRegistrar = (name: string, options: ApplicationModelViewOptions<unknown, unknown, ApplicationQueryPrincipal>) => ApplicationQueryOperation<unknown, unknown>;
+type NativeModelBeforeCommitRegistrar = (
+  options: ApplicationModelBeforeCommitOptions<object, object>,
+  handler: ApplicationModelBeforeCommitHandler<object, object>,
+) => void;
+type ApplicationModelViewRegistrar = <TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined>(name: string, options: ApplicationModelViewOptions<TInput, TOutput, TPrincipal, TSource>) => ApplicationQueryOperation<TInput, TOutput>;
 
 const nativeModelCommandRegistrars = new WeakMap<object, NativeModelCommandRegistrar>();
+const nativeModelBeforeCommitRegistrars = new WeakMap<object, NativeModelBeforeCommitRegistrar>();
+type NativeModelLifecycleRegistrar = ApplicationModelLifecycleRegistrar<object, unknown>;
+const nativeModelLifecycleRegistrars = new WeakMap<object, NativeModelLifecycleRegistrar>();
+type NativeModelActionEventRegistrar = (
+  definition: EventDefinition<object>,
+  name: string,
+  options: ApplicationStreamProcessOptions,
+  handler: (payload: object, context: ApplicationStreamProcessContext) => void | Promise<void>,
+) => ApplicationStreamProcessorBinding<object>;
+const nativeModelActionEventRegistrars = new WeakMap<object, NativeModelActionEventRegistrar>();
+const nativeApplicationModelBindings = new WeakMap<object, ApplicationModelBinding<object, object>>();
 const applicationModelViewRegistrars = new WeakMap<object, ApplicationModelViewRegistrar>();
+const applicationModelCommandOperationBindings = new WeakMap<object, ApplicationModelCommandBinding>();
+type NativeKubernetesLifecycleRegistrar = ApplicationKubernetesLifecycleRegistrar<object, object>;
+const nativeKubernetesLifecycleRegistrars = new WeakMap<object, NativeKubernetesLifecycleRegistrar>();
+
+export function applicationModelCommandBindingForOperation(value: unknown): ApplicationModelCommandBinding | undefined {
+  return (typeof value === 'object' || typeof value === 'function') && value !== null
+    ? applicationModelCommandOperationBindings.get(value)
+    : undefined;
+}
+
+export function bindNativeApplicationModelBeforeCommit<TInput extends object, TOutput, TValue extends object>(
+  operation: ApplicationModelMutationOperation<TInput, TOutput, TValue>,
+  registrar: (
+    options: ApplicationModelBeforeCommitOptions<TInput, TValue>,
+    handler: ApplicationModelBeforeCommitHandler<TValue, TInput>,
+  ) => void,
+): void {
+  nativeModelBeforeCommitRegistrars.set(operation, registrar as unknown as NativeModelBeforeCommitRegistrar);
+}
+
+export function nativeApplicationModelBeforeCommitRegistrar<TInput extends object, TOutput, TValue extends object>(
+  operation: ApplicationModelMutationOperation<TInput, TOutput, TValue>,
+): ((
+  options: ApplicationModelBeforeCommitOptions<TInput, TValue>,
+  handler: ApplicationModelBeforeCommitHandler<TValue, TInput>,
+) => void) | undefined {
+  return nativeModelBeforeCommitRegistrars.get(operation) as unknown as ((
+    options: ApplicationModelBeforeCommitOptions<TInput, TValue>,
+    handler: ApplicationModelBeforeCommitHandler<TValue, TInput>,
+  ) => void) | undefined;
+}
+
+/** Binds a compiler-created direct operation such as Model.create to its durable command transport. */
+export function bindApplicationModelCommandOperation(value: object, binding: ApplicationModelCommandBinding): void {
+  applicationModelCommandOperationBindings.set(value, binding);
+}
+
+export function bindNativeKubernetesLifecycle<TSpec extends object, TStatus extends object>(
+  resource: PromotedKubernetesResource<TSpec, TStatus>,
+  registrar: ApplicationKubernetesLifecycleRegistrar<TSpec, TStatus>,
+): void {
+  nativeKubernetesLifecycleRegistrars.set(resource, registrar as unknown as NativeKubernetesLifecycleRegistrar);
+}
+
+export function nativeKubernetesLifecycleRegistrar<TSpec extends object, TStatus extends object>(
+  resource: PromotedKubernetesResource<TSpec, TStatus>,
+): ApplicationKubernetesLifecycleRegistrar<TSpec, TStatus> | undefined {
+  return nativeKubernetesLifecycleRegistrars.get(resource) as unknown as ApplicationKubernetesLifecycleRegistrar<TSpec, TStatus> | undefined;
+}
 
 export interface KubernetesApplicationModelFacet<TSpec extends object, TStatus extends object = Record<string, never>>
   extends Omit<CommonApplicationModelFacet<TSpec, string>, 'provider' | 'native' | 'schema' | 'revision'> {
@@ -164,22 +410,33 @@ export interface ApplicationKubernetesCreatePolicy<TSpec extends object, TPrinci
   readonly place: (request: { readonly context: Readonly<Record<string, JsonValue>>; readonly input: TSpec }) => ApplicationKubernetesCreatePlacement;
 }
 
+export interface ApplicationKubernetesLifecycleRegistrar<TSpec extends object, TStatus extends object> {
+  create(name: string, options: ApplicationReconcileOptions, handler: ApplicationReconcileHandler<TSpec, TStatus>): ApplicationResourceControllerBinding;
+  update(name: string, options: ApplicationReconcileOptions, handler: ApplicationReconcileHandler<TSpec, TStatus>): ApplicationResourceControllerBinding;
+  delete(name: string, options: ApplicationReconcileOptions, handler: ApplicationReconcileHandler<TSpec, TStatus>): ApplicationResourceControllerBinding;
+}
+
 export type PromotedKubernetesResource<TSpec extends object, TStatus extends object = Record<string, never>> = ResourceDefinition<TSpec, TStatus> & {
   readonly $model: KubernetesApplicationModelFacet<TSpec, TStatus>;
   readonly [applicationModelFacet]: KubernetesApplicationModelFacet<TSpec, TStatus>;
+  readonly relations: KubernetesApplicationModelFacet<TSpec, TStatus>['relations'];
+  ref(): ApplicationModelReferenceSchema<string>;
   readonly create: ApplicationMutationOperation<TSpec | ResourceInstanceInput<TSpec> | ResourceObject<TSpec, TStatus>, ResourceObject<TSpec, TStatus>>;
-  view<const TName extends string, TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(
+  readonly on: ResourceDefinition<TSpec, TStatus>['on'] & ApplicationKubernetesLifecycleRegistrar<TSpec, TStatus>;
+  view<const TName extends string, TInput, TOutput, TSelf extends PromotedKubernetesResource<TSpec, TStatus> = PromotedKubernetesResource<TSpec, TStatus>, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(
+    this: TSelf,
     name: TName,
     options: ApplicationKubernetesModelViewOptions<TInput, ResourceObject<TSpec, TStatus>, TOutput, TPrincipal>,
-  ): PromotedKubernetesResource<TSpec, TStatus> & Readonly<Record<TName, ApplicationQueryOperation<TInput, TOutput>>>;
+  ): TSelf & Readonly<Record<TName, ApplicationQueryOperation<TInput, TOutput>>>;
 };
 
 /**
  * Promotes a native Drizzle table without wrapping or proxying it.
  *
- * The returned value is the original table by identity. A single non-enumerable
- * `$model` facet avoids changing Drizzle schema enumeration or colliding with
- * ordinary table APIs. A user column named `$model` is rejected before mutation.
+ * The returned value is the original table by identity. Convenience members are
+ * non-enumerable and installed only when the table does not already own that
+ * name. The private symbol facet always exposes the complete API, so valid
+ * Drizzle column names such as `create`, `on`, or `$model` remain usable.
  */
 // typecast-boundary: Drizzle symbol metadata and drizzle-arktype output are validated before installing the promoted model facet.
 export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, options: PromoteDrizzleTableOptions<TTable> = {}): PromotedDrizzleTable<TTable> {
@@ -191,15 +448,22 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
     assertCompatiblePromotion(existing, table, options);
     return table as PromotedDrizzleTable<TTable>;
   }
-  if ('$model' in table) {
-    throw new Error(`Drizzle table ${getTableName(table)} cannot be promoted because it already exposes a $model property or column. Rename that column or use the symbol-based getApplicationModelFacet(...) access path.`);
-  }
-  if ('create' in table) {
-    throw new Error(`Drizzle table ${getTableName(table)} cannot expose the conventional create operation because it already has a create property or column.`);
-  }
-  if ('view' in table) {
-    throw new Error(`Drizzle table ${getTableName(table)} cannot expose model-native views because it already has a view property or column.`);
-  }
+  const directMemberNames = [
+    '$model',
+    'schema',
+    'relations',
+    'ref',
+    'create',
+    'update',
+    'delete',
+    'on',
+    'view',
+    'command',
+    'action',
+  ] as const;
+  const directMemberCollisions = Object.freeze(
+    directMemberNames.filter((member) => member in table),
+  );
 
   const tableConfig = getTableConfig(table);
   const identityFields = resolveIdentityFields(table, options.identity);
@@ -210,9 +474,10 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
   const selectSchema = createSelectSchema(table) as Type<InferSelectModel<TTable>>;
   const insertSchema = createInsertSchema(table) as Type<InferInsertModel<TTable>>;
   const updateSchema = createUpdateSchema(table) as Type<Partial<InferInsertModel<TTable>>>;
-  const name = options.name ?? getTableName(table);
+  const name = publicApplicationModelName(options.name ?? getTableName(table), `Drizzle table ${getTableName(table)}`);
   const identity: ApplicationModelIdentityContract = { fields: identityFields, encoding: 'scalar' };
   const relationships = Object.freeze(normalizeDrizzleModelRelationships(table, options.schema, name));
+  let collisionSafeApi: DrizzleApplicationModelApi<TTable> | undefined;
   const facet: DrizzleApplicationModelFacet<TTable> = Object.freeze({
     apiVersion: 'applik8s.model/v1alpha1',
     kind: 'applicationModelFacet',
@@ -223,6 +488,13 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
     table: {
       name: tableConfig.name,
       ...(tableConfig.schema ? { schema: tableConfig.schema } : {}),
+    },
+    directMemberCollisions,
+    get api() {
+      if (!collisionSafeApi) {
+        throw new Error(`Drizzle model ${name} is not fully promoted yet.`);
+      }
+      return collisionSafeApi;
     },
     identity,
     ...(revisionField ? { revision: { field: revisionField, authority: 'postgres-row' as const } } : {}),
@@ -240,6 +512,15 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
         // typecast: the registrar is installed by app.model for this exact promoted table and runtime row schema.
         return registrar(command as CommandDefinition<object, object, Readonly<Record<string, object>>>, commandOptions as ApplicationModelCommandOptions<object, object>, handler as unknown as ApplicationModelCommandHandler<object, Record<string, never>, object, object, Readonly<Record<string, object>>>) as unknown as ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>>;
       },
+      action<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+        action: CommandDefinition<TInput, TOutput, TErrors>,
+        actionOptions: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+        handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
+      ): ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>> {
+        const registrar = nativeModelCommandRegistrars.get(table);
+        if (!registrar) throw new Error(`Native model ${name} must be registered through app.model(table) before declaring durable actions.`);
+        return registrar(action as CommandDefinition<object, object, Readonly<Record<string, object>>>, actionOptions as ApplicationModelCommandOptions<object, object>, handler as unknown as ApplicationModelCommandHandler<object, Record<string, never>, object, object, Readonly<Record<string, object>>>) as unknown as ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>>;
+      },
     }),
     ref() {
       const identitySchema = arktypePropertySchema(selectSchema, identityFields[0] as string);
@@ -252,31 +533,302 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
     },
   });
 
-  Object.defineProperties(table, {
-    [applicationModelFacet]: { value: facet, enumerable: false, configurable: false, writable: false },
-    $model: { value: facet, enumerable: false, configurable: false, writable: false },
-    create: {
-      value: createApplicationMutationOperation({
-        apiVersion: 'applik8s.operation/v1alpha1',
-        kind: 'applicationOperation',
-        id: `${name}.create`,
-        model: name,
-        name: 'create',
-        operation: 'create',
-        transport: 'command',
-      }),
-      enumerable: false,
-      configurable: false,
-      writable: false,
+  const createOperation = applicationModelMutationOperation<
+    InferInsertModel<TTable>,
+    ApplicationModelSnapshot<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>,
+    InferSelectModel<TTable>
+  >({
+    apiVersion: 'applik8s.operation/v1alpha1',
+    kind: 'applicationOperation',
+    id: `${name}.create`,
+    model: name,
+    name: 'create',
+    operation: 'create',
+    transport: 'command',
+  });
+  const updateOperation = applicationModelMutationOperation<
+    ApplicationModelUpdateInput<Partial<InferInsertModel<TTable>>, ConventionalTableIdentity<TTable>>,
+    ApplicationModelSnapshot<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>,
+    InferSelectModel<TTable>
+  >({
+    apiVersion: 'applik8s.operation/v1alpha1',
+    kind: 'applicationOperation',
+    id: `${name}.update`,
+    model: name,
+    name: 'update',
+    operation: 'update',
+    transport: 'command',
+  });
+  const deleteOperation = applicationModelMutationOperation<
+    ApplicationModelDeleteInput<ConventionalTableIdentity<TTable>>,
+    ApplicationModelDeleteEvent<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>['tombstone'],
+    InferSelectModel<TTable>
+  >({
+    apiVersion: 'applik8s.operation/v1alpha1',
+    kind: 'applicationOperation',
+    id: `${name}.delete`,
+    model: name,
+    name: 'delete',
+    operation: 'delete',
+    transport: 'command',
+  });
+
+  const lifecycleRegistrars = {
+    create(
+      lifecycleName: string,
+      lifecycleOptions: ApplicationStreamProcessOptions,
+      lifecycleHandler: ApplicationModelCreateEventHandler<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>,
+    ) {
+      const registrar = nativeModelLifecycleRegistrars.get(table);
+      if (!registrar) throw new Error(`Native model ${name} must be registered through app.model(table) before declaring create-event handlers.`);
+      // typecast: the registrar is installed for this exact promoted table and its derived select/identity types.
+      return registrar.create(lifecycleName, lifecycleOptions, lifecycleHandler as ApplicationModelCreateEventHandler<object, unknown>) as ApplicationStreamProcessorBinding<ApplicationModelCreateEvent<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>>;
     },
-    view: {
-      value: (viewName: string, viewOptions: ApplicationModelViewOptions<unknown, unknown, ApplicationQueryPrincipal>) => installApplicationModelView(table, viewName, viewOptions),
+    update(
+      lifecycleName: string,
+      lifecycleOptions: ApplicationStreamProcessOptions,
+      lifecycleHandler: ApplicationModelUpdateEventHandler<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>,
+    ) {
+      const registrar = nativeModelLifecycleRegistrars.get(table);
+      if (!registrar) throw new Error(`Native model ${name} must be registered through app.model(table) before declaring update-event handlers.`);
+      return registrar.update(lifecycleName, lifecycleOptions, lifecycleHandler as ApplicationModelUpdateEventHandler<object, unknown>) as ApplicationStreamProcessorBinding<ApplicationModelUpdateEvent<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>>;
+    },
+    delete(
+      lifecycleName: string,
+      lifecycleOptions: ApplicationStreamProcessOptions,
+      lifecycleHandler: ApplicationModelDeleteEventHandler<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>,
+    ) {
+      const registrar = nativeModelLifecycleRegistrars.get(table);
+      if (!registrar) throw new Error(`Native model ${name} must be registered through app.model(table) before declaring delete-event handlers.`);
+      return registrar.delete(lifecycleName, lifecycleOptions, lifecycleHandler as ApplicationModelDeleteEventHandler<object, unknown>) as ApplicationStreamProcessorBinding<ApplicationModelDeleteEvent<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>>;
+    },
+  };
+
+  const viewModel = <TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined>(viewName: string, viewOptions: ApplicationModelViewOptions<TInput, TOutput, TPrincipal, TSource>) =>
+    installApplicationModelView(table, viewName, viewOptions);
+  const commandModel = <TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+    operationName: string,
+    command: CommandDefinition<TInput, TOutput, TErrors>,
+    commandOptions: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+    handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
+  ) => installApplicationModelCommand(table, operationName, command, commandOptions, handler);
+  const actionModel = <TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+    operationName: string,
+    action: CommandDefinition<TInput, TOutput, TErrors>,
+    actionOptions: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+    handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
+  ) => installApplicationModelAction(table, operationName, action, actionOptions, handler);
+  // typecast-boundary: every member is derived from this exact table; the
+  // private object-returning installers regain their generic public surface at
+  // this single collision-safe API boundary.
+  collisionSafeApi = Object.freeze({
+    create: createOperation,
+    update: updateOperation,
+    delete: deleteOperation,
+    on: lifecycleRegistrars,
+    view: viewModel,
+    command: commandModel,
+    action: actionModel,
+  }) as DrizzleApplicationModelApi<TTable>;
+
+  Object.defineProperty(table, applicationModelFacet, {
+    value: facet,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  const directMembers: Readonly<Record<string, unknown>> = {
+    $model: facet,
+    schema: facet.schema,
+    relations: facet.relations,
+    ref: () => facet.ref(),
+    create: collisionSafeApi.create,
+    update: collisionSafeApi.update,
+    delete: collisionSafeApi.delete,
+    on: collisionSafeApi.on,
+    view: collisionSafeApi.view,
+    command: collisionSafeApi.command,
+    action: collisionSafeApi.action,
+  };
+  for (const [member, value] of Object.entries(directMembers)) {
+    if (directMemberCollisions.some((collision) => collision === member)) continue;
+    Object.defineProperty(table, member, {
+      value,
       enumerable: false,
       configurable: false,
       writable: false,
+    });
+  }
+  return table as PromotedDrizzleTable<TTable>;
+}
+
+function applicationModelMutationOperation<TInput extends object, TOutput, TValue extends object>(
+  contract: Parameters<typeof createApplicationMutationOperation>[0],
+): ApplicationModelMutationOperation<TInput, TOutput, TValue> {
+  const operation = createApplicationMutationOperation<TInput, TOutput>(contract) as ApplicationModelMutationOperation<TInput, TOutput, TValue>;
+  Object.defineProperty(operation, 'beforeCommit', {
+    value: (
+      options: ApplicationModelBeforeCommitOptions<TInput, TValue>,
+      handler: ApplicationModelBeforeCommitHandler<TValue, TInput>,
+    ) => {
+      const registrar = nativeApplicationModelBeforeCommitRegistrar(operation);
+      if (!registrar) {
+        throw new Error(`Application model ${contract.model}.${contract.name}.beforeCommit(...) requires a model registered through app.model(...).`);
+      }
+      registrar(options, handler);
+      return operation;
+    },
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return operation;
+}
+
+function installApplicationModelCommand<TTable extends AnyPgTable, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+  model: TTable,
+  name: string,
+  command: CommandDefinition<TInput, TOutput, TErrors>,
+  options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+  handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
+): object {
+  if (!/^[$A-Z_a-z][$\w]*$/.test(name)) throw new Error(`Application model command name ${JSON.stringify(name)} must be a JavaScript identifier.`);
+  if (name in model) throw new Error(`Application model command ${name} cannot replace an existing model member.`);
+  const registrar = nativeModelCommandRegistrars.get(model);
+  if (!registrar) throw new Error('Application model commands must be declared on a model registered through app.model(...).');
+  // typecast: the table-identity registry intentionally erases command generics while retaining the same runtime definition object.
+  const erasedCommand = command as CommandDefinition<object, object, Readonly<Record<string, object>>>;
+  // typecast: the model table identity correlates these options with the erased registrar's row schema.
+  const erasedOptions = { ...options, publicName: name } as ApplicationModelCommandOptions<object, object>;
+  // typecast: handler generics are restored by the public method result after this one private identity-keyed registry boundary.
+  const erasedHandler = handler as unknown as ApplicationModelCommandHandler<object, Record<string, never>, object, object, Readonly<Record<string, object>>>;
+  const binding = registrar(erasedCommand, erasedOptions, erasedHandler);
+  const operation = createApplicationMutationOperation<TInput, TOutput>({
+      apiVersion: 'applik8s.operation/v1alpha1',
+      kind: 'applicationOperation',
+      id: command.id,
+      model: getApplicationModelFacet(model)?.name ?? getTableName(model),
+      name,
+      operation: 'custom',
+      transport: 'command',
+    });
+  applicationModelCommandOperationBindings.set(operation, binding);
+  Object.defineProperty(model, name, {
+    value: operation,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return model;
+}
+
+function installApplicationModelAction<TTable extends AnyPgTable, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+  model: TTable,
+  name: string,
+  command: CommandDefinition<TInput, TOutput, TErrors>,
+  options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+  handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
+): object {
+  const completion = applicationModelActionCompletedDefinition(model, name, command);
+  const source = applicationModelActionHandlerSource(name, handler);
+  const wrapped: typeof handler = async (target, input, context) => {
+    const previous = target.value;
+    const result = await handler(target, input, context);
+    context.emit(completion, {
+      operation: name,
+      identity: target.identity,
+      previous,
+      current: target.value,
+      result,
+      revision: target.revision ?? '',
+    });
+    return result;
+  };
+  const transaction = {
+    ...options.transaction,
+    outbox: [...(options.transaction?.outbox ?? []), completion],
+  };
+  const installed = installApplicationModelCommand(model, name, command, {
+    ...options,
+    transaction,
+    __generatedSources: { ...options.__generatedSources, handler: source },
+  }, wrapped);
+  const registrar = nativeModelActionEventRegistrars.get(model);
+  if (!registrar) throw new Error(`Native model action ${name} must be declared on a model registered through app.model(...).`);
+  const on = getRequiredDrizzleApplicationModelFacet(model).api.on as unknown as Record<string, unknown>;
+  if (name in on) throw new Error(`Application model action event ${name} cannot replace an existing lifecycle member.`);
+  Object.defineProperty(on, name, {
+    value: (
+      processorName: string,
+      processorOptions: ApplicationStreamProcessOptions,
+      processorHandler: (payload: object, context: ApplicationStreamProcessContext) => void | Promise<void>,
+    ) => registrar(completion as EventDefinition<object>, processorName, processorOptions, processorHandler),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return installed;
+}
+
+function applicationModelActionCompletedDefinition<TTable extends AnyPgTable, TInput extends object, TOutput extends object>(
+  model: TTable,
+  name: string,
+  command: CommandDefinition<TInput, TOutput, Readonly<Record<string, object>>>,
+): EventDefinition<ApplicationModelActionCompletedEvent<string, InferSelectModel<TTable>, TOutput, ConventionalTableIdentity<TTable>>> {
+  const facet = getApplicationModelFacet<
+    InferSelectModel<TTable>,
+    ConventionalTableIdentity<TTable>,
+    InferInsertModel<TTable>,
+    Partial<InferInsertModel<TTable>>
+  >(model);
+  if (!facet) throw new Error('Application model actions require promoted model metadata.');
+  const row = emittedApplicationJsonSchema(facet.schema.select, `${facet.name}.select`);
+  const result = emittedApplicationJsonSchema(command.output, `${command.id}.output`);
+  const identityField = facet.identity.fields[0];
+  const identity = identityField ? jsonSchemaProperty(row, identityField) : undefined;
+  if (!identity) throw new Error(`Application model action ${facet.name}.${name} cannot derive the scalar identity schema.`);
+  const payload: JsonObject = {
+    type: 'object',
+    properties: {
+      operation: { type: 'string', enum: [name] },
+      identity,
+      previous: row,
+      current: row,
+      result,
+      revision: { type: 'string' },
+    },
+    required: ['operation', 'identity', 'previous', 'current', 'result', 'revision'],
+    additionalProperties: false,
+  };
+  return event(`models.${facet.name}.${name}.completed.v1`, {
+    payload: {
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: `${facet.name}.${name}.completed` },
+      schema: payload,
     },
   });
-  return table as PromotedDrizzleTable<TTable>;
+}
+
+function emittedApplicationJsonSchema<T extends object>(schema: import('@applik8s/sdk').SchemaInput<T>, name: string): JsonObject {
+  const emitted = normalizeSchema(schema, name).emitJsonSchema();
+  if (!emitted.ok) throw new Error(`Application model action ${name} cannot emit JSON Schema: ${emitted.error.message}`);
+  return emitted.value.schema;
+}
+
+function jsonSchemaProperty(schema: JsonObject, name: string): JsonObject | undefined {
+  const properties = schema.properties;
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) return undefined;
+  const property = Reflect.get(properties, name) as JsonValue | undefined;
+  return property && typeof property === 'object' && !Array.isArray(property) ? property as JsonObject : undefined;
+}
+
+function applicationModelActionHandlerSource<TOutput extends object>(
+  name: string,
+  handler: (...args: never[]) => TOutput | Promise<TOutput>,
+): string {
+  const source = Function.prototype.toString.call(handler).trim();
+  if (!source || source.includes('[native code]')) throw new Error(`Application model action ${name} must use a serializable handler.`);
+  return `async (model, input, context) => {\n  const previous = model.value;\n  const result = await (${source})(model, input, context);\n  context.emit(ActionCompleted, { operation: ${JSON.stringify(name)}, identity: model.identity, previous, current: model.value, result, revision: model.revision ?? '' });\n  return result;\n}`;
 }
 
 export function bindNativeApplicationModelCommands<TTable extends AnyPgTable>(
@@ -290,6 +842,41 @@ export function bindNativeApplicationModelCommands<TTable extends AnyPgTable>(
 export function nativeApplicationModelCommandRegistrar<TTable extends AnyPgTable>(model: PromotedDrizzleTable<TTable>): DrizzleApplicationModelFacet<TTable>['on']['command'] | undefined {
   // typecast: table identity guarantees the erased registrar was installed for this promoted row schema.
   return nativeModelCommandRegistrars.get(model) as DrizzleApplicationModelFacet<TTable>['on']['command'] | undefined;
+}
+
+export function bindNativeApplicationModelLifecycle<TTable extends AnyPgTable>(
+  model: PromotedDrizzleTable<TTable>,
+  registrar: ApplicationModelLifecycleRegistrar<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>,
+): void {
+  nativeModelLifecycleRegistrars.set(model, registrar as NativeModelLifecycleRegistrar);
+}
+
+export function bindNativeApplicationModelActionEvents<TTable extends AnyPgTable>(
+  model: PromotedDrizzleTable<TTable>,
+  registrar: NativeModelActionEventRegistrar,
+): void {
+  nativeModelActionEventRegistrars.set(model, registrar);
+}
+
+export function nativeApplicationModelActionEventRegistrar<TTable extends AnyPgTable>(
+  model: PromotedDrizzleTable<TTable>,
+): NativeModelActionEventRegistrar | undefined {
+  return nativeModelActionEventRegistrars.get(model);
+}
+
+export function nativeApplicationModelLifecycleRegistrar<TTable extends AnyPgTable>(
+  model: PromotedDrizzleTable<TTable>,
+): ApplicationModelLifecycleRegistrar<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>> | undefined {
+  return nativeModelLifecycleRegistrars.get(model) as ApplicationModelLifecycleRegistrar<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>> | undefined;
+}
+
+/** Internal bridge used when a promoted Drizzle model participates in another model action's transaction. */
+export function bindNativeApplicationModelBinding(model: object, binding: ApplicationModelBinding<object, object>): void {
+  nativeApplicationModelBindings.set(model, binding);
+}
+
+export function nativeApplicationModelBindingFor(model: object): ApplicationModelBinding<object, object> | undefined {
+  return nativeApplicationModelBindings.get(model);
 }
 
 export function bindApplicationModelViews(model: object, registrar: ApplicationModelViewRegistrar): void {
@@ -313,7 +900,7 @@ export interface PromoteKubernetesResourceOptions<TSpec extends object = object>
 // typecast-boundary: the resource definition owns the spec/status generics installed in its immutable common model facet.
 export function promoteKubernetesResource<TSpec extends object, TStatus extends object>(resource: ResourceDefinition<TSpec, TStatus>, nameOrOptions: string | PromoteKubernetesResourceOptions<TSpec> = resource.kind): PromotedKubernetesResource<TSpec, TStatus> {
   const options = typeof nameOrOptions === 'string' ? { name: nameOrOptions } : nameOrOptions;
-  const name = options.name ?? resource.kind;
+  const name = publicApplicationModelName(options.name ?? resource.kind, `Kubernetes resource ${resource.apiVersion}/${resource.kind}`);
   const existing = Reflect.get(resource, applicationModelFacet) as KubernetesApplicationModelFacet<TSpec, TStatus> | undefined;
   if (existing) {
     if (existing.name !== name || JSON.stringify(existing.access) !== JSON.stringify(options.access)) {
@@ -323,6 +910,11 @@ export function promoteKubernetesResource<TSpec extends object, TStatus extends 
   }
   if ('$model' in resource) {
     throw new Error(`Kubernetes resource ${resource.apiVersion}/${resource.kind} already exposes a $model property.`);
+  }
+  for (const directFacet of ['relations', 'ref'] as const) {
+    if (directFacet in resource) {
+      throw new Error(`Kubernetes resource ${resource.apiVersion}/${resource.kind} cannot expose direct model ${directFacet} because it already has that property. Use getApplicationModelFacet(...) as the collision-safe advanced path.`);
+    }
   }
   const identity: ApplicationModelIdentityContract = { fields: ['metadata.name'], encoding: 'scalar' };
   const relationships = Object.freeze(modelRelationshipsFromRuntimeSchema(resource.spec, name));
@@ -347,6 +939,8 @@ export function promoteKubernetesResource<TSpec extends object, TStatus extends 
   Object.defineProperties(resource, {
     [applicationModelFacet]: { value: facet, enumerable: false, configurable: false, writable: false },
     $model: { value: facet, enumerable: false, configurable: false, writable: false },
+    relations: { value: facet.relations, enumerable: false, configurable: false, writable: false },
+    ref: { value: () => facet.ref(), enumerable: false, configurable: false, writable: false },
     view: {
       value: (viewName: string, viewOptions: ApplicationModelViewOptions<unknown, unknown, ApplicationQueryPrincipal>) => installApplicationModelView(resource, viewName, viewOptions),
       enumerable: false,
@@ -354,6 +948,7 @@ export function promoteKubernetesResource<TSpec extends object, TStatus extends 
       writable: false,
     },
   });
+  installPromotedKubernetesLifecycleMethods(resource, name);
   decorateApplicationMutationOperation(resource.create, {
     apiVersion: 'applik8s.operation/v1alpha1',
     kind: 'applicationOperation',
@@ -366,10 +961,35 @@ export function promoteKubernetesResource<TSpec extends object, TStatus extends 
   return resource as PromotedKubernetesResource<TSpec, TStatus>;
 }
 
-function installApplicationModelView(
+function installPromotedKubernetesLifecycleMethods<TSpec extends object, TStatus extends object>(
+  resource: ResourceDefinition<TSpec, TStatus>,
+  modelName: string,
+): void {
+  const eventSources = resource.on as ResourceDefinition<TSpec, TStatus>['on'] & Record<string, unknown>;
+  for (const lifecycle of ['create', 'update', 'delete'] as const) {
+    const sdkRegister = Reflect.get(eventSources, lifecycle);
+    if (typeof sdkRegister !== 'function') throw new Error(`Kubernetes model ${modelName} has no SDK ${lifecycle} lifecycle registrar.`);
+    Object.defineProperty(eventSources, lifecycle, {
+      value: (handlerOrName: ApplicationReconcileHandler<TSpec, TStatus> | string, options?: ApplicationReconcileOptions, handler?: ApplicationReconcileHandler<TSpec, TStatus>) => {
+        if (typeof handlerOrName !== 'string') return sdkRegister(handlerOrName);
+        if (!options || typeof handler !== 'function') {
+          throw new Error(`Kubernetes model ${modelName}.on.${lifecycle}(name, options, handler) requires a lifecycle name, deployment options, and handler.`);
+        }
+        const registrar = nativeKubernetesLifecycleRegistrars.get(resource);
+        if (!registrar) throw new Error(`Kubernetes model ${modelName} must be registered through app.crd(...) before declaring direct lifecycle handlers.`);
+        return registrar[lifecycle](handlerOrName, options, handler as unknown as ApplicationReconcileHandler<object, object>);
+      },
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
+  }
+}
+
+function installApplicationModelView<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined>(
   model: object,
   name: string,
-  options: ApplicationModelViewOptions<unknown, unknown, ApplicationQueryPrincipal>,
+  options: ApplicationModelViewOptions<TInput, TOutput, TPrincipal, TSource>,
 ): object {
   if (name in model) throw new Error(`Application model view ${name} cannot replace an existing model member.`);
   const registrar = applicationModelViewRegistrars.get(model);
@@ -570,6 +1190,13 @@ function assertCompatiblePromotion<TTable extends AnyPgTable>(existing: DrizzleA
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+function publicApplicationModelName(value: string, owner: string): string {
+  if (!/^[$A-Z_a-z][$\w]*$/.test(value)) {
+    throw new Error(`${owner} application model name ${JSON.stringify(value)} must be a valid JavaScript identifier because it is exported by generated browser and server facades. Pass an explicit name such as "GuestBookEntry".`);
+  }
+  return value;
 }
 
 // Compile-time guard: relation schema inputs are native Drizzle objects, never serialized graph values.

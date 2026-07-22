@@ -1,11 +1,15 @@
+// typecast-file-boundary: PostgreSQL rows and schema-normalized command payloads are validated before restoring declaration-time model generics.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { ApplicationRetryPolicy, JsonObject, JsonValue } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import postgres from 'postgres';
-import type { ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationRuntimeModelContract } from './application-models.js';
-import type { ApplicationCommandObservation, ApplicationMessageEnvelope, ApplicationStateRevisionRef, CommandDefinition, EventDefinition } from './dsl.js';
+import type { ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationRuntimeModelContract } from './application-models.js';
+import { applicationCommandPrincipal, applicationCommandTrustedContext } from './command-principal.js';
+import { applicationPublicStreamCommitScope } from './application-stream-commit.js';
 import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
+import type { ApplicationCommandObservation, ApplicationMessageEnvelope, ApplicationStateRevisionRef, CommandDefinition, EventDefinition } from './dsl.js';
+import { applicationRelationalChangeScopeDigest } from './relational-runtime.js';
 import { applicationModelChangeCommitScope } from './relational-runtime-contract.js';
 
 export { canonicalApplicationCommandKey } from './command-runtime-contract.js';
@@ -26,6 +30,7 @@ export interface PostgresModelCommandMessage<TInput extends object> {
   readonly context?: {
     readonly values: Readonly<Record<string, JsonValue>>;
     readonly digest: string;
+    readonly changeScopes?: Readonly<Record<string, string>>;
   };
 }
 
@@ -47,6 +52,8 @@ export interface PostgresModelCommandExecution<
   };
   readonly model: ApplicationRuntimeModelContract;
   readonly models?: readonly ApplicationRuntimeModelContract[];
+  /** Expose a read-only participant client for related rows of the owning model. */
+  readonly selfRead?: boolean;
   readonly historyModels?: readonly string[];
   readonly retry?: ApplicationRetryPolicy;
   readonly message: PostgresModelCommandMessage<TInput>;
@@ -55,7 +62,7 @@ export interface PostgresModelCommandExecution<
   readonly commands?: readonly CommandDefinition<object, object, Readonly<Record<string, object>>>[];
   readonly ordering?: 'serial' | 'concurrent';
   readonly missingRoute?: string;
-  readonly initialize?: (input: TInput) => TSpec;
+  readonly initialize?: (input: TInput, targetKey: string) => TSpec;
   readonly handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput>;
   readonly databaseUrl?: string;
 }
@@ -65,7 +72,22 @@ export interface PostgresModelCommandResult<TSpec extends object, TStatus extend
   readonly observation: ApplicationCommandObservation;
   readonly output: TOutput;
   readonly model: ApplicationModelObject<TSpec, TStatus>;
+  readonly deleted?: boolean;
   readonly events: readonly ApplicationMessageEnvelope<object>[];
+}
+
+export interface PostgresModelCommandTerminalFailureExecution<TInput extends object = object> {
+  readonly bindingId: string;
+  readonly model: ApplicationRuntimeModelContract;
+  readonly message: PostgresModelCommandMessage<TInput>;
+  readonly databaseUrl?: string;
+  /** Focused runtime/test injection; generated workers use databaseUrl. */
+  readonly sql?: postgres.Sql;
+}
+
+export interface ApplicationCommandTerminalFailure {
+  readonly code: 'processing_failed';
+  readonly attempts: number;
 }
 
 interface CommandResultRow {
@@ -73,6 +95,8 @@ interface CommandResultRow {
   readonly error: unknown;
   readonly model_revision: string;
   readonly target_key: string;
+  readonly model_snapshot: unknown;
+  readonly model_deleted: boolean;
 }
 
 export class DurableCommandRejectedError extends Error {
@@ -131,6 +155,36 @@ export async function closePostgresModelCommandRuntime(): Promise<void> {
   await Promise.all(clients.map((client) => client.end({ timeout: 1 })));
 }
 
+/**
+ * Records the redacted terminal result of an exhausted command delivery. The
+ * handler transaction has already rolled back, so this deliberately writes
+ * only the inbox/result pair required to end durable progress polling.
+ */
+export async function recordPostgresModelCommandTerminalFailure<TInput extends object>(
+  execution: PostgresModelCommandTerminalFailureExecution<TInput>,
+  failure: ApplicationCommandTerminalFailure,
+): Promise<void> {
+  if (!Number.isSafeInteger(failure.attempts) || failure.attempts < 1) {
+    throw new Error('applik8s-command-terminal-failure-attempts-invalid: attempts must be a positive safe integer.');
+  }
+  const sql = execution.sql ?? postgresCommandDatabase(execution.model, execution.databaseUrl);
+  const scope = commandScope(execution);
+  const revision = commandDeterministicId(scope, 'terminal-failure');
+  await sql.begin(async (transaction) => {
+    await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [scope]);
+    const existing = await transaction.unsafe('SELECT scope FROM applik8s_command_results WHERE scope = $1 LIMIT 1', [scope]);
+    if (existing.length > 0) return;
+    await transaction.unsafe(
+      'INSERT INTO applik8s_command_inbox (scope, binding_id, model, target_key, idempotency_key, message_id, input) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb) ON CONFLICT (scope) DO NOTHING',
+      [scope, execution.bindingId, execution.model.name, execution.message.targetKey, execution.message.idempotencyKey, execution.message.id, postgresJson(transaction, execution.message.input)],
+    );
+    await transaction.unsafe(
+      'INSERT INTO applik8s_command_results (scope, output, error, model_revision) VALUES ($1, NULL, $2::jsonb, $3) ON CONFLICT (scope) DO NOTHING',
+      [scope, postgresJson(transaction, { name: 'internalFailure', payload: failure }), revision],
+    );
+  });
+}
+
 export async function executePostgresModelCommand<
   TSpec extends object,
   TStatus extends object,
@@ -148,14 +202,16 @@ export async function executePostgresModelCommand<
       await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [applicationModelChangeCommitScope(execution.message.context.digest)]);
     }
     await installCommandTrustedContext(transaction, execution.model, execution.message.context);
-    const completedRows = await transaction.unsafe('SELECT result.output, result.error, result.model_revision, inbox.target_key FROM applik8s_command_results result JOIN applik8s_command_inbox inbox ON inbox.scope = result.scope WHERE result.scope = $1 LIMIT 1', [scope]);
+    const completedRows = await transaction.unsafe('SELECT result.output, result.error, result.model_revision, result.model_snapshot, result.model_deleted, inbox.target_key FROM applik8s_command_results result JOIN applik8s_command_inbox inbox ON inbox.scope = result.scope WHERE result.scope = $1 LIMIT 1', [scope]);
     // typecast: the fixed projection comes from an Applik8s-owned command-results migration.
     const completed = completedRows[0] as CommandResultRow | undefined;
     if (completed) {
       if (completed.error) {
         return { rejected: true, rejection: durableRejection(completed.error), replayed: true, revision: completed.model_revision, targetKey: completed.target_key };
       }
-      const current = await lockedModelObject<TSpec, TStatus>(transaction, execution.model, completed.target_key, false);
+      const current = completed.model_deleted
+        ? durableModelSnapshot<TSpec, TStatus>(completed.model_snapshot, completed.target_key, completed.model_revision)
+        : await lockedModelObject<TSpec, TStatus>(transaction, execution.model, completed.target_key, false);
       if (!current) {
         throw new Error(`applik8s-command-result-state-missing: Durable result ${scope} exists but model ${execution.model.name}/${execution.message.targetKey} is missing.`);
       }
@@ -166,6 +222,7 @@ export async function executePostgresModelCommand<
         // typecast: durable output was validated against this binding's versioned output schema before it was committed.
         output: completed.output as TOutput,
         model: current,
+        ...(completed.model_deleted ? { deleted: true } : {}),
         events: [],
       };
     }
@@ -210,16 +267,21 @@ export async function executePostgresModelCommand<
       }
       before = {
         id: effectiveTargetKey,
-        spec: execution.initialize(execution.message.input),
+        spec: execution.initialize(execution.message.input, effectiveTargetKey),
         revision: commandDeterministicId(scope, 'initial-revision'),
       };
       initializedTarget = true;
       const initialized = await insertModelObject(transaction, execution.model, before, !serial);
       if (!serial && initialized.length === 0) throw concurrentCommandModification();
+      if (execution.model.storageShape === 'native-relational' && initialized[0] && typeof initialized[0] === 'object') {
+        before = { ...before, spec: nativeRowToProperties(execution.model, initialized[0] as NativeModelRow) as TSpec };
+      }
     }
+    if (!before) throw new Error(`applik8s-command-target-unresolved: Model ${execution.model.name}/${effectiveTargetKey} was not loaded or initialized.`);
 
     let stagedSpec = before.spec;
     let stagedStatus = before.status;
+    let deleteTarget = false;
     await transaction.unsafe(
       'INSERT INTO applik8s_command_inbox (scope, binding_id, model, target_key, idempotency_key, message_id, input) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)',
       [scope, execution.bindingId, execution.model.name, effectiveTargetKey, execution.message.idempotencyKey, execution.message.id, postgresJson(transaction, execution.message.input)],
@@ -234,7 +296,7 @@ export async function executePostgresModelCommand<
         // typecast: model patch keys are constrained to Partial<TStatus>; merging them preserves the status contract.
         stagedStatus = { ...(stagedStatus ?? {}), ...patch.status } as TStatus;
       }
-    }, () => stagedSpec, () => stagedStatus);
+    }, () => stagedSpec, () => stagedStatus, () => { deleteTarget = true; });
     const updateTarget: ApplicationModelCommandContext<Readonly<Record<string, object>>>['update'] = async <TValue extends object>(model: ApplicationModelCommandTarget<TValue, object>, patch: Partial<TValue>, options?: { readonly ifRevision?: string }) => {
       if (model.id !== target.id) throw new Error('applik8s-command-update-target-invalid: context.update() may only mutate the locked command target; declare other models as transaction participants.');
       if (options?.ifRevision && options.ifRevision !== before.revision) {
@@ -245,12 +307,15 @@ export async function executePostgresModelCommand<
       // typecast: model identity was checked against the single locked target and the patch's TValue shape is the same handler-bound model value.
       return { value: { identity: model.identity, value: stagedSpec as unknown as TValue, ...(model.revision ? { revision: model.revision } : {}) }, changed };
     };
+    const principal = applicationCommandPrincipal(execution.message.context);
     const context: ApplicationModelCommandContext<Readonly<Record<string, object>>> = {
       commandId: execution.message.id,
       ...(execution.message.correlationId ? { correlationId: execution.message.correlationId } : {}),
       ...(execution.message.causationId ? { causationId: execution.message.causationId } : {}),
       attempt: execution.message.attempt ?? 1,
       now: recordedAt,
+      ...(principal ? { principal } : {}),
+      trustedContext: applicationCommandTrustedContext(execution.message.context),
       models: commandParticipantClients(transaction, execution, scope),
       update: updateTarget,
       id: (idScope = 'default') => commandDeterministicId(scope, `handler:${idScope}`),
@@ -262,12 +327,13 @@ export async function executePostgresModelCommand<
         // typecast: the event and payload retain their generic relationship at the public emit call and are erased only for durable outbox storage.
         emitted.push({ definition: event as EventDefinition<object>, payload });
       },
-      send(command, payload, options) {
-        const declared = allowedCommands.get(command.id);
-        if (!declared) throw new Error(`applik8s-command-undeclared-command-outbox: Handler ${execution.bindingId} sent ${command.id}, but it is not declared in transaction.commands.`);
-        validateJsonMessageSchema(execution.schemas?.commands?.[command.id], payload, `${command.name}.${command.version}.input`);
+      send(command: unknown, payload: object, options: { readonly targetKey: import('./application-models.js').ApplicationCommandKey; readonly idempotencyKey?: string }) {
+        const commandId = applicationOutboxCommandId(command);
+        const declared = allowedCommands.get(commandId);
+        if (!declared) throw new Error(`applik8s-command-undeclared-command-outbox: Handler ${execution.bindingId} sent ${commandId}, but it is not declared in transaction.commands.`);
+        validateJsonMessageSchema(execution.schemas?.commands?.[commandId], payload, `${declared.name}.${declared.version}.input`);
         const targetKey = canonicalApplicationCommandKey(options.targetKey);
-        emittedCommands.push({ definition: declared, payload, targetKey, idempotencyKey: options.idempotencyKey ?? commandDeterministicId(scope, `command-idempotency:${emittedCommands.length}:${command.id}`) });
+        emittedCommands.push({ definition: declared, payload, targetKey, idempotencyKey: options.idempotencyKey ?? commandDeterministicId(scope, `command-idempotency:${emittedCommands.length}:${commandId}`) });
       },
       reject(name, payload) {
         if (!execution.errors?.includes(name)) {
@@ -302,33 +368,45 @@ export async function executePostgresModelCommand<
     }
     await transaction.unsafe('RELEASE SAVEPOINT applik8s_command_handler');
     const revision = commandDeterministicId(scope, `revision:${JSON.stringify(stagedSpec)}:${JSON.stringify(stagedStatus ?? null)}`);
+    const committedSpec = modelSpecAtRevision(execution.model, stagedSpec, revision);
+    const completedOutput = modelLifecycleOutput(execution.model, execution.command.name, output, committedSpec, revision);
     const after: ApplicationModelObject<TSpec, TStatus> = {
       id: before.id,
-      spec: stagedSpec,
+      spec: committedSpec,
       ...(stagedStatus ? { status: stagedStatus } : {}),
       revision,
     };
 
-    const updated = await updateModelObject(transaction, execution.model, before, after, serial);
+    const updated = deleteTarget
+      ? await deleteModelObject(transaction, execution.model, before, serial)
+      : await updateModelObject(transaction, execution.model, before, after, serial);
     if (!serial && updated.length === 0) throw concurrentCommandModification();
     await transaction.unsafe(
       'INSERT INTO applik8s_model_transitions (id, scope, model, target_key, before_state, after_state, model_revision) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)',
-      [commandDeterministicId(scope, 'transition'), scope, execution.model.name, effectiveTargetKey, postgresJson(transaction, before), postgresJson(transaction, after), revision],
+      [commandDeterministicId(scope, 'transition'), scope, execution.model.name, effectiveTargetKey, postgresJson(transaction, before), postgresJson(transaction, deleteTarget ? { id: after.id, deleted: true, revision } : after), revision],
     );
     if (execution.history) {
       await transaction.unsafe(
         'INSERT INTO applik8s_model_history (id, scope, model, target_key, before_state, after_state, model_revision) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7)',
-        [commandDeterministicId(scope, 'history'), scope, execution.model.name, effectiveTargetKey, postgresJson(transaction, before), postgresJson(transaction, after), revision],
+        [commandDeterministicId(scope, 'history'), scope, execution.model.name, effectiveTargetKey, postgresJson(transaction, before), postgresJson(transaction, deleteTarget ? { id: after.id, deleted: true, revision } : after), revision],
       );
     }
-    await recordGenericModelChange(transaction, execution.model, effectiveTargetKey, revision, execution.message.context, initializedTarget ? {} : before.spec, after.spec, initializedTarget ? 'insert' : 'update');
+    await recordGenericModelChange(transaction, execution.model, effectiveTargetKey, revision, execution.message.context, initializedTarget ? {} : before.spec, deleteTarget ? {} : after.spec, deleteTarget ? 'delete' : initializedTarget ? 'insert' : 'update');
 
     const envelopes: ApplicationMessageEnvelope<object>[] = [];
+    // Identity values are allocated by INSERT, not commit. Serialize every
+    // transaction that can allocate a sequence for the same public contract so
+    // a reader can safely use sequence as its durable committed frontier.
+    const publicStreamCommitScopes = [...new Set(emitted.map((item) => applicationPublicStreamCommitScope(item.definition.name, item.definition.version)))].sort();
+    for (const publicStreamCommitScope of publicStreamCommitScopes) {
+      await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [publicStreamCommitScope]);
+    }
     for (const [index, item] of emitted.entries()) {
+      const payload = modelLifecyclePayload(execution.model, item.definition, item.payload, committedSpec, revision);
       const envelope: ApplicationMessageEnvelope<object> = {
         id: commandDeterministicId(scope, `event:${index}:${item.definition.id}`),
         contract: { name: item.definition.name, version: item.definition.version },
-        payload: item.payload,
+        payload,
         recordedAt,
         ...(execution.message.tenant ? { tenant: execution.message.tenant } : {}),
         correlationId: execution.message.correlationId ?? execution.message.id,
@@ -337,16 +415,16 @@ export async function executePostgresModelCommand<
         ...(execution.message.context ? { trustedContext: execution.message.context } : {}),
         attempt: execution.message.attempt ?? 1,
         partitionKey: effectiveTargetKey,
-        stateRevision: modelStateRevision(execution.model.name, effectiveTargetKey, revision),
+        ...(deleteTarget ? {} : { stateRevision: modelStateRevision(execution.model.name, effectiveTargetKey, revision) }),
       };
       envelopes.push(envelope);
       await transaction.unsafe(
         'INSERT INTO applik8s_event_outbox (id, scope, contract_name, contract_version, partition_key, envelope, payload) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)',
-        [envelope.id, scope, item.definition.name, item.definition.version, effectiveTargetKey, postgresJson(transaction, envelope), postgresJson(transaction, item.payload)],
+        [envelope.id, scope, item.definition.name, item.definition.version, effectiveTargetKey, postgresJson(transaction, envelope), postgresJson(transaction, payload)],
       );
       await transaction.unsafe(
         'INSERT INTO applik8s_public_stream_events (id, contract_name, contract_version, partition_key, envelope, payload, context_digest, recorded_at) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8::timestamptz)',
-        [envelope.id, item.definition.name, item.definition.version, effectiveTargetKey, postgresJson(transaction, envelope), postgresJson(transaction, item.payload), execution.message.context?.digest ?? null, recordedAt],
+        [envelope.id, item.definition.name, item.definition.version, effectiveTargetKey, postgresJson(transaction, envelope), postgresJson(transaction, payload), execution.message.context?.digest ?? null, recordedAt],
       );
     }
     for (const [index, item] of emittedCommands.entries()) {
@@ -369,14 +447,15 @@ export async function executePostgresModelCommand<
       );
     }
     await transaction.unsafe(
-      'INSERT INTO applik8s_command_results (scope, output, error, model_revision) VALUES ($1, $2::jsonb, NULL, $3)',
-      [scope, postgresJson(transaction, output), revision],
+      'INSERT INTO applik8s_command_results (scope, output, error, model_revision, model_snapshot, model_deleted) VALUES ($1, $2::jsonb, NULL, $3, $4::jsonb, $5)',
+      [scope, postgresJson(transaction, completedOutput), revision, postgresJson(transaction, after), deleteTarget],
     );
     return {
       replayed: false,
-      observation: commandObservation(execution, 'completed', false, revision, true, undefined, effectiveTargetKey),
-      output,
+      observation: commandObservation(execution, 'completed', false, revision, !deleteTarget, undefined, effectiveTargetKey),
+      output: completedOutput as TOutput,
       model: after,
+      ...(deleteTarget ? { deleted: true } : {}),
       events: envelopes,
     };
   }), execution.retry);
@@ -388,6 +467,24 @@ export async function executePostgresModelCommand<
     );
   }
   return outcome;
+}
+
+function applicationOutboxCommandId(command: unknown): string {
+  const id = command && typeof command === 'object' ? Reflect.get(command, 'id') : undefined;
+  if (typeof id === 'string') return id;
+  const operation = (typeof command === 'object' || typeof command === 'function') && command !== null
+    ? Reflect.get(command, 'operation')
+    : undefined;
+  if (!operation || typeof operation !== 'object') throw new Error('applik8s-command-outbox-operation-invalid: Outbox commands must be declared command contracts or registered model operations.');
+  const operationId = Reflect.get(operation, 'id');
+  const model = Reflect.get(operation, 'model');
+  const name = Reflect.get(operation, 'name');
+  const kind = Reflect.get(operation, 'operation');
+  if (typeof model === 'string' && typeof name === 'string' && (kind === 'create' || kind === 'update' || kind === 'delete')) {
+    return `models.${model}.${name}.v1`;
+  }
+  if (typeof operationId === 'string') return operationId;
+  throw new Error('applik8s-command-outbox-operation-invalid: Registered model operation has no durable command identity.');
 }
 
 function installCommandEffectGuards(): void {
@@ -472,14 +569,53 @@ function modelStateRevision(model: string, target: string, revision: string): Ap
   return { authority: 'model', model, target, revision };
 }
 
+function modelLifecyclePayload(model: ApplicationRuntimeModelContract, definition: EventDefinition<object>, payload: object, committedSpec: object, revision: string): object {
+  const modelName = model.name;
+  const expectedPrefix = `models.${modelName}.`;
+  if (!definition.name.startsWith(expectedPrefix)) return payload;
+  const operation = Reflect.get(payload, 'operation');
+  if (operation !== 'create' && operation !== 'update' && operation !== 'delete') {
+    return typeof operation === 'string' && Reflect.has(payload, 'result')
+      ? { ...payload, current: committedSpec, revision }
+      : payload;
+  }
+  if (operation === 'create') return { ...payload, value: committedSpec, revision };
+  if (operation === 'update') return { ...payload, current: committedSpec, revision };
+  return { ...payload, revision };
+}
+
+function modelLifecycleOutput(model: ApplicationRuntimeModelContract, commandName: string, output: object, committedSpec: object, revision: string): object {
+  if (commandName !== `models.${model.name}.create` && commandName !== `models.${model.name}.update`) return output;
+  return { ...output, value: committedSpec, revision };
+}
+
+function modelSpecAtRevision<TSpec extends object>(model: ApplicationRuntimeModelContract, spec: TSpec, revision: string): TSpec {
+  const revisionProperty = model.storageShape === 'native-relational' ? model.nativeRelational?.revision?.property : undefined;
+  if (!revisionProperty) return spec;
+  return { ...spec, [revisionProperty]: revision };
+}
+
 function commandParticipantClients(
   transaction: postgres.TransactionSql,
-  execution: Pick<PostgresModelCommandExecution<object, object, object, object>, 'bindingId' | 'historyModels' | 'message' | 'model' | 'models'>,
+  execution: Pick<PostgresModelCommandExecution<object, object, object, object>, 'bindingId' | 'historyModels' | 'message' | 'model' | 'models' | 'selfRead'>,
   scope: string,
 ): Readonly<Record<string, ApplicationModelCommandParticipantClient>> {
   const clients: Record<string, ApplicationModelCommandParticipantClient> = {};
   for (const model of execution.models ?? []) {
-    if (model.name === execution.model.name) continue;
+    if (model.name === execution.model.name) {
+      if (!execution.selfRead) continue;
+      const mutationError = () => {
+        throw new Error(`applik8s-command-self-participant-read-only: Model ${model.name} is available through context.models only for related-row reads; mutate the locked target through the handler model.`);
+      };
+      clients[model.name] = {
+        get: (ref) => lockedModelObject<object, object>(transaction, model, ref.id, true),
+        query: (options) => lockedModelObjects<object, object>(transaction, model, options),
+        create: mutationError,
+        patch: mutationError,
+        delete: mutationError,
+      };
+      continue;
+    }
     let operation = 0;
     const nextRevision = (purpose: string) => commandDeterministicId(scope, `participant:${model.name}:${operation++}:${purpose}`);
     const transition = async (before: ApplicationModelObject<object, object>, after: ApplicationModelObject<object, object>, revision: string) => {
@@ -497,6 +633,7 @@ function commandParticipantClients(
     };
     clients[model.name] = {
       get: (ref) => lockedModelObject<object, object>(transaction, model, ref.id, true),
+      query: (options) => lockedModelObjects<object, object>(transaction, model, options),
       async create(input) {
         const revision = nextRevision('create');
         const created = { id: input.id ?? nextRevision('id'), spec: input.spec, revision };
@@ -657,11 +794,54 @@ async function lockedModelObject<TSpec extends object, TStatus extends object>(
   };
 }
 
+async function lockedModelObjects<TSpec extends object, TStatus extends object>(
+  transaction: postgres.TransactionSql,
+  model: ApplicationRuntimeModelContract,
+  query: ApplicationModelQueryOptions<TSpec> & { readonly limit: number },
+): Promise<ApplicationModelQueryPage<TSpec, TStatus>> {
+  if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 100) throw new Error(`applik8s-command-participant-query-limit-invalid: Model ${model.name} requires a limit between 1 and 100.`);
+  if (query.cursor || (query.orderBy?.length ?? 0) > 0) throw new Error(`applik8s-command-participant-query-unsupported: Model ${model.name} transaction queries currently support only bounded equality filters.`);
+  if (model.storageShape === 'native-relational') {
+    const native = requiredNativeRelationalContract(model);
+    const parameters: unknown[] = [];
+    const predicates = Object.entries(query.where ?? {}).map(([property, value]) => {
+      const column = native.columns.find((candidate) => candidate.property === property)?.column;
+      if (!column) throw new Error(`applik8s-command-participant-query-field-invalid: Model ${model.name} has no declared property ${property}.`);
+      if (value === undefined) throw new Error(`applik8s-command-participant-query-value-invalid: Model ${model.name}.${property} cannot compare undefined.`);
+      if (value === null) return `${quoteIdentifier(column)} IS NULL`;
+      parameters.push(value);
+      return `${quoteIdentifier(column)} = $${parameters.length}`;
+    });
+    const where = predicates.length > 0 ? ` WHERE ${predicates.join(' AND ')}` : '';
+    const rows = await transaction.unsafe(`SELECT * FROM ${qualifiedModelTable(model)}${where} ORDER BY ${quoteIdentifier(native.identity.column)} ASC LIMIT ${query.limit} FOR UPDATE`, parameters as never[]);
+    return {
+      items: rows.map((row) => {
+        const value = nativeRowToProperties(model, row as NativeModelRow) as TSpec;
+        const identity = Reflect.get(value, native.identity.property);
+        const revision = native.revision ? Reflect.get(value, native.revision.property) : undefined;
+        return { id: String(identity), spec: value, ...(typeof revision === 'string' ? { revision } : {}) };
+      }),
+    };
+  }
+  const where = query.where && Object.keys(query.where).length > 0 ? ' WHERE spec @> $1::jsonb' : '';
+  const parameters = where ? [JSON.stringify(query.where)] : [];
+  const rows = await transaction.unsafe(`SELECT id, spec, status, revision FROM ${qualifiedModelTable(model)}${where} ORDER BY id ASC LIMIT ${query.limit} FOR UPDATE`, parameters);
+  return {
+    items: rows.map((row) => {
+      // postgres.js deliberately exposes a broad Row & Iterable<Row> result
+      // shape; this query selects the complete durable model-row contract.
+      const modelRow = row as unknown as ModelRow;
+      return { id: modelRow.id, spec: modelRow.spec as TSpec, ...(modelRow.status ? { status: modelRow.status as TStatus } : {}), revision: modelRow.revision };
+    }),
+  };
+}
+
 function commandTarget<TSpec extends object, TStatus extends object>(
   before: ApplicationModelObject<TSpec, TStatus>,
   patch: (patch: ApplicationModelPatch<TSpec, TStatus>) => void,
   spec: () => TSpec,
   status: () => TStatus | undefined,
+  remove: () => void,
 ): ApplicationModelCommandTarget<TSpec, TStatus> {
   return {
     id: before.id,
@@ -677,6 +857,7 @@ function commandTarget<TSpec extends object, TStatus extends object>(
     },
     ...(before.revision ? { revision: before.revision } : {}),
     patch,
+    delete: remove,
   };
 }
 
@@ -699,7 +880,7 @@ async function insertModelObject<TSpec extends object, TStatus extends object>(
   const columns = entries.map(({ column }) => quoteIdentifier(column)).join(', ');
   const placeholders = entries.map((_entry, index) => `$${index + 1}`).join(', ');
   const parameters = entries.map(({ property }) => Reflect.get(properties, property));
-  return transaction.unsafe(`INSERT INTO ${qualifiedModelTable(model)} (${columns}) VALUES (${placeholders})${ignoreConflict ? ` ON CONFLICT (${quoteIdentifier(native.identity.column)}) DO NOTHING` : ''} RETURNING ${quoteIdentifier(native.identity.column)}`, parameters);
+  return transaction.unsafe(`INSERT INTO ${qualifiedModelTable(model)} (${columns}) VALUES (${placeholders})${ignoreConflict ? ` ON CONFLICT (${quoteIdentifier(native.identity.column)}) DO NOTHING` : ''} RETURNING *`, parameters);
 }
 
 async function updateModelObject<TSpec extends object, TStatus extends object>(
@@ -732,11 +913,56 @@ async function updateModelObject<TSpec extends object, TStatus extends object>(
   return transaction.unsafe(`UPDATE ${qualifiedModelTable(model)} SET ${assignments} WHERE ${predicate} RETURNING ${quoteIdentifier(native.identity.column)}`, parameters as never[]);
 }
 
+async function deleteModelObject<TSpec extends object, TStatus extends object>(
+  transaction: postgres.TransactionSql,
+  model: ApplicationRuntimeModelContract,
+  before: ApplicationModelObject<TSpec, TStatus>,
+  locked: boolean,
+): Promise<readonly unknown[]> {
+  if (model.storageShape !== 'native-relational') {
+    const parameters: unknown[] = [before.id];
+    let predicate = 'id = $1';
+    if (!locked) {
+      parameters.push(before.revision ?? '');
+      predicate += ` AND revision = $${parameters.length}`;
+    }
+    return transaction.unsafe(`DELETE FROM ${qualifiedModelTable(model)} WHERE ${predicate} RETURNING id`, parameters as never[]);
+  }
+  const native = requiredNativeRelationalContract(model);
+  const parameters: unknown[] = [before.id];
+  let predicate = `${quoteIdentifier(native.identity.column)} = $1`;
+  if (!locked) {
+    if (!native.revision) throw new Error(`Native model ${model.name} cannot execute concurrent durable deletion without a revision column.`);
+    parameters.push(before.revision ?? '');
+    predicate += ` AND ${quoteIdentifier(native.revision.column)} = $${parameters.length}`;
+  }
+  return transaction.unsafe(`DELETE FROM ${qualifiedModelTable(model)} WHERE ${predicate} RETURNING ${quoteIdentifier(native.identity.column)}`, parameters as never[]);
+}
+
+function durableModelSnapshot<TSpec extends object, TStatus extends object>(value: unknown, id: string, revision: string): ApplicationModelObject<TSpec, TStatus> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const spec = Reflect.get(value, 'spec');
+  if (!spec || typeof spec !== 'object') return undefined;
+  const status = Reflect.get(value, 'status');
+  return {
+    id,
+    spec: spec as TSpec,
+    ...(status && typeof status === 'object' ? { status: status as TStatus } : {}),
+    revision,
+  };
+}
+
 async function installCommandTrustedContext(
   transaction: postgres.TransactionSql,
   model: ApplicationRuntimeModelContract,
   context: PostgresModelCommandMessage<object>['context'],
 ): Promise<void> {
+  const principal = applicationCommandPrincipal(context);
+  // Install the actor setting on every transaction. An explicit empty value
+  // prevents a pooled connection from retaining an earlier actor if this
+  // command has no admitted principal; model defaults use NULLIF to fail
+  // actor-owned NOT NULL columns closed in that case.
+  await transaction.unsafe('SELECT set_config($1, $2, true)', ['applik8s.principal.id', principal?.id ?? '']);
   const access = model.nativeRelational?.access;
   if (!access) return;
   const value = context?.values[access.context];
@@ -757,10 +983,12 @@ async function recordGenericModelChange(
 ): Promise<void> {
   if (model.storageShape !== 'native-relational') return;
   if (!context?.digest) throw new Error(`applik8s-command-context-digest-missing: Native model ${model.name} changes require a server-admitted context digest.`);
+  if (!context.changeScopes) throw new Error(`applik8s-command-change-scopes-missing: Native model ${model.name} changes require server-admitted relational change scopes.`);
+  const changeScope = applicationRelationalChangeScopeDigest(context.changeScopes, model.nativeRelational?.access?.context);
   const changedFields = [...new Set([...Object.keys(before), ...Object.keys(after)].filter((field) => !Object.is(Reflect.get(before, field), Reflect.get(after, field))))].sort();
   await transaction.unsafe(
     'INSERT INTO applik8s_model_changes (model, operation, identity, revision, context_digest, changed_fields, recorded_at) VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb, now())',
-    [model.name, operation, JSON.stringify(identity), revision, context.digest, JSON.stringify(changedFields)],
+    [model.name, operation, JSON.stringify(identity), revision, changeScope, JSON.stringify(changedFields)],
   );
 }
 

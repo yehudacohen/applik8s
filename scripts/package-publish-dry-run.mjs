@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { publishablePackageDirectories } from './publishable-packages.mjs';
 
 const execFileAsync = promisify(execFile);
 const npmCache = resolve('node_modules/.cache/applik8s-npm-pack');
@@ -9,21 +10,7 @@ await mkdir(npmCache, { recursive: true });
 
 await execFileAsync(process.execPath, ['scripts/build-publishable-packages.mjs']);
 
-const publishablePackages = [
-  'packages/applik8s',
-  'packages/client',
-  'packages/react',
-  'packages/vite',
-  'packages/tanstack-start',
-  'packages/core',
-  'packages/sdk',
-  'packages/compiler',
-  'packages/runtime-contract',
-  'packages/runtime',
-  'packages/testing',
-  'packages/typekro-adapter',
-  'packages/typetainer',
-];
+const publishablePackages = publishablePackageDirectories;
 
 const failures = [];
 

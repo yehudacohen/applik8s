@@ -60,6 +60,7 @@ import {
 describe('application graph substrate contract', () => {
   it('names the v0.3 substrate node and provider interfaces explicitly', () => {
     expect(applicationGraphNodeKinds).toEqual([
+      'installation',
       'crd',
       'model',
       'server',
@@ -79,8 +80,10 @@ describe('application graph substrate contract', () => {
       'query',
       'gateway',
       'stream',
+      'streamProcessor',
       'subscription',
       'projection',
+      'objectStore',
       'job',
       'config',
       'secret',
@@ -105,7 +108,10 @@ describe('application graph substrate contract', () => {
       'WorkflowEngine',
       'ProjectionStore',
       'ApplicationHost',
+      'ContainerRegistry',
       'RequestIdentity',
+      'Authorization',
+      'StructuredGeneration',
     ]);
     expect(isApplicationGraphNodeKind('job')).toBe(true);
     expect(isApplicationGraphNodeKind('workflow')).toBe(true);
@@ -312,6 +318,32 @@ describe('application graph substrate contract', () => {
     expect(serializeApplicationGraph(graph)).toContain('"apiVersion":"applik8s.appGraph/v1alpha1"');
   });
 
+  it('preserves opaque installation references across the durable graph boundary', () => {
+    const namespace = new Proxy({}, {
+      get(_target, property) {
+        if (property === Symbol.for('TypeKro.KubernetesRef')) return true;
+        if (property === 'resourceId') return '__schema__';
+        if (property === 'fieldPath') return 'spec.name';
+        return undefined;
+      },
+    });
+    const endpoint = { expression: '"http://" + string(schema.spec.hostname)', __isTemplate: true };
+    const base = guestBookSubstrateGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: base.nodes.map((node) => node.id === 'provider.model.postgres'
+        ? { ...node, config: { namespace, endpoint } }
+        : node),
+    };
+
+    const serialized = JSON.parse(serializeApplicationGraph(graph));
+    const provider = serialized.nodes.find((node: { id: string }) => node.id === 'provider.model.postgres');
+    expect(provider.config).toEqual({
+      endpoint: ['$', '{"http://" + string(schema.spec.hostname)}'].join(''),
+      namespace: ['$', '{schema.spec.name}'].join(''),
+    });
+  });
+
   it('keeps provider requirements and bindings as first-class graph contracts', () => {
     const graph = guestBookSubstrateGraph();
 
@@ -478,7 +510,10 @@ describe('application graph substrate contract', () => {
       'WorkflowEngine:failClosedReserved',
       'ProjectionStore:failClosedReserved',
       'ApplicationHost:failClosedReserved',
+      'ContainerRegistry:failClosedReserved',
       'RequestIdentity:failClosedReserved',
+      'Authorization:failClosedReserved',
+      'StructuredGeneration:failClosedReserved',
     ]);
     expect(contracts.flatMap(validateApplicationProviderInterfaceContract)).toEqual([]);
     expect(validateApplicationProviderInterfaceContract({ interface: 'Queue', surface: 'stablePublicApi', support: 'failClosedReserved', diagnostics: [] })).toEqual(expect.arrayContaining([
@@ -542,7 +577,10 @@ describe('application graph substrate contract', () => {
       WorkflowEngine: 'workflowEngine',
       ProjectionStore: 'projectionStore',
       ApplicationHost: 'applicationHost',
+      ContainerRegistry: 'containerRegistry',
       RequestIdentity: 'requestIdentity',
+      Authorization: 'authorization',
+      StructuredGeneration: 'taskCapability',
     };
     const requirements = applicationProviderInterfaceKinds.map((providerInterface) => ({
       id: `requirement.${providerInterface}`,
@@ -556,7 +594,7 @@ describe('application graph substrate contract', () => {
       },
     }) satisfies ApplicationProviderRequirement);
 
-    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['modelStore', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'projectionStore', 'applicationHost', 'requestIdentity']);
+    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['modelStore', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'projectionStore', 'applicationHost', 'containerRegistry', 'requestIdentity', 'authorization', 'taskCapability']);
     for (const requirement of requirements) {
       expect(requirement.diagnostics.missing).toContain(requirement.interface);
     }

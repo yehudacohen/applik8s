@@ -2,11 +2,11 @@ import { execFile } from 'node:child_process';
 import { chmod, cp, mkdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { publishablePackageNames } from './publishable-packages.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(process.cwd());
 const buildRoot = join(root, '.package-build');
-const packages = ['applik8s', 'client', 'react', 'vite', 'tanstack-start', 'core', 'sdk', 'compiler', 'runtime-contract', 'runtime', 'testing', 'typekro-adapter', 'typetainer'];
 
 await rm(buildRoot, { recursive: true, force: true });
 await execFileAsync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '--project', join(root, 'tsconfig.json'), '--rootDir', root, '--outDir', buildRoot, '--declaration', '--declarationMap', 'false', '--sourceMap', 'false', '--noEmit', 'false'], {
@@ -14,7 +14,7 @@ await execFileAsync(process.execPath, [join(root, 'node_modules/typescript/bin/t
   maxBuffer: 20 * 1024 * 1024,
 });
 
-for (const packageName of packages) {
+for (const packageName of publishablePackageNames) {
   const packageRoot = join(root, 'packages', packageName);
   const dist = join(packageRoot, 'dist');
   await rm(dist, { recursive: true, force: true });
@@ -23,4 +23,5 @@ for (const packageName of packages) {
 }
 
 await cp(join(root, 'packages/applik8s/src/node-build-runner.mjs'), join(root, 'packages/applik8s/dist/node-build-runner.mjs'));
+await cp(join(root, 'packages/applik8s/src/node-delete-runner.mjs'), join(root, 'packages/applik8s/dist/node-delete-runner.mjs'));
 await chmod(join(root, 'packages/applik8s/dist/bin.js'), 0o755);

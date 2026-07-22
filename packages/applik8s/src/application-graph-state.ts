@@ -18,28 +18,37 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
     providerRequirements: dedupeApplicationProviderRequirements(state.providerRequirements),
     providerBindings: dedupeApplicationProviderBindings(state.providerBindings),
     compatibility: {
-      stablePublicApis: ['sdk.kubernetesComposition', 'app.server', 'app.http', 'app.crd', 'app.resource', 'app.model', 'app.reconcile', 'app.storage.postgres', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'app.aggregate', 'app.config', 'app.secret', 'app.expose', 'app.query', 'app.gateway', 'app.stream', 'app.subscription', 'app.projection', 'Resource.index', 'Resource.increment', 'command', 'event', 'stream', 'task', 'workflow', 'Model.on.command', 'app.task', 'app.workflow', 'provider.ModelStore', 'provider.IndexStore', 'provider.CounterStore', 'provider.EventSource', 'provider.EventLog', 'provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.Certificate', 'provider.DnsPublication', 'provider.CredentialStore', 'provider.WorkflowEngine', 'provider.ProjectionStore'],
+      stablePublicApis: ['sdk.kubernetesComposition', 'app.installation', 'app.server', 'app.http', 'app.crd', 'app.resource', 'app.model', 'app.on', 'app.reconcile', 'app.storage.postgres', 'app.objectStore', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'app.select', 'app.selectProvider', 'app.when', 'app.any', 'app.all', 'app.interpolate', 'app.aggregate', 'app.config', 'app.secret', 'app.expose', 'app.query', 'app.gateway', 'app.stream', 'app.subscription', 'app.projection', 'Stream.process', 'Stream.project', 'Stream.subscribe', 'Resource.index', 'Resource.increment', 'command', 'event', 'stream', 'task', 'workflow', 'Model.create', 'Model.update', 'Model.delete', 'Model.on.create', 'Model.on.update', 'Model.on.delete', 'Model.action', 'Model.on.action', 'Model.command', 'Model.on.command', 'app.task', 'app.workflow', 'provider.ModelStore', 'provider.IndexStore', 'provider.CounterStore', 'provider.EventSource', 'provider.EventLog', 'provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.Certificate', 'provider.DnsPublication', 'provider.CredentialStore', 'provider.WorkflowEngine', 'provider.ProjectionStore', 'provider.Authorization', 'provider.StructuredGeneration'],
       documentedInternalContracts: ['ApplicationGraph'],
       experimentalSurfaces: ['app.graph'],
       postV3Surfaces: ['workload-movement-operator', 'additional-provider-adapters'],
       labels: [
         stableApiLabel('sdk.kubernetesComposition', 'v0.2', 'Canonical TypeKro-backed app composition entrypoint.'),
+        stableApiLabel('app.installation', 'v0.7', 'Typed installable Application CRD contract shared by generated manifests, operators, and application code.'),
         stableApiLabel('app.server', 'v0.2', 'Generated app-server workload entrypoint with inferred resources and RBAC.'),
         stableApiLabel('app.http', 'v0.3', 'Golden-path generated HTTP workload entrypoint; aliases app.server while preserving generated artifacts and RBAC.'),
         stableApiLabel('app.crd', 'v0.2', 'Schema-first Kubernetes CRD materialization entrypoint.'),
         stableApiLabel('app.resource', 'v0.3', 'Golden-path Kubernetes control-plane resource declaration that materializes as an app-owned CRD.'),
         { name: 'ApplicationGraph', surface: 'documentedInternalContract', since: 'v0.3', rationale: 'Substrate-freeze app IR before lowering.', implementation: 'implemented' },
         stableApiLabel('app.model', 'v0.3', 'Schema-first storage-backed model materialization entrypoint.'),
+        stableApiLabel('app.on', 'v0.6', 'App-native Kubernetes lifecycle event registration for created, updated, deleted, statusChanged, reconcile, and finalize handlers.'),
         stableApiLabel('app.reconcile', 'v0.3', 'Golden-path app-scoped reconcile handler entrypoint backed by a generated operator install.'),
         stableApiLabel('app.storage.postgres', 'v0.3', 'Golden-path default ModelStore binding for the concrete Postgres provider and generated migration job path.'),
+        stableApiLabel('app.objectStore', 'v0.7', 'Provider-neutral bounded object store declaration with server-only credentials, integrity metadata, and optional signed browser intents.'),
         stableApiLabel('app.job', 'v0.3', 'Durable generated Kubernetes Job task entrypoint with diagnostics and status metadata.'),
         stableApiLabel('app.schedule', 'v0.3', 'Durable generated Kubernetes CronJob task entrypoint with diagnostics and status metadata.'),
         stableApiLabel('app.defaults', 'v0.3', 'App-scoped provider default binding boundary.'),
         stableApiLabel('app.provide', 'v0.3', 'Typed app-scoped provider binding boundary.'),
+        stableApiLabel('app.select', 'v0.7', 'Typed installation-discriminated scalar selection lowered to portable KRO CEL.'),
+        stableApiLabel('app.selectProvider', 'v0.7', 'Deployment-bound provider selection resolved only after concrete installation validation.'),
+        stableApiLabel('app.when', 'v0.7', 'Typed conditional scalar selection without authored CEL.'),
+        stableApiLabel('app.any', 'v0.7', 'Typed disjunction of installation conditions without authored CEL.'),
+        stableApiLabel('app.all', 'v0.7', 'Typed conjunction of installation conditions without authored CEL.'),
+        stableApiLabel('app.interpolate', 'v0.7', 'Typed string composition over installation values without authored CEL.'),
         stableApiLabel('app.aggregate', 'v0.2', 'Generated aggregate worker entrypoint for resource event streams.'),
         stableApiLabel('app.config', 'v0.3', 'App-scoped ConfigMap-backed configuration binding API with explicit env/file metadata.'),
         stableApiLabel('app.secret', 'v0.3', 'App-scoped Secret-backed binding API with explicit redaction metadata.'),
-        stableApiLabel('app.expose', 'v0.3', 'App-scoped HTTP exposure API for the concrete Ingress-backed v0.3 slice; unsupported TLS/Gateway semantics fail closed.'),
+        stableApiLabel('app.expose', 'v0.3', 'App-scoped conditional HTTP exposure through explicit Ingress or NodePort providers, with managed TLS and DNS intent.'),
         stableApiLabel('Resource.index', 'v0.2', 'Cache-backed resource read-model declaration.'),
         stableApiLabel('Resource.increment', 'v0.2', 'Buffered counter operation for generated server/runtime scopes.'),
         stableApiLabel('provider.ModelStore', 'v0.3', 'Typed model storage capability contract backed by the Postgres provider slice.'),
@@ -49,12 +58,21 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
         stableApiLabel('provider.Secret', 'v0.3', 'Defaults to Kubernetes Secret references with explicit object ownership.'),
         stableApiLabel('provider.Queue', 'v0.3', 'Defaults to a bounded resourceVersion-safe ConfigMap queue contract.'),
         stableApiLabel('provider.ObjectStorage', 'v0.3', 'Defaults to bounded ConfigMap-backed objects with an explicit 512 KiB object ceiling.'),
-        stableApiLabel('provider.HttpExposure', 'v0.3', 'Typed HTTP exposure capability contract backed by the Ingress app.expose slice; unsupported provider adapters fail closed.'),
+        stableApiLabel('provider.HttpExposure', 'v0.3', 'Typed HTTP exposure capability contract backed by explicit Ingress and NodePort providers.'),
         stableApiLabel('provider.CredentialStore', 'v0.3', 'Defaults to Kubernetes SecretRef credentials with external object ownership.'),
         { name: 'app.graph', surface: 'experimentalSurface', since: 'v0.3', rationale: 'Direct graph introspection remains experimental while the serialized ApplicationGraph artifact is the documented contract.', implementation: 'failClosedReserved' },
         stableApiLabel('command', 'v0.4', 'Inert versioned command contracts with durable schema, identity, result, and compatibility semantics.'),
         stableApiLabel('event', 'v0.4', 'Inert versioned committed-fact contracts written through declared transactional outboxes.'),
-        stableApiLabel('Model.on.command', 'v0.4', 'Keyed model command declarations lower to the PostgreSQL transaction kernel and inferred bounded processors.'),
+        stableApiLabel('Model.on.command', 'v0.4', 'Deprecated compatibility spelling for keyed model commands; migrate conventional behavior to direct lifecycle mutations during v0.7. Removal is scheduled for 1.0.'),
+        stableApiLabel('Model.create', 'v0.7', 'Direct schema-derived durable relational creation with transactional outbox change delivery.'),
+        stableApiLabel('Model.update', 'v0.7', 'Direct schema-derived durable relational update with transactional outbox change delivery.'),
+        stableApiLabel('Model.delete', 'v0.7', 'Direct schema-derived durable relational deletion with retained typed tombstones.'),
+        stableApiLabel('Model.on.create', 'v0.7', 'Typed bounded processing of committed model creation events.'),
+        stableApiLabel('Model.on.update', 'v0.7', 'Typed bounded processing of committed model update events with previous/current snapshots.'),
+        stableApiLabel('Model.on.delete', 'v0.7', 'Typed bounded processing of committed model deletion events with previous snapshots and tombstones.'),
+        stableApiLabel('Model.action', 'v0.7', 'Single declaration for exceptional non-CRUD model behavior; derives the direct method and its typed committed Model.on.<verb> completion stream. Prefer lifecycle mutations or tasks/workflows where they fit.'),
+        stableApiLabel('Model.on.action', 'v0.7', 'Deprecated compatibility facet for durable model behavior; it is excluded from ordinary examples and scheduled for removal at 1.0.'),
+        stableApiLabel('Model.command', 'v0.4', 'Deprecated compatibility spelling for direct custom model behavior; migrate during v0.7 and remove at 1.0.'),
         stableApiLabel('provider.EventLog', 'v0.4', 'Durable at-least-once transport implemented by NATS JetStream while PostgreSQL remains authoritative.'),
         stableApiLabel('provider.Certificate', 'v0.4', 'Managed TLS intent materializes cert-manager Certificate resources while issuer lifecycle remains platform-owned.'),
         stableApiLabel('provider.DnsPublication', 'v0.4', 'Managed DNS intent materializes external-dns declarations without claiming propagation readiness.'),
@@ -69,7 +87,12 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
         stableApiLabel('app.stream', 'v0.6', 'App-bound replay, retention, partition, compatibility, and authorization contract.'),
         stableApiLabel('app.subscription', 'v0.6', 'Authorized cursor-scoped delivery binding with bounded retry and suspension.'),
         stableApiLabel('app.projection', 'v0.6', 'Rebuildable idempotent projection over an explicit replayable stream.'),
+        stableApiLabel('Stream.process', 'v0.7', 'Durable at-least-once stream processing with PostgreSQL checkpoints, stable event idempotency, bounded retries, and explicit terminal failure policy.'),
+        stableApiLabel('Stream.project', 'v0.7', 'Canonical stream-scoped spelling for a rebuildable projection.'),
+        stableApiLabel('Stream.subscribe', 'v0.7', 'Canonical stream-scoped spelling for an authorized live subscription.'),
         stableApiLabel('provider.ProjectionStore', 'v0.6', 'Disposable analytical projection storage initially implemented by ClickHouse.'),
+        stableApiLabel('provider.Authorization', 'v0.7', 'Provider-neutral versioned authorization decisions separated from request identity and enforced fail closed.'),
+        stableApiLabel('provider.StructuredGeneration', 'v0.7', 'Schema-bound, cancellable structured generation with bounded usage evidence and Secret-backed credentials.'),
         { name: 'workload-movement-operator', surface: 'postV3Surface', rationale: 'Pressure-test application after v0.3 substrate freeze.', implementation: 'postV3' },
         { name: 'additional-provider-adapters', surface: 'postV3Surface', rationale: 'v0.3 ships bounded Kubernetes-native defaults; additional cloud and hosted-service adapters remain incremental.', implementation: 'postV3' },
       ],
@@ -111,6 +134,20 @@ export function isApplicationGraph(value: unknown): value is ApplicationGraph {
 export function addApplicationGraphNode(state: ApplicationGraphState, node: ApplicationGraphNode): void {
   const index = state.graphNodes.findIndex((candidate) => candidate.id === node.id);
   if (index >= 0) {
+    const existing = state.graphNodes[index];
+    if (
+      existing?.kind === 'provider'
+      && node.kind === 'provider'
+      && existing.interface === node.interface
+      && existing.implementation === node.implementation
+    ) {
+      state.graphNodes[index] = {
+        ...existing,
+        ...node,
+        config: { ...(existing.config ?? {}), ...(node.config ?? {}) },
+      };
+      return;
+    }
     state.graphNodes[index] = node;
     return;
   }

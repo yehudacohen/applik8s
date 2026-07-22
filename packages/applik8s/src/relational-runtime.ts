@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHmac, randomUUID } from 'node:crypto';
+import { applicationModelFacet, getRequiredDrizzleApplicationModelFacet } from './native-model-runtime.js';
 import type { ApplicationModelSnapshot, PromotedDrizzleTable } from './native-models.js';
 import type { ApplicationDatabaseBinding } from './application.js';
 import { and, eq, getTableColumns, sql, type InferInsertModel, type InferSelectModel } from 'drizzle-orm';
@@ -15,6 +16,8 @@ export interface ApplicationAdmittedContext {
   /** Server-held secret used to prevent raw access-context values from entering generic change records. */
   readonly digestSecret: string;
 }
+
+export type ApplicationRelationalChangeScopes = Readonly<Record<string, string>>;
 
 export interface ApplicationModelChange {
   readonly model: string;
@@ -118,19 +121,20 @@ export function createApplicationRelationalContext(options: {
       return registered.db.transaction(async (tx) => {
         await tx.execute(sql.raw('set transaction isolation level repeatable read read only'));
         await installTrustedContext(tx, registered.binding, options.admittedContext);
-        await acquireApplicationModelChangeCommitLock(tx, contextDigest(options.admittedContext));
+        const changeScope = relationalChangeScopeDigest(registered.binding, options.admittedContext);
+        await acquireApplicationModelChangeCommitLock(tx, changeScope);
         const value = await active.run({ database: binding.name, db: tx as ApplicationDatabaseClient<Readonly<Record<string, unknown>>> }, handler);
-        const digest = contextDigest(options.admittedContext);
-        const rows = await tx.execute(sql`select coalesce(max(sequence), 0) as sequence from applik8s_model_changes where context_digest = ${digest}`);
+        const rows = await tx.execute(sql`select coalesce(max(sequence), 0) as sequence from applik8s_model_changes where context_digest = ${changeScope}`);
         return { value, sequence: numericResult(rows, 'sequence') };
       });
     },
     async changes(binding, afterSequence, limit = 100) {
       if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new Error('Application model change cursor sequence must be a non-negative safe integer.');
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new Error('Application model change page limit must be between 1 and 1000.');
+      const registered = registeredDatabase(databases, binding);
       return context.run(binding, async () => {
         const db = context.database(binding);
-        const digest = contextDigest(options.admittedContext);
+        const digest = relationalChangeScopeDigest(registered.binding, options.admittedContext);
         const rows = await db.execute(sql`
           select sequence, model, operation, identity, revision, context_digest, changed_fields, recorded_at
           from applik8s_model_changes
@@ -146,8 +150,9 @@ export function createApplicationRelationalContext(options: {
       const registered = registeredDatabase(databases, binding);
       return registered.db.transaction(async (tx) => {
         await installTrustedContext(tx, registered.binding, options.admittedContext);
-        await acquireApplicationModelChangeCommitLock(tx, contextDigest(options.admittedContext));
-        const collector = new MutableChangeCollector(registered.binding, options.admittedContext, now);
+        const changeScope = relationalChangeScopeDigest(registered.binding, options.admittedContext);
+        await acquireApplicationModelChangeCommitLock(tx, changeScope);
+        const collector = new MutableChangeCollector(registered.binding, changeScope, now);
         // typecast: the transaction is created by the same schema-bound Drizzle database and preserves that schema at runtime.
         const typedTransaction = tx as unknown as ApplicationDatabaseClient<typeof binding.schema>;
         const result = await active.run({ database: binding.name, db: typedTransaction as ApplicationDatabaseClient<Readonly<Record<string, unknown>>>, changes: collector }, () => handler({ db: typedTransaction, changes: collector }));
@@ -159,15 +164,16 @@ export function createApplicationRelationalContext(options: {
       const binding = databaseForModel(databases, model);
       return context.run(binding, async () => {
         const db = context.database(binding);
-        const identityField = model.$model.identity.fields[0];
+        const facet = getRequiredDrizzleApplicationModelFacet(model);
+        const identityField = facet.identity.fields[0];
         const identityColumn = identityField ? getTableColumns(model)[identityField] : undefined;
-        if (!identityColumn) throw new Error(`Model ${model.$model.name} has no usable scalar identity column.`);
+        if (!identityColumn) throw new Error(`Model ${facet.name} has no usable scalar identity column.`);
         const nativeTable: AnyPgTable = model;
         const rows = await db.select().from(nativeTable).where(eq(identityColumn, identity)).limit(1);
         // typecast: Drizzle selected the complete promoted native table; its row shape is the table's inferred select model.
         const value = rows[0] as InferSelectModel<TTable> | undefined;
         if (!value) return undefined;
-        const revision = model.$model.revision ? String(Reflect.get(value, model.$model.revision.field)) : undefined;
+        const revision = facet.revision ? String(Reflect.get(value, facet.revision.field)) : undefined;
         return { identity, value, ...(revision ? { revision } : {}) };
       });
     },
@@ -175,15 +181,16 @@ export function createApplicationRelationalContext(options: {
       const binding = databaseForModel(databases, model);
       const execute = async (): Promise<ApplicationModelUpdateResult<InferSelectModel<TTable>, unknown>> => {
         const db = context.database(binding);
+        const facet = getRequiredDrizzleApplicationModelFacet(model);
         const scope = active.getStore();
-        if (!scope?.changes) throw new Error(`Model ${model.$model.name} update requires an observable transaction scope.`);
+        if (!scope?.changes) throw new Error(`Model ${facet.name} update requires an observable transaction scope.`);
         if (Object.keys(patch).length === 0) return { identity: snapshot.identity, value: snapshot.value, ...(snapshot.revision ? { revision: snapshot.revision } : {}), changed: false };
-        const identityField = model.$model.identity.fields[0];
+        const identityField = facet.identity.fields[0];
         const identityColumn = identityField ? getTableColumns(model)[identityField] : undefined;
-        if (!identityColumn) throw new Error(`Model ${model.$model.name} has no usable scalar identity column.`);
-        const revisionField = model.$model.revision?.field;
+        if (!identityColumn) throw new Error(`Model ${facet.name} has no usable scalar identity column.`);
+        const revisionField = facet.revision?.field;
         const revisionColumn = revisionField ? getTableColumns(model)[revisionField] : undefined;
-        if (updateOptions.ifRevision && !revisionColumn) throw new Error(`Model ${model.$model.name} does not declare a revision column.`);
+        if (updateOptions.ifRevision && !revisionColumn) throw new Error(`Model ${facet.name} does not declare a revision column.`);
         const revision = revisionColumn ? nextRevision() : undefined;
         const where = updateOptions.ifRevision && revisionColumn
           ? and(eq(identityColumn, snapshot.identity), eq(revisionColumn, updateOptions.ifRevision))
@@ -194,10 +201,10 @@ export function createApplicationRelationalContext(options: {
         // typecast: returning() selected the complete native table after the update.
         const value = rows[0] as InferSelectModel<TTable> | undefined;
         if (!value) {
-          if (updateOptions.ifRevision) throw new ApplicationModelRevisionConflict(model.$model.name, snapshot.identity, updateOptions.ifRevision);
-          throw new Error(`Model ${model.$model.name} identity ${JSON.stringify(snapshot.identity)} was not found.`);
+          if (updateOptions.ifRevision) throw new ApplicationModelRevisionConflict(facet.name, snapshot.identity, updateOptions.ifRevision);
+          throw new Error(`Model ${facet.name} identity ${JSON.stringify(snapshot.identity)} was not found.`);
         }
-        scope.changes.record(model.$model.name, 'update', {
+        scope.changes.record(facet.name, 'update', {
           identity: snapshot.identity,
           ...(revision ? { revision } : {}),
           changedFields: Object.keys(patch).sort(),
@@ -213,17 +220,18 @@ export function createApplicationRelationalContext(options: {
 
 class MutableChangeCollector implements ApplicationChangeCollector {
   readonly #changes: ApplicationModelChange[] = [];
-  readonly #contextDigest: string;
-  constructor(readonly database: ApplicationDatabaseBinding, admitted: ApplicationAdmittedContext, readonly now: () => Date) {
-    this.#contextDigest = contextDigest(admitted);
-  }
+  constructor(
+    readonly database: ApplicationDatabaseBinding,
+    readonly contextDigest: string,
+    readonly now: () => Date,
+  ) {}
   invalidate<TTable extends AnyPgTable>(model: PromotedDrizzleTable<TTable>, options: ApplicationChangeOptions = {}): void {
     assertModelDatabase(model, this.database);
-    this.record(model.$model.name, 'invalidate', options);
+    this.record(getRequiredDrizzleApplicationModelFacet(model).name, 'invalidate', options);
   }
   reset<TTable extends AnyPgTable>(model: PromotedDrizzleTable<TTable>): void {
     assertModelDatabase(model, this.database);
-    this.record(model.$model.name, 'reset', {});
+    this.record(getRequiredDrizzleApplicationModelFacet(model).name, 'reset', {});
   }
   record(model: string, operation: ApplicationModelChange['operation'], options: ApplicationChangeOptions): void {
     this.#changes.push(Object.freeze({
@@ -231,7 +239,7 @@ class MutableChangeCollector implements ApplicationChangeCollector {
       operation,
       ...(options.identity !== undefined ? { identity: options.identity } : {}),
       ...(options.revision ? { revision: options.revision } : {}),
-      contextDigest: this.#contextDigest,
+      contextDigest: this.contextDigest,
       ...(options.changedFields ? { changedFields: [...new Set(options.changedFields)].sort() } : {}),
       recordedAt: this.now().toISOString(),
     }));
@@ -268,15 +276,17 @@ export function applicationRelationalFrameworkMigrationSql(database: Application
     `CREATE TABLE IF NOT EXISTS applik8s_model_changes (\n  sequence bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  model text NOT NULL,\n  operation text NOT NULL CHECK (operation IN ('insert', 'update', 'delete', 'invalidate', 'reset')),\n  identity jsonb,\n  revision text,\n  context_digest text NOT NULL,\n  changed_fields jsonb,\n  recorded_at timestamptz NOT NULL\n);`,
     'CREATE INDEX IF NOT EXISTS applik8s_model_changes_context_sequence ON applik8s_model_changes (context_digest, sequence);',
     'CREATE INDEX IF NOT EXISTS applik8s_model_changes_model_sequence ON applik8s_model_changes (model, sequence);',
+    `CREATE TABLE IF NOT EXISTS applik8s_public_stream_retention_floors (\n  contract_name text NOT NULL,\n  contract_version text NOT NULL,\n  context_digest text NOT NULL,\n  deleted_through bigint NOT NULL CHECK (deleted_through >= 0),\n  updated_at timestamptz NOT NULL DEFAULT now(),\n  PRIMARY KEY (contract_name, contract_version, context_digest)\n);`,
   ];
   if (database.access) {
     for (const model of models) {
       assertModelDatabase(model, database);
+      const facet = getRequiredDrizzleApplicationModelFacet(model);
       const column = getTableColumns(model)[database.access.column];
       if (!column) continue;
-      const tableName = quoteSqlIdentifier(model.$model.table.name);
+      const tableName = quoteSqlIdentifier(facet.table.name);
       const columnName = quoteSqlIdentifier(column.name);
-      const policyName = quoteSqlIdentifier(`applik8s_${model.$model.table.name}_${database.access.context.name}`);
+      const policyName = quoteSqlIdentifier(`applik8s_${facet.table.name}_${database.access.context.name}`);
       const setting = quoteSqlLiteral(database.access.setting);
       statements.push(`ALTER TABLE ${tableName} ENABLE ROW LEVEL SECURITY;`);
       statements.push(`ALTER TABLE ${tableName} FORCE ROW LEVEL SECURITY;`);
@@ -306,25 +316,77 @@ function registeredDatabase(databases: ReadonlyMap<string, RegisteredDatabase>, 
 }
 
 function databaseForModel<TTable extends AnyPgTable>(databases: ReadonlyMap<string, RegisteredDatabase>, model: PromotedDrizzleTable<TTable>): ApplicationDatabaseBinding {
-  const registered = databases.get(model.$model.database);
-  if (!registered) throw new Error(`Model ${model.$model.name} references unregistered database ${model.$model.database}.`);
+  const facet = getRequiredDrizzleApplicationModelFacet(model);
+  const registered = databases.get(facet.database);
+  if (!registered) throw new Error(`Model ${facet.name} references unregistered database ${facet.database}.`);
   return registered.binding;
 }
 
 function assertModelDatabase<TTable extends AnyPgTable>(model: PromotedDrizzleTable<TTable> | RelationalModelRuntimeTable, database: ApplicationDatabaseBinding): void {
-  if (model.$model.database !== database.name) throw new Error(`Model ${model.$model.name} belongs to database ${model.$model.database}, not ${database.name}; cross-database atomic work fails closed.`);
+  const facet = getRequiredDrizzleApplicationModelFacet(model);
+  if (facet.database !== database.name) throw new Error(`Model ${facet.name} belongs to database ${facet.database}, not ${database.name}; cross-database atomic work fails closed.`);
 }
 
 type RelationalModelRuntimeTable = AnyPgTable & {
-  readonly $model: {
-    readonly name: string;
-    readonly database: string;
-    readonly table: { readonly name: string; readonly schema?: string };
-  };
+  readonly [applicationModelFacet]: unknown;
 };
 
 function contextDigest(admitted: ApplicationAdmittedContext): string {
   return createHmac('sha256', admitted.digestSecret).update(stableJson(admitted.values)).digest('hex');
+}
+
+/**
+ * Change delivery follows the database's data-isolation boundary, not the
+ * identity of the actor that happened to perform a write. Otherwise a worker,
+ * controller, or administrator updating data on a user's behalf produces a
+ * change that the user's live query can never observe.
+ *
+ * Global databases therefore share one opaque invalidation scope. RLS-backed
+ * databases share one scope per validated access-context value. Full principal,
+ * claims, authorization version, and other trusted context remain bound into
+ * command/result and query cursors; they are deliberately not change scopes.
+ */
+function relationalChangeScopeDigest(binding: ApplicationDatabaseBinding, admitted: ApplicationAdmittedContext): string {
+  const access = binding.access;
+  const scopes = applicationRelationalChangeScopes(admitted);
+  if (!access) return applicationRelationalChangeScopeDigest(scopes);
+  const raw = admitted.values[access.context.name];
+  if (raw === undefined) throw new Error(`Required trusted context ${access.context.name} is missing for database ${binding.name}.`);
+  validateTrustedContextValue(access.context, raw);
+  return applicationRelationalChangeScopeDigest(scopes, access.context.name);
+}
+
+/**
+ * Precomputes opaque invalidation scopes at a secret-holding admission
+ * boundary. Durable workers can then select the data scope for their target
+ * model without receiving the signing secret or copying raw tenancy values
+ * into the generic change log.
+ */
+export function applicationRelationalChangeScopes(admitted: ApplicationAdmittedContext): ApplicationRelationalChangeScopes {
+  const scopes: Record<string, string> = {
+    global: createHmac('sha256', admitted.digestSecret).update('applik8s.relational-change-scope.global.v1').digest('hex'),
+  };
+  for (const [name, value] of Object.entries(admitted.values)) {
+    if (name.startsWith('applik8s.dev/')) continue;
+    scopes[`context:${name}`] = createHmac('sha256', admitted.digestSecret)
+      .update('applik8s.relational-change-scope.context.v1\0')
+      .update(name)
+      .update('\0')
+      .update(stableJson(value))
+      .digest('hex');
+  }
+  return Object.freeze(scopes);
+}
+
+export function applicationRelationalChangeScopeDigest(scopes: ApplicationRelationalChangeScopes, accessContext?: string): string {
+  const key = accessContext ? `context:${accessContext}` : 'global';
+  const digest = scopes[key];
+  if (!digest || !/^[a-f0-9]{64}$/.test(digest)) {
+    throw new Error(accessContext
+      ? `Application relational change scopes do not contain validated trusted context ${accessContext}.`
+      : 'Application relational change scopes do not contain a validated global scope.');
+  }
+  return digest;
 }
 
 function stableJson(value: unknown): string {

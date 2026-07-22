@@ -1,24 +1,40 @@
-import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, NamespaceName, ObjectRef, ResourceScope, SourceLocation } from './common.js';
-import type { PermissionRule } from './resource.js';
 import type {
   ApplicationHandlerDependencies,
   ApplicationKubernetesCreateAuthorityContract,
   ApplicationKubernetesQueryAuthorityContract,
 } from './application-graph-gateway.js';
+import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, NamespaceName, ObjectRef, ResourceScope, SourceLocation } from './common.js';
+import type { PermissionRule } from './resource.js';
+
 export type {
   ApplicationHandlerDependencies,
   ApplicationKubernetesCreateAuthorityContract,
   ApplicationKubernetesQueryAuthorityContract,
   ApplicationSerializedCallbackContract,
 } from './application-graph-gateway.js';
-import { normalizeApplicationGraphArtifact, serializeNormalizedApplicationGraph } from './application-graph-serialization.js';
+
 import { validateApplicationGraphCompatibility } from './application-graph-compatibility.js';
+import type { ApplicationNestedInstallationNode } from './application-graph-installation.js';
+import { applicationModelNodeStructureDiagnostics, applicationObservabilityStructureDiagnostics, applicationProviderBindingDiagnostic, applicationProviderRefDiagnostics, applicationProviderRefsForNode, compareStrings, uniqueApplicationProviderRefs, validateApplicationRouteDiagnosticsContract } from './application-graph-node-validation.js';
 import { applicationReactiveNodeStructureMessages } from './application-graph-reactive-validation.js';
+import { normalizeApplicationGraphArtifact, serializeNormalizedApplicationGraph } from './application-graph-serialization.js';
+
+export type { ApplicationInstallationArtifactContract, ApplicationNestedInstallationNode } from './application-graph-installation.js';
+export { applicationInstallationMetadataProperty } from './application-graph-installation.js';
+
+import type { ApplicationExposureNode, ApplicationObjectStoreNode, ApplicationProjectionNode, ApplicationStreamProcessorNode } from './application-graph-projections.js';
+
+export type { ApplicationDnsIntentContract, ApplicationExposureNode, ApplicationExposureReadinessContract, ApplicationExposureTransportContract, ApplicationObjectStoreNode, ApplicationProjectionNode, ApplicationStreamProcessorNode, ApplicationTlsIntentContract } from './application-graph-projections.js';
 
 export type ApplicationGraphVersion = 'applik8s.appGraph/v1alpha1';
 
 export const applicationGraphMetadataProperty = '__applik8sApplicationGraph';
 
+/**
+ * Non-enumerable metadata shared by the application builder and compiler.
+ * It controls artifact emission only; installation values remain ordinary
+ * Kubernetes custom resources supplied by the application owner.
+ */
 export const applicationGraphArtifactFileName = 'application-graph.json';
 
 export interface ApplicationGraphArtifactReference {
@@ -28,6 +44,7 @@ export interface ApplicationGraphArtifactReference {
 }
 
 export type ApplicationGraphNodeKind =
+  | 'installation'
   | 'crd'
   | 'model'
   | 'server'
@@ -47,8 +64,10 @@ export type ApplicationGraphNodeKind =
   | 'query'
   | 'gateway'
   | 'stream'
+  | 'streamProcessor'
   | 'subscription'
   | 'projection'
+  | 'objectStore'
   | 'job'
   | 'config'
   | 'secret'
@@ -59,6 +78,7 @@ export type ApplicationGraphNodeKind =
 
 // typecast: the runtime node-kind registry is intentionally kept as a literal tuple while checked against the public union.
 export const applicationGraphNodeKinds = [
+  'installation',
   'crd',
   'model',
   'server',
@@ -78,8 +98,10 @@ export const applicationGraphNodeKinds = [
   'query',
   'gateway',
   'stream',
+  'streamProcessor',
   'subscription',
   'projection',
+  'objectStore',
   'job',
   'config',
   'secret',
@@ -105,7 +127,10 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'WorkflowEngine'
   | 'ProjectionStore'
   | 'ApplicationHost'
-  | 'RequestIdentity';
+  | 'ContainerRegistry'
+  | 'RequestIdentity'
+  | 'Authorization'
+  | 'StructuredGeneration';
 
 /** Built-ins remain strongly named while versioned provider packages may add interfaces without editing core. */
 export type ApplicationProviderInterfaceKind = ApplicationBuiltInProviderInterfaceKind | (string & {});
@@ -127,7 +152,10 @@ export const applicationProviderInterfaceKinds = [
   'WorkflowEngine',
   'ProjectionStore',
   'ApplicationHost',
+  'ContainerRegistry',
   'RequestIdentity',
+  'Authorization',
+  'StructuredGeneration',
 ] as const satisfies readonly ApplicationProviderInterfaceKind[];
 
 // typecast: v0.3 predates the experimental EventLog surface introduced for v0.4 durable behavior.
@@ -178,6 +206,7 @@ export interface ApplicationGraphMetadata {
 }
 
 export type ApplicationGraphNode =
+  | ApplicationNestedInstallationNode
   | ApplicationCrdNode
   | ApplicationModelNode
   | ApplicationServerNode
@@ -197,8 +226,10 @@ export type ApplicationGraphNode =
   | ApplicationQueryNode
   | ApplicationGatewayNode
   | ApplicationStreamNode
+  | ApplicationStreamProcessorNode
   | ApplicationSubscriptionNode
   | ApplicationProjectionNode
+  | ApplicationObjectStoreNode
   | ApplicationJobNode
   | ApplicationConfigNode
   | ApplicationSecretNode
@@ -370,6 +401,8 @@ export interface ApplicationCommandHandlerNode extends ApplicationGraphNodeBase<
   readonly missingRoute?: string;
   readonly transaction: {
     readonly models: readonly ApplicationGraphNodeRef[];
+    /** The owning model was explicitly declared for related-row reads. */
+    readonly selfRead?: boolean;
     readonly history: readonly ApplicationGraphNodeRef[];
     readonly outbox: readonly ApplicationGraphNodeRef[];
     readonly commands?: readonly ApplicationGraphNodeRef[];
@@ -422,16 +455,16 @@ export interface ApplicationProcessorNode extends ApplicationGraphNodeBase<'proc
 
 export interface ApplicationProcessorDeploymentContract {
   /** Manually selected processor replicas. Automatic lag-based scaling remains outside v0.4.1. */
-  readonly replicas: number;
+  readonly replicas: number | `\${${string}}`;
   /** Maximum concurrently executing messages in each processor pod. */
-  readonly concurrency: number;
+  readonly concurrency: number | `\${${string}}`;
   /** Durable-consumer delivery window shared by all replicas. */
-  readonly maxAckPending: number;
+  readonly maxAckPending: number | `\${${string}}`;
   readonly resources: {
-    readonly requests: { readonly cpu: string; readonly memory: string };
-    readonly limits: { readonly cpu: string; readonly memory: string };
+    readonly requests: { readonly cpu: string | `\${${string}}`; readonly memory: string | `\${${string}}` };
+    readonly limits: { readonly cpu: string | `\${${string}}`; readonly memory: string | `\${${string}}` };
   };
-  readonly disruption: { readonly maxUnavailable: number } | { readonly minAvailable: number } | { readonly disabled: true };
+  readonly disruption: { readonly maxUnavailable: number | `\${${string}}` } | { readonly minAvailable: number } | { readonly disabled: true };
   readonly nodeSelector?: Readonly<Record<string, string>>;
 }
 
@@ -448,6 +481,46 @@ export interface ApplicationTaskNode extends ApplicationGraphNodeBase<'task'> {
 export interface ApplicationTaskHandlerNode extends ApplicationGraphNodeBase<'taskHandler'> {
   readonly task: ApplicationGraphNodeRef;
   readonly workflowEngine: ApplicationProviderRef<'WorkflowEngine'>;
+  /** Runtime capabilities explicitly injected into this external-effect task. */
+  readonly capabilities?: readonly ApplicationProviderRef[];
+  /**
+   * Durable model mutations explicitly injected into this task. The generated
+   * worker may submit only these command bindings; all execution still passes
+   * through the canonical command processor and PostgreSQL transaction.
+   */
+  readonly operations?: readonly {
+    readonly alias: string;
+    readonly command: ApplicationGraphNodeRef;
+    readonly handler: ApplicationGraphNodeRef;
+  }[];
+  /** Authenticated bounded queries explicitly injected into this task. */
+  readonly queries?: readonly {
+    readonly alias: string;
+    readonly query: ApplicationGraphNodeRef;
+  }[];
+  /** Generation-scoped online projections this task may rebuild or retire. */
+  readonly projections?: readonly {
+    readonly alias: string;
+    readonly projection: ApplicationGraphNodeRef;
+    readonly artifacts: ApplicationGraphNodeRef;
+    readonly bounds: {
+      readonly batchSize: number;
+      readonly maxSegments: number;
+      readonly maxSegmentBytes: number;
+      readonly maxEvents: number;
+      readonly maxCatchUpRounds: number;
+    };
+  }[];
+	/** Bounded object stores explicitly injected into this task. */
+	readonly objects?: readonly {
+		readonly alias: string;
+		readonly store: ApplicationGraphNodeRef;
+	}[];
+  /** Compiler-captured service-principal derivation for declared effects. */
+  readonly operationPrincipalSource?: string;
+  readonly operationPrincipalDependencies?: ApplicationHandlerDependencies;
+  readonly operationPrincipalLocation?: SourceLocation;
+  readonly operationPrincipalUnresolved?: readonly string[];
   readonly retry: ApplicationRetryPolicy;
   readonly executionTimeoutSeconds: number;
   readonly scheduleTimeoutSeconds: number;
@@ -498,7 +571,8 @@ export interface ApplicationWorkflowWorkerNode extends ApplicationGraphNodeBase<
   readonly runtime: 'node';
   readonly lifecycle: 'longLived';
   readonly deployment: {
-    readonly replicas: number;
+    /** Concrete in direct graphs, or a serialized installation-derived KRO expression. */
+    readonly replicas: ApplicationGraphNumberValue;
     readonly taskSlots: number;
     readonly durableSlots: number;
     readonly gracefulShutdownSeconds: number;
@@ -509,6 +583,9 @@ export interface ApplicationWorkflowWorkerNode extends ApplicationGraphNodeBase<
   };
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
 }
+
+/** A graph number can remain installation-derived until TypeKro instance evaluation. */
+export type ApplicationGraphNumberValue = number | `\${${string}}`;
 
 export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> {
   readonly publicId?: string;
@@ -533,6 +610,10 @@ export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> 
   readonly cursor: 'opaque-query-version-context-scoped';
   readonly database?: ApplicationReactiveDatabaseRuntimeContract;
   readonly kubernetes?: ApplicationKubernetesQueryAuthorityContract;
+  readonly projection?: {
+    readonly nodeId: string;
+    readonly storage: 'online' | 'analytical';
+  };
   readonly authorizationSource: string;
   readonly authorizationDependencies?: ApplicationHandlerDependencies;
   readonly authorizationLocation?: SourceLocation;
@@ -578,6 +659,14 @@ export interface ApplicationGatewayNode extends ApplicationGraphNodeBase<'gatewa
   readonly authenticationDependencies?: ApplicationHandlerDependencies;
   readonly authenticationLocation?: SourceLocation;
   readonly authenticationUnresolved?: readonly string[];
+  readonly identityReadinessSource?: string;
+  readonly identityReadinessDependencies?: ApplicationHandlerDependencies;
+  readonly identityReadinessLocation?: SourceLocation;
+  readonly identityReadinessUnresolved?: readonly string[];
+  readonly authorizationReadinessSource?: string;
+  readonly authorizationReadinessDependencies?: ApplicationHandlerDependencies;
+  readonly authorizationReadinessLocation?: SourceLocation;
+  readonly authorizationReadinessUnresolved?: readonly string[];
   readonly commandAuthorizationSource?: string;
   readonly commandAuthorizationDependencies?: ApplicationHandlerDependencies;
   readonly commandAuthorizationLocation?: SourceLocation;
@@ -628,25 +717,12 @@ export interface ApplicationSubscriptionNode extends ApplicationGraphNodeBase<'s
   readonly suspension: 'bounded-failures';
 }
 
-export interface ApplicationProjectionNode extends ApplicationGraphNodeBase<'projection'> {
-  readonly source: ApplicationGraphNodeRef;
-  readonly provider: ApplicationProviderRef;
-  readonly rebuildable: boolean;
-  readonly checkpoint: 'transactional' | 'idempotent' | 'external';
-  readonly output: ApplicationMessageContractSchema;
-  readonly eventIdentity: 'stable-source-event-id';
-  readonly duplicateHandling: 'idempotent';
-  readonly rebuild: 'full-replay';
-  readonly handlerSource: string;
-  readonly handlerDependencies?: ApplicationHandlerDependencies;
-  readonly handlerLocation?: SourceLocation;
-  readonly handlerUnresolved?: readonly string[];
-}
-
 export interface ApplicationModelRuntimeContract {
   readonly name: string;
   readonly tableName: string;
   readonly provider: 'postgres';
+  /** Stable application-level authority identity; never installation-derived. */
+  readonly authorityName?: string;
   readonly database: string;
   readonly clusterName: string;
   readonly secretName: string;
@@ -693,37 +769,6 @@ export interface ApplicationSecretNode extends ApplicationGraphNodeBase<'secret'
   readonly mountPath?: string;
   readonly redaction: 'required' | 'none';
   readonly generatedResources: readonly ApplicationGeneratedResourceContract[];
-}
-
-export interface ApplicationExposureNode extends ApplicationGraphNodeBase<'exposure'> {
-  readonly provider: ApplicationProviderRef<'HttpExposure'>;
-  readonly certificate?: ApplicationProviderRef<'Certificate'>;
-  readonly dnsPublication?: ApplicationProviderRef<'DnsPublication'>;
-  readonly service: string;
-  readonly hostnames: readonly string[];
-  readonly tls: 'required' | 'optional' | 'disabled';
-  readonly tlsIntent?: ApplicationTlsIntentContract;
-  readonly dnsIntent?: ApplicationDnsIntentContract;
-  readonly publicUrl: string;
-  readonly readiness: ApplicationExposureReadinessContract;
-  readonly generatedResources: readonly ApplicationGeneratedResourceContract[];
-}
-
-export type ApplicationTlsIntentContract =
-  | { readonly mode: 'disabled' }
-  | { readonly mode: 'external'; readonly secretName: string }
-  | { readonly mode: 'managed'; readonly secretName: string; readonly issuerRef: { readonly name: string; readonly kind: 'Issuer' | 'ClusterIssuer' } };
-
-export type ApplicationDnsIntentContract =
-  | { readonly mode: 'disabled' }
-  | { readonly mode: 'managed'; readonly ttlSeconds?: number };
-
-export interface ApplicationExposureReadinessContract {
-  readonly ingress: 'resourceApplied';
-  readonly loadBalancer: 'statusObserved';
-  readonly certificate: 'notRequested' | 'external' | 'readyCondition';
-  readonly dns: 'notRequested' | 'intentApplied' | 'propagationUnverified';
-  readonly publicUrl: 'derived';
 }
 
 export interface GeneratedJobContract extends ApplicationJobNode {
@@ -855,7 +900,7 @@ export interface ApplicationProviderRequirement<TInterface extends ApplicationPr
   readonly consumer: ApplicationGraphNodeRef;
   readonly provider?: ApplicationProviderRef<TInterface>;
   readonly required: true;
-  readonly purpose: 'modelStore' | 'indexStore' | 'counterStore' | 'eventSource' | 'eventLog' | 'secret' | 'queue' | 'objectStorage' | 'httpExposure' | 'certificate' | 'dnsPublication' | 'credentialStore' | (string & {});
+  readonly purpose: 'modelStore' | 'indexStore' | 'counterStore' | 'eventSource' | 'eventLog' | 'secret' | 'queue' | 'objectStorage' | 'httpExposure' | 'certificate' | 'dnsPublication' | 'credentialStore' | 'containerRegistry' | (string & {});
   readonly diagnostics: ApplicationProviderRequirementDiagnostics;
 }
 
@@ -2600,10 +2645,42 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
       return applicationReactiveNodeStructureMessages(node, graph).map(applicationGraphStructureDiagnostic);
     case 'stream':
       return applicationReactiveNodeStructureMessages(node, graph).map(applicationGraphStructureDiagnostic);
+    case 'streamProcessor': {
+      const source = graph.nodes.find((candidate) => candidate.id === node.source.nodeId);
+      const scheduleAliases = new Set<string>();
+			const taskAliases = new Set<string>();
+      const messages = [
+        ...(source?.kind === 'stream' ? [] : [`Application stream processor ${node.id} must consume a replayable stream.`]),
+        ...(node.handlerSource.trim() ? [] : [`Application stream processor ${node.id} must retain a serializable handler.`]),
+        ...(node.deployment.replicas === 1 ? [] : [`Application stream processor ${node.id} must use one replica until distributed partition claims are implemented.`]),
+      ];
+      for (const schedule of node.schedules ?? []) {
+        const target = graph.nodes.find((candidate) => candidate.id === schedule.target.nodeId);
+        if (!schedule.alias || scheduleAliases.has(schedule.alias)) messages.push(`Application stream processor ${node.id} declares an empty or duplicate schedule alias ${JSON.stringify(schedule.alias)}.`);
+        scheduleAliases.add(schedule.alias);
+        if (target?.kind !== 'task' && target?.kind !== 'workflow') messages.push(`Application stream processor ${node.id} schedule ${schedule.alias} must target a declared task or workflow.`);
+      }
+			for (const task of node.tasks ?? []) {
+				const target = graph.nodes.find((candidate) => candidate.id === task.target.nodeId);
+				if (!task.alias || taskAliases.has(task.alias)) messages.push(`Application stream processor ${node.id} declares an empty or duplicate task alias ${JSON.stringify(task.alias)}.`);
+				taskAliases.add(task.alias);
+				if (target?.kind !== 'task') messages.push(`Application stream processor ${node.id} task ${task.alias} must target a declared task.`);
+			}
+      if ((node.schedules?.length ?? 0) + (node.tasks?.length ?? 0) > 0) {
+        const provider = graph.nodes.find((candidate) => candidate.id === node.workflowEngine?.nodeId);
+				if (provider?.kind !== 'provider' || provider.interface !== 'WorkflowEngine') messages.push(`Application stream processor ${node.id} durable task and schedule targets require one WorkflowEngine provider.`);
+      }
+      return messages.map(applicationGraphStructureDiagnostic);
+    }
     case 'subscription':
       return applicationReactiveNodeStructureMessages(node, graph).map(applicationGraphStructureDiagnostic);
     case 'projection':
       return applicationReactiveNodeStructureMessages(node, graph).map(applicationGraphStructureDiagnostic);
+    case 'objectStore':
+      return node.maxObjectBytes > 0 && node.contentTypes.length > 0 && node.browserAccess.ttlSeconds > 0
+        && (node.browserAccess.downloadAccess === 'owner' || node.browserAccess.downloadAccess === 'authenticated')
+        ? []
+        : [applicationGraphStructureDiagnostic(`Application object store ${node.id} must declare positive bounds and at least one content type.`)];
     default:
       return [];
   }
@@ -2646,6 +2723,9 @@ function applicationCommandHandlerNodeStructureDiagnostics(node: ApplicationComm
     if (nodeById.get(model.nodeId)?.kind !== 'model') {
       diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} transaction reference ${model.nodeId} must be a model node.`));
     }
+  }
+  if (node.transaction.selfRead === true && !node.transaction.models.some((model) => model.nodeId === node.model.nodeId)) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application command handler ${node.id} may enable selfRead only when its target model is an explicit transaction participant.`));
   }
   for (const event of node.transaction.outbox) {
     if (nodeById.get(event.nodeId)?.kind !== 'event') {
@@ -2725,16 +2805,27 @@ function applicationProcessorNodeStructureDiagnostics(node: ApplicationProcessor
       diagnostics.push(applicationGraphStructureDiagnostic(`Application processor node ${node.id} references missing command handler ${handler.nodeId}.`));
     }
   }
-  if (!node.deployment || !Number.isInteger(node.deployment.replicas) || node.deployment.replicas < 1 || node.deployment.replicas > 32) {
+  if (!node.deployment || !applicationProcessorInteger(node.deployment.replicas, 1, 32)) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application processor node ${node.id} deployment.replicas must be an integer between 1 and 32.`));
   }
-  if (!node.deployment || !Number.isInteger(node.deployment.concurrency) || node.deployment.concurrency < 1 || node.deployment.concurrency > 64) {
+  if (!node.deployment || !applicationProcessorInteger(node.deployment.concurrency, 1, 64)) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application processor node ${node.id} deployment.concurrency must be an integer between 1 and 64.`));
   }
-  if (node.deployment && (!Number.isInteger(node.deployment.maxAckPending) || node.deployment.maxAckPending < node.deployment.replicas * node.deployment.concurrency || node.deployment.maxAckPending > 65_536)) {
+  if (node.deployment && !applicationProcessorDeliveryWindow(node.deployment)) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application processor node ${node.id} deployment.maxAckPending must be an integer between replicas * concurrency and 65536.`));
   }
   return diagnostics;
+}
+
+function applicationProcessorInteger(value: number | string, minimum: number, maximum: number): boolean {
+  if (typeof value === 'string') return /^\$\{.+\}$/.test(value);
+  return Number.isInteger(value) && value >= minimum && value <= maximum;
+}
+
+function applicationProcessorDeliveryWindow(deployment: ApplicationProcessorDeploymentContract): boolean {
+  if (!applicationProcessorInteger(deployment.maxAckPending, 1, 65_536)) return false;
+  if (typeof deployment.maxAckPending !== 'number' || typeof deployment.replicas !== 'number' || typeof deployment.concurrency !== 'number') return true;
+  return deployment.maxAckPending >= deployment.replicas * deployment.concurrency;
 }
 
 function applicationDurableContractNodeStructureDiagnostics(kind: 'task' | 'workflow', id: string, contract: { readonly name: string; readonly version: string; readonly errors: readonly { readonly name: string }[] }): readonly Diagnostic[] {
@@ -2752,6 +2843,42 @@ function applicationTaskHandlerNodeStructureDiagnostics(node: ApplicationTaskHan
   const nodes = new Map(graph.nodes.map((candidate) => [candidate.id, candidate]));
   const diagnostics: Diagnostic[] = [];
   if (nodes.get(node.task.nodeId)?.kind !== 'task') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} must reference a task node.`));
+  for (const capability of node.capabilities ?? []) {
+    const provider = nodes.get(capability.nodeId);
+    if (provider?.kind !== 'provider' || provider.interface !== capability.interface) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} capability ${capability.interface} must reference a matching provider node.`));
+  }
+  const operationAliases = new Set<string>();
+  for (const operation of node.operations ?? []) {
+    if (!operation.alias.trim() || operationAliases.has(operation.alias)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} operation aliases must be non-empty and unique.`));
+    operationAliases.add(operation.alias);
+    if (nodes.get(operation.command.nodeId)?.kind !== 'command') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} operation ${operation.alias} must reference a command node.`));
+    const handler = nodes.get(operation.handler.nodeId);
+    if (handler?.kind !== 'commandHandler' || handler.command.nodeId !== operation.command.nodeId) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} operation ${operation.alias} must reference the matching command handler.`));
+  }
+  const queryAliases = new Set<string>();
+  for (const query of node.queries ?? []) {
+    if (!query.alias.trim() || queryAliases.has(query.alias)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} query aliases must be non-empty and unique.`));
+    queryAliases.add(query.alias);
+    if (nodes.get(query.query.nodeId)?.kind !== 'query') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} query ${query.alias} must reference a query node.`));
+  }
+  const projectionAliases = new Set<string>();
+  for (const projection of node.projections ?? []) {
+    if (!projection.alias.trim() || projectionAliases.has(projection.alias)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} projection aliases must be non-empty and unique.`));
+    projectionAliases.add(projection.alias);
+    const target = nodes.get(projection.projection.nodeId);
+    if (target?.kind !== 'projection' || target.storage !== 'online' || !target.online) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} projection ${projection.alias} must reference a generation-scoped online projection.`));
+    if (nodes.get(projection.artifacts.nodeId)?.kind !== 'objectStore') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} projection ${projection.alias} must reference an object store for immutable rebuild evidence.`));
+    for (const [name, value] of Object.entries(projection.bounds)) if (!Number.isSafeInteger(value) || value < 1) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} projection ${projection.alias} ${name} bound must be a positive safe integer.`));
+  }
+	const objectAliases = new Set<string>();
+	for (const object of node.objects ?? []) {
+		if (!object.alias.trim() || objectAliases.has(object.alias)) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} object aliases must be non-empty and unique.`));
+		objectAliases.add(object.alias);
+		if (nodes.get(object.store.nodeId)?.kind !== 'objectStore') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} object ${object.alias} must reference an object store.`));
+	}
+  const effectCount = (node.operations?.length ?? 0) + (node.queries?.length ?? 0);
+  if (effectCount > 0 && !node.operationPrincipalSource?.trim()) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} declares authenticated effects without a service-principal derivation.`));
+  if (effectCount === 0 && node.operationPrincipalSource) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} declares a service principal without durable operations or authenticated queries.`));
   if (!node.handlerSource.trim()) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} must retain handler source for generated worker lowering.`));
   if (node.effectBoundary !== 'externalEffectsAllowed' || node.idempotency.guarantee !== 'atLeastOnceRetrySafe') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} must retain the retry-safe external-effect boundary.`));
   if (!Number.isInteger(node.executionTimeoutSeconds) || node.executionTimeoutSeconds < 1) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} execution timeout must be a positive integer.`));
@@ -2776,9 +2903,15 @@ function applicationWorkflowWorkerNodeStructureDiagnostics(node: ApplicationWork
   const diagnostics: Diagnostic[] = [];
   if (node.handlers.length === 0) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} must include at least one task or workflow handler.`));
   for (const handler of node.handlers) if (!handlerIds.has(handler.nodeId)) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} references missing handler ${handler.nodeId}.`));
-  if (!Number.isInteger(node.deployment.replicas) || node.deployment.replicas < 1 || !Number.isInteger(node.deployment.taskSlots) || node.deployment.taskSlots < 1 || !Number.isInteger(node.deployment.durableSlots) || node.deployment.durableSlots < 1) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} requires positive replica, task-slot, and durable-slot counts.`));
+  if (!applicationGraphPositiveInteger(node.deployment.replicas) || !applicationGraphPositiveInteger(node.deployment.taskSlots) || !applicationGraphPositiveInteger(node.deployment.durableSlots)) diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} requires positive replica, task-slot, and durable-slot counts.`));
   if (node.deployment.egress !== 'allowAll' && node.deployment.egress !== 'sameNamespace') diagnostics.push(applicationGraphStructureDiagnostic(`Application workflow worker ${node.id} requires an explicit supported egress posture.`));
   return diagnostics;
+}
+
+function applicationGraphPositiveInteger(value: ApplicationGraphNumberValue): boolean {
+  return typeof value === 'number'
+    ? Number.isInteger(value) && value > 0
+    : /^\$\{[^{}]+\}$/.test(value);
 }
 
 function applicationServerRouteStructureDiagnostics(node: ApplicationServerNode): readonly Diagnostic[] {
@@ -2793,32 +2926,6 @@ function applicationServerRouteStructureDiagnostics(node: ApplicationServerNode)
   return diagnostics;
 }
 
-function validateApplicationRouteDiagnosticsContract(owner: string, contract: ApplicationRouteDiagnosticsContract): readonly Diagnostic[] {
-  const diagnostics: Diagnostic[] = [];
-  if (contract.routeFailureEvent !== 'applik8s-server-route-failure') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application route diagnostics ${owner} routeFailureEvent must be applik8s-server-route-failure.`));
-  }
-  if (contract.actionFailureEvent !== 'applik8s-route-action-failure') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application route diagnostics ${owner} actionFailureEvent must be applik8s-route-action-failure.`));
-  }
-  if (contract.failurePolicy !== 'failClosed') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application route diagnostics ${owner} failurePolicy must fail closed.`));
-  }
-  if (contract.partialEffects !== 'unknownAfterActionStarted') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application route diagnostics ${owner} must declare unknown partial effects after route actions start.`));
-  }
-  if (contract.sourceMaps !== 'required') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application route diagnostics ${owner} must require source maps.`));
-  }
-  const fields = new Set(contract.includes);
-  for (const field of ['routeId', 'method', 'path', 'module', 'sourceLocation', 'bundleInputs', 'action', 'diagnostic', 'stack'] satisfies readonly ApplicationRouteDiagnosticField[]) {
-    if (!fields.has(field)) {
-      diagnostics.push(applicationGraphStructureDiagnostic(`Application route diagnostics ${owner} must include ${field}.`));
-    }
-  }
-  return diagnostics;
-}
-
 function applicationProviderNodeStructureDiagnostics(node: ApplicationProviderNode): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   if (!node.contract) {
@@ -2828,23 +2935,6 @@ function applicationProviderNodeStructureDiagnostics(node: ApplicationProviderNo
     diagnostics.push(applicationGraphStructureDiagnostic(`Application provider node ${node.id} contract interface ${node.contract.interface} must match provider interface ${node.interface}.`));
   }
   diagnostics.push(...validateApplicationProviderInterfaceContract(node.contract));
-  return diagnostics;
-}
-
-function applicationModelNodeStructureDiagnostics(node: ApplicationModelNode, graph: ApplicationGraph): readonly Diagnostic[] {
-  const diagnostics: Diagnostic[] = [];
-  if (node.store.interface !== node.materialization.provider.interface || node.store.nodeId !== node.materialization.provider.nodeId) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application model node ${node.id} has inconsistent ModelStore refs between store and materialization.provider.`));
-  }
-  if (node.schema.migrations.strategy === 'generatedJob') {
-    const hasMigrationJob = graph.edges.some((edge) => edge.relationship === 'dependsOn' && edge.to.nodeId === node.id && graph.nodes.some((candidate) => candidate.id === edge.from.nodeId && candidate.kind === 'job' && candidate.task.taskKind === 'migration'));
-    if (!hasMigrationJob) {
-      diagnostics.push(applicationGraphStructureDiagnostic(`Application model node ${node.id} declares generatedJob migrations but no migration job depends on it.`));
-    }
-  }
-  if (node.schema.retention?.mode === 'ttl' && node.schema.retention.ttlSeconds === undefined) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application model node ${node.id} uses ttl retention without ttlSeconds.`));
-  }
   return diagnostics;
 }
 
@@ -2890,44 +2980,6 @@ function applicationJobNodeStructureDiagnostics(node: ApplicationJobNode): reado
   return diagnostics;
 }
 
-function applicationObservabilityStructureDiagnostics(owner: string, observability: ApplicationObservabilityContract | undefined, diagnosticsArtifactKind: ApplicationGeneratedArtifactKind): readonly Diagnostic[] {
-  const diagnostics: Diagnostic[] = [];
-  if (!observability) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`${owner} must declare generated observability metadata.`));
-    return diagnostics;
-  }
-  if (observability.health.mode === 'http') {
-    if (!observability.health.readinessPath?.startsWith('/')) {
-      diagnostics.push(applicationGraphStructureDiagnostic(`${owner} HTTP observability readinessPath must be an absolute path.`));
-    }
-    if (!observability.health.livenessPath?.startsWith('/')) {
-      diagnostics.push(applicationGraphStructureDiagnostic(`${owner} HTTP observability livenessPath must be an absolute path.`));
-    }
-  }
-  if (observability.logs.format !== 'json') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`${owner} observability logs must use json format.`));
-  }
-  if (!observability.logs.component || observability.logs.component.trim().length === 0) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`${owner} observability logs must declare a runtime component.`));
-  }
-  if (observability.logs.failureEvents.length === 0) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`${owner} observability logs must declare failure events.`));
-  }
-  if (observability.events.length === 0) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`${owner} observability must declare diagnostic events.`));
-  }
-  if (observability.metrics.mode === 'declaredHooks' && observability.metrics.names.length === 0) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`${owner} observability metrics declaredHooks mode must name emitted hooks.`));
-  }
-  if (observability.sourceMaps === 'required' && observability.replayArtifacts.length === 0) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`${owner} observability requiring source maps must declare replay artifacts.`));
-  }
-  if (observability.diagnosticsArtifact.kind !== diagnosticsArtifactKind) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`${owner} observability diagnostics artifact must be ${diagnosticsArtifactKind}.`));
-  }
-  return diagnostics;
-}
-
 function applicationGraphStructureDiagnostic(message: string): Diagnostic {
   return {
     severity: 'error',
@@ -2935,59 +2987,4 @@ function applicationGraphStructureDiagnostic(message: string): Diagnostic {
     message,
     recovery: { summary: 'Fix the application graph contract before lowering it to generated artifacts.' },
   };
-}
-
-function uniqueApplicationProviderRefs(refs: readonly ApplicationProviderRef[]): readonly ApplicationProviderRef[] {
-  const byKey = new Map<string, ApplicationProviderRef>();
-  for (const ref of refs) {
-    byKey.set(`${ref.interface}:${ref.nodeId}`, ref);
-  }
-  return [...byKey.values()];
-}
-
-function applicationProviderRefDiagnostics(owner: string, ref: ApplicationProviderRef, providerById: ReadonlyMap<string, ApplicationProviderNode>): readonly Diagnostic[] {
-  const provider = providerById.get(ref.nodeId);
-  if (!provider) {
-    return [applicationProviderBindingDiagnostic(`${owner} requires ${ref.interface} provider ${ref.nodeId}, but that provider node is missing.`)];
-  }
-  if (provider.interface !== ref.interface) {
-    return [applicationProviderBindingDiagnostic(`${owner} requires ${ref.interface} provider ${ref.nodeId}, but the provider node implements ${provider.interface}.`)];
-  }
-  return [];
-}
-
-function applicationProviderRefsForNode(node: ApplicationGraphNode): readonly ApplicationProviderRef[] {
-  switch (node.kind) {
-    case 'model':
-      return [node.store, node.materialization.provider];
-    case 'server':
-      return node.exposure ? [node.exposure] : [];
-    case 'index':
-      return [node.provider];
-    case 'counter':
-      return node.provider ? [node.provider] : [];
-    case 'processor':
-      return node.eventLog ? [node.eventLog] : [];
-    case 'taskHandler':
-    case 'workflowHandler':
-    case 'workflowWorker':
-      return [node.workflowEngine];
-    case 'projection':
-      return [node.provider];
-    default:
-      return [];
-  }
-}
-
-function applicationProviderBindingDiagnostic(message: string): Diagnostic {
-  return {
-    severity: 'error',
-    code: 'COMPATIBILITY_FAILED',
-    message,
-    recovery: { summary: 'Bind exactly one matching provider before lowering this application graph.' },
-  };
-}
-
-function compareStrings(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }

@@ -1,3 +1,4 @@
+// typecast-file-boundary: emitted JSON Schema is recursively validated before conversion to ArkType's runtime schema vocabulary.
 import type { Type } from 'arktype';
 
 import type {
@@ -28,16 +29,22 @@ export function normalizeSchema<T extends object>(input: SchemaInput<T>, name: s
 }
 
 export function toRuntimeSchema<T extends object>(source: RuntimeSchemaSource<T>): RuntimeSchema<T> {
-  const contract = schemaContract(source);
+  // Compiler-discovered ArkType schemas arrive as structural JSON Schema. Run
+  // that representation through the same nullable/literal normalization as a
+  // live ArkType schema so generated gateways do not reject their own schema.
+  const normalizedSource = source.kind === 'jsonSchema'
+    ? { ...source, schema: toDraft7Subset(source.schema) }
+    : source;
+  const contract = schemaContract(normalizedSource);
   return {
-    source,
+    source: normalizedSource,
     contract,
     validate(value) {
-      if (source.kind === 'arktype') {
-        if (!hasArkType(source)) {
-          return unsupportedSchemaResult(source, 'runtime validation');
+      if (normalizedSource.kind === 'arktype') {
+        if (!hasArkType(normalizedSource)) {
+          return unsupportedSchemaResult(normalizedSource, 'runtime validation');
         }
-        const schema = arktypeJsonSchema(source);
+        const schema = arktypeJsonSchema(normalizedSource);
         if (!schema.ok) {
           return schema;
         }
@@ -45,22 +52,22 @@ export function toRuntimeSchema<T extends object>(source: RuntimeSchemaSource<T>
         if (diagnostics.length > 0) {
           return err('SCHEMA_UNSUPPORTED', diagnostics[0]?.message ?? 'ArkType schema emits unsupported JSON Schema keywords.');
         }
-        if (typeof source.arktype !== 'function') {
-          return unsupportedSchemaResult(source, 'runtime validation');
+        if (typeof normalizedSource.arktype !== 'function') {
+          return unsupportedSchemaResult(normalizedSource, 'runtime validation');
         }
-        const result = source.arktype(value);
+        const result = normalizedSource.arktype(value);
         if (isArkTypeErrors(result)) {
           return err('SCHEMA_INVALID', String(result));
         }
         // typecast: ArkType has accepted the value, establishing the runtime T contract for supported structural schemas.
         return ok(result as T);
       }
-      if (source.kind === 'jsonSchema') {
-        const diagnostics = unsupportedJsonSchemaDiagnostics(source.schema, '$');
+      if (normalizedSource.kind === 'jsonSchema') {
+        const diagnostics = unsupportedJsonSchemaDiagnostics(normalizedSource.schema, '$');
         if (diagnostics.length > 0) {
           return err('SCHEMA_UNSUPPORTED', diagnostics[0]?.message ?? 'JSON Schema uses unsupported validation keywords.');
         }
-        const errors = validateJsonValue(value, source.schema, '$');
+        const errors = validateJsonValue(value, normalizedSource.schema, '$');
         if (errors.length > 0) {
           return err('SCHEMA_INVALID', errors[0] ?? 'Value does not match JSON Schema.');
         }
@@ -68,37 +75,37 @@ export function toRuntimeSchema<T extends object>(source: RuntimeSchemaSource<T>
         return ok(value as T);
       }
 
-      return unsupportedSchemaResult(source, 'runtime validation');
+      return unsupportedSchemaResult(normalizedSource, 'runtime validation');
     },
     emitOpenApiSchema() {
-      if (source.kind === 'arktype') {
-        if (!hasArkType(source)) {
-          return unsupportedSchemaResult(source, 'Kubernetes OpenAPI emission');
+      if (normalizedSource.kind === 'arktype') {
+        if (!hasArkType(normalizedSource)) {
+          return unsupportedSchemaResult(normalizedSource, 'Kubernetes OpenAPI emission');
         }
-        const schema = arktypeJsonSchema(source);
+        const schema = arktypeJsonSchema(normalizedSource);
         return schema.ok
           ? ok({ kind: 'kubernetesOpenApi', source: source.ref, schema: cloneJson(schema.value), diagnostics: unsupportedJsonSchemaDiagnostics(schema.value, '$') })
           : schema;
       }
-      if (source.kind === 'jsonSchema') {
-        return ok({ kind: 'kubernetesOpenApi', source: source.ref, schema: cloneJson(source.schema), diagnostics: unsupportedJsonSchemaDiagnostics(source.schema, '$') });
+      if (normalizedSource.kind === 'jsonSchema') {
+        return ok({ kind: 'kubernetesOpenApi', source: normalizedSource.ref, schema: cloneJson(normalizedSource.schema), diagnostics: unsupportedJsonSchemaDiagnostics(normalizedSource.schema, '$') });
       }
-      return unsupportedSchemaResult(source, 'Kubernetes OpenAPI emission');
+      return unsupportedSchemaResult(normalizedSource, 'Kubernetes OpenAPI emission');
     },
     emitJsonSchema() {
-      if (source.kind === 'arktype') {
-        if (!hasArkType(source)) {
-          return unsupportedSchemaResult(source, 'JSON Schema emission');
+      if (normalizedSource.kind === 'arktype') {
+        if (!hasArkType(normalizedSource)) {
+          return unsupportedSchemaResult(normalizedSource, 'JSON Schema emission');
         }
-        const schema = arktypeJsonSchema(source);
+        const schema = arktypeJsonSchema(normalizedSource);
         return schema.ok
           ? ok({ kind: 'jsonSchema', source: source.ref, schema: cloneJson(schema.value), diagnostics: unsupportedJsonSchemaDiagnostics(schema.value, '$') })
           : schema;
       }
-      if (source.kind === 'jsonSchema') {
-        return ok({ kind: 'jsonSchema', source: source.ref, schema: cloneJson(source.schema), diagnostics: unsupportedJsonSchemaDiagnostics(source.schema, '$') });
+      if (normalizedSource.kind === 'jsonSchema') {
+        return ok({ kind: 'jsonSchema', source: normalizedSource.ref, schema: cloneJson(normalizedSource.schema), diagnostics: unsupportedJsonSchemaDiagnostics(normalizedSource.schema, '$') });
       }
-      return unsupportedSchemaResult(source, 'JSON Schema emission');
+      return unsupportedSchemaResult(normalizedSource, 'JSON Schema emission');
     },
   };
 }
@@ -281,6 +288,26 @@ function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): 
     return [`${path} must match pattern ${pattern}.`];
   }
 
+  if (typeof value === 'number') {
+    const minimum = readNumber(schema, 'minimum');
+    if (minimum !== undefined && value < minimum) return [`${path} must be greater than or equal to ${minimum}.`];
+    const maximum = readNumber(schema, 'maximum');
+    if (maximum !== undefined && value > maximum) return [`${path} must be less than or equal to ${maximum}.`];
+    const exclusiveMinimum = readNumber(schema, 'exclusiveMinimum');
+    if (exclusiveMinimum !== undefined && value <= exclusiveMinimum) return [`${path} must be greater than ${exclusiveMinimum}.`];
+    const exclusiveMaximum = readNumber(schema, 'exclusiveMaximum');
+    if (exclusiveMaximum !== undefined && value >= exclusiveMaximum) return [`${path} must be less than ${exclusiveMaximum}.`];
+    const multipleOf = readNumber(schema, 'multipleOf');
+    if (multipleOf !== undefined && multipleOf > 0 && !isJsonSchemaMultiple(value, multipleOf)) return [`${path} must be a multiple of ${multipleOf}.`];
+  }
+
+  if (typeof value === 'string') {
+    const minLength = readNonNegativeInteger(schema, 'minLength');
+    if (minLength !== undefined && [...value].length < minLength) return [`${path} must contain at least ${minLength} characters.`];
+    const maxLength = readNonNegativeInteger(schema, 'maxLength');
+    if (maxLength !== undefined && [...value].length > maxLength) return [`${path} must contain at most ${maxLength} characters.`];
+  }
+
   if (type === 'object' || (isJsonObject(value) && schema.properties !== undefined)) {
     if (!isJsonObject(value)) {
       return [`${path} must be object.`];
@@ -332,6 +359,12 @@ function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): 
       return [`${path} must be array.`];
     }
 
+    const minItems = readNonNegativeInteger(schema, 'minItems');
+    if (minItems !== undefined && value.length < minItems) return [`${path} must contain at least ${minItems} items.`];
+    const maxItems = readNonNegativeInteger(schema, 'maxItems');
+    if (maxItems !== undefined && value.length > maxItems) return [`${path} must contain at most ${maxItems} items.`];
+    if (schema.uniqueItems === true && new Set(value.map((item) => JSON.stringify(item))).size !== value.length) return [`${path} must contain unique items.`];
+
     const itemSchema = readSchema(schema, 'items');
     if (itemSchema) {
       for (const [index, item] of value.entries()) {
@@ -348,7 +381,7 @@ function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): 
 
 function unsupportedJsonSchemaDiagnostics(schema: JsonObject, path: string) {
   const diagnostics: Diagnostic[] = [];
-  const supportedKeywords = new Set(['type', 'required', 'properties', 'items', 'enum', 'nullable', 'additionalProperties', 'description', 'title', 'default', 'examples', 'deprecated', '$schema', 'pattern', 'oneOf', 'anyOf', 'allOf', 'not']);
+  const supportedKeywords = new Set(['type', 'required', 'properties', 'items', 'enum', 'nullable', 'additionalProperties', 'description', 'title', 'default', 'examples', 'deprecated', '$schema', 'pattern', 'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf', 'minLength', 'maxLength', 'minItems', 'maxItems', 'uniqueItems', 'oneOf', 'anyOf', 'allOf', 'not']);
   for (const key of Object.keys(schema)) {
     if (!supportedKeywords.has(key)) {
       diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path} uses unsupported JSON Schema keyword ${key}.` });
@@ -396,6 +429,23 @@ function unsupportedJsonSchemaDiagnostics(schema: JsonObject, path: string) {
         diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.pattern must be a valid JavaScript regular expression.` });
       }
     }
+  }
+
+  for (const keyword of ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf'] as const) {
+    if (keyword in schema && readNumber(schema, keyword) === undefined) {
+      diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.${keyword} must be a finite number.` });
+    }
+  }
+  if ('multipleOf' in schema && (readNumber(schema, 'multipleOf') ?? 0) <= 0) {
+    diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.multipleOf must be greater than zero.` });
+  }
+  for (const keyword of ['minLength', 'maxLength', 'minItems', 'maxItems'] as const) {
+    if (keyword in schema && readNonNegativeInteger(schema, keyword) === undefined) {
+      diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.${keyword} must be a non-negative integer.` });
+    }
+  }
+  if ('uniqueItems' in schema && typeof schema.uniqueItems !== 'boolean') {
+    diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.uniqueItems must be boolean.` });
   }
 
   const properties = readSchemaMap(schema, 'properties');
@@ -448,6 +498,21 @@ function isSupportedJsonSchemaType(type: string): boolean {
 function readString(schema: JsonObject, key: string): string | undefined {
   const value = schema[key];
   return typeof value === 'string' ? value : undefined;
+}
+
+function readNumber(schema: JsonObject, key: string): number | undefined {
+  const value = schema[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readNonNegativeInteger(schema: JsonObject, key: string): number | undefined {
+  const value = readNumber(schema, key);
+  return value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function isJsonSchemaMultiple(value: number, multipleOf: number): boolean {
+  const quotient = value / multipleOf;
+  return Math.abs(quotient - Math.round(quotient)) <= Number.EPSILON * Math.max(1, Math.abs(quotient)) * 8;
 }
 
 function readArray(schema: JsonObject, key: string): readonly JsonValue[] | undefined {

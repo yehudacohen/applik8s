@@ -1,8 +1,11 @@
+// typecast-file-boundary: PostgreSQL result rows are checked by the runtime contract before restoring stream event shapes.
 import postgres, { type Sql } from 'postgres';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import type { ApplicationStreamBinding } from './application-reactive.js';
 import type { ApplicationReplayPage, ApplicationReplayableStream, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
+import { applicationCommandPrincipal, applicationCommandTrustedContext } from './command-principal.js';
+import { applicationPublicStreamCommitScope } from './application-stream-commit.js';
 
 export interface PostgresApplicationStreamOptions<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal> {
   readonly stream: ApplicationStreamBinding<TPayload, TPrincipal>;
@@ -11,6 +14,13 @@ export interface PostgresApplicationStreamOptions<TPayload extends object, TPrin
   readonly principal: TPrincipal;
   /** Digest of provider-admitted context. Raw access values never enter replay filters or cursors. */
   readonly contextDigest?: string;
+  /** Internal processor mode. Public subscriptions and replay APIs must leave this disabled. */
+  readonly includeTrustedContext?: boolean;
+  /**
+   * Compiler-issued read authority for a graph-declared internal consumer.
+   * Public replay/subscription paths must omit this and pass stream authorization.
+   */
+  readonly internalConsumer?: { readonly kind: 'processor' | 'projection'; readonly name: string };
 }
 
 export interface PostgresApplicationStream<TPayload extends object> extends ApplicationReplayableStream<TPayload> {
@@ -36,21 +46,28 @@ export function createPostgresApplicationStream<TPayload extends object, TPrinci
     async read(afterSequence, limit) {
       if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new Error('Application stream replay sequence must be a non-negative safe integer.');
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new Error('Application stream replay limit must be between 1 and 1000.');
-      if (!await options.stream.authorize(options.principal, 'replay')) throw new ApplicationStreamAuthorizationError(options.stream.definition.id);
+      if (options.internalConsumer) {
+        const expectedPrincipal = `applik8s:${options.internalConsumer.kind}:${options.internalConsumer.name}`;
+        if (options.principal.id !== expectedPrincipal) throw new ApplicationStreamAuthorizationError(options.stream.definition.id);
+      } else if (!await options.stream.authorize(options.principal, 'replay')) {
+        throw new ApplicationStreamAuthorizationError(options.stream.definition.id);
+      }
       const [name, version] = [options.stream.definition.name, options.stream.definition.version];
-      const contextClause = options.contextDigest ? ' AND context_digest = $5' : '';
-      const parameters = [name, version, afterSequence, limit + 1, ...(options.contextDigest ? [options.contextDigest] : [])];
-      const floorParameters = [name, version, ...(options.contextDigest ? [options.contextDigest] : [])];
-      const floorContextClause = options.contextDigest ? ' AND context_digest = $3' : '';
-      const [floorRows, rows] = await Promise.all([
-        client.unsafe(`SELECT coalesce(min(sequence), 0) AS retention_floor FROM applik8s_public_stream_events WHERE contract_name = $1 AND contract_version = $2${floorContextClause}`, floorParameters),
-        client.unsafe(`SELECT id, sequence, partition_key, recorded_at, payload FROM applik8s_public_stream_events WHERE contract_name = $1 AND contract_version = $2 AND sequence > $3${contextClause} ORDER BY sequence ASC LIMIT $4`, parameters),
-      ]);
-      const pageRows = rows.slice(0, limit);
-      const items = pageRows.map((row) => streamEnvelope<TPayload>(options.stream, row));
-      const retentionFloor = Number(floorRows[0]?.retention_floor ?? 0);
-      if (!Number.isSafeInteger(retentionFloor) || retentionFloor < 0) throw new Error(`PostgreSQL returned an invalid ${options.stream.definition.id} retention floor.`);
-      return { items, nextSequence: items.at(-1)?.sequence ?? afterSequence, exhausted: rows.length <= limit, retentionFloor } satisfies ApplicationReplayPage<TPayload>;
+      return client.begin(async (transaction) => {
+        await transaction.unsafe('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))', [applicationPublicStreamCommitScope(name, version)]);
+        const contextClause = options.contextDigest ? ' AND context_digest = $5' : '';
+        const parameters = [name, version, afterSequence, limit + 1, ...(options.contextDigest ? [options.contextDigest] : [])];
+        const floorParameters = [name, version, options.contextDigest ?? ''];
+        const [floorRows, rows] = await Promise.all([
+          transaction.unsafe('SELECT coalesce(max(deleted_through), 0) AS retention_floor FROM applik8s_public_stream_retention_floors WHERE contract_name = $1 AND contract_version = $2 AND context_digest = $3', floorParameters),
+          transaction.unsafe(`SELECT id, sequence, partition_key, recorded_at, context_digest, payload${options.includeTrustedContext ? ', envelope' : ''} FROM applik8s_public_stream_events WHERE contract_name = $1 AND contract_version = $2 AND sequence > $3${contextClause} ORDER BY sequence ASC LIMIT $4`, parameters),
+        ]);
+        const pageRows = rows.slice(0, limit);
+        const items = pageRows.map((row) => streamEnvelope<TPayload>(options.stream, row, options.includeTrustedContext === true));
+        const retentionFloor = Number(floorRows[0]?.retention_floor ?? 0);
+        if (!Number.isSafeInteger(retentionFloor) || retentionFloor < 0) throw new Error(`PostgreSQL returned an invalid ${options.stream.definition.id} retention floor.`);
+        return { items, nextSequence: items.at(-1)?.sequence ?? afterSequence, exhausted: rows.length <= limit, retentionFloor } satisfies ApplicationReplayPage<TPayload>;
+      });
     },
     async close() {
       if (ownsClient) await client.end({ timeout: 5 });
@@ -75,8 +92,10 @@ export async function enforcePostgresApplicationStreamRetention<TPayload extends
   const now = (options.now ?? new Date()).toISOString();
   const maxMessages = options.stream.retention.maxMessages ?? null;
   try {
-    const rows = await client.unsafe(`WITH ranked AS (
-  SELECT id, recorded_at, row_number() OVER (ORDER BY sequence DESC) AS retained_rank
+    const rows = await client.begin(async (transaction) => {
+      await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [applicationPublicStreamCommitScope(name, version)]);
+      return transaction.unsafe(`WITH ranked AS (
+  SELECT id, sequence, context_digest, recorded_at, row_number() OVER (ORDER BY sequence DESC) AS retained_rank
   FROM applik8s_public_stream_events
   WHERE contract_name = $1 AND contract_version = $2
 ), candidates AS (
@@ -85,11 +104,24 @@ export async function enforcePostgresApplicationStreamRetention<TPayload extends
      OR ($5::bigint IS NOT NULL AND retained_rank > $5::bigint)
   ORDER BY recorded_at ASC, id ASC
   LIMIT $6
-)
+), deleted AS (
 DELETE FROM applik8s_public_stream_events events
 USING candidates
 WHERE events.id = candidates.id
-RETURNING events.id`, [name, version, now, options.stream.retention.maxAgeSeconds, maxMessages, batchSize]);
+RETURNING events.id, events.sequence, events.context_digest
+), global_floor AS (
+  INSERT INTO applik8s_public_stream_retention_floors (contract_name, contract_version, context_digest, deleted_through, updated_at)
+  SELECT $1, $2, '', max(sequence), now() FROM deleted HAVING count(*) > 0
+  ON CONFLICT (contract_name, contract_version, context_digest) DO UPDATE
+  SET deleted_through = greatest(applik8s_public_stream_retention_floors.deleted_through, EXCLUDED.deleted_through), updated_at = now()
+), context_floors AS (
+  INSERT INTO applik8s_public_stream_retention_floors (contract_name, contract_version, context_digest, deleted_through, updated_at)
+  SELECT $1, $2, context_digest, max(sequence), now() FROM deleted GROUP BY context_digest
+  ON CONFLICT (contract_name, contract_version, context_digest) DO UPDATE
+  SET deleted_through = greatest(applik8s_public_stream_retention_floors.deleted_through, EXCLUDED.deleted_through), updated_at = now()
+)
+SELECT id FROM deleted`, [name, version, now, options.stream.retention.maxAgeSeconds, maxMessages, batchSize]);
+    });
     return { deleted: rows.length };
   } finally {
     if (ownsClient) await client.end({ timeout: 5 });
@@ -105,11 +137,35 @@ export class ApplicationStreamAuthorizationError extends Error {
 }
 
 // typecast-boundary: normalizeSchema validates the opaque PostgreSQL JSON payload before it enters the stream envelope.
-function streamEnvelope<TPayload extends object>(stream: ApplicationStreamBinding<TPayload>, row: Record<string, unknown>): ApplicationStreamEnvelope<TPayload> {
+function streamEnvelope<TPayload extends object>(stream: ApplicationStreamBinding<TPayload>, row: Record<string, unknown>, includeTrustedContext: boolean): ApplicationStreamEnvelope<TPayload> {
   const sequence = Number(row.sequence);
   const recordedAt = row.recorded_at instanceof Date ? row.recorded_at.toISOString() : String(row.recorded_at);
   if (typeof row.id !== 'string' || !Number.isSafeInteger(sequence) || sequence < 1 || typeof row.partition_key !== 'string' || !row.payload || typeof row.payload !== 'object') throw new Error(`PostgreSQL returned an invalid ${stream.definition.id} outbox row.`);
   const payload = normalizeSchema(stream.definition.payload, `${stream.definition.id}.payload`).validate(row.payload as never);
   if (!payload.ok) throw new Error(`PostgreSQL returned an invalid ${stream.definition.id} payload: ${payload.error.message}`);
-  return { id: row.id, stream: { name: stream.definition.name, version: stream.definition.version }, sequence, partitionKey: row.partition_key, recordedAt, payload: payload.value };
+  const contextDigest = typeof row.context_digest === 'string' && row.context_digest.length > 0 ? row.context_digest : undefined;
+  const durableContext = includeTrustedContext ? durableEnvelopeContext(row.envelope) : undefined;
+  const principal = applicationCommandPrincipal(durableContext);
+  const trustedContext = durableContext ? applicationCommandTrustedContext(durableContext) : undefined;
+  return {
+    id: row.id,
+    stream: { name: stream.definition.name, version: stream.definition.version },
+    sequence,
+    partitionKey: row.partition_key,
+    recordedAt,
+    ...(contextDigest ? { contextDigest } : {}),
+    ...(principal ? { principal } : {}),
+    ...(trustedContext ? { trustedContext } : {}),
+    payload: payload.value,
+  };
+}
+
+function durableEnvelopeContext(envelope: unknown): { readonly values: Readonly<Record<string, import('@applik8s/core').JsonValue>> } | undefined {
+  if (!envelope || typeof envelope !== 'object') return undefined;
+  const context = Reflect.get(envelope, 'trustedContext');
+  if (!context || typeof context !== 'object') return undefined;
+  const values = Reflect.get(context, 'values');
+  return values && typeof values === 'object' && !Array.isArray(values)
+    ? { values: values as Readonly<Record<string, import('@applik8s/core').JsonValue>> }
+    : undefined;
 }

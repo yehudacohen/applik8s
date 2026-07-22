@@ -312,19 +312,11 @@ Kubernetes-context configuration.
 This module is the dependency root. It must not import models, operators, routes, or components.
 
 ```ts
-import { createApplik8sStart } from '@applik8s/tanstack-start';
-import { type } from 'arktype';
+import { app as defineApplication, RequestIdentity } from '@applik8s/applik8s';
 import { authenticateGuestBookRequest } from './auth';
 
-export const app = createApplik8sStart({
-  name: 'guestbook',
-  context: type({
-    guestbook: 'string',
-    namespace: 'string',
-    role: "'reader' | 'author' | 'moderator'",
-  }),
-  authenticate: authenticateGuestBookRequest,
-});
+export const app = defineApplication('guestbook', { namespace: 'guestbook' });
+app.provide(RequestIdentity, RequestIdentity.from(authenticateGuestBookRequest));
 ```
 
 ### `src/application.ts`
@@ -335,10 +327,7 @@ The entrypoint imports every model and operator for registration, binds provider
 Start host.
 
 ```ts
-import {
-  Certificate,
-  DnsPublication,
-} from '@applik8s/tanstack-start';
+import { Certificate, DnsPublication } from '@applik8s/applik8s';
 import { app } from './app';
 import { provideGuestBookInfrastructure } from './infrastructure';
 import { GuestBook } from './models/guestbook';
@@ -361,10 +350,11 @@ if (process.env.APPLIK8S_PUBLIC_HOSTNAME) {
   app.provide(DnsPublication, DnsPublication.externalDns());
 }
 
-app.expose({
+app.expose('web', {
+  service: host,
   hostnames: [process.env.APPLIK8S_PUBLIC_HOSTNAME ?? 'guestbook.localhost'],
-  tls: process.env.APPLIK8S_PUBLIC_HOSTNAME ? 'managed' : 'disabled',
-  dns: process.env.APPLIK8S_PUBLIC_HOSTNAME ? 'managed' : 'disabled',
+  tls: { mode: process.env.APPLIK8S_PUBLIC_HOSTNAME ? 'managed' : 'disabled' },
+  dns: { mode: process.env.APPLIK8S_PUBLIC_HOSTNAME ? 'managed' : 'disabled' },
 });
 
 export { app, GuestBook, GuestBookEntry, GuestBookPageViewBucket };
@@ -383,10 +373,10 @@ import {
   ApplicationHost,
   EventLog,
   IndexStore,
-  type Applik8sStartApplication,
-} from '@applik8s/tanstack-start';
+  type KubernetesApplicationBuilder,
+} from '@applik8s/applik8s';
 
-export function provideGuestBookInfrastructure(app: Applik8sStartApplication) {
+export function provideGuestBookInfrastructure(app: KubernetesApplicationBuilder) {
   const host = app.provide(
     ApplicationHost,
     ApplicationHost.kubernetes({
@@ -430,25 +420,28 @@ TanStack Start hosts the public boundary, but Applik8s retains the admitted-cont
 contract.
 
 ```ts
-import type { Applik8sAuthenticationHandler } from '@applik8s/tanstack-start/server';
+import { RequestIdentity } from '@applik8s/applik8s';
 
-export const authenticateGuestBookRequest: Applik8sAuthenticationHandler =
-  async (request) => {
-    const session = await readApplicationSession(request);
+export const guestBookIdentity = RequestIdentity.from(async (request) => {
+  const session = await readApplicationSession(request);
 
-    return {
-      principal: {
-        id: session?.subject ?? 'guestbook-demo',
-      },
-      authorizationVersion: session?.authorizationVersion ?? 'demo-v1',
-      trustedContext: {
-        guestbook: 'main',
-        namespace: 'guestbook',
-        role: session?.role ?? 'author',
-      },
-    };
+  return {
+    principal: {
+      id: session?.subject ?? 'guestbook-demo',
+    },
+    authorizationVersion: session?.authorizationVersion ?? 'demo-v1',
+    trustedContext: {
+      guestbook: 'main',
+      namespace: 'guestbook',
+      role: session?.role ?? 'author',
+    },
   };
+});
 ```
+
+`src/app.ts` installs this authority with `app.provide(RequestIdentity, guestBookIdentity)`. Authentication
+is an application capability; the TanStack package only adapts Nitro's current request context to the
+framework-neutral server runtime.
 
 The demo may use a clearly labeled local identity implementation. Public mode must not silently grant
 anonymous mutation permissions.
@@ -650,13 +643,13 @@ The root installs the generated Applik8s hydration boundary. It does not create 
 
 ```tsx
 import { Outlet, createRootRoute } from '@tanstack/react-router';
-import { Applik8sStartProvider } from '@applik8s/tanstack-start/react';
+import { Applik8sProvider } from '@applik8s/react';
 
 export const Route = createRootRoute({
   component: () => (
-    <Applik8sStartProvider>
+    <Applik8sProvider>
       <Outlet />
-    </Applik8sStartProvider>
+    </Applik8sProvider>
   ),
 });
 ```
@@ -820,26 +813,27 @@ The application test proves the normalized graph and dependency injection withou
 
 ```ts
 import { describe, expect, test } from 'vitest';
-import { applicationGraph } from '@applik8s/applik8s/testing';
+import { applicationGraphFor } from '@applik8s/applik8s';
 import { app, host } from '../src/application';
 
 describe('GuestBook application graph', () => {
   test('binds the Start host and inferred dependencies', () => {
-    const graph = applicationGraph(app);
+    const graph = applicationGraphFor(app.composition);
 
     expect(host.kind).toBe('applicationHost');
-    expect(graph.requirement('GuestBookEntry.published', 'IndexStore'))
-      .toBeBoundTo('valkey');
-    expect(graph.requirement('GuestBookEntry.create', 'EventLog'))
-      .toBeBoundTo('jetstream');
-    expect(graph.edge('application-host', 'guestbook-renderer'))
-      .toMatchObject({ relationship: 'dependsOn' });
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'provider', interface: 'ApplicationHost' }),
+      expect.objectContaining({ kind: 'query', name: 'GuestBookEntry.published' }),
+    ]));
+    expect(graph?.providerRequirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ interface: 'IndexStore', purpose: 'queryInvalidation' }),
+    ]));
   });
 });
 ```
 
-Exact testing helpers may differ, but assertions must inspect normalized graph facts rather than YAML text
-fragments alone.
+Assertions inspect the real normalized graph API rather than a framework-specific testing facade or YAML
+text fragments.
 
 ### `test/guestbook.ssr.test.ts`
 
@@ -847,20 +841,23 @@ The SSR test proves one authoritative request, safe dehydration, hydration reuse
 
 ```ts
 import { expect, test } from 'vitest';
-import { renderGuestBookRequest, hydrateGuestBook } from '@applik8s/tanstack-start/testing';
+import { hydrateApplicationQueries, preloadApplicationQuery } from '@applik8s/client';
 
 test('SSR snapshot hydrates without a duplicate fetch', async () => {
-  const runtime = createGuestBookTestRuntime({
+  const server = createGuestBookQueryClient({
     published: [{ id: 'ada', author: 'Ada', message: 'Hello', publishedAt: now }],
   });
+  const initial = await preloadApplicationQuery(server, 'GuestBookEntry.published', {
+    guestbook: 'main',
+  });
 
-  const rendered = await renderGuestBookRequest('/', { runtime });
-  expect(rendered.html).toContain('Ada');
-  expect(runtime.snapshots).toHaveLength(1);
+  const browser = createGuestBookQueryClient();
+  hydrateApplicationQueries(browser, initial);
+  expect(browser.query('GuestBookEntry.published', { guestbook: 'main' }).getSnapshot().data)
+    .toEqual(initial.applik8s[0]?.value);
 
-  const browser = await hydrateGuestBook(rendered, { runtime });
-  expect(runtime.snapshots).toHaveLength(1);
-  expect(browser.activeSubscriptions()).toEqual(['GuestBookEntry.published']);
+  // Mounting the route under <Applik8sProvider queryClient={browser}> now
+  // reuses the hydrated snapshot and starts the resumable subscription.
 });
 ```
 
@@ -972,7 +969,8 @@ export interface ApplicationMutation<TInput, TOutput> {
     | 'unknown'
     | 'pending'
     | 'succeeded'
-    | 'rejected';
+    | 'rejected'
+    | 'failed';
   readonly observation:
     | { readonly state: 'notDeclared' }
     | { readonly state: 'pending'; readonly identity: unknown }
@@ -992,6 +990,12 @@ The adapter may use TanStack Query's mutation observer internally. The returned 
 promise-returning mutation path so `await mutation(input)` has normal exception semantics. Hook callbacks,
 optimistic state, serialization scope, retry policy, command cursor/progress, and reset behavior remain
 available through typed options and properties without exposing `.mutate` or `.mutateAsync`.
+
+`rejected` is a declared domain outcome with its typed rejection payload. `failed` is a terminal processing
+outcome recorded only after bounded retries are exhausted; clients receive the redacted
+`processing_failed` contract rather than worker, database, or provider error detail. Both are durable and
+stop cursor polling. A transport failure remains distinct because it does not prove whether the command
+committed.
 
 `observation` is `notDeclared` unless the operation explicitly declares one authoritative downstream
 condition. The framework must not invent one generic reconciliation phase for actions with multiple or no
@@ -1096,7 +1100,7 @@ not build during application execution, deploy during Vite build, or expose arbi
 access.
 
 The Vite plugin implicitly declares that the current application requires an `ApplicationHost`. The
-Kubernetes implementation accepts deployment policy but receives the built Start artifact from the
+Kubernetes implementation accepts deployment policy but receives the built web artifact from the
 compiler rather than an authored image string.
 
 ```ts
@@ -1110,13 +1114,14 @@ const host = app.provide(
 );
 ```
 
-The binding exposes hydrateable deployment facts:
+The graph-time binding exposes service facts and an honest pending-build state. The compiler's web artifact
+manifest and generated workload carry the resolved image/artifact digests:
 
 ```ts
 host.service.name;
 host.service.port;
 host.status.ready;
-host.image.digest;
+host.image.state; // 'pendingBuild' during graph authoring
 host.url.internal;
 ```
 

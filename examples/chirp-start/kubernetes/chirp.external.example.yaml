@@ -1,0 +1,78 @@
+apiVersion: applications.chirp.dev/v1alpha1
+kind: ChirpInstallation
+metadata:
+  name: chirp-external
+  namespace: chirp-control
+spec:
+  name: chirp-external
+  hostname: chirp.example.com
+  profile: external
+  version: 0.7.0-dev
+  features:
+    automatedAccounts: true
+    analytics: true
+    media: true
+  lifecycle:
+    databaseDeletion: retain
+    registryProjectDeletion: retain
+    purgeRegistryRepositories: false
+  backup:
+    # Backup lifecycle for an externally owned database belongs to that
+    # provider. Chirp will not create a misleading CNPG ScheduledBackup.
+    enabled: false
+    schedule: "0 0 2 * * *"
+    retentionPolicy: 30d
+  exposure:
+    mode: ingress
+    nodePort: 30081
+    certificateIssuerName: letsencrypt-prod
+  identity:
+    # Zitadel substitution profile. Switching this block to the documented Ory
+    # endpoints changes no model, gateway operation, route, or component.
+    mode: zitadel
+    issuer: https://identity.example.com
+    sessionEndpoint: https://identity.example.com/oidc/v1/userinfo
+    authorizationVersion: chirp-production-policy-v1
+    infrastructure:
+      mode: external
+      namespace: chirp-external-identity
+      deletionPolicy: retain
+  providers:
+    registry:
+      origin: https://registry.example.com
+      repositoryPrefix: chirp-external
+      pushSecretName: chirp-registry-push
+      pullSecretName: chirp-registry-pull
+    objectStorage:
+      endpoint: https://objects.example.com
+      bucket: chirp-external-media
+      prefix: site
+      region: us-east-1
+      credentialsSecretName: chirp-object-storage
+      forcePathStyle: false
+    database:
+      database: chirp_external
+      connectionSecretName: chirp-postgres
+      connectionSecretKey: uri
+    analytics:
+      endpoint: https://clickhouse.example.com:8443
+      database: chirp
+      credentialsSecretName: chirp-clickhouse
+    workflows:
+      hostPort: hatchet.example.com:443
+      apiUrl: https://hatchet.example.com
+      workerTokenSecretName: chirp-hatchet
+      tls: true
+    index:
+      host: valkey.example.com
+      port: 6379
+      passwordSecretName: chirp-valkey
+      passwordSecretKey: password
+    generation:
+      # Provider-neutral schema-bound generation endpoint. The credential is
+      # read by the workflow worker from the installation namespace only.
+      endpoint: https://generation.example.com/v1/generate
+      credentialsSecretName: chirp-structured-generation
+      credentialKey: apiKey
+      authorization: bearer
+      defaultProfile: chirp-safe-v1

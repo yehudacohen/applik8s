@@ -4,40 +4,27 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import ts from 'typescript';
+import { publishablePackageDirectories } from './publishable-packages.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(process.cwd());
 await execFileAsync(process.execPath, [join(root, 'scripts/build-publishable-packages.mjs')], { cwd: root });
 console.log('Package consumer smoke: built publishable packages.');
-const packageDirs = [
-  'packages/applik8s',
-  'packages/client',
-  'packages/react',
-  'packages/vite',
-  'packages/tanstack-start',
-  'packages/core',
-  'packages/sdk',
-  'packages/compiler',
-  'packages/runtime-contract',
-  'packages/runtime',
-  'packages/testing',
-  'packages/typekro-adapter',
-  'packages/typetainer',
-];
+const packageDirs = publishablePackageDirectories;
 const publicEntrypoints = [
   '@applik8s/applik8s',
   '@applik8s/applik8s/operator',
   '@applik8s/applik8s/dsl',
+  '@applik8s/applik8s/drizzle',
   '@applik8s/applik8s/typekro',
   '@applik8s/applik8s/factories',
   '@applik8s/applik8s/processor-runtime',
   '@applik8s/applik8s/dns',
   '@applik8s/client',
   '@applik8s/react',
+  '@applik8s/server',
+  '@applik8s/server/kubernetes-gateway',
   '@applik8s/vite',
-  '@applik8s/vite/server',
-  '@applik8s/tanstack-start',
-  '@applik8s/tanstack-start/react',
   '@applik8s/tanstack-start/server',
   '@applik8s/tanstack-start/vite',
   '@applik8s/core',
@@ -159,18 +146,20 @@ if (!graph?.nodes.some((node) => node.kind === 'workflowWorker') || !graph.provi
   const v06Path = join(consumerDir, 'v06.mjs');
   await writeFile(v06Path, `import { app, applicationGraphFor, ApplicationHost, Certificate, DnsPublication, RequestIdentity, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
-import { ApplicationQueryClient } from '@applik8s/client';
+import { authenticatedPrincipalId } from '@applik8s/applik8s/drizzle';
+import { ApplicationQueryClient, preloadApplicationQuery } from '@applik8s/client';
 import { ApplicationQueryClientProvider } from '@applik8s/react';
 import { applik8sVite } from '@applik8s/vite';
-import { createApplik8sKubernetesGateway } from '@applik8s/vite/server';
-import { createApplik8sStart, preloadApplicationQuery } from '@applik8s/tanstack-start';
+import { createApplik8sKubernetesGateway } from '@applik8s/server/kubernetes-gateway';
 import { applik8sStart } from '@applik8s/tanstack-start/vite';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 void ApplicationQueryClient; void ApplicationQueryClientProvider; void preloadApplicationQuery;
-void applik8sVite; void applik8sStart; void createApplik8sKubernetesGateway; void createApplik8sStart;
-const cards = pgTable('cards', { id: text('id').primaryKey(), organizationId: text('organization_id').notNull(), name: text('name').notNull(), revision: text('revision').notNull() });
+void applik8sVite; void applik8sStart; void createApplik8sKubernetesGateway;
+const cards = pgTable('cards', { id: text('id').default(authenticatedPrincipalId).primaryKey(), organizationId: text('organization_id').notNull(), name: text('name').notNull(), revision: text('revision').notNull() });
 const OrganizationId = trustedContext('organizationId', { schema: type('string') });
 const platform = app('packed-v06', { namespace: 'packed-v06' });
+const Work = platform.resource('Work', { apiVersion: 'packed.example/v1alpha1', spec: type({ message: 'string' }), status: type({ 'phase?': 'string' }) });
+platform.on(Work, { created: async (work) => { work.status.phase = 'Ready'; } });
 platform.provide(RequestIdentity, RequestIdentity.from(async () => ({ principal: { id: 'guest' }, trustedContext: { organizationId: 'guest' }, authorizationVersion: 'v1' })));
 platform.provide(ApplicationHost, ApplicationHost.kubernetes({ namespace: 'packed-v06', image: 'registry.example.test/packed-v06@sha256:${'a'.repeat(64)}' }));
 const Database = platform.database.postgres('catalog', { schema: { cards }, access: postgres.rls({ context: OrganizationId, column: 'organizationId' }) });
@@ -183,7 +172,7 @@ platform.expose('public', { service: gateway, hostnames: ['packed.example.test']
 const graph = applicationGraphFor(platform.composition);
 const native = graph?.nodes.find((node) => node.kind === 'model' && node.name === 'Card');
 const exposure = graph?.nodes.find((node) => node.kind === 'exposure' && node.name === 'public');
-if (Card !== cards || native?.runtime?.storageShape !== 'native-relational' || native.native?.schemaAuthority !== 'drizzle' || exposure?.service !== 'packed-v06-public' || exposure.publicUrl !== 'https://packed.example.test' || !graph?.nodes.some((node) => node.kind === 'provider' && node.interface === 'RequestIdentity') || !graph.nodes.some((node) => node.kind === 'provider' && node.interface === 'ApplicationHost')) throw new Error('Packed v0.6 native model/query/application-host graph did not materialize.');
+if (Card !== cards || native?.runtime?.storageShape !== 'native-relational' || native.native?.schemaAuthority !== 'drizzle' || exposure?.service !== 'packed-v06-public' || exposure.publicUrl !== 'https://packed.example.test' || !graph?.nodes.some((node) => node.kind === 'provider' && node.interface === 'RequestIdentity') || !graph.nodes.some((node) => node.kind === 'provider' && node.interface === 'ApplicationHost') || !graph.nodes.some((node) => node.kind === 'operator' && node.name === 'work-controller')) throw new Error('Packed v0.6 native model/query/application-host/event graph did not materialize.');
 `);
   await execFileAsync(process.execPath, [v06Path], { cwd: consumerDir });
   console.log('Package consumer smoke: packed v0.6 native model/query/exposure graph passed.');

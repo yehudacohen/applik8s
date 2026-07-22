@@ -1,5 +1,5 @@
 // typecast-file-boundary: operation test doubles intentionally erase generic payloads while asserting runtime dispatch and metadata preservation.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   attachApplicationOperations,
   createApplicationMutationOperation,
@@ -9,6 +9,7 @@ import {
   installApplicationMutationHook,
   installApplicationOperationRuntime,
   installApplicationQueryHook,
+  queryInputKey,
 } from '../src/index.js';
 
 const createContract = {
@@ -47,6 +48,28 @@ describe('application operations', () => {
       expect(getApplicationOperationContract(create)).toEqual(createContract);
     } finally {
       restore();
+    }
+  });
+
+  it('fails closed when multiple browser authorities are installed and restores the remaining authority out of order', async () => {
+    const first = installApplicationOperationRuntime({
+      async execute() {
+        return { authority: 'first' } as never;
+      },
+    });
+    const second = installApplicationOperationRuntime({
+      async execute() {
+        return { authority: 'second' } as never;
+      },
+    });
+    const create = createApplicationMutationOperation<undefined, { authority: string }>(createContract);
+    try {
+      expect(() => create(undefined)).toThrow(/multiple browser authorities/i);
+      first();
+      await expect(create(undefined)).resolves.toEqual({ authority: 'second' });
+    } finally {
+      first();
+      second();
     }
   });
 
@@ -114,6 +137,30 @@ describe('application operations', () => {
     } finally {
       restoreHook();
       restoreRuntime();
+    }
+  });
+
+  it('preloads through the same-origin browser authority before a UI provider has mounted', async () => {
+    vi.stubGlobal('window', {});
+    vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      return Response.json({
+        kind: 'snapshot',
+        protocol: 'applik8s.query/v1alpha1',
+        query: 'GuestBookEntry.published',
+        inputKey: queryInputKey(body.input),
+        value: [{ id: 'entry-1' }],
+        cursor: 'browser-cursor',
+        capability: 'resumableInvalidation',
+        generatedAt: '2026-07-16T00:00:00.000Z',
+      });
+    }));
+    try {
+      const published = createApplicationQueryOperation<{ guestbook: string }, readonly { readonly id: string }[]>(publishedContract);
+      await expect(published({ guestbook: 'main' }).preload()).resolves.toEqual([{ id: 'entry-1' }]);
+      expect(fetch).toHaveBeenCalledWith('/__applik8s/v1/queries/GuestBookEntry.published/snapshot', expect.objectContaining({ method: 'POST' }));
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 

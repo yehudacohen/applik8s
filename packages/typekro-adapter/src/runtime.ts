@@ -290,17 +290,21 @@ export function resolveOperatorInstalls<TSpec extends KroCompatibleType, TStatus
       if (!manifest) {
         return err('BUNDLE_INVALID', `Captured TypeKro operator install ${install.operatorName} is missing a compiled applik8s OperatorBundle manifest.`);
       }
-      const defaultNamespace = options.defaultNamespace ?? install.operator.deployment?.namespace;
+      const operator = {
+        ...install.operator,
+        deployment: { ...install.operator.deployment, ...install.deployment },
+      };
+      const defaultNamespace = options.defaultNamespace ?? operator.deployment?.namespace;
       const adapterOptions: TypeKroAdapterOptions = {
         compositionName: options.compositionName?.(install.operatorName) ?? install.operatorName,
         ...(options.factoryOptions ? { factoryOptions: options.factoryOptions } : {}),
         ...(defaultNamespace ? { defaultNamespace } : {}),
       };
-      const lowered = asComposition(install.operator, manifest, adapterOptions);
+      const lowered = asComposition(operator, manifest, adapterOptions);
       if (!lowered.ok) {
         return lowered;
       }
-      generatedCrdPrerequisites.push(...operatorGeneratedCrdPrerequisites(install.operator, manifest));
+      generatedCrdPrerequisites.push(...operatorGeneratedCrdPrerequisites(operator, manifest));
       // typecast: asComposition returns the operator-install composition shape required by install replay.
       resolvedInstallCompositions.set(install.operatorName, lowered.value as TypeKroOperatorComposition);
     }
@@ -1202,7 +1206,7 @@ function installResources<
   replicas: number
 ): readonly KubernetesManifestResource[] {
   const operatorName = operator.name;
-  validateDeploymentOperationalSafety(operatorName, replicas, manifest);
+  validateDeploymentOperationalSafety(operatorName, replicas, manifest, deployment);
   const serviceAccountName = deployment?.serviceAccountName ?? `${operatorName}-controller`;
   const clusterRbac = requiresClusterRbac(operator, deployment, namespace);
   const image = manifest.spec.container ? imageRefString(manifest.spec.container.image) : undefined;
@@ -1226,7 +1230,12 @@ function installResources<
       rbacRoleDocument(operatorName, namespacedPermissions, namespace, false, manifest, clusterRbac ? 'connection-secrets' : 'controller'),
       rbacBindingDocument(operatorName, serviceAccountName, namespace, false, manifest, clusterRbac ? 'connection-secrets' : 'controller'),
     ] : []),
-    deploymentDocument(manifest, serviceAccountName, image, namespace, replicas),
+    deploymentDocument(manifest, serviceAccountName, image, namespace, replicas, deployment),
+    operatorNetworkPolicyDocument(manifest, namespace),
+    // TypeKro install replicas may be a schema-derived CEL expression at graph
+    // construction time. Emitting the bounded PDB unconditionally keeps later
+    // scale-up safe; maxUnavailable: 1 does not constrain a one-replica rollout.
+    operatorPodDisruptionBudgetDocument(manifest, namespace),
   ];
 }
 
@@ -1264,7 +1273,12 @@ function operatorGeneratedCrdPrerequisites(
   return crds;
 }
 
-function validateDeploymentOperationalSafety(operatorName: string, replicas: number, manifest: OperatorManifest): void {
+function validateDeploymentOperationalSafety(
+  operatorName: string,
+  replicas: number,
+  manifest: OperatorManifest,
+  deployment: OperatorDeploymentOptions | undefined,
+): void {
   const leaderElection = manifest.spec.runtime?.leaderElection;
   if (replicas > 1 && !leaderElection?.enabled) {
     throw new Error(`Operator ${operatorName} requested ${replicas} replicas, but multi-replica operators require runtime.leaderElection.enabled.`);
@@ -1272,6 +1286,19 @@ function validateDeploymentOperationalSafety(operatorName: string, replicas: num
   const unsupportedConcurrency = unsupportedRuntimeConcurrency(manifest.spec.runtime?.concurrency);
   if (unsupportedConcurrency) {
     throw new Error(unsupportedConcurrency);
+  }
+  const terminationGracePeriodSeconds = deployment?.terminationGracePeriodSeconds;
+  if (terminationGracePeriodSeconds !== undefined
+    && (!Number.isInteger(terminationGracePeriodSeconds) || terminationGracePeriodSeconds < 1 || terminationGracePeriodSeconds > 600)) {
+    throw new Error('deployment.terminationGracePeriodSeconds must be an integer between 1 and 600.');
+  }
+  for (const [path, value] of Object.entries({
+    'resources.requests.cpu': deployment?.resources?.requests?.cpu,
+    'resources.requests.memory': deployment?.resources?.requests?.memory,
+    'resources.limits.cpu': deployment?.resources?.limits?.cpu,
+    'resources.limits.memory': deployment?.resources?.limits?.memory,
+  })) {
+    if (value !== undefined && !value.trim()) throw new Error(`deployment.${path} must not be empty.`);
   }
 }
 
@@ -1439,7 +1466,21 @@ function clusterRbacName(operatorName: string, namespace: string): string {
   return `${namespace}-${operatorName}-controller`;
 }
 
-function deploymentDocument(manifest: OperatorManifest, serviceAccountName: string, image: string, namespace: string, replicas: number): KubernetesManifestResource {
+function deploymentDocument(
+  manifest: OperatorManifest,
+  serviceAccountName: string,
+  image: string,
+  namespace: string,
+  replicas: number,
+  deployment: OperatorDeploymentOptions | undefined,
+): KubernetesManifestResource {
+  const configuredResources = deployment?.resources;
+  const resources = {
+    requests: { cpu: '100m', memory: '128Mi', ...configuredResources?.requests },
+    // Match the compiler's measured ComponentizeJS/Wasmtime execution
+    // envelope while preserving explicit per-operator overrides.
+    limits: { cpu: '1', memory: '1Gi', ...configuredResources?.limits },
+  };
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -1448,15 +1489,29 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
     spec: {
       replicas,
       selector: { matchLabels: appLabels(manifest.metadata.name) },
+      strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
       template: {
         metadata: { labels: appLabels(manifest.metadata.name), annotations: auditAnnotations(manifest) },
         spec: {
           serviceAccountName,
+          terminationGracePeriodSeconds: deployment?.terminationGracePeriodSeconds ?? 45,
+          securityContext: {
+            runAsNonRoot: true,
+            runAsUser: 65532,
+            runAsGroup: 65532,
+            seccompProfile: { type: 'RuntimeDefault' },
+          },
           containers: [
             {
               name: 'operator-host',
               image,
               imagePullPolicy: 'IfNotPresent',
+              securityContext: {
+                allowPrivilegeEscalation: false,
+                readOnlyRootFilesystem: true,
+                capabilities: { drop: ['ALL'] },
+              },
+              volumeMounts: [{ name: 'tmp', mountPath: '/tmp' }],
               ports: [{ name: 'health', containerPort: 8080 }],
               env: operatorHostEnv(manifest),
               startupProbe: {
@@ -1479,10 +1534,39 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
                 periodSeconds: 5,
                 timeoutSeconds: 5,
               },
+              resources,
             },
           ],
+          volumes: [{ name: 'tmp', emptyDir: {} }],
         },
       },
+    },
+  };
+}
+
+function operatorNetworkPolicyDocument(manifest: OperatorManifest, namespace: string): KubernetesManifestResource {
+  return {
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'NetworkPolicy',
+    id: 'operatorNetworkPolicy',
+    metadata: metadata(manifest.metadata.name, namespace, manifest),
+    spec: {
+      podSelector: { matchLabels: appLabels(manifest.metadata.name) },
+      policyTypes: ['Ingress'],
+      ingress: [{ ports: [{ protocol: 'TCP', port: 8080 }] }],
+    },
+  };
+}
+
+function operatorPodDisruptionBudgetDocument(manifest: OperatorManifest, namespace: string): KubernetesManifestResource {
+  return {
+    apiVersion: 'policy/v1',
+    kind: 'PodDisruptionBudget',
+    id: 'operatorPodDisruptionBudget',
+    metadata: metadata(manifest.metadata.name, namespace, manifest),
+    spec: {
+      maxUnavailable: 1,
+      selector: { matchLabels: appLabels(manifest.metadata.name) },
     },
   };
 }

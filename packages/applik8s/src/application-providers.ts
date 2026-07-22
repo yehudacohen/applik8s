@@ -1,4 +1,11 @@
+// typecast-file-boundary: provider constructors validate structural runtime input before restoring provider-specific discriminated contracts.
 import type { ApplicationMigrationContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef } from '@applik8s/core';
+import type { OryIdentityStackConfig, OryPlatformStackConfig } from 'typekro/ory';
+import { applicationTypeKroExpressionValue, applicationTypeKroString } from './application-typekro-values.js';
+import { StructuredGeneration, isApplicationStructuredGenerationProvider } from './structured-generation.js';
+
+export { StructuredGeneration, isApplicationStructuredGenerationProvider } from './structured-generation.js';
+export type { ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken } from './structured-generation.js';
 
 export interface ApplicationIndexBackendSelectionOptions {
   readonly cache?: readonly unknown[];
@@ -8,7 +15,10 @@ export type ApplicationIndexBackend = ApplicationValkeyIndexBackend;
 
 export type ApplicationModelStoreProvider = ApplicationPostgresModelStoreProvider;
 
-export type ApplicationHttpExposureProvider = 'ingress' | ApplicationIngressHttpExposureProvider;
+export type ApplicationHttpExposureProvider =
+  | 'ingress'
+  | ApplicationIngressHttpExposureProvider
+  | ApplicationNodePortHttpExposureProvider;
 export type ApplicationCertificateProvider = ApplicationCertManagerCertificateProvider;
 export type ApplicationDnsPublicationProvider = ApplicationExternalDnsPublicationProvider;
 
@@ -17,6 +27,34 @@ export interface ApplicationKubernetesWatchEventSourceProvider { readonly kind: 
 export interface ApplicationKubernetesSecretProvider { readonly kind: 'kubernetes-secret'; readonly defaultOwnership?: 'external' | 'generated' }
 export interface ApplicationKubernetesConfigMapQueueProvider { readonly kind: 'kubernetes-configmap-queue'; readonly maxDepth?: number; readonly maxMessageBytes?: number }
 export interface ApplicationKubernetesConfigMapObjectStorageProvider { readonly kind: 'kubernetes-configmap-objects'; readonly maxObjectBytes?: number }
+export interface ApplicationS3ObjectStorageProvider {
+  readonly kind: 's3';
+  /** Typed desired-state switch. Disabled providers are omitted and do not block installation readiness. */
+  readonly enabled?: boolean;
+  readonly name?: string;
+  readonly bucket: string;
+  /** Provider-level prefix. Logical store names are appended beneath it. */
+  readonly prefix?: string;
+  readonly region: string;
+  readonly endpoint?: string;
+  readonly forcePathStyle?: boolean;
+  readonly credentialsSecret?: ApplicationResourceRef;
+  readonly accessKeyIdKey?: string;
+  readonly secretAccessKeyKey?: string;
+  readonly sessionTokenKey?: string;
+  /** External providers are referenced; direct provisioners may prepare a bucket before the Application instance exists. */
+  readonly ownership?: 'external' | 'direct-provisioned';
+  readonly provisioning?: {
+    /** Typed desired-state switch for the app-owned OBC preparation boundary. */
+    readonly enabled?: boolean;
+    readonly claimName?: string;
+    readonly storageClassName: string;
+    readonly timeoutMs?: number;
+    /** OBC deletion removes credentials and the claim; retained bucket data follows the StorageClass reclaim policy. */
+    readonly claimLifecycle?: 'application';
+  };
+  readonly publicBaseUrl?: string;
+}
 export interface ApplicationKubernetesCredentialStoreProvider { readonly kind: 'kubernetes-secret-credentials'; readonly defaultOwnership?: 'external' | 'generated' }
 export interface ApplicationNatsJetStreamEventLogProvider {
   readonly kind: 'nats-jetstream';
@@ -41,12 +79,14 @@ export type ApplicationCounterStoreProvider = ApplicationKubernetesResourceCount
 export type ApplicationEventSourceProvider = ApplicationKubernetesWatchEventSourceProvider;
 export type ApplicationSecretProvider = ApplicationKubernetesSecretProvider;
 export type ApplicationQueueProvider = ApplicationKubernetesConfigMapQueueProvider;
-export type ApplicationObjectStorageProvider = ApplicationKubernetesConfigMapObjectStorageProvider;
+export type ApplicationObjectStorageProvider = ApplicationKubernetesConfigMapObjectStorageProvider | ApplicationS3ObjectStorageProvider;
 export type ApplicationCredentialStoreProvider = ApplicationKubernetesCredentialStoreProvider;
 export type ApplicationEventLogProvider = ApplicationNatsJetStreamEventLogProvider;
 
 export interface ApplicationHatchetWorkflowEngineProvider {
   readonly kind: 'hatchet';
+  /** Typed desired-state switch for the provider and its generated workers. */
+  readonly enabled?: boolean;
   readonly name?: string;
   readonly namespace?: string;
   readonly provision?: boolean;
@@ -65,7 +105,7 @@ export interface ApplicationHatchetWorkflowEngineProvider {
   };
   /** External bootstrap credentials containing adminEmail and adminPassword. */
   readonly adminCredentialsSecret?: ApplicationResourceRef;
-  /** Hatchet client-token Secret. Defaults to the chart-generated <name>-client-config Secret when provisioned. */
+  /** Hatchet client-token Secret. Defaults to the chart-generated hatchet-client-config Secret when provisioned. */
   readonly workerTokenSecret?: ApplicationResourceRef;
   /** @deprecated Use adminCredentialsSecret and workerTokenSecret when they differ. */
   readonly credentialsSecret?: ApplicationResourceRef;
@@ -91,6 +131,8 @@ export type ApplicationWorkflowEngineProvider = ApplicationHatchetWorkflowEngine
 
 export interface ApplicationClickHouseProjectionStoreProvider {
   readonly kind: 'clickhouse';
+  /** Typed desired-state switch for analytical storage and projection workers. */
+  readonly enabled?: boolean;
   readonly name?: string;
   readonly namespace?: string;
   readonly provision?: boolean;
@@ -106,6 +148,114 @@ export interface ApplicationClickHouseProjectionStoreProvider {
 
 export type ApplicationProjectionStoreProvider = ApplicationClickHouseProjectionStoreProvider;
 
+export type ApplicationContainerRegistryEndpoint =
+  | { readonly kind: 'origin'; readonly origin: string }
+  | {
+      readonly kind: 'kubernetes-node-port';
+      readonly namespace: string;
+      readonly service: string;
+      readonly port: number;
+      readonly protocol: 'http' | 'https';
+      /** Optional deployer/BuildKit-visible host. Defaults to the selected node's InternalIP. */
+      readonly publishHost?: string;
+      /** Optional node-runtime-visible host used in rendered immutable image references. */
+      readonly pullHost?: string;
+    };
+
+export interface ApplicationContainerRegistrySecretRef
+  extends Omit<ApplicationResourceRef, 'apiVersion' | 'kind' | 'name' | 'namespace'> {
+  readonly apiVersion: 'v1';
+  readonly kind: 'Secret';
+  readonly name: string;
+  readonly namespace: string;
+}
+
+export interface ApplicationContainerRegistryCredentialSecret extends ApplicationContainerRegistrySecretRef {
+  /** Non-secret fixed username paired with passwordKey; mutually exclusive with usernameKey. */
+  readonly username?: string;
+  readonly usernameKey?: string;
+  readonly passwordKey?: string;
+  readonly dockerConfigJsonKey?: string;
+}
+
+export interface ApplicationHarborProjectManagement {
+  /** Harbor administrator credential coordinates. Values are resolved only during deployment. */
+  readonly adminCredentials: ApplicationContainerRegistryCredentialSecret;
+  /** Namespace where purpose-scoped push and pull robot Secrets are reconciled. */
+  readonly secretNamespace: string;
+  readonly pushRobotName?: string;
+  readonly pushSecretName?: string;
+  readonly pullRobotName?: string;
+  readonly pullSecretName?: string;
+  readonly storageLimitBytes?: number;
+  readonly autoScan?: boolean;
+  readonly autoSbomGeneration?: boolean;
+  readonly immutableTags?: {
+    readonly repositoryPattern?: string;
+    readonly tagPattern?: string;
+  };
+  readonly retention?: {
+    readonly keepMostRecent: number;
+    readonly scheduleCron?: string;
+    readonly repositoryPattern?: string;
+    readonly tagPattern?: string;
+    readonly includeUntagged?: boolean;
+  };
+  /**
+   * Lifecycle of the installation-scoped Harbor project. Retention is the
+   * default. Deletion is deliberately explicit because purging repositories
+   * is irreversible and happens only after the KRO instance has finalized.
+   */
+  readonly projectLifecycle?: {
+    readonly deletionPolicy: 'retain' | 'delete';
+    readonly purgeRepositories?: boolean;
+    readonly timeoutMs?: number;
+  };
+}
+
+export interface ApplicationContainerRegistryTls {
+  readonly plainHttp?: boolean;
+  readonly insecure?: boolean;
+  /** Public CA trust may be read from a file at deployment time; credential material is never accepted here. */
+  readonly caFile?: string;
+}
+
+export interface ApplicationOrbstackContainerRegistryProvider {
+  readonly kind: 'orbstack-container-registry';
+}
+
+export interface ApplicationOciContainerRegistryProvider {
+  readonly kind: 'oci-container-registry';
+  readonly endpoint: ApplicationContainerRegistryEndpoint;
+  readonly repositoryPrefix?: string;
+  readonly pushCredentials?: ApplicationContainerRegistryCredentialSecret;
+  /** Least-privilege dockerconfig Secret already projected into each consuming namespace. */
+  readonly pullSecret?: ApplicationContainerRegistrySecretRef;
+  readonly tls?: ApplicationContainerRegistryTls;
+}
+
+export interface ApplicationHarborContainerRegistryProvider
+  extends Omit<ApplicationOciContainerRegistryProvider, 'kind' | 'repositoryPrefix' | 'pushCredentials' | 'pullSecret'> {
+  readonly kind: 'harbor-container-registry';
+  readonly project: string;
+  readonly pushCredentials: ApplicationContainerRegistryCredentialSecret;
+  readonly pullSecret: ApplicationContainerRegistrySecretRef;
+  readonly management?: ApplicationHarborProjectManagement;
+}
+
+export type ApplicationHarborContainerRegistryOptions =
+  | (Omit<ApplicationHarborContainerRegistryProvider, 'kind' | 'pushCredentials' | 'pullSecret' | 'management'> & {
+      readonly management: ApplicationHarborProjectManagement;
+      readonly pushCredentials?: never;
+      readonly pullSecret?: never;
+    })
+  | Omit<ApplicationHarborContainerRegistryProvider, 'kind' | 'management'>;
+
+export type ApplicationContainerRegistryProvider =
+  | ApplicationOrbstackContainerRegistryProvider
+  | ApplicationOciContainerRegistryProvider
+  | ApplicationHarborContainerRegistryProvider;
+
 export interface ApplicationRequestAdmission {
   readonly principal: {
     readonly id: string;
@@ -118,8 +268,43 @@ export interface ApplicationRequestAdmission {
 
 export interface ApplicationRequestIdentityProvider {
   readonly kind: 'request-identity';
+  readonly infrastructure?: ApplicationIdentityInfrastructure;
   authenticate(request: Request): ApplicationRequestAdmission | Promise<ApplicationRequestAdmission>;
+  /** Bounded credential-free capability probe used by generated workload readiness. */
+  ready?(): void | Promise<void>;
 }
+
+export interface ApplicationIdentityInfrastructure {
+  readonly kind: 'ory';
+  readonly stack: 'identity' | 'platform';
+  readonly provision?: boolean;
+  readonly spec: OryIdentityStackConfig | OryPlatformStackConfig;
+  readonly deletionPolicy: 'retain' | 'delete';
+  readonly timeoutMs?: number;
+}
+
+export interface ApplicationAuthorizationRequest {
+  readonly principal: ApplicationRequestAdmission['principal'];
+  readonly action: string;
+  readonly resource?: ApplicationResourceRef & { readonly id?: string };
+  readonly context: Readonly<Record<string, unknown>>;
+}
+
+export interface ApplicationAuthorizationDecision {
+  readonly allowed: boolean;
+  /** Provider policy or relationship revision used to invalidate admitted cursors and cached decisions. */
+  readonly version: string;
+  readonly reason?: string;
+}
+
+/** Provider-neutral policy/relationship decision service. Domain code retains final authorization policy. */
+export interface ApplicationAuthorizationProvider {
+  readonly kind: 'application-authorization';
+  decide(request: ApplicationAuthorizationRequest): ApplicationAuthorizationDecision | Promise<ApplicationAuthorizationDecision>;
+  /** Bounded credential-free capability probe used by generated workload readiness. */
+  ready?(): void | Promise<void>;
+}
+
 
 export interface ApplicationKubernetesHostProvider {
   readonly kind: 'kubernetes-application-host';
@@ -148,12 +333,83 @@ export interface ApplicationPostgresModelStoreProvider {
   readonly namespace?: string;
   readonly database?: string;
   readonly provision?: boolean;
+  /**
+   * Selects the provider lifecycle boundary. Graph ownership is the compact
+   * default and therefore deletes the cluster with the Application instance.
+   * Direct preparation is required for honest retained-data semantics.
+   */
+  readonly ownership?: 'application-graph' | 'direct-provisioned' | 'external';
+  readonly lifecycle?: {
+    readonly deletionPolicy: 'delete' | 'retain';
+    readonly preparationTimeoutMs?: number;
+  };
+  readonly instances?: number;
+  readonly storage?: { readonly size: string; readonly storageClassName?: string };
+  /** Provider-neutral backup intent lowered to the selected PostgreSQL implementation. */
+  readonly backup?: ApplicationPostgresBackupPolicy;
+  readonly resources?: {
+    readonly requests?: { readonly cpu?: string; readonly memory?: string };
+    readonly limits?: { readonly cpu?: string; readonly memory?: string };
+  };
   readonly cluster?: ApplicationResourceRef;
   readonly connectionSecret?: ApplicationResourceRef;
   readonly connectionSecretKey?: string;
   readonly migrations?: ApplicationModelStoreMigrationPolicy;
   readonly runtime?: ApplicationProviderRuntimeContract;
   readonly readiness?: ApplicationPostgresReadinessPolicy;
+}
+
+export interface ApplicationPostgresBackupPolicy {
+  /** Disables scheduling while preserving the declared recovery wiring. */
+  readonly enabled?: boolean;
+  /** Six-field cron expression understood by CloudNativePG. */
+  readonly schedule: string;
+  /** CloudNativePG duration such as `7d` or `4w`. */
+  readonly retentionPolicy: string;
+  readonly immediate?: boolean;
+  readonly target?: 'primary' | 'prefer-standby';
+  readonly destination:
+    | {
+        readonly kind: 'volume-snapshot';
+        readonly className?: string;
+        readonly online?: boolean;
+      }
+    | {
+        readonly kind: 's3';
+        readonly destinationPath: string;
+        readonly endpoint?: string;
+        readonly credentialsSecret: ApplicationResourceRef;
+        readonly accessKeyIdKey?: string;
+        readonly secretAccessKeyKey?: string;
+        /** Optional key in credentialsSecret containing the S3 region for CNPG. */
+        readonly regionKey?: string;
+      };
+}
+
+export interface ApplicationPostgresClusterSpec {
+  readonly instances: number;
+  readonly storage: { readonly size: string; readonly storageClass?: string };
+  readonly resources?: ApplicationPostgresModelStoreProvider['resources'];
+  readonly bootstrap: { readonly initdb: { readonly database: string; readonly owner: string } };
+  readonly backup?: {
+    readonly retentionPolicy: string;
+    readonly target: 'primary' | 'prefer-standby';
+    readonly volumeSnapshot?: {
+      readonly className?: string;
+      readonly online: boolean;
+    };
+    readonly barmanObjectStore?: {
+      readonly destinationPath: string;
+      readonly endpointURL?: string;
+      readonly s3Credentials: {
+        readonly accessKeyId: { readonly name: string; readonly key: string };
+        readonly secretAccessKey: { readonly name: string; readonly key: string };
+        readonly region?: { readonly name: string; readonly key: string };
+      };
+      readonly data: { readonly compression: string; readonly jobs: number; readonly immediateCheckpoint: boolean };
+      readonly wal: { readonly compression: string; readonly maxParallel: number };
+    };
+  };
 }
 
 export interface ApplicationModelStoreMigrationPolicy extends ApplicationMigrationContract {
@@ -178,12 +434,47 @@ export interface ApplicationValkeyIndexBackend {
   readonly port?: number;
   readonly image?: string;
   readonly provision?: boolean;
+  /** Shared Hyperspike operator prerequisite used by the TypeKro-backed provisioner. */
+  readonly operator?: {
+    readonly provision?: boolean;
+    readonly name?: string;
+    readonly namespace?: string;
+    readonly version?: string;
+  };
+  readonly topology?: {
+    readonly shards?: number;
+    readonly replicas?: number;
+  };
+  readonly authentication?: {
+    readonly mode: 'anonymous' | 'password';
+    readonly secret?: ApplicationResourceRef;
+    readonly key?: string;
+  };
+  readonly storage?: {
+    readonly size: string;
+    readonly storageClassName?: string;
+  };
+  readonly resources?: {
+    readonly requests?: { readonly cpu?: string; readonly memory?: string };
+    readonly limits?: { readonly cpu?: string; readonly memory?: string };
+  };
   readonly spec?: Readonly<Record<string, unknown>>;
 }
 
 export interface ApplicationIngressHttpExposureProvider {
   readonly kind: 'ingress';
   readonly ingressClassName?: string;
+}
+
+/**
+ * Deliberately small local-cluster exposure adapter. It changes only the
+ * generated Service boundary; TLS termination and DNS remain the concern of an
+ * Ingress/Gateway provider rather than being implied by a development NodePort.
+ */
+export interface ApplicationNodePortHttpExposureProvider {
+  readonly kind: 'node-port';
+  readonly host: string;
+  readonly nodePort: number | `\${${string}}`;
 }
 
 export interface ApplicationCertManagerCertificateProvider {
@@ -267,6 +558,11 @@ export interface ApplicationCertificateProviderToken extends ApplicationProvider
   certManager(options: Omit<ApplicationCertManagerCertificateProvider, 'kind'>): ApplicationCertManagerCertificateProvider;
 }
 
+export interface ApplicationHttpExposureProviderToken extends ApplicationProviderToken<ApplicationHttpExposureProvider> {
+  ingress(options?: Omit<ApplicationIngressHttpExposureProvider, 'kind'>): ApplicationIngressHttpExposureProvider;
+  nodePort(options: Omit<ApplicationNodePortHttpExposureProvider, 'kind'>): ApplicationNodePortHttpExposureProvider;
+}
+
 export interface ApplicationDnsPublicationProviderToken extends ApplicationProviderToken<ApplicationDnsPublicationProvider> {
   externalDns(options?: Omit<ApplicationExternalDnsPublicationProvider, 'kind'>): ApplicationExternalDnsPublicationProvider;
 }
@@ -279,13 +575,34 @@ export interface ApplicationProjectionStoreProviderToken extends ApplicationProv
   clickhouse(options?: Omit<ApplicationClickHouseProjectionStoreProvider, 'kind'>): ApplicationClickHouseProjectionStoreProvider;
 }
 
+export interface ApplicationContainerRegistryProviderToken extends ApplicationProviderToken<ApplicationContainerRegistryProvider> {
+  orbstack(): ApplicationOrbstackContainerRegistryProvider;
+  oci(options: Omit<ApplicationOciContainerRegistryProvider, 'kind'>): ApplicationOciContainerRegistryProvider;
+  harbor(options: ApplicationHarborContainerRegistryOptions): ApplicationHarborContainerRegistryProvider;
+  origin(origin: string): ApplicationContainerRegistryEndpoint;
+  nodePort(options: Omit<Extract<ApplicationContainerRegistryEndpoint, { readonly kind: 'kubernetes-node-port' }>, 'kind'>): ApplicationContainerRegistryEndpoint;
+}
+
+export interface ApplicationObjectStorageProviderToken extends ApplicationProviderToken<ApplicationObjectStorageProvider> {
+  s3(options: Omit<ApplicationS3ObjectStorageProvider, 'kind'>): ApplicationS3ObjectStorageProvider;
+  configMap(options?: Omit<ApplicationKubernetesConfigMapObjectStorageProvider, 'kind'>): ApplicationKubernetesConfigMapObjectStorageProvider;
+}
+
 export interface ApplicationHostProviderToken extends ApplicationProviderToken<ApplicationHostProvider> {
   kubernetes(options?: Omit<ApplicationKubernetesHostProvider, 'kind'>): ApplicationKubernetesHostProvider;
 }
 
 export interface ApplicationRequestIdentityProviderToken extends ApplicationProviderToken<ApplicationRequestIdentityProvider> {
-  from(authenticate: ApplicationRequestIdentityProvider['authenticate']): ApplicationRequestIdentityProvider;
+  from(
+    authenticate: ApplicationRequestIdentityProvider['authenticate'],
+    options?: { readonly infrastructure?: ApplicationIdentityInfrastructure; readonly ready?: NonNullable<ApplicationRequestIdentityProvider['ready']> },
+  ): ApplicationRequestIdentityProvider;
 }
+
+export interface ApplicationAuthorizationProviderToken extends ApplicationProviderToken<ApplicationAuthorizationProvider> {
+  from(decide: ApplicationAuthorizationProvider['decide'], options?: { readonly ready?: NonNullable<ApplicationAuthorizationProvider['ready']> }): ApplicationAuthorizationProvider;
+}
+
 
 export interface ApplicationProviderBindingBase<TImplementation = unknown> {
   readonly kind: 'applicationProvider';
@@ -296,8 +613,8 @@ export interface ApplicationProviderBindingBase<TImplementation = unknown> {
 export interface ApplicationHostBinding extends Omit<ApplicationProviderBindingBase<ApplicationHostProvider>, 'kind'> {
   readonly kind: 'applicationHost';
   readonly service: { readonly name: string; readonly namespace: string; readonly port: number };
-  readonly status: { readonly ready: boolean };
-  readonly image: { readonly digest: string };
+  readonly status: { readonly state: 'pendingBuild'; readonly ready: false };
+  readonly image: { readonly state: 'pendingBuild' };
   readonly url: { readonly internal: string };
 }
 
@@ -311,10 +628,17 @@ export interface ApplicationProviderState {
   readonly providers: { indexes?: unknown; models?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown; projections?: unknown; extensions?: Record<string, unknown> };
 }
 
-export const IndexStore: ApplicationProviderToken<ApplicationIndexBackend | 'valkey'> = {
+export interface ApplicationIndexStoreProviderToken extends ApplicationProviderToken<ApplicationIndexBackend | 'valkey'> {
+  valkey(options?: Omit<ApplicationValkeyIndexBackend, 'kind'>): ApplicationValkeyIndexBackend;
+}
+
+export const IndexStore: ApplicationIndexStoreProviderToken = {
   name: 'IndexStore',
   description: 'Default app-scoped index backend provider.',
   contract: builtInProviderContract('IndexStore', ['typedIndexes']),
+  valkey(options = {}) {
+    return { kind: 'valkey', ...options };
+  },
 };
 
 export const ModelStore: ApplicationModelStoreProviderToken = {
@@ -322,7 +646,9 @@ export const ModelStore: ApplicationModelStoreProviderToken = {
   description: 'Default app-scoped storage-backed model provider.',
   contract: builtInProviderContract('ModelStore', ['transactions', 'strongReads']),
   postgres(options = {}) {
-    return { kind: 'postgres', ...options };
+    const provider: ApplicationPostgresModelStoreProvider = { kind: 'postgres', ...options };
+    assertApplicationPostgresModelStoreLifecycle(provider);
+    return provider;
   },
   migrations: {
     generatedJob(options = {}) {
@@ -366,16 +692,45 @@ export const Queue: ApplicationProviderToken<ApplicationQueueProvider> = {
   contract: builtInProviderContract('Queue', ['boundedDelivery']),
 };
 
-export const ObjectStorage: ApplicationProviderToken<ApplicationObjectStorageProvider> = {
+export const ObjectStorage: ApplicationObjectStorageProviderToken = {
   name: 'ObjectStorage',
   description: 'Default app-scoped object storage provider.',
-  contract: builtInProviderContract('ObjectStorage', ['objectReadWrite']),
+  contract: builtInProviderContract('ObjectStorage', ['objectReadWrite', 'boundedObjects', 'serverOnlyCredentials']),
+  accepts: isApplicationObjectStorageProvider,
+  s3(options) {
+    if (!applicationProviderRequiredString(options.bucket)) throw new Error('ObjectStorage.s3({ bucket }) must not be empty.');
+    if (!applicationProviderRequiredString(options.region)) throw new Error('ObjectStorage.s3({ region }) must not be empty.');
+    const dynamicOwnership = applicationTypeKroExpressionValue(options.ownership);
+    if (!dynamicOwnership && options.ownership === 'direct-provisioned' && !options.credentialsSecret) {
+      throw new Error('ObjectStorage.s3({ ownership: "direct-provisioned" }) requires the Secret reference produced by the direct provisioning boundary.');
+    }
+    if (!dynamicOwnership && options.ownership === 'direct-provisioned' && !options.provisioning?.storageClassName.trim()) {
+      throw new Error('ObjectStorage.s3({ ownership: "direct-provisioned" }) requires provisioning.storageClassName.');
+    }
+    if (!dynamicOwnership && options.ownership !== 'direct-provisioned' && options.provisioning) {
+      throw new Error('ObjectStorage.s3({ provisioning }) is valid only with ownership: "direct-provisioned".');
+    }
+    return { kind: 's3', ...options };
+  },
+  configMap(options = {}) {
+    return { kind: 'kubernetes-configmap-objects', ...options };
+  },
 };
 
-export const HttpExposure: ApplicationProviderToken<ApplicationHttpExposureProvider> = {
+export const HttpExposure: ApplicationHttpExposureProviderToken = {
   name: 'HttpExposure',
   description: 'Default app-scoped HTTP exposure provider.',
   contract: builtInProviderContract('HttpExposure', ['httpRouting']),
+  ingress(options = {}) {
+    return { kind: 'ingress', ...options };
+  },
+  nodePort(options) {
+    if (!options.host.trim()) throw new Error('HttpExposure.nodePort({ host }) must not be empty.');
+    if (!applicationProviderNodePort(options.nodePort)) {
+      throw new Error('HttpExposure.nodePort({ nodePort }) must be an integer in the Kubernetes NodePort range 30000-32767 or a typed installation reference.');
+    }
+    return { kind: 'node-port', ...options };
+  },
 };
 
 export const Certificate: ApplicationCertificateProviderToken = {
@@ -428,13 +783,89 @@ export const ProjectionStore: ApplicationProjectionStoreProviderToken = {
   },
 };
 
+export const ContainerRegistry: ApplicationContainerRegistryProviderToken = {
+  name: 'ContainerRegistry',
+  description: 'Provider-neutral publication and immutable resolution of generated OCI workloads.',
+  contract: builtInProviderContract('ContainerRegistry', [
+    'immutableDigest',
+    'executionTimeCredentials',
+    'leastPrivilegePullSecret',
+  ]),
+  accepts: isApplicationContainerRegistryProvider,
+  orbstack() {
+    return { kind: 'orbstack-container-registry' };
+  },
+  oci(options) {
+    assertApplicationContainerRegistryEndpoint(options.endpoint);
+    if (options.repositoryPrefix !== undefined && !applicationProviderStringOrInstallationReference(options.repositoryPrefix)) {
+      throw new Error('ContainerRegistry.oci({ repositoryPrefix }) must not be empty.');
+    }
+    assertApplicationContainerRegistryCredentials(options.pushCredentials);
+    return { kind: 'oci-container-registry', ...options };
+  },
+  harbor(options) {
+    assertApplicationContainerRegistryEndpoint(options.endpoint);
+    if (!applicationProviderStringOrInstallationReference(options.project)) {
+      throw new Error('ContainerRegistry.harbor({ project }) must be a non-empty value or typed installation reference.');
+    }
+    if ('management' in options && options.management) {
+      assertApplicationHarborProjectManagement(options.management);
+      if (typeof options.project !== 'string' && (!options.management.pushSecretName || !options.management.pullSecretName)) {
+        throw new Error('ContainerRegistry.harbor with an installation-derived project requires explicit management.pushSecretName and management.pullSecretName so deployment preparation can resolve names without evaluating arbitrary CEL.');
+      }
+      const pushSecretName = options.management.pushSecretName ?? `${options.project}-registry-push`;
+      const pullSecretName = options.management.pullSecretName ?? `${options.project}-registry-pull`;
+      return {
+        kind: 'harbor-container-registry',
+        ...options,
+        pushCredentials: {
+          apiVersion: 'v1',
+          kind: 'Secret',
+          namespace: options.management.secretNamespace,
+          name: pushSecretName,
+          dockerConfigJsonKey: '.dockerconfigjson',
+        },
+        pullSecret: {
+          apiVersion: 'v1',
+          kind: 'Secret',
+          namespace: options.management.secretNamespace,
+          name: pullSecretName,
+        },
+      };
+    }
+    assertApplicationContainerRegistryCredentials(options.pushCredentials);
+    assertApplicationContainerRegistrySecret(options.pullSecret, 'pullSecret');
+    return { kind: 'harbor-container-registry', ...options };
+  },
+  origin(origin) {
+    if (!applicationProviderStringOrInstallationReference(origin)) throw new Error('ContainerRegistry.origin(...) requires a non-empty registry origin or typed installation reference.');
+    // TypeKro schema references are statically string-shaped but remain proxy objects until graph serialization.
+    return { kind: 'origin', origin: typeof origin === 'string' ? canonicalApplicationContainerRegistryOrigin(origin) : origin };
+  },
+  nodePort(options) {
+    if (!options.namespace.trim() || !options.service.trim()) {
+      throw new Error('ContainerRegistry.nodePort(...) requires non-empty namespace and service names.');
+    }
+    if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65_535) {
+      throw new Error('ContainerRegistry.nodePort(...) requires a valid TCP port.');
+    }
+    if (options.publishHost !== undefined && !options.publishHost.trim()) {
+      throw new Error('ContainerRegistry.nodePort(...) publishHost must not be empty when provided.');
+    }
+    if (options.pullHost !== undefined && !options.pullHost.trim()) {
+      throw new Error('ContainerRegistry.nodePort(...) pullHost must not be empty when provided.');
+    }
+    return { kind: 'kubernetes-node-port', ...options };
+  },
+};
+
 export const ApplicationHost: ApplicationHostProviderToken = {
   name: 'ApplicationHost',
   description: 'Immutable application artifact hosting and runtime lifecycle.',
   contract: builtInProviderContract('ApplicationHost', ['immutableArtifact', 'readiness', 'gracefulShutdown', 'serviceDiscovery']),
   accepts: isKubernetesApplicationHostProvider,
   kubernetes(options = {}) {
-    if (options.replicas !== undefined && (!Number.isInteger(options.replicas) || options.replicas < 1)) {
+    if (options.replicas !== undefined && !applicationTypeKroExpressionValue(options.replicas) && (!Number.isInteger(options.replicas) || options.replicas < 1)) {
       throw new Error('ApplicationHost.kubernetes({ replicas }) requires a positive integer.');
     }
     if (options.port !== undefined && (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535)) {
@@ -458,17 +889,31 @@ export const RequestIdentity: ApplicationRequestIdentityProviderToken = {
   description: 'Application-supplied request authentication and trusted-context admission.',
   contract: builtInProviderContract('RequestIdentity', ['principalIdentity', 'trustedContextAdmission', 'authorizationVersion']),
   accepts: isApplicationRequestIdentityProvider,
-  from(authenticate) {
-    return { kind: 'request-identity', authenticate };
+  from(authenticate, options) {
+    if (options?.infrastructure) assertApplicationIdentityInfrastructure(options.infrastructure);
+    if (options?.ready !== undefined && typeof options.ready !== 'function') throw new Error('RequestIdentity.from({ ready }) must be a function.');
+    return { kind: 'request-identity', authenticate, ...(options?.infrastructure ? { infrastructure: options.infrastructure } : {}), ...(options?.ready ? { ready: options.ready } : {}) };
   },
 };
+
+export const Authorization: ApplicationAuthorizationProviderToken = {
+  name: 'Authorization',
+  description: 'Provider-neutral policy and relationship decisions that assist application-owned authorization rules.',
+  contract: builtInProviderContract('Authorization', ['versionedDecisions', 'policyAssistance', 'failClosed']),
+  accepts: isApplicationAuthorizationProvider,
+  from(decide, options) {
+    if (options?.ready !== undefined && typeof options.ready !== 'function') throw new Error('Authorization.from({ ready }) must be a function.');
+    return { kind: 'application-authorization', decide, ...(options?.ready ? { ready: options.ready } : {}) };
+  },
+};
+
 
 function builtInProviderContract(providerInterface: string, guarantees: readonly string[]): ApplicationTypedProviderContract {
   return { apiVersion: 'applik8s.provider/v1alpha1', interface: providerInterface, version: 'v1alpha1', requirements: [], guarantees };
 }
 
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, ModelStore, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ProjectionStore, ApplicationHost, RequestIdentity } as const;
+export const providers = { IndexStore, ModelStore, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ProjectionStore, ApplicationHost, ContainerRegistry, RequestIdentity, Authorization, StructuredGeneration } as const;
 
 export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
   if (!name) return undefined;
@@ -587,6 +1032,26 @@ export function isValkeyIndexDefault(value: unknown): boolean {
 
 // typecast-boundary: provider tokens are identity-based and compared only after their public name and implementation contract are validated.
 export function applyApplicationProvider<TImplementation>(state: ApplicationProviderState, token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): void {
+  if (isApplicationProviderSelection(implementation)) {
+    const candidates = [...Object.values(implementation.cases), implementation.default];
+    if ((token as unknown) === ContainerRegistry) {
+      if (candidates.some((candidate) => !isApplicationContainerRegistryProvider(candidate))) {
+        throw new Error('app.selectProvider(...) ContainerRegistry branches must each be a valid registry provider.');
+      }
+      if (!state.providers.extensions) state.providers.extensions = {};
+      state.providers.extensions['ContainerRegistry@v1alpha1'] = implementation;
+      return;
+    }
+    if ((token as unknown) === StructuredGeneration) {
+      if (candidates.some((candidate) => !isApplicationStructuredGenerationProvider(candidate))) {
+        throw new Error('app.selectProvider(...) StructuredGeneration branches must each be StructuredGeneration.http(...) or .deterministic(...).');
+      }
+      if (!state.providers.extensions) state.providers.extensions = {};
+      state.providers.extensions['StructuredGeneration@v1alpha1'] = implementation;
+      return;
+    }
+    throw new Error(`app.selectProvider(...) is not yet supported for ${applicationProviderTokenName(token)}. Supported provider selections are ContainerRegistry and StructuredGeneration.`);
+  }
   if (applicationProviderTokenName(token) === 'IndexStore') {
     if (!isValkeyIndexDefault(implementation)) {
       throw new Error('app.provide(IndexStore, ...) currently supports only the Valkey index backend provider slice. Use "valkey" or { kind: "valkey", ... } for v0.2.');
@@ -602,8 +1067,8 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     return;
   }
   if (applicationProviderTokenName(token) === 'HttpExposure') {
-    if (!isIngressHttpExposureProvider(implementation)) {
-      throw new Error('app.provide(HttpExposure, ...) currently supports only the Ingress HTTP exposure provider slice. Use "ingress" or { kind: "ingress", ... } until Gateway/provider-specific exposure adapters are implemented.');
+    if (!isIngressHttpExposureProvider(implementation) && !isNodePortHttpExposureProvider(implementation)) {
+      throw new Error('app.provide(HttpExposure, ...) requires HttpExposure.ingress(...) or HttpExposure.nodePort(...).');
     }
     state.providers.expose = implementation;
     return;
@@ -645,12 +1110,36 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.extensions['ApplicationHost@v1alpha1'] = implementation;
     return;
   }
+  if ((token as unknown) === ContainerRegistry) {
+    if (!isApplicationContainerRegistryProvider(implementation)) {
+      throw new Error('app.provide(ContainerRegistry, ...) requires ContainerRegistry.orbstack(), .oci(...), or .harbor(...).');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['ContainerRegistry@v1alpha1'] = implementation;
+    return;
+  }
   if ((token as unknown) === RequestIdentity) {
     if (!isApplicationRequestIdentityProvider(implementation)) {
       throw new Error('app.provide(RequestIdentity, ...) requires RequestIdentity.from(authenticate).');
     }
     if (!state.providers.extensions) state.providers.extensions = {};
     state.providers.extensions['RequestIdentity@v1alpha1'] = implementation;
+    return;
+  }
+  if ((token as unknown) === Authorization) {
+    if (!isApplicationAuthorizationProvider(implementation)) {
+      throw new Error('app.provide(Authorization, ...) requires Authorization.from(decide).');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['Authorization@v1alpha1'] = implementation;
+    return;
+  }
+  if ((token as unknown) === StructuredGeneration) {
+    if (!isApplicationStructuredGenerationProvider(implementation)) {
+      throw new Error('app.provide(StructuredGeneration, ...) requires StructuredGeneration.http(...) or .deterministic(...).');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['StructuredGeneration@v1alpha1'] = implementation;
     return;
   }
   const tokenName = applicationProviderTokenName(token);
@@ -675,6 +1164,25 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
   throw new Error(`app.provide(${tokenName}, ...) requires a versioned provider token created with defineApplicationProvider().`);
 }
 
+export interface ApplicationProviderSelectionValue<TImplementation = unknown> {
+  readonly kind: 'application-provider-selection';
+  readonly selector: string;
+  readonly cases: Readonly<Record<string, TImplementation>>;
+  readonly default: TImplementation;
+}
+
+export function isApplicationProviderSelection(value: unknown): value is ApplicationProviderSelectionValue {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'application-provider-selection'
+    && typeof Reflect.get(value, 'selector') === 'string'
+    && Reflect.get(value, 'cases')
+    && typeof Reflect.get(value, 'cases') === 'object'
+    && Object.hasOwn(value, 'default'),
+  );
+}
+
 function applicationProviderStateField(tokenName: string | undefined): 'counters' | 'events' | 'eventLogs' | 'secrets' | 'queues' | 'objects' | 'credentials' | undefined {
   if (tokenName === 'CounterStore') return 'counters';
   if (tokenName === 'EventSource') return 'events';
@@ -693,19 +1201,41 @@ function isSupportedDefaultProvider(tokenName: string | undefined, implementatio
     || (tokenName === 'EventLog' && kind === 'nats-jetstream')
     || (tokenName === 'Secret' && kind === 'kubernetes-secret')
     || (tokenName === 'Queue' && kind === 'kubernetes-configmap-queue')
-    || (tokenName === 'ObjectStorage' && kind === 'kubernetes-configmap-objects')
+    || (tokenName === 'ObjectStorage' && (kind === 'kubernetes-configmap-objects' || kind === 's3'))
     || (tokenName === 'CredentialStore' && kind === 'kubernetes-secret-credentials');
 }
 
-export function isIngressHttpExposureProvider(value: unknown): value is ApplicationHttpExposureProvider {
+export function isIngressHttpExposureProvider(value: unknown): value is 'ingress' | ApplicationIngressHttpExposureProvider {
   return value === 'ingress' || Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'ingress');
 }
 
+export function isNodePortHttpExposureProvider(value: unknown): value is ApplicationNodePortHttpExposureProvider {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'node-port'
+    && typeof Reflect.get(value, 'host') === 'string'
+    && applicationProviderNodePort(Reflect.get(value, 'nodePort')),
+  );
+}
+
+function applicationProviderNodePort(value: unknown): boolean {
+  return (Number.isInteger(value) && Number(value) >= 30_000 && Number(value) <= 32_767)
+    || applicationProviderNumberOrInstallationReference(value);
+}
+
+function applicationProviderRequiredString(value: unknown): boolean {
+  return typeof value === 'string'
+    ? value.trim().length > 0
+    : applicationTypeKroExpressionValue(value) !== undefined;
+}
+
 export function applicationHttpExposureImplementation(value: unknown): ApplicationHttpExposureProvider | undefined {
-  if (isIngressHttpExposureProvider(value)) {
+  if (isIngressHttpExposureProvider(value) || isNodePortHttpExposureProvider(value)) {
     return value;
   }
-  if (isApplicationProviderBinding(value) && value.token === HttpExposure && isIngressHttpExposureProvider(value.implementation)) {
+  if (isApplicationProviderBinding(value) && value.token === HttpExposure
+    && (isIngressHttpExposureProvider(value.implementation) || isNodePortHttpExposureProvider(value.implementation))) {
     return value.implementation;
   }
   return undefined;
@@ -719,7 +1249,7 @@ export function isCertManagerCertificateProvider(value: unknown): value is Appli
     && Reflect.get(value, 'kind') === 'cert-manager'
     && issuerRef
     && typeof issuerRef === 'object'
-    && typeof Reflect.get(issuerRef, 'name') === 'string'
+    && applicationProviderStringOrInstallationReference(Reflect.get(issuerRef, 'name'))
     && (Reflect.get(issuerRef, 'kind') === 'Issuer' || Reflect.get(issuerRef, 'kind') === 'ClusterIssuer')
   );
 }
@@ -750,12 +1280,114 @@ export function isPostgresModelStoreProvider(value: unknown): value is Applicati
 
 export function applicationModelStoreImplementation(store: unknown): ApplicationModelStoreProvider | undefined {
   if (isPostgresModelStoreProvider(store)) {
+    assertApplicationPostgresModelStoreLifecycle(store);
     return store;
   }
   if (isApplicationProviderBinding(store) && store.token === ModelStore && isPostgresModelStoreProvider(store.implementation)) {
+    assertApplicationPostgresModelStoreLifecycle(store.implementation);
     return store.implementation;
   }
   return undefined;
+}
+
+function assertApplicationPostgresModelStoreLifecycle(provider: ApplicationPostgresModelStoreProvider): void {
+  if (provider.ownership !== undefined
+    && !applicationTypeKroExpressionValue(provider.ownership)
+    && !['application-graph', 'direct-provisioned', 'external'].includes(provider.ownership)) {
+    throw new Error('ModelStore.postgres ownership must be application-graph, direct-provisioned, external, or a typed installation expression.');
+  }
+  if (provider.provision !== undefined
+    && typeof provider.provision !== 'boolean'
+    && !applicationTypeKroExpressionValue(provider.provision)) {
+    throw new Error('ModelStore.postgres provision must be boolean or a typed installation expression.');
+  }
+  const ownership = provider.ownership ?? (provider.provision === false || provider.cluster ? 'external' : 'application-graph');
+  if (ownership === 'direct-provisioned' && (provider.provision === false || provider.cluster)) {
+    throw new Error('ModelStore.postgres({ ownership: "direct-provisioned" }) cannot disable provisioning or reference an external cluster.');
+  }
+  if (ownership === 'direct-provisioned' && !provider.lifecycle) {
+    throw new Error('ModelStore.postgres({ ownership: "direct-provisioned" }) requires lifecycle.deletionPolicy to be declared explicitly.');
+  }
+  if (ownership === 'external' && provider.provision !== false && !provider.cluster) {
+    throw new Error('ModelStore.postgres({ ownership: "external" }) requires provision: false or an explicit cluster reference.');
+  }
+  if (ownership === 'application-graph' && provider.lifecycle?.deletionPolicy === 'retain') {
+    throw new Error('ModelStore.postgres graph ownership cannot retain the database after Application deletion. Use ownership: "direct-provisioned" or "external" for retained data.');
+  }
+  if (provider.lifecycle?.preparationTimeoutMs !== undefined
+    && (!Number.isInteger(provider.lifecycle.preparationTimeoutMs) || provider.lifecycle.preparationTimeoutMs < 1_000)) {
+    throw new Error('ModelStore.postgres lifecycle.preparationTimeoutMs must be an integer of at least 1000 milliseconds.');
+  }
+  assertApplicationPostgresBackupPolicy(provider.backup);
+}
+
+function assertApplicationPostgresBackupPolicy(policy: ApplicationPostgresBackupPolicy | undefined): void {
+  if (!policy) return;
+  if (!applicationTypeKroExpressionValue(policy.schedule) && !policy.schedule.trim()) {
+    throw new Error('ModelStore.postgres backup.schedule must be a non-empty six-field cron expression.');
+  }
+  if (!applicationTypeKroExpressionValue(policy.retentionPolicy) && !/^\d+[dwm]$/.test(policy.retentionPolicy)) {
+    throw new Error('ModelStore.postgres backup.retentionPolicy must be a duration such as "7d" or "4w".');
+  }
+  if (policy.destination.kind === 's3') {
+    if (!applicationTypeKroExpressionValue(policy.destination.destinationPath) && !/^s3:\/\/[A-Za-z0-9]/.test(policy.destination.destinationPath)) {
+      throw new Error('ModelStore.postgres S3 backup.destinationPath must be an s3:// URL.');
+    }
+    if (!policy.destination.credentialsSecret.name?.trim()) {
+      throw new Error('ModelStore.postgres S3 backup credentialsSecret must reference a named Secret.');
+    }
+  }
+}
+
+/** One canonical CNPG spec for graph-owned and direct-prepared PostgreSQL. */
+export function applicationPostgresClusterSpec(
+  provider: ApplicationPostgresModelStoreProvider,
+  database: string,
+): ApplicationPostgresClusterSpec {
+  assertApplicationPostgresModelStoreLifecycle(provider);
+  const backup = provider.backup && provider.backup.enabled !== false
+    ? applicationPostgresClusterBackupSpec(provider.backup)
+    : undefined;
+  return {
+    instances: provider.instances ?? 1,
+    storage: {
+      size: provider.storage?.size ?? '1Gi',
+      ...(provider.storage?.storageClassName ? { storageClass: provider.storage.storageClassName } : {}),
+    },
+    ...(provider.resources ? { resources: provider.resources } : {}),
+    bootstrap: { initdb: { database, owner: 'app' } },
+    ...(backup ? { backup } : {}),
+  };
+}
+
+function applicationPostgresClusterBackupSpec(policy: ApplicationPostgresBackupPolicy): NonNullable<ApplicationPostgresClusterSpec['backup']> {
+  if (policy.destination.kind === 'volume-snapshot') {
+    return {
+      retentionPolicy: policy.retentionPolicy,
+      target: policy.target ?? 'prefer-standby',
+      volumeSnapshot: {
+        ...(policy.destination.className ? { className: policy.destination.className } : {}),
+        online: policy.destination.online ?? true,
+      },
+    };
+  }
+  const secretName = policy.destination.credentialsSecret.name;
+  if (!secretName) throw new Error('ModelStore.postgres S3 backup credentialsSecret must reference a named Secret.');
+  return {
+    retentionPolicy: policy.retentionPolicy,
+    target: policy.target ?? 'prefer-standby',
+    barmanObjectStore: {
+      destinationPath: policy.destination.destinationPath,
+      ...(policy.destination.endpoint ? { endpointURL: policy.destination.endpoint } : {}),
+      s3Credentials: {
+        accessKeyId: { name: secretName, key: policy.destination.accessKeyIdKey ?? 'AWS_ACCESS_KEY_ID' },
+        secretAccessKey: { name: secretName, key: policy.destination.secretAccessKeyKey ?? 'AWS_SECRET_ACCESS_KEY' },
+        ...(policy.destination.regionKey ? { region: { name: secretName, key: policy.destination.regionKey } } : {}),
+      },
+      data: { compression: 'gzip', jobs: 2, immediateCheckpoint: true },
+      wal: { compression: 'gzip', maxParallel: 2 },
+    },
+  };
 }
 
 export function applicationEventLogImplementation(value: unknown): ApplicationEventLogProvider | undefined {
@@ -780,18 +1412,265 @@ export function applicationProviderTokenName(token: ApplicationProviderToken<unk
 }
 
 export function applicationProviderInterface(tokenName: string | undefined): ApplicationProviderInterfaceKind | undefined {
-  if (tokenName === 'IndexStore' || tokenName === 'ModelStore' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ProjectionStore' || tokenName === 'ApplicationHost' || tokenName === 'RequestIdentity') {
+  if (tokenName === 'IndexStore' || tokenName === 'ModelStore' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ProjectionStore' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'RequestIdentity' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
     return tokenName;
   }
   return undefined;
 }
 
 export function isApplicationRequestIdentityProvider(value: unknown): value is ApplicationRequestIdentityProvider {
-  return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'request-identity' && typeof Reflect.get(value, 'authenticate') === 'function');
+  if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'request-identity' || typeof Reflect.get(value, 'authenticate') !== 'function') return false;
+  if (Reflect.get(value, 'ready') !== undefined && typeof Reflect.get(value, 'ready') !== 'function') return false;
+  const infrastructure = Reflect.get(value, 'infrastructure');
+  if (infrastructure === undefined) return true;
+  try {
+    assertApplicationIdentityInfrastructure(infrastructure);
+    return true;
+  } catch {
+    return false;
+  }
 }
+
+function assertApplicationIdentityInfrastructure(value: unknown): asserts value is ApplicationIdentityInfrastructure {
+  if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'ory') {
+    throw new Error('RequestIdentity infrastructure currently supports the released TypeKro Ory integration.');
+  }
+  const stack = Reflect.get(value, 'stack');
+  const spec = Reflect.get(value, 'spec');
+  const deletionPolicy = Reflect.get(value, 'deletionPolicy');
+  if (stack !== 'identity' && stack !== 'platform' && !applicationTypeKroExpressionValue(stack)) {
+    throw new Error('Ory identity infrastructure stack must be identity or platform.');
+  }
+  const specName = spec && typeof spec === 'object' ? Reflect.get(spec, 'name') : undefined;
+  const specNamespace = spec && typeof spec === 'object' ? Reflect.get(spec, 'namespace') : undefined;
+  if (!spec || typeof spec !== 'object'
+    || (!applicationProviderRequiredString(specName) && !applicationTypeKroExpressionValue(specName))
+    || (!applicationProviderRequiredString(specNamespace) && !applicationTypeKroExpressionValue(specNamespace))) {
+    throw new Error('Ory identity infrastructure requires a typed spec with non-empty name and namespace.');
+  }
+  if (deletionPolicy !== 'retain' && deletionPolicy !== 'delete' && !applicationTypeKroExpressionValue(deletionPolicy)) {
+    throw new Error('Ory identity infrastructure requires an explicit retain or delete lifecycle.');
+  }
+  const timeoutMs = Reflect.get(value, 'timeoutMs');
+  if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1_000)) {
+    throw new Error('Ory identity infrastructure timeoutMs must be an integer of at least 1000ms.');
+  }
+}
+
+export function isApplicationObjectStorageProvider(value: unknown): value is ApplicationObjectStorageProvider {
+  if (!value || typeof value !== 'object') return false;
+  if (Reflect.get(value, 'kind') === 'kubernetes-configmap-objects') return true;
+  return Reflect.get(value, 'kind') === 's3'
+    && applicationProviderRequiredString(Reflect.get(value, 'bucket'))
+    && applicationProviderRequiredString(Reflect.get(value, 'region'));
+}
+
+export function isApplicationAuthorizationProvider(value: unknown): value is ApplicationAuthorizationProvider {
+  return Boolean(value && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'application-authorization'
+    && typeof Reflect.get(value, 'decide') === 'function'
+    && (Reflect.get(value, 'ready') === undefined || typeof Reflect.get(value, 'ready') === 'function'));
+}
+
 
 export function isKubernetesApplicationHostProvider(value: unknown): value is ApplicationKubernetesHostProvider {
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'kubernetes-application-host');
+}
+
+export function isApplicationContainerRegistryProvider(value: unknown): value is ApplicationContainerRegistryProvider {
+  if (!value || typeof value !== 'object') return false;
+  const kind = Reflect.get(value, 'kind');
+  if (kind === 'orbstack-container-registry') return true;
+  const endpoint = Reflect.get(value, 'endpoint');
+  if (!isApplicationContainerRegistryEndpoint(endpoint)) return false;
+  if (kind === 'oci-container-registry') return true;
+  if (
+    kind !== 'harbor-container-registry'
+    || !applicationProviderStringOrInstallationReference(Reflect.get(value, 'project'))
+  ) return false;
+  try {
+    assertApplicationContainerRegistryCredentials(
+      Reflect.get(value, 'pushCredentials') as ApplicationContainerRegistryCredentialSecret | undefined,
+    );
+    assertApplicationContainerRegistrySecret(
+      Reflect.get(value, 'pullSecret') as ApplicationContainerRegistrySecretRef | undefined,
+      'pullSecret',
+    );
+    const management = Reflect.get(value, 'management');
+    if (management !== undefined) {
+      if (!management || typeof management !== 'object') return false;
+      assertApplicationHarborProjectManagement(management as ApplicationHarborProjectManagement);
+    }
+    return Boolean(Reflect.get(value, 'pushCredentials'));
+  } catch {
+    return false;
+  }
+}
+
+function isApplicationContainerRegistryEndpoint(value: unknown): value is ApplicationContainerRegistryEndpoint {
+  if (!value || typeof value !== 'object') return false;
+  if (Reflect.get(value, 'kind') === 'origin') {
+    const origin = Reflect.get(value, 'origin');
+    if (!applicationProviderStringOrInstallationReference(origin)) return false;
+    if (typeof origin !== 'string') return applicationProviderInstallationReference(origin);
+    try {
+      canonicalApplicationContainerRegistryOrigin(origin);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return Reflect.get(value, 'kind') === 'kubernetes-node-port'
+    && typeof Reflect.get(value, 'namespace') === 'string'
+    && Boolean((Reflect.get(value, 'namespace') as string).trim())
+    && typeof Reflect.get(value, 'service') === 'string'
+    && Boolean((Reflect.get(value, 'service') as string).trim())
+    && Number.isInteger(Reflect.get(value, 'port'))
+    && (Reflect.get(value, 'publishHost') === undefined
+      || (typeof Reflect.get(value, 'publishHost') === 'string' && Boolean((Reflect.get(value, 'publishHost') as string).trim())))
+    && (Reflect.get(value, 'pullHost') === undefined
+      || (typeof Reflect.get(value, 'pullHost') === 'string' && Boolean((Reflect.get(value, 'pullHost') as string).trim())))
+    && (Reflect.get(value, 'protocol') === 'http' || Reflect.get(value, 'protocol') === 'https');
+}
+
+/** Canonical, credential-free HTTP(S) registry authority safe for evidence and diagnostics. */
+export function canonicalApplicationContainerRegistryOrigin(origin: string): string {
+  if (/^\$\{schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+\}$/.test(origin)) return origin;
+  if (origin !== origin.trim() || [...origin].some((character) => character.charCodeAt(0) <= 0x20 || character.charCodeAt(0) === 0x7f)) {
+    throw new Error('ContainerRegistry origin must not contain whitespace or control characters.');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    throw new Error('ContainerRegistry origin must be an absolute HTTP(S) URL.');
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('ContainerRegistry origin must use HTTP or HTTPS.');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('ContainerRegistry origin must not contain userinfo or credentials; use a Secret reference.');
+  }
+  if (parsed.search || parsed.hash || (parsed.pathname !== '' && parsed.pathname !== '/')) {
+    throw new Error('ContainerRegistry origin must contain only scheme, host, and optional port.');
+  }
+  if (!parsed.hostname) throw new Error('ContainerRegistry origin must contain a hostname.');
+  return parsed.origin;
+}
+
+function assertApplicationContainerRegistryEndpoint(endpoint: ApplicationContainerRegistryEndpoint): void {
+  if (!isApplicationContainerRegistryEndpoint(endpoint)) {
+    throw new Error('ContainerRegistry requires a literal origin or a complete Kubernetes NodePort endpoint.');
+  }
+}
+
+function assertApplicationContainerRegistryCredentials(credentials: ApplicationContainerRegistryCredentialSecret | undefined): void {
+  if (!credentials) return;
+  assertApplicationContainerRegistrySecret(credentials, 'pushCredentials');
+  if (credentials.username !== undefined && credentials.usernameKey !== undefined) {
+    throw new Error('ContainerRegistry pushCredentials must select either username or usernameKey, not both.');
+  }
+}
+
+function assertApplicationContainerRegistrySecret(
+  secret: ApplicationContainerRegistrySecretRef | undefined,
+  field: string,
+): asserts secret is ApplicationContainerRegistrySecretRef {
+  if (
+    secret?.apiVersion !== 'v1'
+    || secret.kind !== 'Secret'
+    || !applicationProviderStringOrInstallationReference(secret.name)
+    || !applicationProviderStringOrInstallationReference(secret.namespace)
+  ) {
+    throw new Error(`ContainerRegistry ${field} must reference a named v1 Secret in an explicit namespace.`);
+  }
+}
+
+function assertApplicationHarborProjectManagement(management: ApplicationHarborProjectManagement): void {
+  assertApplicationContainerRegistryCredentials(management.adminCredentials);
+  if (!applicationProviderStringOrInstallationReference(management.secretNamespace)) {
+    throw new Error('ContainerRegistry.harbor management.secretNamespace must not be empty.');
+  }
+  for (const [field, value] of [
+    ['pushRobotName', management.pushRobotName],
+    ['pushSecretName', management.pushSecretName],
+    ['pullRobotName', management.pullRobotName],
+    ['pullSecretName', management.pullSecretName],
+  ] as const) {
+    if (value !== undefined && !applicationProviderStringOrInstallationReference(value)) {
+      throw new Error(`ContainerRegistry.harbor management.${field} must be a non-empty value or typed installation reference.`);
+    }
+  }
+  if (management.storageLimitBytes !== undefined && (!Number.isInteger(management.storageLimitBytes) || management.storageLimitBytes < 1)) {
+    throw new Error('ContainerRegistry.harbor management.storageLimitBytes must be a positive integer.');
+  }
+  if (management.retention && (!Number.isInteger(management.retention.keepMostRecent) || management.retention.keepMostRecent < 1)) {
+    throw new Error('ContainerRegistry.harbor management.retention.keepMostRecent must be a positive integer.');
+  }
+  if (management.projectLifecycle) {
+    const deletionPolicy = management.projectLifecycle.deletionPolicy;
+    if (
+      deletionPolicy !== 'retain'
+      && deletionPolicy !== 'delete'
+      && !applicationProviderInstallationReference(deletionPolicy)
+    ) {
+      throw new Error('ContainerRegistry.harbor management.projectLifecycle.deletionPolicy must be retain, delete, or a typed installation reference.');
+    }
+    if (
+      management.projectLifecycle.purgeRepositories !== undefined
+      && typeof management.projectLifecycle.purgeRepositories !== 'boolean'
+      && !applicationProviderBooleanOrInstallationReference(management.projectLifecycle.purgeRepositories)
+    ) {
+      throw new Error('ContainerRegistry.harbor management.projectLifecycle.purgeRepositories must be boolean or a typed installation reference.');
+    }
+    if (management.projectLifecycle.timeoutMs !== undefined && (!Number.isInteger(management.projectLifecycle.timeoutMs) || management.projectLifecycle.timeoutMs < 1_000)) {
+      throw new Error('ContainerRegistry.harbor management.projectLifecycle.timeoutMs must be an integer of at least 1000 milliseconds.');
+    }
+  }
+}
+
+function applicationProviderBooleanOrInstallationReference(value: unknown): boolean {
+  if (typeof value === 'boolean') return true;
+  if (applicationProviderSerializedInstallationReference(value)) return true;
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) return false;
+  if (Reflect.get(value, Symbol.for('TypeKro.KubernetesRef')) === true) {
+    return Reflect.get(value, 'resourceId') === '__schema__' && typeof Reflect.get(value, 'fieldPath') === 'string';
+  }
+  return Reflect.get(value, Symbol.for('TypeKro.CelExpression')) === true
+    && typeof Reflect.get(value, 'expression') === 'string'
+    && (Reflect.get(value, 'expression') as string).startsWith('schema.spec.');
+}
+
+function applicationProviderNumberOrInstallationReference(value: unknown): boolean {
+  if (typeof value === 'number' && Number.isFinite(value)) return true;
+  if (applicationProviderSerializedInstallationReference(value)) return true;
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) return false;
+  if (Reflect.get(value, Symbol.for('TypeKro.KubernetesRef')) === true) {
+    return Reflect.get(value, 'resourceId') === '__schema__' && typeof Reflect.get(value, 'fieldPath') === 'string';
+  }
+  return Reflect.get(value, Symbol.for('TypeKro.CelExpression')) === true
+    && typeof Reflect.get(value, 'expression') === 'string'
+    && (Reflect.get(value, 'expression') as string).startsWith('schema.spec.');
+}
+
+function applicationProviderStringOrInstallationReference(value: unknown): boolean {
+  if (typeof value === 'string') return Boolean(value.trim());
+  return applicationProviderInstallationReference(value);
+}
+
+function applicationProviderInstallationReference(value: unknown): boolean {
+  if (applicationProviderSerializedInstallationReference(value)) return true;
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) return false;
+  if (Reflect.get(value, Symbol.for('TypeKro.KubernetesRef')) === true) {
+    return Reflect.get(value, 'resourceId') === '__schema__' && typeof Reflect.get(value, 'fieldPath') === 'string';
+  }
+  return Reflect.get(value, Symbol.for('TypeKro.CelExpression')) === true
+    && typeof Reflect.get(value, 'expression') === 'string'
+    && (Reflect.get(value, 'expression') as string).startsWith('schema.spec.');
+}
+
+function applicationProviderSerializedInstallationReference(value: unknown): value is string {
+  return typeof value === 'string' && /^\$\{schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+\}$/.test(value);
 }
 
 export function applicationHostBinding(
@@ -808,9 +1687,9 @@ export function applicationHostBinding(
     token,
     implementation,
     service: { name, namespace, port },
-    status: { ready: false },
-    image: { digest: 'sha256:pending-build' },
-    url: { internal: `http://${name}.${namespace}.svc:${port}` },
+    status: { state: 'pendingBuild', ready: false },
+    image: { state: 'pendingBuild' },
+    url: { internal: applicationTypeKroString('http://', name, '.', namespace, '.svc:', port) },
   };
 }
 

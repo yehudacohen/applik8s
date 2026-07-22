@@ -1,18 +1,25 @@
 import { access, mkdir, rm, writeFile } from 'node:fs/promises';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { build } from 'esbuild';
 
 const request = JSON.parse(process.argv[2] ?? '{}');
 const cwd = request.cwd ?? process.cwd();
+const workspaceRoot = await findWorkspaceRoot(cwd);
 process.chdir(cwd);
 
 const tempDir = join(cwd, '.applik8s-tmp', `cli-build-${process.pid}`);
 await mkdir(tempDir, { recursive: true });
 
 try {
-  const compilerEntry = fileURLToPath(await import.meta.resolve('@applik8s/compiler'));
+  const installedCompilerEntry = fileURLToPath(await import.meta.resolve('@applik8s/compiler'));
+  const workspaceCompilerEntry = workspaceRoot
+    ? join(workspaceRoot, 'packages/compiler/src/index.ts')
+    : undefined;
+  const compilerEntry = workspaceCompilerEntry && await fileExists(workspaceCompilerEntry)
+    ? workspaceCompilerEntry
+    : installedCompilerEntry;
   const runnerSource = join(tempDir, 'runner.ts');
   const runnerBundle = join(tempDir, 'runner.mjs');
 
@@ -26,10 +33,10 @@ try {
     target: 'node22',
     sourcemap: false,
     external: ['@bytecodealliance/componentize-js', '@kubernetes/client-node', 'arktype', 'esbuild', 'typekro', 'typekro/*', 'typescript', 'yaml'],
-    plugins: [workspaceSourcePlugin(cwd)],
+    plugins: [workspaceSourcePlugin(workspaceRoot)],
   });
 
-  const code = await run('node', [runnerBundle], { APPLIK8S_WORKSPACE_ROOT: cwd });
+  const code = await run('node', [runnerBundle], { APPLIK8S_WORKSPACE_ROOT: workspaceRoot });
   process.exitCode = code;
 } finally {
   if (process.env.APPLIK8S_KEEP_TMP !== '1') {
@@ -93,20 +100,21 @@ function importSpecifier(fromDir, targetPath) {
   return specifier.startsWith('.') ? specifier : `./${specifier}`;
 }
 
-function workspaceSourcePlugin(cwd) {
+function workspaceSourcePlugin(workspaceRoot) {
+  const root = workspaceRoot ?? cwd;
   const packageAliases = new Map([
-    ['@applik8s/applik8s', resolve(cwd, 'packages/applik8s/src/index.ts')],
-    ['@applik8s/applik8s/typekro', resolve(cwd, 'packages/applik8s/src/typekro.ts')],
-    ['@applik8s/applik8s/factories', resolve(cwd, 'packages/applik8s/src/factories.ts')],
-    ['@applik8s/compiler', resolve(cwd, 'packages/compiler/src/index.ts')],
-    ['@applik8s/compiler/kubernetes-schema', resolve(cwd, 'packages/compiler/src/kubernetes-schema/index.ts')],
-    ['@applik8s/core', resolve(cwd, 'packages/core/src/index.ts')],
-    ['@applik8s/runtime-contract', resolve(cwd, 'packages/runtime-contract/src/index.ts')],
-    ['@applik8s/sdk', resolve(cwd, 'packages/sdk/src/index.ts')],
-    ['@applik8s/testing', resolve(cwd, 'packages/testing/src/index.ts')],
-    ['@applik8s/typekro-adapter', resolve(cwd, 'packages/typekro-adapter/src/index.ts')],
-    ['@applik8s/typekro-adapter/targets', resolve(cwd, 'packages/typekro-adapter/src/operation-targets.ts')],
-    ['@applik8s/typetainer', resolve(cwd, 'packages/typetainer/src/index.ts')],
+    ['@applik8s/applik8s', resolve(root, 'packages/applik8s/src/index.ts')],
+    ['@applik8s/applik8s/typekro', resolve(root, 'packages/applik8s/src/typekro.ts')],
+    ['@applik8s/applik8s/factories', resolve(root, 'packages/applik8s/src/factories.ts')],
+    ['@applik8s/compiler', resolve(root, 'packages/compiler/src/index.ts')],
+    ['@applik8s/compiler/kubernetes-schema', resolve(root, 'packages/compiler/src/kubernetes-schema/index.ts')],
+    ['@applik8s/core', resolve(root, 'packages/core/src/index.ts')],
+    ['@applik8s/runtime-contract', resolve(root, 'packages/runtime-contract/src/index.ts')],
+    ['@applik8s/sdk', resolve(root, 'packages/sdk/src/index.ts')],
+    ['@applik8s/testing', resolve(root, 'packages/testing/src/index.ts')],
+    ['@applik8s/typekro-adapter', resolve(root, 'packages/typekro-adapter/src/index.ts')],
+    ['@applik8s/typekro-adapter/targets', resolve(root, 'packages/typekro-adapter/src/operation-targets.ts')],
+    ['@applik8s/typetainer', resolve(root, 'packages/typetainer/src/index.ts')],
   ]);
 
   return {
@@ -114,7 +122,7 @@ function workspaceSourcePlugin(cwd) {
     setup(build) {
       build.onResolve({ filter: /^@applik8s\// }, async (args) => {
         if (args.path.startsWith('@applik8s/applik8s/factories/')) {
-          const alias = resolve(cwd, 'packages/applik8s/src/factories', `${args.path.slice('@applik8s/applik8s/factories/'.length)}.ts`);
+          const alias = resolve(root, 'packages/applik8s/src/factories', `${args.path.slice('@applik8s/applik8s/factories/'.length)}.ts`);
           if (await fileExists(alias)) {
             return { path: alias };
           }
@@ -127,7 +135,7 @@ function workspaceSourcePlugin(cwd) {
       });
 
       build.onResolve({ filter: /^\.\.?\/.*\.js$/ }, async (args) => {
-        if (!args.importer.startsWith(resolve(cwd, 'packages'))) {
+        if (!workspaceRoot || !args.importer.startsWith(resolve(root, 'packages'))) {
           return undefined;
         }
         const tsCandidate = resolve(args.resolveDir, args.path.replace(/\.js$/, '.ts'));
@@ -138,6 +146,17 @@ function workspaceSourcePlugin(cwd) {
       });
     },
   };
+}
+
+async function findWorkspaceRoot(start) {
+  let current = resolve(start);
+  for (;;) {
+    if (await fileExists(join(current, 'packages/compiler/src/index.ts'))
+      && await fileExists(join(current, 'packages/applik8s/src/index.ts'))) return current;
+    const parent = dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
 }
 
 async function fileExists(path) {
@@ -151,7 +170,12 @@ async function fileExists(path) {
 
 function run(command, args, env = {}) {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: 'inherit', env: { ...process.env, ...env } });
+    const childEnv = { ...process.env };
+    for (const [name, value] of Object.entries(env)) {
+      if (value === undefined) delete childEnv[name];
+      else childEnv[name] = value;
+    }
+    const child = spawn(command, args, { stdio: 'inherit', env: childEnv });
     child.on('close', (code) => resolve(code ?? 1));
     child.on('error', () => resolve(1));
   });

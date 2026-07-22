@@ -4290,15 +4290,23 @@ fn status_observed_generation_for_route(
 }
 
 fn default_watch_namespace(manifest: &Value) -> Option<String> {
-    if let Some(namespace) = manifest
-        .pointer("/metadata/annotations/applik8s.dev~1namespace")
-        .and_then(Value::as_str)
-    {
-        return Some(namespace.to_string());
-    }
-    std::env::var("APPLIK8S_POD_NAMESPACE")
-        .ok()
-        .filter(|value| !value.is_empty())
+    default_watch_namespace_with_pod_namespace(
+        manifest,
+        std::env::var("APPLIK8S_POD_NAMESPACE").ok(),
+    )
+}
+
+fn default_watch_namespace_with_pod_namespace(
+    manifest: &Value,
+    pod_namespace: Option<String>,
+) -> Option<String> {
+    pod_namespace.filter(|value| !value.is_empty()).or_else(|| {
+        manifest
+            .pointer("/metadata/annotations/applik8s.dev~1namespace")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
 }
 
 fn unsupported_runtime_concurrency(manifest: &Value) -> Option<String> {
@@ -6606,6 +6614,42 @@ fn action_for_plan(plan: &applik8s_runtime_contract::NormalizedOperationPlan) ->
 mod connection_tests {
     use super::*;
     use crate::kubernetes_connection::KubernetesEndpointPolicy;
+
+    #[test]
+    fn pod_namespace_is_authoritative_over_a_manifest_template_namespace() {
+        let manifest = serde_json::json!({
+            "metadata": {
+                "annotations": {
+                    "applik8s.dev/namespace": "${schema.spec.name}"
+                }
+            }
+        });
+
+        assert_eq!(
+            default_watch_namespace_with_pod_namespace(
+                &manifest,
+                Some("materialized-application".to_string()),
+            )
+            .as_deref(),
+            Some("materialized-application")
+        );
+    }
+
+    #[test]
+    fn manifest_namespace_remains_the_off_cluster_fallback() {
+        let manifest = serde_json::json!({
+            "metadata": {
+                "annotations": {
+                    "applik8s.dev/namespace": "configured-application"
+                }
+            }
+        });
+
+        assert_eq!(
+            default_watch_namespace_with_pod_namespace(&manifest, None).as_deref(),
+            Some("configured-application")
+        );
+    }
 
     #[test]
     fn exact_secondary_watch_target_names_use_kubernetes_dns_subdomains() {

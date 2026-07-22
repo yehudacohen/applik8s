@@ -3,7 +3,7 @@
 For the v0.6 native Drizzle/Kubernetes model, trusted-context, migration, query, stream, client, and
 projection contracts, see [Native Models and Live Queries](./native-models-and-live-queries.md).
 
-This is the supported public surface for `applik8s` v0.5. The v0.3 application substrate and v0.4 durable command semantics remain supported; v0.5 adds provider-neutral durable tasks and workflows plus bounded named Kubernetes connections without broadening into v0.6 projection/UI APIs.
+This is the supported public surface for the pending `applik8s` v0.6 release. It includes the v0.3 application substrate, v0.4 durable commands, v0.5 tasks/connections, and v0.6 native models, live queries, browser facades, and application hosting.
 
 ## Packages
 
@@ -15,10 +15,20 @@ This is the supported public surface for `applik8s` v0.5. The v0.3 application s
 - `@applik8s/typekro-adapter`: TypeKro install composition and operation-target adapters.
 - `@applik8s/core`: shared types and contracts.
 - `@applik8s/runtime-contract`: generated runtime/handler ABI schema constants.
-- `@applik8s/runtime`: runtime package placeholder for TypeScript-facing runtime exports.
+- `@applik8s/runtime`: TypeScript-facing operator runtime interfaces.
 - `@applik8s/typetainer`: typed container image reference utilities.
+- `@applik8s/client`: framework-neutral browser/server operation clients and transports.
+- `@applik8s/react`: router-independent providers, hydration boundary, and live-query/mutation hooks.
+- `@applik8s/server`: framework-neutral authenticated request scope and Fetch-compatible Kubernetes gateway.
+- `@applik8s/vite`: graph discovery, dual-runtime facade partitioning, dependency-zone enforcement, and web-artifact recording.
+- `@applik8s/tanstack-start`: the thin Nitro/TanStack adapter; it does not re-export application providers.
 
 The umbrella package is the normal application-authoring and integration surface. Code that must be captured inside a minimal WASM reconciliation closure should import focused handler-safe APIs from `@applik8s/sdk` or an explicitly documented handler-safe subpath. The compiler follows the reachable closure and fails closed on unsupported Node or integration dependencies; it does not promise that importing the umbrella entrypoint from inside a handler is minimal or portable.
+
+Generated browser facades use the same-origin `/__applik8s/v1` authority for route-loader preloads even
+before React mounts. `Applik8sProvider` supplies live-query/mutation hooks and may override the browser
+clients or base URL. If overlapping providers make a direct model call ambiguous, the client fails closed;
+context-bound React hooks continue to use their nearest provider.
 
 Static dispatcher capture preserves the defining source module and authored handler expression through discovery metadata. Reachable declarations are emitted in isolated module scopes, so unrelated duplicate helper names and explicitly aliased same-named imports retain normal JavaScript module semantics. Missing source provenance, unresolved lexical state, and unsupported capture cycles still fail closed with the handler and dependency named.
 
@@ -74,10 +84,29 @@ The primary authoring sequence is:
 - `myApp.storage.postgres('db', { database, migrations: 'generated-job' })` for the concrete Postgres `ModelStore` slice
 - `myApp.model('Name', { spec, indexes })` for storage-backed app data
 - `myApp.http('server', (http) => { ... })` for generated HTTP workloads with inferred resources/models
-- `myApp.reconcile(Resource, handler)` for generated operators
+- `myApp.on(Resource, { created, updated, finalize })` for explicit app-native lifecycle controllers
+- `myApp.reconcile(Resource, handler)` as the continuous-reconciliation shorthand
+- `myApp.install(childApp, { spec })` to statically nest another installable Application into the generated TypeKro graph
 - `myApp.composition` when a TypeKro composition is needed
 
 Provider APIs such as `app.provide(ModelStore, ...)`, `app.defaults(...)`, and explicit `app.server(...)` options remain supported for advanced composition. They should be treated as progressive disclosure: use them when you need a non-default binding, explicit provider ownership, or lower-level compatibility inspection.
+
+PostgreSQL ownership is explicit when data must outlive the Application graph. The compact default,
+`ModelStore.postgres()`, makes the CNPG `Cluster` a KRO child and therefore deletes it with the Application
+instance. A retained application-owned database uses
+`ModelStore.postgres({ ownership: 'direct-provisioned', lifecycle: { deletionPolicy: 'retain' } })`; deployment
+prepares it through a recorded TypeKro direct factory and the KRO graph observes it with `externalRef` without
+adopting it. Use `deletionPolicy: 'delete'` for a disposable direct-managed database, or
+`ownership: 'external'` with `provision: false` or an explicit `cluster` reference for infrastructure owned
+outside Applik8s. Direct ownership without an explicit deletion policy fails at authoring time, and a KRO-owned
+cluster is never silently adopted into the direct lifecycle.
+
+`app.install(child, { name?, spec, dependsOn? })` calls the child Application's TypeKro composition while the
+parent graph is being materialized. TypeKro statically merges the child resources and exposes the child's typed
+status proxy to the parent; no operator builds a second graph during reconciliation. `name` is stable graph
+evidence, while Kubernetes names and namespaces remain fields of the child's typed spec. Use the child
+installation model's normal create/update/delete operations instead when an independently owned child CR and
+separate lifecycle are required.
 
 `app.secret(name, options)` makes Secret ownership explicit. An explicit `secretName` defaults to `ownership: 'external'`: applik8s emits references and workload wiring, but does not emit or own the Secret object. A generated name defaults to `ownership: 'generated'`; applik8s emits the empty Secret shell while leaving Secret data runtime/user-owned. Set `ownership` explicitly when the default is not the intended lifecycle. applik8s never emits an empty `data` map for an externally populated key, because doing so would claim and potentially erase that key under server-side apply.
 
@@ -171,6 +200,30 @@ The v0.2 flagship TypeKro example remains available through `examples/guestbook.
 
 No `dev` or `package` command is promised in v0.3.
 
+## Native Model Lifecycle
+
+A promoted Drizzle model exposes schema-derived `Model.create`, `Model.update`, and `Model.delete`
+operations plus typed `Model.on.create`, `Model.on.update`, and `Model.on.delete` committed-event handlers.
+`Model.<mutation>.beforeCommit(options, handler)` adds one transaction-authoritative policy hook for
+authorization, validation, derivation, transaction participants, and declared event/command outboxes. It
+does not create a second public action or event path. The framework owns the conventional mutation,
+durable result, versioned lifecycle event, replay stream, and bounded processor lowering.
+
+Lifecycle handlers receive inferred snapshots: create has `value`; update has `previous` and `current`;
+delete has `previous` and a typed tombstone. Handler context exposes event identity, stream name/version,
+sequence, recorded time, partition, opaque admitted-context digest, stable idempotency key, admitted
+principal and trusted values, attempt, and abort signal. Principal/trusted values are available only inside
+generated server-side processors and are excluded from public replay and SSE. Essential initialization
+belongs in database defaults or `beforeCommit`; `on.*` is retryable post-commit work.
+
+A genuinely exceptional non-CRUD declaration derives both a direct `Model.<verb>(input)` method and a typed
+`Model.on.<verb>(...)` completion registration. Completion carries previous/current snapshots, result,
+identity, and committed revision through the same transactional outbox. It does not require an
+`.actions({...})` registry.
+
+`$model.on.command`, `$model.on.action`, and generic command registration remain compatibility-only during
+the v0.7 migration window and are scheduled for removal at 1.0. They are not the ordinary model API.
+
 ## Resource Operations
 
 Generated `app.server(...)` routes can call typed resource helpers such as `Resource.create(...)`, `Resource.get(...)`, `Resource.query(...)`, `Resource.patch(...)`, `Resource.delete(...)`, and `Resource.increment(...)`. `increment(...)` is generated-runtime-only: route code declares the target resource, object identity, spec fields, labels, and numeric field, while the generated server batches increments and flushes them with create-on-miss and patch-on-existing-object semantics.
@@ -195,7 +248,7 @@ Applik8s consumes TypeKro 0.26 and re-exports its production Valkey, Rook/Ceph, 
 
 ## v0.4 Durable Behavior
 
-`command(...)`, `event(...)`, `Model.on.command(...)`, and the `EventLog` provider are stable v0.4 APIs. One model command declaration lowers into PostgreSQL command authority, declared transactional outboxes, a bounded generated processor, and JetStream transport resources. PostgreSQL owns idempotency and durable results; JetStream is at-least-once delivery. See `docs/commands.md` for ordering, missing-target, revision, recovery, and effect-boundary semantics.
+`command(...)`, `event(...)`, and the `EventLog` provider remain the versioned durable-message foundation introduced in v0.4. Promoted relational models now derive direct CRUD operations and typed committed lifecycle handlers; one exceptional `Model.action(...)` declaration derives a direct method and its completion stream. Both paths lower into PostgreSQL command authority, declared transactional outboxes, bounded generated processors, and JetStream transport. PostgreSQL owns idempotency and durable results; JetStream is at-least-once delivery. `Model.on.command(...)` is compatibility-only. See `docs/commands.md` for ordering, missing-target, revision, recovery, and effect-boundary semantics.
 
 ## v0.5 Durable Tasks and Workflows
 

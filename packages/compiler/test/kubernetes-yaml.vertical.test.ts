@@ -313,7 +313,15 @@ describe('Kubernetes YAML generation', () => {
       });
       const operator = sdk.operator({
         name: 'leader-elected-operator',
-        deployment: { namespace: 'media', replicas: 2 },
+        deployment: {
+          namespace: 'media',
+          replicas: 2,
+          terminationGracePeriodSeconds: 75,
+          resources: {
+            requests: { cpu: '250m', memory: '192Mi' },
+            limits: { cpu: '2', memory: '768Mi' },
+          },
+        },
         runtime: {
           leaderElection: { enabled: true, leaseName: 'leader-elected-operator', leaseDurationSeconds: 15, renewDeadlineSeconds: 10, retryPeriodSeconds: 2 },
           concurrency: { workerCount: 1, maxInFlightPerResource: 1 },
@@ -339,10 +347,24 @@ describe('Kubernetes YAML generation', () => {
       const documents = await Promise.all(yaml.value.paths.map(async (path) => parse(await readFile(path, 'utf8'))));
       const deployment = documents.find((document) => document.kind === 'Deployment');
       const role = documents.find((document) => document.kind === 'Role');
+      const networkPolicy = documents.find((document) => document.kind === 'NetworkPolicy');
+      const disruptionBudget = documents.find((document) => document.kind === 'PodDisruptionBudget');
       const env = deployment?.spec.template.spec.containers[0].env;
 
       expect(deployment?.spec.replicas).toBe(2);
+      expect(deployment?.spec.strategy).toEqual({ type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } });
+      expect(deployment?.spec.template.spec.terminationGracePeriodSeconds).toBe(75);
+      expect(deployment?.spec.template.spec.containers[0].resources).toEqual({
+        requests: { cpu: '250m', memory: '192Mi' },
+        limits: { cpu: '2', memory: '768Mi' },
+      });
       expect(deployment?.spec.template.spec.containers[0].readinessProbe.httpGet).toEqual({ path: '/healthz', port: 'health' });
+      expect(networkPolicy?.spec).toMatchObject({
+        podSelector: { matchLabels: { 'app.kubernetes.io/name': 'leader-elected-operator' } },
+        policyTypes: ['Ingress'],
+        ingress: [{ ports: [{ protocol: 'TCP', port: 8080 }] }],
+      });
+      expect(disruptionBudget?.spec).toEqual({ maxUnavailable: 1, selector: { matchLabels: { 'app.kubernetes.io/managed-by': 'applik8s', 'app.kubernetes.io/name': 'leader-elected-operator' } } });
       expect(env).toContainEqual({ name: 'APPLIK8S_LEADER_ELECTION_IDENTITY', valueFrom: { fieldRef: { fieldPath: 'metadata.name' } } });
       expect(role?.rules).toContainEqual({ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['get', 'update', 'patch'], resourceNames: ['leader-elected-operator'] });
       expect(role?.rules).toContainEqual({ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['create'] });

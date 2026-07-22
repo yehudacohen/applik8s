@@ -8,3 +8,11 @@ export function shellQuote(value: string): string {
 export async function digestFile(path: string): Promise<string> {
   return `sha256:${createHash('sha256').update(await readFile(path)).digest('hex')}`;
 }
+
+export function safePathSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_.-]/g, '-');
+}
+
+export function unique<T>(values: readonly T[]): T[] {
+  return [...new Set(values)];
+}

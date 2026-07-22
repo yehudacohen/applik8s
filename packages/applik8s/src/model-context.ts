@@ -1,7 +1,7 @@
 import type { ResourceGetQuery, ResourceObject } from '@applik8s/core';
 import type { InferSelectModel } from 'drizzle-orm';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
-import type { ApplicationModelSnapshot, PromotedDrizzleTable, PromotedKubernetesResource } from './native-models.js';
+import { getApplicationModelFacet, type ApplicationModelSnapshot, type PromotedDrizzleTable, type PromotedKubernetesResource } from './native-models.js';
 import type { ApplicationAdmittedContext, ApplicationRelationalContext } from './relational-runtime.js';
 
 export interface ApplicationKubernetesModelReader {
@@ -41,16 +41,18 @@ export function createApplicationModelContext(options: {
   readonly admittedContext: ApplicationAdmittedContext;
 }): ApplicationModelContext {
   const get = async (model: PromotedDrizzleTable<AnyPgTable> | PromotedKubernetesResource<object, object>, identity: unknown): Promise<ApplicationModelSnapshot<unknown, unknown> | undefined> => {
-    if (model.$model.provider === 'postgres') {
-      if (!options.relational) throw new Error(`Model ${model.$model.name} requires a relational model reader in this runtime context.`);
+    const facet = getApplicationModelFacet<object, unknown, object, object>(model);
+    if (!facet) throw new Error('Application model context received an unpromoted model.');
+    if (facet.provider === 'postgres') {
+      if (!options.relational) throw new Error(`Model ${facet.name} requires a relational model reader in this runtime context.`);
       return options.relational.get(model as PromotedDrizzleTable<AnyPgTable>, identity);
     }
-    if (!options.kubernetes) throw new Error(`Model ${model.$model.name} requires a Kubernetes model reader in this runtime context.`);
+    if (!options.kubernetes) throw new Error(`Model ${facet.name} requires a Kubernetes model reader in this runtime context.`);
     const normalized = kubernetesIdentity(model as PromotedKubernetesResource<object, object>, identity);
     await enforceKubernetesContext(model as PromotedKubernetesResource<object, object>, normalized.namespace, options.kubernetes, options.admittedContext);
     const resource = await options.kubernetes.get(model as PromotedKubernetesResource<object, object>, normalized);
     if (!resource) return undefined;
-    if (!resource.spec || resource.metadata.name !== normalized.name || (normalized.namespace && resource.metadata.namespace !== normalized.namespace)) throw new Error(`Kubernetes provider returned an invalid ${model.$model.name} resource for ${JSON.stringify(normalized)}.`);
+    if (!resource.spec || resource.metadata.name !== normalized.name || (normalized.namespace && resource.metadata.namespace !== normalized.namespace)) throw new Error(`Kubernetes provider returned an invalid ${facet.name} resource for ${JSON.stringify(normalized)}.`);
     return {
       identity: normalized.name,
       value: resource.spec,
@@ -61,7 +63,9 @@ export function createApplicationModelContext(options: {
     get: get as ApplicationModelContext['get'],
     require: (async (model: PromotedDrizzleTable<AnyPgTable> | PromotedKubernetesResource<object, object>, identity: unknown) => {
       const snapshot = await get(model, identity);
-      if (!snapshot) throw new ApplicationModelReferenceMissingError(model.$model.name, identity);
+      const facet = getApplicationModelFacet<object, unknown, object, object>(model);
+      if (!facet) throw new Error('Application model context received an unpromoted model.');
+      if (!snapshot) throw new ApplicationModelReferenceMissingError(facet.name, identity);
       return snapshot;
     }) as ApplicationModelContext['require'],
   };

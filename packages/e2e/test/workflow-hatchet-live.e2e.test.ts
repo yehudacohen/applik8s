@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type ApplicationWorkflowRun, setApplicationWorkflowRuntimeFactory } from '@applik8s/applik8s';
-import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1';
+import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 
 import { createHatchetWorkflowRuntime } from '../../applik8s/src/workflow-runtime-hatchet.js';

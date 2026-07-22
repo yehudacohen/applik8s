@@ -15,24 +15,24 @@ const rules: readonly BoundaryRule[] = [
     rationale: 'Operator closure entrypoints must stay WASM-safe and free of Node, compiler, and TypeKro dependencies.',
   },
   {
-    roots: ['packages/client/src', 'packages/react/src', 'packages/tanstack-start/src/react.ts'],
-    forbidden: [/^node:/, /^@kubernetes\/client-node$/, /^@applik8s\/(?:applik8s|compiler|runtime|sdk|typekro-adapter)$/, /^typekro(?:\/|$)/],
-    rationale: 'Future v0.6 browser packages may depend only on browser-safe contracts and transport clients.',
+    roots: ['packages/client/src', 'packages/react/src'],
+    forbidden: [/^node:/, /^@kubernetes\/client-node$/, /^@applik8s\/(?!client(?:\/|$))/, /^typekro(?:\/|$)/],
+    rationale: 'Browser packages may depend only on the browser-safe client contract and transport package.',
   },
   {
     roots: ['packages/vite/src/index.ts'],
-    forbidden: [/^@kubernetes\/client-node$/, /^@applik8s\/(?:applik8s|runtime|sdk|typekro-adapter)$/, /^typekro(?:\/|$)/],
-    rationale: 'The generic Vite build adapter may consume compiler metadata but must not become a Kubernetes, runtime-host, or TypeKro client.',
+    forbidden: [/^@kubernetes\/client-node$/, /^@applik8s\/(?!compiler(?:\/|$))/, /^typekro(?:\/|$)/],
+    rationale: 'The generic Vite build adapter may consume compiler metadata only; runtime and framework integration belong elsewhere.',
   },
   {
-    roots: ['packages/vite/src/server.ts', 'packages/vite/src/kubernetes-gateway.ts'],
-    forbidden: [/^@applik8s\/(?:applik8s|runtime|typekro-adapter)$/, /^typekro(?:\/|$)/],
-    rationale: 'Framework-neutral server adapters may use focused provider SDKs but must not pull in the authoring umbrella, runtime host, or TypeKro.',
+    roots: ['packages/server/src'],
+    forbidden: [/^@applik8s\/(?!client(?:\/|$)|core(?:\/|$)|sdk(?:\/|$))/, /^typekro(?:\/|$)/],
+    rationale: 'Framework-neutral server authority may use only client, core, SDK, and Kubernetes APIs—not authoring, build, UI, or framework adapters.',
   },
   {
-    roots: ['packages/tanstack-start/src/index.ts', 'packages/tanstack-start/src/server.ts', 'packages/tanstack-start/src/vite.ts'],
-    forbidden: [/^@kubernetes\/client-node$/, /^@applik8s\/(?:compiler|runtime|sdk|typekro-adapter)$/, /^typekro(?:\/|$)/],
-    rationale: 'TanStack authoring, server, and build adapters may use their environment APIs but must not become direct Kubernetes, compiler, runtime-host, or TypeKro clients.',
+    roots: ['packages/tanstack-start/src'],
+    forbidden: [/^@kubernetes\/client-node$/, /^@applik8s\/(?!client(?:\/|$)|server(?:\/|$)|vite(?:\/|$)|tanstack-start(?:\/|$))/, /^typekro(?:\/|$)/],
+    rationale: 'TanStack Start is a thin framework adapter over client, server, and Vite; generic UI and application capabilities belong in their own packages.',
   },
 ];
 

@@ -35,6 +35,10 @@
       "types": "./dist/dsl.d.ts",
       "import": "./dist/dsl.js"
     },
+    "./drizzle": {
+      "types": "./dist/drizzle.d.ts",
+      "import": "./dist/drizzle.js"
+    },
     "./typekro": {
       "types": "./dist/typekro.d.ts",
       "import": "./dist/typekro.js"
@@ -55,20 +59,67 @@
       "types": "./dist/reactive-runtime.d.ts",
       "import": "./dist/reactive-runtime.js"
     },
+    "./query-runtime": {
+      "types": "./dist/query-runtime.d.ts",
+      "import": "./dist/query-runtime.js"
+    },
+    "./command-gateway-runtime": {
+      "types": "./dist/command-gateway-runtime.d.ts",
+      "import": "./dist/command-gateway-runtime.js"
+    },
+    "./subscription-runtime": {
+      "types": "./dist/subscription-runtime.d.ts",
+      "import": "./dist/subscription-runtime.js"
+    },
+    "./projection-worker-runtime": {
+      "types": "./dist/projection-worker-runtime.d.ts",
+      "import": "./dist/projection-worker-runtime.js"
+    },
+    "./structured-generation-runtime": {
+      "types": "./dist/structured-generation-runtime.d.ts",
+      "import": "./dist/structured-generation-runtime.js"
+    },
+    "./structured-generation": {
+      "types": "./dist/structured-generation.d.ts",
+      "import": "./dist/structured-generation.js"
+    },
+    "./task-operation-runtime": {
+      "types": "./dist/task-operation-runtime.d.ts",
+      "import": "./dist/task-operation-runtime.js"
+    },
+    "./task-query-runtime": {
+      "types": "./dist/task-query-runtime.d.ts",
+      "import": "./dist/task-query-runtime.js"
+    },
+    "./workflow-runtime-hatchet": {
+      "types": "./dist/workflow-runtime-hatchet.d.ts",
+      "import": "./dist/workflow-runtime-hatchet.js"
+    },
+    "./stream-worker-runtime": {
+      "types": "./dist/stream-worker-runtime.d.ts",
+      "import": "./dist/stream-worker-runtime.js"
+    },
     "./cli": {
       "types": "./dist/cli.d.ts",
       "import": "./dist/cli.js"
     }
   },
   "dependencies": {
-    "@applik8s/compiler": "0.6.0",
     "@applik8s/client": "0.6.0",
+    "@applik8s/compiler": "0.6.0",
     "@applik8s/core": "0.6.0",
     "@applik8s/sdk": "0.6.0",
     "@applik8s/typekro-adapter": "0.6.0",
     "@applik8s/typetainer": "0.6.0",
+    "@aws-sdk/client-s3": "^3.1075.0",
+    "@aws-sdk/s3-request-presigner": "3.1075.0",
     "@hatchet-dev/typescript-sdk": "1.24.3",
+    "@kubernetes/client-node": "^1.3.0",
+    "@nats-io/jetstream": "3.4.0",
+    "@nats-io/nats-core": "3.4.0",
+    "@nats-io/transport-node": "3.4.0",
     "arktype": "^2.1.20",
+    "cel-js": "0.8.2",
     "commander": "^15.0.0",
     "drizzle-arktype": "0.1.3",
     "drizzle-orm": "^0.45.1",
@@ -76,6 +127,7 @@
     "hono": "^4.10.7",
     "nats": "^2.29.3",
     "postgres": "^3.4.7",
-    "typekro": "^0.26.0"
+    "typekro": "^0.28.1",
+    "yaml": "^2.9.0"
   }
 }

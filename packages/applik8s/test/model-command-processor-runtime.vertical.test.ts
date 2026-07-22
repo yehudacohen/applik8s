@@ -13,7 +13,7 @@ describe('generated JetStream command processor runtime', () => {
     const execute = vi.fn(async () => { calls.push('commit'); });
 
     await expect(handleJetStreamCommandMessage(message, fakeJetStream(), {
-      bindings: [{ bindingId: 'Account-account.rename.v1', contract: { name: 'account.rename', version: 'v1' }, execute }],
+      bindings: [{ bindingId: 'Account-account.rename.v1', contract: { name: 'account.rename', version: 'v1' }, execute, recordTerminalFailure: async () => undefined }],
       subjectPrefix: 'applik8s',
     })).resolves.toBe('acked');
 
@@ -26,7 +26,7 @@ describe('generated JetStream command processor runtime', () => {
     const message = fakeMessage(commandEnvelope(), 3, calls);
 
     await expect(handleJetStreamCommandMessage(message, fakeJetStream(), {
-      bindings: [{ bindingId: 'Account-account.rename.v1', contract: { name: 'account.rename', version: 'v1' }, execute: async () => { throw new Error('database unavailable'); } }],
+      bindings: [{ bindingId: 'Account-account.rename.v1', contract: { name: 'account.rename', version: 'v1' }, execute: async () => { throw new Error('database unavailable'); }, recordTerminalFailure: async () => undefined }],
       subjectPrefix: 'applik8s',
       maxAttempts: 5,
       retryDelayMs: 100,
@@ -46,6 +46,7 @@ describe('generated JetStream command processor runtime', () => {
         bindingId: 'Account-account.rename.v1',
         contract: { name: 'account.rename', version: 'v1' },
         execute: async () => { throw new DurableCommandRejectedError({ name: 'accountClosed', payload: { accountId: 'account-1' } }, true, commandObservation('rejected', true)); },
+        recordTerminalFailure: async () => undefined,
       }],
       subjectPrefix: 'applik8s',
       logger: (record) => logs.push(record),
@@ -62,7 +63,7 @@ describe('generated JetStream command processor runtime', () => {
     const message = fakeMessage(commandEnvelope(), 1, calls);
 
     await expect(handleJetStreamCommandMessage(message, fakeJetStream(), {
-      bindings: [{ bindingId: 'Account-account.rename.v1', contract: { name: 'account.rename', version: 'v1' }, execute: async () => ({ observation }) }],
+      bindings: [{ bindingId: 'Account-account.rename.v1', contract: { name: 'account.rename', version: 'v1' }, execute: async () => ({ observation }), recordTerminalFailure: async () => undefined }],
       subjectPrefix: 'applik8s',
       logger: (record) => logs.push(record),
     })).resolves.toBe('acked');
@@ -77,13 +78,29 @@ describe('generated JetStream command processor runtime', () => {
     const message = fakeMessage(commandEnvelope(), 5, calls);
 
     await expect(handleJetStreamCommandMessage(message, fakeJetStream(published), {
-      bindings: [{ bindingId: 'Account-account.rename.v1', contract: { name: 'account.rename', version: 'v1' }, execute: async () => { throw new Error('constraint failed'); } }],
+      bindings: [{ bindingId: 'Account-account.rename.v1', contract: { name: 'account.rename', version: 'v1' }, execute: async () => { throw new Error('constraint failed'); }, recordTerminalFailure: async (_input, _delivery, failure) => { calls.push(`record:${failure.code}:${failure.attempts}`); } }],
       subjectPrefix: 'applik8s',
       maxAttempts: 5,
     })).resolves.toBe('terminated');
 
     expect(published).toEqual([expect.objectContaining({ subject: 'applik8s.dead-letter.account-account-rename-v1', messageId: 'message-1:dead-letter', body: expect.objectContaining({ id: 'message-1:dead-letter', causationId: 'message-1' }) })]);
-    expect(calls).toEqual(['term:applik8s command attempts exhausted']);
+    expect(calls).toEqual(['record:processing_failed:5', 'term:applik8s command attempts exhausted']);
+  });
+
+  it('does not terminate an exhausted delivery until its durable failure result is recorded', async () => {
+    const calls: string[] = [];
+    const published: { subject: string; body: unknown; messageId?: string }[] = [];
+    const message = fakeMessage(commandEnvelope(), 5, calls);
+    await expect(handleJetStreamCommandMessage(message, fakeJetStream(published), {
+      bindings: [{
+        bindingId: 'Account-account.rename.v1', contract: { name: 'account.rename', version: 'v1' },
+        execute: async () => { throw new Error('constraint failed'); },
+        recordTerminalFailure: async () => { throw new Error('result database unavailable'); },
+      }],
+      subjectPrefix: 'applik8s', maxAttempts: 5,
+    })).rejects.toThrow(/result database unavailable/);
+    expect(published).toHaveLength(1);
+    expect(calls).toEqual([]);
   });
 
   it('fails malformed and ambiguously routed messages closed without invoking handlers', async () => {
@@ -92,7 +109,7 @@ describe('generated JetStream command processor runtime', () => {
     const execute = vi.fn(async () => undefined);
     // typecast: preserve literal binding identifiers so this fixture matches the public processor contract.
     const options = {
-      bindings: [{ bindingId: 'Account-account.rename.v1', contract: { name: 'account.rename', version: 'v1' }, execute }],
+      bindings: [{ bindingId: 'Account-account.rename.v1', contract: { name: 'account.rename', version: 'v1' }, execute, recordTerminalFailure: async () => undefined }],
       subjectPrefix: 'applik8s',
     } as const;
 
@@ -136,6 +153,7 @@ describe('generated JetStream command processor runtime', () => {
             completed.push(delivery.id);
             active -= 1;
           },
+          async recordTerminalFailure() {},
         }],
         servers: [],
         stream: 'APPLIK8S_EVENTS',

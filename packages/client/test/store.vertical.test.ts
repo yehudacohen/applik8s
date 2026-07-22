@@ -8,8 +8,10 @@ class FakeTransport implements ApplicationQueryTransport {
   readonly subscriptions: { query: string; input: unknown; cursor: string; onEvent: (event: ApplicationQueryEvent) => void; onError: (error: Error) => void }[] = [];
   nextValue: unknown = [{ id: 'card-1', name: 'First' }];
   sequence = 1;
+  snapshotOverride: ((query: string, input: unknown) => Promise<ApplicationQuerySnapshot>) | undefined;
   async snapshot<TInput, TValue>(query: string, input: TInput): Promise<ApplicationQuerySnapshot<TValue>> {
     this.snapshots.push({ query, input });
+    if (this.snapshotOverride) return this.snapshotOverride(query, input) as Promise<ApplicationQuerySnapshot<TValue>>;
     return { kind: 'snapshot', protocol: 'applik8s.query/v1alpha1', query, inputKey: queryInputKey(input), value: this.nextValue as TValue, cursor: `cursor-${this.sequence++}`, capability: 'resumableInvalidation', generatedAt: '2026-07-15T12:00:00.000Z' };
   }
   subscribe<TInput>(query: string, input: TInput, cursor: string, options: { signal: AbortSignal; onEvent: (event: ApplicationQueryEvent) => void; onError: (error: Error) => void }): void {
@@ -41,6 +43,21 @@ describe('browser-safe application query client', () => {
     unsubscribe();
   });
 
+  test('accepts a newer hydration snapshot and rejects an older navigation snapshot', () => {
+    const transport = new FakeTransport();
+    const client = new ApplicationQueryClient(transport);
+    const input = { setId: 'set-1' };
+    const snapshot = (value: string, cursor: string, generatedAt: string): ApplicationQuerySnapshot => ({
+      kind: 'snapshot', protocol: 'applik8s.query/v1alpha1', query: 'cards.for-set.v1',
+      inputKey: queryInputKey(input), value, cursor, capability: 'resumableInvalidation', generatedAt,
+    });
+    const store = client.query<typeof input, string>('cards.for-set.v1', input);
+    client.hydrate([snapshot('first', 'cursor-1', '2026-07-15T12:00:00.000Z')]);
+    client.hydrate([snapshot('newer', 'cursor-2', '2026-07-15T12:00:01.000Z')]);
+    client.hydrate([snapshot('stale', 'cursor-0', '2026-07-15T11:59:59.000Z')]);
+    expect(store.getSnapshot()).toMatchObject({ value: 'newer', cursor: 'cursor-2' });
+  });
+
   test('deduplicates invalidations and coalesces authoritative requery', async () => {
     const transport = new FakeTransport();
     const client = new ApplicationQueryClient(transport);
@@ -58,6 +75,38 @@ describe('browser-safe application query client', () => {
     unsubscribe();
   });
 
+  test('does not lose an invalidation that arrives during its authoritative requery', async () => {
+    const transport = new FakeTransport();
+    const client = new ApplicationQueryClient(transport);
+    const input = { postIds: ['post-1'] };
+    const store = client.query<typeof input, readonly { id: string; state: string }[]>('media.for-posts.v1', input);
+    const unsubscribe = store.subscribe(() => undefined);
+    await settle();
+
+    const first = deferred<ApplicationQuerySnapshot>();
+    const second = deferred<ApplicationQuerySnapshot>();
+    const queued = [first.promise, second.promise];
+    transport.snapshotOverride = async () => {
+      const snapshot = queued.shift();
+      if (!snapshot) throw new Error('Unexpected extra snapshot.');
+      return snapshot;
+    };
+    const subscription = transport.subscriptions[0];
+    subscription?.onEvent({ kind: 'invalidate', protocol: 'applik8s.query/v1alpha1', id: 'media:2', sequence: 2, query: 'media.for-posts.v1', cursor: 'event-cursor-2', models: ['Media'] });
+    await Promise.resolve();
+    subscription?.onEvent({ kind: 'invalidate', protocol: 'applik8s.query/v1alpha1', id: 'media:3', sequence: 3, query: 'media.for-posts.v1', cursor: 'event-cursor-3', models: ['Media'] });
+    first.resolve(snapshot('media.for-posts.v1', input, [{ id: 'media-1', state: 'uploaded' }], 'snapshot-cursor-2'));
+    await settle();
+
+    expect(transport.snapshots).toHaveLength(3);
+    expect(store.getSnapshot()).toMatchObject({ value: [{ id: 'media-1', state: 'uploaded' }], cursor: 'event-cursor-3', stale: true });
+    second.resolve(snapshot('media.for-posts.v1', input, [{ id: 'media-1', state: 'ready' }], 'snapshot-cursor-3'));
+    await settle();
+
+    expect(store.getSnapshot()).toMatchObject({ value: [{ id: 'media-1', state: 'ready' }], cursor: 'snapshot-cursor-3', stale: false });
+    unsubscribe();
+  });
+
   test('ignores duplicate and out-of-order provider sequences independently of event-id formatting', async () => {
     const transport = new FakeTransport();
     const client = new ApplicationQueryClient(transport);
@@ -70,6 +119,47 @@ describe('browser-safe application query client', () => {
     await settle();
     expect(store.getSnapshot().cursor).toBe('cursor-8');
     expect(transport.snapshots).toHaveLength(1);
+    unsubscribe();
+  });
+
+  test('requeries when a provider revision advances at the same database sequence', async () => {
+    const transport = new FakeTransport();
+    const client = new ApplicationQueryClient(transport);
+    const store = client.query('timeline.home.v1', { viewerId: 'viewer-1' });
+    const unsubscribe = store.subscribe(() => undefined);
+    await settle();
+
+    const subscription = transport.subscriptions[0];
+    subscription?.onEvent({
+      kind: 'invalidate',
+      protocol: 'applik8s.query/v1alpha1',
+      id: 'timeline.home.v1:8:live:10',
+      sequence: 8,
+      query: 'timeline.home.v1',
+      cursor: 'cursor-database-8-provider-10',
+      models: ['Post'],
+    });
+    await settle();
+    expect(transport.snapshots).toHaveLength(2);
+
+    transport.nextValue = [{ id: 'post-2', name: 'Projected' }];
+    subscription?.onEvent({
+      kind: 'invalidate',
+      protocol: 'applik8s.query/v1alpha1',
+      id: 'timeline.home.v1:8:live:11',
+      sequence: 8,
+      query: 'timeline.home.v1',
+      cursor: 'cursor-database-8-provider-11',
+      models: ['Post'],
+    });
+    await settle();
+
+    expect(transport.snapshots).toHaveLength(3);
+    expect(store.getSnapshot()).toMatchObject({
+      value: [{ id: 'post-2', name: 'Projected' }],
+      cursor: 'cursor-3',
+      stale: false,
+    });
     unsubscribe();
   });
 
@@ -92,4 +182,14 @@ async function settle(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function snapshot(query: string, input: unknown, value: unknown, cursor: string): ApplicationQuerySnapshot {
+  return { kind: 'snapshot', protocol: 'applik8s.query/v1alpha1', query, inputKey: queryInputKey(input), value, cursor, capability: 'resumableInvalidation', generatedAt: '2026-07-15T12:00:00.000Z' };
+}
+
+function deferred<T>(): { readonly promise: Promise<T>; readonly resolve: (value: T) => void } {
+  let resolve: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((complete) => { resolve = complete; });
+  return { promise, resolve: (value) => resolve?.(value) };
 }

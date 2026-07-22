@@ -34,6 +34,8 @@ interface StoreEntry<TInput = unknown, TValue = unknown> {
   lastEventSequence: number;
   reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   lastUsed: number;
+  snapshotGeneratedAt: number;
+  invalidationEpoch: number;
 }
 
 export class ApplicationQueryClient {
@@ -57,7 +59,7 @@ export class ApplicationQueryClient {
     const key = queryCacheKey(query, input);
     let entry = this.#entries.get(key) as StoreEntry<TInput, TValue> | undefined;
     if (!entry) {
-      entry = { key, query, input, listeners: new Set(), seenEvents: new Set(), state: { phase: 'idle', stale: true, revision: 0 }, controller: undefined, refresh: undefined, reconnectAttempt: 0, lastEventSequence: 0, reconnectTimer: undefined, lastUsed: ++this.#clock };
+      entry = { key, query, input, listeners: new Set(), seenEvents: new Set(), state: { phase: 'idle', stale: true, revision: 0 }, controller: undefined, refresh: undefined, reconnectAttempt: 0, lastEventSequence: 0, reconnectTimer: undefined, lastUsed: ++this.#clock, snapshotGeneratedAt: 0, invalidationEpoch: 0 };
       this.#entries.set(key, entry);
       this.#evict();
     }
@@ -87,9 +89,11 @@ export class ApplicationQueryClient {
     for (const snapshot of snapshots) {
       const key = `${snapshot.query}:${snapshot.inputKey}`;
       const existing = this.#entries.get(key);
-      if (existing?.state.phase === 'ready') continue;
-      const entry: StoreEntry = existing ?? { key, query: snapshot.query, input: undefined, listeners: new Set(), seenEvents: new Set(), state: { phase: 'idle', stale: true, revision: 0 }, controller: undefined, refresh: undefined, reconnectAttempt: 0, lastEventSequence: 0, reconnectTimer: undefined, lastUsed: ++this.#clock };
+      const generatedAt = snapshotTimestamp(snapshot);
+      if (existing?.state.phase === 'ready' && existing.snapshotGeneratedAt >= generatedAt) continue;
+      const entry: StoreEntry = existing ?? { key, query: snapshot.query, input: undefined, listeners: new Set(), seenEvents: new Set(), state: { phase: 'idle', stale: true, revision: 0 }, controller: undefined, refresh: undefined, reconnectAttempt: 0, lastEventSequence: 0, reconnectTimer: undefined, lastUsed: ++this.#clock, snapshotGeneratedAt: 0, invalidationEpoch: 0 };
       entry.state = { phase: 'ready', value: snapshot.value, cursor: snapshot.cursor, stale: false, revision: entry.state.revision + 1 };
+      entry.snapshotGeneratedAt = generatedAt;
       this.#entries.set(key, entry);
       this.#notify(entry);
     }
@@ -115,13 +119,34 @@ export class ApplicationQueryClient {
     const { error: _error, ...stateWithoutError } = entry.state;
     entry.state = { ...stateWithoutError, phase: entry.state.value === undefined ? 'loading' : 'ready', stale: true, revision: entry.state.revision + 1 };
     this.#notify(entry);
-    const refresh = this.transport.snapshot(entry.query, entry.input).then((snapshot) => {
-      if (snapshot.query !== entry.query || snapshot.inputKey !== entry.key.slice(entry.query.length + 1)) throw new Error('Application query snapshot identity does not match the requested query/input.');
-      entry.state = { phase: 'ready', value: snapshot.value, cursor: snapshot.cursor, stale: false, revision: entry.state.revision + 1 };
-      entry.reconnectAttempt = 0;
-      this.#notify(entry);
-      if (entry.listeners.size > 0) this.#connect(entry);
-    }).catch((error: unknown) => {
+    const refresh = (async () => {
+      // An invalidate can arrive while its authoritative requery is in flight.
+      // A snapshot started before that invalidate is not allowed to clear the
+      // stale bit or replace the newer resume cursor. Requery until one snapshot
+      // spans a stable invalidation epoch; this closes the snapshot/SSE handoff
+      // without relying on timing or a page reload.
+      while (true) {
+        const epoch = entry.invalidationEpoch;
+        const eventCursor = entry.state.cursor;
+        const snapshot = await this.transport.snapshot(entry.query, entry.input);
+        if (snapshot.query !== entry.query || snapshot.inputKey !== entry.key.slice(entry.query.length + 1)) throw new Error('Application query snapshot identity does not match the requested query/input.');
+        const superseded = entry.invalidationEpoch !== epoch;
+        entry.state = {
+          phase: 'ready',
+          value: snapshot.value,
+          cursor: superseded ? (entry.state.cursor ?? eventCursor ?? snapshot.cursor) : snapshot.cursor,
+          stale: superseded,
+          revision: entry.state.revision + 1,
+        };
+        entry.snapshotGeneratedAt = snapshotTimestamp(snapshot);
+        entry.reconnectAttempt = 0;
+        this.#notify(entry);
+        if (!superseded) {
+          if (entry.listeners.size > 0) this.#connect(entry);
+          return;
+        }
+      }
+    })().catch((error: unknown) => {
       entry.state = { ...entry.state, phase: 'error', stale: true, error: error instanceof Error ? error : new Error(String(error)), revision: entry.state.revision + 1 };
       this.#notify(entry);
       throw error;
@@ -144,18 +169,25 @@ export class ApplicationQueryClient {
   #event(entry: StoreEntry, event: ApplicationQueryEvent): void {
     if (event.query !== entry.query || entry.seenEvents.has(event.id)) return;
     const sequence = event.kind === 'reset' ? undefined : event.sequence;
-    if (sequence !== undefined && sequence <= entry.lastEventSequence) return;
+    // A query cursor may carry more than one independently advancing frontier.
+    // Projection-backed queries, for example, can first invalidate for database
+    // sequence N and later invalidate again when their provider revision catches
+    // up while the database sequence is still N. Event ids deduplicate the same
+    // frontier observation; only a *strictly* older database sequence is stale.
+    if (sequence !== undefined && sequence < entry.lastEventSequence) return;
     if (sequence !== undefined) entry.lastEventSequence = sequence;
     entry.seenEvents.add(event.id);
     // typecast: size > 1000 proves the Set iterator yields a string value.
     if (entry.seenEvents.size > 1_000) entry.seenEvents.delete(entry.seenEvents.values().next().value as string);
     if (event.kind === 'reset') {
+      entry.invalidationEpoch += 1;
       const { cursor: _cursor, ...stateWithoutCursor } = entry.state;
       entry.state = { ...stateWithoutCursor, stale: true, revision: entry.state.revision + 1 };
       this.#disconnect(entry);
       void this.#refresh(entry);
       return;
     }
+    if (event.kind === 'invalidate') entry.invalidationEpoch += 1;
     entry.state = { ...entry.state, cursor: event.cursor, stale: event.kind === 'invalidate' || entry.state.stale, revision: entry.state.revision + 1 };
     this.#notify(entry);
     if (event.kind === 'invalidate') void this.#refresh(entry);
@@ -191,6 +223,12 @@ export class ApplicationQueryClient {
       this.#entries.delete(entry.key);
     }
   }
+}
+
+function snapshotTimestamp(snapshot: ApplicationQuerySnapshot): number {
+  const value = Date.parse(snapshot.generatedAt);
+  if (!Number.isFinite(value)) throw new Error(`Application query snapshot ${snapshot.query} has invalid generatedAt ${JSON.stringify(snapshot.generatedAt)}.`);
+  return value;
 }
 
 export function queryInputKey(input: unknown): string {

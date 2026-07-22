@@ -1,127 +1,213 @@
+// typecast-file-boundary: live Kubernetes and HTTP responses are narrowed before their fields are inspected.
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { applicationAdmittedContextDigest } from '@applik8s/applik8s';
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { assertExpectedKubectlContext, describeLive, exec, formatSettledOutput, kubectl, sleep } from './live-e2e-helpers';
+import {
+  collectV06ClusterIdentity,
+  collectV06GitIdentity,
+  createV06AssertionEvidence,
+  discardV06Evidence,
+  writeV06EvidenceReceipt,
+} from '../../../scripts/v06-evidence';
+import {
+  assertExpectedKubectlContext,
+  describeLive,
+  exec,
+  formatSettledOutput,
+  kubectl,
+  sleep,
+} from './live-e2e-helpers';
 
+const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
 const namespace = process.env.APPLIK8S_E2E_NAMESPACE ?? `applik8s-v06-generated-${process.pid}`;
+const controlPlaneNamespace = `${namespace}-control`;
 const stackName = process.env.APPLIK8S_E2E_STACK_NAME ?? `v06-generated-proof-${process.pid}`;
 const fixture = join(process.cwd(), 'packages/e2e/test/fixtures/v06-generated-app/app.ts');
-const cursorSecret = 'v06-generated-live-cursor-secret-at-least-32-bytes';
 const org1 = '00000000-0000-0000-0000-000000000001';
 const org2 = '00000000-0000-0000-0000-000000000002';
+const cardId = '10000000-0000-0000-0000-000000000001';
 const gatewayName = `${stackName}-public`;
+const commandProcessorName = 'card-commands';
 const projectionName = `${stackName}-card-history`;
-const migrationJob = `${stackName}-catalog-migration`;
+const applicationKind = pascalCase(stackName);
+const applicationResource = `${applicationKind.toLowerCase()}s.${stackName}.applik8s.dev`;
 
 let tempDir: string | undefined;
 let outDir: string | undefined;
-let composition: DeletableComposition | undefined;
-let instanceApplied = false;
+let instancePath: string | undefined;
+let deploymentAttempted = false;
 let proofComplete = false;
-let emptyCrdRecoveryUsed = false;
-let orphanedJobPodRecoveryUsed = false;
+let observedMigrationJob: string | undefined;
+const evidencePath = join(process.cwd(), '.applik8s-tmp/evidence/v0.6/orbstack.json');
+const evidenceRunId = randomUUID();
+const evidenceStartedAt = new Date().toISOString();
 
 describeLive('v0.6 generated application lifecycle on OrbStack', () => {
   beforeAll(async () => {
+    await discardV06Evidence(evidencePath);
     await assertExpectedKubectlContext();
     await assertPrerequisites();
     await exec('bun', ['run', 'build:packages'], process.cwd());
     tempDir = await mkdtemp(join(tmpdir(), 'applik8s-v06-generated-live-'));
     outDir = join(tempDir, 'dist');
-    await ensureNamespace();
-    await installCursorSecret();
+    instancePath = join(tempDir, 'instance.yaml');
+    await writeFile(instancePath, `apiVersion: ${stackName}.applik8s.dev/v1alpha1
+kind: ${applicationKind}
+metadata:
+  name: ${stackName}
+  namespace: ${controlPlaneNamespace}
+spec: {}
+`);
     process.env.APPLIK8S_E2E_NAMESPACE = namespace;
     process.env.APPLIK8S_E2E_STACK_NAME = stackName;
-    // static-import-exception: this known local fixture is imported only to obtain its TypeKro lifecycle factory after the environment-scoped identity is fixed.
-    const fixtureUrl = `${pathToFileURL(fixture).href}?live=${Date.now()}`;
-    // static-import-exception: environment-scoped graph identity requires loading after setup; typecast: the fixture's narrow lifecycle-only contract is checked immediately below.
-    const loaded = await import(/* @vite-ignore */ fixtureUrl) as { readonly v06GeneratedApp?: { readonly composition?: DeletableComposition } };
-    composition = loaded.v06GeneratedApp?.composition;
-    if (!composition) throw new Error('v0.6 generated application fixture did not export its TypeKro composition.');
-    await exec('bun', ['run', 'applik8s', 'build', fixture, '--typekro', '--composition-name', 'v06GeneratedApp', '--out-dir', outDir], process.cwd());
-    await exec('sh', [join(outDir, 'typekro', 'apply.sh')], process.cwd());
-    instanceApplied = true;
-  }, 300_000);
+    deploymentAttempted = true;
+    await exec('bun', [
+      'run', 'packages/applik8s/src/bin.ts', 'deploy', fixture,
+      '--context', context,
+      '--composition-name', 'v06GeneratedApp',
+      '--out-dir', outDir,
+      '--instance', instancePath,
+      '--skip-app-build',
+    ], process.cwd());
+  }, 1_200_000);
 
   afterAll(async () => {
-    let cleanupComplete = false;
     let cleanupFailure: unknown;
     try {
-      await deleteApplicationThroughTypeKro();
-      await cleanKroOrphanedGeneratedWorkloads();
-      await ensureGeneratedCrdDeletionCompletes();
-      await deleteFixtures();
-      await deleteNamespaceAndWait();
-      cleanupComplete = true;
-      if (proofComplete) await writeEvidenceReceipt();
+      if (deploymentAttempted && outDir && await access(join(outDir, 'typekro', 'typekro-composition.json')).then(() => true).catch(() => false)) {
+        await exec('bun', [
+          'run', 'packages/applik8s/src/bin.ts', 'delete', fixture,
+          '--context', context,
+          '--composition-name', 'v06GeneratedApp',
+          '--out-dir', outDir,
+        ], process.cwd());
+        await expect(kubectl(['get', `${applicationResource}/${stackName}`, '--namespace', controlPlaneNamespace])).rejects.toThrow();
+        await expect(kubectl(['get', `namespace/${namespace}`])).rejects.toThrow();
+        await expect(kubectl(['get', `namespace/${controlPlaneNamespace}`])).rejects.toThrow();
+        await expect(kubectl(['get', `resourcegraphdefinition/${stackName}`])).rejects.toThrow();
+        if (proofComplete) await writeEvidenceReceipt();
+      }
     } catch (cause) {
       cleanupFailure = cause;
     } finally {
+      delete process.env.APPLIK8S_E2E_NAMESPACE;
+      delete process.env.APPLIK8S_E2E_STACK_NAME;
       if (tempDir && process.env.APPLIK8S_KEEP_TMP !== '1') await rm(tempDir, { recursive: true, force: true });
     }
     if (cleanupFailure) throw cleanupFailure;
-    if (proofComplete && !cleanupComplete) throw new Error('v0.6 live proof passed behavior assertions but failed lifecycle cleanup; no evidence receipt was written.');
-  }, 720_000);
+  }, 900_000);
 
-  it('serves isolated snapshots/SSE, projects durably, resumes after restart, and reports dependency readiness', async () => {
-    await waitForInfrastructure();
-    await waitForDeployment(gatewayName, 600_000);
-    await waitForDeployment(projectionName, 600_000);
-    const gateway = await startPortForward(`service/${gatewayName}`, 8080);
-    const clickhouse = await startPortForward('service/clickhouse-v06-analytics', 8123);
+  it('runs command admission, PostgreSQL/outbox, JetStream, SSE/requery, ClickHouse, restart recovery, and TypeKro lifecycle', async () => {
     try {
-      await expect(waitForJson(`${gateway.endpoint}/ready`, {}, (value) => value.ready === true)).resolves.toMatchObject({ ready: true, stopping: false });
-      await seedSql(initialSeedSql());
+      await waitForInfrastructure();
+      await Promise.all([
+        waitForDeployment(gatewayName, 600_000),
+        waitForDeployment(commandProcessorName, 600_000),
+        waitForDeployment(projectionName, 600_000),
+      ]);
+      await assertApplicationReady();
+      const gateway = await startPortForward(`service/${gatewayName}`, 8080);
+      const clickhouse = await startPortForward('service/clickhouse-v06-analytics', 8123);
+      try {
+        await expect(waitForJson(`${gateway.endpoint}/ready`, {}, (value) => value.ready === true)).resolves.toMatchObject({ ready: true, stopping: false });
 
-      const first = await snapshot(gateway.endpoint, org1);
-      expect(first.value).toEqual([expect.objectContaining({ id: '10000000-0000-0000-0000-000000000001', organizationId: org1, name: 'First' })]);
-      await expect(snapshot(gateway.endpoint, org2)).resolves.toMatchObject({ value: [] });
+        const empty = await snapshot(gateway.endpoint, org1);
+        expect(empty.value).toEqual([]);
+        await expect(snapshot(gateway.endpoint, org2)).resolves.toMatchObject({ value: [] });
 
-      await seedSql(eventSql(1, 'First updated'));
-      const queryEvent = await waitForSseEvent(`${gateway.endpoint}/queries/cards.for-organization.v1/subscribe`, {
-        input: { organizationId: org1 }, cursor: first.cursor,
-      }, identityHeaders(org1), 'invalidate');
-      expect(queryEvent).toContain('event: invalidate');
+        const createdInvalidation = waitForSseEvent(
+          `${gateway.endpoint}/queries/cards.for-organization.v1/subscribe`,
+          { input: { organizationId: org1 }, cursor: empty.cursor },
+          identityHeaders(org1),
+          'invalidate',
+        );
+        const created = await submitCommand(gateway.endpoint, 'models.Card.create.v1', {
+          id: cardId,
+          organizationId: org1,
+          name: 'First',
+        }, 'card-create', org1);
+        expect(created).toMatchObject({ durableResult: 'succeeded', modelRevision: expect.any(String) });
+        await expect(createdInvalidation).resolves.toContain('event: invalidate');
+        await expect(snapshot(gateway.endpoint, org1)).resolves.toMatchObject({
+          value: [expect.objectContaining({ id: cardId, organizationId: org1, name: 'First' })],
+        });
 
-      const replay = await postJson(`${gateway.endpoint}/streams/card-events/replay`, {}, identityHeaders(org1));
-      expect(replay).toMatchObject({ kind: 'replay', items: [expect.objectContaining({ id: 'event-1', payload: expect.objectContaining({ name: 'First updated' }) })] });
-      await waitForClickHouse(clickhouse.endpoint, 1, 1);
+        const beforeUpdate = await snapshot(gateway.endpoint, org1);
+        const updatedInvalidation = waitForSseEvent(
+          `${gateway.endpoint}/queries/cards.for-organization.v1/subscribe`,
+          { input: { organizationId: org1 }, cursor: beforeUpdate.cursor },
+          identityHeaders(org1),
+          'invalidate',
+        );
+        const updated = await submitCommand(gateway.endpoint, 'models.Card.update.v1', {
+          identity: cardId,
+          patch: { name: 'First updated' },
+        }, 'card-update', org1, stringField(created, 'modelRevision'));
+        await expect(updatedInvalidation).resolves.toContain('event: invalidate');
+        await expect(snapshot(gateway.endpoint, org1)).resolves.toMatchObject({
+          value: [expect.objectContaining({ id: cardId, name: 'First updated' })],
+        });
 
-      const oldPod = await deploymentPod(projectionName);
-      await kubectl(['delete', `pod/${oldPod}`, '--namespace', namespace, '--wait=false']);
-      await seedSql(eventSql(2, 'First resumed'));
-      await waitForReplacementPod(projectionName, oldPod);
-      await waitForDeployment(projectionName, 600_000);
-      await waitForClickHouse(clickhouse.endpoint, 2, 2);
-      proofComplete = true;
+        const replay = await postJson(`${gateway.endpoint}/streams/card-events/replay`, {}, identityHeaders(org1));
+        const replayItems = arrayField(replay, 'items');
+        expect(replayItems).toHaveLength(2);
+        expect(replayItems).toEqual(expect.arrayContaining([
+          expect.objectContaining({ payload: expect.objectContaining({ cardId, name: 'First' }) }),
+          expect.objectContaining({ payload: expect.objectContaining({ cardId, name: 'First updated' }) }),
+        ]));
+        const firstCheckpoint = await waitForClickHouse(clickhouse.endpoint, 2, 0);
+
+        const oldPod = await deploymentPod(projectionName);
+        await kubectl(['delete', `pod/${oldPod}`, '--namespace', namespace, '--wait=false']);
+        await waitForReplacementPod(projectionName, oldPod);
+        await waitForDeployment(projectionName, 600_000);
+
+        const beforeResume = await snapshot(gateway.endpoint, org1);
+        const resumedInvalidation = waitForSseEvent(
+          `${gateway.endpoint}/queries/cards.for-organization.v1/subscribe`,
+          { input: { organizationId: org1 }, cursor: beforeResume.cursor },
+          identityHeaders(org1),
+          'invalidate',
+        );
+        const resumed = await submitCommand(gateway.endpoint, 'models.Card.update.v1', {
+          identity: cardId,
+          patch: { name: 'First resumed' },
+        }, 'card-resume', org1, stringField(updated, 'modelRevision'));
+        expect(resumed).toMatchObject({ durableResult: 'succeeded', modelRevision: expect.any(String) });
+        await expect(resumedInvalidation).resolves.toContain('event: invalidate');
+        await expect(snapshot(gateway.endpoint, org1)).resolves.toMatchObject({
+          value: [expect.objectContaining({ id: cardId, name: 'First resumed' })],
+        });
+        await expect(waitForClickHouse(clickhouse.endpoint, 3, firstCheckpoint)).resolves.toBeGreaterThan(firstCheckpoint);
+        proofComplete = true;
+      } finally {
+        await Promise.all([gateway.close(), clickhouse.close()]);
+      }
     } catch (cause) {
       const diagnostics = await Promise.allSettled([
-        kubectl(['get', 'pods,deployments,services,networkpolicies,cluster.postgresql.cnpg.io,clickhouseinstallation.clickhouse.altinity.com', '--namespace', namespace, '--output=wide']),
+        kubectl(['get', 'pods,deployments,services,networkpolicies,cluster.postgresql.cnpg.io,clickhouseinstallation.clickhouse.altinity.com,helmrelease', '--namespace', namespace, '--output=wide']),
         kubectl(['get', 'events', '--namespace', namespace, '--sort-by=.lastTimestamp']),
         kubectl(['logs', '--namespace', namespace, `deployment/${gatewayName}`, '--all-containers=true', '--tail=500']),
+        kubectl(['logs', '--namespace', namespace, `deployment/${commandProcessorName}`, '--all-containers=true', '--tail=500']),
         kubectl(['logs', '--namespace', namespace, `deployment/${projectionName}`, '--all-containers=true', '--tail=500']),
       ]);
       throw new Error(`${cause instanceof Error ? cause.message : String(cause)}\n${diagnostics.map(formatSettledOutput).join('\n')}`);
-    } finally {
-      await gateway.close();
-      await clickhouse.close();
     }
   }, 900_000);
 });
 
-interface DeletableComposition {
-  factory(mode: 'kro', options: { readonly namespace: string; readonly waitForReady: boolean; readonly timeout: number }): {
-    getInstances(): Promise<readonly { readonly metadata?: { readonly name?: string } }[]>;
-    deleteInstance(name: string): Promise<void>;
-    dispose(): Promise<void>;
-  };
+interface PortForward {
+  readonly endpoint: string;
+  close(): Promise<void>;
 }
-interface PortForward { readonly endpoint: string; close(): Promise<void> }
-interface Snapshot { readonly value: readonly unknown[]; readonly cursor: string }
+
+interface Snapshot {
+  readonly value: readonly unknown[];
+  readonly cursor: string;
+}
 
 async function assertPrerequisites(): Promise<void> {
   await Promise.all([
@@ -130,38 +216,68 @@ async function assertPrerequisites(): Promise<void> {
     kubectl(['get', 'crd/clusters.postgresql.cnpg.io']),
     kubectl(['get', 'crd/clickhouseinstallations.clickhouse.altinity.com']),
     kubectl(['get', 'storageclass/local-path']),
+    kubectl(['get', 'service/harbor', '--namespace', 'typekro-harbor-registry']),
+    kubectl(['get', 'secret/harbor-admin', '--namespace', 'typekro-harbor-registry']),
   ]);
 }
 
-async function ensureNamespace(): Promise<void> {
-  try { await kubectl(['get', `namespace/${namespace}`]); } catch { await kubectl(['create', 'namespace', namespace]); }
-}
-
-async function installCursorSecret(): Promise<void> {
-  const manifest = await exec('kubectl', ['create', 'secret', 'generic', 'v06-gateway-cursor', '--namespace', namespace, `--from-literal=secret=${cursorSecret}`, '--dry-run=client', '--output=yaml'], process.cwd());
-  const path = join(requiredTempDir(), 'cursor-secret.yaml');
-  await writeFile(path, manifest.stdout);
-  await kubectl(['apply', '--server-side', '--field-manager=applik8s-v06-live-fixture', '--filename', path]);
+async function assertApplicationReady(): Promise<void> {
+  const value = jsonObject((await kubectl([
+    'get', `${applicationResource}/${stackName}`, '--namespace', controlPlaneNamespace, '--output=json',
+  ])).stdout);
+  const status = objectField(value, 'status');
+  expect(status.state).toBe('ACTIVE');
+  expect(arrayField(status, 'conditions')).toEqual(expect.arrayContaining([
+    expect.objectContaining({ type: 'Ready', status: 'True' }),
+  ]));
 }
 
 async function waitForInfrastructure(): Promise<void> {
   try {
     await waitForResource('cluster.postgresql.cnpg.io/catalog', 300_000);
     await kubectl(['wait', 'cluster.postgresql.cnpg.io/catalog', '--namespace', namespace, '--for=condition=Ready', '--timeout=300s']);
-    await waitForResource(`job/${migrationJob}`, 300_000);
-    await kubectl(['wait', `job/${migrationJob}`, '--namespace', namespace, '--for=condition=Complete', '--timeout=300s']);
+    observedMigrationJob = await waitForMigrationJob(300_000);
+    await kubectl(['wait', `job/${observedMigrationJob}`, '--namespace', namespace, '--for=condition=Complete', '--timeout=300s']);
     await waitForJsonResource('clickhouseinstallation.clickhouse.altinity.com/v06-analytics', (value) => {
       const status = value.status;
-      return typeof status === 'object' && status !== null && 'status' in status && status.status === 'Completed';
+      return typeof status === 'object' && status !== null && Reflect.get(status, 'status') === 'Completed';
     }, 600_000);
   } catch (cause) {
     const diagnostics = await Promise.allSettled([
       kubectl(['get', 'all,cluster.postgresql.cnpg.io,clickhouseinstallation.clickhouse.altinity.com,helmrelease', '--namespace', namespace, '--output=wide']),
       kubectl(['get', 'events', '--namespace', namespace, '--sort-by=.lastTimestamp']),
-      kubectl(['logs', '--namespace', namespace, `job/${migrationJob}`, '--all-containers=true', '--tail=300']),
+      observedMigrationJob
+        ? kubectl(['logs', '--namespace', namespace, `job/${observedMigrationJob}`, '--all-containers=true', '--tail=300'])
+        : kubectl(['get', 'jobs', '--namespace', namespace, '--selector=app.kubernetes.io/component=migration', '--output=wide']),
     ]);
     throw new Error(`${cause instanceof Error ? cause.message : String(cause)}\n${diagnostics.map(formatSettledOutput).join('\n')}`);
   }
+}
+
+async function waitForMigrationJob(timeout: number): Promise<string> {
+  const started = Date.now();
+  let last = '';
+  const baseName = `${stackName}-catalog-migration`;
+  while (Date.now() - started < timeout) {
+    try {
+      const value = jsonObject((await kubectl([
+        'get', 'jobs', '--namespace', namespace,
+        '--selector=app.kubernetes.io/component=migration', '--output=json',
+      ])).stdout);
+      const names = arrayField(value, 'items')
+        .map((item) => objectField(unknownObject(item), 'metadata'))
+        .map((metadata) => metadata.name)
+        .filter((name): name is string => typeof name === 'string' && (name === baseName || name.startsWith(`${baseName}-`)));
+      last = JSON.stringify(names);
+      const [name] = names;
+      if (names.length === 1 && name) return name;
+      if (names.length > 1) throw new Error(`Expected one generated catalog migration Job, found: ${names.join(', ')}`);
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+    }
+    await sleep(2_000);
+  }
+  throw new Error(`Timed out waiting for the generated catalog migration Job. Last observation: ${last}`);
 }
 
 async function waitForResource(resource: string, timeout: number): Promise<void> {
@@ -183,58 +299,103 @@ async function waitForDeployment(name: string, timeout: number): Promise<void> {
   await kubectl(['rollout', 'status', `deployment/${name}`, '--namespace', namespace, `--timeout=${Math.floor(timeout / 1_000)}s`]);
 }
 
-async function waitForJsonResource(resource: string, predicate: (value: Record<string, unknown>) => boolean, timeout: number): Promise<void> {
+async function waitForJsonResource(
+  resource: string,
+  predicate: (value: Record<string, unknown>) => boolean,
+  timeout: number,
+): Promise<void> {
   const started = Date.now();
   let last = '';
   while (Date.now() - started < timeout) {
     try {
-      const output = (await kubectl(['get', resource, '--namespace', namespace, '--output=json'])).stdout;
-      // typecast: kubectl's JSON response is untyped at this boundary and all inspected fields are narrowed by predicates.
-      const value = JSON.parse(output) as Record<string, unknown>;
+      const value = jsonObject((await kubectl(['get', resource, '--namespace', namespace, '--output=json'])).stdout);
       last = JSON.stringify(value.status ?? {});
       if (predicate(value)) return;
-    } catch (error) { last = error instanceof Error ? error.message : String(error); }
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+    }
     await sleep(2_000);
   }
   throw new Error(`Timed out waiting for ${resource}. Last status: ${last}`);
 }
 
-async function seedSql(sql: string): Promise<void> {
-  const name = `v06-seed-${Date.now().toString(36)}`;
-  const configMap = `${name}-sql`;
-  const path = join(requiredTempDir(), `${name}.yaml`);
-  await writeFile(path, `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ${configMap}\n  namespace: ${namespace}\ndata:\n  script.sql: |\n${indent(sql.trimEnd(), 4)}\n---\napiVersion: batch/v1\nkind: Job\nmetadata:\n  name: ${name}\n  namespace: ${namespace}\nspec:\n  backoffLimit: 1\n  ttlSecondsAfterFinished: 600\n  template:\n    spec:\n      restartPolicy: Never\n      containers:\n        - name: psql\n          image: postgres:17-alpine\n          command: [sh, -c, 'psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /sql/script.sql']\n          env:\n            - name: DATABASE_URL\n              valueFrom:\n                secretKeyRef:\n                  name: catalog-app\n                  key: uri\n          volumeMounts:\n            - name: sql\n              mountPath: /sql\n      volumes:\n        - name: sql\n          configMap:\n            name: ${configMap}\n`);
-  await kubectl(['apply', '--server-side', '--field-manager=applik8s-v06-live-fixture', '--filename', path]);
-  await kubectl(['wait', `job/${name}`, '--namespace', namespace, '--for=condition=Complete', '--timeout=180s']);
-}
-
-function initialSeedSql(): string {
-  return `SELECT set_config('applik8s.context.organizationId', '${org1}', false);\nINSERT INTO cards (id, organization_id, name, revision) VALUES ('10000000-0000-0000-0000-000000000001', '${org1}', 'First', 'r1');`;
-}
-
-function eventSql(sequence: number, name: string): string {
-  const digest = applicationAdmittedContextDigest({ values: { organizationId: org1 }, digestSecret: cursorSecret });
-  const recordedAt = new Date(Date.now() + sequence * 1_000).toISOString();
-  return `SELECT set_config('applik8s.context.organizationId', '${org1}', false);\nUPDATE cards SET name = '${name.replaceAll("'", "''")}', revision = 'r${sequence + 1}' WHERE id = '10000000-0000-0000-0000-000000000001';\nINSERT INTO applik8s_model_changes (model, operation, identity, revision, context_digest, changed_fields, recorded_at) VALUES ('Card', 'invalidate', '"10000000-0000-0000-0000-000000000001"'::jsonb, 'r${sequence + 1}', '${digest}', '["name"]'::jsonb, '${recordedAt}');\nINSERT INTO applik8s_public_stream_events (id, contract_name, contract_version, partition_key, envelope, payload, context_digest, recorded_at) VALUES ('event-${sequence}', 'cards.changed', 'v1', '10000000-0000-0000-0000-000000000001', '{}'::jsonb, '{"cardId":"10000000-0000-0000-0000-000000000001","organizationId":"${org1}","name":"${name.replaceAll("'", "''")}","revision":"r${sequence + 1}"}'::jsonb, '${digest}', '${recordedAt}');`;
-}
-
 async function snapshot(endpoint: string, organizationId: string): Promise<Snapshot> {
-  const value = await postJson(`${endpoint}/queries/cards.for-organization.v1/snapshot`, { input: { organizationId } }, identityHeaders(organizationId));
-  if (!Array.isArray(value.value) || typeof value.cursor !== 'string') throw new Error(`Unexpected snapshot response: ${JSON.stringify(value)}`);
+  const value = await postJson(
+    `${endpoint}/queries/cards.for-organization.v1/snapshot`,
+    { input: { organizationId } },
+    identityHeaders(organizationId),
+  );
+  if (!Array.isArray(value.value) || typeof value.cursor !== 'string') {
+    throw new Error(`Unexpected snapshot response: ${JSON.stringify(value)}`);
+  }
   return { value: value.value, cursor: value.cursor };
 }
 
-function identityHeaders(organizationId: string): HeadersInit { return { 'content-type': 'application/json', 'x-principal': organizationId, 'x-organization': organizationId, 'x-authorization-version': 'v1' }; }
-// typecast: JSON.parse is validated as an object by the endpoint-specific callers before field access.
-async function postJson(url: string, body: object, headers: HeadersInit): Promise<Record<string, unknown>> { const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) }); const text = await response.text(); if (!response.ok) throw new Error(`${url} returned ${response.status}: ${text}`); return JSON.parse(text) as Record<string, unknown>; }
+async function submitCommand(
+  endpoint: string,
+  command: string,
+  input: object,
+  suffix: string,
+  organizationId: string,
+  expectedRevision?: string,
+): Promise<Record<string, unknown>> {
+  const commandId = `${stackName}-${suffix}-${Date.now()}`;
+  const submission = await postJson(`${endpoint}/commands/${command}/submit`, {
+    input,
+    commandId,
+    idempotencyKey: commandId,
+    ...(expectedRevision ? { expectedRevision } : {}),
+  }, identityHeaders(organizationId));
+  expect(submission).toMatchObject({ command, durableResult: 'pending', transport: 'acknowledged' });
+  return waitForCommand(endpoint, command, stringField(submission, 'progressCursor'), organizationId);
+}
 
-async function waitForSseEvent(url: string, body: object, headers: HeadersInit, event: string): Promise<string> {
+async function waitForCommand(
+  endpoint: string,
+  command: string,
+  cursor: string,
+  organizationId: string,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 120_000;
+  let last: Record<string, unknown> = {};
+  while (Date.now() < deadline) {
+    last = await postJson(`${endpoint}/commands/${command}/progress`, { cursor }, identityHeaders(organizationId));
+    if (last.durableResult === 'succeeded') return last;
+    if (last.durableResult === 'rejected') throw new Error(`Generated application command was rejected: ${JSON.stringify(last)}`);
+    if (last.durableResult === 'failed') throw new Error(`Generated application command failed after bounded processing attempts: ${JSON.stringify(last)}`);
+    await sleep(500);
+  }
+  throw new Error(`Timed out waiting for generated application command ${command}: ${JSON.stringify(last)}`);
+}
+
+function identityHeaders(organizationId: string): HeadersInit {
+  return {
+    'content-type': 'application/json',
+    'x-principal': organizationId,
+    'x-organization': organizationId,
+    'x-authorization-version': 'v1',
+  };
+}
+
+async function postJson(url: string, body: object, headers: HeadersInit): Promise<Record<string, unknown>> {
+  const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`${url} returned ${response.status}: ${text}`);
+  return jsonObject(text);
+}
+
+async function waitForSseEvent(
+  url: string,
+  body: object,
+  headers: HeadersInit,
+  event: string,
+): Promise<string> {
   const controller = new AbortController();
   const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal });
   if (!response.ok || !response.body) throw new Error(`${url} returned ${response.status}: ${await response.text()}`);
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + 60_000;
   let pending = '';
   const observedEvents = new Set<string>();
   try {
@@ -242,9 +403,11 @@ async function waitForSseEvent(url: string, body: object, headers: HeadersInit, 
       const remainingMs = deadline - Date.now();
       const result = await Promise.race([
         reader.read().then((next) => ({ next })),
-        sleep(remainingMs).then(() => ({ timeout: true })),
+        sleep(remainingMs).then(() => ({ timeout: true as const })),
       ]);
-      if ('timeout' in result) throw new Error(`Timed out waiting for SSE event ${event} from ${url}; observed ${JSON.stringify([...observedEvents])}.`);
+      if ('timeout' in result) {
+        throw new Error(`Timed out waiting for SSE event ${event} from ${url}; observed ${JSON.stringify([...observedEvents])}.`);
+      }
       const { next } = result;
       if (next.done) break;
       pending += decoder.decode(next.value, { stream: true });
@@ -259,113 +422,173 @@ async function waitForSseEvent(url: string, body: object, headers: HeadersInit, 
       if (match !== undefined) return `${match}\n\n`;
     }
     throw new Error(`SSE stream from ${url} ended before event ${event}; observed ${JSON.stringify([...observedEvents])}.`);
-  } finally { controller.abort(); await reader.cancel().catch(() => undefined); }
+  } finally {
+    controller.abort();
+    await reader.cancel().catch(() => undefined);
+  }
 }
 
-async function waitForJson(url: string, init: RequestInit, predicate: (value: Record<string, unknown>) => boolean): Promise<Record<string, unknown>> {
-  const started = Date.now(); let last = '';
-  // typecast: the caller's predicate is the runtime validator for each polled JSON endpoint response.
-  while (Date.now() - started < 120_000) { try { const response = await fetch(url, init); last = await response.text(); if (response.ok) { const value = JSON.parse(last) as Record<string, unknown>; if (predicate(value)) return value; } } catch (error) { last = error instanceof Error ? error.message : String(error); } await sleep(1_000); }
+async function waitForJson(
+  url: string,
+  init: RequestInit,
+  predicate: (value: Record<string, unknown>) => boolean,
+): Promise<Record<string, unknown>> {
+  const started = Date.now();
+  let last = '';
+  while (Date.now() - started < 120_000) {
+    try {
+      const response = await fetch(url, init);
+      last = await response.text();
+      if (response.ok) {
+        const value = jsonObject(last);
+        if (predicate(value)) return value;
+      }
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+    }
+    await sleep(1_000);
+  }
   throw new Error(`Timed out waiting for ${url}: ${last}`);
 }
 
-async function waitForClickHouse(endpoint: string, rows: number, checkpoint: number): Promise<void> {
-  await waitForJson(`${endpoint}/?query=${encodeURIComponent(`SELECT count() AS rows FROM default.card_history FINAL FORMAT JSONEachRow`)}`, { method: 'POST' }, (value) => Number(value.rows) === rows);
-  await waitForJson(`${endpoint}/?query=${encodeURIComponent(`SELECT coalesce(max(\`sequence\`), 0) AS sequence FROM default.applik8s_projection_checkpoints FINAL WHERE \`projection\` = 'card-history' AND \`stream\` = 'cards.changed.v1' FORMAT JSONEachRow`)}`, { method: 'POST' }, (value) => Number(value.sequence) === checkpoint);
+async function waitForClickHouse(endpoint: string, rows: number, afterCheckpoint: number): Promise<number> {
+  const deadline = Date.now() + 120_000;
+  let last = '';
+  while (Date.now() < deadline) {
+    try {
+      const count = await clickHouseValue(endpoint, 'SELECT count() AS value FROM default.card_history FINAL FORMAT JSONEachRow');
+      const checkpoint = await clickHouseValue(endpoint, "SELECT coalesce(max(`sequence`), 0) AS value FROM default.applik8s_projection_checkpoints FINAL WHERE `projection` = 'card-history' AND `stream` = 'cards.changed.v1' FORMAT JSONEachRow");
+      last = JSON.stringify({ count, checkpoint });
+      if (count === rows && checkpoint > afterCheckpoint) return checkpoint;
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+    }
+    await sleep(1_000);
+  }
+  throw new Error(`Timed out waiting for ClickHouse card-history rows=${rows} checkpoint>${afterCheckpoint}: ${last}`);
 }
 
-async function deploymentPod(name: string): Promise<string> { const output = (await kubectl(['get', 'pods', '--namespace', namespace, '--selector', `app.kubernetes.io/name=${name}`, '--output=jsonpath={.items[0].metadata.name}'])).stdout.trim(); if (!output) throw new Error(`No pod found for ${name}.`); return output; }
-async function waitForReplacementPod(name: string, oldPod: string): Promise<void> { const started = Date.now(); while (Date.now() - started < 300_000) { const current = await deploymentPod(name).catch(() => ''); if (current && current !== oldPod) return; await sleep(1_000); } throw new Error(`Timed out waiting for replacement pod for ${name}.`); }
+async function clickHouseValue(endpoint: string, query: string): Promise<number> {
+  const response = await fetch(`${endpoint}/?query=${encodeURIComponent(query)}`, { method: 'POST' });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`ClickHouse returned ${response.status}: ${text}`);
+  const value = Number(jsonObject(text).value);
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`ClickHouse returned an invalid numeric value: ${text}`);
+  return value;
+}
+
+async function deploymentPod(name: string): Promise<string> {
+  const output = (await kubectl([
+    'get', 'pods', '--namespace', namespace,
+    '--selector', `app.kubernetes.io/name=${name}`,
+    '--output=jsonpath={.items[0].metadata.name}',
+  ])).stdout.trim();
+  if (!output) throw new Error(`No pod found for ${name}.`);
+  return output;
+}
+
+async function waitForReplacementPod(name: string, oldPod: string): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < 300_000) {
+    const current = await deploymentPod(name).catch(() => '');
+    if (current && current !== oldPod) return;
+    await sleep(1_000);
+  }
+  throw new Error(`Timed out waiting for replacement pod for ${name}.`);
+}
 
 async function startPortForward(resource: string, remotePort: number): Promise<PortForward> {
-  const child = spawn('kubectl', ['port-forward', '--namespace', namespace, resource, `0:${remotePort}`], { stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = ''; child.stdout.on('data', (chunk) => { output += String(chunk); }); child.stderr.on('data', (chunk) => { output += String(chunk); });
-  const started = Date.now(); while (Date.now() - started < 30_000) { const match = output.match(/Forwarding from 127\.0\.0\.1:(\d+)/); if (match?.[1]) return { endpoint: `http://127.0.0.1:${match[1]}`, async close() { if (!child.killed) child.kill('SIGTERM'); await new Promise((resolve) => child.once('exit', resolve)); } }; if (child.exitCode !== null) throw new Error(`kubectl port-forward ${resource} exited: ${output}`); await sleep(100); }
-  child.kill('SIGTERM'); throw new Error(`Timed out starting port-forward for ${resource}: ${output}`);
-}
-
-async function deleteApplicationThroughTypeKro(): Promise<void> {
-  if (!composition || !instanceApplied) return;
-  const factory = composition.factory('kro', { namespace, waitForReady: true, timeout: 600_000 });
-  try {
-    const names = (await factory.getInstances()).map((instance) => instance.metadata?.name).filter((name): name is string => Boolean(name));
-    if (!names.includes(stackName)) throw new Error(`Expected TypeKro instance ${namespace}/${stackName}, found ${JSON.stringify(names)}.`);
-    await factory.deleteInstance(stackName);
-    instanceApplied = false;
-  } finally { await factory.dispose(); }
-}
-
-async function cleanKroOrphanedGeneratedWorkloads(): Promise<void> {
-  // KRO 0.9 deletes Jobs without a background propagation policy. Kubernetes
-  // consequently orphans their completed Pods; KRO's propagation-control KREP
-  // is not released yet. The root instance itself was still deleted through
-  // TypeKro above. This recovery is deliberately fail-closed and limited to a
-  // completed, ownerless Pod from this disposable migration Job.
-  // typecast: the Kubernetes PodList is structurally narrowed before any deletion decision.
-  const podList = JSON.parse((await kubectl(['get', 'pods', '--namespace', namespace, '--selector', 'app.kubernetes.io/component=migration', '--output=json'])).stdout) as Record<string, unknown>;
-  const items = Array.isArray(podList.items) ? podList.items : [];
-  const orphanedNames: string[] = [];
-  for (const item of items) {
-    if (!item || typeof item !== 'object') throw new Error('Migration PodList contained a non-object item.');
-    const metadata = 'metadata' in item && item.metadata && typeof item.metadata === 'object' ? item.metadata : undefined;
-    const status = 'status' in item && item.status && typeof item.status === 'object' ? item.status : undefined;
-    const name = metadata && 'name' in metadata && typeof metadata.name === 'string' ? metadata.name : undefined;
-    const owners = metadata && 'ownerReferences' in metadata && Array.isArray(metadata.ownerReferences) ? metadata.ownerReferences : [];
-    const phase = status && 'phase' in status && typeof status.phase === 'string' ? status.phase : undefined;
-    if (!name?.startsWith(`${migrationJob}-`) || owners.length > 0 || (phase !== 'Succeeded' && phase !== 'Failed')) {
-      throw new Error(`Refusing KRO Job-Pod recovery for unexpected migration Pod ${JSON.stringify({ name, owners, phase })}.`);
-    }
-    orphanedNames.push(`pod/${name}`);
-  }
-  if (orphanedNames.length === 0) return;
-  const jobStillExists = await kubectl(['get', `job/${migrationJob}`, '--namespace', namespace, '--output=name']).then(() => true, () => false);
-  if (jobStillExists) throw new Error(`Refusing orphan recovery while job/${migrationJob} still exists.`);
-  await kubectl(['delete', ...orphanedNames, '--namespace', namespace, '--wait=true', '--timeout=60s']);
-  orphanedJobPodRecoveryUsed = true;
-}
-
-async function ensureGeneratedCrdDeletionCompletes(): Promise<void> {
-  const crdName = `${stackName.toLowerCase().replaceAll(/[^a-z0-9]/g, '')}s.${stackName}.applik8s.dev`;
+  const child = spawn('kubectl', [
+    '--context', context,
+    'port-forward', '--namespace', namespace, resource, `0:${remotePort}`,
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout.on('data', (chunk) => { output += String(chunk); });
+  child.stderr.on('data', (chunk) => { output += String(chunk); });
   const started = Date.now();
-  let crd: Record<string, unknown> | undefined;
   while (Date.now() - started < 30_000) {
-    try {
-      // typecast: the generated CRD response is narrowed to metadata fields before recovery decisions.
-      crd = JSON.parse((await kubectl(['get', `crd/${crdName}`, '--output=json'])).stdout) as Record<string, unknown>;
-    } catch { return; }
-    await sleep(2_000);
+    const match = output.match(/Forwarding from 127\.0\.0\.1:(\d+)/);
+    if (match?.[1]) {
+      return {
+        endpoint: `http://127.0.0.1:${match[1]}`,
+        async close() {
+          if (!child.killed) child.kill('SIGTERM');
+          await new Promise((resolve) => child.once('exit', resolve));
+        },
+      };
+    }
+    if (child.exitCode !== null) throw new Error(`kubectl port-forward ${resource} exited: ${output}`);
+    await sleep(100);
   }
-  const metadata = crd?.metadata;
-  if (!metadata || typeof metadata !== 'object' || !('deletionTimestamp' in metadata) || typeof metadata.deletionTimestamp !== 'string') {
-    throw new Error(`Generated CRD ${crdName} remained after TypeKro cleanup without an active deletion timestamp.`);
-  }
-  const remainingInstances = (await kubectl(['get', crdName, '--all-namespaces', '--output=name'])).stdout.trim();
-  if (remainingInstances) throw new Error(`Refusing empty-CRD finalizer recovery because instances still exist: ${remainingInstances}`);
-  await kubectl(['patch', `crd/${crdName}`, '--type=merge', '--patch', '{"metadata":{"finalizers":[]}}']);
-  emptyCrdRecoveryUsed = true;
-  await kubectl(['wait', '--for=delete', `crd/${crdName}`, '--timeout=60s']);
-}
-
-async function deleteFixtures(): Promise<void> {
-  await kubectl(['delete', 'secret/v06-gateway-cursor', '--namespace', namespace, '--ignore-not-found=true', '--wait=true', '--timeout=60s']);
-  const jobs = (await kubectl(['get', 'jobs', '--namespace', namespace, '--output=name'])).stdout.split('\n').filter((name) => name.startsWith('job.batch/v06-seed-'));
-  const configMaps = (await kubectl(['get', 'configmaps', '--namespace', namespace, '--output=name'])).stdout.split('\n').filter((name) => name.includes('v06-seed-'));
-  if (jobs.length + configMaps.length > 0) await kubectl(['delete', ...jobs, ...configMaps, '--namespace', namespace, '--ignore-not-found=true', '--wait=true', '--timeout=120s']);
-}
-
-async function deleteNamespaceAndWait(): Promise<void> {
-  if (!namespace.startsWith('applik8s-v06-generated-')) throw new Error(`Refusing cleanup for non-disposable namespace ${namespace}.`);
-  await kubectl(['delete', `namespace/${namespace}`, '--wait=true', '--timeout=300s']);
+  child.kill('SIGTERM');
+  throw new Error(`Timed out starting port-forward for ${resource}: ${output}`);
 }
 
 async function writeEvidenceReceipt(): Promise<void> {
-  const directory = join(process.cwd(), '.applik8s-tmp/evidence/v0.6');
-  await mkdir(directory, { recursive: true });
-  const assertions = ['typekro-apply', 'gateway-ready', 'projection-ready', 'restart-resume', 'factory-delete', 'generated-child-cleanup', 'generated-crd-removed', 'namespace-removed'];
-  if (orphanedJobPodRecoveryUsed) assertions.push('kro-job-orphan-recovery');
-  if (emptyCrdRecoveryUsed) assertions.push('orbstack-empty-crd-finalizer-recovery');
-  await writeFile(join(directory, 'orbstack.json'), `${JSON.stringify({ schemaVersion: 1, suite: 'orbstack', completedAt: new Date().toISOString(), environment: { context: process.env.APPLIK8S_E2E_CONTEXT ?? 'unknown', namespace, deployment: 'generated-typekro' }, assertions }, null, 2)}\n`);
+  if (!outDir) throw new Error('Generated application output directory is unavailable for evidence.');
+  const imageEvidence = jsonObject(await readFile(join(outDir, 'typekro', 'application-image-evidence.json'), 'utf8'));
+  const completedAt = new Date().toISOString();
+  const assertions = [
+    'harbor-digest-images',
+    'typekro-apply',
+    'schema-complete-ready',
+    'gateway-ready',
+    'command-create-update',
+    'postgres-transactional-outbox',
+    'jetstream-delivery',
+    'sse-invalidation',
+    'authoritative-requery',
+    'clickhouse-projection',
+    'projection-restart-resume',
+    'typekro-factory-delete',
+    'direct-preparation-delete',
+    'generated-rgd-removed',
+    'namespaces-removed',
+  ];
+  await writeV06EvidenceReceipt(evidencePath, {
+    suite: 'orbstack',
+    run: { id: evidenceRunId, startedAt: evidenceStartedAt, completedAt },
+    candidate: {
+      git: await collectV06GitIdentity(),
+      cluster: await collectV06ClusterIdentity(context),
+    },
+    environment: { context, namespace, controlPlaneNamespace, deployment: 'generated-typekro-harbor' },
+    assertionEvidence: createV06AssertionEvidence(
+      assertions.map((assertion) => ({ assertion, test: 'generated application live lifecycle', observedAt: completedAt })),
+      evidenceRunId,
+    ),
+    imageEvidence,
+  });
 }
 
-function indent(value: string, spaces: number): string { const prefix = ' '.repeat(spaces); return value.split('\n').map((line) => `${prefix}${line}`).join('\n'); }
-function requiredTempDir(): string { if (!tempDir) throw new Error('Temporary directory is unavailable.'); return tempDir; }
+function jsonObject(value: string): Record<string, unknown> {
+  const parsed = JSON.parse(value) as unknown;
+  return unknownObject(parsed);
+}
+
+function unknownObject(parsed: unknown): Record<string, unknown> {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(`Expected a JSON object, received ${JSON.stringify(parsed)}.`);
+  return parsed as Record<string, unknown>;
+}
+
+function objectField(value: Record<string, unknown>, field: string): Record<string, unknown> {
+  const nested = value[field];
+  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) throw new Error(`Expected object field ${field}: ${JSON.stringify(value)}`);
+  return nested as Record<string, unknown>;
+}
+
+function stringField(value: Record<string, unknown>, field: string): string {
+  const nested = value[field];
+  if (typeof nested !== 'string' || !nested) throw new Error(`Expected string field ${field}: ${JSON.stringify(value)}`);
+  return nested;
+}
+
+function arrayField(value: Record<string, unknown>, field: string): readonly unknown[] {
+  const nested = value[field];
+  if (!Array.isArray(nested)) throw new Error(`Expected array field ${field}: ${JSON.stringify(value)}`);
+  return nested;
+}
+
+function pascalCase(value: string): string {
+  return value.split(/[^A-Za-z0-9]+/).filter(Boolean).map((part) => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`).join('');
+}
