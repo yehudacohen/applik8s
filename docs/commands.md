@@ -86,9 +86,10 @@ Account.on.rotateRecoveryCodes('audit-recovery-code-rotation', processorOptions,
 });
 ```
 
-Do not introduce an `.actions({...})` registry or a second completion event. Compatibility spellings such as
-`$model.on.command(...)`, `$model.on.action(...)`, and named-model `Model.on.command(...)` remain only for
-older applications and are scheduled for removal at 1.0.
+Do not introduce an `.actions({...})` registry or a second completion event. Ordinary domain code uses
+direct lifecycle mutations or a named `Model.action(...)`. The lower-level `Model.on.command(...)` and
+`Model.on.action(...)` registrars remain available for explicit protocol integration and framework
+internals, but do not belong in golden-path examples.
 
 ## Transactional outboxes
 
@@ -112,48 +113,6 @@ Post.create.beforeCommit({
 
 Event and command relays use stable message IDs. A crash after publish but before database acknowledgement
 safely republishes the same ID.
-
-## Stateful provider ownership migration
-
-An application upgrading from a legacy graph that placed durable provider data
-inside a KRO ApplySet must opt into the transition explicitly:
-
-```sh
-applik8s deploy app.ts --context orbstack --instance kubernetes/app.yaml \
-  --migrate-kro-owned-provider-data \
-  --confirm-legacy-typekro-node-fetch-manager
-```
-
-The migration operates across every live instance of the shared RGD. It fails
-closed for terminating instances, conditional provider nodes, computed resource
-identities, missing children, mismatched ownership, or changed UIDs. It suspends
-KRO reconciliation before direct TypeKro adoption, removes KRO and ApplySet
-ownership with resource-version compare-and-swap patches, replaces only the
-matching RGD node with the generated `externalRef`, waits for the new RGD
-generation, and restores each instance's original reconciliation setting.
-Because KRO's per-instance suspension is checked only when a reconcile begins,
-Applik8s also journals and scales the KRO controller Deployment to zero, waits
-for every controller Pod to terminate, and re-reads the unchanged RGD before
-the first ownership mutation. It restores the exact prior replica count only
-after every instance annotation is restored. An interrupted post-mutation run
-keeps both the instance journals and controller quiescence in place so the same
-command can resume without a stale reconcile reacquiring the provider.
-
-The same explicit flag permits one scoped server-side-apply ownership handoff
-for the named root RGD. Applik8s first rejects unexpected spec field managers;
-only the known migration manager's atomic `spec.resources` ownership may be
-displaced. Other RGDs and all other resources retain ordinary conflict
-behavior.
-
-TypeKro 0.28 imperative factories can appear in Kubernetes managed fields as
-the generic `node-fetch` manager. That name is not authoritative on its own,
-so Applik8s accepts it only with the separate confirmation flag shown above,
-an exact pre/post-quiescence RGD UID and spec match, and the precise historical
-TypeKro field set. Any other manager identity or field set fails closed.
-
-Once adoption starts, failures deliberately leave instances suspended. Repair
-the reported invariant and rerun the same command; do not delete the provider,
-its PVCs, the instance, or the RGD manually.
 
 ## Processor runtime image
 

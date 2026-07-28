@@ -4,5 +4,4 @@ export { createValkeyOnlineProjectionReader, createValkeyOnlineProjectionStore }
 export { retireApplicationOnlineProjectionGeneration, runApplicationOnlineProjectionRebuild } from './projection-rebuild-runtime.js';
 export { createPostgresApplicationProjectionSnapshotSource } from './projection-snapshot-postgres-runtime.js';
 export type { ApplicationProjectionSnapshotItem, ApplicationProjectionSnapshotSource, PostgresApplicationProjectionSnapshotOptions } from './projection-snapshot-postgres-runtime.js';
-export { createS3ApplicationObjectStorageRuntime } from './object-storage-s3-runtime.js';
 export { createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from './stream-runtime-postgres.js';

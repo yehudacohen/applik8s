@@ -22,6 +22,8 @@ for (const packageName of publishablePackageNames) {
   await cp(join(buildRoot, 'packages', packageName, 'src'), dist, { recursive: true });
 }
 
-await cp(join(root, 'packages/applik8s/src/node-build-runner.mjs'), join(root, 'packages/applik8s/dist/node-build-runner.mjs'));
-await cp(join(root, 'packages/applik8s/src/node-delete-runner.mjs'), join(root, 'packages/applik8s/dist/node-delete-runner.mjs'));
-await chmod(join(root, 'packages/applik8s/dist/bin.js'), 0o755);
+await cp(join(root, 'packages/cli/src/node-build-runner.mjs'), join(root, 'packages/cli/dist/node-build-runner.mjs'));
+await cp(join(root, 'packages/cli/src/node-deploy-runner.mjs'), join(root, 'packages/cli/dist/node-deploy-runner.mjs'));
+await cp(join(root, 'packages/cli/src/node-typescript-loader.mjs'), join(root, 'packages/cli/dist/node-typescript-loader.mjs'));
+await cp(join(root, 'packages/cli/src/node-register-typescript.mjs'), join(root, 'packages/cli/dist/node-register-typescript.mjs'));
+await chmod(join(root, 'packages/cli/dist/bin.js'), 0o755);

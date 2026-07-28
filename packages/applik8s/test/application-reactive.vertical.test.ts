@@ -267,7 +267,7 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     const automation = app('automation-schedule-fixture', { namespace: 'automation-system' });
     automation.provide(WorkflowEngine, WorkflowEngine.hatchet({
       namespace: 'automation-system',
-      credentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: 'automation-worker-token', namespace: 'automation-system' },
+      workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'automation-worker-token', namespace: 'automation-system' },
     }));
     const database = automation.database.postgres('automation', { schema: {} });
     const Execute = task('automation.execute.v1', {

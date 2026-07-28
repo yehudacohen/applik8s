@@ -20,7 +20,10 @@ import { emitGeneratedApplicationMigrations } from '../application-migrations/in
 import type { GeneratedApplicationProcessorArtifact } from '../application-processors/index.js';
 import { emitGeneratedApplicationProcessors } from '../application-processors/index.js';
 import type { GeneratedApplicationReactiveArtifact } from '../application-reactive/index.js';
-import { emitGeneratedApplicationReactive } from '../application-reactive/index.js';
+import {
+  consolidateGeneratedApplicationReactiveResources,
+  emitGeneratedApplicationReactive,
+} from '../application-reactive/index.js';
 import type { GeneratedApplicationWorkflowArtifact } from '../application-workflows/index.js';
 import { emitGeneratedApplicationWorkflows } from '../application-workflows/index.js';
 import { compilerArtifactLayout } from '../artifacts/index.js';
@@ -402,7 +405,12 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     // typecast: generated workflow resources are concrete Kubernetes JSON objects and pass through the shared TypeKro serialization path.
     const workflowResources = workflowArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated reactive resources are concrete Kubernetes JSON objects and use the shared TypeKro serialization path.
-    const reactiveResources = reactiveArtifacts.flatMap((artifact) => artifact.resources) as unknown as readonly TypeKroCompositionResource[];
+    const reactiveResources = request.applicationGraph
+      ? consolidateGeneratedApplicationReactiveResources({
+          graphName: request.applicationGraph.metadata.name,
+          artifacts: reactiveArtifacts,
+        }) as unknown as readonly TypeKroCompositionResource[]
+      : [];
     // typecast: generated host resources are concrete Kubernetes JSON objects and share the TypeKro emission contract.
     const generatedResources = [...migrationResources, ...processorResources, ...workflowResources, ...reactiveResources, ...hostResources as unknown as readonly TypeKroCompositionResource[]];
     const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition, request.applicationGraph?.metadata, request.applicationInstallation);

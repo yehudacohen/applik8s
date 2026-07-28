@@ -1,4 +1,4 @@
-import { app, ContainerRegistry, event, ProjectionStore, postgres, trustedContext } from '@applik8s/applik8s';
+import { app, ContainerRegistry, defaultApplicationEventLogProvider, event, ProjectionStore, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { eq } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
@@ -29,7 +29,7 @@ v06GeneratedApp.provide(ContainerRegistry, ContainerRegistry.harbor({
     adminCredentials: {
       apiVersion: 'v1',
       kind: 'Secret',
-      name: 'harbor-admin',
+      name: 'typekro-harbor-admin',
       namespace: 'typekro-harbor-registry',
       username: 'admin',
       passwordKey: 'HARBOR_ADMIN_PASSWORD',
@@ -39,14 +39,28 @@ v06GeneratedApp.provide(ContainerRegistry, ContainerRegistry.harbor({
     pullRobotName: 'v06-generated-runtime',
     immutableTags: { tagPattern: 'sha-*' },
     retention: { keepMostRecent: 20 },
+    projectLifecycle: {
+      deletionPolicy: 'delete',
+      purgeRepositories: true,
+    },
   },
   tls: { plainHttp: true },
 }));
+v06GeneratedApp.defaults({
+  eventLog: {
+    ...defaultApplicationEventLogProvider,
+    namespace,
+    storageSize: '1Gi',
+    storageClassName: 'local-path',
+  },
+  projections: ProjectionStore.clickhouse({ name: 'v06-analytics', namespace, storageSize: '1Gi', storageClassName: 'local-path' }),
+});
 const Database = v06GeneratedApp.database.postgres('catalog', {
   schema,
   migrations: './migrations',
   database: 'catalog',
   access: postgres.rls({ context: OrganizationId, column: 'organizationId' }),
+  storage: { size: '1Gi', storageClassName: 'local-path' },
 });
 const Card = v06GeneratedApp.model(cards, { name: 'Card', database: Database });
 
@@ -95,9 +109,6 @@ const CardChanges = v06GeneratedApp.stream(CardChanged, {
 });
 const CardEvents = v06GeneratedApp.subscription('card-events', { source: CardChanges, authorize: ({ principal }) => principal.id.length > 0 });
 
-v06GeneratedApp.defaults({
-  projections: ProjectionStore.clickhouse({ name: 'v06-analytics', namespace, storageSize: '1Gi', storageClassName: 'local-path' }),
-});
 v06GeneratedApp.projection('card-history', {
   source: CardChanges,
   output: type({ eventId: 'string', cardId: 'string', organizationId: 'string', name: 'string' }),

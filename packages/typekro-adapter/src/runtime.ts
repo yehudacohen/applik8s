@@ -304,13 +304,18 @@ export function resolveOperatorInstalls<TSpec extends KroCompatibleType, TStatus
       if (!lowered.ok) {
         return lowered;
       }
-      generatedCrdPrerequisites.push(...operatorGeneratedCrdPrerequisites(operator, manifest));
+      generatedCrdPrerequisites.push(...operatorGeneratedCrdPrerequisites(operator));
       // typecast: asComposition returns the operator-install composition shape required by install replay.
       resolvedInstallCompositions.set(install.operatorName, lowered.value as TypeKroOperatorComposition);
     }
 
     // typecast: replay preserves the original composition's public spec/status generic contract.
-    return ok(createResolvedListenerComposition(source, options, resolvedInstallCompositions, generatedCrdPrerequisites) as TypeKroListenerComposition<TSpec, TStatus>);
+    return ok(createResolvedListenerComposition(
+      source,
+      options,
+      resolvedInstallCompositions,
+      uniqueGeneratedCrdPrerequisites(generatedCrdPrerequisites),
+    ) as TypeKroListenerComposition<TSpec, TStatus>);
   } catch (cause) {
     return err('BUNDLE_INVALID', cause instanceof Error ? cause.message : 'Failed to resolve captured TypeKro operator installs.');
   }
@@ -1220,7 +1225,7 @@ function installResources<
     : [];
   const namespacedPermissions = clusterRbac ? connectionSecretPermissions : manifest.spec.permissions;
   return [
-    ...ownedResources.map((resource, index) => crdDocument(resource, `ownedCrd${index + 1}`, manifest)),
+    ...ownedResources.map((resource, index) => crdDocument(resource, `ownedCrd${index + 1}`)),
     serviceAccountDocument(serviceAccountName, namespace, manifest),
     ...(clusterPermissions.length > 0 ? [
       rbacRoleDocument(operatorName, clusterPermissions, namespace, true, manifest),
@@ -1255,22 +1260,46 @@ function requiresClusterRbac<
 
 function operatorGeneratedCrdPrerequisites(
   operator: OperatorDefinition,
-  manifest: OperatorManifest
 ): readonly PrerequisiteResource[] {
   // typecast: SDK operator resources are ResourceDefinition values with event sources; CRD emission only needs erased resource metadata.
   const resources = Object.values(operator.resources) as unknown as readonly AnyResourceDefinition[];
   const crds = resources
     .filter(isOwnedResource)
-    .map((resource, index): PrerequisiteResource => {
+    .map((resource): PrerequisiteResource => {
       const document = crdDocument(
         resource,
-        `${operator.name.replace(/[^a-zA-Z0-9]/g, '')}PrerequisiteCrd${index + 1}`,
-        manifest
+        `${resource.kind.replace(/[^a-zA-Z0-9]/g, '')}${resource.apiVersion.replace(/[^a-zA-Z0-9]/g, '')}PrerequisiteCrd`,
       );
       // typecast: this concrete CRD is cluster-scoped; only the adapter's erased manifest union carries unrelated optional RBAC fields.
       return { ...document, scope: 'cluster' } as unknown as PrerequisiteResource;
     });
   return crds;
+}
+
+function uniqueGeneratedCrdPrerequisites(
+  resources: readonly PrerequisiteResource[],
+): readonly PrerequisiteResource[] {
+  const unique = new Map<string, PrerequisiteResource>();
+  for (const resource of resources) {
+    const metadata = Reflect.get(resource, 'metadata');
+    const name = isJsonObject(metadata) && typeof metadata.name === 'string'
+      ? metadata.name
+      : undefined;
+    const apiVersion = Reflect.get(resource, 'apiVersion');
+    const kind = Reflect.get(resource, 'kind');
+    if (typeof apiVersion !== 'string' || typeof kind !== 'string' || !name) {
+      throw new Error('Generated CRD prerequisite has no complete Kubernetes identity.');
+    }
+    const key = `${apiVersion}\u0000${kind}\u0000${name}`;
+    const existing = unique.get(key);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(resource)) {
+      throw new Error(
+        `Generated CRD prerequisite ${apiVersion}/${kind}/${name} has conflicting schemas across captured operators.`,
+      );
+    }
+    if (!existing) unique.set(key, resource);
+  }
+  return [...unique.values()];
 }
 
 function validateDeploymentOperationalSafety(
@@ -1318,13 +1347,17 @@ function unsupportedRuntimeConcurrency(concurrency: ConcurrencyConfig | undefine
   return undefined;
 }
 
-function crdDocument(resource: AnyResourceDefinition, id: string, manifest: OperatorManifest): KubernetesManifestResource {
+function crdDocument(resource: AnyResourceDefinition, id: string): KubernetesManifestResource {
   const { group } = splitApiVersion(resource.apiVersion);
   return {
     apiVersion: 'apiextensions.k8s.io/v1',
     kind: 'CustomResourceDefinition',
     id,
-    metadata: metadata(`${resource.plural}.${group}`, undefined, manifest),
+    metadata: {
+      name: `${resource.plural}.${group}`,
+      labels: managedLabels(),
+      annotations: {},
+    },
     spec: {
       group,
       scope: resource.scope,
@@ -1580,7 +1613,7 @@ function operatorHostEnv(manifest: OperatorManifest): readonly JsonObject[] {
     { name: 'APPLIK8S_HEALTH_ADDR', value: '0.0.0.0:8080' },
     { name: 'APPLIK8S_HANDLER_TIMEOUT_SECONDS', value: String(manifest.spec.runtime?.handlerTimeoutSeconds ?? 30) },
     { name: 'OTEL_SERVICE_NAME', value: manifest.metadata.name },
-    { name: 'OTEL_RESOURCE_ATTRIBUTES', value: `service.namespace=applik8s,applik8s.operator=${manifest.metadata.name},applik8s.bundle_digest=${manifest.spec.bundle.digest}` },
+    { name: 'OTEL_RESOURCE_ATTRIBUTES', value: `service.namespace=applik8s,applik8s.operator=${manifest.metadata.name},applik8s.build_identity_digest=${manifest.spec.bundle.buildIdentityDigest}` },
     { name: 'OTEL_METRIC_EXPORT_INTERVAL', value: '30000' },
     ...(replayArtifacts?.enabled && replayArtifacts.directory ? [
       { name: 'APPLIK8S_REPLAY_ARTIFACT_DIR', value: replayArtifacts.directory },
@@ -1625,7 +1658,7 @@ function auditAnnotations(manifest: OperatorManifest): Readonly<Record<string, s
   const storageVersions = manifest.spec.ownedCrds.map((crd) => `${crd.apiVersion}/${crd.kind}=${crd.storageVersion}`);
   const conversionStrategies = manifest.spec.ownedCrds.map((crd) => `${crd.apiVersion}/${crd.kind}=${crd.conversionStrategy}`);
   return {
-    'applik8s.dev/bundle-digest': manifest.spec.bundle.digest,
+    'applik8s.dev/build-identity-digest': manifest.spec.bundle.buildIdentityDigest,
     'applik8s.dev/source-digest': manifest.spec.bundle.sourceDigest,
     'applik8s.dev/compiler-version': manifest.spec.bundle.compilerVersion,
     'applik8s.dev/handler-abi': manifest.spec.handlerAbi,

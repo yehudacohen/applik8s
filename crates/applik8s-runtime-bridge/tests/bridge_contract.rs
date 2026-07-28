@@ -6,9 +6,11 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use applik8s_runtime_bridge::{
-    KubernetesHttpTransport, RuntimeBridgeError, capability_denied_payload, component_host_imports,
-    component_model_engine, decode_handler_input_payload, decode_handler_output_plan_payload,
-    invoke_handler_component_bytes, invoke_handler_component_bytes_with_timeout,
+    KubernetesHttpTransport, RuntimeBridgeError, capability_denied_payload,
+    compile_handler_component, component_host_imports, component_model_engine,
+    decode_handler_input_payload, decode_handler_output_plan_payload,
+    invoke_compiled_handler_component_with_timeout_async, invoke_handler_component_bytes,
+    invoke_handler_component_bytes_with_timeout,
     invoke_handler_component_bytes_with_timeout_and_capabilities_async,
     invoke_handler_component_bytes_with_timeout_and_kubernetes_http_async,
     invoke_handler_component_bytes_with_timeout_async, retry_after, runtime_abi_version,
@@ -216,6 +218,30 @@ fn bridge_invokes_handler_component_and_decodes_output_plan() {
             .expect("bridge invokes canonical handler component");
 
     assert!(plan.operations.is_empty());
+}
+
+#[test]
+fn compiled_handler_component_supports_repeated_isolated_invocations() {
+    let engine = component_model_engine().expect("component model engine configures");
+    let component =
+        compile_handler_component(&engine, &canonical_result_handler_component_bytes(), &[])
+            .expect("handler component compiles once");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime builds");
+
+    for _ in 0..3 {
+        let plan = runtime
+            .block_on(invoke_compiled_handler_component_with_timeout_async(
+                &engine,
+                &component,
+                valid_handler_input_payload(),
+                Duration::from_secs(1),
+            ))
+            .expect("compiled handler receives a fresh invocation Store");
+        assert!(plan.operations.is_empty());
+    }
 }
 
 #[test]

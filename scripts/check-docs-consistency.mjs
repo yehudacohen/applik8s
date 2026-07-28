@@ -58,6 +58,7 @@ const publicDocs = [
 for (const path of publicDocs) {
   const text = await read(path);
   rejectContains(path, text, 'packages/applik8s/src/cli.ts');
+  rejectContains(path, text, 'packages/cli/src/cli.ts');
   rejectContains(path, text, 'job.batch.ConfigMap');
   rejectContains(path, text, 'createApplik8sStart');
   rejectContains(path, text, 'Applik8sAuthenticationHandler');

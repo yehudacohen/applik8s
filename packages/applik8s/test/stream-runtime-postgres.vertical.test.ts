@@ -2,7 +2,7 @@
 import { app, createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from '@applik8s/applik8s';
 import { stream, type } from '@applik8s/applik8s/dsl';
 import { describe, expect, test, vi } from 'vitest';
-import { applicationCommandContextValues } from '../src/command-principal.js';
+import { applicationRequestContextValues } from '../src/command-principal.js';
 
 describe('PostgreSQL replayable application stream', () => {
   test('reads a bounded, context-scoped, schema-validated outbox page', async () => {
@@ -25,7 +25,7 @@ describe('PostgreSQL replayable application stream', () => {
     const database = catalog.database.postgres('catalog', { schema: {} });
     const Changed = stream('cards.internal-changed.v1', { payload: type({ cardId: 'string' }) });
     const binding = catalog.stream(Changed, { database, retention: { maxAgeSeconds: 3600 }, partitionBy: (payload) => payload.cardId, authorize: () => true });
-    const values = applicationCommandContextValues(
+    const values = applicationRequestContextValues(
       { id: 'author-1', claims: { role: 'author' } },
       'authz-v3',
       { tenantId: 'tenant-1' },

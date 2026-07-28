@@ -144,8 +144,7 @@ export interface ApplicationExposureNode
 	readonly dnsPublication?: ApplicationProviderRef<"DnsPublication">;
 	readonly service: string;
 	readonly hostnames: readonly string[];
-	readonly tls: "required" | "optional" | "disabled";
-	readonly tlsIntent?: ApplicationTlsIntentContract;
+	readonly tlsIntent: ApplicationTlsIntentContract;
 	readonly dnsIntent?: ApplicationDnsIntentContract;
 	readonly publicUrl: string;
 	readonly transport: ApplicationExposureTransportContract;

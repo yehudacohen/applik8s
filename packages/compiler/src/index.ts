@@ -13,3 +13,4 @@ export * from './runtime-contract/index.js';
 export * from './wasm-component/index.js';
 export * from './application-facade/index.js';
 export * from './application-fetch-gateway/index.js';
+export * from './application-deployment-graph.js';

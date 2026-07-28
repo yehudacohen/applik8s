@@ -1072,10 +1072,10 @@ export const guestBookStack = sdk.kubernetesComposition(
       ...(defaultOptions.ingressClassName ? { ingressClassName: defaultOptions.ingressClassName } : {}),
       ...(defaultOptions.profile === "public"
         ? {
-            tls: { mode: "managed", ...(defaultOptions.tlsSecretName ? { secretName: defaultOptions.tlsSecretName } : {}) },
+            tls: { mode: "managed", ...(defaultOptions.certificateSecretName ? { secretName: defaultOptions.certificateSecretName } : {}) },
             dns: { mode: "managed", ttlSeconds: defaultOptions.dnsTtlSeconds },
           }
-        : { tls: "disabled" }),
+        : { tls: { mode: "disabled" } }),
     };
     app.expose("web", exposureOptions);
 

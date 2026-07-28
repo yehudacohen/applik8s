@@ -1,12 +1,13 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/postgres-js';
+import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
-import postgres from 'postgres';
 import type { ApplicationModelCreateInput, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelTransactionClient, ApplicationRuntimeModelContract } from './application-models.js';
+import { createApplicationPostgresDrizzle } from './postgres-runtime-loader.js';
+import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
 
 interface ModelStoreConnection {
-  readonly client: postgres.Sql;
-  readonly db: ReturnType<typeof drizzle>;
+  readonly client: ApplicationPostgresSql;
+  readonly db: PostgresJsDatabase;
 }
 
 interface PostgresErrorLike {
@@ -26,23 +27,23 @@ type PostgresModelClient<TSpec extends object, TStatus extends object> = Applica
   transaction<TResult>(handler: (model: ApplicationModelTransactionClient<TSpec, TStatus>) => TResult | Promise<TResult>): Promise<TResult>;
 };
 
-const modelStoreConnections = new Map<string, ModelStoreConnection>();
+const modelStoreConnections = new Map<string, Promise<ModelStoreConnection>>();
 const modelStoreTables = new Map<string, ReturnType<typeof modelTable>>();
 
 export async function closePostgresModelClients(): Promise<void> {
   const connections = [...modelStoreConnections.values()];
   modelStoreConnections.clear();
   modelStoreTables.clear();
-  await Promise.all(connections.map((connection) => connection.client.end({ timeout: 1 })));
+  await Promise.all(connections.map(async (connection) => (await connection).client.end({ timeout: 1 })));
 }
 
-export function createPostgresModelClient<TSpec extends object, TStatus extends object = Record<string, never>>(model: ApplicationRuntimeModelContract, databaseOverride?: ReturnType<typeof drizzle>): PostgresModelClient<TSpec, TStatus> {
+export function createPostgresModelClient<TSpec extends object, TStatus extends object = Record<string, never>>(model: ApplicationRuntimeModelContract, databaseOverride?: PostgresJsDatabase): PostgresModelClient<TSpec, TStatus> {
   const client: PostgresModelClient<TSpec, TStatus> = {
     async create(input: ApplicationModelCreateInput<TSpec> | TSpec): Promise<ApplicationModelObject<TSpec, TStatus>> {
       const table = modelTableFor(model);
       const object = modelObjectFromInput<TSpec, TStatus>(input);
       try {
-        await modelDatabaseForClient(model, databaseOverride).insert(table).values(modelRowFromObject(object));
+        await (await modelDatabaseForClient(model, databaseOverride)).insert(table).values(modelRowFromObject(object));
       } catch (error) {
         throw modelStoreError(model, error);
       }
@@ -52,7 +53,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
       const table = modelTableFor(model);
       try {
         const clauses = [eq(table.id, ref.id), ...modelRetentionClauses(model)];
-        const rows = await modelDatabaseForClient(model, databaseOverride).select().from(table).where(and(...clauses)).limit(1);
+        const rows = await (await modelDatabaseForClient(model, databaseOverride)).select().from(table).where(and(...clauses)).limit(1);
         return rows[0] ? modelObjectFromRow<TSpec, TStatus>(rows[0]) : undefined;
       } catch (error) {
         throw modelStoreError(model, error);
@@ -74,7 +75,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
       };
       const table = modelTableFor(model);
       try {
-        await modelDatabaseForClient(model, databaseOverride).update(table).set({ spec: next.spec, status: next.status ?? null, revision: next.revision ?? nextModelRevision(), updatedAt: new Date() }).where(eq(table.id, ref.id));
+        await (await modelDatabaseForClient(model, databaseOverride)).update(table).set({ spec: next.spec, status: next.status ?? null, revision: next.revision ?? nextModelRevision(), updatedAt: new Date() }).where(eq(table.id, ref.id));
       } catch (error) {
         throw modelStoreError(model, error);
       }
@@ -83,7 +84,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
     async delete(ref: ApplicationModelRef): Promise<void> {
       const table = modelTableFor(model);
       try {
-        await modelDatabaseForClient(model, databaseOverride).delete(table).where(eq(table.id, ref.id));
+        await (await modelDatabaseForClient(model, databaseOverride)).delete(table).where(eq(table.id, ref.id));
       } catch (error) {
         throw modelStoreError(model, error);
       }
@@ -108,9 +109,9 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
       };
     },
     async transaction<TResult>(handler: (model: ApplicationModelTransactionClient<TSpec, TStatus>) => TResult | Promise<TResult>): Promise<TResult> {
-      return modelDatabase(model).transaction(async (transaction) => {
+      return (await modelDatabase(model)).transaction(async (transaction) => {
         // typecast: Drizzle transaction clients expose the same query-builder surface used by the generated ModelStore client.
-        const transactionalClient = createPostgresModelClient<TSpec, TStatus>(model, transaction as unknown as ReturnType<typeof drizzle>);
+        const transactionalClient = createPostgresModelClient<TSpec, TStatus>(model, transaction as unknown as PostgresJsDatabase);
         return handler(transactionalClient);
       });
     },
@@ -118,7 +119,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
   return client;
 }
 
-function queryPostgresModel<TSpec extends object, TStatus extends object>(model: ApplicationRuntimeModelContract, query: ApplicationModelQueryOptions<TSpec> = {}, options: { readonly allowedOrderBy?: readonly string[]; readonly defaultOrderBy?: readonly string[] } = {}, databaseOverride?: ReturnType<typeof drizzle>): Promise<ApplicationModelQueryPage<TSpec, TStatus>> {
+async function queryPostgresModel<TSpec extends object, TStatus extends object>(model: ApplicationRuntimeModelContract, query: ApplicationModelQueryOptions<TSpec> = {}, options: { readonly allowedOrderBy?: readonly string[]; readonly defaultOrderBy?: readonly string[] } = {}, databaseOverride?: PostgresJsDatabase): Promise<ApplicationModelQueryPage<TSpec, TStatus>> {
   const requestedOrderBy = query.orderBy ?? options.defaultOrderBy ?? [];
   if ((query.orderBy?.length ?? 0) > 0 && !options.allowedOrderBy) {
     throw new Error(`Model ${model.name} query orderBy is not supported by the Postgres ModelStore runtime yet; unsupported ordering fails closed until index/order semantics are implemented.`);
@@ -131,7 +132,7 @@ function queryPostgresModel<TSpec extends object, TStatus extends object>(model:
   const offset = query.cursor ? Number(query.cursor) : 0;
   const normalizedOffset = Number.isFinite(offset) && offset > 0 ? offset : 0;
   const limit = Math.max(1, Math.min(Number(query.limit ?? 50), 500));
-  let builder = modelDatabaseForClient(model, databaseOverride).select().from(table).$dynamic();
+  let builder = (await modelDatabaseForClient(model, databaseOverride)).select().from(table).$dynamic();
   if (clauses.length > 0) {
     builder = builder.where(and(...clauses));
   }
@@ -149,15 +150,15 @@ function queryPostgresModel<TSpec extends object, TStatus extends object>(model:
     });
 }
 
-function modelDatabaseForClient(model: ApplicationRuntimeModelContract, databaseOverride: ReturnType<typeof drizzle> | undefined): ReturnType<typeof drizzle> {
-  return databaseOverride ?? modelDatabase(model);
+function modelDatabaseForClient(model: ApplicationRuntimeModelContract, databaseOverride: PostgresJsDatabase | undefined): Promise<PostgresJsDatabase> {
+  return databaseOverride ? Promise.resolve(databaseOverride) : modelDatabase(model);
 }
 
-function modelDatabase(model: ApplicationRuntimeModelContract): ReturnType<typeof drizzle> {
+function modelDatabase(model: ApplicationRuntimeModelContract): Promise<PostgresJsDatabase> {
   const key = model.connectionEnvName;
   const existing = modelStoreConnections.get(key);
   if (existing) {
-    return existing.db;
+    return existing.then((connection) => connection.db);
   }
   const url = process.env[key] || process.env.DATABASE_URL;
   if (!url) {
@@ -167,10 +168,9 @@ function modelDatabase(model: ApplicationRuntimeModelContract): ReturnType<typeo
       diagnostic: { event: 'applik8s-modelstore-missing-credentials', model: model.name, env: key },
     });
   }
-  const client = postgres(url, { max: 5 });
-  const db = drizzle(client);
-  modelStoreConnections.set(key, { client, db });
-  return db;
+  const connection = createApplicationPostgresDrizzle(url, { max: 5 }).then(({ client, database }) => ({ client, db: database }));
+  modelStoreConnections.set(key, connection);
+  return connection.then((value) => value.db);
 }
 
 function modelTableFor(model: ApplicationRuntimeModelContract): ReturnType<typeof modelTable> {

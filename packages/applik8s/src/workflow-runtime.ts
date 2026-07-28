@@ -98,7 +98,7 @@ export type ApplicationWorkflowRuntimeFactory = (provider: ApplicationWorkflowEn
 let workflowRuntimeFactory: ApplicationWorkflowRuntimeFactory = async (provider) => {
   if (provider.kind !== 'hatchet') throw new Error(`Unsupported WorkflowEngine provider ${String(Reflect.get(provider, 'kind'))}.`);
   // static-import-exception: keep the optional Hatchet SDK adapter outside applications that never invoke workflows.
-  const runtime = await import('./workflow-runtime-hatchet.js');
+  const runtime = await import('@applik8s/runtime-hatchet');
   return runtime.createHatchetWorkflowRuntime(provider);
 };
 

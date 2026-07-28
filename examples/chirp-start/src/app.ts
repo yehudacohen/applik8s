@@ -125,7 +125,6 @@ export const InstallationStatus = type({
     analytics: "'Ready' | 'Pending' | 'Failed' | 'NotConfigured'",
   },
   'degradedReasons?': 'string[]',
-  'conditions?': 'unknown[]',
 });
 
 export const app = defineApplication('chirp', {
@@ -159,7 +158,17 @@ export const capacity = Object.freeze({
   commandCpuLimit: app.select(app.installation.spec.profile, { starter: '1', dedicated: '2', external: '1', default: '1' }),
   commandMemoryLimit: app.select(app.installation.spec.profile, { starter: '512Mi', dedicated: '1Gi', external: '768Mi', default: '512Mi' }),
   postgresInstances: app.select(app.installation.spec.profile, { starter: 1, dedicated: 3, external: 1, default: 1 }),
-  postgresStorage: app.select(app.installation.spec.profile, { starter: '20Gi', dedicated: '200Gi', external: '20Gi', default: '20Gi' }),
+  // The checked-in starter profile is an OrbStack contract, not a disguised
+  // production capacity tier. Keep its established local volumes stable so an
+  // ordinary application rollout never attempts an implicit PVC migration.
+  // Dedicated installations opt into expandable Ceph storage explicitly.
+  postgresStorage: app.select(app.installation.spec.profile, { starter: '1Gi', dedicated: '200Gi', external: '1Gi', default: '1Gi' }),
+  postgresStorageClass: app.select(app.installation.spec.profile, {
+    starter: 'local-path',
+    dedicated: 'ceph-block',
+    external: 'local-path',
+    default: 'local-path',
+  }),
   eventLogReplicas: app.select(app.installation.spec.profile, { starter: 1, dedicated: 3, external: 1, default: 1 }),
   // Persistent JetStream claim templates are immutable. Keep the starter and
   // external profiles on the framework's established 8Gi baseline so an
@@ -167,16 +176,51 @@ export const capacity = Object.freeze({
   // Moving an existing installation to the dedicated 100Gi profile requires
   // an explicit backup/restore migration onto expandable storage.
   eventLogStorage: app.select(app.installation.spec.profile, { starter: '8Gi', dedicated: '100Gi', external: '8Gi', default: '8Gi' }),
+  eventLogStorageClass: app.select(app.installation.spec.profile, {
+    // Empty means "use the cluster default". This preserves the original
+    // StatefulSet claim-template shape on OrbStack while dedicated profiles
+    // opt into an explicitly managed, expandable class.
+    starter: '',
+    dedicated: 'ceph-block',
+    external: '',
+    default: '',
+  }),
   workflowDatabaseInstances: app.select(app.installation.spec.profile, { starter: 1, dedicated: 3, external: 1, default: 1 }),
   workflowDatabaseStorage: app.select(app.installation.spec.profile, { starter: '8Gi', dedicated: '100Gi', external: '8Gi', default: '8Gi' }),
+  workflowDatabaseStorageClass: app.select(app.installation.spec.profile, {
+    starter: 'local-path',
+    dedicated: 'ceph-block',
+    external: 'local-path',
+    default: 'local-path',
+  }),
   workflowReplicas: app.select(app.installation.spec.profile, { starter: 1, dedicated: 3, external: 2, default: 1 }),
   analyticsStorage: app.select(app.installation.spec.profile, { starter: '16Gi', dedicated: '250Gi', external: '16Gi', default: '16Gi' }),
+  analyticsStorageClass: app.select(app.installation.spec.profile, {
+    starter: 'local-path',
+    dedicated: 'ceph-block',
+    external: 'local-path',
+    default: 'local-path',
+  }),
   indexShards: app.select(app.installation.spec.profile, { starter: 1, dedicated: 3, external: 1, default: 1 }),
   indexReplicas: app.select(app.installation.spec.profile, { starter: 0, dedicated: 1, external: 0, default: 0 }),
   indexStorage: app.select(app.installation.spec.profile, { starter: '8Gi', dedicated: '100Gi', external: '8Gi', default: '8Gi' }),
+  indexStorageClass: app.select(app.installation.spec.profile, {
+    starter: 'local-path',
+    dedicated: 'ceph-block',
+    external: 'local-path',
+    default: 'local-path',
+  }),
 });
 
-app.defaults({ eventLog: { ...defaultApplicationEventLogProvider, namespace, replicas: capacity.eventLogReplicas, storageSize: capacity.eventLogStorage } });
+app.defaults({
+  eventLog: {
+    ...defaultApplicationEventLogProvider,
+    namespace,
+    replicas: capacity.eventLogReplicas,
+    storageSize: capacity.eventLogStorage,
+    storageClassName: capacity.eventLogStorageClass,
+  },
+});
 
 export const external = externalInfrastructureProviders(
   namespace,
@@ -315,6 +359,10 @@ app.provide(IndexStore, IndexStore.valkey({
     namespace: 'valkey-operator-system',
   },
   topology: { shards: capacity.indexShards, replicas: capacity.indexReplicas },
+  storage: {
+    size: capacity.indexStorage,
+    storageClassName: capacity.indexStorageClass,
+  },
   authentication: {
     mode: app.select(app.installation.spec.profile, { external: 'password', default: 'anonymous' }),
     secret: {
@@ -323,7 +371,6 @@ app.provide(IndexStore, IndexStore.valkey({
     },
     key: app.select(app.installation.spec.profile, { external: external.index.passwordSecretKey, default: 'password' }),
   },
-  storage: { size: capacity.indexStorage },
   resources: {
     requests: { cpu: '100m', memory: '128Mi' },
     limits: { cpu: '1', memory: '512Mi' },

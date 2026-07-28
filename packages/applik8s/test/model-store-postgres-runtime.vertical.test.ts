@@ -11,9 +11,9 @@ import { closePostgresModelClients, createPostgresModelClient } from '../src/mod
 import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor } from '../src/native-models.js';
 import { applicationRelationalFrameworkMigrationSql } from '../src/relational-runtime.js';
 import { command, event } from '../src/dsl.js';
-import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/event-log-jetstream-runtime.js';
+import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/postgres-outbox-runtime.js';
 import { type } from 'arktype';
-import { applicationCommandContextValues } from '../src/command-principal.js';
+import { applicationRequestContextValues } from '../src/command-principal.js';
 
 const liveDatabaseUrl = process.env.APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL;
 
@@ -400,7 +400,7 @@ describe.runIf(liveDatabaseUrl)('Postgres ModelStore script runtime live databas
     const remove = applicationModelCommandBindingForOperation(Card.delete);
     const archive = applicationModelCommandBindingForOperation(Card.archive);
     const admittedContext = {
-      values: applicationCommandContextValues(
+      values: applicationRequestContextValues(
         { id: 'author-1', claims: { role: 'author' } },
         'chirp-authz-v1',
         { tenantId: 'direct-native-live' },

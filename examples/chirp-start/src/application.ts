@@ -4,10 +4,9 @@ import { app, capacity, namespace, publicExposure } from './app';
 import { Account, Attachments, Automation, AutomationControl, AutomationRun, Avatars, Block, Bookmark, DefaultModerationPolicy, Follow, gateway, Media, ModerationCase, ModerationPolicy, Mute, Notification, Post, ProjectionArtifacts, Reaction, RebuildHomeTimelines, Report } from './models';
 
 /**
- * The workload Namespace exists before the KRO instance so Harbor can project
- * its pull robot Secret before any authored Pod starts. The deployment planner
- * prepares it through a TypeKro direct factory and records the matching
- * deleteInstance receipt; this KRO graph observes it and never adopts it.
+ * The portable deployment graph hoists this Namespace through a TypeKro
+ * direct declaration before generated credentials and the KRO application.
+ * The root composition observes that lifecycle boundary without duplicating it.
  */
 export const workloadNamespace = app.infra(() => externalRef({
   apiVersion: 'v1',

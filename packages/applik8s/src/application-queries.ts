@@ -437,7 +437,7 @@ function reactiveDatabaseRuntime(binding: ApplicationDatabaseBinding): {
   readonly access?: { readonly context: string; readonly contextSchema: JsonObject; readonly setting: string; readonly column: string };
 } {
   const provider = binding.provider;
-  const clusterName = provider.name ?? `${reactiveName(binding.name)}-db`;
+  const clusterName = provider.clusterName ?? provider.name ?? `${reactiveName(binding.name)}-db`;
   const secret = provider.connectionSecret ?? { apiVersion: 'v1', kind: 'Secret', name: `${clusterName}-app`, ...(provider.namespace ? { namespace: provider.namespace } : {}) };
   return {
     name: binding.name,

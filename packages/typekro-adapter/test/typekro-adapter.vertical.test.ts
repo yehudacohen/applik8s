@@ -208,7 +208,7 @@ describe('TypeKro adapter operation targets', () => {
       expect(composition.resources.some((resource) => resource.kind === 'Deployment')).toBe(true);
       const deployment = composition.resources.find((resource) => resource.kind === 'Deployment');
       expect(deployment?.metadata.annotations).toMatchObject({
-        'applik8s.dev/bundle-digest': manifest.spec.bundle.digest,
+        'applik8s.dev/build-identity-digest': manifest.spec.bundle.buildIdentityDigest,
         'applik8s.dev/source-digest': manifest.spec.bundle.sourceDigest,
         'applik8s.dev/compiler-version': manifest.spec.bundle.compilerVersion,
         'applik8s.dev/handler-abi': 'applik8s.handler/v1alpha1',

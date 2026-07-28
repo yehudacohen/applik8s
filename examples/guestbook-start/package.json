@@ -17,6 +17,8 @@
   "dependencies": {
     "@applik8s/applik8s": "workspace:*",
     "@applik8s/react": "workspace:*",
+    "@applik8s/sdk": "workspace:*",
+    "@applik8s/server": "workspace:*",
     "@applik8s/tanstack-start": "workspace:*",
     "@applik8s/vite": "workspace:*",
     "@tanstack/react-router": "^1.170.18",
@@ -26,6 +28,7 @@
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
+    "@applik8s/cli": "workspace:*",
     "@tanstack/router-cli": "^1.167.19",
     "@vitejs/plugin-react": "^6.0.3",
     "vite": "^8.1.5"

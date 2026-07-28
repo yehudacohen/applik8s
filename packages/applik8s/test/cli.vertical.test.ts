@@ -10,24 +10,16 @@ import { describe, expect, it } from 'vitest';
 
 import {
   applicationGraphDeploymentSlice,
-  applicationHarborProjectDeletionTimeoutMs,
   applicationInstallationReadiness,
-  collectApplicationRuntimeCursorSecrets,
-  invalidateGeneratedDeploymentMaterialization,
-  isTypeKroInstanceNotFound,
-  loadGeneratedApplicationLifecycleComposition,
-  purgeHarborProjectRepositoriesForDeletion,
-  removeHarborProjectImmutableTagRulesForDeletion,
   readGeneratedApplicationGraph,
-  readGeneratedResourceGraphDefinition,
   resolveApplicationBuildPackage,
   resolveGeneratedApplicationDeleteTarget,
   resourceGraphDefinitionReadiness,
   runCli,
   stageExplicitApplicationInstance,
   waitForApplicationEndpoint,
-} from '../src/cli.js';
-import { resolveApplicationInstallationValues } from '../src/application-installation-values.js';
+} from '@applik8s/cli';
+import { resolveApplicationInstallationValues } from '../../cli/src/application-installation-values.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -63,77 +55,6 @@ describe('applik8s CLI', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
-  });
-
-  it('gives asynchronous Harbor repository purges a bounded production-sized convergence window', () => {
-    expect(applicationHarborProjectDeletionTimeoutMs()).toBe(300_000);
-    expect(applicationHarborProjectDeletionTimeoutMs(75_000)).toBe(75_000);
-  });
-
-  it('removes Harbor immutable-tag guards before an explicitly confirmed repository purge', async () => {
-    const calls: Array<{ readonly method: string; readonly path: string; readonly allowed?: readonly number[] }> = [];
-    const output: string[] = [];
-    const client = {
-      async request(request: { readonly method: 'GET' | 'DELETE'; readonly path: string }, allowed?: readonly number[]) {
-        calls.push({ ...request, ...(allowed ? { allowed } : {}) });
-        if (request.method === 'GET') {
-          return { status: 200, body: [{ id: 17 }, { id: '19' }] };
-        }
-        return { status: 200 };
-      },
-    };
-
-    await removeHarborProjectImmutableTagRulesForDeletion(client, 'chirp/team', {
-      stdout(message) { output.push(message); },
-    });
-
-    expect(calls).toEqual([
-      { method: 'GET', path: '/projects/chirp%2Fteam/immutabletagrules', allowed: [200, 404] },
-      { method: 'DELETE', path: '/projects/chirp%2Fteam/immutabletagrules/17', allowed: [200, 204, 404] },
-      { method: 'DELETE', path: '/projects/chirp%2Fteam/immutabletagrules/19', allowed: [200, 204, 404] },
-    ]);
-    expect(output).toEqual(['Removing 2 immutable-tag rules before purging Harbor project chirp/team']);
-  });
-
-  it('fails closed on malformed Harbor immutable-tag lifecycle responses', async () => {
-    const client = {
-      async request() {
-        return { status: 200, body: [{ disabled: false }] };
-      },
-    };
-
-    await expect(removeHarborProjectImmutableTagRulesForDeletion(client, 'chirp')).rejects.toThrow(
-      'did not contain a valid ID',
-    );
-  });
-
-  it('double-encodes nested Harbor repository names and waits for bounded absence', async () => {
-    const calls: Array<{ readonly method: string; readonly path: string; readonly allowed?: readonly number[] }> = [];
-    let listings = 0;
-    const client = {
-      async request(request: { readonly method: 'GET' | 'DELETE'; readonly path: string }, allowed?: readonly number[]) {
-        calls.push({ ...request, ...(allowed ? { allowed } : {}) });
-        if (request.method === 'GET') {
-          listings += 1;
-          return listings === 1
-            ? { status: 200, body: [{ name: 'chirp/applik8s/web' }] }
-            : { status: 200, body: [] };
-        }
-        return { status: 202 };
-      },
-    };
-
-    await purgeHarborProjectRepositoriesForDeletion(client, 'chirp', {
-      timeoutMs: 1_000,
-      pollIntervalMs: 0,
-      sleep: async () => undefined,
-    });
-
-    expect(calls).toEqual([
-      { method: 'GET', path: '/projects/chirp/repositories?page=1&page_size=100', allowed: [200, 404] },
-      { method: 'DELETE', path: '/projects/chirp/repositories/applik8s%252Fweb', allowed: [200, 202, 404] },
-      { method: 'GET', path: '/projects/chirp/repositories?page=1&page_size=100', allowed: [200, 404] },
-    ]);
   });
 
   it('classifies the authoritative installation status without guessing from child resources', () => {
@@ -238,99 +159,32 @@ describe('applik8s CLI', () => {
     await expect(waitForApplicationEndpoint('file:///tmp/chirp', { stdout() {} })).rejects.toThrow(/must use http or https/);
   });
 
-  it('invalidates stale image evidence as soon as a new composition has compiled', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-image-evidence-'));
-    try {
-      const bundlePath = join(dir, 'typekro-composition.json');
-      await writeFile(bundlePath, '{}\n');
-      await writeFile(join(dir, 'application-image-evidence.json'), '{"artifactSetDigest":"old"}\n');
-      await writeFile(join(dir, 'image-receipts.json'), '{"images":[]}\n');
+  it('uses the shared TypeScript loader instead of a second bundled compiler runtime', async () => {
+    const workspaceRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    const runner = await readFile(join(workspaceRoot, 'packages', 'cli', 'src', 'node-build-runner.mjs'), 'utf8');
+    const loader = await readFile(join(workspaceRoot, 'packages', 'cli', 'src', 'node-typescript-loader.mjs'), 'utf8');
 
-      await invalidateGeneratedDeploymentMaterialization(bundlePath);
-
-      await expect(readFile(join(dir, 'application-image-evidence.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-      await expect(readFile(join(dir, 'image-receipts.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-      expect(await readFile(bundlePath, 'utf8')).toBe('{}\n');
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('selects the exact generated root RGD used by provider ownership migration', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-rgd-selection-'));
-    try {
-      const bundlePath = join(dir, 'typekro-composition.json');
-      await writeFile(bundlePath, '{}\n');
-      await writeFile(join(dir, 'resources.json'), `${JSON.stringify([
-        { apiVersion: 'kro.run/v1alpha1', kind: 'ResourceGraphDefinition', metadata: { name: 'prerequisite' } },
-        { apiVersion: 'kro.run/v1alpha1', kind: 'ResourceGraphDefinition', metadata: { name: 'chirp' }, spec: { resources: [] } },
-      ])}\n`);
-
-      await expect(readGeneratedResourceGraphDefinition(bundlePath, 'chirp')).resolves.toMatchObject({ metadata: { name: 'chirp' } });
-      await expect(readGeneratedResourceGraphDefinition(bundlePath, 'missing')).rejects.toThrow(/do not contain ResourceGraphDefinition\/missing/);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('keeps TypeKro package subpaths external to the Node build runner', async () => {
-    const testDir = dirname(fileURLToPath(import.meta.url));
-    const runner = await readFile(join(testDir, '..', 'src', 'node-build-runner.mjs'), 'utf8');
-
-    expect(runner).toContain("'typekro/*'");
+    expect(runner).toContain("import './node-register-typescript.mjs'");
     expect(runner).toContain("join(workspaceRoot, 'packages/compiler/src/index.ts')");
+    expect(runner).toContain('APPLIK8S_WORKSPACE_ROOT');
+    expect(runner).not.toContain('.applik8s-tmp');
+    expect(runner).not.toContain('workspaceSourcePlugin');
+    expect(runner).not.toContain('await build({');
+    expect(loader).toContain('resolveWorkspacePackageSource');
+    expect(loader).toContain('resolveExportTarget(manifest.exports, subpath)');
   });
 
-  it('ships a Node deletion runner that bundles TypeScript entrypoints and preserves TypeKro ownership', async () => {
-    const testDir = dirname(fileURLToPath(import.meta.url));
-    const runner = await readFile(join(testDir, '..', 'src', 'node-delete-runner.mjs'), 'utf8');
+  it('uses one TypeScript-aware Node deployment host for deploy and delete', async () => {
+    const workspaceRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+    const runner = await readFile(join(workspaceRoot, 'packages', 'cli', 'src', 'node-deploy-runner.mjs'), 'utf8');
 
-    expect(runner).toContain("bundle: true");
-    expect(runner).toContain("platform: 'node'");
-    expect(runner).toContain("'typekro/*'");
-    expect(runner).toContain('__applik8sCreateRequire');
+    expect(runner).toContain("request.command === 'delete'");
+    expect(runner).toContain("'node-register-typescript.mjs'");
+    expect(runner).toContain("command === 'delete' ? deleteArgs : deployArgs");
     expect(runner).toContain("'delete'");
     expect(runner).toContain("APPLIK8S_DISABLE_NODE_DELETE_HANDOFF: '1'");
+    expect(runner).toContain("APPLIK8S_DISABLE_NODE_DEPLOY_HANDOFF: '1'");
     expect(runner).not.toContain('kubectl');
-  });
-
-  it('explicitly deletes owned direct Namespace preparations at TypeKro cluster scope', async () => {
-    const testDir = dirname(fileURLToPath(import.meta.url));
-    const cliSource = await readFile(join(testDir, '..', 'src', 'cli.ts'), 'utf8');
-
-    expect(cliSource).toContain("factory.deleteInstance(receipt.instanceName, { scopes: ['cluster'] })");
-    expect(cliSource).toContain('const absent = await waitForAbsence');
-    expect(cliSource).toContain('is already absent; continuing idempotent cleanup');
-    expect(cliSource).toContain('Managed ObjectBucketClaim $' + '{receipt.namespace}/$' + '{receipt.name} is already absent');
-    expect(cliSource).toContain('Managed Hatchet admin Secret $' + '{receipt.namespace}/$' + '{receipt.name} is already absent');
-    expect(cliSource).toContain('Application instance $' + '{target.instanceName} is already absent');
-    expect(cliSource).toContain("input.artifact?.class === 'operator-host'");
-    expect(cliSource).toContain('buildTimeoutMs: 15 * 60_000');
-    expect(cliSource).toContain('timeout: input.buildTimeoutMs');
-    expect(cliSource).toContain("'app.kubernetes.io/managed-by': 'typekro'");
-    expect(cliSource).toContain('timeout: 5 * 60_000');
-    expect(cliSource).toContain("ensureDirectNamespace(io, context, namespace, 'identity-infrastructure')");
-    expect(cliSource).toContain('identityStackSpec, { targetScopes: [] }');
-  });
-
-  it('suppresses only TypeKro\'s explicit absent-instance cleanup signal', () => {
-    expect(isTypeKroInstanceNotFound({ code: 'INSTANCE_NOT_FOUND' })).toBe(true);
-    expect(isTypeKroInstanceNotFound(new Error('Instance not found'))).toBe(false);
-    expect(isTypeKroInstanceNotFound({ code: 'HTTP_404' })).toBe(false);
-  });
-
-  it('rejects KRO-owned provider resources before comparing them for direct adoption', async () => {
-    const testDir = dirname(fileURLToPath(import.meta.url));
-    const cliSource = await readFile(join(testDir, '..', 'src', 'cli.ts'), 'utf8');
-    const valkeyStart = cliSource.indexOf('async ensureValkeyCluster');
-    const valkeyEnd = cliSource.indexOf('async deleteValkeyCluster', valkeyStart);
-    const valkeyBody = cliSource.slice(valkeyStart, valkeyEnd);
-    const postgresStart = cliSource.indexOf('async ensurePostgresCluster');
-    const postgresEnd = cliSource.indexOf('async deletePostgresCluster', postgresStart);
-    const postgresBody = cliSource.slice(postgresStart, postgresEnd);
-
-    expect(valkeyBody.indexOf('if (kroOwned)')).toBeLessThan(valkeyBody.indexOf('assertValkeyClusterContract'));
-    expect(postgresBody.indexOf('if (kroOwned)')).toBeLessThan(postgresBody.indexOf('assertJsonSubset'));
   });
 
   it('prints help for the thin command surface', async () => {
@@ -355,14 +209,55 @@ describe('applik8s CLI', () => {
     expect(output.join('\n')).toContain('--bundle-dir <dir>');
   });
 
-  it('makes destructive provider-data migration an explicit deploy option', async () => {
+  it('keeps deploy focused on graph-backed strategy and installation selection', async () => {
     const output: string[] = [];
 
     const code = await runCli(['deploy', '--help'], { cwd: process.cwd(), stdout: (message) => output.push(message), stderr: (message) => output.push(message) });
 
     expect(code).toBe(0);
-    expect(output.join('\n')).toContain('--migrate-kro-owned-provider-data');
-    expect(output.join('\n')).toContain('--confirm-legacy-typekro-node-fetch-manager');
+    expect(output.join('\n')).toContain('--strategy <strategy>');
+    expect(output.join('\n')).not.toContain('migrate-kro-owned');
+    expect(output.join('\n')).not.toContain('legacy');
+  });
+
+  it('fails closed when delete has no scoped deployment graph', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-delete-without-graph-'));
+    const output: string[] = [];
+    const previousHandoff = process.env.APPLIK8S_DISABLE_NODE_DELETE_HANDOFF;
+    process.env.APPLIK8S_DISABLE_NODE_DELETE_HANDOFF = '1';
+    try {
+      const code = await runCli(
+        ['delete', 'src/application.ts', '--context', 'orbstack'],
+        {
+          cwd: dir,
+          stdout: (message) => output.push(message),
+          stderr: (message) => output.push(message),
+        },
+      );
+      expect(code).toBe(1);
+      expect(output.join('\n')).toContain('No deployment graph exists');
+      expect(output.join('\n')).toContain('refuses to guess at ownership');
+    } finally {
+      if (previousHandoff === undefined) delete process.env.APPLIK8S_DISABLE_NODE_DELETE_HANDOFF;
+      else process.env.APPLIK8S_DISABLE_NODE_DELETE_HANDOFF = previousHandoff;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed before compilation for an unknown deployment strategy', async () => {
+    const output: string[] = [];
+
+    const code = await runCli(
+      ['deploy', 'src/application.ts', '--context', 'orbstack', '--strategy', 'other'],
+      {
+        cwd: process.cwd(),
+        stdout: (message) => output.push(message),
+        stderr: (message) => output.push(message),
+      },
+    );
+
+    expect(code).toBe(1);
+    expect(output.join('\n')).toContain('--strategy must be "direct" or "kro"');
   });
 
   it('explains diagnostic reasons through the shared taxonomy', async () => {
@@ -541,127 +436,6 @@ spec:
     expect(resolved.metadata).toEqual({ name: 'chirp' });
   });
 
-  it('discovers and deduplicates cursor Secrets for the host and every generated gateway', () => {
-    const graph = {
-      apiVersion: 'applik8s.appGraph/v1alpha1',
-      kind: 'ApplicationGraph',
-      metadata: { name: 'chirp' },
-      nodes: [
-        {
-          id: 'gateway.account', kind: 'gateway', name: 'account', stability: 'stable',
-          materialization: 'generatedDeployment',
-          deployment: { namespace: 'chirp', image: 'gateway', replicas: 1, port: 8080 },
-          cursorSecret: { apiVersion: 'v1', kind: 'Secret', name: 'chirp-gateway-cursor', key: 'key' },
-        },
-        {
-          id: 'gateway.social', kind: 'gateway', name: 'social', stability: 'stable',
-          materialization: 'generatedDeployment',
-          deployment: { namespace: 'chirp', image: 'gateway', replicas: 1, port: 8080 },
-          cursorSecret: { apiVersion: 'v1', kind: 'Secret', name: 'chirp-gateway-cursor', key: 'key' },
-        },
-        {
-          id: 'gateway.tests', kind: 'gateway', name: 'tests', stability: 'stable',
-          materialization: 'runtimeOnly',
-        },
-      ],
-      edges: [],
-      providers: [],
-      providerRequirements: [],
-      compatibility: { stablePublicApis: [], documentedInternalContracts: [], experimentalSurfaces: [], postV3Surfaces: [], labels: [] },
-    } as unknown as Parameters<typeof collectApplicationRuntimeCursorSecrets>[0];
-
-    expect(collectApplicationRuntimeCursorSecrets(graph, {
-      metadata: { name: 'chirp-web' },
-      spec: { namespace: 'chirp', cursorSecret: { name: 'chirp-web-cursor', key: 'key' } },
-    })).toEqual([
-      { namespace: 'chirp', name: 'chirp-gateway-cursor', key: 'key', consumerName: 'account' },
-      { namespace: 'chirp', name: 'chirp-web-cursor', key: 'key', consumerName: 'chirp-web' },
-    ]);
-  });
-
-  it('fails closed when generated gateways disagree about a shared cursor Secret key', () => {
-    const graph = {
-      nodes: [
-        {
-          id: 'gateway.one', kind: 'gateway', name: 'one', materialization: 'generatedDeployment',
-          deployment: { namespace: 'app', image: 'gateway', replicas: 1, port: 8080 },
-          cursorSecret: { name: 'cursor', key: 'first' },
-        },
-        {
-          id: 'gateway.two', kind: 'gateway', name: 'two', materialization: 'generatedDeployment',
-          deployment: { namespace: 'app', image: 'gateway', replicas: 1, port: 8080 },
-          cursorSecret: { name: 'cursor', key: 'second' },
-        },
-      ],
-    } as unknown as Parameters<typeof collectApplicationRuntimeCursorSecrets>[0];
-
-    expect(() => collectApplicationRuntimeCursorSecrets(graph)).toThrow(/conflicting keys first and second/);
-  });
-
-  it('deletes the generated instance through the selected TypeKro factory', async () => {
-    const output: string[] = [];
-    const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-delete-'));
-    const callKey = `__applik8sDeleteCalls${Date.now()}`;
-    try {
-      const entrypoint = join(dir, 'application.mjs');
-      const typeKroDir = join(dir, 'dist', 'typekro');
-      await mkdir(join(typeKroDir, 'instances'), { recursive: true });
-      await writeFile(join(typeKroDir, 'typekro-composition.json'), '{}\n');
-      await writeFile(join(typeKroDir, 'instances', 'clickhouse-repository.yaml'), `
-apiVersion: kro.run/v1alpha1
-kind: ClickHouseHelmRepository
-metadata:
-  name: clickhouse-helm-repository
-  namespace: typekro-singletons
-spec: {}
-`);
-      await writeFile(join(typeKroDir, 'instances', 'chirp.yaml'), `
-apiVersion: applications.chirp.dev/v1alpha1
-kind: ChirpInstallation
-metadata:
-  name: local
-  namespace: chirp-control
-  labels:
-    typekro.io/factory: chirp
-    typekro.io/mode: kro
-spec: {}
-`);
-      await writeFile(entrypoint, `
-export const app = {
-  factory(mode, options) {
-    return {
-      async deleteInstance(name) {
-        globalThis[${JSON.stringify(callKey)}] = [{ mode, namespace: options.namespace, name }];
-      },
-    };
-  },
-};
-`);
-
-      const previousHandoff = process.env.APPLIK8S_DISABLE_NODE_DELETE_HANDOFF;
-      process.env.APPLIK8S_DISABLE_NODE_DELETE_HANDOFF = '1';
-      let code: number;
-      try {
-        code = await runCli([
-          'delete', entrypoint,
-          '--context', 'orbstack',
-          '--out-dir', 'dist',
-        ], { cwd: dir, stdout: (message) => output.push(message), stderr: (message) => output.push(message) });
-      } finally {
-        if (previousHandoff === undefined) delete process.env.APPLIK8S_DISABLE_NODE_DELETE_HANDOFF;
-        else process.env.APPLIK8S_DISABLE_NODE_DELETE_HANDOFF = previousHandoff;
-      }
-
-      expect(code).toBe(0);
-      expect(Reflect.get(globalThis, callKey)).toEqual([{ mode: 'kro', namespace: 'chirp-control', name: 'local' }]);
-      expect(output.join('\n')).toContain('through TypeKro');
-      expect(output.join('\n')).toContain('finalization completed');
-    } finally {
-      Reflect.deleteProperty(globalThis, callKey);
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
   it('derives an unlabeled explicit root instance from the generated ApplicationGraph instead of singleton prerequisites', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-delete-target-'));
     try {
@@ -703,17 +477,6 @@ spec: {}
         applicationInstance: true,
         resourceGraphDefinitionName: 'chirp',
       });
-      const lifecycle = await loadGeneratedApplicationLifecycleComposition(
-        bundlePath,
-        target,
-        join(dir, 'source-that-must-not-be-loaded.ts'),
-        'app',
-        { name: 'community', enabled: false },
-      );
-      const factory = lifecycle.factory('kro', { namespace: 'chirp-control' });
-      expect(Object.keys(Reflect.get(factory, 'resources') as Record<string, unknown>).sort()).toEqual([
-        'externalSecret', 'ownedConfig',
-      ]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -737,7 +500,7 @@ spec: {}
   it('builds the documented ImageJob through the isolated Node runner', async () => {
     const outDir = join(process.cwd(), 'dist', 'test-node-runner-build');
     await rm(outDir, { recursive: true, force: true });
-    const runner = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'node-build-runner.mjs');
+    const runner = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'src', 'node-build-runner.mjs');
     const request = JSON.stringify({
       cwd: process.cwd(),
       entrypoint: 'examples/imagejob.ts',
@@ -756,7 +519,7 @@ spec: {}
   it('keeps monorepo source resolution when the isolated Node runner starts in an app subdirectory', async () => {
     const outDir = join(process.cwd(), 'dist', 'test-node-runner-subdirectory-build');
     await rm(outDir, { recursive: true, force: true });
-    const runner = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'node-build-runner.mjs');
+    const runner = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'cli', 'src', 'node-build-runner.mjs');
     const request = JSON.stringify({
       cwd: join(process.cwd(), 'examples'),
       entrypoint: 'imagejob.ts',

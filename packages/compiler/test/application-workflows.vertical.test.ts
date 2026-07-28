@@ -25,7 +25,7 @@ const platform = app('workflow-proof', {
   spec: type({ profile: "'starter' | 'external'", generationEndpoint: 'string', generationSecretName: 'string' }),
   status: type({ ready: 'boolean' }),
 });
-platform.provide(WorkflowEngine, WorkflowEngine.hatchet({ name: 'hatchet', namespace: 'workflow-proof', tenantId: 'tenant-id', credentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: 'workflow-proof' } }));
+platform.provide(WorkflowEngine, WorkflowEngine.hatchet({ name: 'hatchet', namespace: 'workflow-proof', tenantId: 'tenant-id', workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: 'workflow-proof' } }));
 platform.provide(StructuredGeneration, platform.selectProvider(platform.installation.spec.profile, {
   external: StructuredGeneration.http({ endpoint: platform.installation.spec.generationEndpoint, credentialSecret: { apiVersion: 'v1', kind: 'Secret', name: platform.installation.spec.generationSecretName, namespace: 'workflow-proof' } }),
   default: StructuredGeneration.deterministic({ output: { sent: true }, inputUnits: 1, outputUnits: 1 }),
@@ -62,6 +62,9 @@ export const workflowProof = platform.composition;
       expect(source).toContain('HatchetClient');
       expect(source).toContain('applik8s-workflow-startup-wait');
       expect(source).toContain('applik8s-workflow-startup-timeout');
+      expect(source).toContain('applik8s-workflow-credential-timeout');
+      expect(source).toContain('process.argv.includes');
+      expect(source).toContain('credential-preflight');
       expect(source).toContain('Hatchet engine');
       expect(source).toContain('Hatchet API');
       expect(source).toContain('applik8s-durable-error:');
@@ -87,13 +90,22 @@ export const workflowProof = platform.composition;
       const networkPolicy = resources.find((resource) => resource.kind === 'NetworkPolicy');
       expect(networkPolicy?.spec).toMatchObject({ policyTypes: ['Ingress'] });
       const release = resources.find((resource) => resource.kind === 'HelmRelease');
-      expect(release?.spec).toMatchObject({ chart: { spec: { chart: 'hatchet-stack', version: '0.12.4' } }, valuesFrom: expect.arrayContaining([expect.objectContaining({ name: 'hatchet-worker', targetPath: 'sharedConfig.defaultAdminPassword' })]), values: { sharedConfig: { serverAuthCookieDomain: 'hatchet-api.workflow-proof.svc', env: { SERVER_MSGQUEUE_KIND: 'postgres' } }, postgres: { enabled: false }, rabbitmq: { enabled: false } } });
+      expect(release?.spec).toMatchObject({ chart: { spec: { chart: 'hatchet-stack', version: '0.13.3' } }, valuesFrom: expect.arrayContaining([expect.objectContaining({ name: 'hatchet-admin', targetPath: 'sharedConfig.defaultAdminPassword' })]), values: { sharedConfig: { serverAuthCookieDomain: 'hatchet-api.workflow-proof.svc', env: { SERVER_MSGQUEUE_KIND: 'postgres' } }, postgres: { enabled: false }, rabbitmq: { enabled: false } } });
       const workerDeployment = resources.find((resource) => resource.kind === 'Deployment');
-      expect(workerDeployment?.spec).toMatchObject({ template: { spec: { containers: [expect.objectContaining({ env: expect.arrayContaining([
-        { name: 'APPLIK8S_STRUCTURED_GENERATION_SELECTION', value: '${schema.spec.profile}' },
-        { name: 'APPLIK8S_STRUCTURED_GENERATION_ENDPOINT', value: '${schema.spec.profile == "external" ? schema.spec.generationEndpoint : ("")}' },
-        { name: 'APPLIK8S_STRUCTURED_GENERATION_API_KEY', valueFrom: { secretKeyRef: { name: '${schema.spec.profile == "external" ? schema.spec.generationSecretName : ("applik8s-structured-generation-unused")}', key: '${schema.spec.profile == "external" ? "apiKey" : ("apiKey")}', optional: true } } },
-      ]) })] } } });
+      expect(workerDeployment?.spec).toMatchObject({ template: { spec: {
+        initContainers: [expect.objectContaining({
+          name: 'wait-for-workflow-credentials',
+          command: ['node', '/app/workflow-worker.mjs', '--credential-preflight'],
+          env: expect.arrayContaining([{ name: 'APPLIK8S_WORKFLOW_TOKEN_FILE', value: '/var/run/secrets/applik8s/workflow-token/token' }]),
+          volumeMounts: [{ name: 'workflow-token', mountPath: '/var/run/secrets/applik8s/workflow-token', readOnly: true }],
+        })],
+        containers: [expect.objectContaining({ env: expect.arrayContaining([
+          { name: 'APPLIK8S_STRUCTURED_GENERATION_SELECTION', value: '${schema.spec.profile}' },
+          { name: 'APPLIK8S_STRUCTURED_GENERATION_ENDPOINT', value: '${schema.spec.profile == "external" ? schema.spec.generationEndpoint : ("")}' },
+          { name: 'APPLIK8S_STRUCTURED_GENERATION_API_KEY', valueFrom: { secretKeyRef: { name: '${schema.spec.profile == "external" ? schema.spec.generationSecretName : ("applik8s-structured-generation-unused")}', key: '${schema.spec.profile == "external" ? "apiKey" : ("apiKey")}', optional: true } } },
+        ]) })],
+        volumes: [{ name: 'workflow-token', secret: { secretName: 'hatchet-worker', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] } }],
+      } } });
       const bundle = result.value.artifacts.manifest.spec.workflows;
       expect(bundle).toEqual([expect.objectContaining({ name: 'hatchet', digest: artifact?.digest, sizeBytes: artifact?.sizeBytes })]);
     } finally {
@@ -126,9 +138,16 @@ export const defaultToken = platform.composition;
       expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
       if (!result.ok) return;
       const deployment = result.value.artifacts.resources.find((resource) => resource.kind === 'Deployment');
-      expect(deployment?.spec).toMatchObject({ template: { spec: { containers: [expect.objectContaining({ env: expect.arrayContaining([
-        { name: 'HATCHET_CLIENT_TOKEN', valueFrom: { secretKeyRef: { name: 'hatchet-client-config', key: 'HATCHET_CLIENT_TOKEN' } } },
-      ]) })] } } });
+      expect(deployment?.spec).toMatchObject({ template: { spec: {
+        initContainers: [expect.objectContaining({
+          name: 'wait-for-workflow-credentials',
+          command: ['node', '/app/workflow-worker.mjs', '--credential-preflight'],
+        })],
+        containers: [expect.objectContaining({ env: expect.arrayContaining([
+          { name: 'HATCHET_CLIENT_TOKEN', valueFrom: { secretKeyRef: { name: 'hatchet-client-config', key: 'HATCHET_CLIENT_TOKEN' } } },
+        ]) })],
+        volumes: [{ name: 'workflow-token', secret: { secretName: 'hatchet-client-config', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] } }],
+      } } });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

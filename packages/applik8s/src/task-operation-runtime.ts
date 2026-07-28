@@ -2,10 +2,11 @@
 import { createHash } from 'node:crypto';
 import type { JsonObject } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
-import postgres, { type Sql } from 'postgres';
 import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
 import { applicationRequestContextValues } from './command-principal.js';
-import { createJetStreamEventLog, type ApplicationEventLogPublisher, type JetStreamEventLogOptions } from './event-log-jetstream-runtime.js';
+import type { ApplicationEventLogPublisher } from './event-log-runtime.js';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
 import { applicationAdmittedContextDigest, applicationRelationalChangeScopes } from './relational-runtime.js';
 
 export interface ApplicationTaskOperationRuntimeContract {
@@ -14,7 +15,7 @@ export interface ApplicationTaskOperationRuntimeContract {
   readonly model: string;
   readonly inputSchema: JsonObject;
   readonly databaseUrl: string;
-  readonly sql?: Sql;
+  readonly sql?: ApplicationPostgresSql;
   readonly key: (input: object) => unknown;
   readonly idempotencyKey?: (input: object) => string;
 }
@@ -38,8 +39,7 @@ export interface ApplicationTaskOperationInvocation {
 export interface ApplicationTaskOperationRuntimeOptions {
   readonly commands: readonly ApplicationTaskOperationRuntimeContract[];
   readonly cursorSecret: string;
-  readonly eventLog?: JetStreamEventLogOptions;
-  readonly eventLogPublisher?: Pick<ApplicationEventLogPublisher, 'publish' | 'drain'> & Partial<Pick<ApplicationEventLogPublisher, 'verify'>>;
+  readonly eventLogPublisher: Pick<ApplicationEventLogPublisher, 'publish' | 'drain'> & Partial<Pick<ApplicationEventLogPublisher, 'verify'>>;
   readonly resultTimeoutMs?: number;
   readonly now?: () => Date;
 }
@@ -61,11 +61,10 @@ export interface ApplicationTaskOperationRuntime {
  */
 export function createApplicationTaskOperationRuntime(options: ApplicationTaskOperationRuntimeOptions): ApplicationTaskOperationRuntime {
   if (options.cursorSecret.length < 32) throw new Error('Application task operation cursorSecret must contain at least 32 characters.');
-  if (!options.eventLog && !options.eventLogPublisher) throw new Error('Application task operations require an EventLog provider.');
   const commands = new Map(options.commands.map((command) => [command.id, command]));
   if (commands.size !== options.commands.length) throw new Error('Application task operation contracts must be unique.');
-  const publisher = options.eventLogPublisher ?? createJetStreamEventLog(requiredEventLog(options.eventLog));
-  const databases = new Map<string, Sql>();
+  const publisher = options.eventLogPublisher;
+  const databases = new Map<string, Promise<ApplicationPostgresSql>>();
   const now = options.now ?? (() => new Date());
   const resultTimeoutMs = options.resultTimeoutMs ?? 120_000;
   if (!Number.isSafeInteger(resultTimeoutMs) || resultTimeoutMs < 1_000 || resultTimeoutMs > 15 * 60_000) {
@@ -120,7 +119,7 @@ export function createApplicationTaskOperationRuntime(options: ApplicationTaskOp
       return Object.freeze(bound);
     },
     async close() {
-      await Promise.all([publisher.drain(), ...[...databases.values()].map((database) => database.end({ timeout: 5 }))]);
+      await Promise.all([publisher.drain(), ...[...databases.values()].map(async (database) => (await database).end({ timeout: 5 }))]);
       databases.clear();
     },
   };
@@ -133,7 +132,7 @@ export function createApplicationTaskOperationRuntime(options: ApplicationTaskOp
     readonly signal: AbortSignal;
   }): Promise<unknown> {
     const scope = applicationCommandScope(input.command.bindingId, input.command.model, input.targetKey, input.idempotencyKey, input.contextDigest);
-    const database = input.command.sql ?? commandDatabase(databases, input.command.databaseUrl);
+    const database = input.command.sql ?? await commandDatabase(databases, input.command.databaseUrl);
     const deadline = Date.now() + resultTimeoutMs;
     let delayMs = 50;
     while (true) {
@@ -206,15 +205,10 @@ function commandContract(id: string): { readonly name: string; readonly version:
   return { name: match[1], version: match[2] };
 }
 
-function requiredEventLog(eventLog: JetStreamEventLogOptions | undefined): JetStreamEventLogOptions {
-  if (!eventLog) throw new Error('Application task operations require an EventLog provider.');
-  return eventLog;
-}
-
-function commandDatabase(databases: Map<string, Sql>, url: string): Sql {
+function commandDatabase(databases: Map<string, Promise<ApplicationPostgresSql>>, url: string): Promise<ApplicationPostgresSql> {
   const existing = databases.get(url);
   if (existing) return existing;
-  const database = postgres(url, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
+  const database = createApplicationPostgresSql(url, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
   databases.set(url, database);
   return database;
 }

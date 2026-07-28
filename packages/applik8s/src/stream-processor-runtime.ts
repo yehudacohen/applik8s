@@ -1,7 +1,8 @@
 // typecast-file-boundary: stream envelope payloads are schema-authoritative and regain their declared payload generic after runtime decoding.
-import postgres, { type Sql } from 'postgres';
 import type { ApplicationReplayableStream, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
 import type { ApplicationStreamProcessContext } from './application-reactive.js';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
 
 export interface ApplicationStreamProcessorStore {
   prepare(): Promise<void>;
@@ -13,23 +14,23 @@ export interface ApplicationStreamProcessorStore {
 
 export interface PostgresApplicationStreamProcessorStoreOptions {
   readonly databaseUrl?: string;
-  readonly sql?: Sql;
+  readonly sql?: ApplicationPostgresSql;
 }
 
 export function createPostgresApplicationStreamProcessorStore(options: PostgresApplicationStreamProcessorStoreOptions): ApplicationStreamProcessorStore {
   if (!options.sql && !options.databaseUrl) throw new Error('PostgreSQL stream processor store requires sql or databaseUrl.');
   const ownsClient = !options.sql;
-  const sql = options.sql ?? postgres(options.databaseUrl as string, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
+  const sql = options.sql ? Promise.resolve(options.sql) : createApplicationPostgresSql(options.databaseUrl as string, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
   return {
     async prepare() {
-      await sql.unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_checkpoints (
+      await (await sql).unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_checkpoints (
   processor text NOT NULL,
   stream text NOT NULL,
   sequence bigint NOT NULL CHECK (sequence >= 0),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (processor, stream)
 )`);
-      await sql.unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_dead_letters (
+      await (await sql).unsafe(`CREATE TABLE IF NOT EXISTS applik8s_stream_processor_dead_letters (
   processor text NOT NULL,
   stream text NOT NULL,
   event_id text NOT NULL,
@@ -44,23 +45,23 @@ export function createPostgresApplicationStreamProcessorStore(options: PostgresA
 )`);
     },
     async checkpoint(processor, stream) {
-      const rows = await sql.unsafe('SELECT sequence FROM applik8s_stream_processor_checkpoints WHERE processor = $1 AND stream = $2', [processor, stream]);
+      const rows = await (await sql).unsafe('SELECT sequence FROM applik8s_stream_processor_checkpoints WHERE processor = $1 AND stream = $2', [processor, stream]);
       const sequence = Number(rows[0]?.sequence ?? 0);
       if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error(`Stream processor ${processor} returned an invalid checkpoint.`);
       return sequence;
     },
     async advance(processor, stream, sequence) {
       if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error(`Stream processor ${processor} checkpoint must be a non-negative safe integer.`);
-      await sql.unsafe(`INSERT INTO applik8s_stream_processor_checkpoints (processor, stream, sequence, updated_at)
+      await (await sql).unsafe(`INSERT INTO applik8s_stream_processor_checkpoints (processor, stream, sequence, updated_at)
 VALUES ($1, $2, $3, now())
 ON CONFLICT (processor, stream) DO UPDATE SET sequence = greatest(applik8s_stream_processor_checkpoints.sequence, EXCLUDED.sequence), updated_at = now()`, [processor, stream, sequence]);
     },
     async deadLetter(processor, stream, envelope, attempts, error) {
-      await sql.unsafe(`INSERT INTO applik8s_stream_processor_dead_letters (processor, stream, event_id, sequence, partition_key, recorded_at, payload, attempts, error)
+      await (await sql).unsafe(`INSERT INTO applik8s_stream_processor_dead_letters (processor, stream, event_id, sequence, partition_key, recorded_at, payload, attempts, error)
 VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7::jsonb, $8, $9)
 ON CONFLICT (processor, stream, event_id) DO UPDATE SET attempts = greatest(applik8s_stream_processor_dead_letters.attempts, EXCLUDED.attempts), error = EXCLUDED.error, failed_at = now()`, [processor, stream, envelope.id, envelope.sequence, envelope.partitionKey, envelope.recordedAt, JSON.stringify(envelope.payload), attempts, error.slice(0, 4_000)]);
     },
-    async close() { if (ownsClient) await sql.end({ timeout: 5 }); },
+    async close() { if (ownsClient) await (await sql).end({ timeout: 5 }); },
   };
 }
 

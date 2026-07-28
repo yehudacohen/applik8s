@@ -66,6 +66,42 @@ describe('native relational migration lowering', () => {
     const missing: ApplicationModelNode = { ...model, native: { ...model.native, artifact } };
     await expect(emitGeneratedApplicationMigrations({ graph: { ...graph, nodes: [missing] }, entrypoint: '/tmp/app.ts', outDir: '/tmp/out' })).rejects.toThrow('no committed migration artifact');
   });
+
+  it('gives each physical database authority a distinct immutable migration Job', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-native-migrations-authority-'));
+    await writeFile(join(root, 'migration.sql'), 'SELECT 1;\n');
+    const original = nativeGraph('./migration.sql');
+    const model = original.nodes[0];
+    if (model?.kind !== 'model' || !model.runtime) throw new Error('Expected native model fixture.');
+    const moved: ApplicationModelNode = {
+      ...model,
+      runtime: {
+        ...model.runtime,
+        clusterName: 'catalog-models',
+        secretName: 'catalog-models-app',
+      },
+    };
+    const [before] = await emitGeneratedApplicationMigrations({
+      graph: original,
+      entrypoint: join(root, 'app.ts'),
+      outDir: join(root, 'before'),
+    });
+    const [after] = await emitGeneratedApplicationMigrations({
+      graph: { ...original, nodes: [moved] },
+      entrypoint: join(root, 'app.ts'),
+      outDir: join(root, 'after'),
+    });
+    expect(after?.digest).toBe(before?.digest);
+    expect(after?.name).not.toBe(before?.name);
+    expect(after?.resources[0]).toMatchObject({
+      metadata: { name: after?.name },
+      spec: { template: { spec: { containers: [{
+        env: expect.arrayContaining([
+          { name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: 'catalog-models-app', key: 'uri' } } },
+        ]),
+      }] } } },
+    });
+  });
 });
 
 function nativeGraph(path: string, digest?: string): ApplicationGraph {

@@ -1,6 +1,6 @@
 // typecast-file-boundary: Task-operation tests intentionally construct protocol envelopes and provider fakes around runtime validation boundaries.
 import { describe, expect, it, vi } from 'vitest';
-import type { Sql } from 'postgres';
+import type { ApplicationPostgresSql } from '../src/postgres-runtime-contract.js';
 import type { JsonValue } from '@applik8s/core';
 import { applicationCommandPrincipal } from '../src/command-principal.js';
 import {
@@ -36,7 +36,7 @@ describe('task operation runtime', () => {
     let published: Record<string, unknown> | undefined;
     const verify = vi.fn(async () => undefined);
     const drain = vi.fn(async () => undefined);
-    const sql = { unsafe: vi.fn(async () => published ? [{ output: { identity: 'post-1', accepted: true }, error: null }] : []) } as unknown as Sql;
+    const sql = { unsafe: vi.fn(async () => published ? [{ output: { identity: 'post-1', accepted: true }, error: null }] : []) } as unknown as ApplicationPostgresSql;
     const runtime = createApplicationTaskOperationRuntime({
       commands: [{
         id: 'Post.create.v1', bindingId: 'Post.create', model: 'Post', inputSchema,
@@ -76,7 +76,7 @@ describe('task operation runtime', () => {
 
   it('fails closed for undeclared aliases and invalid command input', async () => {
     const runtime = createApplicationTaskOperationRuntime({
-      commands: [{ id: 'Post.create.v1', bindingId: 'Post.create', model: 'Post', inputSchema, databaseUrl: 'postgres://unused', sql: { unsafe: vi.fn() } as unknown as Sql, key: (input) => Reflect.get(input, 'id') }],
+      commands: [{ id: 'Post.create.v1', bindingId: 'Post.create', model: 'Post', inputSchema, databaseUrl: 'postgres://unused', sql: { unsafe: vi.fn() } as unknown as ApplicationPostgresSql, key: (input) => Reflect.get(input, 'id') }],
       cursorSecret: 'a-stable-secret-containing-at-least-thirty-two-characters',
       eventLogPublisher: { async publish() { throw new Error('must not publish'); }, async drain() {} },
     });
@@ -95,7 +95,7 @@ describe('task operation runtime', () => {
   });
 
   it('surfaces durable domain rejection without retrying it as an unknown transport failure', async () => {
-    const sql = { unsafe: vi.fn(async () => [{ output: null, error: { name: 'quotaExceeded', payload: { remaining: 0 } } }]) } as unknown as Sql;
+    const sql = { unsafe: vi.fn(async () => [{ output: null, error: { name: 'quotaExceeded', payload: { remaining: 0 } } }]) } as unknown as ApplicationPostgresSql;
     const runtime = createApplicationTaskOperationRuntime({
       commands: [{ id: 'Post.create.v1', bindingId: 'Post.create', model: 'Post', inputSchema, databaseUrl: 'postgres://unused', sql, key: (input) => Reflect.get(input, 'id') }],
       cursorSecret: 'a-stable-secret-containing-at-least-thirty-two-characters',
@@ -116,7 +116,7 @@ describe('task operation runtime', () => {
   });
 
   it('surfaces exhausted command processing as a distinct redacted task failure', async () => {
-    const sql = { unsafe: vi.fn(async () => [{ output: null, error: { name: 'internalFailure', payload: { code: 'processing_failed', attempts: 5, privateDetail: 'hidden' } } }]) } as unknown as Sql;
+    const sql = { unsafe: vi.fn(async () => [{ output: null, error: { name: 'internalFailure', payload: { code: 'processing_failed', attempts: 5, privateDetail: 'hidden' } } }]) } as unknown as ApplicationPostgresSql;
     const runtime = createApplicationTaskOperationRuntime({
       commands: [{ id: 'Post.create.v1', bindingId: 'Post.create', model: 'Post', inputSchema, databaseUrl: 'postgres://unused', sql, key: (input) => Reflect.get(input, 'id') }],
       cursorSecret: 'a-stable-secret-containing-at-least-thirty-two-characters',

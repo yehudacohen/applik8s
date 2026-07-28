@@ -5,7 +5,7 @@ import { cpus, platform, tmpdir } from 'node:os';
 import { extname, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 import { applicationGraphFor } from '@applik8s/applik8s';
-import { waitForHatchetResult } from '../packages/applik8s/src/workflow-runtime-hatchet.js';
+import { waitForHatchetResult } from '../packages/runtime-hatchet/src/index.js';
 
 const execFileAsync = promisify(execFile);
 const root = new URL('..', import.meta.url).pathname.replace(/\/$/, '');

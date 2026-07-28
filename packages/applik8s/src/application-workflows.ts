@@ -478,7 +478,6 @@ function workflowEngineRuntime(engine: ApplicationWorkflowEngineProvider): Appli
   const name = kubernetesName(engine.name ?? 'applik8s-hatchet');
   const namespace = engine.namespace;
   const secret = engine.workerTokenSecret
-    ?? engine.credentialsSecret
     ?? { apiVersion: 'v1', kind: 'Secret', name: engine.provision === false ? `${name}-worker` : 'hatchet-client-config', ...(namespace ? { namespace } : {}) };
   return {
     env: {

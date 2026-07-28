@@ -23,7 +23,15 @@ await discardV06Evidence(evidencePath);
 
 await deploy();
 const first = await candidate();
-await deploy();
+const secondDeployment = await deploy();
+if (!/Alchemy plan: \d+ resources, 0 changes/.test(secondDeployment.stdout))
+	throw new Error(
+		"The second Chirp deploy did not produce a zero-change Alchemy plan.",
+	);
+if (secondDeployment.stdout.includes("Container build published"))
+	throw new Error(
+		"The second Chirp deploy republished an immutable Harbor artifact instead of reusing it.",
+	);
 const second = await candidate();
 if (first.installation.uid !== second.installation.uid)
 	throw new Error(
@@ -52,6 +60,7 @@ await writeV06EvidenceReceipt(evidencePath, {
 			"second-idempotent-deploy",
 			"installation-uid-preserved",
 			"artifact-identity-preserved",
+			"incremental-harbor-reuse",
 		].map((assertion) => ({
 			assertion,
 			test: "Chirp consecutive deployment convergence",
@@ -62,7 +71,7 @@ await writeV06EvidenceReceipt(evidencePath, {
 });
 
 async function deploy() {
-	await execute([
+	return execute([
 		"run",
 		"--cwd",
 		"examples/chirp-start",
@@ -80,7 +89,7 @@ async function candidate() {
 			namespace,
 		}),
 		collectV06ArtifactIdentity(
-			"examples/chirp-start/.applik8s/deploy/typekro/application-image-evidence.json",
+			"examples/chirp-start/.applik8s/deploy/typekro/application-deployment-graph.json",
 		),
 	]);
 	return { git, cluster, installation, artifacts };
@@ -95,4 +104,5 @@ async function execute(args) {
 	const result = await child;
 	if (result.stdout) process.stdout.write(result.stdout);
 	if (result.stderr) process.stderr.write(result.stderr);
+	return result;
 }

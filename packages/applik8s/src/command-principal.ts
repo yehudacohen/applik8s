@@ -42,9 +42,6 @@ export function applicationRequestContextValues(
   });
 }
 
-/** @deprecated Prefer the transport-neutral applicationRequestContextValues name. */
-export const applicationCommandContextValues = applicationRequestContextValues;
-
 export function applicationCommandPrincipal(
   context: { readonly values: Readonly<Record<string, JsonValue>> } | undefined,
 ): ApplicationCommandPrincipal | undefined {

@@ -1,0 +1,39 @@
+{
+  "name": "@applik8s/runtime-nats",
+  "version": "0.6.0",
+  "description": "NATS JetStream event-log and command-consumer runtime for Applik8s workloads.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/runtime-nats"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./event-log": {
+      "types": "./dist/event-log.d.ts",
+      "import": "./dist/event-log.js"
+    },
+    "./command-processor": {
+      "types": "./dist/command-processor.d.ts",
+      "import": "./dist/command-processor.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/applik8s": "0.6.0",
+    "@nats-io/jetstream": "3.4.0",
+    "@nats-io/nats-core": "3.4.0",
+    "@nats-io/transport-node": "3.4.0",
+    "nats": "^2.29.3"
+  }
+}

@@ -48,21 +48,17 @@ The live lane requires an explicitly selected disposable OrbStack context. It pr
 - browser-shaped `GuestBookEntry.create(...)` submission, Kubernetes creation, operator publication and
   rejection, resumable SSE invalidation, authoritative requery, SSR rendering, and host/operator restart
   recovery without manually inserting events or status;
-- root deletion initiated and awaited by `applik8s delete`, which delegates the root to
-  `composition.factory('kro').deleteInstance()` and app-owned direct preparation to the matching TypeKro
-  direct factories;
+- root deletion initiated and awaited by `applik8s delete`, which resumes the scoped Alchemy transaction
+  and delegates Kubernetes finalization to its TypeKro resources;
 - runtime-created GuestBook model instances removed before application-root teardown;
-- absence of generated children, CR instances, the RGD, app-owned direct preparation, and application
+- absence of generated children, CR instances, the RGD, graph-owned resources, and application
   namespaces after teardown; and
 - the KRO-generated application CRD retained `Active`, empty, and KRO-labeled for safe reuse, matching
-  TypeKro 0.28's deliberate generated-CRD lifecycle contract;
-- a live KRO-to-direct provider handoff that quiesces the KRO controller before ownership mutation,
-  preserves the provider UID and database contents, externalizes the RGD node, restores the controller,
-  and proves TypeKro-first deletion preserves the provider until its direct owner deletes it; and
+  TypeKro 0.31.1's deliberate generated-CRD lifecycle contract;
 - two consecutive Chirp deployments that preserve installation UID and immutable artifact identity.
 
-Receipts under `.applik8s-tmp/evidence/v0.6/`, including `provider-migration.json`,
-`chirp-deployment.json`, and `guestbook-start.json`, are machine-local, expire after 24 hours, and are
+Receipts under `.applik8s-tmp/evidence/v0.6/`, including `chirp-deployment.json` and
+`guestbook-start.json`, are machine-local, expire after 24 hours, and are
 accepted by `bun run scripts/check-v06-scorecard.ts --require-live --require-chirp`. The release-evidence
 workflow runs this complete lane and emits a schema-v2 exact-commit attestation that binds every required
 schema-v3 receipt by SHA-256 digest and assertion set. A smaller legacy live subset or schema-v1 summary
@@ -79,15 +75,15 @@ zero-vulnerability claim. The baseline fails on new, changed, stale, or expired 
 
 ## Dependency boundary
 
-KRO 0.9 can finish a graph deletion after the first bounded client wait expires. TypeKro 0.28.0 deliberately
-leaves the RGD and generated CRD intact on that timeout; repeating the same `deleteInstance()` call completes
-the durable root, child, Namespace, and RGD cleanup after the controller catches up. The generated CRD is
-deliberately retained `Active` for reuse even after successful normal cleanup. The release lane treats a
-timeout as failure, never removes an RGD, CRD, Namespace finalizer, or application finalizer underneath KRO,
-and uses only TypeKro factories for normal Application and prepared-Namespace lifecycle. A successful receipt
-proves the root, RGD, app-owned direct preparations, and namespaces reached absence and the retained generated
-CRD is empty before the test reported success. Deleting a retained generated CRD is a separate administrative
-garbage-collection operation, not part of normal application teardown.
+KRO 0.9 can finish a graph deletion after the first bounded client wait expires. TypeKro 0.31.1 deliberately
+leaves the RGD and generated CRD intact on that timeout; resuming the same Alchemy destroy operation repeats
+the supported TypeKro deletion until the durable root, child, Namespace, and RGD cleanup completes. The
+generated CRD is deliberately retained `Active` for reuse even after successful normal cleanup. The release
+lane treats a timeout as failure and never removes an RGD, CRD, Namespace finalizer, or application finalizer
+underneath KRO. A successful receipt proves the root, RGD, graph-owned resources, and namespaces reached
+absence and the retained generated CRD is empty before the test reported success. Deleting a retained
+generated CRD is a separate administrative garbage-collection operation, not part of normal application
+teardown.
 
 ## Maturity boundary
 

@@ -22,7 +22,6 @@ import {
   applicationExposureServiceNamespace,
   applicationExposureServicePort,
   applicationExternalDnsAnnotations,
-  applicationLegacyTlsMode,
   normalizeApplicationTlsIntent,
 } from './application-exposure.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode } from './application-graph-state.js';
@@ -236,7 +235,6 @@ export function emitApplicationExposure(
       dependsOn: [{ nodeId: applicationProviderNodeId('Certificate') }],
     });
   }
-  const tls = applicationLegacyTlsMode(options.tls, tlsIntent);
   const publicUrl = applicationTypeKroString(tlsIntent.mode === 'disabled' ? 'http://' : 'https://', hostnames[0]);
   const readiness: ApplicationExposureReadinessContract = {
     ingress: 'resourceApplied',
@@ -262,7 +260,6 @@ export function emitApplicationExposure(
     provider: { interface: 'HttpExposure', nodeId: applicationProviderNodeId('HttpExposure') },
     service: exposedService,
     hostnames,
-    tls,
     tlsIntent: graphTlsIntent,
     dnsIntent,
     publicUrl,
@@ -277,7 +274,7 @@ export function emitApplicationExposure(
   if (dnsProvider) addApplicationGraphEdge(state, { from: { nodeId: applicationProviderNodeId('DnsPublication') }, to: { nodeId }, relationship: 'provides' });
   return {
     kind: 'applicationExposure', name, provider: 'HttpExposure', resourceName, ...(namespace ? { namespace } : {}), hostnames,
-    tls, tlsIntent, dnsIntent, publicUrl, readiness, statusPath: `exposure/${name}`,
+    tlsIntent, dnsIntent, publicUrl, readiness, statusPath: `exposure/${name}`,
   };
 }
 
@@ -345,7 +342,6 @@ function emitApplicationNodePortExposure(
     provider: { interface: 'HttpExposure', nodeId: applicationProviderNodeId('HttpExposure') },
     service: exposedService,
     hostnames,
-    tls: 'disabled',
     tlsIntent,
     dnsIntent,
     publicUrl,
@@ -367,7 +363,7 @@ function emitApplicationNodePortExposure(
   addApplicationGraphEdge(state, { from: { nodeId: applicationProviderNodeId('HttpExposure') }, to: { nodeId }, relationship: 'provides' });
   return {
     kind: 'applicationExposure', name, provider: 'HttpExposure', resourceName, ...(namespace ? { namespace } : {}),
-    hostnames, tls: 'disabled', tlsIntent, dnsIntent, publicUrl, readiness, statusPath: `exposure/${name}`,
+    hostnames, tlsIntent, dnsIntent, publicUrl, readiness, statusPath: `exposure/${name}`,
   };
 }
 

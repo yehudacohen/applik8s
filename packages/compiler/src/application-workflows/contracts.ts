@@ -140,10 +140,9 @@ export function workflowContract(graph: ApplicationGraph, worker: ApplicationWor
   const config = provider.config ?? {};
   const namespace = applicationGraphStringValue(config.namespace) || 'default';
   const engineName = kubernetesName(stringConfig(config.name) || 'applik8s-hatchet');
-  const legacyCredentials = objectConfig(config.credentialsSecret);
   const adminCredentials = objectConfig(config.adminCredentialsSecret);
   const workerToken = objectConfig(config.workerTokenSecret);
-  for (const credentials of [legacyCredentials, adminCredentials, workerToken]) {
+  for (const credentials of [adminCredentials, workerToken]) {
     const credentialNamespace = applicationGraphStringValue(credentials.namespace);
     if (credentialNamespace && credentialNamespace !== namespace) {
       throw new Error(`Generated workflow worker ${worker.id} cannot read Hatchet Secret ${credentialNamespace}/${stringConfig(credentials.name)} from namespace ${namespace}.`);
@@ -174,9 +173,9 @@ export function workflowContract(graph: ApplicationGraph, worker: ApplicationWor
 		...(objectEffects ? { objectEffects } : {}),
     namespace,
     engineName,
-    adminCredentialsSecret: stringConfig(adminCredentials.name) || stringConfig(legacyCredentials.name) || `${engineName}-admin`,
-    workerTokenSecret: stringConfig(workerToken.name) || stringConfig(legacyCredentials.name) || (config.provision === false ? `${engineName}-worker` : 'hatchet-client-config'),
-    tokenKey: stringConfig(config.tokenKey) || (stringConfig(workerToken.name) || (!stringConfig(legacyCredentials.name) && config.provision !== false) ? 'HATCHET_CLIENT_TOKEN' : 'token'),
+    adminCredentialsSecret: stringConfig(adminCredentials.name) || `${engineName}-admin`,
+    workerTokenSecret: stringConfig(workerToken.name) || (config.provision === false ? `${engineName}-worker` : 'hatchet-client-config'),
+    tokenKey: stringConfig(config.tokenKey) || (stringConfig(workerToken.name) || config.provision !== false ? 'HATCHET_CLIENT_TOKEN' : 'token'),
     image: stringConfig(objectConfig(config.worker).image) || DEFAULT_WORKER_IMAGE,
     contractNames: Object.fromEntries(graph.nodes.flatMap((node) => node.kind === 'task' || node.kind === 'workflow' ? [[node.id, node.name]] : [])),
   };

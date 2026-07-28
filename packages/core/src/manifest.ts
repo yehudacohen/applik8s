@@ -33,7 +33,19 @@ export interface OwnedCrd { readonly apiVersion: import('./common.js').ApiVersio
 export interface ReadResource { readonly apiVersion: import('./common.js').ApiVersion; readonly kind: Kind; readonly plural: PluralName; readonly scope: ResourceScope; readonly namespaces?: readonly NamespaceName[] | 'all'; readonly access: import('./resource.js').KubernetesReadAccess; }
 export interface CrdVersioningPosture { readonly multiVersion: 'unsupported' | 'singleVersion'; readonly conversionWebhook: 'unsupported' | 'notConfigured'; readonly storageMigration: 'notRequired' | 'unsupported'; readonly rollbackSafety: 'schemaCompatibleOnly'; }
 export interface WatchRegistration { readonly apiVersion: import('./common.js').ApiVersion; readonly kind: Kind; readonly plural?: PluralName; readonly scope?: ResourceScope; readonly namespace?: NamespaceName; readonly name?: KubernetesName; readonly names?: readonly KubernetesName[]; readonly labelSelector?: LabelSelector; readonly fieldSelector?: string; readonly events: readonly HandlerEventType[]; readonly handlers: readonly import('./common.js').HandlerId[]; }
-export interface BundleMetadata { readonly digest: Sha256Digest; readonly sourceDigest: Sha256Digest; readonly compilerVersion: string; readonly createdAt: Timestamp; readonly artifacts: readonly BundleArtifact[]; readonly supplyChain: SupplyChainMetadata; readonly portability?: PortabilityMetadata; }
+export interface BundleMetadata {
+  /** Exact digest of the emitted artifact inventory, including backend-specific WASM bytes. */
+  readonly digest: Sha256Digest;
+  /** Stable semantic build identity used for image tags and deployment rollout. */
+  readonly buildIdentityDigest: Sha256Digest;
+  /** Digest of the canonical host/runtime contract consumed by the bundle. */
+  readonly sourceDigest: Sha256Digest;
+  readonly compilerVersion: string;
+  readonly createdAt: Timestamp;
+  readonly artifacts: readonly BundleArtifact[];
+  readonly supplyChain: SupplyChainMetadata;
+  readonly portability?: PortabilityMetadata;
+}
 export interface BundleArtifact { readonly kind: BundleArtifactKind; readonly path: string; readonly digest: Sha256Digest; }
 export type BundleArtifactKind = 'wasm-component' | 'runtime-contract' | 'handler-wit' | 'javascript-bundle' | 'javascript-source-map' | 'esbuild-metafile' | 'kubernetes-yaml' | 'operator-manifest';
 export interface SupplyChainMetadata { readonly signatures: readonly ArtifactSignature[]; readonly sbomDigest?: Sha256Digest; readonly provenanceDigest?: Sha256Digest; readonly posture?: SupplyChainPosture; }

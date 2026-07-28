@@ -45,7 +45,7 @@ export interface ApplicationS3ObjectStorageProvider {
   /** External providers are referenced; direct provisioners may prepare a bucket before the Application instance exists. */
   readonly ownership?: 'external' | 'direct-provisioned';
   readonly provisioning?: {
-    /** Typed desired-state switch for the app-owned OBC preparation boundary. */
+    /** Typed desired-state switch for the app-owned OBC provisioning boundary. */
     readonly enabled?: boolean;
     readonly claimName?: string;
     readonly storageClassName: string;
@@ -66,6 +66,7 @@ export interface ApplicationNatsJetStreamEventLogProvider {
   readonly subjectPrefix?: string;
   readonly replicas?: number;
   readonly storageSize?: string;
+  readonly storageClassName?: string;
   readonly connectionSecret?: ApplicationResourceRef;
   readonly authMode?: 'token' | 'userPassword';
   readonly tokenKey?: string;
@@ -107,8 +108,6 @@ export interface ApplicationHatchetWorkflowEngineProvider {
   readonly adminCredentialsSecret?: ApplicationResourceRef;
   /** Hatchet client-token Secret. Defaults to the chart-generated hatchet-client-config Secret when provisioned. */
   readonly workerTokenSecret?: ApplicationResourceRef;
-  /** @deprecated Use adminCredentialsSecret and workerTokenSecret when they differ. */
-  readonly credentialsSecret?: ApplicationResourceRef;
   readonly tokenKey?: string;
   readonly hostPort?: string;
   readonly apiUrl?: string;
@@ -329,19 +328,21 @@ export type ApplicationPostgresModelStoreOptions = Omit<ApplicationPostgresModel
 
 export interface ApplicationPostgresModelStoreProvider {
   readonly kind: 'postgres';
+  /** Stable logical provider identity used by the application graph. */
   readonly name?: string;
+  /** Physical CloudNativePG Cluster name. Defaults to the logical provider name. */
+  readonly clusterName?: string;
   readonly namespace?: string;
   readonly database?: string;
   readonly provision?: boolean;
   /**
    * Selects the provider lifecycle boundary. Graph ownership is the compact
    * default and therefore deletes the cluster with the Application instance.
-   * Direct preparation is required for honest retained-data semantics.
+   * A separately owned direct graph node is required for honest retained-data semantics.
    */
   readonly ownership?: 'application-graph' | 'direct-provisioned' | 'external';
   readonly lifecycle?: {
     readonly deletionPolicy: 'delete' | 'retain';
-    readonly preparationTimeoutMs?: number;
   };
   readonly instances?: number;
   readonly storage?: { readonly size: string; readonly storageClassName?: string };
@@ -811,7 +812,7 @@ export const ContainerRegistry: ApplicationContainerRegistryProviderToken = {
     if ('management' in options && options.management) {
       assertApplicationHarborProjectManagement(options.management);
       if (typeof options.project !== 'string' && (!options.management.pushSecretName || !options.management.pullSecretName)) {
-        throw new Error('ContainerRegistry.harbor with an installation-derived project requires explicit management.pushSecretName and management.pullSecretName so deployment preparation can resolve names without evaluating arbitrary CEL.');
+        throw new Error('ContainerRegistry.harbor with an installation-derived project requires explicit management.pushSecretName and management.pullSecretName so deployment lowering can resolve names without evaluating arbitrary CEL.');
       }
       const pushSecretName = options.management.pushSecretName ?? `${options.project}-registry-push`;
       const pullSecretName = options.management.pullSecretName ?? `${options.project}-registry-pull`;
@@ -934,8 +935,8 @@ export const defaultApplicationWorkflowEngineProvider: ApplicationWorkflowEngine
   kind: 'hatchet',
   name: 'applik8s-hatchet',
   provision: true,
-  chartVersion: '0.12.4',
-  serverVersion: 'v0.90.13',
+  chartVersion: '0.13.3',
+  serverVersion: 'v0.94.10',
   mode: 'stack',
   tls: false,
   database: { provision: true, database: 'hatchet', instances: 1, storageSize: '8Gi' },
@@ -1313,10 +1314,6 @@ function assertApplicationPostgresModelStoreLifecycle(provider: ApplicationPostg
   }
   if (ownership === 'application-graph' && provider.lifecycle?.deletionPolicy === 'retain') {
     throw new Error('ModelStore.postgres graph ownership cannot retain the database after Application deletion. Use ownership: "direct-provisioned" or "external" for retained data.');
-  }
-  if (provider.lifecycle?.preparationTimeoutMs !== undefined
-    && (!Number.isInteger(provider.lifecycle.preparationTimeoutMs) || provider.lifecycle.preparationTimeoutMs < 1_000)) {
-    throw new Error('ModelStore.postgres lifecycle.preparationTimeoutMs must be an integer of at least 1000 milliseconds.');
   }
   assertApplicationPostgresBackupPolicy(provider.backup);
 }

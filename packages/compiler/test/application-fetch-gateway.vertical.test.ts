@@ -58,7 +58,7 @@ describe("application host Fetch gateway", () => {
 				"gateway.generated.ts"
 			];
 		expect(source).toContain(
-			"createApplicationFetchGateway, createS3ApplicationObjectStorageRuntime",
+			"createS3ApplicationObjectStorageRuntime",
 		);
 		expect(source).toContain('name: "attachments"');
 		expect(source).toContain(

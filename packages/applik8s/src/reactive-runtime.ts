@@ -7,5 +7,4 @@ export { createPostgresApplicationStreamProcessorStore, runApplicationStreamProc
 export { createApplicationCommandGateway } from './command-gateway.js';
 export { createApplicationStreamSubscriptionGateway } from './stream-subscription-gateway.js';
 export { createApplicationFetchGateway } from './application-gateway.js';
-export { createS3ApplicationObjectStorageRuntime } from './object-storage-s3-runtime.js';
 export { verifyApplicationObjectCompletionReceipt } from './application-object-storage-gateway.js';

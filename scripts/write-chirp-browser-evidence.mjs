@@ -79,12 +79,12 @@ const assertionEvidence = createV06AssertionEvidence(
 const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
 const controlPlaneNamespace = process.env.APPLIK8S_CONTROL_PLANE_NAMESPACE ?? 'chirp-control';
 const installationName = process.env.APPLIK8S_CHIRP_INSTANCE ?? 'chirp';
-const imageEvidencePath = join(process.cwd(), 'examples/chirp-start/.applik8s/deploy/typekro/application-image-evidence.json');
+const deploymentGraphPath = join(process.cwd(), 'examples/chirp-start/.applik8s/deploy/typekro/application-deployment-graph.json');
 const [git, cluster, installation, artifacts] = await Promise.all([
   collectV06GitIdentity(),
   collectV06ClusterIdentity(context),
   collectV06InstallationIdentity({ context, resource: `chirpinstallation/${installationName}`, namespace: controlPlaneNamespace }),
-  collectV06ArtifactIdentity(imageEvidencePath),
+  collectV06ArtifactIdentity(deploymentGraphPath),
 ]);
 await writeV06EvidenceReceipt(join(directory, 'chirp-browser.json'), {
   suite: 'chirp-browser',

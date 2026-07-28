@@ -266,6 +266,23 @@ pub trait WasmComponentInvoker {
     fn invoke(&self, input: Value) -> Result<Value, RuntimeBridgeError>;
 }
 
+/// A component compiled and import-validated once for an immutable operator
+/// bundle. Each invocation still receives a fresh Store and host state.
+#[derive(Clone)]
+pub struct CompiledHandlerComponent {
+    component: Component,
+}
+
+pub fn compile_handler_component(
+    engine: &Engine,
+    component_bytes: &[u8],
+    allowed_host_imports: &[String],
+) -> Result<CompiledHandlerComponent, RuntimeBridgeError> {
+    let component = Component::new(engine, component_bytes)?;
+    validate_component_host_imports(engine, &component, allowed_host_imports)?;
+    Ok(CompiledHandlerComponent { component })
+}
+
 pub fn validate_invocation_payload(
     payload: &HandlerInvocationPayload,
 ) -> Result<(), RuntimeBridgeError> {
@@ -347,6 +364,24 @@ pub async fn invoke_handler_component_bytes_with_timeout_async(
     .await
 }
 
+pub async fn invoke_compiled_handler_component_with_timeout_async(
+    engine: &Engine,
+    component: &CompiledHandlerComponent,
+    input: Value,
+    timeout: Duration,
+) -> Result<NormalizedOperationPlan, RuntimeBridgeError> {
+    invoke_compiled_handler_component_with_policy(
+        engine,
+        component,
+        input,
+        Some(timeout),
+        None,
+        None,
+        None,
+    )
+    .await
+}
+
 pub async fn invoke_handler_component_bytes_with_timeout_and_capabilities_async(
     engine: &Engine,
     component_bytes: &[u8],
@@ -390,6 +425,26 @@ pub async fn invoke_handler_component_bytes_with_timeout_and_host_imports_async(
     .await
 }
 
+pub async fn invoke_compiled_handler_component_with_timeout_and_host_imports_async(
+    engine: &Engine,
+    component: &CompiledHandlerComponent,
+    input: Value,
+    timeout: Duration,
+    capability_request: CapabilityRequestHandler,
+    kubernetes_read: KubernetesReadHandler,
+) -> Result<NormalizedOperationPlan, RuntimeBridgeError> {
+    invoke_compiled_handler_component_with_policy(
+        engine,
+        component,
+        input,
+        Some(timeout),
+        Some(capability_request),
+        Some(kubernetes_read),
+        None,
+    )
+    .await
+}
+
 // This explicit host-boundary entrypoint keeps independent capability handlers
 // visible to callers; collapsing them into an opaque options bag would weaken
 // the security review surface.
@@ -409,6 +464,30 @@ pub async fn invoke_handler_component_bytes_with_timeout_host_imports_and_kubern
         component_bytes,
         input,
         allowed_host_imports,
+        Some(timeout),
+        Some(capability_request),
+        Some(kubernetes_read),
+        Some(transport),
+    )
+    .await
+}
+
+// This compiled-component entrypoint preserves the same explicit host security
+// boundary while avoiding repeated compilation of the immutable guest.
+#[allow(clippy::too_many_arguments)]
+pub async fn invoke_compiled_handler_component_with_timeout_host_imports_and_kubernetes_http_async(
+    engine: &Engine,
+    component: &CompiledHandlerComponent,
+    input: Value,
+    timeout: Duration,
+    capability_request: CapabilityRequestHandler,
+    kubernetes_read: KubernetesReadHandler,
+    transport: KubernetesHttpTransport,
+) -> Result<NormalizedOperationPlan, RuntimeBridgeError> {
+    invoke_compiled_handler_component_with_policy(
+        engine,
+        component,
+        input,
         Some(timeout),
         Some(capability_request),
         Some(kubernetes_read),
@@ -449,10 +528,31 @@ async fn invoke_handler_component_bytes_with_policy(
     kubernetes_read: Option<KubernetesReadHandler>,
     kubernetes_http: Option<KubernetesHttpTransport>,
 ) -> Result<NormalizedOperationPlan, RuntimeBridgeError> {
+    let component = compile_handler_component(engine, component_bytes, allowed_host_imports)?;
+    invoke_compiled_handler_component_with_policy(
+        engine,
+        &component,
+        input,
+        timeout,
+        capability_request,
+        kubernetes_read,
+        kubernetes_http,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn invoke_compiled_handler_component_with_policy(
+    engine: &Engine,
+    component: &CompiledHandlerComponent,
+    input: Value,
+    timeout: Option<Duration>,
+    capability_request: Option<CapabilityRequestHandler>,
+    kubernetes_read: Option<KubernetesReadHandler>,
+    kubernetes_http: Option<KubernetesHttpTransport>,
+) -> Result<NormalizedOperationPlan, RuntimeBridgeError> {
     validate_handler_input(&input)?;
 
-    let component = Component::new(engine, component_bytes)?;
-    validate_component_host_imports(engine, &component, allowed_host_imports)?;
     let mut linker = Linker::new(engine);
     wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
     wasmtime_wasi_http::p2::add_only_http_to_linker_async(&mut linker)?;
@@ -462,7 +562,9 @@ async fn invoke_handler_component_bytes_with_policy(
         InvocationState::new(capability_request, kubernetes_read, kubernetes_http),
     );
     configure_epoch_deadline(&mut store);
-    let instance = linker.instantiate_async(&mut store, &component).await?;
+    let instance = linker
+        .instantiate_async(&mut store, &component.component)
+        .await?;
     let handle = instance.get_func(&mut store, "handle").ok_or_else(|| {
         RuntimeBridgeError::InvalidPayload("component does not export handle".to_string())
     })?;

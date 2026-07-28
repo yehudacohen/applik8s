@@ -4,7 +4,7 @@ import type { AnyHandlerRegistration, AnyResourceDefinition, BundleArtifact, Cap
 import { canonicalRuntimeContract } from '@applik8s/runtime-contract';
 import type { ContainerRecipe } from '@applik8s/typetainer';
 import { DEFAULT_OPERATOR_HOST_IMAGE } from '../operator-host-image.js';
-import { canonicalBundleArtifacts, computeBundleDigest } from './bundle-digest.js';
+import { canonicalBundleArtifacts, computeBundleBuildIdentityDigest, computeBundleDigest } from './bundle-digest.js';
 import { validateOperatorManifest } from './validation.js';
 
 export { validateOperatorManifest } from './validation.js';
@@ -134,7 +134,17 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     readResources,
     payloadSchemaDigests: schemaDigests,
   });
-  const container = implicitRuntimeContainer(request.operator.name, bundleDigest, request.containerBuildContext ?? '.');
+  const buildIdentityDigest = computeBundleBuildIdentityDigest({
+    compilerVersion,
+    handlerAbi: contract.abiVersion,
+    operatorName: request.operator.name,
+    artifacts: artifactInventory,
+    handlerExports,
+    ownedCrds,
+    readResources,
+    payloadSchemaDigests: schemaDigests,
+  });
+  const container = implicitRuntimeContainer(request.operator.name, buildIdentityDigest, request.containerBuildContext ?? '.');
   const hostImports = canonicalHostImports();
   const portableManifest: OperatorManifest = {
     apiVersion: 'applik8s.operator/v1alpha1',
@@ -179,6 +189,7 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
       container,
       bundle: {
         digest: bundleDigest,
+        buildIdentityDigest,
         sourceDigest: request.runtimeContractDigest,
         compilerVersion,
         createdAt: new Date(0).toISOString(),
@@ -247,8 +258,8 @@ function canonicalHostImports(): readonly string[] {
   ];
 }
 
-function implicitRuntimeContainer(operatorName: string, bundleDigest: string, context: string): ContainerRecipe {
-  const tag = bundleDigest.replace('sha256:', '').slice(0, 12);
+function implicitRuntimeContainer(operatorName: string, buildIdentityDigest: string, context: string): ContainerRecipe {
+  const tag = buildIdentityDigest.replace('sha256:', '').slice(0, 12);
   return {
     image: {
       repository: `applik8s/${operatorName}-operator`,
@@ -267,7 +278,7 @@ function implicitRuntimeContainer(operatorName: string, bundleDigest: string, co
       labels: {
         'app.kubernetes.io/managed-by': 'applik8s',
         'applik8s.dev/operator': operatorName,
-        'applik8s.dev/bundle-digest': bundleDigest,
+        'applik8s.dev/build-identity-digest': buildIdentityDigest,
       },
     },
     publish: { enabled: false },

@@ -179,7 +179,7 @@ describe('integrated TypeKro package surface', () => {
 
     const role = composition.resources.find((resource) => resource.kind === 'Role' && resource.metadata.name === 'web');
     const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
-    expect(role).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['create'] }] });
+    expect(plainValue(role)).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['create'] }] });
     expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const Note = resourceClients["Note"];') } });
 
     const modelImplicitDefaultComposition = sdk.kubernetesComposition({
@@ -288,17 +288,17 @@ describe('integrated TypeKro package surface', () => {
       const web = app.server('web', { namespace: 'notes', config: [config], secrets: [secret] }, (server) => {
         server.get('/healthz', async () => ({ ok: true }));
       });
-      const exposure = app.expose('web', { service: web, servicePort: 8080, hostnames: ['notes.example.test'], tls: 'required', tlsSecretName: 'notes-web-tls' });
+      const exposure = app.expose('web', { service: web, servicePort: 8080, hostnames: ['notes.example.test'], tls: { mode: 'external', secretName: 'notes-web-tls' } });
       expect(config.resourceName).toBe('notes-app-config');
       expect(secret.resourceName).toBe('notes-db-app');
       expect(secret.ownership).toBe('external');
       expect(generatedSecret.ownership).toBe('generated');
       expect(web.serviceName).toBe('web');
       expect(exposure.hostnames).toEqual(['notes.example.test']);
-      expect(exposure.tls).toBe('required');
+      expect(exposure.tlsIntent).toEqual({ mode: 'external', secretName: 'notes-web-tls' });
       return { ready: true };
     });
-    expect(appInfraComposition.resources).toEqual(expect.arrayContaining([
+    expect(plainValue(appInfraComposition.resources)).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-app-config', namespace: 'notes' }), data: { 'database-url': 'postgres://example.invalid/notes' } }),
       expect.objectContaining({ kind: 'Secret', metadata: expect.objectContaining({ name: 'session-key-secret', namespace: 'notes' }), type: 'Opaque' }),
       expect.objectContaining({
@@ -328,7 +328,7 @@ describe('integrated TypeKro package surface', () => {
       }),
       expect.objectContaining({ apiVersion: 'networking.k8s.io/v1', kind: 'Ingress', metadata: expect.objectContaining({ name: 'web-ingress', namespace: 'notes' }), spec: expect.objectContaining({ ingressClassName: 'nginx', rules: [expect.objectContaining({ host: 'notes.example.test' })], tls: [{ hosts: ['notes.example.test'], secretName: 'notes-web-tls' }] }) }),
     ]));
-    expect(appInfraComposition.resources).not.toContainEqual(expect.objectContaining({ kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }));
+    expect(plainValue(appInfraComposition.resources)).not.toContainEqual(expect.objectContaining({ kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }));
     expect(applicationGraphFor(appInfraComposition)?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'provider.http-exposure', kind: 'provider', implementation: 'ingress', config: { bindingKind: 'provided', provider: 'ingress' } }),
       expect.objectContaining({ id: 'config.database-url', kind: 'config', provider: 'ConfigMap', key: 'database-url' }),
@@ -352,9 +352,9 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.expose('web', { service: 'notes-web', hostnames: ['notes.example.test'], tls: 'required' });
+      app.expose('web', { service: 'notes-web', hostnames: ['notes.example.test'], tls: { mode: 'external', secretName: '' } });
       return { ready: true };
-    })).toThrow(/requires tlsSecretName/);
+    })).toThrow(/requires a non-empty secretName/);
 
     const managedExposureComposition = sdk.kubernetesComposition({
       name: 'notes-managed-exposure-app',
@@ -377,7 +377,7 @@ describe('integrated TypeKro package surface', () => {
       expect(exposure.readiness.dns).toBe('propagationUnverified');
       return { ready: true };
     });
-    expect(managedExposureComposition.resources).toEqual(expect.arrayContaining([
+    expect(plainValue(managedExposureComposition.resources)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'Ingress',
         metadata: expect.objectContaining({
@@ -399,7 +399,9 @@ describe('integrated TypeKro package surface', () => {
         }),
       }),
     ]));
-    expect(managedExposureComposition.factory('kro').toYaml()).toMatch(/kind: Ingress[\s\S]*readyWhen:\n\s+- \$\{true\}/);
+    const managedExposureYaml = managedExposureComposition.factory('kro').toYaml();
+    expect(managedExposureYaml).toContain('kind: Ingress');
+    expect(managedExposureYaml).toMatch(/readyWhen:\n\s+- \$\{true\}/);
     expect(applicationGraphFor(managedExposureComposition)?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'provider.certificate', interface: 'Certificate', implementation: 'cert-manager' }),
       expect.objectContaining({ id: 'provider.dns-publication', interface: 'DnsPublication', implementation: 'external-dns' }),
@@ -660,7 +662,7 @@ describe('integrated TypeKro package surface', () => {
       expect(job).toMatchObject({ kind: 'applicationJob', resourceName: 'migrate', diagnosticsConfigMapName: 'migrate-diagnostics', statusPath: 'status.applik8s.jobs.migrate' });
       return { ready: true };
     });
-    expect(jobComposition.resources).toEqual(expect.arrayContaining([
+    expect(plainValue(jobComposition.resources)).toEqual(expect.arrayContaining([
       expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', metadata: expect.objectContaining({ name: 'migrate' }) }),
       expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'migrate-diagnostics' }), data: expect.objectContaining({ phaseStatusPath: 'status.applik8s.jobs.migrate' }) }),
       expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'migrate-status-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('runGeneratedJobStatusReconciler'), 'status-runtime.json': expect.stringContaining('notesjobapps') }) }),
@@ -710,7 +712,7 @@ describe('integrated TypeKro package surface', () => {
       expect(schedule).toMatchObject({ kind: 'applicationJob', resourceName: 'cleanup', diagnosticsConfigMapName: 'cleanup-diagnostics', statusPath: 'status.applik8s.jobs.cleanup' });
       return { ready: true };
     });
-    expect(scheduleComposition.resources).toEqual(expect.arrayContaining([
+    expect(plainValue(scheduleComposition.resources)).toEqual(expect.arrayContaining([
       expect.objectContaining({ apiVersion: 'batch/v1', kind: 'CronJob', metadata: expect.objectContaining({ name: 'cleanup' }), spec: expect.objectContaining({ schedule: '0 * * * *', concurrencyPolicy: 'Forbid' }) }),
       expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'cleanup-diagnostics' }), data: expect.objectContaining({ materialization: 'kubernetes-cronjob' }) }),
       expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'notes-schedule-app-status-reconciler' }), rules: expect.arrayContaining([
@@ -737,9 +739,10 @@ describe('integrated TypeKro package surface', () => {
       app.schedule('sweep', { taskKind: 'cleanup', cron: '*/5 * * * *' });
       return { ready: true };
     });
-    const maintenanceReconcilers = multiJobComposition.resources.filter((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'notes-maintenance-app-status-reconciler');
+    const maintenanceResources = plainValue(multiJobComposition.resources);
+    const maintenanceReconcilers = maintenanceResources.filter((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'notes-maintenance-app-status-reconciler');
     expect(maintenanceReconcilers).toHaveLength(1);
-    expect(multiJobComposition.resources).toEqual(expect.arrayContaining([
+    expect(maintenanceResources).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-maintenance-app-status-reconciler-runtime' }), data: expect.objectContaining({ 'status-runtime.json': expect.stringContaining('compact'), 'runtime__job-runner.mjs': expect.stringContaining('deepMerge') }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'notes-maintenance-app-status-reconciler-runtime' }), data: expect.objectContaining({ 'status-runtime.json': expect.stringContaining('sweep') }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'compact-diagnostics' }), data: expect.objectContaining({ terminalFailureStatus: expect.stringContaining('partialEffects') }) }),
@@ -749,7 +752,7 @@ describe('integrated TypeKro package surface', () => {
         expect.objectContaining({ apiGroups: ['batch'], resources: ['jobs', 'cronjobs'], verbs: ['get', 'list', 'watch'] }),
       ]) }),
     ]));
-    const maintenanceStatusConfigMap = multiJobComposition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'notes-maintenance-app-status-reconciler-status');
+    const maintenanceStatusConfigMap = maintenanceResources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'notes-maintenance-app-status-reconciler-status');
     expect(Reflect.get(maintenanceStatusConfigMap ?? {}, '__externalRef')).toBe(true);
   });
 
@@ -881,7 +884,7 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     });
 
-    expect(composition.resources).toEqual(expect.arrayContaining([
+    expect(plainValue(composition.resources)).toEqual(expect.arrayContaining([
       expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'notes-db', namespace: 'notes' }) }),
       expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'note-model-store', namespace: 'notes' }) }),
     ]));
@@ -910,7 +913,7 @@ describe('integrated TypeKro package surface', () => {
     const cluster = composition.resources.find((resource) => resource.apiVersion === 'postgresql.cnpg.io/v1' && resource.kind === 'Cluster');
     expect(cluster).toMatchObject({ metadata: { name: 'notes-authority', namespace: 'notes' } });
     expect(Reflect.get(cluster ?? {}, '__externalRef')).toBe(true);
-    expect(composition.resources).toEqual(expect.arrayContaining([
+    expect(plainValue(composition.resources)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         apiVersion: 'postgresql.cnpg.io/v1',
         kind: 'ScheduledBackup',
@@ -1397,7 +1400,7 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     });
 
-    expect(composition.resources).toEqual(expect.arrayContaining([
+    expect(plainValue(composition.resources)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         apiVersion: 'batch/v1',
         kind: 'Job',
@@ -1795,7 +1798,7 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     });
 
-    expect(composition.resources).toEqual(expect.arrayContaining([
+    expect(plainValue(composition.resources)).toEqual(expect.arrayContaining([
       expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', metadata: expect.objectContaining({ name: 'repair-accounts', namespace: 'maintenance' }) }),
       expect.objectContaining({ apiVersion: 'batch/v1', kind: 'CronJob', metadata: expect.objectContaining({ name: 'cleanup-accounts', namespace: 'maintenance', annotations: { 'applik8s.dev/missed-run-policy': 'failClosed' } }) }),
     ]));
@@ -1924,8 +1927,8 @@ describe('integrated TypeKro package surface', () => {
     const indexerSourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-indexer-source');
     const serverRole = composition.resources.find((resource) => resource.kind === 'Role' && resource.metadata.name === 'web');
     const indexerRole = composition.resources.find((resource) => resource.kind === 'Role' && resource.metadata.name === 'web-indexer');
-    expect(serverRole).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['create'] }] });
-    expect(indexerRole).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['get', 'list', 'watch'] }] });
+    expect(plainValue(serverRole)).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['create'] }] });
+    expect(plainValue(indexerRole)).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['get', 'list', 'watch'] }] });
     expect(JSON.stringify(sourceConfigMap)).toContain('applik8sServerRuntime');
     expect(JSON.stringify(sourceConfigMap)).toContain('hono');
     expect(JSON.stringify(sourceConfigMap)).toContain('server.mjs.map');
@@ -1971,7 +1974,9 @@ describe('integrated TypeKro package surface', () => {
     const kroYaml = composition.factory('kro').toYaml();
     expect(kroYaml).toContain('availableReplicas');
     expect(kroYaml).toContain('webDeployment.status.availableReplicas >= webDeployment.spec.replicas');
-    expect(kroYaml).toContain('phase: "${webDeployment.status.availableReplicas >= webDeployment.spec.replicas ?');
+    expect(kroYaml).toMatch(
+      /phase: ['"]\$\{webDeployment\.status\.availableReplicas >= webDeployment\.spec\.replicas \?/,
+    );
   });
 
   it('lowers operator watch scopes into app graph contracts and fails closed for unsupported selectors', () => {
@@ -2006,28 +2011,29 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     });
 
-    const operatorNode = applicationGraphFor(composition)?.nodes.find((node) => node.kind === 'operator' && node.name === 'watched-notes-controller');
-    expect(operatorNode).toMatchObject({
-      watches: expect.arrayContaining([
-        { kind: 'exact', ref: { apiVersion: 'notes.applik8s.dev/v1alpha1', kind: 'Note', name: 'one', namespace: 'notes' } },
-        { kind: 'finite', refs: expect.arrayContaining([{ apiVersion: 'notes.applik8s.dev/v1alpha1', kind: 'Note', name: 'two', namespace: 'notes' }]) },
-        { kind: 'labelSelector', apiVersion: 'notes.applik8s.dev/v1alpha1', resourceKind: 'Note', namespace: 'notes', labels: { app: 'notes' } },
-        { kind: 'fieldSelector', apiVersion: 'notes.applik8s.dev/v1alpha1', resourceKind: 'Note', namespace: 'notes', fieldSelector: 'metadata.name=one' },
-        { kind: 'mixed', scopes: [] },
-      ]),
-      watchContracts: expect.arrayContaining([
-        expect.objectContaining({ lowering: 'exact', failurePolicy: 'failClosed', permissions: expect.arrayContaining([expect.objectContaining({ resources: ['notes'], verbs: ['get', 'list', 'watch'] })]) }),
-        expect.objectContaining({ lowering: 'labelSelector', runtime: { mode: 'sharedInformer', resyncPolicy: 'bounded', cancellation: 'onScopeRemoved' } }),
-        expect.objectContaining({ lowering: 'mixed', permissions: [], diagnostics: expect.arrayContaining([expect.objectContaining({ event: 'applik8s-watch-scope-unlowerable', reason: 'UnsupportedLabelSelectorExpression', retryable: false })]) }),
-      ]),
-    });
+    composition.factory('kro').toYaml();
+    const operatorNode = plainValue(applicationGraphFor(composition))?.nodes.find((node) => node.kind === 'operator' && node.name === 'watched-notes-controller');
     if (operatorNode?.kind !== 'operator') {
       throw new Error('expected operator graph node');
     }
-    const unsupportedContract = operatorNode.watchContracts?.find((contract) => contract.diagnostics.some((diagnostic) => diagnostic.reason === 'UnsupportedLabelSelectorExpression'));
+    const watches = plainValue(operatorNode.watches);
+    const watchContracts = plainValue(operatorNode.watchContracts ?? []);
+    expect(watches).toEqual(expect.arrayContaining([
+      { kind: 'exact', ref: { apiVersion: 'notes.applik8s.dev/v1alpha1', kind: 'Note', name: 'one', namespace: 'notes' } },
+      { kind: 'finite', refs: expect.arrayContaining([{ apiVersion: 'notes.applik8s.dev/v1alpha1', kind: 'Note', name: 'two', namespace: 'notes' }]) },
+      { kind: 'labelSelector', apiVersion: 'notes.applik8s.dev/v1alpha1', resourceKind: 'Note', namespace: 'notes', labels: { app: 'notes' } },
+      { kind: 'fieldSelector', apiVersion: 'notes.applik8s.dev/v1alpha1', resourceKind: 'Note', namespace: 'notes', fieldSelector: 'metadata.name=one' },
+      { kind: 'mixed', scopes: [] },
+    ]));
+    expect(watchContracts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ lowering: 'exact', failurePolicy: 'failClosed', permissions: expect.arrayContaining([expect.objectContaining({ resources: ['notes'], verbs: ['get', 'list', 'watch'] })]) }),
+      expect.objectContaining({ lowering: 'labelSelector', runtime: { mode: 'sharedInformer', resyncPolicy: 'bounded', cancellation: 'onScopeRemoved' } }),
+      expect.objectContaining({ lowering: 'mixed', permissions: [], diagnostics: expect.arrayContaining([expect.objectContaining({ event: 'applik8s-watch-scope-unlowerable', reason: 'UnsupportedLabelSelectorExpression', retryable: false })]) }),
+    ]));
+    const unsupportedContract = watchContracts.find((contract) => contract.diagnostics.some((diagnostic) => diagnostic.reason === 'UnsupportedLabelSelectorExpression'));
     expect(unsupportedContract).toMatchObject({ lowering: 'mixed', permissions: [], failurePolicy: 'failClosed' });
     expect(unsupportedContract?.scope).toEqual({ kind: 'mixed', scopes: [] });
-    expect(operatorNode.watchContracts).not.toEqual(expect.arrayContaining([
+    expect(watchContracts).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ scope: expect.objectContaining({ kind: 'labelSelector', labels: {} }) }),
     ]));
   });
@@ -2338,7 +2344,7 @@ describe('integrated TypeKro package surface', () => {
     });
 
     const role = composition.resources.find((resource) => resource.kind === 'Role' && resource.metadata.name === 'web');
-    expect(role).toMatchObject({
+    expect(plainValue(role)).toMatchObject({
       rules: expect.arrayContaining([
         expect.objectContaining({
           apiGroups: ['notes.applik8s.dev'],
@@ -2378,7 +2384,7 @@ describe('integrated TypeKro package surface', () => {
 
     const role = composition.resources.find((resource) => resource.kind === 'Role' && resource.metadata.name === 'web');
     const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
-    expect(role).toMatchObject({
+    expect(plainValue(role)).toMatchObject({
       rules: expect.arrayContaining([
         expect.objectContaining({
           apiGroups: ['notes.applik8s.dev'],
@@ -2426,13 +2432,13 @@ describe('integrated TypeKro package surface', () => {
     const valkeyConnection = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'shared-index-applik8s-index');
     const indexer = composition.resources.find((resource) => resource.kind === 'Deployment' && resource.metadata.name === 'web-indexer');
     const serverSource = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
-    expect(valkey).toMatchObject({
+    expect(plainValue(valkey)).toMatchObject({
       metadata: { name: 'shared-index' },
       spec: { template: { spec: { containers: [expect.objectContaining({ name: 'valkey', image: 'valkey/valkey:8.1-alpine' })] } } },
     });
-    expect(valkeyService).toMatchObject({ spec: { ports: [{ name: 'valkey', port: 6379, targetPort: 6379 }] } });
-    expect(valkeyConnection).toMatchObject({ data: { backend: 'valkey', host: 'shared-index.default.svc.cluster.local', port: '6379' } });
-    expect(indexer).toMatchObject({ metadata: { name: 'web-indexer' } });
+    expect(plainValue(valkeyService)).toMatchObject({ spec: { ports: [{ name: 'valkey', port: 6379, targetPort: 6379 }] } });
+    expect(plainValue(valkeyConnection)).toMatchObject({ data: { backend: 'valkey', host: 'shared-index.default.svc.cluster.local', port: '6379' } });
+    expect(plainValue(indexer)).toMatchObject({ metadata: { name: 'web-indexer' } });
     expect(JSON.stringify(serverSource)).toContain('shared-index.default.svc.cluster.local');
     expect(composition.factory('kro').toYaml()).toContain('availableReplicas');
   });
@@ -2583,8 +2589,8 @@ describe('integrated TypeKro package surface', () => {
     expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'web-index' }) }));
     expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'Service', metadata: expect.objectContaining({ name: 'web-index' }) }));
     expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'web-indexer' }) }));
-    expect(role).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['create'] }] });
-    expect(indexerRole).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['get', 'list', 'watch'] }] });
+    expect(plainValue(role)).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['create'] }] });
+    expect(plainValue(indexerRole)).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['get', 'list', 'watch'] }] });
     expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const Note = resourceClients["Note"];') } });
     expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const byBook = indexClients["byBook"];') } });
     expect(sourceConfigMap).toMatchObject({ data: { 'route-post-notes-1.mjs': expect.stringContaining('function decoratedRouteMessage') } });
@@ -2625,7 +2631,7 @@ describe('integrated TypeKro package surface', () => {
     const role = composition.resources.find((resource) => resource.kind === 'Role' && resource.metadata.name === 'web');
     const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'web-source');
     expect(composition.operatorInstalls.map((install) => install.operatorName)).toContain('notes-controller-direct-call');
-    expect(role).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['create'] }] });
+    expect(plainValue(role)).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['create'] }] });
     expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const Note = resourceClients["Note"];') } });
   });
 
@@ -2712,7 +2718,7 @@ describe('integrated TypeKro package surface', () => {
     });
 
     const role = composition.resources.find((resource) => resource.kind === 'Role' && resource.metadata.name === 'web');
-    expect(role).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['create'] }] });
+    expect(plainValue(role)).toMatchObject({ rules: [{ apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['create'] }] });
   });
 
   it('fails closed for dynamic app.server resource client access', () => {
@@ -2792,7 +2798,7 @@ describe('integrated TypeKro package surface', () => {
     const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'note-stats-aggregate-source');
     expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'ServiceAccount', metadata: expect.objectContaining({ name: 'note-stats-aggregate' }) }));
     expect(composition.resources).toContainEqual(expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'note-stats-aggregate' }) }));
-    expect(role).toMatchObject({
+    expect(plainValue(role)).toMatchObject({
       rules: [
         { apiGroups: ['notes.applik8s.dev'], resources: ['notes'], verbs: ['get', 'list', 'watch'] },
         { apiGroups: ['notes.applik8s.dev'], resources: ['books/status'], verbs: ['patch'] },
@@ -2894,10 +2900,10 @@ describe('integrated TypeKro package surface', () => {
     const adapterPackage = JSON.parse(await readFile('packages/typekro-adapter/package.json', 'utf8'));
     const installedPackage = JSON.parse(await readFile('node_modules/typekro/package.json', 'utf8'));
 
-    expect(workspacePackage.dependencies.typekro).toBe('^0.28.1');
-    expect(applik8sPackage.dependencies.typekro).toBe('^0.28.1');
-    expect(adapterPackage.dependencies.typekro).toBe('^0.28.1');
-    expect(installedPackage.version).toBe('0.28.1');
+    expect(workspacePackage.dependencies.typekro).toBe('0.31.1');
+    expect(applik8sPackage.dependencies.typekro).toBe('0.31.1');
+    expect(adapterPackage.dependencies.typekro).toBe('0.31.1');
+    expect(installedPackage.version).toBe('0.31.1');
   });
 
   it('builds generated app infrastructure on existing TypeKro Kubernetes factories', async () => {
@@ -3386,6 +3392,11 @@ function noteObject(name: string, phase: string, creationTimestamp: string): obj
     spec: { message: `${name} says hi` },
     status: { phase },
   };
+}
+
+// typecast-boundary: the JSON round-trip deliberately strips framework proxies while preserving the caller's fixture contract.
+function plainValue<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 function artifactOnlyOperationTarget(options: { readonly apply?: boolean; readonly dryRun?: boolean } = {}): OperationTarget<{ readonly ready: boolean }> {

@@ -2,12 +2,13 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { ApplicationCommandProgress, ApplicationCommandSubmission } from '@applik8s/client';
 import type { JsonObject, JsonValue } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
-import postgres, { type Sql } from 'postgres';
 import type { ApplicationGatewayAdmission } from './application-reactive.js';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
 import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
 import { applicationRequestContextValues } from './command-principal.js';
-import { createJetStreamEventLog, type ApplicationEventLogPublisher, type JetStreamEventLogOptions } from './event-log-jetstream-runtime.js';
+import type { ApplicationEventLogPublisher } from './event-log-runtime.js';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
 import { applicationAdmittedContextDigest, applicationRelationalChangeScopes } from './relational-runtime.js';
 
 export interface ApplicationGatewayCommandRuntimeContract {
@@ -16,7 +17,7 @@ export interface ApplicationGatewayCommandRuntimeContract {
   readonly model: string;
   readonly inputSchema: JsonObject;
   readonly databaseUrl: string;
-  readonly sql?: Sql;
+  readonly sql?: ApplicationPostgresSql;
   readonly key: (input: object, context: {
     readonly principal: ApplicationQueryPrincipal;
     readonly authorizationVersion: string;
@@ -36,8 +37,7 @@ export interface ApplicationCommandGatewayOptions<TPrincipal extends Application
     readonly input: unknown;
   }) => boolean | Promise<boolean>;
   readonly cursorSecret: string;
-  readonly eventLog?: JetStreamEventLogOptions;
-  readonly eventLogPublisher?: Pick<ApplicationEventLogPublisher, 'publish' | 'drain'> & Partial<Pick<ApplicationEventLogPublisher, 'verify'>>;
+  readonly eventLogPublisher: Pick<ApplicationEventLogPublisher, 'publish' | 'drain'> & Partial<Pick<ApplicationEventLogPublisher, 'verify'>>;
   readonly cursorTtlSeconds?: number;
   readonly maxRequestBytes?: number;
   readonly now?: () => Date;
@@ -69,9 +69,8 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
   if (options.cursorSecret.length < 32) throw new Error('Application command gateway cursorSecret must contain at least 32 characters.');
   const commands = new Map(options.commands.map((command) => [command.id, command]));
   if (commands.size !== options.commands.length) throw new Error('Application command gateway command registrations must be unique.');
-  if (!options.eventLog && !options.eventLogPublisher) throw new Error('Application command gateway requires an EventLog provider.');
-  const publisher = options.eventLogPublisher ?? createJetStreamEventLog(requiredEventLog(options.eventLog));
-  const databases = new Map<string, Sql>();
+  const publisher = options.eventLogPublisher;
+  const databases = new Map<string, Promise<ApplicationPostgresSql>>();
   const now = options.now ?? (() => new Date());
   const cursorTtlSeconds = options.cursorTtlSeconds ?? 15 * 60;
   const maxRequestBytes = options.maxRequestBytes ?? 1024 * 1024;
@@ -131,7 +130,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
         const durableContext = applicationRequestContextValues(admission.principal, admission.authorizationVersion, admission.trustedContext);
         const contextDigest = applicationAdmittedContextDigest({ values: durableContext, digestSecret: options.cursorSecret });
         if (cursor.contextBinding !== cursorBinding(options.cursorSecret, 'context', contextDigest)) return json({ error: 'cursor_invalid' }, 400);
-        const sql = command.sql ?? database(databases, command.databaseUrl);
+        const sql = command.sql ?? await database(databases, command.databaseUrl);
         const rows = await sql.unsafe('SELECT output, error, model_revision FROM applik8s_command_results WHERE scope = $1 LIMIT 1', [cursor.durableScope]);
         const row = rows[0] as { readonly output?: unknown; readonly error?: unknown; readonly model_revision?: unknown } | undefined;
         if (!row) return json(progress(cursor, encoded, 'pending'), 200);
@@ -159,11 +158,11 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
     async ready() {
       await publisher.verify?.();
       await Promise.all(options.commands.map(async (command) => {
-        const sql = command.sql ?? database(databases, command.databaseUrl);
+        const sql = command.sql ?? await database(databases, command.databaseUrl);
         await sql.unsafe('SELECT 1 AS applik8s_ready');
       }));
     },
-    async close() { await Promise.all([publisher.drain(), ...[...databases.values()].map((sql) => sql.end({ timeout: 5 }))]); },
+    async close() { await Promise.all([publisher.drain(), ...[...databases.values()].map(async (sql) => (await sql).end({ timeout: 5 }))]); },
   };
 }
 
@@ -171,11 +170,6 @@ function commandRoute(request: Request): { readonly command: string; readonly op
   const parts = new URL(request.url).pathname.split('/').filter(Boolean);
   if (parts.length !== 3 || parts[0] !== 'commands' || (parts[2] !== 'submit' && parts[2] !== 'progress')) return undefined;
   return { command: decodeURIComponent(parts[1] ?? ''), operation: parts[2] };
-}
-
-function requiredEventLog(eventLog: JetStreamEventLogOptions | undefined): JetStreamEventLogOptions {
-  if (!eventLog) throw new Error('Application command gateway requires an EventLog provider.');
-  return eventLog;
 }
 
 async function admitted<TPrincipal extends ApplicationQueryPrincipal>(options: ApplicationCommandGatewayOptions<TPrincipal>, request: Request): Promise<ApplicationGatewayAdmission> {
@@ -192,7 +186,13 @@ function validateCommandInput(command: ApplicationGatewayCommandRuntimeContract,
 }
 
 function commandContract(id: string): { readonly name: string; readonly version: string } { const match = /^(.*)\.(v[1-9][0-9]*)$/.exec(id); if (!match?.[1] || !match[2]) throw new Error(`Application command ${id} is not versioned.`); return { name: match[1], version: match[2] }; }
-function database(databases: Map<string, Sql>, url: string): Sql { const existing = databases.get(url); if (existing) return existing; const sql = postgres(url, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false }); databases.set(url, sql); return sql; }
+function database(databases: Map<string, Promise<ApplicationPostgresSql>>, url: string): Promise<ApplicationPostgresSql> {
+  const existing = databases.get(url);
+  if (existing) return existing;
+  const sql = createApplicationPostgresSql(url, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
+  databases.set(url, sql);
+  return sql;
+}
 function requiredString(value: unknown, field: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`Application command ${field} is required.`); return value; }
 function progress(cursor: ProgressCursor, encoded: string, durableResult: 'pending' | 'succeeded' | 'rejected' | 'failed'): ApplicationCommandProgress { return { protocol: 'applik8s.command/v1alpha1', command: cursor.command, commandId: cursor.commandId, correlationId: cursor.correlationId, transport: 'acknowledged', durableResult, progressCursor: encoded, workflow: 'notStarted', reconciliation: durableResult === 'succeeded' ? 'progressing' : durableResult === 'failed' ? 'failed' : 'notObserved' }; }
 function durableRejection(value: unknown): { readonly name: string; readonly payload: unknown } { if (!value || typeof value !== 'object') return { name: 'unknown', payload: null }; const name = Reflect.get(value, 'name'); return { name: typeof name === 'string' ? name : 'unknown', payload: Reflect.get(value, 'payload') ?? null }; }

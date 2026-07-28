@@ -20,7 +20,8 @@ export { validateQueryInput, validateQueryOutput } from './application-query-run
 export type { ApplicationGatewayAdmission, ApplicationGatewayBinding, ApplicationGatewayOptions, ApplicationProjectionBinding, ApplicationProjectionOptions, ApplicationStreamBinding, ApplicationStreamOptions, ApplicationStreamProcessContext, ApplicationStreamProcessHandler, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding, ApplicationSubscriptionBinding, ApplicationSubscriptionOptions } from './application-reactive.js';
 export type { ApplicationCommandGateway, ApplicationCommandGatewayOptions, ApplicationGatewayCommandRuntimeContract } from './command-gateway.js';
 export { createApplicationCommandGateway } from './command-gateway.js';
-export { applicationCommandContextValues, applicationRequestContextValues } from './command-principal.js';
+export type { ApplicationEventLogConsumerLag, ApplicationEventLogPublisher, ApplicationMessageChannel, EventLogPublishAcknowledgement } from './event-log-runtime.js';
+export { applicationRequestContextValues } from './command-principal.js';
 export type { ApplicationCommandObservation, ApplicationMessageEnvelope, ApplicationStateRevisionRef, CommandDefinition, EventDefinition, StreamDefinition, TaskDefinition, WorkflowDefinition } from './dsl.js';
 export { command, event, stream, task, workflow } from './dsl.js';
 export type { ApplicationKubernetesInvalidation, ApplicationKubernetesListPage, ApplicationKubernetesSnapshot, ApplicationKubernetesSnapshotWatchClient, ApplicationKubernetesSnapshotWatchOptions, ApplicationKubernetesWatchEvent } from './kubernetes-query-authority.js';
@@ -29,8 +30,6 @@ export type { ApplicationKubernetesModelReader, ApplicationModelContext, Kuberne
 export { ApplicationModelContextBoundaryError, ApplicationModelReferenceMissingError, createApplicationModelContext } from './model-context.js';
 export type { ApplicationKubernetesCreatePlacement, ApplicationKubernetesCreatePolicy, ApplicationKubernetesCreateRequest, ApplicationModelCreateEvent, ApplicationModelCreateEventHandler, ApplicationModelDeleteEvent, ApplicationModelDeleteEventHandler, ApplicationModelDeleteInput, ApplicationModelIdentityContract, ApplicationModelLifecycleRegistrar, ApplicationModelReferenceContract, ApplicationModelReferenceSchema, ApplicationModelRelationshipContract, ApplicationModelRevisionContract, ApplicationModelSchemaSet, ApplicationModelSnapshot, ApplicationModelUpdateEvent, ApplicationModelUpdateEventHandler, ApplicationModelUpdateInput, CommonApplicationModelFacet, ConventionalTableIdentity, DrizzleApplicationModelFacet, DrizzleApplicationSchema, KubernetesApplicationModelFacet, PromoteDrizzleTableOptions, PromotedDrizzleTable, PromotedKubernetesResource, PromoteKubernetesResourceOptions } from './native-models.js';
 export { applicationModelFacet, applicationModelReference, applicationModelViewRegistrar, bindApplicationModelViews, getApplicationModelFacet, isPromotedApplicationModel, modelReferenceContract, promoteDrizzleTable, promoteKubernetesResource } from './native-models.js';
-export type { S3ApplicationObjectStorageRuntimeOptions } from './object-storage-s3-runtime.js';
-export { createS3ApplicationObjectStorageRuntime } from './object-storage-s3-runtime.js';
 export type { ApplicationProjectionCheckpoint, ApplicationProjectionStore, ApplicationReplayableStream, ApplicationReplayPage, ApplicationStreamEnvelope, ClickHouseAnalyticalProjectionReaderOptions, ClickHouseProjectionStoreOptions, RunApplicationProjectionOptions } from './projection-runtime-clickhouse.js';
 export { ApplicationAnalyticalProjectionNotConfiguredError, ApplicationProjectionRetentionGapError, createClickHouseAnalyticalProjectionReader, createClickHouseProjectionStore, runApplicationProjection } from './projection-runtime-clickhouse.js';
 export { createPostgresApplicationProjectionSnapshotSource } from './projection-snapshot-postgres-runtime.js';
@@ -55,5 +54,5 @@ export type { ApplicationPostgresRlsOptions, ApplicationPostgresRlsPolicy, Appli
 export { postgres, trustedContext, validateTrustedContextValue } from './trusted-context.js';
 export * from './typekro.js';
 export { typeKro } from './typekro.js';
-export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationWorkflowInvocationMetadata, ApplicationWorkflowObservationFailure, ApplicationWorkflowResultOptions, ApplicationWorkflowRun, ApplicationWorkflowRuntime } from './workflow-runtime.js';
+export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationWorkflowInvocationMetadata, ApplicationWorkflowObservationFailure, ApplicationWorkflowResultOptions, ApplicationWorkflowRun, ApplicationWorkflowRuntime, ApplicationWorkflowScheduleResult, ApplicationWorkflowScheduleSpec } from './workflow-runtime.js';
 export { ApplicationWorkflowObservationError, setApplicationWorkflowRuntimeFactory } from './workflow-runtime.js';

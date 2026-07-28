@@ -198,6 +198,8 @@ The v0.2 flagship TypeKro example remains available through `examples/guestbook.
 
 `app.expose(...)` accepts a generated server binding, a generated v0.6 gateway binding, or an explicit Service name. Binding the workload is preferred because Applik8s derives its generated Service name, namespace, and port. Managed TLS requires an explicit `Certificate` provider such as `Certificate.certManager(...)`; managed DNS requires an explicit `DnsPublication` provider such as `DnsPublication.externalDns()`. Those declarations create application-owned namespaced intent and do not install or own the cluster-wide controllers.
 
+TLS is one explicit ownership intent: `{ mode: "managed" }` asks the selected Certificate provider to own the Secret, `{ mode: "external", secretName }` references an externally owned Secret, and `{ mode: "disabled" }` requests plaintext transport. The former string-mode plus separate `tlsSecretName` shape has been removed so ownership cannot be inferred from two independent fields.
+
 No `dev` or `package` command is promised in v0.3.
 
 ## Native Model Lifecycle
@@ -221,8 +223,9 @@ A genuinely exceptional non-CRUD declaration derives both a direct `Model.<verb>
 identity, and committed revision through the same transactional outbox. It does not require an
 `.actions({...})` registry.
 
-`$model.on.command`, `$model.on.action`, and generic command registration remain compatibility-only during
-the v0.7 migration window and are scheduled for removal at 1.0. They are not the ordinary model API.
+`$model.on.command`, `$model.on.action`, and generic command registration are lower-level protocol and
+framework integration surfaces. They are not the ordinary model API and do not appear in golden-path
+examples.
 
 ## Resource Operations
 
@@ -244,11 +247,11 @@ The defaults are deliberately bounded: Postgres/CNPG for models; Valkey for inde
 
 “Broad provider implementations” can also mean multiple production-scale adapters behind each contract—for example S3 and GCS, several hosted queues, multiple SQL databases, secret managers, and several gateway choices. v0.3 does not require that catalog: it requires one working zero-configuration default for every native interface. `defaultApplicationProviders` exposes those choices, while `app.defaults(...)` and `app.provide(...)` remain override points.
 
-Applik8s consumes TypeKro 0.26 and re-exports its production Valkey, Rook/Ceph, and NATS/JetStream integration surfaces. These are explicit scale-up paths rather than unconditional defaults: operators and durable storage have platform lifecycle prerequisites, while data claims that cannot be reconciled safely by KRO remain direct-only. Keeping those lifecycle prerequisites explicit preserves the bounded-application contract.
+Applik8s consumes TypeKro 0.31 and re-exports its production Valkey, Rook/Ceph, and NATS/JetStream integration surfaces. These are explicit scale-up paths rather than unconditional defaults: operators and durable storage have platform lifecycle prerequisites, while data claims that cannot be reconciled safely by KRO remain direct-only. Keeping those lifecycle prerequisites explicit preserves the bounded-application contract.
 
 ## v0.4 Durable Behavior
 
-`command(...)`, `event(...)`, and the `EventLog` provider remain the versioned durable-message foundation introduced in v0.4. Promoted relational models now derive direct CRUD operations and typed committed lifecycle handlers; one exceptional `Model.action(...)` declaration derives a direct method and its completion stream. Both paths lower into PostgreSQL command authority, declared transactional outboxes, bounded generated processors, and JetStream transport. PostgreSQL owns idempotency and durable results; JetStream is at-least-once delivery. `Model.on.command(...)` is compatibility-only. See `docs/commands.md` for ordering, missing-target, revision, recovery, and effect-boundary semantics.
+`command(...)`, `event(...)`, and the `EventLog` provider remain the versioned durable-message foundation introduced in v0.4. Promoted relational models now derive direct CRUD operations and typed committed lifecycle handlers; one exceptional `Model.action(...)` declaration derives a direct method and its completion stream. Both paths lower into PostgreSQL command authority, declared transactional outboxes, bounded generated processors, and JetStream transport. PostgreSQL owns idempotency and durable results; JetStream is at-least-once delivery. `Model.on.command(...)` is the lower-level explicit-protocol registrar; ordinary domain code uses direct lifecycle mutations or `Model.action(...)`. See `docs/commands.md` for ordering, missing-target, revision, recovery, and effect-boundary semantics.
 
 ## v0.5 Durable Tasks and Workflows
 

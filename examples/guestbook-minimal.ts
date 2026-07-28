@@ -106,7 +106,7 @@ const web = application.http(
 export const guestBookMinimalExposure = application.expose('web', {
   service: web,
   hostnames: ['guestbook.localhost'],
-  tls: 'disabled',
+  tls: { mode: 'disabled' },
 });
 
 export const guestBookMinimalStack = application.composition;

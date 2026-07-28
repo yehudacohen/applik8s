@@ -5,7 +5,10 @@ import { dirname, join } from 'node:path';
 import { applicationGraphFor } from '@applik8s/applik8s';
 import type { ApplicationGraph, ApplicationGraphNode, JsonObject } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
-import { emitGeneratedApplicationReactive } from '../src/application-reactive/index.js';
+import {
+  consolidateGeneratedApplicationReactiveResources,
+  emitGeneratedApplicationReactive,
+} from '../src/application-reactive/index.js';
 import { compileTypeKroComposition } from '../src/pipeline/index.js';
 import { nativeQueryApplication } from './fixtures/v06-native-query-app.js';
 
@@ -72,8 +75,8 @@ describe('generated v0.6 reactive workloads', () => {
       expect(applyScript).toContain("wait_for_api_resource 'kro.run' 'ClickHouseOperatorBootstrap'");
       expect(applyScript).toContain('metadata.deletionTimestamp');
       expect(applyScript).toContain('Waiting for terminating resource');
-      expect(applyScript).toContain('APPLIK8S_FORCE_RGD_NAME');
-      expect(applyScript).toContain('--force-conflicts --field-manager="$FIELD_MANAGER"');
+      expect(applyScript).not.toContain('APPLIK8S_FORCE_RGD_NAME');
+      expect(applyScript).not.toContain('--force-conflicts');
       expect(applyScript).toContain('wait_for_resource_graph_definition "$manifest"');
       expect(applyScript).toContain('GraphAccepted');
       expect(applyScript).toContain('.observedGeneration');
@@ -86,15 +89,41 @@ describe('generated v0.6 reactive workloads', () => {
   it('bundles a normal app-scoped Drizzle query without an example-only graph fixture', async () => {
     const graph = applicationGraphFor(nativeQueryApplication.composition);
     if (!graph) throw new Error('Native query fixture did not expose its ApplicationGraph.');
+    const gateway = graph.nodes.find((node) => node.kind === 'gateway');
+    if (gateway?.kind !== 'gateway') throw new Error('Native query fixture did not expose its query gateway.');
+    const duplicatedGatewayGraph: ApplicationGraph = {
+      ...graph,
+      nodes: [
+        ...graph.nodes,
+        { ...gateway, id: 'gateway.internal', name: 'internal' },
+      ],
+    };
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-native-query-gateway-'));
 
-    const [artifact] = await emitGeneratedApplicationReactive({ graph, outDir, entrypoint: new URL('./fixtures/v06-native-query-app.ts', import.meta.url).pathname });
+    const artifacts = await emitGeneratedApplicationReactive({ graph: duplicatedGatewayGraph, outDir, entrypoint: new URL('./fixtures/v06-native-query-app.ts', import.meta.url).pathname });
+    const artifact = artifacts.find((entry) => entry.name === 'native-query-fixture-public');
 
     expect(artifact).toMatchObject({ kind: 'queryGateway', name: 'native-query-fixture-public' });
     expect(artifact?.sizeBytes).toBeLessThan(550_000);
     const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
     expect(source).toContain('cards');
     expect(source).not.toContain('typekro');
+    expect(source).toContain('APPLIK8S_HTTP_PORT');
+    const consolidated = consolidateGeneratedApplicationReactiveResources({
+      graphName: graph.metadata.name,
+      artifacts,
+    });
+    const deployment = consolidated.find((resource) => resource.kind === 'Deployment');
+    expect(consolidated.filter((resource) => resource.kind === 'Deployment')).toHaveLength(1);
+    expect(consolidated.filter((resource) => resource.kind === 'Service')).toHaveLength(2);
+    expect(deployment).toMatchObject({
+      metadata: { labels: { 'app.kubernetes.io/component': 'query-gateway' } },
+      spec: { strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } } },
+    });
+    expect(JSON.stringify(deployment)).toContain('"name":"APPLIK8S_HTTP_PORT","value":"8080"');
+    expect(JSON.stringify(deployment)).toContain('"name":"APPLIK8S_HTTP_PORT","value":"8081"');
+    expect(JSON.stringify(consolidated)).toContain('"targetPort":"http-0"');
+    expect(JSON.stringify(consolidated)).toContain('"targetPort":"http-1"');
   });
 
   it('follows fluent view callbacks and their Drizzle dependencies through a thin imported entrypoint', async () => {
@@ -283,11 +312,13 @@ describe('generated v0.6 reactive workloads', () => {
 			workflowEngine: { interface: 'WorkflowEngine', nodeId: workflowProvider.id },
 			handlerSource: 'async (payload, context) => { if (context.principal?.id && context.trustedContext.tenantId) await context.tasks.inspect({ cardId: payload.cardId }); }',
     } as const;
-    const [artifact] = await emitGeneratedApplicationReactive({
-			graph: reactiveGraph([workflowProvider, inspectTask, stream, processor] as unknown as ApplicationGraphNode[]),
+    const auditProcessor = { ...processor, id: 'streamProcessor.card-audit', name: 'card-audit' } as const;
+    const artifacts = await emitGeneratedApplicationReactive({
+			graph: reactiveGraph([workflowProvider, inspectTask, stream, processor, auditProcessor] as unknown as ApplicationGraphNode[]),
       outDir: await mkdtemp(join(tmpdir(), 'applik8s-reactive-processor-context-')),
       entrypoint: import.meta.filename,
     });
+    const artifact = artifacts.find((entry) => entry.name === 'reactive-test-card-timeline');
 
     expect(artifact).toMatchObject({ kind: 'streamProcessorWorker', name: 'reactive-test-card-timeline' });
     expect(artifact?.resources.find((resource) => resource.kind === 'Deployment')).toMatchObject({
@@ -312,24 +343,96 @@ describe('generated v0.6 reactive workloads', () => {
 		expect(generatedSource).toContain("output, name, 'output'");
 		expect(artifact?.resources.find((resource) => resource.kind === 'Deployment')).toMatchObject({ spec: { template: { spec: { containers: [expect.objectContaining({ env: expect.arrayContaining([
 			{ name: 'HATCHET_CLIENT_TOKEN', valueFrom: { secretKeyRef: { name: 'hatchet-worker', key: 'HATCHET_CLIENT_TOKEN' } } },
-		]) })] } } } });
+			{ name: 'APPLIK8S_WORKFLOW_TOKEN_FILE', value: '/var/run/secrets/applik8s/workflow-token/token' },
+		]), volumeMounts: [{ name: 'workflow-token', mountPath: '/var/run/secrets/applik8s/workflow-token', readOnly: true }] })], volumes: [{
+			name: 'workflow-token',
+			secret: { secretName: 'hatchet-worker', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] },
+		}] } } } });
+    const consolidated = consolidateGeneratedApplicationReactiveResources({
+      graphName: 'reactive-test',
+      artifacts,
+    });
+    const consolidatedDeployment = consolidated.find((resource) => resource.kind === 'Deployment');
+    expect(consolidatedDeployment).toMatchObject({
+      metadata: { annotations: { 'applik8s.dev/include-when': 'false' } },
+      spec: {
+        template: {
+          metadata: {
+            annotations: {
+              'applik8s.dev/workload-members': 'reactive-test-card-audit,reactive-test-card-timeline',
+            },
+          },
+          spec: {
+						containers: [
+							expect.objectContaining({
+								env: expect.arrayContaining([{ name: 'APPLIK8S_WORKFLOW_TOKEN_FILE', value: '/var/run/secrets/applik8s/workflow-token/token' }]),
+								volumeMounts: [{ name: 'workflow-token', mountPath: '/var/run/secrets/applik8s/workflow-token', readOnly: true }],
+							}),
+							expect.objectContaining({
+								env: expect.arrayContaining([{ name: 'APPLIK8S_WORKFLOW_TOKEN_FILE', value: '/var/run/secrets/applik8s/workflow-token/token' }]),
+								volumeMounts: [{ name: 'workflow-token', mountPath: '/var/run/secrets/applik8s/workflow-token', readOnly: true }],
+							}),
+						],
+						volumes: [{
+							name: 'workflow-token',
+							secret: { secretName: 'hatchet-worker', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] },
+						}],
+					},
+        },
+      },
+    });
+    expect(JSON.stringify((consolidatedDeployment?.spec?.template as { readonly metadata?: unknown } | undefined)?.metadata))
+      .not.toContain('applik8s.dev/include-when');
   });
 
   it('bundles a durable PostgreSQL-to-ClickHouse projection and fails closed on unresolved callbacks', async () => {
     const provider = { id: 'provider.projection-store', kind: 'provider', name: 'ProjectionStore', stability: 'stable', interface: 'ProjectionStore', implementation: 'clickhouse', contract: { apiVersion: 'applik8s.provider/v1alpha1', interface: 'ProjectionStore', version: 'v1alpha1', requirements: [], guarantees: [], implementation: { name: 'clickhouse' }, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] }, config: { namespace: 'catalog', endpoint: 'http://clickhouse.catalog.svc:8123', database: 'analytics' } } as const;
     const stream = { id: 'stream.cards.changed.v1', kind: 'stream', name: 'cards.changed', version: 'v1', stability: 'stable', payload: schema({ type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] }), authority: 'postgres-outbox', delivery: 'at-least-once', replay: 'supported', retention: { maxAgeSeconds: 3600 }, partitioning: 'declared', compatibility: 'versioned-schema', authorization: 'application-defined', database, partitionSource: '(payload) => payload.cardId', authorizationSource: '() => { throw new Error("projection-stream-authorization-proof"); }' } as const;
     const projection = { id: 'projection.cards', kind: 'projection', name: 'cards', stability: 'stable', source: { nodeId: stream.id }, provider: { interface: 'ProjectionStore', nodeId: provider.id }, rebuildable: true, checkpoint: 'idempotent', output: schema({ type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] }), eventIdentity: 'stable-source-event-id', duplicateHandling: 'idempotent', rebuild: 'full-replay', handlerSource: '(payload) => payload' } as const;
+    const summaryProjection = { ...projection, id: 'projection.card-summaries', name: 'card-summaries' } as const;
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-reactive-projection-'));
-    const [artifact] = await emitGeneratedApplicationReactive({ graph: reactiveGraph([provider, stream, projection] as unknown as ApplicationGraphNode[]), outDir, entrypoint: import.meta.filename });
+    const artifacts = await emitGeneratedApplicationReactive({ graph: reactiveGraph([provider, stream, projection, summaryProjection] as unknown as ApplicationGraphNode[]), outDir, entrypoint: import.meta.filename });
+    const artifact = artifacts.find((entry) => entry.name === 'reactive-test-cards');
     expect(artifact).toMatchObject({ kind: 'projectionWorker', name: 'reactive-test-cards' });
     expect(artifact?.resources.find((resource) => resource.kind === 'Deployment')).toMatchObject({ spec: { strategy: { type: 'Recreate' } } });
     const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
+    expect(source).toContain('APPLIK8S_HEALTH_PORT');
     expect(source).toContain('APPLIK8S_PROJECTION_RETENTION_GAP');
     expect(source).toContain('APPLIK8S_CLICKHOUSE_DATABASE');
     expect(JSON.stringify(artifact?.resources)).toContain('"name":"APPLIK8S_CLICKHOUSE_DATABASE","value":"analytics"');
     expect(source).toContain('applik8s:projection:cards');
     expect(source).toContain('internalConsumer');
     expect(source).not.toContain('projection-stream-authorization-proof');
+    const consolidated = consolidateGeneratedApplicationReactiveResources({
+      graphName: 'reactive-test',
+      artifacts,
+    });
+    const deployments = consolidated.filter((resource) => resource.kind === 'Deployment');
+    expect(deployments).toHaveLength(1);
+    expect(deployments[0]).toMatchObject({
+      metadata: {
+        labels: { 'app.kubernetes.io/component': 'reactive-worker' },
+      },
+      spec: {
+        strategy: { type: 'Recreate' },
+      },
+    });
+    const consolidatedContainers = ((deployments[0]?.spec?.template as { readonly spec?: { readonly containers?: readonly unknown[] } } | undefined)?.spec?.containers ?? []);
+    expect(consolidatedContainers).toEqual([
+      expect.objectContaining({
+        name: 'reactive-test-card-summaries',
+        env: expect.arrayContaining([{ name: 'APPLIK8S_HEALTH_PORT', value: '8080' }]),
+        readinessProbe: { httpGet: { path: '/ready', port: 'health-0' }, periodSeconds: 5, failureThreshold: 6 },
+      }),
+      expect.objectContaining({
+        name: 'reactive-test-cards',
+        env: expect.arrayContaining([{ name: 'APPLIK8S_HEALTH_PORT', value: '8081' }]),
+        readinessProbe: { httpGet: { path: '/ready', port: 'health-1' }, periodSeconds: 5, failureThreshold: 6 },
+      }),
+    ]);
+    expect(consolidated.filter((resource) => resource.kind === 'NetworkPolicy')).toHaveLength(1);
+    expect(JSON.stringify(consolidated)).toContain('"port":8080');
+    expect(JSON.stringify(consolidated)).toContain('"port":8081');
     await expect(emitGeneratedApplicationReactive({ graph: reactiveGraph([provider, stream, { ...projection, handlerUnresolved: ['localHelper'] }] as unknown as ApplicationGraphNode[]), outDir: join(outDir, 'invalid'), entrypoint: import.meta.filename })).rejects.toThrow(/unresolved local identifier/);
   });
 

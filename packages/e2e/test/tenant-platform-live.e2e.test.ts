@@ -2,7 +2,8 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { canonicalApplicationCommandKey, eventLogSubject } from '@applik8s/applik8s/processor-runtime';
+import { canonicalApplicationCommandKey } from '@applik8s/applik8s/processor-runtime';
+import { eventLogSubject } from '@applik8s/runtime-nats';
 import { buildImplicitRuntimeImage } from '@applik8s/compiler';
 import type { OperatorManifest } from '@applik8s/core';
 import { type } from 'arktype';
@@ -38,7 +39,10 @@ let deleteKroApplicationInstance: ((instance: AppInstanceRef) => Promise<void>) 
 let deleteJetStreamInfrastructure: (() => Promise<void>) | undefined;
 let deleteDisposableNamespaceWithTypeKro: (() => Promise<void>) | undefined;
 
-const disposableNamespaceComposition = kubernetesComposition(
+const disposableNamespaceComposition = kubernetesComposition<
+  { name: string },
+  { ready: boolean }
+>(
   {
     name: 'applik8s-e2e-disposable-namespace',
     apiVersion: 'testing.applik8s.dev/v1alpha1',

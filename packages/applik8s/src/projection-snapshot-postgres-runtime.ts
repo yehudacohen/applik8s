@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto';
 import type { ApplicationModelRuntimeContract } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
-import postgres, { type Sql } from 'postgres';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
 
 export interface ApplicationProjectionSnapshotItem<TPayload extends object> {
   readonly id: string;
@@ -29,7 +30,7 @@ export interface ApplicationProjectionSnapshotSource<TPayload extends object> {
 
 export interface PostgresApplicationProjectionSnapshotOptions<TModel extends object, TPayload extends object> {
   readonly databaseUrl?: string;
-  readonly sql?: Sql;
+  readonly sql?: ApplicationPostgresSql;
   readonly model: Pick<ApplicationModelRuntimeContract, 'name' | 'tableName' | 'nativeRelational'>;
   readonly stream: { readonly name: string; readonly version: string };
   readonly payload: SchemaInput<TPayload>;
@@ -49,7 +50,7 @@ export function createPostgresApplicationProjectionSnapshotSource<TModel extends
   const relation = options.model.nativeRelational;
   if (!relation || relation.columns.length === 0) throw new Error(`Projection snapshot source ${options.model.name} must be a promoted native relational model.`);
   const ownsClient = !options.sql;
-  const client = options.sql ?? postgres(options.databaseUrl as string, { max: 1, idle_timeout: 20, connect_timeout: 10, prepare: false });
+  const client = options.sql ? Promise.resolve(options.sql) : createApplicationPostgresSql(options.databaseUrl as string, { max: 1, idle_timeout: 20, connect_timeout: 10, prepare: false });
   const payloadSchema = normalizeSchema(options.payload, `${options.stream.name}.${options.stream.version}.snapshot-payload`);
   const emittedPayload = payloadSchema.emitJsonSchema();
   const definitionDigest = createHash('sha256').update(JSON.stringify({
@@ -74,7 +75,7 @@ export function createPostgresApplicationProjectionSnapshotSource<TModel extends
       const maxItems = boundedInteger(scan.maxItems, 1, 100_000_000, 'maxItems');
       const maxDurationMs = boundedInteger(scan.maxDurationMs ?? 3_600_000, 1_000, 3_600_000, 'maxDurationMs');
       const startedAt = Date.now();
-      return client.begin(async (transaction) => {
+      return (await client).begin(async (transaction) => {
         await transaction.unsafe('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
         const watermarkRows = await transaction.unsafe(
           "SELECT coalesce(max(sequence), 0) AS sequence, coalesce(max(recorded_at), to_timestamp(0)) AS recorded_at FROM applik8s_public_stream_events WHERE contract_name = $1 AND contract_version = $2",
@@ -119,7 +120,7 @@ export function createPostgresApplicationProjectionSnapshotSource<TModel extends
       });
     },
     async close() {
-      if (ownsClient) await client.end({ timeout: 5 });
+      if (ownsClient) await (await client).end({ timeout: 5 });
     },
   };
 }

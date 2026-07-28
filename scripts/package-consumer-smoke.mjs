@@ -12,6 +12,7 @@ await execFileAsync(process.execPath, [join(root, 'scripts/build-publishable-pac
 console.log('Package consumer smoke: built publishable packages.');
 const packageDirs = publishablePackageDirectories;
 const publicEntrypoints = [
+  '@applik8s/cli',
   '@applik8s/applik8s',
   '@applik8s/applik8s/operator',
   '@applik8s/applik8s/dsl',
@@ -19,6 +20,8 @@ const publicEntrypoints = [
   '@applik8s/applik8s/typekro',
   '@applik8s/applik8s/factories',
   '@applik8s/applik8s/processor-runtime',
+  '@applik8s/applik8s/event-log-runtime',
+  '@applik8s/applik8s/postgres-runtime-contract',
   '@applik8s/applik8s/dns',
   '@applik8s/client',
   '@applik8s/react',
@@ -28,11 +31,26 @@ const publicEntrypoints = [
   '@applik8s/tanstack-start/server',
   '@applik8s/tanstack-start/vite',
   '@applik8s/core',
+  '@applik8s/deployment-contract',
+  '@applik8s/deployment-compiler',
+  '@applik8s/deployment-typekro',
+  '@applik8s/deployment-provider-harbor',
+  '@applik8s/deployment-provider-kubernetes',
+  '@applik8s/deployment-provider-oci',
+  '@applik8s/deployment-alchemy',
   '@applik8s/sdk',
   '@applik8s/compiler',
+  '@applik8s/compiler/diagnostics',
   '@applik8s/compiler/kubernetes-schema',
   '@applik8s/runtime-contract',
   '@applik8s/runtime',
+  '@applik8s/runtime-s3',
+  '@applik8s/runtime-hatchet',
+  '@applik8s/runtime-nats',
+  '@applik8s/runtime-nats/event-log',
+  '@applik8s/runtime-nats/command-processor',
+  '@applik8s/runtime-kubernetes',
+  '@applik8s/runtime-postgres',
   '@applik8s/testing',
   '@applik8s/typekro-adapter',
   '@applik8s/typekro-adapter/targets',
@@ -186,7 +204,7 @@ export const smoke = sdk.operator({ name: 'packed-smoke', deployment: { namespac
   const binDir = join(consumerModules, '.bin');
   await mkdir(binDir, { recursive: true });
   const executable = join(binDir, 'applik8s');
-  await symlink(join(consumerModules, '@applik8s/applik8s/dist/bin.js'), executable);
+  await symlink(join(consumerModules, '@applik8s/cli/dist/bin.js'), executable);
   const help = await execFileAsync(executable, ['--help'], { cwd: consumerDir });
   if (!help.stdout.includes('Usage: applik8s')) throw new Error('Packed applik8s executable did not render help.');
   await execFileAsync(executable, ['build', operatorPath, '--out-dir', outDir, '--operator-name', 'packed-smoke'], { cwd: consumerDir, maxBuffer: 20 * 1024 * 1024 });

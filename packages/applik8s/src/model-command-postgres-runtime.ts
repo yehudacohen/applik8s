@@ -3,7 +3,6 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { ApplicationRetryPolicy, JsonObject, JsonValue } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
-import postgres from 'postgres';
 import type { ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationRuntimeModelContract } from './application-models.js';
 import { applicationCommandPrincipal, applicationCommandTrustedContext } from './command-principal.js';
 import { applicationPublicStreamCommitScope } from './application-stream-commit.js';
@@ -11,6 +10,8 @@ import { applicationCommandScope, canonicalApplicationCommandKey } from './comma
 import type { ApplicationCommandObservation, ApplicationMessageEnvelope, ApplicationStateRevisionRef, CommandDefinition, EventDefinition } from './dsl.js';
 import { applicationRelationalChangeScopeDigest } from './relational-runtime.js';
 import { applicationModelChangeCommitScope } from './relational-runtime-contract.js';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from './postgres-runtime-contract.js';
 
 export { canonicalApplicationCommandKey } from './command-runtime-contract.js';
 
@@ -82,7 +83,7 @@ export interface PostgresModelCommandTerminalFailureExecution<TInput extends obj
   readonly message: PostgresModelCommandMessage<TInput>;
   readonly databaseUrl?: string;
   /** Focused runtime/test injection; generated workers use databaseUrl. */
-  readonly sql?: postgres.Sql;
+  readonly sql?: ApplicationPostgresSql;
 }
 
 export interface ApplicationCommandTerminalFailure {
@@ -145,14 +146,14 @@ interface EmittedCommand {
   readonly idempotencyKey: string;
 }
 
-const commandConnections = new Map<string, postgres.Sql>();
+const commandConnections = new Map<string, Promise<ApplicationPostgresSql>>();
 const commandEffectBoundary = new AsyncLocalStorage<boolean>();
 let commandEffectGuardsInstalled = false;
 
 export async function closePostgresModelCommandRuntime(): Promise<void> {
   const clients = [...commandConnections.values()];
   commandConnections.clear();
-  await Promise.all(clients.map((client) => client.end({ timeout: 1 })));
+  await Promise.all(clients.map(async (client) => (await client).end({ timeout: 1 })));
 }
 
 /**
@@ -167,7 +168,7 @@ export async function recordPostgresModelCommandTerminalFailure<TInput extends o
   if (!Number.isSafeInteger(failure.attempts) || failure.attempts < 1) {
     throw new Error('applik8s-command-terminal-failure-attempts-invalid: attempts must be a positive safe integer.');
   }
-  const sql = execution.sql ?? postgresCommandDatabase(execution.model, execution.databaseUrl);
+  const sql = execution.sql ?? await postgresCommandDatabase(execution.model, execution.databaseUrl);
   const scope = commandScope(execution);
   const revision = commandDeterministicId(scope, 'terminal-failure');
   await sql.begin(async (transaction) => {
@@ -193,7 +194,7 @@ export async function executePostgresModelCommand<
 >(execution: PostgresModelCommandExecution<TSpec, TStatus, TInput, TOutput>): Promise<PostgresModelCommandResult<TSpec, TStatus, TOutput>> {
   installCommandEffectGuards();
   validateJsonMessageSchema(execution.schemas?.input, execution.message.input, `${execution.command.name}.${execution.command.version}.input`);
-  const sql = postgresCommandDatabase(execution.model, execution.databaseUrl);
+  const sql = await postgresCommandDatabase(execution.model, execution.databaseUrl);
   const scope = commandScope(execution);
   const recordedAt = execution.message.recordedAt ?? new Date().toISOString();
   const outcome: PostgresModelCommandResult<TSpec, TStatus, TOutput> | RejectedCommandOutcome = await retryPostgresCommandTransaction(() => sql.begin(async (transaction) => {
@@ -596,7 +597,7 @@ function modelSpecAtRevision<TSpec extends object>(model: ApplicationRuntimeMode
 }
 
 function commandParticipantClients(
-  transaction: postgres.TransactionSql,
+  transaction: ApplicationPostgresTransactionSql,
   execution: Pick<PostgresModelCommandExecution<object, object, object, object>, 'bindingId' | 'historyModels' | 'message' | 'model' | 'models' | 'selfRead'>,
   scope: string,
 ): Readonly<Record<string, ApplicationModelCommandParticipantClient>> {
@@ -677,7 +678,7 @@ export function isDurableCommandRejectedError(error: unknown): error is DurableC
 }
 
 async function recordCommandRejection<TInput extends object>(
-  transaction: postgres.TransactionSql,
+  transaction: ApplicationPostgresTransactionSql,
   execution: Pick<PostgresModelCommandExecution<object, object, TInput, object>, 'bindingId' | 'message' | 'model'>,
   scope: string,
   rejection: { readonly name: string; readonly payload: object },
@@ -742,7 +743,7 @@ function concurrentCommandModification(): Error & { readonly code: string } {
   return error;
 }
 
-function postgresCommandDatabase(model: ApplicationRuntimeModelContract, databaseUrl: string | undefined): postgres.Sql {
+function postgresCommandDatabase(model: ApplicationRuntimeModelContract, databaseUrl: string | undefined): Promise<ApplicationPostgresSql> {
   const url = databaseUrl ?? process.env[model.connectionEnvName] ?? process.env.DATABASE_URL;
   if (!url) {
     throw new Error(`applik8s-modelstore-missing-credentials: Command processor for ${model.name} requires ${model.connectionEnvName} or DATABASE_URL.`);
@@ -752,14 +753,14 @@ function postgresCommandDatabase(model: ApplicationRuntimeModelContract, databas
   if (current) {
     return current;
   }
-  const client = postgres(url, { max: 5 });
+  const client = createApplicationPostgresSql(url, { max: 5 });
   commandConnections.set(key, client);
   return client;
 }
 
 // typecast-boundary: PostgreSQL's untyped row is converted through the registered native column contract before returning generic model data.
 async function lockedModelObject<TSpec extends object, TStatus extends object>(
-  transaction: postgres.TransactionSql,
+  transaction: ApplicationPostgresTransactionSql,
   model: ApplicationRuntimeModelContract,
   targetKey: string,
   lock: boolean,
@@ -795,7 +796,7 @@ async function lockedModelObject<TSpec extends object, TStatus extends object>(
 }
 
 async function lockedModelObjects<TSpec extends object, TStatus extends object>(
-  transaction: postgres.TransactionSql,
+  transaction: ApplicationPostgresTransactionSql,
   model: ApplicationRuntimeModelContract,
   query: ApplicationModelQueryOptions<TSpec> & { readonly limit: number },
 ): Promise<ApplicationModelQueryPage<TSpec, TStatus>> {
@@ -862,7 +863,7 @@ function commandTarget<TSpec extends object, TStatus extends object>(
 }
 
 async function insertModelObject<TSpec extends object, TStatus extends object>(
-  transaction: postgres.TransactionSql,
+  transaction: ApplicationPostgresTransactionSql,
   model: ApplicationRuntimeModelContract,
   value: ApplicationModelObject<TSpec, TStatus>,
   ignoreConflict: boolean,
@@ -884,7 +885,7 @@ async function insertModelObject<TSpec extends object, TStatus extends object>(
 }
 
 async function updateModelObject<TSpec extends object, TStatus extends object>(
-  transaction: postgres.TransactionSql,
+  transaction: ApplicationPostgresTransactionSql,
   model: ApplicationRuntimeModelContract,
   before: ApplicationModelObject<TSpec, TStatus>,
   after: ApplicationModelObject<TSpec, TStatus>,
@@ -914,7 +915,7 @@ async function updateModelObject<TSpec extends object, TStatus extends object>(
 }
 
 async function deleteModelObject<TSpec extends object, TStatus extends object>(
-  transaction: postgres.TransactionSql,
+  transaction: ApplicationPostgresTransactionSql,
   model: ApplicationRuntimeModelContract,
   before: ApplicationModelObject<TSpec, TStatus>,
   locked: boolean,
@@ -953,7 +954,7 @@ function durableModelSnapshot<TSpec extends object, TStatus extends object>(valu
 }
 
 async function installCommandTrustedContext(
-  transaction: postgres.TransactionSql,
+  transaction: ApplicationPostgresTransactionSql,
   model: ApplicationRuntimeModelContract,
   context: PostgresModelCommandMessage<object>['context'],
 ): Promise<void> {
@@ -972,7 +973,7 @@ async function installCommandTrustedContext(
 }
 
 async function recordGenericModelChange(
-  transaction: postgres.TransactionSql,
+  transaction: ApplicationPostgresTransactionSql,
   model: ApplicationRuntimeModelContract,
   identity: string,
   revision: string,
@@ -1025,14 +1026,14 @@ function commandDeterministicId(scope: string, purpose: string): string {
   return createHash('sha256').update(`${scope}:${purpose}`).digest('hex');
 }
 
-function postgresJson(transaction: postgres.TransactionSql, value: unknown): ReturnType<postgres.TransactionSql['json']> {
+function postgresJson(transaction: ApplicationPostgresTransactionSql, value: unknown): unknown {
   const serialized = JSON.stringify(value);
   if (serialized === undefined) {
     throw new Error('applik8s-command-json-invalid: Durable command state, results, and outbox payloads must be JSON serializable.');
   }
   const normalized: unknown = JSON.parse(serialized);
   // typecast: JSON.parse of a defined JSON.stringify result satisfies postgres-js's recursive JSONValue contract.
-  return transaction.json(normalized as Parameters<postgres.TransactionSql['json']>[0]);
+  return transaction.json(normalized);
 }
 
 function quoteIdentifier(value: string): string {

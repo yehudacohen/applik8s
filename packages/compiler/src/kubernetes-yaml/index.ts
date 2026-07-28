@@ -50,7 +50,7 @@ export async function emitOperatorKubernetesYaml(request: KubernetesYamlRequest)
       : [];
     const namespacedPermissions = clusterRbac ? connectionSecretPermissions : request.manifest.spec.permissions;
     const documents = [
-      ...ownedResources.map((resource) => crdDocument(resource, request.manifest)),
+      ...ownedResources.map((resource) => crdDocument(resource)),
       serviceAccountDocument(serviceAccountName, namespace, request.manifest),
       ...(clusterPermissions.length > 0 ? [
         rbacRoleDocument(request.operator.name, clusterPermissions, namespace, true, request.manifest),
@@ -187,13 +187,13 @@ export function validateGeneratedKubernetesDocuments(documents: readonly Kuberne
   return { ok: true, value: diagnostics };
 }
 
-function crdDocument(resource: AnyResourceDefinition, manifest: OperatorManifest): V1CustomResourceDefinition {
+function crdDocument(resource: AnyResourceDefinition): V1CustomResourceDefinition {
   const { group } = splitApiVersion(resource.apiVersion);
 
   return {
     apiVersion: 'apiextensions.k8s.io/v1',
     kind: 'CustomResourceDefinition',
-    metadata: metadata(`${resource.plural}.${group}`, undefined, manifest),
+    metadata: sharedCrdMetadata(`${resource.plural}.${group}`),
     spec: {
       group,
       scope: resource.scope,
@@ -204,6 +204,20 @@ function crdDocument(resource: AnyResourceDefinition, manifest: OperatorManifest
       },
       versions: resource.versions.map((version) => crdVersionDocument(resource, version)),
     },
+  };
+}
+
+/**
+ * CRDs are shared API contracts, not controller-instance workloads. Multiple
+ * independently deployed handlers may watch the same CRD; attaching one
+ * handler's name or bundle digest makes otherwise identical declarations
+ * conflict in TypeKro's strict operation merger and gives misleading
+ * ownership. The schema itself remains the authoritative drift boundary.
+ */
+function sharedCrdMetadata(name: string): V1ObjectMeta {
+  return {
+    name,
+    labels: managedLabels(),
   };
 }
 
@@ -559,7 +573,7 @@ function operatorHostEnv(manifest: OperatorManifest) {
     { name: 'APPLIK8S_HEALTH_ADDR', value: '0.0.0.0:8080' },
     { name: 'APPLIK8S_HANDLER_TIMEOUT_SECONDS', value: String(manifest.spec.runtime?.handlerTimeoutSeconds ?? 30) },
     { name: 'OTEL_SERVICE_NAME', value: manifest.metadata.name },
-    { name: 'OTEL_RESOURCE_ATTRIBUTES', value: `service.namespace=applik8s,applik8s.operator=${manifest.metadata.name},applik8s.bundle_digest=${manifest.spec.bundle.digest}` },
+    { name: 'OTEL_RESOURCE_ATTRIBUTES', value: `service.namespace=applik8s,applik8s.operator=${manifest.metadata.name},applik8s.build_identity_digest=${manifest.spec.bundle.buildIdentityDigest}` },
     { name: 'OTEL_METRIC_EXPORT_INTERVAL', value: '30000' },
     ...(replayArtifacts?.enabled && replayArtifacts.directory ? [
       { name: 'APPLIK8S_REPLAY_ARTIFACT_DIR', value: replayArtifacts.directory },
@@ -584,7 +598,7 @@ function auditAnnotations(manifest: OperatorManifest): Readonly<Record<string, s
   const storageVersions = manifest.spec.ownedCrds.map((crd) => `${crd.apiVersion}/${crd.kind}=${crd.storageVersion}`);
   const conversionStrategies = manifest.spec.ownedCrds.map((crd) => `${crd.apiVersion}/${crd.kind}=${crd.conversionStrategy}`);
   return {
-    'applik8s.dev/bundle-digest': manifest.spec.bundle.digest,
+    'applik8s.dev/build-identity-digest': manifest.spec.bundle.buildIdentityDigest,
     'applik8s.dev/source-digest': manifest.spec.bundle.sourceDigest,
     'applik8s.dev/compiler-version': manifest.spec.bundle.compilerVersion,
     'applik8s.dev/handler-abi': manifest.spec.handlerAbi,

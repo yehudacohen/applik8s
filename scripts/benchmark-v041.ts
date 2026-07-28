@@ -5,7 +5,7 @@ import { cpus, freemem, platform, release, tmpdir, totalmem } from 'node:os';
 import { extname, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 import { consumeWithBoundedConcurrency } from '../packages/applik8s/src/bounded-concurrency.js';
-import { startJetStreamCommandProcessor } from '../packages/applik8s/src/model-command-processor-runtime.js';
+import { startJetStreamCommandProcessor } from '@applik8s/runtime-nats';
 import { AckPolicy, connect, JSONCodec, RetentionPolicy, StorageType } from 'nats';
 import postgres from 'postgres';
 

@@ -1,5 +1,5 @@
 import type { ApplicationGatewayBinding } from './application-reactive.js';
-import type { ApplicationDnsIntent, ApplicationExposureOptions, ApplicationServerBinding, ApplicationTlsIntent } from './application.js';
+import type { ApplicationDnsIntent, ApplicationExposureOptions, ApplicationServerBinding } from './application.js';
 import { kubernetesNameSegment } from './application-identifiers.js';
 import type { ApplicationDnsPublicationProvider, ApplicationHostBinding } from './application-providers.js';
 
@@ -9,21 +9,19 @@ export type NormalizedApplicationTlsIntent =
   | { readonly mode: 'managed'; readonly secretName: string };
 
 export function normalizeApplicationTlsIntent(name: string, options: ApplicationExposureOptions): NormalizedApplicationTlsIntent {
-  if (options.tls && typeof options.tls === 'object') {
-    if (options.tls.mode === 'managed') return { mode: 'managed', secretName: options.tls.secretName ?? options.tlsSecretName ?? `${kubernetesNameSegment(name)}-tls` };
-    if (options.tls.mode === 'external') return options.tls;
-    return { mode: 'disabled' };
+  if (options.tls?.mode === 'managed') {
+    return {
+      mode: 'managed',
+      secretName: options.tls.secretName ?? `${kubernetesNameSegment(name)}-tls`,
+    };
   }
-  if (options.tls === 'required' && !options.tlsSecretName) {
-    throw new Error(`app.expose(${JSON.stringify(name)}, ...) with tls: "required" requires tlsSecretName so generated Ingress TLS Secret ownership stays explicit.`);
+  if (options.tls?.mode === 'external') {
+    if (!options.tls.secretName.trim()) {
+      throw new Error(`app.expose(${JSON.stringify(name)}, ...) with external TLS requires a non-empty secretName.`);
+    }
+    return options.tls;
   }
-  if (options.tlsSecretName) return { mode: 'external', secretName: options.tlsSecretName };
   return { mode: 'disabled' };
-}
-
-export function applicationLegacyTlsMode(tls: ApplicationExposureOptions['tls'], intent: ApplicationTlsIntent): 'required' | 'optional' | 'disabled' {
-  if (typeof tls === 'string') return tls;
-  return intent.mode === 'disabled' ? 'disabled' : 'required';
 }
 
 export function applicationExternalDnsAnnotations(provider: ApplicationDnsPublicationProvider, hostnames: readonly string[], intent: ApplicationDnsIntent): Readonly<Record<string, string>> {

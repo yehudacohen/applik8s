@@ -3,6 +3,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, readlink, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import {
+  decodeApplicationDeploymentGraph,
+  digestApplicationDeploymentGraph,
+  digestApplicationDeploymentValue,
+} from '@applik8s/deployment-contract';
 
 const execFileAsync = promisify(execFile);
 
@@ -28,7 +33,9 @@ export interface V06InstallationIdentity {
 
 export interface V06ArtifactIdentity {
   readonly artifactSetDigest: string;
-  readonly applicationGraphDigest: string;
+  readonly deploymentGraphDigest: string;
+  readonly sourceGraphDigest: string;
+  readonly artifactCount: number;
 }
 
 export interface V06CandidateIdentity {
@@ -134,11 +141,21 @@ export async function collectV06InstallationIdentity(input: {
 }
 
 export async function collectV06ArtifactIdentity(path: string): Promise<V06ArtifactIdentity> {
-  const evidence = jsonObject(await readFile(path, 'utf8'), 'application image evidence');
-  const graph = objectField(evidence, 'applicationGraph');
+  const graph = decodeApplicationDeploymentGraph(await readFile(path, 'utf8'));
+  const artifacts = graph.nodes
+    .filter((node) => node.kind === 'artifact')
+    .map((node) => ({
+      id: node.id,
+      configurationDigest: node.configurationDigest,
+      provider: node.provider,
+      spec: node.spec,
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
   return {
-    artifactSetDigest: digestField(evidence, 'artifactSetDigest'),
-    applicationGraphDigest: digestField(graph, 'digest'),
+    artifactSetDigest: digestApplicationDeploymentValue(artifacts),
+    deploymentGraphDigest: digestApplicationDeploymentGraph(graph),
+    sourceGraphDigest: graph.metadata.sourceGraphDigest,
+    artifactCount: artifacts.length,
   };
 }
 
@@ -212,10 +229,4 @@ function stringField(value: Record<string, unknown>, field: string): string {
   const nested = value[field];
   if (typeof nested !== 'string' || nested.length === 0) throw new Error(`Expected non-empty string field ${field}.`);
   return nested;
-}
-
-function digestField(value: Record<string, unknown>, field: string): string {
-  const digest = stringField(value, field);
-  if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new Error(`Expected ${field} to be a sha256 digest.`);
-  return digest;
 }

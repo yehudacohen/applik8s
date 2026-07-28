@@ -6,7 +6,7 @@ import { type ApplicationWorkflowRun, setApplicationWorkflowRuntimeFactory } fro
 import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 
-import { createHatchetWorkflowRuntime } from '../../applik8s/src/workflow-runtime-hatchet.js';
+import { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';
 import { assertExpectedKubectlContext, describeLive, exec, formatSettledOutput, kubectl, sleep } from './live-e2e-helpers';
 
 const namespace = process.env.APPLIK8S_E2E_NAMESPACE ?? `applik8s-workflow-${process.pid}`;

@@ -1,6 +1,5 @@
 export { assertCommandEffectAllowed, canonicalApplicationCommandKey, closePostgresModelCommandRuntime, DurableCommandRejectedError, executePostgresModelCommand, isDurableCommandRejectedError, recordPostgresModelCommandTerminalFailure } from './model-command-postgres-runtime.js';
 export type { ApplicationCommandTerminalFailure, PostgresModelCommandExecution, PostgresModelCommandMessage, PostgresModelCommandResult, PostgresModelCommandTerminalFailureExecution } from './model-command-postgres-runtime.js';
-export { handleJetStreamCommandMessage, startJetStreamCommandProcessor } from './model-command-processor-runtime.js';
-export type { ApplicationCommandProcessorBinding, JetStreamCommandProcessorOptions, RunningJetStreamCommandProcessor } from './model-command-processor-runtime.js';
-export { cleanupPostgresCommandData, createJetStreamEventLog, eventLogSubject, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from './event-log-jetstream-runtime.js';
-export type { ApplicationEventLogPublisher, ApplicationMessageChannel, CommandDataCleanupOptions, CommandDataCleanupResult, EventLogPublishAcknowledgement, JetStreamConsumerLag, JetStreamEventLogOptions, PostgresOutboxLag } from './event-log-jetstream-runtime.js';
+export { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from './postgres-outbox-runtime.js';
+export type { CommandDataCleanupOptions, CommandDataCleanupResult, EventOutboxRelayOptions, EventOutboxRelayResult, PostgresOutboxLag } from './postgres-outbox-runtime.js';
+export type { ApplicationEventLogConsumerLag, ApplicationEventLogPublisher, ApplicationMessageChannel, EventLogPublishAcknowledgement } from './event-log-runtime.js';

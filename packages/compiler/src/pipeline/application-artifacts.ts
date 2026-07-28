@@ -80,7 +80,10 @@ export function injectGeneratedResourcesIntoApplicationRgd(
       || applicationResources.some(applicationResourceUsesInstallationContract))
     ? [applicationInstallationContractResource(schema, applicationResources, applicationName)]
     : [];
-  const resources = [...existingResources, ...requiredReferences, ...installationResources, ...injected]
+  // External references are graph inputs. Emit them before every authored or
+  // generated consumer so downstream composition adapters can bind typed
+  // dependencies while materializing Pod specs in one pass.
+  const resources = [...requiredReferences, ...existingResources, ...installationResources, ...injected]
     .filter(isJsonObject);
   const projectedSchema = schema && installation?.statusProjection?.mode === 'standardApplicationReadiness'
     ? { ...schema, status: applicationInstallationStatusProjection(schema, resources, installation.statusProjection.fields, graph) }
@@ -280,7 +283,12 @@ function applicationRequiredExternalReferences(graph: ApplicationGraph): readonl
     : undefined;
   const pullSecret = registryConfig ? applicationContainerRegistryPullSecret(registryConfig) : undefined;
   if (pullSecret && typeof pullSecret.apiVersion === 'string' && typeof pullSecret.kind === 'string' && typeof pullSecret.name === 'string') {
-    references.push(applicationExternalReference('applik8sContainerRegistryPullSecret', pullSecret));
+    references.push(applicationExternalReference(
+      'applik8sContainerRegistryPullSecret',
+      pullSecret,
+      undefined,
+      'containerRegistryPullSecret',
+    ));
   }
   return references;
 }
@@ -369,13 +377,19 @@ function applicationCelString(value: string): string {
     : JSON.stringify(value);
 }
 
-function applicationExternalReference(id: string, reference: JsonObject, includeWhen?: string): JsonObject {
+function applicationExternalReference(
+  id: string,
+  reference: JsonObject,
+  includeWhen?: string,
+  role?: 'containerRegistryPullSecret',
+): JsonObject {
   if (typeof reference.apiVersion !== 'string' || typeof reference.kind !== 'string' || typeof reference.name !== 'string') {
     throw new Error(`Application external reference ${id} requires string apiVersion, kind, and name fields.`);
   }
   const condition = applicationKroIncludeWhen(includeWhen);
   return {
     id,
+    ...(role ? { role } : {}),
     ...(condition ? { includeWhen: [condition] } : {}),
     externalRef: {
       apiVersion: reference.apiVersion,

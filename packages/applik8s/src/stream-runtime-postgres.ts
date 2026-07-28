@@ -1,16 +1,17 @@
 // typecast-file-boundary: PostgreSQL result rows are checked by the runtime contract before restoring stream event shapes.
-import postgres, { type Sql } from 'postgres';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import type { ApplicationStreamBinding } from './application-reactive.js';
 import type { ApplicationReplayPage, ApplicationReplayableStream, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
 import { applicationCommandPrincipal, applicationCommandTrustedContext } from './command-principal.js';
 import { applicationPublicStreamCommitScope } from './application-stream-commit.js';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
 
 export interface PostgresApplicationStreamOptions<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal> {
   readonly stream: ApplicationStreamBinding<TPayload, TPrincipal>;
   readonly databaseUrl?: string;
-  readonly sql?: Sql;
+  readonly sql?: ApplicationPostgresSql;
   readonly principal: TPrincipal;
   /** Digest of provider-admitted context. Raw access values never enter replay filters or cursors. */
   readonly contextDigest?: string;
@@ -30,7 +31,7 @@ export interface PostgresApplicationStream<TPayload extends object> extends Appl
 export interface PostgresApplicationStreamRetentionOptions<TPayload extends object> {
   readonly stream: ApplicationStreamBinding<TPayload>;
   readonly databaseUrl?: string;
-  readonly sql?: Sql;
+  readonly sql?: ApplicationPostgresSql;
   readonly now?: Date;
   readonly batchSize?: number;
 }
@@ -41,7 +42,7 @@ export function createPostgresApplicationStream<TPayload extends object, TPrinci
   if (options.stream.authority !== 'postgres-outbox') throw new Error(`Stream ${options.stream.definition.id} is not backed by the PostgreSQL outbox authority.`);
   if (!options.sql && !options.databaseUrl) throw new Error(`Stream ${options.stream.definition.id} requires sql or databaseUrl.`);
   const ownsClient = !options.sql;
-  const client = options.sql ?? postgres(options.databaseUrl as string, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
+  const client = options.sql ? Promise.resolve(options.sql) : createApplicationPostgresSql(options.databaseUrl as string, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
   return {
     async read(afterSequence, limit) {
       if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) throw new Error('Application stream replay sequence must be a non-negative safe integer.');
@@ -53,7 +54,7 @@ export function createPostgresApplicationStream<TPayload extends object, TPrinci
         throw new ApplicationStreamAuthorizationError(options.stream.definition.id);
       }
       const [name, version] = [options.stream.definition.name, options.stream.definition.version];
-      return client.begin(async (transaction) => {
+      return (await client).begin(async (transaction) => {
         await transaction.unsafe('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))', [applicationPublicStreamCommitScope(name, version)]);
         const contextClause = options.contextDigest ? ' AND context_digest = $5' : '';
         const parameters = [name, version, afterSequence, limit + 1, ...(options.contextDigest ? [options.contextDigest] : [])];
@@ -70,7 +71,7 @@ export function createPostgresApplicationStream<TPayload extends object, TPrinci
       });
     },
     async close() {
-      if (ownsClient) await client.end({ timeout: 5 });
+      if (ownsClient) await (await client).end({ timeout: 5 });
     },
   };
 }
@@ -87,12 +88,12 @@ export async function enforcePostgresApplicationStreamRetention<TPayload extends
   const batchSize = options.batchSize ?? 1_000;
   if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 10_000) throw new Error('Application stream retention batchSize must be between 1 and 10000.');
   const ownsClient = !options.sql;
-  const client = options.sql ?? postgres(options.databaseUrl as string, { max: 1, idle_timeout: 20, connect_timeout: 10, prepare: false });
+  const client = options.sql ? Promise.resolve(options.sql) : createApplicationPostgresSql(options.databaseUrl as string, { max: 1, idle_timeout: 20, connect_timeout: 10, prepare: false });
   const [name, version] = [options.stream.definition.name, options.stream.definition.version];
   const now = (options.now ?? new Date()).toISOString();
   const maxMessages = options.stream.retention.maxMessages ?? null;
   try {
-    const rows = await client.begin(async (transaction) => {
+    const rows = await (await client).begin(async (transaction) => {
       await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [applicationPublicStreamCommitScope(name, version)]);
       return transaction.unsafe(`WITH ranked AS (
   SELECT id, sequence, context_digest, recorded_at, row_number() OVER (ORDER BY sequence DESC) AS retained_rank
@@ -124,7 +125,7 @@ SELECT id FROM deleted`, [name, version, now, options.stream.retention.maxAgeSec
     });
     return { deleted: rows.length };
   } finally {
-    if (ownsClient) await client.end({ timeout: 5 });
+    if (ownsClient) await (await client).end({ timeout: 5 });
   }
 }
 

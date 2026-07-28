@@ -3,8 +3,10 @@ import { ContainerRegistry, ObjectStorage, ProjectionStore, WorkflowEngine } fro
 interface LocalCapacity {
   readonly workflowDatabaseInstances: number;
   readonly workflowDatabaseStorage: string;
+  readonly workflowDatabaseStorageClass: string;
   readonly workflowReplicas: number;
   readonly analyticsStorage: string;
+  readonly analyticsStorageClass: string;
 }
 
 /**
@@ -26,13 +28,13 @@ export function localContainerRegistry(
     }),
     // Harbor projects are cluster-global. Deriving the project from the
     // concrete installation name keeps bounded installations isolated while
-    // direct preparation resolves the typed reference before calling Harbor.
+    // the Alchemy Harbor resource resolves the typed output for OCI publication.
     project: namespace,
     management: {
       adminCredentials: {
         apiVersion: 'v1',
         kind: 'Secret',
-        name: 'harbor-admin',
+        name: 'typekro-harbor-admin',
         namespace: 'typekro-harbor-registry',
         username: 'admin',
         passwordKey: 'HARBOR_ADMIN_PASSWORD',
@@ -102,7 +104,13 @@ export function localWorkflowEngine(namespace: string, capacity: LocalCapacity, 
     namespace,
     ...(connection.provision === undefined ? {} : { provision: connection.provision }),
     dashboard: 'disabled',
-    database: { clusterName: 'chirp-workflows-db', database: 'hatchet', instances: capacity.workflowDatabaseInstances, storageSize: capacity.workflowDatabaseStorage },
+    database: {
+      clusterName: 'chirp-workflows-db',
+      database: 'hatchet',
+      instances: capacity.workflowDatabaseInstances,
+      storageSize: capacity.workflowDatabaseStorage,
+      storageClass: capacity.workflowDatabaseStorageClass,
+    },
     ...(connection.hostPort === undefined ? {} : { hostPort: connection.hostPort }),
     ...(connection.apiUrl === undefined ? {} : { apiUrl: connection.apiUrl }),
     ...(connection.tls === undefined ? {} : { tls: connection.tls }),
@@ -130,5 +138,6 @@ export function localProjectionStore(namespace: string, capacity: LocalCapacity,
       credentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: connection.credentialsSecretName, namespace },
     }),
     storageSize: capacity.analyticsStorage,
+    storageClassName: capacity.analyticsStorageClass,
   });
 }

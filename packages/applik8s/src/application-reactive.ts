@@ -708,7 +708,7 @@ function isApplicationModelCommandBinding(value: unknown): value is ApplicationM
 
 function reactiveDatabaseRuntime(binding: ApplicationDatabaseBinding): { readonly name: string; readonly connectionEnvName: string; readonly secretName: string; readonly secretKey: string; readonly secretNamespace?: string; readonly access?: { readonly context: string; readonly contextSchema: JsonObject; readonly setting: string; readonly column: string } } {
   const provider = binding.provider;
-  const clusterName = provider.name ?? `${reactiveName(binding.name)}-db`;
+  const clusterName = provider.clusterName ?? provider.name ?? `${reactiveName(binding.name)}-db`;
   const secret = provider.connectionSecret ?? { apiVersion: 'v1', kind: 'Secret', name: `${clusterName}-app`, ...(provider.namespace ? { namespace: provider.namespace } : {}) };
   return { name: binding.name, connectionEnvName: `APPLIK8S_DATABASE_${reactiveName(binding.name).replace(/[^A-Z0-9_a-z]+/g, '_').toUpperCase()}_URL`, secretName: applicationTypeKroSerializedValue(secret.name ?? `${clusterName}-app`), secretKey: applicationTypeKroSerializedValue(provider.connectionSecretKey ?? 'uri'), ...(secret.namespace ?? provider.namespace ? { secretNamespace: applicationTypeKroSerializedValue(secret.namespace ?? provider.namespace) } : {}), ...(binding.access ? { access: { context: binding.access.context.name, contextSchema: binding.access.context.contract.jsonSchema, setting: binding.access.setting, column: binding.access.column } } : {}) };
 }

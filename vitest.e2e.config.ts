@@ -15,5 +15,8 @@ export default defineConfig({
     globals: false,
     testTimeout: 180_000,
     hookTimeout: 180_000,
+    server: {
+      deps: { inline: [/^typekro(?:\/|$)/] },
+    },
   },
 });

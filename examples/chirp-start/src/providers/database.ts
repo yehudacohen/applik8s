@@ -8,13 +8,17 @@ import { chirpSchema } from '../schema/index';
  * import only the resulting typed database capability.
  */
 export const Database = app.database.postgres('chirp', {
+  // The logical database authority remains "chirp"; the physical cluster has
+  // an independent identity so stateful storage migrations never overload
+  // domain-facing environment variables or command/query contracts.
+  clusterName: 'chirp-models',
   schema: chirpSchema,
   migrations: { path: '../drizzle' },
   database: app.select(app.installation.spec.profile, { external: external.database.database, default: 'chirp' }),
   connectionSecret: {
     apiVersion: 'v1',
     kind: 'Secret',
-    name: app.select(app.installation.spec.profile, { external: external.database.connectionSecretName, default: 'chirp-app' }),
+    name: app.select(app.installation.spec.profile, { external: external.database.connectionSecretName, default: 'chirp-models-app' }),
     namespace,
   },
   connectionSecretKey: app.select(app.installation.spec.profile, { external: external.database.connectionSecretKey, default: 'uri' }),
@@ -22,10 +26,12 @@ export const Database = app.database.postgres('chirp', {
   provision: managedProfile,
   lifecycle: {
     deletionPolicy: app.installation.spec.lifecycle.databaseDeletion,
-    preparationTimeoutMs: 10 * 60_000,
   },
   instances: capacity.postgresInstances,
-  storage: { size: capacity.postgresStorage },
+  storage: {
+    size: capacity.postgresStorage,
+    storageClassName: capacity.postgresStorageClass,
+  },
   backup: {
     enabled: app.all(managedProfile, app.installation.spec.backup.enabled),
     schedule: app.installation.spec.backup.schedule,

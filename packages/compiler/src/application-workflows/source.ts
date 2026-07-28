@@ -85,16 +85,17 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
     ? `import { createDeterministicStructuredGenerationCapability, createHttpStructuredGenerationCapability } from '@applik8s/applik8s/structured-generation-runtime';`
     : '';
   const operationImports = contract.operationEffects
-    ? `import { createApplicationTaskOperationRuntime } from '@applik8s/applik8s/task-operation-runtime';`
+    ? `import { createApplicationTaskOperationRuntime } from '@applik8s/applik8s/task-operation-runtime';
+import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';`
     : '';
   const queryImports = contract.queryEffects
     ? `import { createApplicationTaskQueryRuntime } from '@applik8s/applik8s/task-query-runtime';`
     : '';
   const projectionImports = contract.projectionEffects
-    ? `import { createPostgresApplicationProjectionSnapshotSource, createPostgresApplicationStream, createS3ApplicationObjectStorageRuntime, createValkeyOnlineProjectionStore, retireApplicationOnlineProjectionGeneration, runApplicationOnlineProjectionRebuild } from '@applik8s/applik8s/projection-worker-runtime';`
+    ? `import { createPostgresApplicationProjectionSnapshotSource, createPostgresApplicationStream, createValkeyOnlineProjectionStore, retireApplicationOnlineProjectionGeneration, runApplicationOnlineProjectionRebuild } from '@applik8s/applik8s/projection-worker-runtime';`
     : '';
-	const objectImports = contract.objectEffects && !contract.projectionEffects
-		? `import { createS3ApplicationObjectStorageRuntime } from '@applik8s/applik8s/reactive-runtime';`
+	const objectImports = contract.objectEffects
+		? `import { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';`
 		: '';
   const capabilityInitializers = generatedWorkflowCapabilities(contract);
   const operationInitializer = generatedWorkflowOperationRuntime(contract);
@@ -102,6 +103,7 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
   const projectionInitializer = generatedWorkflowProjectionRuntime(contract);
 	const objectInitializer = generatedWorkflowObjectRuntime(contract);
   return `import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
 import { connect as connectTcp } from 'node:net';
 import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
 import { normalizeSchema } from '@applik8s/sdk';
@@ -111,6 +113,11 @@ ${queryImports}
 ${projectionImports}
 ${objectImports}
 ${handlerImports}
+
+if (process.argv.includes('--credential-preflight')) {
+  await waitForWorkflowCredential();
+  process.exit(0);
+}
 
 const hatchet = HatchetClient.init();
 const declarations = Object.create(null);
@@ -142,6 +149,28 @@ async function retryStartup(dependency, operation, timeoutMs = 600_000) {
       console.error(JSON.stringify({ event: 'applik8s-workflow-startup-wait', dependency, attempt, error: error instanceof Error ? error.message : String(error) }));
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       delayMs = Math.min(5_000, delayMs * 2);
+    }
+  }
+}
+async function waitForWorkflowCredential(timeoutMs = 600_000) {
+  const tokenFile = process.env.APPLIK8S_WORKFLOW_TOKEN_FILE;
+  if (!tokenFile) throw new Error('Missing required workflow runtime environment variable APPLIK8S_WORKFLOW_TOKEN_FILE');
+  const startedAt = Date.now();
+  let attempt = 0;
+  while (true) {
+    attempt += 1;
+    try {
+      const token = (await readFile(tokenFile, 'utf8')).trim();
+      if (!token) throw new Error('empty workflow token');
+      const candidate = HatchetClient.init({ token });
+      await candidate.workers.list();
+      return;
+    } catch {
+      if (Date.now() - startedAt >= timeoutMs) {
+        throw new Error('applik8s-workflow-credential-timeout: Hatchet did not accept the projected worker token within ' + timeoutMs + 'ms');
+      }
+      console.error(JSON.stringify({ event: 'applik8s-workflow-credential-wait', attempt }));
+      await new Promise((resolve) => setTimeout(resolve, Math.min(5_000, 250 * (2 ** Math.min(attempt - 1, 5)))));
     }
   }
 }
@@ -321,7 +350,7 @@ function generatedWorkflowOperationRuntime(contract: WorkflowContract): string {
   return `const operationRuntime = createApplicationTaskOperationRuntime({
   commands: [${commands}],
   cursorSecret: requiredEnv('APPLIK8S_TASK_OPERATION_CONTEXT_SECRET'),
-  eventLog: { servers: JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS')), stream: ${JSON.stringify(stringConfig(config.stream) || 'APPLIK8S_EVENTS')}, subjectPrefix: ${JSON.stringify(stringConfig(config.subjectPrefix) || 'applik8s')}, connectionName: ${JSON.stringify(`applik8s-workflow-${contract.worker.name}`)}, ...(process.env.APPLIK8S_NATS_TOKEN ? { token: process.env.APPLIK8S_NATS_TOKEN } : {}), ...(process.env.APPLIK8S_NATS_USER ? { user: process.env.APPLIK8S_NATS_USER, pass: process.env.APPLIK8S_NATS_PASSWORD ?? '' } : {}) },
+  eventLogPublisher: createJetStreamEventLog({ servers: JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS')), stream: ${JSON.stringify(stringConfig(config.stream) || 'APPLIK8S_EVENTS')}, subjectPrefix: ${JSON.stringify(stringConfig(config.subjectPrefix) || 'applik8s')}, connectionName: ${JSON.stringify(`applik8s-workflow-${contract.worker.name}`)}, ...(process.env.APPLIK8S_NATS_TOKEN ? { token: process.env.APPLIK8S_NATS_TOKEN } : {}), ...(process.env.APPLIK8S_NATS_USER ? { user: process.env.APPLIK8S_NATS_USER, pass: process.env.APPLIK8S_NATS_PASSWORD ?? '' } : {}) }),
 });`;
 }
 

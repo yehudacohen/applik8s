@@ -1,6 +1,6 @@
 // typecast-file-boundary: Test fixtures deliberately model serialized installation values to exercise validation and recursive concretization boundaries.
 import { describe, expect, test } from 'vitest';
-import { resolveApplicationInstallationValues } from '../src/application-installation-values.js';
+import { resolveApplicationInstallationValues } from '../../cli/src/application-installation-values.js';
 
 describe('application installation deployment values', () => {
   test('resolves direct descriptors and KRO strings without mutating the graph', () => {

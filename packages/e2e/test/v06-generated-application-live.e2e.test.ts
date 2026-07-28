@@ -19,6 +19,7 @@ import {
   formatSettledOutput,
   kubectl,
   sleep,
+  waitForKubernetesResourceDeleted,
 } from './live-e2e-helpers';
 
 const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
@@ -65,7 +66,7 @@ spec: {}
     process.env.APPLIK8S_E2E_STACK_NAME = stackName;
     deploymentAttempted = true;
     await exec('bun', [
-      'run', 'packages/applik8s/src/bin.ts', 'deploy', fixture,
+      'run', 'packages/cli/src/bin.ts', 'deploy', fixture,
       '--context', context,
       '--composition-name', 'v06GeneratedApp',
       '--out-dir', outDir,
@@ -77,16 +78,20 @@ spec: {}
   afterAll(async () => {
     let cleanupFailure: unknown;
     try {
-      if (deploymentAttempted && outDir && await access(join(outDir, 'typekro', 'typekro-composition.json')).then(() => true).catch(() => false)) {
+      if (deploymentAttempted && outDir && await access(join(outDir, 'typekro', 'application-deployment-graph.json')).then(() => true).catch(() => false)) {
         await exec('bun', [
-          'run', 'packages/applik8s/src/bin.ts', 'delete', fixture,
+          'run', 'packages/cli/src/bin.ts', 'delete', fixture,
           '--context', context,
           '--composition-name', 'v06GeneratedApp',
           '--out-dir', outDir,
+          '--instance-name', stackName,
+          '--control-plane-namespace', controlPlaneNamespace,
         ], process.cwd());
         await expect(kubectl(['get', `${applicationResource}/${stackName}`, '--namespace', controlPlaneNamespace])).rejects.toThrow();
-        await expect(kubectl(['get', `namespace/${namespace}`])).rejects.toThrow();
-        await expect(kubectl(['get', `namespace/${controlPlaneNamespace}`])).rejects.toThrow();
+        await Promise.all([
+          waitForKubernetesResourceDeleted(`namespace/${namespace}`, 900_000),
+          waitForKubernetesResourceDeleted(`namespace/${controlPlaneNamespace}`, 900_000),
+        ]);
         await expect(kubectl(['get', `resourcegraphdefinition/${stackName}`])).rejects.toThrow();
         if (proofComplete) await writeEvidenceReceipt();
       }
@@ -98,7 +103,7 @@ spec: {}
       if (tempDir && process.env.APPLIK8S_KEEP_TMP !== '1') await rm(tempDir, { recursive: true, force: true });
     }
     if (cleanupFailure) throw cleanupFailure;
-  }, 900_000);
+  }, 1_500_000);
 
   it('runs command admission, PostgreSQL/outbox, JetStream, SSE/requery, ClickHouse, restart recovery, and TypeKro lifecycle', async () => {
     try {
@@ -217,7 +222,7 @@ async function assertPrerequisites(): Promise<void> {
     kubectl(['get', 'crd/clickhouseinstallations.clickhouse.altinity.com']),
     kubectl(['get', 'storageclass/local-path']),
     kubectl(['get', 'service/harbor', '--namespace', 'typekro-harbor-registry']),
-    kubectl(['get', 'secret/harbor-admin', '--namespace', 'typekro-harbor-registry']),
+    kubectl(['get', 'secret/typekro-harbor-admin', '--namespace', 'typekro-harbor-registry']),
   ]);
 }
 
@@ -526,7 +531,8 @@ async function startPortForward(resource: string, remotePort: number): Promise<P
 
 async function writeEvidenceReceipt(): Promise<void> {
   if (!outDir) throw new Error('Generated application output directory is unavailable for evidence.');
-  const imageEvidence = jsonObject(await readFile(join(outDir, 'typekro', 'application-image-evidence.json'), 'utf8'));
+  const deploymentGraphPath = join(outDir, 'typekro', 'application-deployment-graph.json');
+  const deploymentGraph = jsonObject(await readFile(deploymentGraphPath, 'utf8'));
   const completedAt = new Date().toISOString();
   const assertions = [
     'harbor-digest-images',
@@ -540,8 +546,8 @@ async function writeEvidenceReceipt(): Promise<void> {
     'authoritative-requery',
     'clickhouse-projection',
     'projection-restart-resume',
-    'typekro-factory-delete',
-    'direct-preparation-delete',
+    'alchemy-typekro-destroy',
+    'graph-owned-resources-removed',
     'generated-rgd-removed',
     'namespaces-removed',
   ];
@@ -557,7 +563,7 @@ async function writeEvidenceReceipt(): Promise<void> {
       assertions.map((assertion) => ({ assertion, test: 'generated application live lifecycle', observedAt: completedAt })),
       evidenceRunId,
     ),
-    imageEvidence,
+    deploymentGraph,
   });
 }
 

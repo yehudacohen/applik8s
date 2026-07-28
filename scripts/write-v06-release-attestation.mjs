@@ -57,7 +57,6 @@ const attestation = {
 		"check:v06:local",
 		"test:v06:datastores-live",
 		"test:v06:live",
-		"test:v06:provider-migration-live",
 		"deploy:v06:chirp-twice",
 		"test:v06:chirp-live",
 		"test:v06:chirp-browser",

@@ -50,7 +50,16 @@ export function emitApplicationEventLogResources(
         cluster: { enabled: applicationTypeKroGreaterThan(provider.replicas ?? 1, 1), replicas: provider.replicas ?? 1 },
         jetstream: {
           enabled: true,
-          fileStore: { enabled: true, pvc: { enabled: true, size: provider.storageSize ?? '10Gi' } },
+          fileStore: {
+            enabled: true,
+            pvc: {
+              enabled: true,
+              size: provider.storageSize ?? '10Gi',
+              ...(provider.storageClassName
+                ? { storageClassName: provider.storageClassName }
+                : {}),
+            },
+          },
         },
       },
       natsBox: { enabled: true },

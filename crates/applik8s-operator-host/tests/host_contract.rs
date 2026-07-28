@@ -137,6 +137,7 @@ fn delegates_reconcile_scheduling_to_kube_runtime_controller_primitives() {
 
     assert_eq!(controller_framework(), "kube-runtime::Controller");
     assert_eq!(strategy.framework, "kube-runtime::Controller");
+    assert_eq!(strategy.max_concurrent_reconciles, 1);
     assert_eq!(
         strategy.requeue_after(Duration::from_secs(5)),
         kube::runtime::controller::Action::requeue(Duration::from_secs(5))

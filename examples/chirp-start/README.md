@@ -85,21 +85,10 @@ builds and pushes all authored images, stages the explicit installation, and app
 bun run --cwd examples/chirp-start deploy:local
 ```
 
-The example opts into `--migrate-kro-owned-provider-data` because earlier Chirp
-graphs placed the authoritative CNPG cluster inside the KRO ApplySet. The
-migration is idempotent and preserves the existing Kubernetes object UID: it
-suspends every instance of the shared RGD, fully quiesces the KRO controller,
-acquires TypeKro direct ownership,
-removes KRO/ApplySet ownership, changes only the provider node to `externalRef`,
-waits for that RGD generation to be accepted, and resumes only instances that
-were not already suspended. The local script also explicitly confirms the
-reviewed TypeKro 0.28 `node-fetch` managed-field signature; other signatures
-still fail closed. Any failure after adoption begins leaves the instances
-suspended and the controller quiesced, and is resumed by rerunning the same
-command; it never deletes or replaces the database.
-
-The deployment planner owns direct-only ObjectBucketClaim and cursor-secret preparation. Its recorded
-receipts drive `applik8s delete`; normal operation never requires a separate script or ad-hoc `kubectl delete`.
+The deployment graph owns every declared artifact and lifecycle edge. Alchemy
+records the scoped transaction, while TypeKro owns Kubernetes reconciliation,
+readiness, and deletion. `applik8s delete` resumes that same graph-backed
+lifecycle; it does not use preparation receipts or ad-hoc `kubectl delete`.
 
 An external profile selects OCI registry, PostgreSQL, S3-compatible storage,
 ClickHouse, and Hatchet coordinates from typed provider references while using

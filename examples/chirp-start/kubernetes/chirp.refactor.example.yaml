@@ -1,0 +1,35 @@
+apiVersion: applications.chirp.dev/v1alpha1
+kind: ChirpInstallation
+metadata:
+  name: chirp-refactor
+  namespace: chirp-refactor-control
+spec:
+  name: chirp-refactor
+  hostname: chirp-refactor.localhost
+  profile: starter
+  version: 0.7.0-dev
+  features:
+    automatedAccounts: true
+    analytics: true
+    media: true
+  lifecycle:
+    # This disposable qualification installation deliberately proves complete
+    # Alchemy/TypeKro teardown without touching the retained `chirp` fixture.
+    databaseDeletion: delete
+    registryProjectDeletion: delete
+    purgeRegistryRepositories: true
+  backup:
+    enabled: true
+    schedule: "0 0 2 * * *"
+    retentionPolicy: 14d
+  exposure:
+    mode: node-port
+    nodePort: 30081
+    certificateIssuerName: letsencrypt-prod
+  identity:
+    mode: deterministic-local
+    authorizationVersion: chirp-refactor-local-policy-v1
+    infrastructure:
+      mode: external
+      namespace: chirp-refactor-identity-unused
+      deletionPolicy: retain

@@ -14,8 +14,7 @@ import { analyzeApplicationServerRouteSource, applicationCommandSourceViolations
 import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString, applicationTypeKroValueIdentity } from './application-typekro-values.js';
 import type { ApplicationCommandPrincipal } from './command-principal.js';
 import type { CommandDefinition, EntityDefinition, EventDefinition } from './dsl.js';
-import type { EventLogPublishAcknowledgement } from './event-log-jetstream-runtime.js';
-import { createJetStreamEventLog } from './event-log-jetstream-runtime.js';
+import type { ApplicationEventLogPublisher, EventLogPublishAcknowledgement } from './event-log-runtime.js';
 import type { PostgresModelCommandResult } from './model-command-postgres-runtime.js';
 import { canonicalApplicationCommandKey, executePostgresModelCommand } from './model-command-postgres-runtime.js';
 import { createPostgresModelClient } from './model-store-postgres-runtime.js';
@@ -322,7 +321,7 @@ export interface ApplicationModelEventRegistrar<TSpec extends object, TStatus ex
     options: ApplicationModelCommandOptions<TInput, TSpec>,
     handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
   ): ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus>;
-  /** Preferred domain spelling for a custom durable model operation. Lowers through the command runtime. */
+  /** Low-level registration surface used by model.action(...). Prefer the direct named method in application code. */
   action<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
     action: CommandDefinition<TInput, TOutput, TErrors>,
     options: ApplicationModelCommandOptions<TInput, TSpec>,
@@ -754,12 +753,7 @@ export function recordApplicationModelCommandGraph<
   }
   const subjectPrefix = eventLog.subjectPrefix ?? 'applik8s';
   const servers = eventLog.servers ?? [applicationTypeKroString('nats://', eventLog.name ?? 'applik8s-events', eventLog.namespace ? '.' : '', eventLog.namespace, '.svc:4222')];
-  const publisher = createJetStreamEventLog({
-    servers,
-    stream: eventLog.stream ?? 'APPLIK8S_EVENTS',
-    subjectPrefix,
-    connectionName: `${processorName}-binding`,
-  });
+  let publisher: Promise<ApplicationEventLogPublisher> | undefined;
   const initialize = options.missing && options.missing !== 'reject' && 'initialize' in options.missing
     ? options.missing.initialize
     : undefined;
@@ -774,7 +768,14 @@ export function recordApplicationModelCommandGraph<
     async send(input, delivery) {
       validateApplicationMessage(command.input, input, `${command.id}.input`);
       const key = targetKey(input);
-      const acknowledgement = await publisher.publish({
+      // static-import-exception: provider adapters are optional and load only when this NATS-backed command binding is invoked.
+      publisher ??= import('@applik8s/runtime-nats/event-log').then(({ createJetStreamEventLog }) => createJetStreamEventLog({
+        servers,
+        stream: eventLog.stream ?? 'APPLIK8S_EVENTS',
+        subjectPrefix,
+        connectionName: `${processorName}-binding`,
+      }));
+      const acknowledgement = await (await publisher).publish({
         id: delivery.id,
         contract: { name: command.name, version: command.version },
         payload: input,
@@ -839,7 +840,9 @@ export function recordApplicationModelCommandGraph<
         ...(delivery.databaseUrl ? { databaseUrl: delivery.databaseUrl } : {}),
       });
     },
-    drain: () => publisher.drain(),
+    drain: async () => {
+      if (publisher) await (await publisher).drain();
+    },
   };
 }
 
@@ -1305,7 +1308,7 @@ export function applicationRuntimeModelContract<TSpec extends object, TStatus ex
   const modelSegment = kubernetesNameSegment(name);
   const resources = applicationModelStoreProviderResources(provider, name);
   const cluster = resources[0];
-  const clusterName = applicationTypeKroSerializedValue(provider.name ?? cluster?.name ?? `${modelSegment}-db`);
+  const clusterName = applicationTypeKroSerializedValue(provider.clusterName ?? provider.name ?? cluster?.name ?? `${modelSegment}-db`);
   const secret = provider.connectionSecret ?? { apiVersion: 'v1', kind: 'Secret', name: `${clusterName}-app`, ...(provider.namespace ? { namespace: provider.namespace } : {}) };
   return {
     name,
@@ -1585,7 +1588,7 @@ function applicationModelStoreProviderResources(provider: ApplicationModelStoreP
   if (provider.cluster) {
     return [provider.cluster];
   }
-  const clusterName = provider.name ?? `${kubernetesNameSegment(modelName)}-db`;
+  const clusterName = provider.clusterName ?? provider.name ?? `${kubernetesNameSegment(modelName)}-db`;
   return [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: clusterName, ...(provider.namespace ? { namespace: provider.namespace } : {}) }];
 }
 
@@ -1693,8 +1696,8 @@ function recordApplicationProviderGraph(state: ApplicationGraphState, tokenName:
     config: {
       bindingKind,
       provider: applicationProviderImplementationName(implementation),
-      // Direct provider preparation consumes the normalized ApplicationGraph,
-      // not the authoring closure. Preserve the complete validated provider
+      // Deployment lowering consumes the normalized ApplicationGraph, not the
+      // authoring closure. Preserve the complete validated provider
       // contract—including typed installation references and lifecycle data—
       // so ownership, backup, and external-provider decisions remain possible
       // at the deployment boundary.

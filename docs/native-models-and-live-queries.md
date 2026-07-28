@@ -86,8 +86,9 @@ No `.actions({...})`, command registry, `$model` lookup, or second row schema is
 non-CRUD operations may still be declared once as a direct typed model method. That one declaration derives
 both `Model.<verb>(input)` and `Model.on.<verb>(...)`; the completion handler receives typed previous/current
 snapshots, the committed result, identity, and revision through the same outbox and processor runtime.
-Legacy `$model.on.command(...)`, `$model.on.action(...)`, and generic command registration spellings are
-compatibility-only and are scheduled for removal at 1.0 after the v0.7 migration window.
+Lower-level `$model.on.command(...)`, `$model.on.action(...)`, and generic command registration spellings
+exist for explicit protocol integration and framework internals. They are not the ordinary domain-model
+experience and do not appear in golden-path examples.
 
 Processor context—not the domain payload—carries transport identity: stream version and sequence, stable
 event idempotency, the opaque admitted-context digest, the gateway-established principal, and admitted

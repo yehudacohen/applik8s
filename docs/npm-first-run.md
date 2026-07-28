@@ -8,6 +8,7 @@ cd hello-applik8s
 npm init -y
 npm pkg set type=module
 npm install @applik8s/applik8s
+npm install --save-dev @applik8s/cli
 mkdir src
 ```
 
@@ -41,4 +42,4 @@ find dist/applik8s -maxdepth 3 -type f | sort
 
 The output includes the operator manifest, normalized runtime contract, JavaScript bundle and source map, WASM component, Kubernetes resources, and a generated Dockerfile whose default base is the released multi-architecture operator host. Inspect those artifacts before building or applying them. The compiler does not contact a cluster during this step.
 
-For local framework development, use `bun run applik8s ...` in the repository. For a consumer project, use `npx applik8s` or the package's `node_modules/.bin/applik8s`; `dist/cli.js` is a library module, not the executable entrypoint.
+For local framework development, use `bun run applik8s ...` in the repository. For a consumer project, install `@applik8s/cli` as a development dependency and use `npx applik8s` or `node_modules/.bin/applik8s`; `@applik8s/applik8s` is the authoring/runtime facade and intentionally owns no executable.

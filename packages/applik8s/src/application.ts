@@ -1,6 +1,6 @@
 // typecast-file-boundary: the application builder joins ArkType, Drizzle, TypeKro, and graph registries whose runtime identities preserve generics erased by TypeScript.
 import type { AnyResourceDefinition, ApplicationGeneratedResourceContract, ApplicationGraph, ApplicationObservabilityContract, ApplicationProviderInterfaceKind, HandlerRegistration, JsonValue, NormalizedOperationPlan, OperationTarget, OperatorDeploymentOptions, PermissionRule, PlanTargetOptions, ResourceDefinition, ResourceIndex, ResourceObject, Result } from '@applik8s/core';
-import { applicationGraphMetadataProperty, applicationInstallationMetadataProperty, normalizeApplicationGraph } from '@applik8s/core';
+import { applicationGraphMetadataProperty, applicationInstallationMetadataProperty, applicationTypeKroDefinitionProperty, normalizeApplicationGraph } from '@applik8s/core';
 import type { CrdOptions, SchemaInput } from '@applik8s/sdk';
 import { sdk as baseSdk, normalizeSchema, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
 import type { TypeKroListenerComposition, TypeKroListenerCompositionDefinition } from '@applik8s/typekro-adapter';
@@ -28,7 +28,7 @@ import {
   recordApplicationProviderGraph,
   recordApplicationTypeKroResourceGraph,
 } from './application-infrastructure-resources.js';
-import { type ApplicationInstallationClient, type ApplicationInstallationConnectOptions, createApplicationInstallationClient, kubernetesApplicationInstallationTransport } from './application-installation-client.js';
+import { type ApplicationInstallationClient, type ApplicationInstallationConnectOptions, createApplicationInstallationClient } from './application-installation-client.js';
 import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationRuntimeModelContract } from './application-models.js';
 import { applicationModelBinding, applicationRuntimeModelContract, prepareApplicationModelCommandReplacement, recordApplicationModelCommandGraph, recordApplicationModelGraph, recordApplicationNativeModelGraph, resolveApplicationModelStore } from './application-models.js';
 import {
@@ -73,7 +73,7 @@ import type { ApplicationPostgresRlsPolicy } from './trusted-context.js';
 export type { ApplicationFinalizeEventHandler, ApplicationReconcileHandler, ApplicationReconcileOptions, ApplicationResourceControllerBinding, ApplicationResourceEventHandlers, ApplicationResourceObject } from './application-events.js';
 export type { ApplicationJobBinding, ApplicationJobOptions, ApplicationScheduleOptions } from './application-generated-job-resources.js';
 export type { ApplicationInstallationClient, ApplicationInstallationConnectOptions, ApplicationInstallationReference, ApplicationInstallationTransport, ApplicationInstallationWatchOptions } from './application-installation-client.js';
-export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationCommandSubmissionAcknowledgement, ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandOptions, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
+export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationCommandSubmissionAcknowledgement, ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandContext, ApplicationModelCommandDeliveryOptions, ApplicationModelCommandHandler, ApplicationModelCommandOptions, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
 export type { ApplicationObjectMetadata, ApplicationObjectPutRequest, ApplicationObjectReference, ApplicationObjectStorageRuntime, ApplicationObjectStoreBinding, ApplicationObjectStoreOptions, ApplicationSignedObjectIntent } from './application-object-storage.js';
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
 export type { ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalDnsPublicationProvider, ApplicationGeneratedModelStoreMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationObjectStorageProvider, ApplicationOciContainerRegistryProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresModelStoreOptions, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderToken, ApplicationQueueProvider, ApplicationRequestAdmission, ApplicationRequestIdentityProvider, ApplicationRequestIdentityProviderToken, ApplicationSecretProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
@@ -309,8 +309,7 @@ export interface ApplicationExposureOptions {
   readonly service?: string | ApplicationServerBinding | ApplicationGatewayBinding | ApplicationHostBinding;
   readonly servicePort?: number;
   readonly hostnames?: readonly string[];
-  readonly tls?: 'required' | 'optional' | 'disabled' | ApplicationTlsIntent;
-  readonly tlsSecretName?: string;
+  readonly tls?: ApplicationTlsIntent;
   readonly dns?: ApplicationDnsIntent;
   readonly gateway?: string;
   readonly ingressClassName?: string;
@@ -333,7 +332,6 @@ export interface ApplicationExposureBinding {
   readonly resourceName: string;
   readonly namespace?: string;
   readonly hostnames: readonly string[];
-  readonly tls: 'required' | 'optional' | 'disabled';
   readonly tlsIntent: ApplicationTlsIntent & { readonly secretName?: string };
   readonly dnsIntent: ApplicationDnsIntent;
   readonly publicUrl: string;
@@ -635,6 +633,11 @@ export const kubernetesComposition: KubernetesApplicationCompositionFunction = (
     applicationCompositionWrapper(definition, compositionFn, definition.name),
     options
   );
+  Object.defineProperty(composition, applicationTypeKroDefinitionProperty, {
+    value: definition,
+    enumerable: false,
+    configurable: false,
+  });
   if (lastApplicationGraph) {
     attachApplicationGraph(composition, lastApplicationGraph);
   }
@@ -690,24 +693,29 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
     async connect(connectOptions: ApplicationInstallationConnectOptions<TSpec, TStatus>) {
       const namespace = connectOptions.namespace ?? options.controlPlaneNamespace;
       if (!namespace?.trim()) throw new Error(`Application ${name} installation.connect(...) requires an explicit control-plane namespace.`);
-      const transport = connectOptions.transport ?? await kubernetesApplicationInstallationTransport<TSpec, TStatus>({
-        apiVersion: installationModel.apiVersion,
-        kind: installationModel.kind,
-        plural: installationModel.plural,
-        context: connectOptions.context ?? '',
-        ...(connectOptions.kubeConfig ? { kubeConfig: connectOptions.kubeConfig } : {}),
-        async deleteInstance(reference, kubeConfig) {
-          const factory = materialize().factory('kro', {
-            namespace: reference.namespace,
-            kubeConfig,
-            waitForReady: true,
-            timeout: 10 * 60_000,
-          });
-          const remove = Reflect.get(factory, 'deleteInstance');
-          if (typeof remove !== 'function') throw new Error(`Application ${name} TypeKro factory does not expose deleteInstance().`);
-          await Reflect.apply(remove, factory, [reference.name]);
-        },
-      });
+      // static-import-exception: the Kubernetes SDK adapter loads only for an explicit default installation connection.
+      let transport = connectOptions.transport;
+      if (!transport) {
+        // static-import-exception: preserve the provider-neutral authoring package by loading the Kubernetes adapter on demand.
+        transport = await import('@applik8s/runtime-kubernetes').then(({ kubernetesApplicationInstallationTransport }) => kubernetesApplicationInstallationTransport<TSpec, TStatus>({
+          apiVersion: installationModel.apiVersion,
+          kind: installationModel.kind,
+          plural: installationModel.plural,
+          context: connectOptions.context ?? '',
+          async deleteInstance(reference, kubeConfig) {
+            const factory = materialize().factory('kro', {
+              namespace: reference.namespace,
+              kubeConfig,
+              waitForReady: true,
+              timeout: 10 * 60_000,
+            });
+            const remove = Reflect.get(factory, 'deleteInstance');
+            if (typeof remove !== 'function') throw new Error(`Application ${name} TypeKro factory does not expose deleteInstance().`);
+            await Reflect.apply(remove, factory, [reference.name]);
+          },
+        }));
+      }
+      if (!transport) throw new Error(`Application ${name} installation transport could not be initialized.`);
       return createApplicationInstallationClient({
         apiVersion: installationModel.apiVersion,
         kind: installationModel.kind,
@@ -1323,6 +1331,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
   } satisfies KubernetesApplicationBuilder<TSpec, TStatus>;
   Object.defineProperty(builder, applicationGraphMetadataProperty, { get: () => applicationGraphFor(materialize()), enumerable: false, configurable: false });
   Object.defineProperty(builder, applicationInstallationMetadataProperty, { get: () => Reflect.get(materialize(), applicationInstallationMetadataProperty), enumerable: false, configurable: false });
+  Object.defineProperty(builder, applicationTypeKroDefinitionProperty, { value: definition, enumerable: false, configurable: false });
   return builder;
 }
 
@@ -2474,7 +2483,7 @@ function emitApplicationModelStoreResources(state: ApplicationScopeState, model:
   }
   const modelName = model.name;
   const resourceName = kubernetesNameSegment(modelName);
-  const clusterName = provider.name ?? `${resourceName}-db`;
+  const clusterName = provider.clusterName ?? provider.name ?? `${resourceName}-db`;
   const namespace = provider.namespace;
   const database = provider.database ?? resourceName;
   const secretName = provider.connectionSecret?.name ?? `${clusterName}-app`;
@@ -2508,7 +2517,7 @@ function emitApplicationModelStoreResources(state: ApplicationScopeState, model:
       id: graphResourceId(resourceName, 'modelStoreCluster'),
       name: clusterName,
       ...(namespace ? { namespace } : {}),
-      // typecast: TypeKro 0.28 types CNPG's s3Credentials.region as a
+      // typecast: TypeKro's CNPG factory types s3Credentials.region as a
       // string, while the installed CNPG v1 CRD correctly requires a
       // SecretKeySelector. Keep Applik8s' admitted Kubernetes shape correct
       // at this provider boundary until the upstream declaration catches up.

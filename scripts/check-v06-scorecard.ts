@@ -131,7 +131,7 @@ const chirpInstallation = requireChirp
 	: undefined;
 const chirpArtifacts = requireChirp
 	? await collectV06ArtifactIdentity(
-			"examples/chirp-start/.applik8s/deploy/typekro/application-image-evidence.json",
+			"examples/chirp-start/.applik8s/deploy/typekro/application-deployment-graph.json",
 		)
 	: undefined;
 const diagnostics = validateApplicationGraphStructure(graph);
@@ -153,11 +153,6 @@ const orbstackReceipt = await liveReceipt(
 const guestbookReceipt = await liveReceipt(
 	".applik8s-tmp/evidence/v0.6/guestbook-start.json",
 	"guestbook-start",
-	{ git, ...(cluster ? { cluster } : {}) },
-);
-const providerMigrationReceipt = await liveReceipt(
-	".applik8s-tmp/evidence/v0.6/provider-migration.json",
-	"provider-migration",
 	{ git, ...(cluster ? { cluster } : {}) },
 );
 const chirpExpected = {
@@ -411,7 +406,6 @@ const dimensions: readonly Dimension[] = [
 			"clickhouse-product-query",
 			"schema-complete-status",
 			"harbor-digest-images",
-			"incremental-harbor-reuse",
 			"declared-nodeport-exposure",
 			"valkey-complete-loss",
 			"degraded-query-fails-closed",
@@ -463,8 +457,8 @@ const dimensions: readonly Dimension[] = [
 			"authoritative-requery",
 			"clickhouse-projection",
 			"projection-restart-resume",
-			"typekro-factory-delete",
-			"direct-preparation-delete",
+			"alchemy-typekro-destroy",
+			"graph-owned-resources-removed",
 			"generated-rgd-removed",
 			"namespaces-removed",
 		]),
@@ -480,25 +474,17 @@ const dimensions: readonly Dimension[] = [
 			"authoritative-requery",
 			"ssr-render",
 			"restart-resume",
-			"cli-typekro-delete",
+			"cli-alchemy-typekro-delete",
 			"runtime-created-data-cleanup",
 			"generated-crd-retained-empty-for-reuse",
 			"namespace-removed",
-		]),
-		receiptCheck(providerMigrationReceipt, "provider-migration-live", [
-			"controller-quiesced-before-ownership-mutation",
-			"provider-uid-preserved",
-			"provider-data-preserved",
-			"provider-externalized",
-			"typekro-first-delete-preserves-provider",
-			"direct-delete-removes-provider",
-			"controller-restored",
 		]),
 		receiptCheck(chirpDeploymentReceipt, "chirp-consecutive-deploys", [
 			"first-deploy",
 			"second-idempotent-deploy",
 			"installation-uid-preserved",
 			"artifact-identity-preserved",
+			"incremental-harbor-reuse",
 		]),
 	),
 	dimension(

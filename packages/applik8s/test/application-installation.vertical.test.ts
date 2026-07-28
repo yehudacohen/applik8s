@@ -25,7 +25,6 @@ describe('installable Application resources', () => {
       'backupStatus?': "'Ready' | 'Pending' | 'Failed' | 'NotConfigured'",
       'projectionStatus?': { online: 'string', analytics: 'string' },
       'degradedReasons?': 'string[]',
-      'conditions?': 'unknown[]',
     });
     const chirp = app('chirp', {
       namespace: 'chirp',

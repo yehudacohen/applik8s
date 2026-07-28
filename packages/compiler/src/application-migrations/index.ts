@@ -78,6 +78,17 @@ export async function emitGeneratedApplicationMigrations(options: {
       .update(DEFAULT_MIGRATION_IMAGE)
       .update('\0')
       .update(JSON.stringify(command))
+      .update('\0')
+      // The same idempotent SQL must still execute once for each physical
+      // database authority. A connection/cluster migration therefore needs a
+      // fresh immutable Job even when the application schema is unchanged.
+      .update(JSON.stringify({
+        database: first.runtime.database,
+        clusterName: first.runtime.clusterName,
+        secretName: first.runtime.secretName,
+        secretKey: first.runtime.secretKey,
+        secretNamespace: first.runtime.secretNamespace,
+      }))
       .digest('hex');
     // Jobs are immutable. Content-address their Kubernetes identity so a new
     // committed migration or execution-contract fix produces a new Job instead

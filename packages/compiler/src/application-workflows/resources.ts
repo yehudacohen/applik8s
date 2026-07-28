@@ -5,6 +5,9 @@ import { uniqueWorkflowObjectEffects, uniqueWorkflowProjectionEffects } from './
 import type { GeneratedApplicationWorkflowResource } from './types.js';
 import { kubernetesName, objectConfig, stringConfig, workflowObjectEnabledEnvironment } from './utilities.js';
 
+const workflowTokenMountPath = '/var/run/secrets/applik8s/workflow-token';
+const workflowTokenFile = `${workflowTokenMountPath}/token`;
+
 function workflowCapabilityEnvironment(contract: WorkflowContract): readonly Record<string, unknown>[] {
   return contract.capabilities.flatMap((provider) => {
     if (provider.interface !== 'StructuredGeneration') return [];
@@ -46,6 +49,11 @@ function workflowCapabilityEnvironment(contract: WorkflowContract): readonly Rec
 
 export function workflowResources(contract: WorkflowContract, name: string, image: string, digest: string, ownsProvider: boolean): GeneratedApplicationWorkflowResource[] {
   const labels = { 'app.kubernetes.io/name': name, 'app.kubernetes.io/component': 'workflow-worker', 'applik8s.dev/graph': contract.graphName };
+  const workflowConnectionEnvironment = [
+    { name: 'HATCHET_CLIENT_HOST_PORT', value: stringConfig(contract.providerConfig.hostPort) || `${contract.engineName}-engine.${contract.namespace}.svc:7070` },
+    { name: 'HATCHET_CLIENT_API_URL', value: stringConfig(contract.providerConfig.apiUrl) || `http://${contract.engineName}-api.${contract.namespace}.svc:8080` },
+    { name: 'HATCHET_CLIENT_TLS_STRATEGY', value: workflowTlsStrategy(contract.providerConfig.tls) },
+  ];
   const providerResources = ownsProvider
     ? conditionalWorkflowResources(
         workflowProviderResources(contract),
@@ -60,13 +68,23 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
         strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
         template: { metadata: { labels, annotations: { 'applik8s.dev/digest': digest } }, spec: {
           terminationGracePeriodSeconds: contract.worker.deployment.gracefulShutdownSeconds,
+          initContainers: [{
+            name: 'wait-for-workflow-credentials',
+            image,
+            imagePullPolicy: 'IfNotPresent',
+            command: ['node', '/app/workflow-worker.mjs', '--credential-preflight'],
+            env: [
+              ...workflowConnectionEnvironment,
+              { name: 'APPLIK8S_WORKFLOW_TOKEN_FILE', value: workflowTokenFile },
+            ],
+            volumeMounts: [{ name: 'workflow-token', mountPath: workflowTokenMountPath, readOnly: true }],
+            resources: { requests: { cpu: '25m', memory: '64Mi' }, limits: { cpu: '250m', memory: '256Mi' } },
+          }],
           containers: [{
             name: 'worker', image, imagePullPolicy: 'IfNotPresent', command: ['node', '/app/workflow-worker.mjs'],
             env: uniqueWorkflowEnvironment([
               { name: 'HATCHET_CLIENT_TOKEN', valueFrom: { secretKeyRef: { name: contract.workerTokenSecret, key: contract.tokenKey } } },
-              { name: 'HATCHET_CLIENT_HOST_PORT', value: stringConfig(contract.providerConfig.hostPort) || `${contract.engineName}-engine.${contract.namespace}.svc:7070` },
-              { name: 'HATCHET_CLIENT_API_URL', value: stringConfig(contract.providerConfig.apiUrl) || `http://${contract.engineName}-api.${contract.namespace}.svc:8080` },
-              { name: 'HATCHET_CLIENT_TLS_STRATEGY', value: workflowTlsStrategy(contract.providerConfig.tls) },
+              ...workflowConnectionEnvironment,
               ...workflowCapabilityEnvironment(contract),
               ...workflowOperationEnvironment(contract),
               ...workflowQueryEnvironment(contract),
@@ -77,6 +95,13 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
             readinessProbe: { httpGet: { path: '/ready', port: 'health' }, periodSeconds: 5, failureThreshold: 6 },
             livenessProbe: { httpGet: { path: '/live', port: 'health' }, periodSeconds: 10, failureThreshold: 6 },
             resources: { requests: { cpu: '100m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } },
+          }],
+          volumes: [{
+            name: 'workflow-token',
+            secret: {
+              secretName: contract.workerTokenSecret,
+              items: [{ key: contract.tokenKey, path: 'token' }],
+            },
           }],
         } },
       },
@@ -259,8 +284,8 @@ function workflowProviderResources(contract: WorkflowContract): GeneratedApplica
   const database = objectConfig(config.database);
   const clusterName = kubernetesName(stringConfig(database.clusterName) || `${contract.engineName}-db`);
   const instances = applicationGraphNumberValue(database.instances) ?? (stringConfig(config.mode) === 'ha' ? 3 : 1);
-  const chartVersion = stringConfig(config.chartVersion) || '0.12.4';
-  const serverVersion = stringConfig(config.serverVersion) || 'v0.90.13';
+  const chartVersion = stringConfig(config.chartVersion) || '0.13.3';
+  const serverVersion = stringConfig(config.serverVersion) || 'v0.94.10';
   const databaseSecret = objectConfig(database.connectionSecret);
   const databaseSecretName = stringConfig(databaseSecret.name) || `${clusterName}-app`;
   const databaseKey = stringConfig(database.connectionSecretKey) || 'uri';

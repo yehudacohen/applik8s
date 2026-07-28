@@ -24,7 +24,7 @@ describe('v0.5 durable task and workflow contracts', () => {
     platform.provide(WorkflowEngine, WorkflowEngine.hatchet({
       name: 'workflow-hatchet',
       namespace: 'workflow-system',
-      credentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: 'workflow-hatchet-worker', namespace: 'workflow-system' },
+      workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'workflow-hatchet-worker', namespace: 'workflow-system' },
       worker: { replicas: 2, taskSlots: 8, durableSlots: 32 },
     }));
     const provision = platform.task(ProvisionTenant, {
@@ -54,7 +54,7 @@ describe('v0.5 durable task and workflow contracts', () => {
       expect.objectContaining({ kind: 'workflow', name: 'tenant.onboarding.v1', triggers: { crons: [{ name: 'daily-onboarding', expression: '0 4 * * *', input: { tenantId: 'scheduled', requestId: 'daily' } }] }, contract: expect.objectContaining({ signals: [expect.objectContaining({ name: 'approval' })] }) }),
       expect.objectContaining({ kind: 'workflowHandler', orchestrationBoundary: 'durableEffectsThroughTasks', taskBindings: [{ alias: 'provision', task: { nodeId: 'task.tenant.provision.v1' } }], deterministicOperations: expect.arrayContaining(['sleep', 'externalEvent', 'cancellation']) }),
       expect.objectContaining({ kind: 'workflowWorker', runtime: 'node', lifecycle: 'longLived', deployment: expect.objectContaining({ replicas: 2, taskSlots: 8, durableSlots: 32, gracefulShutdownSeconds: 45, healthPort: 8081, egress: 'allowAll' }) }),
-      expect.objectContaining({ kind: 'provider', interface: 'WorkflowEngine', implementation: 'hatchet', config: expect.objectContaining({ chartVersion: '0.12.4', serverVersion: 'v0.90.13' }) }),
+      expect.objectContaining({ kind: 'provider', interface: 'WorkflowEngine', implementation: 'hatchet', config: expect.objectContaining({ chartVersion: '0.13.3', serverVersion: 'v0.94.10' }) }),
     ]));
     expect(graph?.providerRequirements).toEqual(expect.arrayContaining([expect.objectContaining({ interface: 'WorkflowEngine', purpose: 'workflowEngine' })]));
     expect(graph?.providerBindings).toEqual(expect.arrayContaining([expect.objectContaining({ generatedResources: expect.arrayContaining([expect.objectContaining({ kind: 'HelmRepository' })]), runtime: expect.objectContaining({ secretRefs: [expect.objectContaining({ name: 'workflow-hatchet-worker' })] }) })]));

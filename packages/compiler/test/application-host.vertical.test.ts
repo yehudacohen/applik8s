@@ -221,7 +221,6 @@ function hostGraph(nodePort = false, objects = false, objectStorageEnabled: bool
       provider: { interface: 'HttpExposure' as const, nodeId: 'provider.HttpExposure' },
       service: 'guestbook-web',
       hostnames: ['guestbook.localhost'],
-      tls: 'disabled' as const,
       tlsIntent: { mode: 'disabled' as const },
       dnsIntent: { mode: 'disabled' as const },
       publicUrl: 'http://127.0.0.1:30080',

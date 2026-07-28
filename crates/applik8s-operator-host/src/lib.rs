@@ -6,10 +6,10 @@
 mod kubernetes_connection;
 
 use applik8s_runtime_bridge::{
-    AppliedOperationSummary, KubeOperationPlanApplier, KubeRuntimeBridge, KubernetesHttpTransport,
-    OperationProgress, RuntimeBridgeError, component_model_engine,
-    invoke_handler_component_bytes_with_timeout_and_host_imports_async,
-    invoke_handler_component_bytes_with_timeout_host_imports_and_kubernetes_http_async,
+    AppliedOperationSummary, CompiledHandlerComponent, KubeOperationPlanApplier, KubeRuntimeBridge,
+    KubernetesHttpTransport, OperationProgress, RuntimeBridgeError, compile_handler_component,
+    component_model_engine, invoke_compiled_handler_component_with_timeout_and_host_imports_async,
+    invoke_compiled_handler_component_with_timeout_host_imports_and_kubernetes_http_async,
     validate_component_host_imports,
 };
 use applik8s_runtime_contract::{
@@ -30,7 +30,7 @@ use kube::api::{Api, DynamicObject, ListParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 use kube::core::dynamic::ApiResource;
 use kube::core::gvk::GroupVersionKind;
-use kube::runtime::controller::{Action, Controller};
+use kube::runtime::controller::{Action, Config as ControllerConfig, Controller};
 use kube::runtime::watcher;
 use kube::{Client, Config};
 use kube_lease_manager::{LeaseManagerBuilder, LeaseManagerError};
@@ -60,7 +60,7 @@ use std::time::Duration;
 use std::time::Instant;
 use thiserror::Error;
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
+use tokio::sync::{Mutex as AsyncMutex, Semaphore, mpsc, watch};
 use tokio::task::JoinHandle;
 use tracing::{Level, event};
 use tracing_subscriber::EnvFilter;
@@ -449,6 +449,7 @@ pub enum OperatorHostError {
 
 pub struct KubeRuntimeControllerStrategy {
     pub framework: &'static str,
+    pub max_concurrent_reconciles: u16,
 }
 
 #[derive(Clone)]
@@ -457,6 +458,7 @@ pub struct OperatorHost {
     config: OperatorHostConfig,
     metrics: OperatorMetrics,
     retry_attempts: Arc<Mutex<HashMap<String, u32>>>,
+    compiled_handler: Arc<Mutex<Option<(String, CompiledHandlerComponent)>>>,
 }
 
 impl OperatorHost {
@@ -466,7 +468,40 @@ impl OperatorHost {
             config,
             metrics: OperatorMetrics::new(),
             retry_attempts: Arc::new(Mutex::new(HashMap::new())),
+            compiled_handler: Arc::new(Mutex::new(None)),
         }
+    }
+
+    fn compiled_handler(
+        &self,
+        bundle: &LoadedOperatorBundle,
+    ) -> Result<CompiledHandlerComponent, OperatorHostError> {
+        let bundle_key = format!(
+            "{}:{}",
+            bundle
+                .manifest
+                .pointer("/spec/bundle/digest")
+                .and_then(Value::as_str)
+                .unwrap_or("unidentified"),
+            bundle.handler_wasm.len(),
+        );
+        let mut cache = self.compiled_handler.lock().map_err(|_| {
+            OperatorHostError::InvalidRuntimeConfig(
+                "compiled handler cache lock is poisoned".to_string(),
+            )
+        })?;
+        if let Some((cached_key, component)) = cache.as_ref()
+            && cached_key == &bundle_key
+        {
+            return Ok(component.clone());
+        }
+        let component = compile_handler_component(
+            self.bridge.engine(),
+            &bundle.handler_wasm,
+            &bundle.allowed_host_imports()?,
+        )?;
+        *cache = Some((bundle_key, component.clone()));
+        Ok(component)
     }
 
     pub fn bridge(&self) -> &KubeRuntimeBridge {
@@ -810,7 +845,6 @@ impl OperatorHost {
                 "startedAt": reconcile_started_at_timestamp
             }
         });
-        let allowed_host_imports = bundle.allowed_host_imports()?;
         let handler_timeout = bundle.handler_timeout()?;
         let source_map_path = handler_source_map_path(&bundle.manifest);
         let capability_manifest = bundle.manifest.clone();
@@ -850,12 +884,12 @@ impl OperatorHost {
             }) as applik8s_runtime_bridge::KubernetesReadFuture
         });
         record_reconcile_otel_phase(&mut reconcile_span, "handler.invoke");
+        let compiled_handler = self.compiled_handler(bundle)?;
         let invocation = if let Some(transport) = self.bridge.kubernetes_http().cloned() {
-            invoke_handler_component_bytes_with_timeout_host_imports_and_kubernetes_http_async(
+            invoke_compiled_handler_component_with_timeout_host_imports_and_kubernetes_http_async(
                 self.bridge.engine(),
-                &bundle.handler_wasm,
+                &compiled_handler,
                 input.clone(),
-                &allowed_host_imports,
                 handler_timeout,
                 capability_handler,
                 kubernetes_read_handler,
@@ -863,11 +897,10 @@ impl OperatorHost {
             )
             .await
         } else {
-            invoke_handler_component_bytes_with_timeout_and_host_imports_async(
+            invoke_compiled_handler_component_with_timeout_and_host_imports_async(
                 self.bridge.engine(),
-                &bundle.handler_wasm,
+                &compiled_handler,
                 input.clone(),
-                &allowed_host_imports,
                 handler_timeout,
                 capability_handler,
                 kubernetes_read_handler,
@@ -5809,12 +5842,14 @@ fn capability_error_response(code: &str, message: &str) -> String {
 struct RuntimeContext {
     host: OperatorHost,
     bundle: Arc<LoadedOperatorBundle>,
+    reconcile_permits: Arc<Semaphore>,
 }
 
 impl Default for KubeRuntimeControllerStrategy {
     fn default() -> Self {
         Self {
             framework: "kube-runtime::Controller",
+            max_concurrent_reconciles: 1,
         }
     }
 }
@@ -5937,10 +5972,23 @@ fn start_controller_supervisor(
             let secondary = runtime_controller.secondary.clone();
             runtime_controller
                 .controller
+                .with_config(ControllerConfig::default().concurrency(
+                    KubeRuntimeControllerStrategy::default().max_concurrent_reconciles,
+                ))
                 .run(
                     move |object, context| {
                         let secondary = secondary.clone();
                         async move {
+                            let _permit = context
+                                .reconcile_permits
+                                .clone()
+                                .acquire_owned()
+                                .await
+                                .map_err(|_| {
+                                OperatorHostError::InvalidRuntimeConfig(
+                                    "operator reconcile concurrency gate closed".to_string(),
+                                )
+                            })?;
                             match secondary {
                                 Some(registration) => {
                                     context
@@ -6137,7 +6185,7 @@ pub async fn run_from_env() -> Result<(), OperatorHostError> {
     };
     let bundle = Arc::new(LoadedOperatorBundle::load(&OperatorHostPaths::from_env())?);
     bundle.validate_runtime_compatibility(&host.config.runtime_version)?;
-    bundle.validate_handler_host_imports(host.bridge.engine())?;
+    host.compiled_handler(&bundle)?;
     let run_result = match bundle.leader_election_config()? {
         Some(leader_election) => {
             run_leader_elected_controllers(
@@ -6169,7 +6217,11 @@ async fn run_standalone_controllers(
     readiness: RuntimeReadiness,
 ) -> Result<(), OperatorHostError> {
     let controllers = bundle.controllers(client)?;
-    let context = Arc::new(RuntimeContext { host, bundle });
+    let context = Arc::new(RuntimeContext {
+        host,
+        bundle,
+        reconcile_permits: Arc::new(Semaphore::new(1)),
+    });
     let mut controller_supervisor = start_controller_supervisor(controllers, context, None);
     readiness.mark_ready();
     tokio::select! {
@@ -6235,7 +6287,11 @@ async fn run_leader_elected_controllers(
                 if is_leader {
                     if controller_supervisor.is_none() {
                         let controllers = bundle.controllers(client.clone())?;
-                        let context = Arc::new(RuntimeContext { host: host.clone(), bundle: Arc::clone(&bundle) });
+                        let context = Arc::new(RuntimeContext {
+                            host: host.clone(),
+                            bundle: Arc::clone(&bundle),
+                            reconcile_permits: Arc::new(Semaphore::new(1)),
+                        });
                         controller_supervisor = Some(start_controller_supervisor(controllers, context, Some(controller_done_tx.clone())));
                     }
                     readiness.mark_ready();

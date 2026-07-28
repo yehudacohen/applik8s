@@ -29,6 +29,8 @@ export type { ApplicationDnsIntentContract, ApplicationExposureNode, Application
 export type ApplicationGraphVersion = 'applik8s.appGraph/v1alpha1';
 
 export const applicationGraphMetadataProperty = '__applik8sApplicationGraph';
+/** Internal authoring bridge used by the deployment adapter to rebuild a compiled TypeKro root. */
+export const applicationTypeKroDefinitionProperty = '__applik8sTypeKroDefinition';
 
 /**
  * Non-enumerable metadata shared by the application builder and compiler.

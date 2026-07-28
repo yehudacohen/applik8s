@@ -295,6 +295,7 @@ Handlers can be `async`. The compiler tree-shakes the TypeScript dependency grap
 Synthesize an operator bundle from a TypeScript entrypoint:
 
 ```sh
+bun add --dev @applik8s/cli
 bunx applik8s build ./src/operator.ts --out-dir dist/applik8s
 ```
 

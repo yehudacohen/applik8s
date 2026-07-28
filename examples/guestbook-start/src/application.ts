@@ -31,7 +31,10 @@ if (publicHostname) {
   // OrbStack exposes NodePorts directly on macOS loopback. A local deployment
   // therefore has an endpoint the deployer can authoritatively verify without
   // assuming an ingress controller or editing /etc/hosts.
-  app.provide(HttpExposure, HttpExposure.nodePort({ host: '127.0.0.1', nodePort: 30_081 }));
+  app.provide(HttpExposure, HttpExposure.nodePort({
+    host: '127.0.0.1',
+    nodePort: Number(process.env.APPLIK8S_NODE_PORT ?? '30081'),
+  }));
 }
 
 app.expose('web', {

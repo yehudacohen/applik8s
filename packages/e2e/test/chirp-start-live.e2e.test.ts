@@ -7,8 +7,8 @@ import { setApplicationWorkflowRuntimeFactory } from '@applik8s/applik8s';
 import { S3Client } from '@aws-sdk/client-s3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildHomeTimelineGeneration, RebuildHomeTimelines } from '../../../examples/chirp-start/src/recovery/timeline';
-import { createS3ApplicationObjectStorageRuntime } from '../../applik8s/src/object-storage-s3-runtime.js';
-import { createHatchetWorkflowRuntime } from '../../applik8s/src/workflow-runtime-hatchet.js';
+import { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';
+import { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';
 import {
   collectV06ArtifactIdentity,
   collectV06ClusterIdentity,
@@ -37,7 +37,7 @@ const evidencePath = join(process.cwd(), '.applik8s-tmp/evidence/v0.6/chirp.json
 const evidenceRunId = randomUUID();
 const evidenceStartedAt = new Date().toISOString();
 const completedEvidenceTests = new Set<string>();
-let runtimeEvidence: { readonly endpoint: string; readonly status: Record<string, unknown>; readonly imageEvidence: Record<string, unknown>; readonly allImagesReused: boolean } | undefined;
+let runtimeEvidence: { readonly endpoint: string; readonly status: Record<string, unknown>; readonly artifactEvidence: Record<string, unknown> } | undefined;
 let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evidence: ProjectionRebuildEvidence } | undefined;
 
 (enabled ? describe : describe.skip)('Chirp public golden path on OrbStack', () => {
@@ -180,7 +180,7 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
         'applik8s.dev/public-url': endpoint,
       });
     }
-    runtimeEvidence = await collectRuntimeEvidence(endpoint, status);
+    runtimeEvidence = await collectRuntimeEvidence(endpoint, status, installation);
     completedEvidenceTests.add('runtime');
   }, 180_000);
 
@@ -278,10 +278,10 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
     expect(submission.durableResult).toBe('pending');
 
     await Promise.all([
-      restartDeployment('chirp-commands'),
-      restartDeployment('chirp-home-timeline'),
-      restartDeployment('chirp-social'),
-      restartDeployment('chirp-web'),
+      restartLogicalWorkload('chirp-commands'),
+      restartLogicalWorkload('chirp-home-timeline'),
+      restartLogicalWorkload('chirp-social'),
+      restartLogicalWorkload('chirp-web'),
     ]);
     await expect(waitForCommand(endpoint, stringField(submission, 'progressCursor'))).resolves.toMatchObject({
       durableResult: 'succeeded',
@@ -336,8 +336,9 @@ interface ProjectionRebuildEvidence {
 }
 
 async function assertOnlineTimelineProjection(postId: string, body: string): Promise<void> {
+  const deployment = await deploymentForLogicalWorkload('chirp-home-timeline');
   const ready = (await kubectl([
-    'get', 'deployment/chirp-home-timeline', '--namespace', namespace,
+    'get', `deployment/${deployment}`, '--namespace', namespace,
     '--output=jsonpath={.status.readyReplicas}',
   ])).stdout.trim();
   expect(ready).toBe('1');
@@ -435,6 +436,37 @@ async function waitForCommand(
 async function restartDeployment(name: string, targetNamespace = namespace): Promise<void> {
   await kubectl(['rollout', 'restart', `deployment/${name}`, '--namespace', targetNamespace]);
   await kubectl(['rollout', 'status', `deployment/${name}`, '--namespace', targetNamespace, '--timeout=300s']);
+}
+
+async function restartLogicalWorkload(name: string): Promise<void> {
+  await restartDeployment(await deploymentForLogicalWorkload(name));
+}
+
+async function deploymentForLogicalWorkload(name: string): Promise<string> {
+  const response = jsonObject((await kubectl(['get', 'deployments', '--namespace', namespace, '--output=json'])).stdout);
+  const items = response.items;
+  if (!Array.isArray(items)) throw new Error('Kubernetes returned no Deployment items for Chirp.');
+  const deployments = items
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === 'object' && !Array.isArray(item))
+    .map((item) => {
+      const metadata = objectField(item, 'metadata');
+      const spec = objectField(item, 'spec');
+      const template = objectField(spec, 'template');
+      const templateMetadata = objectField(template, 'metadata');
+      const annotations = templateMetadata.annotations;
+      const members = annotations && typeof annotations === 'object' && !Array.isArray(annotations)
+        ? Reflect.get(annotations, 'applik8s.dev/workload-members')
+        : undefined;
+      return {
+        name: stringField(metadata, 'name'),
+        members: typeof members === 'string' ? members.split(',').map((member) => member.trim()) : [],
+      };
+    });
+  const matches = deployments.filter((deployment) => deployment.name === name || deployment.members.includes(name));
+  if (matches.length !== 1) {
+    throw new Error(`Expected one Deployment for logical Chirp workload ${name}, found ${JSON.stringify(matches.map((match) => match.name))}.`);
+  }
+  return matches[0]?.name as string;
 }
 
 async function createPostAndWait(endpoint: string, id: string, body: string, idempotencyKey: string): Promise<Record<string, unknown>> {
@@ -662,34 +694,40 @@ function stringField(value: Record<string, unknown>, field: string): string {
   return result;
 }
 
+function collectStrings(value: unknown): string[] {
+  if (typeof value === 'string') return [value];
+  if (Array.isArray(value)) return value.flatMap(collectStrings);
+  if (!value || typeof value !== 'object') return [];
+  return Object.values(value).flatMap(collectStrings);
+}
+
 function required<T>(value: T | undefined): T {
   if (value === undefined) throw new Error('Chirp live E2E setup did not complete.');
   return value;
 }
 
-async function collectRuntimeEvidence(endpoint: string, status: Record<string, unknown>): Promise<NonNullable<typeof runtimeEvidence>> {
-  const imageEvidencePath = join(
+async function collectRuntimeEvidence(
+  endpoint: string,
+  status: Record<string, unknown>,
+  installation: Record<string, unknown>,
+): Promise<NonNullable<typeof runtimeEvidence>> {
+  const deploymentGraphPath = join(
     process.cwd(),
-    'examples/chirp-start/.applik8s/deploy/typekro/application-image-evidence.json',
+    'examples/chirp-start/.applik8s/deploy/typekro/application-deployment-graph.json',
   );
-  const imageEvidence = jsonObject(await readFile(imageEvidencePath, 'utf8'));
-  const images = imageEvidence.images;
-  if (!Array.isArray(images) || images.length === 0) {
-    throw new Error(`Chirp image evidence contains no images: ${JSON.stringify(imageEvidence)}`);
+  const identity = await collectV06ArtifactIdentity(deploymentGraphPath);
+  const bindings = objectField(objectField(installation, 'spec'), 'typekroArtifactBindings');
+  const immutableReferences = collectStrings(bindings)
+    .filter((value) => /@sha256:[a-f0-9]{64}$/.test(value))
+    .sort();
+  if (immutableReferences.length === 0) {
+    throw new Error('Chirp installation contains no digest-pinned TypeKro artifact bindings.');
   }
-  for (const image of images) {
-    if (!image || typeof image !== 'object' || Array.isArray(image)) {
-      throw new Error(`Chirp image evidence contains an invalid image: ${JSON.stringify(image)}`);
-    }
-    const immutableImage = Reflect.get(image, 'immutableImage');
-    const digest = Reflect.get(image, 'digest');
-    if (typeof immutableImage !== 'string' || !immutableImage.includes('@sha256:') || typeof digest !== 'string' || !/^sha256:[a-f0-9]{64}$/.test(digest)) {
-      throw new Error(`Chirp image is not digest-pinned: ${JSON.stringify(image)}`);
-    }
-  }
-  const allImagesReused = images.every((image) => Reflect.get(image as object, 'publication') === 'reused');
-
-  return { endpoint, status, imageEvidence, allImagesReused };
+  return {
+    endpoint,
+    status,
+    artifactEvidence: { ...identity, immutableReferences },
+  };
 }
 
 async function writeCompleteChirpEvidenceReceipt(): Promise<void> {
@@ -713,7 +751,6 @@ async function writeCompleteChirpEvidenceReceipt(): Promise<void> {
     'clickhouse-product-query',
     'schema-complete-status',
     'harbor-digest-images',
-    ...(runtime.allImagesReused ? ['incremental-harbor-reuse'] : []),
     'declared-nodeport-exposure',
   ];
   const recoveryAssertions = [
@@ -738,7 +775,7 @@ async function writeCompleteChirpEvidenceReceipt(): Promise<void> {
     ...recoveryAssertions.map((assertion) => ({ assertion, test: recoveryTest })),
     ...restartAssertions.map((assertion) => ({ assertion, test: restartTest })),
   ], evidenceRunId);
-  const imageEvidencePath = join(process.cwd(), 'examples/chirp-start/.applik8s/deploy/typekro/application-image-evidence.json');
+  const deploymentGraphPath = join(process.cwd(), 'examples/chirp-start/.applik8s/deploy/typekro/application-deployment-graph.json');
   const [git, cluster, installation, artifacts] = await Promise.all([
     collectV06GitIdentity(),
     collectV06ClusterIdentity(context),
@@ -747,7 +784,7 @@ async function writeCompleteChirpEvidenceReceipt(): Promise<void> {
       resource: `chirpinstallation/${installationName}`,
       namespace: controlPlaneNamespace,
     }),
-    collectV06ArtifactIdentity(imageEvidencePath),
+    collectV06ArtifactIdentity(deploymentGraphPath),
   ]);
   await writeV06EvidenceReceipt(evidencePath, {
     suite: 'chirp',
@@ -756,7 +793,7 @@ async function writeCompleteChirpEvidenceReceipt(): Promise<void> {
     environment: { context, namespace, controlPlaneNamespace, installation: installationName, endpoint: runtime.endpoint },
     assertionEvidence,
     installationStatus: runtime.status,
-    imageEvidence: runtime.imageEvidence,
+    artifactEvidence: runtime.artifactEvidence,
     onlineProjectionRecovery: {
       ...recovery.result,
       manifestSha256: recovery.evidence.manifestSha256,

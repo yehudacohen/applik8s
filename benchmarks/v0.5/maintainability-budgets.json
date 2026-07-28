@@ -14,5 +14,5 @@
   "packages/applik8s/src/application-route-source.ts": 1200,
   "packages/applik8s/src/application-workflows.ts": 600,
   "packages/compiler/src/application-workflows/index.ts": 550,
-  "packages/applik8s/src/workflow-runtime-hatchet.ts": 250
+  "packages/runtime-hatchet/src/index.ts": 250
 }

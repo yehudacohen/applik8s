@@ -566,6 +566,51 @@ export function handle(input: string) { return JSON.stringify({ input, recognize
     ]));
   });
 
+  it('keeps deployment build identity stable when ComponentizeJS emits different bytes for the same JavaScript source', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: imageSpecSchema,
+      status: imageStatusSchema,
+    });
+    const operator = sdk.operator({
+      name: 'stable-build-identity',
+      resources: { ImageJob },
+      handlers: [ImageJob.on.reconcile(() => {})],
+    });
+    const common = {
+      operator: operator.definition,
+      handlerArtifactPath: 'wasm/handler.wasm',
+      runtimeContractPath: 'contract/runtime-contract.json',
+      runtimeContractDigest: `sha256:${'b'.repeat(64)}`,
+      additionalArtifacts: [
+        // typecast: keep the fixture discriminator literal without freezing the mutable artifact array.
+        { kind: 'javascript-bundle' as const, path: 'bundle/handler.js', digest: `sha256:${'c'.repeat(64)}` },
+        // typecast: keep the second fixture discriminator literal for manifest inference.
+        { kind: 'handler-wit' as const, path: 'contract/applik8s-handler.wit', digest: `sha256:${'d'.repeat(64)}` },
+      ],
+    };
+    const first = buildOperatorManifest({
+      ...common,
+      handlerArtifactDigest: `sha256:${'a'.repeat(64)}`,
+    });
+    const second = buildOperatorManifest({
+      ...common,
+      handlerArtifactDigest: `sha256:${'e'.repeat(64)}`,
+    });
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+
+    expect(first.value.spec.bundle.digest).not.toBe(second.value.spec.bundle.digest);
+    expect(first.value.spec.handlerArtifact.digest).not.toBe(second.value.spec.handlerArtifact.digest);
+    expect(first.value.spec.bundle.buildIdentityDigest).toBe(second.value.spec.bundle.buildIdentityDigest);
+    expect(first.value.spec.container?.image).toEqual(second.value.spec.container?.image);
+    expect(first.value.spec.container?.build?.labels).toMatchObject({
+      'applik8s.dev/build-identity-digest': first.value.spec.bundle.buildIdentityDigest,
+    });
+  });
+
   it('lowers an exact source-metadata mapping without adding target-list fan-out', () => {
     const PublicationOwner = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'PublicationOwner', spec: imageSpecSchema, status: imageStatusSchema });
     const DnsEndpoint = sdk.kubernetes.resource({ apiVersion: 'externaldns.k8s.io/v1alpha1', kind: 'DNSEndpoint', plural: 'dnsendpoints', namespaces: ['media'] });
@@ -908,9 +953,9 @@ export const installableProof = platform;
         metadata: expect.objectContaining({ name: 'installable-proof' }),
       }));
       const definition = result.value.artifacts.resources.find((resource) => resource.kind === 'ResourceGraphDefinition' && resource.metadata.name === 'installable-proof');
-      // TypeKro 0.28 hoists owned Namespaces out of the RGD so an instance can
+      // TypeKro hoists owned Namespaces out of the RGD so an instance can
       // never finalizer-deadlock inside the Namespace it owns. Applik8s runtime
-      // preparation creates the application Namespace before applying an
+      // graph materialization creates the application Namespace before applying an
       // installation instance.
       expect(definition?.spec).toMatchObject({
         resources: [expect.objectContaining({
@@ -1876,7 +1921,7 @@ export const imagePipeline = sdk.operator({
       const deployment = parse(await readFile(result.value.artifacts.generatedDeploymentYamlPath, 'utf8'));
       const container = deployment.spec.template.spec.containers[0];
       expect(deployment.metadata.annotations).toMatchObject({
-        'applik8s.dev/bundle-digest': result.value.manifest.spec.bundle.digest,
+        'applik8s.dev/build-identity-digest': result.value.manifest.spec.bundle.buildIdentityDigest,
         'applik8s.dev/source-digest': result.value.manifest.spec.bundle.sourceDigest,
         'applik8s.dev/compiler-version': result.value.manifest.spec.bundle.compilerVersion,
         'applik8s.dev/handler-abi': 'applik8s.handler/v1alpha1',
@@ -1905,7 +1950,7 @@ export const imagePipeline = sdk.operator({
         'applik8s.dev/unsupported-native-modules': 'denied',
       });
       expect(deployment.spec.template.metadata.annotations).toMatchObject({
-        'applik8s.dev/bundle-digest': result.value.manifest.spec.bundle.digest,
+        'applik8s.dev/build-identity-digest': result.value.manifest.spec.bundle.buildIdentityDigest,
         'applik8s.dev/handler-abi': 'applik8s.handler/v1alpha1',
       });
       expect(deployment.spec.template.spec.securityContext).toEqual({
@@ -1932,7 +1977,7 @@ export const imagePipeline = sdk.operator({
       expect(container.env).toContainEqual({ name: 'OTEL_METRIC_EXPORT_INTERVAL', value: '30000' });
       expect(container.env).toContainEqual({
         name: 'OTEL_RESOURCE_ATTRIBUTES',
-        value: `service.namespace=applik8s,applik8s.operator=image-pipeline,applik8s.bundle_digest=${result.value.manifest.spec.bundle.digest}`,
+        value: `service.namespace=applik8s,applik8s.operator=image-pipeline,applik8s.build_identity_digest=${result.value.manifest.spec.bundle.buildIdentityDigest}`,
       });
       expect(container.startupProbe).toMatchObject({
         httpGet: { path: '/healthz', port: 'health' },

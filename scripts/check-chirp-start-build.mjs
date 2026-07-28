@@ -120,7 +120,7 @@ assert(indexStore?.config?.indexStore?.kind === 'valkey' && indexStore.config.in
 assert(installationProfileValue(indexStore?.config?.indexStore?.host) && indexStore.config.indexStore.host.includes('schema.spec.providers.index.host'), 'The external profile must select its online index endpoint from typed provider coordinates.');
 assert(installationProfileValue(indexStore?.config?.indexStore?.provision) && indexStore.config.indexStore.provision.includes('false') && indexStore.config.indexStore.provision.includes('true'), 'Managed profiles must own Valkey directly while the external profile references it.');
 const objectStoreProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'ObjectStorage');
-assert(installationProfileValue(objectStoreProvider?.config?.objectStorage?.ownership) && objectStoreProvider.config.objectStorage.ownership.includes('"external"') && objectStoreProvider.config.objectStorage.ownership.includes('"direct-provisioned"') && objectStoreProvider.config.objectStorage.provisioning?.storageClassName === 'typekro-harbor-bucket-retain', 'Managed profiles must declare automatic direct Rook bucket preparation while the external profile retains external ownership.');
+assert(installationProfileValue(objectStoreProvider?.config?.objectStorage?.ownership) && objectStoreProvider.config.objectStorage.ownership.includes('"external"') && objectStoreProvider.config.objectStorage.ownership.includes('"direct-provisioned"') && objectStoreProvider.config.objectStorage.provisioning?.storageClassName === 'typekro-harbor-bucket-retain', 'Managed profiles must declare automatic direct Rook bucket provisioning while the external profile retains external ownership.');
 assert(objectStoreProvider?.config?.objectStorage?.enabled === true, 'Chirp must retain ObjectStorage as a core projection-recovery dependency.');
 const modelStoreProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'ModelStore')?.config?.modelStore;
 assert(installationProfileValue(modelStoreProvider?.ownership) && modelStoreProvider.ownership.includes('"external"') && modelStoreProvider.ownership.includes('"direct-provisioned"') && modelStoreProvider.lifecycle?.deletionPolicy === '${schema.spec.lifecycle.databaseDeletion}', 'Chirp PostgreSQL must select external or explicit direct ownership from typed profile and lifecycle desired state.');
@@ -215,11 +215,11 @@ const jetStreamResources = chirpRgd.spec.resources.filter((resource) => ['Stream
 assert(jetStreamResources.length > 0, 'Chirp must materialize declared JetStream Streams and Consumers.');
 assert(jetStreamResources.every((resource) => chirpRgd.spec.schema.status.ready.includes(resource.id)), 'Chirp readiness must observe every declared JetStream Stream and Consumer.');
 const applicationClusters = chirpRgd.spec.resources
-  .filter((resource) => resource.externalRef?.apiVersion === 'postgresql.cnpg.io/v1' && resource.externalRef?.kind === 'Cluster' && resource.externalRef.metadata?.name === 'chirp');
+  .filter((resource) => resource.externalRef?.apiVersion === 'postgresql.cnpg.io/v1' && resource.externalRef?.kind === 'Cluster' && resource.externalRef.metadata?.name === 'chirp-models');
 assert(applicationClusters.length === 1, `Chirp must observe exactly one direct-lifecycle authoritative application database cluster, found ${applicationClusters.length}.`);
 assert(applicationClusters[0]?.externalRef?.metadata?.namespace === installationNamespace, 'ChirpInstallation.spec.name must scope the authoritative application database.');
-assert(!chirpRgd.spec.resources.some((resource) => resource.template?.apiVersion === 'postgresql.cnpg.io/v1' && resource.template?.kind === 'Cluster' && resource.template.metadata?.name === 'chirp'), 'The retained Chirp database must never be a KRO-owned graph child.');
-assert(installationProfileValue(modelStoreProvider?.instances) && installationProfileValue(modelStoreProvider?.storage?.size), 'ChirpInstallation.spec.profile must drive the direct PostgreSQL preparation contract.');
+assert(!chirpRgd.spec.resources.some((resource) => resource.template?.apiVersion === 'postgresql.cnpg.io/v1' && resource.template?.kind === 'Cluster' && resource.template.metadata?.name === 'chirp-models'), 'The retained Chirp database must never be a KRO-owned graph child.');
+assert(installationProfileValue(modelStoreProvider?.instances) && installationProfileValue(modelStoreProvider?.storage?.size), 'ChirpInstallation.spec.profile must drive the direct PostgreSQL provisioning contract.');
 const natsRelease = chirpRgd.spec.resources.map((resource) => resource.template).find((resource) => resource?.kind === 'HelmRelease' && resource.metadata?.name === 'applik8s-events');
 assert(installationProfileValue(natsRelease?.spec?.values?.config?.cluster?.replicas) && installationProfileValue(natsRelease?.spec?.values?.config?.jetstream?.fileStore?.pvc?.size), 'ChirpInstallation.spec.profile must drive JetStream replicas and durable storage.');
 const workflowDatabase = chirpRgd.spec.resources.map((resource) => resource.template).find((resource) => resource?.apiVersion === 'postgresql.cnpg.io/v1' && resource?.kind === 'Cluster' && resource.metadata?.name === 'chirp-workflows-db');
@@ -274,7 +274,13 @@ assert(
 const applicationHost = chirpRgd.spec.resources.map((resource) => resource.template).find((resource) => resource?.kind === 'Deployment' && resource.metadata?.name === 'chirp-web');
 assert(installationProfileValue(applicationHost?.spec?.replicas), 'ChirpInstallation.spec.profile must drive ApplicationHost replicas.');
 const queryGateways = chirpRgd.spec.resources.map((resource) => resource.template).filter((resource) => resource?.kind === 'Deployment' && resource.metadata?.labels?.['app.kubernetes.io/component'] === 'query-gateway');
-assert(queryGateways.length === 4 && queryGateways.every((resource) => installationProfileValue(resource.spec?.replicas)), 'ChirpInstallation.spec.profile must drive every query gateway replica count.');
+const queryGatewayContainers = queryGateways.flatMap((resource) => resource.spec?.template?.spec?.containers ?? []);
+assert(
+  queryGateways.length === 2
+    && queryGateways.every((resource) => installationProfileValue(resource.spec?.replicas))
+    && queryGatewayContainers.map((container) => container.name).sort().join(',') === 'chirp-account,chirp-social,chirp-system,runtime',
+  'ChirpInstallation.spec.profile must drive both the dedicated Kubernetes gateway and the compatible three-gateway workload envelope.',
+);
 const administrationGateway = queryGateways.find((resource) => resource.metadata?.name === 'chirp-administration');
 const administrationNamespaceEnvironment = administrationGateway?.spec?.template?.spec?.containers?.[0]?.env?.find((entry) => entry.name?.startsWith('APPLIK8S_KUBERNETES_QUERY_'));
 assert(administrationNamespaceEnvironment?.value === installationNamespace, 'The administration gateway must receive its evaluated installation namespace at deployment time.');
@@ -297,8 +303,16 @@ const analyticsResources = chirpRgd.spec.resources.filter((resource) =>
   resource.template?.kind === 'ClickHouseInstallation'
   || resource.externalRef?.kind === 'ClickHouseHelmRepository'
   || resource.externalRef?.kind === 'ClickHouseOperatorBootstrap'
-  || (resource.template?.kind === 'Deployment' && resource.template?.metadata?.labels?.['app.kubernetes.io/component'] === 'projection-worker' && /analytics-hourly$/.test(resource.template?.metadata?.name ?? '')));
-assert(analyticsResources.length >= 6 && analyticsResources.every((resource) => resource.includeWhen?.some((condition) => condition.includes('schema.spec.features.analytics'))), 'Analytics feature selection must omit the ClickHouse control/data plane and every analytical projection worker as one RGD branch.');
+  || (resource.template?.kind === 'Deployment'
+    && resource.template?.spec?.template?.spec?.containers?.some((container) => /analytics-hourly$/.test(container.name ?? ''))));
+const analyticsWorkers = analyticsResources.filter((resource) => resource.template?.kind === 'Deployment');
+assert(
+  analyticsResources.length === 4
+    && analyticsWorkers.length === 1
+    && analyticsWorkers[0]?.template?.spec?.template?.spec?.containers?.filter((container) => /analytics-hourly$/.test(container.name ?? '')).length === 3
+    && analyticsResources.every((resource) => resource.includeWhen?.some((condition) => condition.includes('schema.spec.features.analytics'))),
+  'Analytics feature selection must omit the ClickHouse control/data plane and the co-located three-projection worker envelope as one RGD branch.',
+);
 const workflowResources = chirpRgd.spec.resources.filter((resource) =>
   ['chirp-workflows', 'chirp-workflows-db', 'chirp-workflows-repository'].includes(resource.template?.metadata?.name));
 assert(
@@ -340,7 +354,7 @@ assert(
 const scheduledBackup = chirpRgd.spec.resources.find((resource) => resource.template?.kind === 'ScheduledBackup');
 assert(
   scheduledBackup?.includeWhen?.includes(installationManagedBackupValue)
-    && scheduledBackup.template.spec?.cluster?.name === 'chirp'
+    && scheduledBackup.template.spec?.cluster?.name === 'chirp-models'
     && scheduledBackup.template.spec?.method === 'barmanObjectStore',
   'Chirp backup desired state must emit one condition-aware CNPG ScheduledBackup for the externally observed direct cluster.',
 );

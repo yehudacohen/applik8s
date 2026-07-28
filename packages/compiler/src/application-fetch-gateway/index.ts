@@ -87,7 +87,8 @@ export function generatedApplicationFetchGatewayModules(
 		);
 	if (objectStores.length > 0)
 		imports.push(
-			"import { createApplicationFetchGateway, createS3ApplicationObjectStorageRuntime } from '@applik8s/applik8s/reactive-runtime';",
+			"import { createApplicationFetchGateway } from '@applik8s/applik8s/reactive-runtime';",
+			"import { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';",
 		);
 	const authenticate =
 		(queries.length > 0 || commands.length > 0 || objectStores.length > 0) &&

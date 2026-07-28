@@ -215,7 +215,9 @@ function generatedProcessorSource(contract: ProcessorContract): string {
   const bindingSources = contract.handlers.map((handler) => generatedBindingSource(handler)).join(',\n');
   return `
 import { rm, writeFile } from 'node:fs/promises';
-import { canonicalApplicationCommandKey, cleanupPostgresCommandData, createJetStreamEventLog, executePostgresModelCommand, observePostgresOutboxLag, recordPostgresModelCommandTerminalFailure, relayPostgresCommandOutbox, relayPostgresEventOutbox, startJetStreamCommandProcessor } from '@applik8s/applik8s/processor-runtime';
+import { canonicalApplicationCommandKey, cleanupPostgresCommandData, executePostgresModelCommand, observePostgresOutboxLag, recordPostgresModelCommandTerminalFailure, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '@applik8s/applik8s/processor-runtime';
+import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';
+import { startJetStreamCommandProcessor } from '@applik8s/runtime-nats/command-processor';
 
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
 function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(name + ' must be an integer between ' + minimum + ' and ' + maximum + '.'); return value; }

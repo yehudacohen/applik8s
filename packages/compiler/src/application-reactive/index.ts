@@ -38,6 +38,76 @@ export interface GeneratedApplicationReactiveArtifact {
   readonly resources: readonly GeneratedApplicationReactiveResource[];
 }
 
+const DEFAULT_REACTIVE_WORKER_CONTAINERS_PER_POD = 8;
+
+/**
+ * Co-locates compatible background runtimes without erasing their artifact,
+ * process, checkpoint, retry, or health identities. HTTP gateways retain
+ * dedicated Pods because they own Services and may own distinct RBAC.
+ */
+export function consolidateGeneratedApplicationReactiveResources(options: {
+  readonly graphName: string;
+  readonly artifacts: readonly GeneratedApplicationReactiveArtifact[];
+  readonly maxContainersPerPod?: number;
+}): readonly GeneratedApplicationReactiveResource[] {
+  const maxContainersPerPod = options.maxContainersPerPod
+    ?? DEFAULT_REACTIVE_WORKER_CONTAINERS_PER_POD;
+  if (!Number.isInteger(maxContainersPerPod) || maxContainersPerPod < 1 || maxContainersPerPod > 16) {
+    throw new Error('Reactive worker co-location requires maxContainersPerPod to be an integer between 1 and 16.');
+  }
+  const gateways = options.artifacts.filter((artifact) => artifact.kind === 'queryGateway');
+  const dedicated = gateways
+    .filter(reactiveArtifactOwnsRbac)
+    .flatMap((artifact) => artifact.resources);
+  const gatewayGroups = reactiveArtifactGroups(
+    gateways.filter((artifact) => !reactiveArtifactOwnsRbac(artifact)),
+  );
+  const consolidatedGateways = [...gatewayGroups.values()].flatMap((group) => {
+    const sorted = [...group].sort((left, right) => left.name.localeCompare(right.name));
+    const chunks: GeneratedApplicationReactiveArtifact[][] = [];
+    for (let index = 0; index < sorted.length; index += maxContainersPerPod) {
+      chunks.push(sorted.slice(index, index + maxContainersPerPod));
+    }
+    return chunks.flatMap((chunk) => chunk.length === 1
+      ? chunk[0]!.resources
+      : consolidatedReactiveGatewayResources(options.graphName, chunk));
+  });
+  const groups = reactiveArtifactGroups(options.artifacts.filter((entry) => entry.kind !== 'queryGateway'));
+  const consolidatedWorkers = [...groups.values()]
+    .flatMap((group) => {
+      const sorted = [...group].sort((left, right) => left.name.localeCompare(right.name));
+      const chunks: GeneratedApplicationReactiveArtifact[][] = [];
+      for (let index = 0; index < sorted.length; index += maxContainersPerPod) {
+        chunks.push(sorted.slice(index, index + maxContainersPerPod));
+      }
+      return chunks.flatMap((chunk) => chunk.length === 1
+        ? chunk[0]!.resources
+        : consolidatedReactiveWorkerResources(options.graphName, chunk));
+    });
+  return [...dedicated, ...consolidatedGateways, ...consolidatedWorkers];
+}
+
+function reactiveArtifactGroups(
+  artifacts: readonly GeneratedApplicationReactiveArtifact[],
+): ReadonlyMap<string, readonly GeneratedApplicationReactiveArtifact[]> {
+  const groups = new Map<string, GeneratedApplicationReactiveArtifact[]>();
+  for (const artifact of artifacts) {
+    const deployment = reactiveArtifactDeployment(artifact);
+    const metadata = recordValue(deployment.metadata);
+    const spec = recordValue(deployment.spec);
+    const annotations = recordValue(metadata.annotations);
+    const key = JSON.stringify({
+      namespace: metadata.namespace,
+      replicas: spec.replicas,
+      includeWhen: annotations['applik8s.dev/include-when'],
+    });
+    const group = groups.get(key) ?? [];
+    group.push(artifact);
+    groups.set(key, group);
+  }
+  return groups;
+}
+
 interface GatewayCommandContract {
   readonly handler: ApplicationCommandHandlerNode;
   readonly command: ApplicationCommandNode;
@@ -281,6 +351,7 @@ async function emitStreamProcessor(graph: ApplicationGraph, processor: Applicati
       { name: 'APPLIK8S_PROCESSOR_MAX_ACK_PENDING', value: reactiveEnvironmentInteger(processor.deployment.maxAckPending) },
       ...streamProcessorScheduleEnvironment(workflow),
     ],
+    ...(workflow ? { workflowToken: streamProcessorWorkflowCredential(workflow) } : {}),
     ...(includeWhen !== undefined ? { includeWhen } : {}),
   });
 }
@@ -309,13 +380,12 @@ function streamProcessorWorkflowContract(graph: ApplicationGraph, processor: App
 		if (target?.kind !== 'task') throw new Error(`Generated stream processor ${processor.id} task ${binding.alias} references missing task ${binding.target.nodeId}.`);
 		if (target.contract.name !== binding.contract.name || target.contract.version !== binding.contract.version || JSON.stringify(target.contract.input) !== JSON.stringify(binding.contract.input) || JSON.stringify(target.contract.output) !== JSON.stringify(binding.contract.output)) throw new Error(`Generated stream processor ${processor.id} task ${binding.alias} contract drifted from ${binding.target.nodeId}.`);
 	}
-  const legacy = objectConfig(config.credentialsSecret);
   const worker = objectConfig(config.workerTokenSecret);
-  assertResourceNamespace(worker.namespace ?? legacy.namespace, namespace, `Stream processor ${processor.id} WorkflowEngine worker Secret`);
+  assertResourceNamespace(worker.namespace, namespace, `Stream processor ${processor.id} WorkflowEngine worker Secret`);
   return { provider, schedules, tasks };
 }
 
-async function bundleReactive(options: { readonly graphName: string; readonly name: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly entrypoint: string; readonly artifactDir: string; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[] }): Promise<GeneratedApplicationReactiveArtifact> {
+async function bundleReactive(options: { readonly graphName: string; readonly name: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly entrypoint: string; readonly artifactDir: string; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[]; readonly workflowToken?: { readonly secretName: string; readonly key: string } }): Promise<GeneratedApplicationReactiveArtifact> {
   const sourcePath = join(options.artifactDir, 'runtime.mjs');
   const sourceMapPath = `${sourcePath}.map`;
   const metafilePath = join(options.artifactDir, 'runtime.esbuild-meta.json');
@@ -361,7 +431,7 @@ function generatedGatewaySource(graph: ApplicationGraph, gateway: ApplicationGat
     "import { verifyApplicationTaskQueryAdmission } from '@applik8s/applik8s/task-query-runtime';",
     ...(onlineSources.length > 0 ? ["import { createValkeyOnlineProjectionReader } from '@applik8s/applik8s/projection-worker-runtime';"] : []),
     ...(analyticalSources.length > 0 ? ["import { createClickHouseAnalyticalProjectionReader } from '@applik8s/applik8s/projection-worker-runtime';"] : []),
-    ...(commands.length > 0 ? ["import { createApplicationCommandGateway } from '@applik8s/applik8s/command-gateway-runtime';"] : []),
+    ...(commands.length > 0 ? ["import { createApplicationCommandGateway } from '@applik8s/applik8s/command-gateway-runtime';", "import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';"] : []),
     ...(subscriptions.length > 0 ? ["import { applicationAdmittedContextDigest, createApplicationStreamSubscriptionGateway, createPostgresApplicationStream } from '@applik8s/applik8s/subscription-runtime';"] : []),
     ...(kubernetesQueries.length > 0 ? ["import { createApplik8sKubernetesGateway } from '@applik8s/server/kubernetes-gateway';"] : []),
     "import { callback as authenticateRequest } from './authentication.generated.js';",
@@ -444,7 +514,7 @@ ${mixedQueryMultiplex}
 let ready = false; let stopping = false; let lastDependencyError; let degradedDependencyError;
 const dependencyMonitor = new AbortController();
 const server = createServer(async (incoming, outgoing) => { const requestController = new AbortController(); const abortRequest = () => requestController.abort(); incoming.once('aborted', abortRequest); outgoing.once('close', abortRequest); try { if (incoming.url === '/live' || incoming.url === '/ready') { const ok = incoming.url === '/live' || (ready && !stopping); outgoing.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ ready, stopping, lastDependencyError, degradedDependencyError })); return; } const request = await webRequest(incoming, requestController.signal); const multiplexResponse = await handleMixedQueryMultiplex(request.clone()); const commandResponse = multiplexResponse || !commandGateway ? undefined : await commandGateway.handle(request.clone()); const streamResponse = multiplexResponse || commandResponse || !streamGateway ? undefined : await streamGateway.handle(request.clone()); const kubernetesResponse = multiplexResponse || commandResponse || streamResponse || !kubernetesGateway ? undefined : await kubernetesGateway.handle(prefixKubernetesRequest(request.clone())); const relationalResponse = multiplexResponse || commandResponse || streamResponse || (kubernetesResponse && kubernetesResponse.status !== 404) || !handle ? undefined : await handle(request); await writeResponse(outgoing, multiplexResponse ?? commandResponse ?? streamResponse ?? (kubernetesResponse?.status !== 404 ? kubernetesResponse : undefined) ?? relationalResponse ?? new Response(JSON.stringify({ error: 'not_found' }), { status: 404, headers: { 'content-type': 'application/json' } })); } catch (error) { if (!requestController.signal.aborted) { console.error(error); if (!outgoing.headersSent) outgoing.writeHead(500, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ error: 'internal_error' })); } } finally { incoming.removeListener('aborted', abortRequest); outgoing.removeListener('close', abortRequest); } });
-server.listen(${gateway.deployment?.port ?? 8080}, '0.0.0.0');
+server.listen(Number(process.env.APPLIK8S_HTTP_PORT ?? '${gateway.deployment?.port ?? 8080}'), '0.0.0.0');
 async function monitorDependencies() { while (!stopping) { try { await Promise.all([${databases.map((database) => `${databaseVariable(database.name)}Sql.unsafe('SELECT 1 AS applik8s_ready')`).join(', ')}, ...(commandGateway ? [commandGateway.ready()] : []), ...(kubernetesGateway ? [kubernetesGateway.ready()] : []), ${gateway.identityReadinessSource ? 'verifyIdentityReadiness()' : 'Promise.resolve()'}, ${gateway.authorizationReadinessSource ? 'verifyAuthorizationReadiness()' : 'Promise.resolve()'}]); const degraded = (await Promise.all([${[...onlineSources, ...analyticalSources].map((contract) => `recoverableProjectionReadiness(() => ${projectionQuerySourceVariable(contract.query.id)}.revision())`).join(', ')}])).filter(Boolean); ready = true; lastDependencyError = undefined; degradedDependencyError = degraded[0]; } catch (error) { ready = false; lastDependencyError = providerReadinessError(error); degradedDependencyError = undefined; if (!stopping) console.error(lastDependencyError); } await abortableSleep(5000, dependencyMonitor.signal); } }
 const dependencyMonitorTask = monitorDependencies();
 function providerReadinessError(error) { return error instanceof Error ? error.message : 'Application provider readiness failed closed.'; }
@@ -612,7 +682,7 @@ function generatedCommandGateway(commands: readonly GatewayCommandContract[], ev
   authenticate: admitRequest,
   authorize: authorizeCommand,
   cursorSecret,
-  eventLog: { servers: JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS')), stream: ${JSON.stringify(stringConfig(config.stream) || 'APPLIK8S_EVENTS')}, subjectPrefix: ${JSON.stringify(stringConfig(config.subjectPrefix) || 'applik8s')}, connectionName: ${JSON.stringify('applik8s-query-command-gateway')}, ...(process.env.APPLIK8S_NATS_TOKEN ? { token: process.env.APPLIK8S_NATS_TOKEN } : {}), ...(process.env.APPLIK8S_NATS_USER ? { user: process.env.APPLIK8S_NATS_USER, pass: process.env.APPLIK8S_NATS_PASSWORD ?? '' } : {}) },
+  eventLogPublisher: createJetStreamEventLog({ servers: JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS')), stream: ${JSON.stringify(stringConfig(config.stream) || 'APPLIK8S_EVENTS')}, subjectPrefix: ${JSON.stringify(stringConfig(config.subjectPrefix) || 'applik8s')}, connectionName: ${JSON.stringify('applik8s-query-command-gateway')}, ...(process.env.APPLIK8S_NATS_TOKEN ? { token: process.env.APPLIK8S_NATS_TOKEN } : {}), ...(process.env.APPLIK8S_NATS_USER ? { user: process.env.APPLIK8S_NATS_USER, pass: process.env.APPLIK8S_NATS_PASSWORD ?? '' } : {}) }),
 });`;
 }
 
@@ -647,7 +717,7 @@ const store = createClickHouseProjectionStore({ endpoint: requiredEnv('APPLIK8S_
 let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0;
 const loopController = new AbortController();
 const server = createServer((request, response) => { const live = request.url === '/live'; const health = live || request.url === '/ready'; if (!health) { response.writeHead(404); response.end(); return; } const ok = live || (ready && !stopping); response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ ready, stopping, checkpoint, processed, lastError })); });
-server.listen(8080, '0.0.0.0');
+server.listen(Number(process.env.APPLIK8S_HEALTH_PORT ?? '8080'), '0.0.0.0');
 async function loop() { let prepared = false; while (!stopping) { try { if (!prepared) { await store.prepare(); prepared = true; } const result = await runApplicationProjection({ projection: ${JSON.stringify(projection.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, project, batchSize: 250, maxBatches: 20 }); checkpoint = result.checkpoint; processed += result.processed; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl: requiredEnv(${JSON.stringify(stream.database.connectionEnvName)}), batchSize: 1000 }); lastError = undefined; ready = true; await abortableSleep(result.exhausted ? 1000 : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; if (!stopping) console.error(error); await abortableSleep(5000, loopController.signal); } } }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
 const loopTask = loop();
@@ -677,7 +747,7 @@ const store = createValkeyOnlineProjectionStore({ host: requiredEnv('APPLIK8S_VA
 let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0; let generation = 'unknown';
 const loopController = new AbortController();
 const server = createServer((request, response) => { const live = request.url === '/live'; const health = live || request.url === '/ready'; if (!health) { response.writeHead(404); response.end(); return; } const ok = live || (ready && !stopping); response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ ready, stopping, checkpoint, processed, generation, lastError })); });
-server.listen(8080, '0.0.0.0');
+server.listen(Number(process.env.APPLIK8S_HEALTH_PORT ?? '8080'), '0.0.0.0');
 async function loop() { let prepared = false; while (!stopping) { try { if (!prepared) { await store.prepare(); prepared = true; } const result = await runApplicationProjection({ projection: ${JSON.stringify(projection.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, project, batchSize: 250, maxBatches: 20 }); checkpoint = result.checkpoint; processed += result.processed; generation = await store.activeGeneration(); await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; await abortableSleep(result.exhausted ? 1000 : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; if (!stopping) console.error(error); await abortableSleep(5000, loopController.signal); } } }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
 const loopTask = loop();
@@ -688,7 +758,7 @@ await loopTask;
 }
 
 function generatedStreamProcessorSource(processor: ApplicationStreamProcessorNode, stream: ApplicationStreamNode, workflow: StreamProcessorWorkflowContract | undefined): string {
-  const workflowImport = workflow ? "import { createHatchetWorkflowRuntime } from '@applik8s/applik8s/workflow-runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
+  const workflowImport = workflow ? "import { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
   const workflowDeclarations = workflow ? `
 const workflowRuntime = createHatchetWorkflowRuntime({ kind: 'hatchet', tls: process.env.HATCHET_CLIENT_TLS_STRATEGY === 'tls' });
 function validateWorkflowValue(schema, value, name, role) { const normalized = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name + ':' + role }, schema }, name + '.' + role); const result = normalized.validate(value); if (!result.ok) throw new Error('applik8s-workflow-' + role + '-invalid: ' + name + ': ' + result.error.message); return result.value; }
@@ -717,7 +787,7 @@ ${workflowDeclarations}
 let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0; let deadLettered = 0;
 const loopController = new AbortController();
 const server = createServer((request, response) => { const live = request.url === '/live'; const health = live || request.url === '/ready'; if (!health) { response.writeHead(404); response.end(); return; } const ok = live || (ready && !stopping); response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ ready, stopping, checkpoint, processed, deadLettered, lastError })); });
-server.listen(8080, '0.0.0.0');
+server.listen(Number(process.env.APPLIK8S_HEALTH_PORT ?? '8080'), '0.0.0.0');
 async function loop() { while (!stopping) { try { const result = await runApplicationStreamProcessor({ processor: ${JSON.stringify(processor.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, handle: invokeHandler, concurrency: processorConcurrency, retry: ${JSON.stringify(processor.retry)}, failure: ${JSON.stringify(processor.failure)}, timeoutMs: ${processor.budgets.timeoutMs}, maxInputBytes: ${processor.budgets.maxInputBytes}, batchSize: Math.min(1000, processorMaxAckPending), maxBatches: 20 }); checkpoint = result.checkpoint; processed += result.processed; deadLettered += result.deadLettered; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; await abortableSleep(result.exhausted ? 1000 : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; if (!stopping) console.error(error); await abortableSleep(5000, loopController.signal); } } }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
 const loopTask = loop();
@@ -1052,7 +1122,315 @@ function objectLiteralStringProperty(node: ts.Expression | undefined, name: stri
   return undefined;
 }
 
-function reactiveResources(options: { readonly graphName: string; readonly name: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[] }, image: string, digest: string): GeneratedApplicationReactiveResource[] {
+function consolidatedReactiveGatewayResources(
+  graphName: string,
+  artifacts: readonly GeneratedApplicationReactiveArtifact[],
+): readonly GeneratedApplicationReactiveResource[] {
+  const firstDeployment = reactiveArtifactDeployment(artifacts[0]!);
+  const firstMetadata = recordValue(firstDeployment.metadata);
+  const firstSpec = recordValue(firstDeployment.spec);
+  const firstTemplate = recordValue(firstSpec.template);
+  const firstPodSpec = recordValue(firstTemplate.spec);
+  const namespace = String(firstMetadata.namespace ?? 'default');
+  const includeWhen = recordValue(firstMetadata.annotations)['applik8s.dev/include-when'];
+  const memberNames = artifacts.map((artifact) => artifact.name).sort();
+  const envelopeIdentity = reactiveEnvelopeIdentity({
+    graphName,
+    namespace,
+    replicas: firstSpec.replicas,
+    role: 'query-gateway',
+    members: memberNames,
+  });
+  const rolloutDigest = reactiveEnvelopeRolloutDigest(artifacts);
+  const name = kubernetesName(`${graphName}-gateways-${envelopeIdentity}`);
+  const labels = {
+    'app.kubernetes.io/name': name,
+    'app.kubernetes.io/component': 'query-gateway',
+    'applik8s.dev/graph': graphName,
+    'applik8s.dev/workload-envelope': envelopeIdentity,
+  };
+  const annotations = reactiveEnvelopeAnnotations(rolloutDigest, memberNames);
+  const metadata = reactiveEnvelopeMetadata(name, namespace, labels, includeWhen);
+  const ports = artifacts.map((_artifact, index) => 8080 + index);
+  const containers = artifacts.map((artifact, index) => {
+    const original = reactiveArtifactContainer(artifact);
+    const portName = `http-${index}`;
+    return {
+      ...original,
+      name: kubernetesName(artifact.name),
+      env: [
+        ...arrayValue(original.env),
+        { name: 'APPLIK8S_HTTP_PORT', value: String(ports[index]) },
+      ],
+      ports: [{ name: portName, containerPort: ports[index] }],
+      readinessProbe: reactiveProbeWithPort(original.readinessProbe, portName),
+      livenessProbe: reactiveProbeWithPort(original.livenessProbe, portName),
+    };
+  });
+  const resources: GeneratedApplicationReactiveResource[] = [
+    {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      metadata,
+      spec: {
+        replicas: firstSpec.replicas,
+        selector: { matchLabels: labels },
+        strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
+        template: {
+          metadata: { labels, annotations },
+          spec: {
+            terminationGracePeriodSeconds: firstPodSpec.terminationGracePeriodSeconds ?? 30,
+            containers,
+          },
+        },
+      },
+    },
+    {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'NetworkPolicy',
+      metadata,
+      spec: {
+        podSelector: { matchLabels: labels },
+        policyTypes: ['Ingress'],
+        ingress: [{ ports: ports.map((port) => ({ protocol: 'TCP', port })) }],
+      },
+    },
+  ];
+  for (const [index, artifact] of artifacts.entries()) {
+    const service = artifact.resources.find((resource) => resource.apiVersion === 'v1'
+      && resource.kind === 'Service');
+    if (!service) throw new Error(`Generated query gateway ${artifact.name} has no Service to co-locate.`);
+    const serviceSpec = recordValue(service.spec);
+    const servicePort = recordValue(arrayValue(serviceSpec.ports)[0]);
+    resources.push({
+      ...service,
+      spec: {
+        ...serviceSpec,
+        selector: labels,
+        ports: [{
+          ...servicePort,
+          targetPort: `http-${index}`,
+        }],
+      },
+    });
+  }
+  resources.push(...reactiveEnvelopeDisruptionBudget(firstSpec.replicas, metadata, labels));
+  return resources;
+}
+
+function consolidatedReactiveWorkerResources(
+  graphName: string,
+  artifacts: readonly GeneratedApplicationReactiveArtifact[],
+): readonly GeneratedApplicationReactiveResource[] {
+  const firstDeployment = reactiveArtifactDeployment(artifacts[0]!);
+  const firstMetadata = recordValue(firstDeployment.metadata);
+  const firstSpec = recordValue(firstDeployment.spec);
+  const firstTemplate = recordValue(firstSpec.template);
+  const firstPodSpec = recordValue(firstTemplate.spec);
+  const namespace = String(firstMetadata.namespace ?? 'default');
+  const includeWhen = recordValue(firstMetadata.annotations)['applik8s.dev/include-when'];
+  const memberNames = artifacts.map((artifact) => artifact.name).sort();
+  const envelopeIdentity = reactiveEnvelopeIdentity({
+    graphName,
+    namespace,
+    replicas: firstSpec.replicas,
+    role: 'background-worker',
+    members: memberNames,
+  });
+  const rolloutDigest = reactiveEnvelopeRolloutDigest(artifacts);
+  const name = kubernetesName(`${graphName}-reactive-${envelopeIdentity}`);
+  const labels = {
+    'app.kubernetes.io/name': name,
+    'app.kubernetes.io/component': 'reactive-worker',
+    'applik8s.dev/graph': graphName,
+    'applik8s.dev/workload-envelope': envelopeIdentity,
+  };
+  const annotations = reactiveEnvelopeAnnotations(rolloutDigest, memberNames);
+  const metadata = reactiveEnvelopeMetadata(name, namespace, labels, includeWhen);
+  const healthPorts = artifacts.map((_artifact, index) => 8080 + index);
+  const volumes = consolidatedReactivePodVolumes(artifacts);
+  const containers = artifacts.map((artifact, index) => {
+    const original = reactiveArtifactContainer(artifact);
+    const healthPortName = `health-${index}`;
+    return {
+      ...original,
+      name: kubernetesName(artifact.name),
+      env: [
+        ...arrayValue(original.env),
+        { name: 'APPLIK8S_HEALTH_PORT', value: String(healthPorts[index]) },
+      ],
+      ports: [{ name: healthPortName, containerPort: healthPorts[index] }],
+      readinessProbe: reactiveProbeWithPort(original.readinessProbe, healthPortName),
+      livenessProbe: reactiveProbeWithPort(original.livenessProbe, healthPortName),
+    };
+  });
+  const resources: GeneratedApplicationReactiveResource[] = [
+    {
+      apiVersion: 'apps/v1',
+      kind: 'Deployment',
+      metadata,
+      spec: {
+        replicas: firstSpec.replicas,
+        selector: { matchLabels: labels },
+        strategy: { type: 'Recreate' },
+        template: {
+          metadata: { labels, annotations },
+          spec: {
+            terminationGracePeriodSeconds: firstPodSpec.terminationGracePeriodSeconds ?? 30,
+            containers,
+            ...(volumes.length > 0 ? { volumes } : {}),
+          },
+        },
+      },
+    },
+    {
+      apiVersion: 'networking.k8s.io/v1',
+      kind: 'NetworkPolicy',
+      metadata,
+      spec: {
+        podSelector: { matchLabels: labels },
+        policyTypes: ['Ingress'],
+        ingress: [{ ports: healthPorts.map((port) => ({ protocol: 'TCP', port })) }],
+      },
+    },
+  ];
+  resources.push(...reactiveEnvelopeDisruptionBudget(firstSpec.replicas, metadata, labels));
+  return resources;
+}
+
+function consolidatedReactivePodVolumes(
+  artifacts: readonly GeneratedApplicationReactiveArtifact[],
+): readonly Record<string, unknown>[] {
+  const volumes = new Map<string, Record<string, unknown>>();
+  for (const artifact of artifacts) {
+    const deployment = reactiveArtifactDeployment(artifact);
+    const podSpec = recordValue(recordValue(recordValue(deployment.spec).template).spec);
+    for (const rawVolume of arrayValue(podSpec.volumes)) {
+      const volume = recordValue(rawVolume);
+      const name = String(volume.name ?? '');
+      if (!name) throw new Error(`Generated reactive artifact ${artifact.name} has an unnamed Pod volume.`);
+      const previous = volumes.get(name);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(volume)) {
+        throw new Error(`Generated reactive artifacts contain conflicting Pod volume ${name}.`);
+      }
+      volumes.set(name, volume);
+    }
+  }
+  return [...volumes.values()].sort((left, right) => String(left.name).localeCompare(String(right.name)));
+}
+
+function reactiveArtifactOwnsRbac(artifact: GeneratedApplicationReactiveArtifact): boolean {
+  return artifact.resources.some((resource) => resource.kind === 'ServiceAccount'
+    || resource.apiVersion === 'rbac.authorization.k8s.io/v1');
+}
+
+function reactiveArtifactContainer(
+  artifact: GeneratedApplicationReactiveArtifact,
+): Record<string, unknown> {
+  const deployment = reactiveArtifactDeployment(artifact);
+  const spec = recordValue(deployment.spec);
+  const template = recordValue(spec.template);
+  const podSpec = recordValue(template.spec);
+  const container = recordValue(arrayValue(podSpec.containers)[0]);
+  if (Object.keys(container).length === 0) {
+    throw new Error(`Generated reactive artifact ${artifact.name} has no runtime container to co-locate.`);
+  }
+  return container;
+}
+
+function reactiveEnvelopeIdentity(value: Readonly<Record<string, unknown>>): string {
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 12);
+}
+
+function reactiveEnvelopeRolloutDigest(
+  artifacts: readonly GeneratedApplicationReactiveArtifact[],
+): string {
+  return `sha256:${createHash('sha256')
+    .update(artifacts.map((artifact) => `${artifact.name}:${artifact.digest}`).sort().join('\n'))
+    .digest('hex')}`;
+}
+
+function reactiveEnvelopeAnnotations(
+  digest: string,
+  members: readonly string[],
+): Readonly<Record<string, string>> {
+  return {
+    'applik8s.dev/digest': digest,
+    'applik8s.dev/workload-members': members.join(','),
+  };
+}
+
+function reactiveEnvelopeMetadata(
+  name: string,
+  namespace: string,
+  labels: Readonly<Record<string, string>>,
+  includeWhen: unknown,
+): Readonly<Record<string, unknown>> {
+  return {
+    name,
+    namespace,
+    labels,
+    ...(typeof includeWhen === 'string'
+      ? { annotations: { 'applik8s.dev/include-when': includeWhen } }
+      : {}),
+  };
+}
+
+function reactiveProbeWithPort(probe: unknown, port: string): Readonly<Record<string, unknown>> {
+  const value = recordValue(probe);
+  return {
+    ...value,
+    httpGet: {
+      ...recordValue(value.httpGet),
+      port,
+    },
+  };
+}
+
+function reactiveEnvelopeDisruptionBudget(
+  replicas: unknown,
+  metadata: Readonly<Record<string, unknown>>,
+  labels: Readonly<Record<string, string>>,
+): readonly GeneratedApplicationReactiveResource[] {
+  if (typeof replicas === 'number' && replicas > 1) {
+    return [{
+      apiVersion: 'policy/v1',
+      kind: 'PodDisruptionBudget',
+      metadata,
+      spec: { minAvailable: 1, selector: { matchLabels: labels } },
+    }];
+  }
+  if (typeof replicas === 'string') {
+    return [{
+      apiVersion: 'policy/v1',
+      kind: 'PodDisruptionBudget',
+      metadata,
+      spec: { maxUnavailable: reactiveMaxUnavailable(replicas), selector: { matchLabels: labels } },
+    }];
+  }
+  return [];
+}
+
+function reactiveArtifactDeployment(
+  artifact: GeneratedApplicationReactiveArtifact,
+): GeneratedApplicationReactiveResource {
+  const deployment = artifact.resources.find((resource) => resource.apiVersion === 'apps/v1'
+    && resource.kind === 'Deployment');
+  if (!deployment) throw new Error(`Generated reactive artifact ${artifact.name} has no Deployment to co-locate.`);
+  return deployment;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function reactiveResources(options: { readonly graphName: string; readonly name: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[]; readonly workflowToken?: { readonly secretName: string; readonly key: string } }, image: string, digest: string): GeneratedApplicationReactiveResource[] {
   const component = options.kind === 'queryGateway' ? 'query-gateway' : options.kind === 'projectionWorker' ? 'projection-worker' : 'stream-processor';
   const labels = { 'app.kubernetes.io/name': options.name, 'app.kubernetes.io/component': component, 'applik8s.dev/graph': options.graphName };
   const metadata = (name: string) => ({
@@ -1070,7 +1448,7 @@ function reactiveResources(options: { readonly graphName: string; readonly name:
   const permissions = options.permissions ?? [];
   const resources: GeneratedApplicationReactiveResource[] = [
     ...(permissions.length > 0 ? [{ apiVersion: 'v1', kind: 'ServiceAccount', metadata: metadata(options.name) }] : []),
-    { apiVersion: 'apps/v1', kind: 'Deployment', metadata: metadata(options.name), spec: { replicas: options.replicas, selector: { matchLabels: labels }, strategy, template: { metadata: { labels, annotations: { 'applik8s.dev/digest': digest } }, spec: { ...(permissions.length > 0 ? { serviceAccountName: options.name } : {}), terminationGracePeriodSeconds: 30, containers: [{ name: 'runtime', image, imagePullPolicy: 'IfNotPresent', command: ['node', '/app/runtime.mjs'], env: options.env, ports: [{ name: 'http', containerPort: options.port }], readinessProbe: { httpGet: { path: '/ready', port: 'http' }, periodSeconds: 5, failureThreshold: 6 }, livenessProbe: { httpGet: { path: '/live', port: 'http' }, periodSeconds: 10, failureThreshold: 6 }, resources: { requests: { cpu: '100m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } } }] } } } },
+    { apiVersion: 'apps/v1', kind: 'Deployment', metadata: metadata(options.name), spec: { replicas: options.replicas, selector: { matchLabels: labels }, strategy, template: { metadata: { labels, annotations: { 'applik8s.dev/digest': digest } }, spec: { ...(permissions.length > 0 ? { serviceAccountName: options.name } : {}), terminationGracePeriodSeconds: 30, containers: [{ name: 'runtime', image, imagePullPolicy: 'IfNotPresent', command: ['node', '/app/runtime.mjs'], env: options.env, ...(options.workflowToken ? { volumeMounts: [{ name: 'workflow-token', mountPath: '/var/run/secrets/applik8s/workflow-token', readOnly: true }] } : {}), ports: [{ name: 'http', containerPort: options.port }], readinessProbe: { httpGet: { path: '/ready', port: 'http' }, periodSeconds: 5, failureThreshold: 6 }, livenessProbe: { httpGet: { path: '/live', port: 'http' }, periodSeconds: 10, failureThreshold: 6 }, resources: { requests: { cpu: '100m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } } }], ...(options.workflowToken ? { volumes: [{ name: 'workflow-token', secret: { secretName: options.workflowToken.secretName, items: [{ key: options.workflowToken.key, path: 'token' }] } }] } : {}) } } } },
     { apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: metadata(options.name), spec: { podSelector: { matchLabels: labels }, policyTypes: ['Ingress'], ingress: [{ ports: [{ protocol: 'TCP', port: options.port }] }] } },
   ];
   resources.push(...gatewayKubernetesRbacResources(options, permissions, labels));
@@ -1289,16 +1667,23 @@ function streamProcessorScheduleEnvironment(contract: StreamProcessorWorkflowCon
   const config = contract.provider.config ?? {};
   const namespace = applicationGraphStringValue(config.namespace) || 'default';
   const engineName = kubernetesName(stringConfig(config.name) || 'applik8s-hatchet');
-  const legacy = objectConfig(config.credentialsSecret);
-  const worker = objectConfig(config.workerTokenSecret);
-  const secretName = applicationGraphStringValue(worker.name) || applicationGraphStringValue(legacy.name) || (config.provision === false ? `${engineName}-worker` : 'hatchet-client-config');
-  const tokenKey = stringConfig(config.tokenKey) || (applicationGraphStringValue(worker.name) || (!applicationGraphStringValue(legacy.name) && config.provision !== false) ? 'HATCHET_CLIENT_TOKEN' : 'token');
+  const { secretName, key: tokenKey } = streamProcessorWorkflowCredential(contract);
   return [
     { name: 'HATCHET_CLIENT_TOKEN', valueFrom: { secretKeyRef: { name: secretName, key: tokenKey } } },
+    { name: 'APPLIK8S_WORKFLOW_TOKEN_FILE', value: '/var/run/secrets/applik8s/workflow-token/token' },
     { name: 'HATCHET_CLIENT_HOST_PORT', value: applicationGraphStringValue(config.hostPort) || `${engineName}-engine.${namespace}.svc:7070` },
     { name: 'HATCHET_CLIENT_API_URL', value: applicationGraphStringValue(config.apiUrl) || `http://${engineName}-api.${namespace}.svc:8080` },
     { name: 'HATCHET_CLIENT_TLS_STRATEGY', value: reactiveWorkflowTlsStrategy(config.tls) },
   ];
+}
+function streamProcessorWorkflowCredential(contract: StreamProcessorWorkflowContract): { readonly secretName: string; readonly key: string } {
+  const config = contract.provider.config ?? {};
+  const engineName = kubernetesName(stringConfig(config.name) || 'applik8s-hatchet');
+  const worker = objectConfig(config.workerTokenSecret);
+  return {
+    secretName: applicationGraphStringValue(worker.name) || (config.provision === false ? `${engineName}-worker` : 'hatchet-client-config'),
+    key: stringConfig(config.tokenKey) || (applicationGraphStringValue(worker.name) || config.provision !== false ? 'HATCHET_CLIENT_TOKEN' : 'token'),
+  };
 }
 function reactiveWorkflowTlsStrategy(value: unknown): string {
   if (value === true) return 'tls';

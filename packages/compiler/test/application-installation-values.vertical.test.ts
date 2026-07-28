@@ -113,6 +113,7 @@ describe('installation-derived compiler values', () => {
     const spec = artifacts.resources[0]?.spec as { resources: Array<Record<string, unknown>>; schema: { status: { providerStatus: { registry: string } } } };
     expect(spec.resources).toContainEqual({
       id: 'applik8sContainerRegistryPullSecret',
+      role: 'containerRegistryPullSecret',
       externalRef: {
         apiVersion: 'v1', kind: 'Secret',
         metadata: {
