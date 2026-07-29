@@ -1,5 +1,5 @@
 import type { BundleArtifact, Diagnostic, HandlerId, LabelSelector, OperatorManifest, Result, WatchRegistration } from '@applik8s/core';
-import { computeBundleDigest } from './bundle-digest.js';
+import { computeBundleBuildIdentityDigest, computeBundleDigest } from './bundle-digest.js';
 
 export function validateOperatorManifest(manifest: OperatorManifest): Result<readonly Diagnostic[]> {
   const diagnostics: Diagnostic[] = [];
@@ -13,6 +13,7 @@ export function validateOperatorManifest(manifest: OperatorManifest): Result<rea
 
   requireSha256(manifest.spec.handlerArtifact.digest, 'handler artifact digest', diagnostics);
   requireSha256(manifest.spec.bundle.digest, 'bundle digest', diagnostics);
+  requireSha256(manifest.spec.bundle.buildIdentityDigest, 'bundle build identity digest', diagnostics);
   requireSha256(manifest.spec.bundle.sourceDigest, 'bundle source digest', diagnostics);
   validateBundleArtifacts(manifest, diagnostics);
   if (manifest.spec.bundle.portability && manifest.spec.bundle.portability.bundleDigest !== manifest.spec.bundle.digest) {
@@ -77,6 +78,19 @@ export function validateOperatorManifest(manifest: OperatorManifest): Result<rea
   });
   if (expectedBundleDigest !== manifest.spec.bundle.digest) {
     diagnostics.push(error('Manifest bundle.digest must match the canonical artifact inventory digest.'));
+  }
+  const expectedBuildIdentityDigest = computeBundleBuildIdentityDigest({
+    compilerVersion: manifest.spec.bundle.compilerVersion,
+    handlerAbi: manifest.spec.handlerAbi,
+    operatorName: manifest.metadata.name,
+    artifacts: manifest.spec.bundle.artifacts,
+    handlerExports: manifest.spec.handlerExports,
+    ownedCrds: manifest.spec.ownedCrds,
+    readResources: manifest.spec.readResources ?? [],
+    payloadSchemaDigests: manifest.spec.payloadSchemaDigests,
+  });
+  if (expectedBuildIdentityDigest !== manifest.spec.bundle.buildIdentityDigest) {
+    diagnostics.push(error('Manifest bundle.buildIdentityDigest must match the canonical semantic-input digest.'));
   }
 
   const errors = diagnostics.filter((diagnostic) => diagnostic.severity === 'error');

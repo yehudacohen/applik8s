@@ -199,7 +199,7 @@ Programmatic `factory('kro').deploy(...)` uses TypeKro's public `kroPrerequisite
 
 Inside WASM handler entrypoints, import operation-target helpers from `@applik8s/typekro-adapter/targets` so the handler bundle stays focused on operation-plan rendering instead of TypeKro install/deployment tooling.
 
-Handlers captured from TypeKro compositions are statically serialized into the nested operator dispatcher. Keep those handlers self-contained: helper functions/constants used only by the handler should live inside the handler body, or the data should flow through the reconciled resource spec/status. The compiler rejects likely module-scope references before producing a WASM dispatcher so missing closure captures do not turn into low-level runtime traps.
+Handlers captured from TypeKro compositions are statically serialized into the nested operator dispatcher. The compiler follows reachable top-level helpers and imports across local modules while preserving module scope and import aliases. Factory-local runtime state must still be a concrete recoverable constructor argument; opaque heap closures fail closed before WASM generation, with the handler and unresolved identifier named.
 
 Generated server routes are stricter and more capable than WASM handler serialization. Source-backed `app.server(...)` route handlers can use module-scope and imported helpers when they are resolvable by the route bundler. Unresolved heap closures are still rejected; pass those values through explicit captures, resources, indexes, or ordinary module imports.
 

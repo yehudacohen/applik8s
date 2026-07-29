@@ -9,7 +9,7 @@ Current behavior intentionally fails closed unless the HA contract is explicit:
 - compiler manifest generation rejects `deployment.replicas > 1` unless `runtime.leaderElection.enabled` is true.
 - generated YAML and TypeKro install synthesis reject multi-replica installs unless the manifest enables leader election.
 - the Rust host validates `leaseDurationSeconds > renewDeadlineSeconds > retryPeriodSeconds` before starting controllers.
-- the Rust host keeps `/readyz` false until this replica holds the Lease and controller streams are running.
+- the Rust host keeps `/readyz` false until this replica holds the Lease and controller streams are running, while generated multi-replica Deployments use `/healthz` for Kubernetes readiness so healthy followers do not deadlock rolling updates.
 - unsupported `runtime.concurrency.*` settings are rejected rather than ignored.
 
 This prevents users from accidentally running multiple independent controllers against the same resources without a coordination contract.
@@ -25,10 +25,10 @@ Implemented behavior:
 - holder identity comes from `APPLIK8S_LEADER_ELECTION_IDENTITY`, `APPLIK8S_POD_NAME`, `HOSTNAME`, or a process-local fallback.
 - generated YAML and TypeKro Deployments set `APPLIK8S_LEADER_ELECTION_IDENTITY` from `metadata.name` and `APPLIK8S_POD_NAMESPACE` from `metadata.namespace`.
 - generated manifests add unrestricted Lease `create` RBAC plus configured-name-scoped `get`, `update`, and `patch` RBAC.
-- non-leaders keep `/healthz` healthy and `/readyz` not ready.
+- non-leaders keep `/healthz` healthy and `/readyz` not ready; the generated Deployment treats `/healthz` as process readiness when leader election is enabled.
 - the active leader starts `kube-runtime::Controller` streams and marks `/readyz` ready only while leadership is held.
 - leadership loss marks `/readyz` not ready and drops controller streams.
-- shutdown marks `/readyz` not ready, drops controller streams, and closes the Lease watch channel so the manager releases the Lease.
+- shutdown marks `/readyz` not ready, drops controller streams, closes the Lease watch channel, and allows up to ten seconds for the manager's best-effort release before falling back to ordinary Lease expiry.
 
 ## Library Option
 
@@ -50,15 +50,15 @@ The implementation is intentionally narrow. Remaining work before calling HA ful
 
 ## Readiness Policy
 
-With leader election enabled, readiness should mean "this replica is able to serve as the active controller" rather than merely "the process is alive."
+With leader election enabled, Kubernetes Pod readiness means "this healthy process can serve as leader or hot standby." The host's `/readyz` endpoint remains a leadership/controller-activity signal for diagnostics; generated multi-replica Deployments probe `/healthz` so followers remain available during rollout.
 
 Expected policy:
 
-- non-leader replicas: `/healthz` healthy, `/readyz` not ready.
+- non-leader replicas: `/healthz` healthy, `/readyz` not ready, Kubernetes Pod ready through the generated `/healthz` readiness probe.
 - active leader after controller construction: `/readyz` ready.
 - leadership lost or shutdown started: `/readyz` not ready before controller streams are dropped.
 - invalid leader-election configuration: startup fails closed and readiness never becomes true.
 
 ## Live Proof
 
-The opt-in adversarial live suite runs on `orbstack` with two replicas, a generated Lease-enabled operator, and assertions that deleting the current holder lets another replica acquire leadership and reconcile the next generation change. Non-leader replicas remain healthy but not ready.
+The opt-in adversarial live suite runs on `orbstack` with two replicas and a generated Lease-enabled operator. It proves both leader and follower are Kubernetes Pod-ready, Lease renewal continues during a reconcile longer than the Lease duration, a rolling restart completes with release-driven handoff before expiry, and forced holder deletion falls back to crash-safe acquisition before the next generation reconciles. Followers remain healthy and Pod-ready through `/healthz`; their diagnostic `/readyz` remains false until they hold leadership.

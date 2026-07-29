@@ -1,27 +1,42 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { publishablePackageNames } from './publishable-packages.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(process.cwd());
 const manifest = JSON.parse(await readFile(join(root, 'packages/applik8s/package.json'), 'utf8'));
 const baseline = JSON.parse(await readFile(join(root, 'security/npm-audit-baseline.json'), 'utf8'));
 const workDir = await mkdtemp(join(tmpdir(), 'applik8s-npm-audit-'));
-const publishablePackageDirs = ['applik8s', 'core', 'sdk', 'compiler', 'runtime-contract', 'runtime', 'testing', 'typekro-adapter', 'typetainer'];
 
 try {
-  const dependencies = {};
-  for (const packageDir of publishablePackageDirs) {
+  const packageManifests = [];
+  const packageDirectoryByName = new Map();
+  for (const packageDir of publishablePackageNames) {
     const packageManifest = JSON.parse(await readFile(join(root, 'packages', packageDir, 'package.json'), 'utf8'));
-    for (const [name, range] of Object.entries(packageManifest.dependencies ?? {})) {
-      if (name.startsWith('@applik8s/')) continue;
-      if (dependencies[name] && dependencies[name] !== range) {
-        throw new Error(`Conflicting external dependency ranges for ${name}: ${dependencies[name]} and ${range}.`);
-      }
-      dependencies[name] = range;
-    }
+    packageManifests.push({ packageDir, packageManifest });
+    packageDirectoryByName.set(packageManifest.name, packageDir);
+  }
+
+  const dependencies = {};
+  for (const { packageDir, packageManifest } of packageManifests) {
+    dependencies[packageManifest.name] = `file:packages/${packageDir}`;
+    const packageWorkDir = join(workDir, 'packages', packageDir);
+    await mkdir(packageWorkDir, { recursive: true });
+    const packageDependencies = Object.fromEntries(Object.entries(packageManifest.dependencies ?? {}).map(([name, range]) => {
+      const internalDirectory = packageDirectoryByName.get(name);
+      return [name, internalDirectory ? `file:../${internalDirectory}` : range];
+    }));
+    await writeFile(join(packageWorkDir, 'package.json'), `${JSON.stringify({
+      name: packageManifest.name,
+      version: packageManifest.version,
+      private: true,
+      dependencies: packageDependencies,
+      peerDependencies: packageManifest.peerDependencies,
+      peerDependenciesMeta: packageManifest.peerDependenciesMeta,
+    }, null, 2)}\n`);
   }
   await writeFile(join(workDir, 'package.json'), `${JSON.stringify({
     name: 'applik8s-audit-consumer',

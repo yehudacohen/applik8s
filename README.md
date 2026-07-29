@@ -6,9 +6,45 @@ You write typed Kubernetes APIs and event listeners. `applik8s` compiles them in
 
 Reconciliation TypeScript becomes WASM component logic evaluated by Kubernetes events through a Rust operator host. Application servers and durable command processors compile into separate, inspectable Node workloads when the application graph requires them.
 
+## v0.6 Flagship: Native Models and Live Applications
+
+v0.6 lets one Drizzle table remain the relational schema authority while gaining derived ArkType contracts and a common Applik8s model facet. Applications can declare trusted context, PostgreSQL RLS, bounded queries, durable replayable streams, ClickHouse projections, authenticated subscriptions, and browser stores from the same inspectable application graph. Generated migrations, gateways, projection workers, provider infrastructure, RBAC, and network policy remain explicit deployment artifacts.
+
+The full-stack path is framework-neutral beneath its first TanStack Start adapter:
+`@applik8s/vite` generates browser/server facades and a Fetch-compatible gateway,
+`GuestBookEntry.create(...)` and named views share one authored model contract, and
+`ApplicationHost.kubernetes(...)` builds the immutable web artifact into the TypeKro-managed
+application. The operator updates domain status; React renders authoritative query results after
+resumable SSE invalidation.
+
+Start with [`examples/guestbook-start`](examples/guestbook-start) for the smallest complete application.
+Then inspect [`examples/chirp-start`](examples/chirp-start), the realistic flagship: native relational
+models and relations, direct commands/views, durable JetStream events, rebuildable ClickHouse facts and
+hourly analytics, Hatchet moderation, a Kubernetes policy operator, SSR/SSE, hosting, and
+optional managed TLS/DNS in one application graph.
+
+```sh
+bun run build:v06-generated-proof
+bun run check:v06:chirp-build
+bun run check:v06:prerelease:orbstack
+```
+
+The release claims provider-specific guarantees rather than a fictional universal consistency model: PostgreSQL is authoritative for relational state and RLS, query delivery is snapshot plus resumable invalidation, streams are bounded durable replay, and ClickHouse projections use idempotent application with durable checkpoints. See [`docs/native-models-and-live-queries.md`](docs/native-models-and-live-queries.md), [`docs/v0.6-foundation.md`](docs/v0.6-foundation.md), and [`docs/v0.6-scorecard.md`](docs/v0.6-scorecard.md).
+
+## v0.5 Flagship: Durable Tenant Orchestration
+
+v0.5 adds provider-neutral durable tasks and workflows with a pinned PostgreSQL-only Hatchet implementation. It also adds bounded, named Kubernetes connections: handlers can read and mutate an installation-authorized cluster without receiving kubeconfig material or ambient client authority. The Tenant Platform models tenant onboarding and decommissioning with retry-safe external-effect tasks, durable approval waits, cancellation, compensation, explicit operator intervention, canonical transitions committed through the v0.4 model transaction boundary, and stable-identity ExternalDNS publication through the operator runtime.
+
+```sh
+bun run build:tenant-platform-v05
+bun run check:v05:prerelease:orbstack
+```
+
+See [`docs/workflows.md`](docs/workflows.md) for workflow semantics, [`docs/kubernetes-connections.md`](docs/kubernetes-connections.md) for the connection authority model, [`docs/dns-publication.md`](docs/dns-publication.md) for DNS ownership and observation semantics, and [`docs/v0.5-scorecard.md`](docs/v0.5-scorecard.md) for the executable release criteria.
+
 ## v0.4 Flagship: Durable Tenant Behavior
 
-v0.4 adds typed, durable application behavior to the v0.3 application substrate. `examples/tenant-platform.ts` now has an opt-in v0.4 slice where one `Model.on.command()` declaration infers PostgreSQL inbox/result/history/outbox semantics, a generated processor, NATS JetStream Stream and Consumer resources, retry/dead-letter behavior, and TypeKro-owned lifecycle.
+v0.4 added typed, durable application behavior to the v0.3 application substrate. The current model API derives `Model.create`, `Model.update`, `Model.delete`, and typed committed lifecycle handlers from a promoted Drizzle table; exceptional domain operations use one `Model.action(...)` declaration. These lower to PostgreSQL inbox/result/history/outbox semantics, generated processors, NATS JetStream resources, retry/dead-letter behavior, and TypeKro-owned lifecycle. The older Tenant Platform evidence retains its compatibility command spelling to reproduce the original v0.4 artifact.
 
 PostgreSQL is authoritative for keyed serialization, idempotency, durable results, model revisions, history, and outboxes. JetStream is acknowledged at-least-once transport; a broker acknowledgement is not a completed command result. Command handlers cannot perform HTTP, object storage, workflow, or other external effects while model locks are held.
 
@@ -27,6 +63,8 @@ bun run build:tenant-platform-v04
 ```
 
 See [`docs/commands.md`](docs/commands.md) for the durable-command contract and [`docs/release-evidence-v0.4.md`](docs/release-evidence-v0.4.md) for captured evidence and maturity boundaries.
+
+For a clean consumer install outside this workspace, start with [`docs/npm-first-run.md`](docs/npm-first-run.md). The executable scorecard is documented in [`docs/v0.4-scorecard.md`](docs/v0.4-scorecard.md).
 
 v0.4.1 adds a measured manual scaling contract for inferred processors: replicas, per-pod concurrency, aggregate acknowledgement windows, resources, topology spreading, node selection, and disruption budgets. Run `bun run benchmark:v041:live` for the reproducible PostgreSQL/JetStream benchmark or `bun run check:v041:performance` for the fast regression gate. See [`docs/release-evidence-v0.4.1.md`](docs/release-evidence-v0.4.1.md).
 
@@ -104,6 +142,23 @@ Build the flagship artifacts:
 bun run build:guestbook
 ```
 
+The default profile serves the complete responsive GuestBook UI at `http://guestbook.localhost` and
+does not require a cluster-wide certificate or DNS controller. The public profile keeps the same
+application code while making the edge intent explicit:
+
+```sh
+APPLIK8S_GUESTBOOK_PROFILE=public \
+APPLIK8S_GUESTBOOK_DOMAIN=guestbook.example.com \
+APPLIK8S_GUESTBOOK_ISSUER_NAME=letsencrypt-prod \
+APPLIK8S_GUESTBOOK_ISSUER_KIND=ClusterIssuer \
+bun run build:guestbook
+```
+
+That profile's `app.expose("web", ...)` declaration emits an Ingress, a namespaced cert-manager
+`Certificate`, ExternalDNS intent, and an HTTPS public URL in the `ApplicationGraph`. cert-manager,
+the selected Issuer/ClusterIssuer, and ExternalDNS remain explicitly platform-owned prerequisites;
+the example never represents accepted intent as completed certificate issuance or DNS propagation.
+
 Run the live GuestBook proof against an explicit local Kubernetes context:
 
 ```sh
@@ -111,6 +166,10 @@ APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vites
 ```
 
 The important v0.2 boundary is honesty: GuestBook is Kubernetes-native application state, not a claim that CRDs are a general-purpose database. High-volume product data belongs in explicit storage-backed models such as the v0.3 Postgres `ModelStore` slice.
+
+For v0.6 generated query gateways, the same exposure API accepts the gateway binding directly:
+`app.expose("public", { service: gateway, ... })`. Applik8s derives the generated Service identity,
+namespace, and port, so applications do not need to repeat compiler naming conventions.
 
 ## A Kubernetes App In TypeScript
 
@@ -236,6 +295,7 @@ Handlers can be `async`. The compiler tree-shakes the TypeScript dependency grap
 Synthesize an operator bundle from a TypeScript entrypoint:
 
 ```sh
+bun add --dev @applik8s/cli
 bunx applik8s build ./src/operator.ts --out-dir dist/applik8s
 ```
 
@@ -354,9 +414,15 @@ bun run check:v04:prerelease:orbstack
 
 - `docs/imagejob-golden-path.md`
 - `docs/first-run.md`
+- `docs/npm-first-run.md`
 - `docs/typekro-golden-path.md`
 - `docs/generated-artifacts.md`
 - `docs/commands.md`
+- `docs/dns-publication.md`
+- `docs/kubernetes-connections.md`
+- `docs/workflows.md`
+- `docs/v0.5-scorecard.md`
+- `docs/v0.4-scorecard.md`
 - `docs/release-evidence-v0.4.md`
 - `docs/release-evidence-v0.4.1.md`
 - `docs/release-evidence-v0.3.md`

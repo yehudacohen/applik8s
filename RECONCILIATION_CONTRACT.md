@@ -336,7 +336,7 @@ Target behavior:
 Current status:
 - Generated manifests, generated YAML, TypeKro install synthesis, and the Rust host accept only `runtime.concurrency.workerCount: 1` and `runtime.concurrency.maxInFlightPerResource: 1`.
 - `runtime.concurrency.maxQueueDepth` is rejected until the runtime exposes trustworthy kube-runtime queue-depth controls.
-- Multi-replica Deployments are accepted only when `runtime.leaderElection.enabled` is true. Kubernetes Lease-based leader election is implemented with active-leader readiness and non-leader `/readyz` false.
+- Multi-replica Deployments are accepted only when `runtime.leaderElection.enabled` is true. Kubernetes Lease-based leader election keeps non-leader `/readyz` false as a leadership diagnostic, while generated multi-replica Deployments use `/healthz` for Pod readiness so healthy followers do not deadlock rollouts.
 - Generated Lease RBAC splits unrestricted `leases/create` from resource-name-scoped `leases/get/update/patch`, because Kubernetes cannot authorize create through a pre-existing `resourceNames` constraint.
 - Live OrbStack e2e proves deleting the current Lease holder causes another replica to acquire leadership and reconcile a later generation change.
 

@@ -87,6 +87,16 @@ Before additional external capability kinds or auth modes become usable, each ki
 - redaction policy for logs, status, diagnostics, and replay artifacts.
 - generated or documented policy/RBAC implications.
 
+## Kubernetes Connections
+
+A Kubernetes connection is a distinct host protocol, not an ambient Kubernetes client. Portable bundles declare a logical alias, an endpoint-policy name, and a resource/verb/namespace envelope. Installation supplies the kubeconfig Secret, selected context, and concrete HTTPS endpoint policy. The compiler requires the declared and bound alias sets to match exactly.
+
+The operator ServiceAccount receives only `get` on each named connection Secret in its own namespace. That permission stays in a namespaced Role even when unrelated controller work needs a ClusterRole. Connection-only resource reads do not generate management-cluster resource RBAC. The host accepts one-context kubeconfigs with inline CA plus either an inline bearer token or client certificate/key; file references, exec/auth plugins, proxies, TLS overrides, impersonation, basic auth, unknown fields, and insecure HTTP fail closed.
+
+Each handler invocation pins the Secret UID/resourceVersion, selected context, endpoint-policy version, and binding revision. Reads and writes share that lease. A mutation reloads the binding and fails if it changed after observation. Remote lists are bounded to 1–500 objects per page. A v1 mutation plan may use at most one remote connection.
+
+Remote apply is limited to managed objects whose identity is scoped by operator, connection alias, and handler identity and whose source UID equals the reconciled owner UID. Updates verify management annotations and use resourceVersion concurrency. Patch/delete either prove that managed identity or provide exact UID/resourceVersion authority. Remote owner references, status, events, finalizers, watches, credential plugins, and cross-cluster transactions are outside v0.5.
+
 ## Kubernetes Effects
 
 Kubernetes effects must go through validated operation plans.

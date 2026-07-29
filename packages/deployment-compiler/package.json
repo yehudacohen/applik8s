@@ -1,0 +1,28 @@
+{
+  "name": "@applik8s/deployment-compiler",
+  "version": "0.6.0",
+  "description": "Pure ApplicationGraph to ApplicationDeploymentGraph lowering for Applik8s.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/deployment-compiler"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/core": "0.6.0",
+    "@applik8s/deployment-contract": "0.6.0"
+  }
+}

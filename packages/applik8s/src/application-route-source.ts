@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transformSync } from 'esbuild';
-
+import { blockCommentEnd, escapeRegExp, isDeclarationIdentifier, isRegexLiteralStart, lineCommentEnd, nextNonWhitespace, previousNonWhitespace, regexLiteralEnd, unique } from './application-route-source-utilities.js';
 export interface ApplicationRouteSourceLocation {
   readonly file: string;
   readonly line: number;
@@ -48,11 +48,61 @@ export interface ApplicationRouteSourceDependencies {
   readonly resolveDir: string;
 }
 
+export interface ApplicationCommandSourceViolation {
+  readonly name: string;
+  readonly reason: 'ambientIo' | 'nondeterminism' | 'dynamicCode';
+}
+
+/**
+ * Command handlers execute while the authoritative model transaction is open.
+ * Keep their supported closure deliberately smaller than normal server/operator
+ * callbacks: no ambient I/O, wall clock, random source, dynamic code, or route
+ * to the Node global object is admitted. Strings and comments have already been
+ * removed by the shared lexical scanner, so diagnostics are based on executable
+ * source rather than keyword text.
+ */
+export function applicationCommandSourceViolations(source: string, kind: 'key' | 'idempotencyKey' | 'initialize' | 'handler'): readonly ApplicationCommandSourceViolation[] {
+  const analysis = analyzeApplicationServerRouteSource(source);
+  const violations = new Map<string, ApplicationCommandSourceViolation>();
+  const add = (name: string, reason: ApplicationCommandSourceViolation['reason']) => violations.set(`${reason}:${name}`, { name, reason });
+  const free = new Set(analysis.freeIdentifiers);
+
+  const nondeterministicGlobals = ['Date', 'performance', 'crypto'];
+  for (const name of nondeterministicGlobals) {
+    if (free.has(name)) add(name, 'nondeterminism');
+  }
+  // Constructor calls are not ordinary function-call tokens in the lightweight
+  // route analyzer, so reject the ambient Date constructor explicitly unless a
+  // handler-local binding deliberately shadows it.
+  if (!analysis.declaredIdentifiers.has('Date') && /\b(?:new\s+Date\s*\(|Date\s*\.)/.test(analysis.strippedSource)) add('Date', 'nondeterminism');
+  if (analysis.memberCalls.some((call) => call.objectName === 'Math' && call.methodName === 'random')) add('Math.random', 'nondeterminism');
+
+  if (kind === 'handler' || kind === 'initialize') {
+    const ambientGlobals = ['fetch', 'XMLHttpRequest', 'WebSocket', 'EventSource', 'navigator', 'process', 'require', 'module', 'global', 'globalThis', 'Bun', 'Deno'];
+    for (const name of ambientGlobals) {
+      if (free.has(name)) add(name, 'ambientIo');
+    }
+    for (const name of ['setTimeout', 'setInterval', 'setImmediate', 'queueMicrotask']) {
+      if (free.has(name)) add(name, 'ambientIo');
+    }
+  }
+
+  for (const name of ['eval', 'Function', 'AsyncFunction', 'WebAssembly']) {
+    if (free.has(name)) add(name, 'dynamicCode');
+  }
+  if (/\bimport\s*\(/.test(analysis.strippedSource)) add('import()', 'dynamicCode');
+  if (/\bthis\b/.test(analysis.strippedSource)) add('this', 'dynamicCode');
+  if (/\.\s*(?:constructor|__proto__|prototype)\b/.test(analysis.strippedSource)) add('.constructor/prototype', 'dynamicCode');
+
+  return [...violations.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
 interface ApplicationRouteTopLevelBinding {
   readonly name: string;
   readonly source: string;
   readonly analysisSource: string;
   readonly kind: 'declaration' | 'import';
+  readonly position: number;
 }
 
 export function normalizeSerializableFunctionSource(source: string): string {
@@ -91,17 +141,28 @@ export function unsupportedRouteFreeIdentifiers(analysis: ApplicationServerRoute
     ...bindingNames,
     ...analysis.declaredIdentifiers,
     'Array',
+    'AbortController',
+    'AbortSignal',
     'Boolean',
     'Date',
     'Error',
+    'Headers',
     'JSON',
+    'Map',
     'Math',
     'Number',
     'Object',
     'Promise',
     'RegExp',
+    'Reflect',
     'Response',
+    'Set',
     'String',
+		'TextDecoder',
+		'TextEncoder',
+		'Uint8Array',
+    'WeakMap',
+    'WeakSet',
     'any',
     'boolean',
     'URL',
@@ -110,6 +171,8 @@ export function unsupportedRouteFreeIdentifiers(analysis: ApplicationServerRoute
     'console',
     'decodeURIComponent',
     'encodeURIComponent',
+    'fetch',
+    'crypto',
     'globalThis',
     'parseFloat',
     'parseInt',
@@ -143,8 +206,21 @@ export function applicationRouteSourceDependencies(route: ApplicationRouteSource
   if (!route.handlerSourceLocation || route.handlerSourceKind !== 'source') {
     return undefined;
   }
-  const fileSource = readFileSync(route.handlerSourceLocation.file, 'utf8');
-  const topLevelBindings = applicationRouteTopLevelBindings(fileSource, bindingNames);
+  const discoveryEntrypoint = Reflect.get(globalThis, Symbol.for('applik8s.discovery.entrypoint'));
+  const candidateFiles = unique([
+    route.handlerSourceLocation.file,
+    ...(typeof discoveryEntrypoint === 'string' && existsSync(discoveryEntrypoint) ? [discoveryEntrypoint] : []),
+  ]);
+  for (const candidateFile of candidateFiles) {
+    const resolved = resolveApplicationRouteSourceDependencies(candidateFile, unsupported, bindingNames);
+    if (resolved) return resolved;
+  }
+  throw new Error(serializedCallbackClosureMessage({ label: 'app.server', route, identifiers: unsupported, sourceLocation: route.handlerSourceLocation }));
+}
+
+function resolveApplicationRouteSourceDependencies(file: string, unsupported: readonly string[], bindingNames: ReadonlySet<string>): ApplicationRouteSourceDependencies | undefined {
+  const fileSource = readFileSync(file, 'utf8');
+  const topLevelBindings = applicationRouteTopLevelBindings(fileSource, bindingNames, file);
   const included = new Map<string, ApplicationRouteTopLevelBinding>();
   const unresolved = new Set<string>();
   const queue = [...unsupported];
@@ -169,17 +245,25 @@ export function applicationRouteSourceDependencies(route: ApplicationRouteSource
     }
   }
   if (unresolved.size > 0) {
-    throw new Error(serializedCallbackClosureMessage({ label: 'app.server', route, identifiers: [...unresolved].sort(), sourceLocation: route.handlerSourceLocation }));
+    if (process.env.APPLIK8S_DEBUG_CALLBACK_DEPENDENCIES === '1') {
+      console.error(JSON.stringify({ component: 'application-callback-dependencies', file, unsupported, bindings: [...topLevelBindings.keys()], included: [...included.keys()], unresolved: [...unresolved] }));
+    }
+    return undefined;
   }
-  const imports = unique([...included.values()].filter((binding) => binding.kind === 'import').map((binding) => binding.source));
-  const declarations = unique([...included.values()].filter((binding) => binding.kind === 'declaration').map((binding) => binding.source));
-  return { source: [...imports, ...declarations].join('\n\n'), resolveDir: dirname(route.handlerSourceLocation.file) };
+  const ordered = [...new Map([...included.values()].map((binding) => [`${binding.kind}:${binding.position}:${binding.source}`, binding])).values()].sort((left, right) => left.position - right.position);
+  const imports = ordered.filter((binding) => binding.kind === 'import').map((binding) => binding.source);
+  const declarations = ordered.filter((binding) => binding.kind === 'declaration').map((binding) => binding.source);
+  return { source: [...imports, ...declarations].join('\n\n'), resolveDir: dirname(file) };
 }
 
 const applicationRouteSourceModulePath = fileURLToPath(import.meta.url);
 const applicationDslModulePath = applicationRouteSourceModulePath.replace(/application-route-source(\.[cm]?[jt]sx?)$/, 'application$1');
 
 export function extractApplicationRouteHandlerSource(method: ApplicationRouteSourceRoute['method']): { readonly source: string; readonly location: ApplicationRouteSourceLocation } | undefined {
+  return extractApplicationCallArgumentSource(method.toLowerCase(), 1, true);
+}
+
+export function extractApplicationCallArgumentSource(methodName: string, argumentIndex: number, requireLiteralFirstArgument = false): { readonly source: string; readonly location: ApplicationRouteSourceLocation } | undefined {
   const previousStackTraceLimit = Error.stackTraceLimit;
   Error.stackTraceLimit = Math.max(previousStackTraceLimit, 50);
   const stack = new Error().stack;
@@ -192,12 +276,31 @@ export function extractApplicationRouteHandlerSource(method: ApplicationRouteSou
   for (const location of locations) {
     try {
       const fileSource = readFileSync(location.file, 'utf8');
-      const expression = routeHandlerExpressionAtLocation(fileSource, location, method);
+      const expression = callArgumentExpressionAtLocation(fileSource, location, methodName, argumentIndex, requireLiteralFirstArgument);
       if (!expression) {
         debugRouteSourceExtraction(`no route expression at ${location.file}:${location.line}:${location.column}`);
         continue;
       }
-      return { source: transpileRouteHandlerExpression(expression), location };
+      return { source: transpileApplicationCallbackExpression(expression), location };
+    } catch (error) {
+      debugRouteSourceExtraction(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return undefined;
+}
+
+/** Extracts a function-valued property from an object literal passed to an app registrar. */
+export function extractApplicationCallObjectFunctionSource(methodName: string, argumentIndex: number, property: string): { readonly source: string; readonly location: ApplicationRouteSourceLocation } | undefined {
+  const previousStackTraceLimit = Error.stackTraceLimit;
+  Error.stackTraceLimit = Math.max(previousStackTraceLimit, 50);
+  const stack = new Error().stack;
+  Error.stackTraceLimit = previousStackTraceLimit;
+  for (const location of applicationRouteCallsiteLocations(stack)) {
+    try {
+      const fileSource = readFileSync(location.file, 'utf8');
+      const objectSource = callArgumentRawAtLocation(fileSource, location, methodName, argumentIndex);
+      const expression = objectSource ? objectLiteralFunctionProperty(objectSource, property) : undefined;
+      if (expression) return { source: transpileApplicationCallbackExpression(expression), location };
     } catch (error) {
       debugRouteSourceExtraction(error instanceof Error ? error.message : String(error));
     }
@@ -342,7 +445,13 @@ function routeFreeIdentifiers(source: string, declared: ReadonlySet<string>): re
   return [...unsupported].sort();
 }
 
-function applicationRouteTopLevelBindings(source: string, bindingNames: ReadonlySet<string>): ReadonlyMap<string, ApplicationRouteTopLevelBinding> {
+function applicationRouteTopLevelBindings(source: string, bindingNames: ReadonlySet<string>, file: string): ReadonlyMap<string, ApplicationRouteTopLevelBinding> {
+  // Parse the transpiled module rather than individual declaration substrings.
+  // A substring scanner cannot reliably distinguish a function body from an
+  // object default (`options = {}`) or an object-shaped return type. Module-
+  // level transpilation strips type-only identifiers and preserves executable
+  // imports/declarations for the generated runtime dependency bundle.
+  source = transpileApplicationRouteModuleForDependencies(source, file);
   const bindings = new Map<string, ApplicationRouteTopLevelBinding>();
   let index = 0;
   let depth = 0;
@@ -382,7 +491,7 @@ function applicationRouteTopLevelBindings(source: string, bindingNames: Readonly
       const importBinding = topLevelImportBindingAt(source, index);
       if (importBinding) {
         for (const name of importBinding.names) {
-          bindings.set(name, { name, source: importBinding.source, analysisSource: importBinding.source, kind: 'import' });
+          bindings.set(name, { name, source: importBinding.source, analysisSource: importBinding.source, kind: 'import', position: index });
         }
         index = importBinding.end;
         continue;
@@ -390,7 +499,7 @@ function applicationRouteTopLevelBindings(source: string, bindingNames: Readonly
       const declaration = topLevelDeclarationBindingAt(source, index, bindingNames);
       if (declaration) {
         for (const name of declaration.names) {
-          bindings.set(name, { name, source: declaration.source, analysisSource: transpileRouteDependencySourceForAnalysis(declaration.source), kind: 'declaration' });
+          bindings.set(name, { name, source: declaration.source, analysisSource: declaration.source, kind: 'declaration', position: index });
         }
         index = declaration.end;
         continue;
@@ -401,9 +510,9 @@ function applicationRouteTopLevelBindings(source: string, bindingNames: Readonly
   return bindings;
 }
 
-function transpileRouteDependencySourceForAnalysis(source: string): string {
+function transpileApplicationRouteModuleForDependencies(source: string, file: string): string {
   try {
-    return transformSync(source, { loader: 'ts', format: 'esm', target: 'node22' }).code;
+    return transformSync(source, { loader: file.endsWith('.tsx') || file.endsWith('.jsx') ? 'tsx' : file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.cjs') ? 'js' : 'ts', format: 'esm', target: 'node22' }).code;
   } catch (_error) {
     return source;
   }
@@ -425,7 +534,9 @@ function topLevelDeclarationBindingAt(source: string, index: number, bindingName
   const snippet = source.slice(index);
   const functionMatch = snippet.match(/^(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b/);
   if (functionMatch) {
-    const open = source.indexOf('{', index + functionMatch[0].length);
+    const parameterOpen = source.indexOf('(', index + functionMatch[0].length);
+    const parameterClose = parameterOpen >= 0 ? matchingDelimiter(source, parameterOpen, '(', ')') : undefined;
+    const open = parameterClose === undefined ? -1 : source.indexOf('{', parameterClose + 1);
     const close = open >= 0 ? matchingDelimiter(source, open, '{', '}') : undefined;
     const end = close === undefined ? statementSourceEnd(source, index) : close + 1;
     const names = [functionMatch[1] ?? ''].filter((name) => name && !bindingNames.has(name));
@@ -473,15 +584,14 @@ function importedLocalNames(source: string): readonly string[] {
 }
 
 function variableDeclarationNames(source: string): readonly string[] {
-  const names: string[] = [];
+  const names = new Set<string>();
   const body = source.replace(/^(?:const|let|var)\s+/, '').replace(/;\s*$/, '');
   for (const part of splitTopLevelArguments(body)) {
-    const name = part.trim().match(/^([A-Za-z_$][\w$]*)\b/)?.[1];
-    if (name) {
-      names.push(name);
-    }
+    const declaration = part.trim();
+    const assignment = topLevelCharacterIndex(declaration, '=');
+    addBindingPatternIdentifiers(names, assignment >= 0 ? declaration.slice(0, assignment) : declaration);
   }
-  return names;
+  return [...names];
 }
 
 function statementSourceEnd(source: string, start: number): number {
@@ -705,17 +815,11 @@ function stripCommentsAndStrings(source: string): string {
 function declaredRouteIdentifiers(source: string): ReadonlySet<string> {
   const declared = new Set<string>();
   addParameterIdentifiers(declared, leadingRouteParameterList(source));
-  for (const match of source.matchAll(/\(([^)]*)\)\s*=>/g)) {
-    addParameterIdentifiers(declared, match[1] ?? '');
-  }
-  for (const match of source.matchAll(/\(\s*([A-Za-z_$][\w$]*)\s*\)\s*=>/g)) {
-    declared.add(match[1] ?? '');
-  }
-  for (const match of source.matchAll(/\b([A-Za-z_$][\w$]*)\s*=>/g)) {
-    declared.add(match[1] ?? '');
-  }
-  for (const match of source.matchAll(/\b(?:const|let|var)\s+([^=;]+)/g)) {
-    addBindingPatternIdentifiers(declared, match[1] ?? '');
+  addArrowParameterIdentifiers(declared, source);
+  for (const match of source.matchAll(/\b(?:const|let|var)\s+/g)) {
+    const start = match.index ?? 0;
+    const end = statementSourceEnd(source, start);
+    for (const name of variableDeclarationNames(source.slice(start, end))) declared.add(name);
   }
   for (const match of source.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g)) {
     declared.add(match[1] ?? '');
@@ -728,6 +832,35 @@ function declaredRouteIdentifiers(source: string): ReadonlySet<string> {
   }
   declared.delete('');
   return declared;
+}
+
+function addArrowParameterIdentifiers(declared: Set<string>, source: string): void {
+  for (const arrow of source.matchAll(/=>/g)) {
+    let end = (arrow.index ?? 0) - 1;
+    while (end >= 0 && /\s/.test(source[end] ?? '')) end -= 1;
+    if (end < 0) continue;
+    if (source[end] === ')') {
+      const open = matchingOpeningDelimiter(source, end, '(', ')');
+      if (open !== undefined) addParameterIdentifiers(declared, source.slice(open + 1, end));
+      continue;
+    }
+    const prefix = source.slice(0, end + 1);
+    const name = prefix.match(/([A-Za-z_$][\w$]*)$/)?.[1];
+    if (name) declared.add(name);
+  }
+}
+
+function matchingOpeningDelimiter(source: string, closeIndex: number, open: string, close: string): number | undefined {
+  let depth = 0;
+  for (let index = closeIndex; index >= 0; index -= 1) {
+    const character = source[index];
+    if (character === close) depth += 1;
+    else if (character === open) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return undefined;
 }
 
 function leadingRouteParameterList(source: string): string {
@@ -868,16 +1001,27 @@ function isApplicationRouteInternalStackFrame(line: string, file: string): boole
   if (file === applicationRouteSourceModulePath || file === applicationDslModulePath) {
     return true;
   }
-  return /\bat (?:extractApplicationRouteHandlerSource|applicationRouteCallsiteLocations?|record|Object\.(?:get|post))\b/.test(line);
+  return /\bat (?:extractApplicationRouteHandlerSource|extractApplicationCallArgumentSource|extractApplicationCallObjectFunctionSource|applicationRouteCallsiteLocations?|record|Object\.(?:get|post))\b/.test(line);
 }
 
-function routeHandlerExpressionAtLocation(source: string, location: ApplicationRouteSourceLocation, method: ApplicationRouteSourceRoute['method']): string | undefined {
+function callArgumentExpressionAtLocation(source: string, location: ApplicationRouteSourceLocation, methodName: string, argumentIndex: number, requireLiteralFirstArgument: boolean): string | undefined {
+  const args = callArgumentsAtLocation(source, location, methodName);
+  const firstArgument = args?.[0]?.trim() ?? '';
+  const handlerSource = args?.[argumentIndex]?.trim();
+  if (!handlerSource || (argumentIndex >= 1 && !/(?:=>|^\s*(?:async\s+)?function\b)/.test(handlerSource)) || (requireLiteralFirstArgument && !/^['"`]/.test(firstArgument))) return undefined;
+  return handlerSource;
+}
+
+function callArgumentRawAtLocation(source: string, location: ApplicationRouteSourceLocation, methodName: string, argumentIndex: number): string | undefined {
+  return callArgumentsAtLocation(source, location, methodName)?.[argumentIndex]?.trim();
+}
+
+function callArgumentsAtLocation(source: string, location: ApplicationRouteSourceLocation, methodName: string): readonly string[] | undefined {
   const position = sourceOffsetForLineColumn(source, location.line, location.column);
-  const methodName = method.toLowerCase();
   const searchStart = Math.max(0, position - 4000);
   const searchEnd = Math.min(source.length, position + 8000);
   const windowSource = source.slice(searchStart, searchEnd);
-  const calls: { readonly openParen: number; readonly closeParen: number; readonly distance: number; readonly handlerSource: string }[] = [];
+  const calls: { readonly openParen: number; readonly closeParen: number; readonly distance: number; readonly args: readonly string[] }[] = [];
   const callPattern = new RegExp(`\\.\\s*${methodName}\\s*\\(`, 'g');
   for (const match of windowSource.matchAll(callPattern)) {
     const openParen = searchStart + (match.index ?? 0) + match[0].lastIndexOf('(');
@@ -886,18 +1030,28 @@ function routeHandlerExpressionAtLocation(source: string, location: ApplicationR
       continue;
     }
     const args = splitTopLevelArguments(source.slice(openParen + 1, closeParen));
-    const routePath = args[0]?.trim() ?? '';
-    const handlerSource = args[1]?.trim();
-    if (!handlerSource || !/^['"`]/.test(routePath)) {
-      continue;
-    }
-    calls.push({ openParen, closeParen, distance: position >= openParen && position <= closeParen ? 0 : Math.abs(openParen - position), handlerSource });
+    calls.push({ openParen, closeParen, distance: position >= openParen && position <= closeParen ? 0 : Math.abs(openParen - position), args });
   }
   const call = calls.sort((left, right) => left.distance - right.distance)[0];
   if (!call) {
     return undefined;
   }
-  return call.handlerSource;
+  return call.args;
+}
+
+function objectLiteralFunctionProperty(source: string, property: string): string | undefined {
+  const trimmed = source.trim();
+  if (!trimmed.startsWith('{')) return undefined;
+  const close = matchingDelimiter(trimmed, 0, '{', '}');
+  if (close === undefined) return undefined;
+  for (const entry of splitTopLevelArguments(trimmed.slice(1, close))) {
+    const candidate = entry.trim();
+    const assignment = candidate.match(new RegExp(`^(?:['"]${escapeRegExp(property)}['"]|${escapeRegExp(property)})\\s*:\\s*([\\s\\S]+)$`));
+    if (assignment?.[1]) return assignment[1].trim();
+    const method = candidate.match(new RegExp(`^(async\\s+)?${escapeRegExp(property)}\\s*(\\([^)]*\\)\\s*\\{[\\s\\S]*\\})$`));
+    if (method?.[2]) return `${method[1] ?? ''}function ${property}${method[2]}`;
+  }
+  return undefined;
 }
 
 function sourceOffsetForLineColumn(source: string, line: number, column: number): number {
@@ -912,7 +1066,7 @@ function sourceOffsetForLineColumn(source: string, line: number, column: number)
   return Math.min(source.length, offset + Math.max(0, column - 1));
 }
 
-function transpileRouteHandlerExpression(source: string): string {
+export function transpileApplicationCallbackExpression(source: string): string {
   const wrapped = `const __applik8sRouteHandler = (${source});\nexport { __applik8sRouteHandler };\n`;
   const output = transformSync(wrapped, { loader: 'ts', format: 'esm', target: 'node22' }).code.trim();
   const prefix = 'const __applik8sRouteHandler = ';
@@ -994,78 +1148,4 @@ function templateExpressionSourceEnd(source: string, start: number): number {
     index += 1;
   }
   return source.length;
-}
-
-function lineCommentEnd(source: string, start: number): number {
-  const end = source.indexOf('\n', start + 2);
-  return end < 0 ? source.length : end + 1;
-}
-
-function blockCommentEnd(source: string, start: number): number {
-  const end = source.indexOf('*/', start + 2);
-  return end < 0 ? source.length : end + 2;
-}
-
-function regexLiteralEnd(source: string, start: number): number {
-  let index = start + 1;
-  let inCharacterClass = false;
-  while (index < source.length) {
-    const character = source[index];
-    if (character === '\\') {
-      index += 2;
-      continue;
-    }
-    if (character === '[') {
-      inCharacterClass = true;
-    } else if (character === ']') {
-      inCharacterClass = false;
-    } else if (character === '/' && !inCharacterClass) {
-      index += 1;
-      while (index < source.length && /[a-z]/i.test(source[index] ?? '')) {
-        index += 1;
-      }
-      return index;
-    } else if (character === '\n' || character === '\r') {
-      return start + 1;
-    }
-    index += 1;
-  }
-  return source.length;
-}
-
-function isRegexLiteralStart(source: string, index: number): boolean {
-  const previous = previousNonWhitespace(source, index);
-  if (previous === undefined || ['(', ',', '=', ':', '[', '{', '!', '?', ';', '&', '|'].includes(previous)) return true;
-  return /(?:^|[^\w$])(?:return|throw|case|delete|typeof|void|yield|await)\s*$/.test(source.slice(0, index));
-}
-
-function previousNonWhitespace(source: string, index: number): string | undefined {
-  for (let position = index - 1; position >= 0; position -= 1) {
-    if (!/\s/.test(source[position] ?? '')) {
-      return source[position];
-    }
-  }
-  return undefined;
-}
-
-function nextNonWhitespace(source: string, index: number): string | undefined {
-  for (let position = index; position < source.length; position += 1) {
-    if (!/\s/.test(source[position] ?? '')) {
-      return source[position];
-    }
-  }
-  return undefined;
-}
-
-function isDeclarationIdentifier(source: string, index: number, name: string): boolean {
-  const prefix = source.slice(Math.max(0, index - 32), index);
-  return /(?:const|let|var|function)\s+$/.test(prefix) || /catch\s*\(\s*$/.test(prefix) || /for\s*\(\s*(?:const|let|var)\s+$/.test(prefix) || prefix.endsWith(`${name}.`);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function unique<T>(values: readonly T[]): T[] {
-  return [...new Set(values)];
 }

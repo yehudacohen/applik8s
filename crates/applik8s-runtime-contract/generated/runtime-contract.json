@@ -331,6 +331,57 @@
                 "required": [],
                 "additionalProperties": false
               },
+              "permissions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "apiGroups": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "resources": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "verbs": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "resourceNames": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "namespaces": {
+                      "oneOf": [
+                        {
+                          "const": "all"
+                        },
+                        {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "apiGroups",
+                    "resources",
+                    "verbs"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "policy": {
                 "type": "object",
                 "properties": {
@@ -359,7 +410,8 @@
                   "protocol": {
                     "enum": [
                       "notImplemented",
-                      "applik8s.capability/v1alpha1"
+                      "applik8s.capability/v1alpha1",
+                      "applik8s.kubernetes-connection/v1alpha1"
                     ]
                   },
                   "audit": {
@@ -419,6 +471,18 @@
               },
               "sensitive": {
                 "type": "boolean"
+              },
+              "kubernetesConnection": {
+                "type": "object",
+                "properties": {
+                  "endpointPolicy": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "endpointPolicy"
+                ],
+                "additionalProperties": false
               }
             },
             "required": [
@@ -629,6 +693,63 @@
                         "additionalProperties": false
                       }
                     ]
+                  },
+                  "connection": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,62}$"
+                  },
+                  "authority": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "const": "managed"
+                          },
+                          "identity": {
+                            "type": "string"
+                          },
+                          "sourceUid": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "mode",
+                          "identity",
+                          "sourceUid"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "const": "existing"
+                          },
+                          "precondition": {
+                            "type": "object",
+                            "properties": {
+                              "uid": {
+                                "type": "string"
+                              },
+                              "resourceVersion": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "uid",
+                              "resourceVersion"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "mode",
+                          "precondition"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -703,6 +824,63 @@
                       ],
                       "additionalProperties": false
                     }
+                  },
+                  "connection": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,62}$"
+                  },
+                  "authority": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "const": "managed"
+                          },
+                          "identity": {
+                            "type": "string"
+                          },
+                          "sourceUid": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "mode",
+                          "identity",
+                          "sourceUid"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "const": "existing"
+                          },
+                          "precondition": {
+                            "type": "object",
+                            "properties": {
+                              "uid": {
+                                "type": "string"
+                              },
+                              "resourceVersion": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "uid",
+                              "resourceVersion"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "mode",
+                          "precondition"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -759,10 +937,82 @@
                       },
                       "gracePeriodSeconds": {
                         "type": "number"
+                      },
+                      "preconditions": {
+                        "type": "object",
+                        "properties": {
+                          "uid": {
+                            "type": "string"
+                          },
+                          "resourceVersion": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "uid"
+                        ],
+                        "additionalProperties": false
                       }
                     },
                     "required": [],
                     "additionalProperties": false
+                  },
+                  "connection": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,62}$"
+                  },
+                  "authority": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "const": "managed"
+                          },
+                          "identity": {
+                            "type": "string"
+                          },
+                          "sourceUid": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "mode",
+                          "identity",
+                          "sourceUid"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "mode": {
+                            "const": "existing"
+                          },
+                          "precondition": {
+                            "type": "object",
+                            "properties": {
+                              "uid": {
+                                "type": "string"
+                              },
+                              "resourceVersion": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "uid",
+                              "resourceVersion"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "required": [
+                          "mode",
+                          "precondition"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -1077,6 +1327,57 @@
             "ownedCrds": {
               "type": "array"
             },
+            "readResources": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "apiVersion": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "plural": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "enum": [
+                      "Namespaced",
+                      "Cluster"
+                    ]
+                  },
+                  "namespaces": {
+                    "oneOf": [
+                      {
+                        "const": "all"
+                      },
+                      {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    ]
+                  },
+                  "access": {
+                    "enum": [
+                      "local",
+                      "connection",
+                      "both"
+                    ]
+                  }
+                },
+                "required": [
+                  "apiVersion",
+                  "kind",
+                  "plural",
+                  "scope",
+                  "access"
+                ],
+                "additionalProperties": false
+              }
+            },
             "watches": {
               "type": "array"
             },
@@ -1085,6 +1386,110 @@
             },
             "capabilities": {
               "type": "object"
+            },
+            "kubernetesConnectionBindings": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]{0,62}$"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "kubeconfigSecretRef": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "namespace": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "key": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "namespace",
+                      "key"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "context": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "endpointPolicy": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "version": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "scheme": {
+                        "const": "https"
+                      },
+                      "hosts": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "ports": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 65535
+                        }
+                      },
+                      "allowedCidrs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "tlsServerNames": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "redirects": {
+                        "const": "deny"
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "version",
+                      "scheme",
+                      "hosts",
+                      "ports",
+                      "redirects"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "kubeconfigSecretRef",
+                  "context",
+                  "endpointPolicy"
+                ],
+                "additionalProperties": false
+              }
             },
             "security": {
               "type": "object"

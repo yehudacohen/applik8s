@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import type { JsonValue } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { type } from 'arktype';
 
@@ -54,6 +55,44 @@ export interface EventDefinition<TPayload extends object> {
   readonly payload: SchemaInput<TPayload>;
 }
 
+export interface StreamDefinition<TPayload extends object> {
+  readonly kind: 'applik8sStream';
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly payload: SchemaInput<TPayload>;
+}
+
+export interface TaskDefinition<
+  TInput extends object,
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+> {
+  readonly kind: 'applik8sTask';
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly input: SchemaInput<TInput>;
+  readonly output: SchemaInput<TOutput>;
+  readonly errors: { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> };
+}
+
+export interface WorkflowDefinition<
+  TInput extends object,
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+  TSignals extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+> {
+  readonly kind: 'applik8sWorkflow';
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly input: SchemaInput<TInput>;
+  readonly output: SchemaInput<TOutput>;
+  readonly errors: { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> };
+  readonly signals: { readonly [TName in keyof TSignals]: SchemaInput<TSignals[TName]> };
+}
+
 export interface ApplicationMessageEnvelope<TPayload extends object> {
   readonly id: string;
   readonly contract: { readonly name: string; readonly version: string };
@@ -68,6 +107,12 @@ export interface ApplicationMessageEnvelope<TPayload extends object> {
   readonly routing?: Readonly<Record<string, string>>;
   readonly expectedRevision?: string;
   readonly stateRevision?: ApplicationStateRevisionRef;
+  readonly trustedContext?: {
+    readonly values: Readonly<Record<string, JsonValue>>;
+    readonly digest: string;
+    /** Opaque data-isolation scopes computed by the secret-holding admission boundary. */
+    readonly changeScopes?: Readonly<Record<string, string>>;
+  };
 }
 
 export interface ApplicationStateRevisionRef {
@@ -142,6 +187,67 @@ export function event<TPayload extends object>(
   return { kind: 'applik8sEvent', id, ...identity, payload: options.payload };
 }
 
+/** Defines an inert, versioned public replay contract. Materialize it with app.stream(...). */
+export function stream<TPayload extends object>(
+  id: string,
+  options: { readonly payload: SchemaInput<TPayload> }
+): StreamDefinition<TPayload> {
+  const identity = applicationContractIdentity('stream', id);
+  return { kind: 'applik8sStream', id, ...identity, payload: options.payload };
+}
+
+export function task<
+  TInput extends object,
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+>(
+  id: string,
+  options: {
+    readonly input: SchemaInput<TInput>;
+    readonly output: SchemaInput<TOutput>;
+    readonly errors?: { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> };
+  }
+): TaskDefinition<TInput, TOutput, TErrors> {
+  const identity = applicationContractIdentity('task', id);
+  return {
+    kind: 'applik8sTask',
+    id,
+    ...identity,
+    input: options.input,
+    output: options.output,
+    // typecast: omitted errors are the empty mapped error contract represented by TErrors's default.
+    errors: (options.errors ?? {}) as { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> },
+  };
+}
+
+export function workflow<
+  TInput extends object,
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+  TSignals extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+>(
+  id: string,
+  options: {
+    readonly input: SchemaInput<TInput>;
+    readonly output: SchemaInput<TOutput>;
+    readonly errors?: { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> };
+    readonly signals?: { readonly [TName in keyof TSignals]: SchemaInput<TSignals[TName]> };
+  }
+): WorkflowDefinition<TInput, TOutput, TErrors, TSignals> {
+  const identity = applicationContractIdentity('workflow', id);
+  return {
+    kind: 'applik8sWorkflow',
+    id,
+    ...identity,
+    input: options.input,
+    output: options.output,
+    // typecast: omitted errors and signals are empty mapped contracts represented by their defaults.
+    errors: (options.errors ?? {}) as { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> },
+    // typecast: omitted signals are the empty mapped signal contract represented by TSignals's default.
+    signals: (options.signals ?? {}) as { readonly [TName in keyof TSignals]: SchemaInput<TSignals[TName]> },
+  };
+}
+
 export const metadata = {
   creationTimestamp: expression('metadata', 'metadata.creationTimestamp'),
   name: expression('metadata', 'metadata.name'),
@@ -172,7 +278,7 @@ function expression(expressionKind: string, value: string): DslExpression {
   return current;
 }
 
-function applicationContractIdentity(kind: 'command' | 'event', id: string): { readonly name: string; readonly version: string } {
+function applicationContractIdentity(kind: 'command' | 'event' | 'stream' | 'task' | 'workflow', id: string): { readonly name: string; readonly version: string } {
   const match = /^(.*)\.(v[1-9][0-9]*)$/.exec(id.trim());
   if (!match?.[1] || !match[2]) {
     throw new Error(`applik8s ${kind} contract ${JSON.stringify(id)} must end with an explicit version such as ".v1".`);

@@ -1,36 +1,37 @@
+import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
+import { app as defineApplication, applicationModelFacet, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationModelStoreProvider, type ApplicationSecretBinding, type ApplicationTaskBinding, type ApplicationWorkflowBinding, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, DnsPublication, EventSource, event, HttpExposure, IndexStore, ModelStore, ObjectStorage, Queue, Secret, task, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import type {
-  CapabilityClient,
-  CapabilityClientSet,
-  GraphAdapter,
-  HandlerContext,
-  GeneratedJobContract,
-  GeneratedJobDurableStatusUpdaterContract,
-  GeneratedJobPhaseStatusContract,
-  ApplicationMigrationDriftCheckContract,
   ApplicationDurableStatusOwnershipContract,
+  ApplicationMigrationDriftCheckContract,
+  ApplicationModelStoreGuaranteesContract,
   ApplicationModelStoreSemanticsContract,
   ApplicationOperationTargetContract,
   ApplicationRuntimeModuleContract,
   ApplicationRuntimeModuleInterfaceContract,
   ApplicationV03PressureTestContract,
   ApplicationWatchScopeLoweringContract,
+  CapabilityClient,
+  CapabilityClientSet,
+  GeneratedJobContract,
+  GeneratedJobDurableStatusUpdaterContract,
+  GeneratedJobPhaseStatusContract,
+  GraphAdapter,
+  HandlerContext,
   OperationTarget,
   OperatorManifest,
-  ApplicationModelStoreGuaranteesContract,
 } from '@applik8s/core';
 import type {
-  Applik8sSdk,
   AnyCrdInstanceFactory,
+  Applik8sSdk,
   CrdInstanceInput,
   DeployedOperator,
   SchemaInput,
 } from '@applik8s/sdk';
 import type { Applik8sTestingApi } from '@applik8s/testing';
 import type { Applik8sTypeKroAdapterApi, TypeKroGraph } from '@applik8s/typekro-adapter';
-import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
-import { Certificate, command, CounterStore, CredentialStore, DnsPublication, event, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, Queue, Secret, sdk as appSdk, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationModelStoreProvider, type ApplicationSecretBinding } from '@applik8s/applik8s';
-import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import { operationTarget as handlerOperationTargetFactory, targetFactory as handlerTargetFactory } from '@applik8s/typekro-adapter/targets';
+import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 
 interface ImageSpec {
   sourceUrl: string;
@@ -115,6 +116,19 @@ const RenameAccount = command('account.rename.v1', {
 
 const AccountChanged = event('account.changed.v1', {
   payload: appSchemaType({ email: 'string', displayName: 'string' }),
+});
+
+const ProvisionAccount = task('account.provision.v1', {
+  input: appSchemaType({ accountId: 'string', requestId: 'string' }),
+  output: appSchemaType({ endpoint: 'string' }),
+  errors: { providerUnavailable: appSchemaType({ retryAfterSeconds: 'number' }) },
+});
+
+const OnboardAccount = workflow('account.onboard.v1', {
+  input: appSchemaType({ accountId: 'string', requestId: 'string' }),
+  output: appSchemaType({ endpoint: 'string' }),
+  errors: { rejected: appSchemaType({ reason: 'string' }) },
+  signals: { approval: appSchemaType({ approved: 'boolean' }) },
 });
 
 const accountModelStore = ModelStore.postgres({
@@ -274,13 +288,20 @@ const v03ProviderInterfaces = [
   { interface: 'IndexStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'CounterStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'EventSource', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'EventLog', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'Secret', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'Queue', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'ObjectStorage', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'HttpExposure', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
-  { interface: 'Certificate', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
-  { interface: 'DnsPublication', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
+  { interface: 'Certificate', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'ProjectionStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'ContainerRegistry', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'RequestIdentity', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'Authorization', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
 ] satisfies ApplicationV03PressureTestContract['requiredProviderInterfaces'];
 
 const v03ProviderCompatibility = {
@@ -392,6 +413,7 @@ appSdk.kubernetesComposition({
   status: appSchemaType({ ready: 'boolean' }),
 }, (spec, app) => {
   const store = app.provide(ModelStore, accountModelStore);
+  app.provide(WorkflowEngine, WorkflowEngine.hatchet({ namespace: spec.namespace, provision: false, workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: spec.namespace } }));
   const modelDefaults = app.defaults({ models: accountModelStore });
   const maintenanceJob: ApplicationJobBinding = app.job('compact-accounts', { taskKind: 'maintenance', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo compact'] });
   const maintenanceSchedule: ApplicationJobBinding = app.schedule('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
@@ -410,6 +432,34 @@ appSdk.kubernetesComposition({
     },
   });
   const accountModelBinding: ApplicationModelBinding<AccountSpec, AccountStatus> = Account;
+  const provisionAccount: ApplicationTaskBinding<{ accountId: string; requestId: string }, { endpoint: string }> = app.task(ProvisionAccount, { idempotencyKey: (input) => input.requestId }, async (input, context) => {
+    if (input.accountId === 'unavailable') context.fail('providerUnavailable', { retryAfterSeconds: 5 });
+    if (input.accountId === 'type-test-only') {
+      // @ts-expect-error durable error names come from the task definition.
+      context.fail('missingError', {});
+      // @ts-expect-error durable error payloads are schema-directed.
+      context.fail('providerUnavailable', { retryAfterSeconds: 'later' });
+    }
+    return { endpoint: `https://${input.accountId}.example.test` };
+  });
+  const onboardAccount: ApplicationWorkflowBinding<{ accountId: string; requestId: string }, { endpoint: string }> = app.workflow(OnboardAccount, { tasks: { provisionAccount } }, async (input, context) => {
+    const result = await context.task('provisionAccount', input, { idempotencyKey: input.requestId });
+    const endpoint: string = result.endpoint;
+    const approval = await context.waitFor('approval');
+    const approved: boolean = approval.approved;
+    // @ts-expect-error aliases must come from the workflow's declared task map.
+    void context.task('missingTask', input);
+    // @ts-expect-error signal names must come from the workflow contract.
+    void context.waitFor('missingSignal');
+    if (!approval.approved) context.fail('rejected', { reason: 'account onboarding rejected' });
+    expectTypeUsage(endpoint, approved);
+    return result;
+  });
+  void onboardAccount.start({ accountId: 'account-1', requestId: 'request-1' }).then(async (run) => {
+    await onboardAccount.signal(run.id, 'approval', { approved: true });
+    const result: { endpoint: string } = await run.result();
+    expectTypeUsage(result);
+  });
   const renameBinding = Account.on.command(RenameAccount, {
     key: ({ email }) => email,
     idempotencyKey: ({ requestId }) => requestId,
@@ -428,7 +478,7 @@ appSdk.kubernetesComposition({
     expectTypeUsage(phase, commandId, correlationId);
   });
   accountModelForScriptExecution = accountModelBinding;
-  expectTypeUsage(modelDefaults, maintenanceJob, maintenanceSchedule, maintenanceJobStatusPath, maintenanceScheduleDiagnostics, maintenanceJobDryRun, maintenanceSchedulePlan, renameBinding);
+  expectTypeUsage(modelDefaults, maintenanceJob, maintenanceSchedule, maintenanceJobStatusPath, maintenanceScheduleDiagnostics, maintenanceJobDryRun, maintenanceSchedulePlan, provisionAccount, onboardAccount, renameBinding);
 
   app.server('accounts-web', { namespace: spec.namespace }, (server) => {
     server.post('/accounts', async () => {
@@ -882,3 +932,103 @@ async function useNamedCapabilityPayloads() {
 }
 
 expectTypeUsage(useNamedCapabilityPayloads);
+
+const directLifecyclePosts = pgTable('direct_lifecycle_posts', {
+  id: uuid('id').primaryKey(),
+  authorId: uuid('author_id').notNull(),
+  body: text('body').notNull(),
+  revision: text('revision').notNull(),
+});
+const directLifecycleApplication = defineApplication('direct-lifecycle-types');
+const directLifecycleDatabase = directLifecycleApplication.database.postgres('direct-lifecycle', {
+  schema: { directLifecyclePosts },
+});
+const DirectLifecyclePost = directLifecycleApplication.model(directLifecyclePosts, {
+  name: 'Post',
+  database: directLifecycleDatabase,
+});
+
+DirectLifecyclePost.on.create('type-created-post', {}, async (created, context) => {
+  const operation: 'create' = created.operation;
+  const authorId: string = created.value.authorId;
+  const version: string = context.event.stream.version;
+  const idempotency: string = context.idempotencyKey;
+  const actor: string | undefined = context.principal?.id;
+  expectTypeUsage(operation, authorId, version, idempotency, actor, context.trustedContext);
+});
+DirectLifecyclePost.on.update('type-updated-post', {}, async (updated) => {
+  const previousBody: string = updated.previous.body;
+  const currentBody: string = updated.current.body;
+  expectTypeUsage(previousBody, currentBody);
+});
+DirectLifecyclePost.on.delete('type-deleted-post', {}, async (deleted) => {
+  const tombstone: true = deleted.tombstone.deleted;
+  expectTypeUsage(tombstone, deleted.previous.body);
+});
+
+const ArchiveDirectLifecyclePost = command('posts.archive.v1', {
+  input: appSchemaType({ postId: 'string' }),
+  output: appSchemaType({ archived: 'boolean' }),
+});
+const DirectLifecyclePostWithArchive = DirectLifecyclePost.action('archive', ArchiveDirectLifecyclePost, {
+  key: ({ postId }) => postId,
+}, async (post) => ({ archived: post.value.body.length >= 0 }));
+DirectLifecyclePostWithArchive.on.archive('type-archived-post', {}, async (archived, context) => {
+  const operation: 'archive' = archived.operation;
+  const result: boolean = archived.result.archived;
+  const previous: string = archived.previous.body;
+  const current: string = archived.current.body;
+  expectTypeUsage(operation, result, previous, current, context.idempotencyKey);
+});
+
+// @ts-expect-error exceptional completion registrars are derived only for declared action names.
+DirectLifecyclePostWithArchive.on.restore('invalid-restore-handler', {}, async () => undefined);
+
+DirectLifecyclePost.create.beforeCommit({}, async (_post, _input, context) => {
+  context.send(DirectLifecyclePost.create, {
+    id: context.id('child-post'),
+    authorId: 'author-1',
+    body: 'typed child',
+    revision: context.id('child-revision'),
+  }, { targetKey: 'child-post' });
+
+  // @ts-expect-error direct-operation outboxes retain the target operation's insert schema.
+  context.send(DirectLifecyclePost.create, { id: 'missing-required-fields' }, { targetKey: 'child-post' });
+});
+
+// @ts-expect-error lifecycle registration uses typed method names rather than arbitrary action strings.
+DirectLifecyclePost.on.action('create', {}, async () => undefined);
+
+// @ts-expect-error no undeclared domain verb appears on a promoted model.
+DirectLifecyclePost.publish({ id: 'post-1' });
+
+// @ts-expect-error direct create requires the Drizzle-derived insert shape.
+DirectLifecyclePost.create({ id: 'post-1', authorId: 'author-1', body: 42, revision: '1' });
+
+const collisionLifecyclePosts = pgTable('collision_lifecycle_posts', {
+  id: uuid('id').primaryKey(),
+  create: text('create').notNull(),
+  on: text('on').notNull(),
+  revision: text('revision').notNull(),
+});
+const collisionLifecycleApplication = defineApplication('collision-lifecycle-types');
+const collisionLifecycleDatabase = collisionLifecycleApplication.database.postgres('collision-lifecycle', {
+  schema: { collisionLifecyclePosts },
+});
+const CollisionLifecyclePost = collisionLifecycleApplication.model(collisionLifecyclePosts, {
+  name: 'CollisionLifecyclePost',
+  database: collisionLifecycleDatabase,
+});
+const collisionLifecycleApi = CollisionLifecyclePost[applicationModelFacet].api;
+collisionLifecycleApi.create({ id: 'post-1', create: 'native column', on: 'native column', revision: '1' });
+collisionLifecycleApi.on.create('type-created-collision-post', {}, async (created) => {
+  const createColumn: string = created.value.create;
+  const onColumn: string = created.value.on;
+  expectTypeUsage(createColumn, onColumn);
+});
+
+// Native columns win direct-name collisions.
+// @ts-expect-error the native Drizzle column is not the model create operation.
+CollisionLifecyclePost.create({ id: 'post-1', create: 'value', on: 'value', revision: '1' });
+// @ts-expect-error the native Drizzle column is not the lifecycle registrar.
+CollisionLifecyclePost.on.create('invalid-direct-collision-handler', {}, async () => undefined);

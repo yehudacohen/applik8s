@@ -134,7 +134,7 @@ spec:
     expect((await kubectl(['get', `preflightjobs.${group}/denied-before-effects`, '--namespace', namespace, '--output=jsonpath={.status.phase}'])).stdout.trim()).toBe('');
   }, 420_000);
 
-  it('fails over leader-elected controllers and reconciles generation changes after deleting the lease holder', async () => {
+  it('keeps followers ready, renews during long reconciles, rolls gracefully, and survives holder failure', async () => {
     const namespace = testNamespace('leader');
     const group = `advleader${runId}.applik8s.dev`;
     const plural = 'leaderjobs';
@@ -148,7 +148,7 @@ spec:
       crd: `${plural}.${group}`,
       fieldManager: 'applik8s-adv-leader-e2e',
       deployment: 'leader-pipeline',
-      readyReplicas: 1,
+      readyReplicas: 2,
     });
     const samplePath = join(tempDir, 'leader-job.yaml');
     await writeFile(samplePath, `apiVersion: ${group}/v1alpha1
@@ -158,18 +158,41 @@ metadata:
   namespace: ${namespace}
 spec:
   value: before-failover
+  delayMs: 0
 `);
 
     await kubectl(['apply', '--server-side', '--field-manager=applik8s-adv-leader-e2e', '--filename', samplePath]);
     await waitForConfigMapData('failover-job-output', namespace, 'value', 'before-failover');
-    const oldHolder = await waitForLeaseHolder('leader-pipeline', namespace);
-    await kubectl(['delete', `pod/${oldHolder}`, '--namespace', namespace, '--wait=false']);
-    const newHolder = await waitForLeaseHolder('leader-pipeline', namespace, oldHolder);
-    expect(newHolder).not.toBe(oldHolder);
+    await waitForReadyReplicas('leader-pipeline', namespace, 2, 180);
 
-    await kubectl(['patch', `leaderjobs.${group}/failover-job`, '--namespace', namespace, '--type=merge', '--patch', '{"spec":{"value":"after-failover"}}']);
-    await waitForConfigMapData('failover-job-output', namespace, 'value', 'after-failover');
-  }, 480_000);
+    const beforeLongReconcile = await leaseState('leader-pipeline', namespace);
+    await kubectl(['patch', `leaderjobs.${group}/failover-job`, '--namespace', namespace, '--type=merge', '--patch', '{"spec":{"value":"after-long-reconcile","delayMs":24000}}']);
+    await waitForConfigMapData('failover-job-output', namespace, 'value', 'after-long-reconcile');
+    const afterLongReconcile = await leaseState('leader-pipeline', namespace);
+    expect(afterLongReconcile.holder).toBe(beforeLongReconcile.holder);
+    expect(Date.parse(afterLongReconcile.renewTime)).toBeGreaterThan(Date.parse(beforeLongReconcile.renewTime));
+
+    await kubectl(['patch', `leaderjobs.${group}/failover-job`, '--namespace', namespace, '--type=merge', '--patch', '{"spec":{"value":"before-graceful-rollout","delayMs":0}}']);
+    await waitForConfigMapData('failover-job-output', namespace, 'value', 'before-graceful-rollout');
+    const steadyState = await leaseState('leader-pipeline', namespace);
+    expect(steadyState.holder).toBe(afterLongReconcile.holder);
+    const gracefulHolder = steadyState.holder;
+    await kubectl(['rollout', 'restart', 'deployment/leader-pipeline', '--namespace', namespace]);
+    const gracefulStarted = await waitForPodTerminationStarted(gracefulHolder, namespace);
+    const postRolloutHolder = await waitForLeaseHolder('leader-pipeline', namespace, gracefulHolder);
+    expect(Date.now() - gracefulStarted).toBeLessThan(17_000);
+    await rolloutStatusWithDiagnostics('leader-pipeline', namespace, 180);
+    await waitForReadyReplicas('leader-pipeline', namespace, 2, 180);
+
+    await kubectl(['patch', `leaderjobs.${group}/failover-job`, '--namespace', namespace, '--type=merge', '--patch', '{"spec":{"value":"after-graceful-rollout","delayMs":0}}']);
+    await waitForConfigMapData('failover-job-output', namespace, 'value', 'after-graceful-rollout');
+
+    await kubectl(['delete', `pod/${postRolloutHolder}`, '--namespace', namespace, '--grace-period=0', '--force', '--wait=false']);
+    const crashFailoverHolder = await waitForLeaseHolder('leader-pipeline', namespace, postRolloutHolder);
+    expect(crashFailoverHolder).not.toBe(postRolloutHolder);
+    await kubectl(['patch', `leaderjobs.${group}/failover-job`, '--namespace', namespace, '--type=merge', '--patch', '{"spec":{"value":"after-crash-failover"}}']);
+    await waitForConfigMapData('failover-job-output', namespace, 'value', 'after-crash-failover');
+  }, 600_000);
 
   it('executes host-routed HTTP capabilities with SecretRef auth and fails closed when the Secret disappears', async () => {
     const namespace = testNamespace('cap');
@@ -383,6 +406,26 @@ async function waitForLeaseHolder(leaseName: string, namespace: string, previous
   throw new Error(`Expected lease/${leaseName} holder${previousHolder ? ` different from ${previousHolder}` : ''}, got ${holder || '<missing>'}.`);
 }
 
+async function leaseState(leaseName: string, namespace: string): Promise<{ readonly holder: string; readonly renewTime: string }> {
+  // typecast: this live assertion reads the two required Lease fields from kubectl JSON.
+  const lease = JSON.parse((await kubectl(['get', `lease/${leaseName}`, '--namespace', namespace, '--output=json'])).stdout) as { readonly spec?: { readonly holderIdentity?: string; readonly renewTime?: string } };
+  const holder = lease.spec?.holderIdentity;
+  const renewTime = lease.spec?.renewTime;
+  if (!holder || !renewTime) throw new Error(`Lease ${namespace}/${leaseName} is missing holderIdentity or renewTime.`);
+  return { holder, renewTime };
+}
+
+async function waitForPodTerminationStarted(name: string, namespace: string, timeoutSeconds = 180): Promise<number> {
+  for (let attempt = 0; attempt < timeoutSeconds * 2; attempt += 1) {
+    const result = await kubectl(['get', `pod/${name}`, '--namespace', namespace, '--ignore-not-found=true', '--output=jsonpath={.metadata.deletionTimestamp}']);
+    if (result.stdout.trim()) return Date.now();
+    const exists = (await kubectl(['get', `pod/${name}`, '--namespace', namespace, '--ignore-not-found=true', '--output=name'])).stdout.trim();
+    if (!exists) return Date.now();
+    await sleep(500);
+  }
+  throw new Error(`Expected pod/${name} in ${namespace} to begin terminating within ${timeoutSeconds}s.`);
+}
+
 async function createTrackedNamespace(namespace: string): Promise<void> {
   namespaces.push(namespace);
   await kubectl(['create', 'namespace', namespace]);
@@ -425,7 +468,7 @@ function commonSchemas(kind: string): string {
   return `const spec = {
   kind: 'jsonSchema' as const,
   ref: { kind: 'jsonSchema' as const, exportName: '${kind}Spec' },
-  schema: { type: 'object', properties: { targetNamespace: { type: 'string' }, value: { type: 'string' }, sourceUrl: { type: 'string' } } },
+  schema: { type: 'object', properties: { targetNamespace: { type: 'string' }, value: { type: 'string' }, delayMs: { type: 'integer' }, sourceUrl: { type: 'string' } } },
 };
 const status = {
   kind: 'jsonSchema' as const,
@@ -437,8 +480,8 @@ const status = {
 function runtimeConfig(name: string, leaderElection = false, replicas = 1): string {
   return `deployment: { namespace: OPERATOR_NAMESPACE, replicas: ${replicas} },
   runtime: {
-    handlerTimeoutSeconds: 10,
-    leaderElection: { enabled: ${leaderElection}, leaseName: '${name}', leaseDurationSeconds: 15, renewDeadlineSeconds: 10, retryPeriodSeconds: 2 },
+    handlerTimeoutSeconds: ${leaderElection ? 35 : 10},
+    leaderElection: { enabled: ${leaderElection}, leaseName: '${name}', leaseDurationSeconds: ${leaderElection ? 20 : 15}, renewDeadlineSeconds: ${leaderElection ? 12 : 10}, retryPeriodSeconds: 2 },
     concurrency: { workerCount: 1, maxInFlightPerResource: 1 },
     rateLimit: { baseDelayMs: 1000, maxDelayMs: 5000 },
     health: { enabled: true, path: '/healthz', port: 8080 },
@@ -524,11 +567,13 @@ export const undeclaredPipeline = sdk.operator({
 function leaderElectionSource(apiGroup: string, namespace: string): string {
   return `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/sdk/src/index.ts'))};
 const OPERATOR_NAMESPACE = ${JSON.stringify(namespace)};
-interface LeaderJobSpec { value: string }
+interface LeaderJobSpec { value: string; delayMs?: number }
 interface LeaderJobStatus { phase?: string }
 ${commonSchemas('LeaderJob')}
 export const LeaderJob = sdk.crd<LeaderJobSpec, LeaderJobStatus>({ apiVersion: ${JSON.stringify(`${apiGroup}/v1alpha1`)}, kind: 'LeaderJob', plural: 'leaderjobs', spec, status, statusConvention: { observedGenerationField: 'observedGeneration', conditionsField: 'conditions' } });
 function reconcile(job: any) {
+  const deadline = Date.now() + Number(job.spec.delayMs ?? 0);
+  while (Date.now() < deadline) { /* deliberate live lease-renewal proof */ }
   job.apply({ apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: job.names.dnsSafe(job.metadata.name + '-output'), namespace: job.metadata.namespace }, data: { value: job.spec.value } });
   job.status.phase = 'Processed';
 }

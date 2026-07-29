@@ -9,6 +9,7 @@ import { sdk } from '@applik8s/sdk';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 import {
+  bindKubernetesConnections,
   buildOperatorManifest,
   bundleHandlerEntrypoint,
   compileTypeKroComposition,
@@ -171,6 +172,68 @@ export function handle(input: string) { return JSON.stringify({ input, recognize
       expect(manifest.value.spec.adapterRequirements?.hostImports).toContain('kubernetes-read');
       expect(manifest.value.spec.permissions).toContainEqual({ apiGroups: ['media.applik8s.dev'], resources: ['imagejobs'], verbs: ['get', 'list', 'watch'] });
     }
+  });
+
+  it('emits portable named Kubernetes connection requirements without installation secrets', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', spec: imageSpecSchema, status: imageStatusSchema,
+    });
+    const operator = sdk.operator({
+      name: 'remote-workload-pipeline',
+      deployment: { namespace: 'media' },
+      resources: { ImageJob },
+      reads: {
+        Deployment: sdk.kubernetes.resource({ apiVersion: 'apps/v1', kind: 'Deployment', namespaces: ['payments'], access: 'connection' }),
+      },
+      capabilities: {
+        destination: sdk.kubernetes.connection.required({
+          endpointPolicy: 'workload-cluster-apis',
+          permissions: [{ apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list', 'create', 'patch'], namespaces: ['payments'] }],
+        }),
+      },
+      handlers: [],
+    });
+    const manifest = buildOperatorManifest({
+      operator: operator.definition,
+      handlerArtifactPath: 'wasm/handler.wasm',
+      handlerArtifactDigest: `sha256:${'a'.repeat(64)}`,
+      runtimeContractPath: 'runtime-contract.json',
+      runtimeContractDigest: `sha256:${'b'.repeat(64)}`,
+      runtimeVersionRange: '^0.4.0',
+    });
+
+    expect(manifest.ok).toBe(true);
+    if (!manifest.ok) return;
+    expect(manifest.value.spec.requiresRuntime).toBe('>=0.1.1, <0.2.0');
+    expect(manifest.value.spec.capabilities?.destination).toMatchObject({
+      name: 'destination', kind: 'kubernetes',
+      kubernetesConnection: { endpointPolicy: 'workload-cluster-apis' },
+      execution: { protocol: 'applik8s.kubernetes-connection/v1alpha1' },
+    });
+    expect(manifest.value.spec.capabilities?.destination).not.toHaveProperty('auth');
+    expect(manifest.value.spec.capabilities?.destination).not.toHaveProperty('endpoint');
+    expect(manifest.value.spec.kubernetesConnectionBindings).toBeUndefined();
+    expect(manifest.value.spec.readResources).toContainEqual({ apiVersion: 'apps/v1', kind: 'Deployment', plural: 'deployments', scope: 'Namespaced', namespaces: ['payments'], access: 'connection' });
+    expect(manifest.value.spec.permissions).not.toContainEqual(expect.objectContaining({ apiGroups: ['apps'], resources: ['deployments'] }));
+    expect(manifest.value.spec.security.secrets.secretRefs).toEqual([]);
+    const installed = bindKubernetesConnections(manifest.value, {
+      destination: {
+        kubeconfigSecretRef: { name: 'destination-kubeconfig', namespace: 'media', key: 'kubeconfig' },
+        context: 'destination',
+        endpointPolicy: {
+          name: 'workload-cluster-apis', version: '1', scheme: 'https',
+          hosts: ['destination.example.test'], ports: [6443], redirects: 'deny',
+        },
+      },
+    });
+    expect(installed.spec.permissions).toContainEqual({ apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: ['destination-kubeconfig'] });
+    expect(installed.spec.kubernetesConnectionBindings?.destination?.context).toBe('destination');
+    expect(() => bindKubernetesConnections(manifest.value, {})).toThrow(/exactly match declared aliases/);
+    // typecast: deliberately constructs an invalid extra-alias binding to prove the runtime installation boundary rejects it.
+    expect(() => bindKubernetesConnections(manifest.value, {
+      ...installed.spec.kubernetesConnectionBindings,
+      undeclared: installed.spec.kubernetesConnectionBindings?.destination,
+    } as NonNullable<typeof installed.spec.kubernetesConnectionBindings>)).toThrow(/exactly match declared aliases/);
   });
 
   it('emits declared typed permission bundles into the operator manifest', () => {
@@ -503,6 +566,89 @@ export function handle(input: string) { return JSON.stringify({ input, recognize
     ]));
   });
 
+  it('keeps deployment build identity stable when ComponentizeJS emits different bytes for the same JavaScript source', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: imageSpecSchema,
+      status: imageStatusSchema,
+    });
+    const operator = sdk.operator({
+      name: 'stable-build-identity',
+      resources: { ImageJob },
+      handlers: [ImageJob.on.reconcile(() => {})],
+    });
+    const common = {
+      operator: operator.definition,
+      handlerArtifactPath: 'wasm/handler.wasm',
+      runtimeContractPath: 'contract/runtime-contract.json',
+      runtimeContractDigest: `sha256:${'b'.repeat(64)}`,
+      additionalArtifacts: [
+        // typecast: keep the fixture discriminator literal without freezing the mutable artifact array.
+        { kind: 'javascript-bundle' as const, path: 'bundle/handler.js', digest: `sha256:${'c'.repeat(64)}` },
+        // typecast: keep the second fixture discriminator literal for manifest inference.
+        { kind: 'handler-wit' as const, path: 'contract/applik8s-handler.wit', digest: `sha256:${'d'.repeat(64)}` },
+      ],
+    };
+    const first = buildOperatorManifest({
+      ...common,
+      handlerArtifactDigest: `sha256:${'a'.repeat(64)}`,
+    });
+    const second = buildOperatorManifest({
+      ...common,
+      handlerArtifactDigest: `sha256:${'e'.repeat(64)}`,
+    });
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+    if (!first.ok || !second.ok) return;
+
+    expect(first.value.spec.bundle.digest).not.toBe(second.value.spec.bundle.digest);
+    expect(first.value.spec.handlerArtifact.digest).not.toBe(second.value.spec.handlerArtifact.digest);
+    expect(first.value.spec.bundle.buildIdentityDigest).toBe(second.value.spec.bundle.buildIdentityDigest);
+    expect(first.value.spec.container?.image).toEqual(second.value.spec.container?.image);
+    expect(first.value.spec.container?.build?.labels).toMatchObject({
+      'applik8s.dev/build-identity-digest': first.value.spec.bundle.buildIdentityDigest,
+    });
+  });
+
+  it('lowers an exact source-metadata mapping without adding target-list fan-out', () => {
+    const PublicationOwner = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'PublicationOwner', spec: imageSpecSchema, status: imageStatusSchema });
+    const DnsEndpoint = sdk.kubernetes.resource({ apiVersion: 'externaldns.k8s.io/v1alpha1', kind: 'DNSEndpoint', plural: 'dnsendpoints', namespaces: ['media'] });
+    const operator = sdk.operator({
+      name: 'exact-secondary-watch-pipeline',
+      deployment: { namespace: 'media' },
+      resources: { PublicationOwner },
+      reads: { DnsEndpoint },
+      handlers: [PublicationOwner.on.reconcile(() => {})],
+      secondaryWatches: [sdk.watch(DnsEndpoint).enqueue(PublicationOwner, {
+        namespace: 'source',
+        map: { mode: 'targetNameFromSourceField', source: { kind: 'annotation', key: 'dns.applik8s.dev/source-name' } },
+      })],
+    });
+    const manifest = buildOperatorManifest({ operator: operator.definition, handlerArtifactPath: 'wasm/handler.wasm', handlerArtifactDigest: `sha256:${'a'.repeat(64)}`, runtimeContractPath: 'runtime-contract.json', runtimeContractDigest: `sha256:${'b'.repeat(64)}` });
+    expect(manifest.ok).toBe(true);
+    if (!manifest.ok) return;
+    expect(manifest.value.spec.secondaryWatches).toEqual([expect.objectContaining({
+      source: expect.objectContaining({ apiVersion: 'externaldns.k8s.io/v1alpha1', kind: 'DNSEndpoint' }),
+      target: expect.objectContaining({ kind: 'PublicationOwner' }),
+      mapper: { mode: 'targetNameFromSourceField', source: { kind: 'annotation', key: 'dns.applik8s.dev/source-name' }, namespace: 'source' },
+    })]);
+    expect(manifest.value.spec.permissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiGroups: ['externaldns.k8s.io'], resources: ['dnsendpoints'], verbs: expect.arrayContaining(['get', 'list', 'watch']) }),
+    ]));
+  });
+
+  it('rejects invalid exact secondary-watch metadata keys and all-namespace mappings', () => {
+    const PublicationOwner = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'PublicationOwner', spec: imageSpecSchema, status: imageStatusSchema });
+    const DnsEndpoint = sdk.kubernetes.resource({ apiVersion: 'externaldns.k8s.io/v1alpha1', kind: 'DNSEndpoint', plural: 'dnsendpoints' });
+    const invalidKey = sdk.operator({
+      name: 'invalid-exact-secondary-watch', resources: { PublicationOwner }, reads: { DnsEndpoint }, handlers: [],
+      secondaryWatches: [sdk.watch(DnsEndpoint).enqueue(PublicationOwner, { map: { mode: 'targetNameFromSourceField', source: { kind: 'annotation', key: 'not valid' } } })],
+    });
+    expect(buildOperatorManifest({ operator: invalidKey.definition, handlerArtifactPath: 'wasm/handler.wasm', handlerArtifactDigest: `sha256:${'a'.repeat(64)}`, runtimeContractPath: 'runtime-contract.json', runtimeContractDigest: `sha256:${'b'.repeat(64)}` })).toMatchObject({ ok: false, error: { code: 'BUNDLE_INVALID', message: expect.stringContaining('metadata key') } });
+    expect(() => sdk.watch(DnsEndpoint).enqueue(PublicationOwner, { namespace: 'all', map: { mode: 'targetNameFromSourceField', source: { kind: 'label', key: 'owner' } } })).toThrow(/cannot use namespace: "all"/);
+  });
+
   it('rejects secondary watch sources that are not declared as resources or reads', () => {
     const Replica = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'Replica', spec: imageSpecSchema, status: imageStatusSchema });
     const Deployment = sdk.kubernetes.Deployment;
@@ -757,7 +903,7 @@ export const imagePipeline = sdk.operator({
         adapter: 'wasmComponent',
         portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
       });
-      expect(result.ok).toBe(true);
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
       if (result.ok) {
         expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
           expect.objectContaining({ kind: 'CustomResourceDefinition', metadata: expect.objectContaining({ name: 'guestbooks.guestbook.applik8s.dev' }) }),
@@ -766,6 +912,63 @@ export const imagePipeline = sdk.operator({
           expect.objectContaining({ kind: 'Ingress', spec: expect.objectContaining({ rules: [expect.objectContaining({ host: 'guestbook.localhost' })] }) }),
         ]));
       }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('emits an installable application definition without fabricating an invalid empty instance', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-installable-application-'));
+    try {
+      const entrypoint = join(dir, 'application.ts');
+      await writeFile(entrypoint, `
+import { app } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
+import { namespace } from 'typekro/kubernetes';
+const platform = app('installable-proof', {
+  namespace: 'installable-proof',
+  controlPlaneNamespace: 'applications-system',
+  apiVersion: 'applications.example.test/v1alpha1',
+  kind: 'ProofInstallation',
+  spec: type({ hostname: 'string' }),
+  status: type({ ready: 'boolean' }),
+});
+platform.infra(() => namespace({ metadata: { name: 'installable-proof' } }));
+export const installableProof = platform;
+`);
+      const result = await compileTypeKroComposition({
+        entrypoint,
+        compositionName: 'installableProof',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.7.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
+      if (!result.ok) return;
+      expect(result.value.artifacts.resources).toContainEqual(expect.objectContaining({
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: expect.objectContaining({ name: 'installable-proof' }),
+      }));
+      const definition = result.value.artifacts.resources.find((resource) => resource.kind === 'ResourceGraphDefinition' && resource.metadata.name === 'installable-proof');
+      // TypeKro hoists owned Namespaces out of the RGD so an instance can
+      // never finalizer-deadlock inside the Namespace it owns. Applik8s runtime
+      // graph materialization creates the application Namespace before applying an
+      // installation instance.
+      expect(definition?.spec).toMatchObject({
+        resources: [expect.objectContaining({
+          id: 'applik8sInstallationContract',
+          template: expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'installable-proof-installation-contract' }) }),
+        })],
+      });
+      const definitionResources = definition?.spec && typeof definition.spec === 'object' ? Reflect.get(definition.spec, 'resources') : undefined;
+      expect(definitionResources).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ template: expect.objectContaining({ kind: 'Namespace' }) }),
+      ]));
+      expect(definition?.spec).toMatchObject({ schema: { status: { ready: ['$', '{false}'].join('') } } });
+      expect(result.value.artifacts.instanceYamlPaths).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -962,6 +1165,7 @@ export const commandStack = platform.composition;
       expect(result.value.artifacts.processorArtifacts).toHaveLength(1);
       const artifact = result.value.artifacts.processorArtifacts[0];
       expect(artifact).toMatchObject({ name: 'account-commands', digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) });
+      expect(artifact?.container).toMatchObject({ image: expect.stringMatching(/^applik8s\/command-artifact-platform-command-processor-account-commands:sha-[0-9a-f]{64}$/), baseImage: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2', entrypoint: '/app/processor.mjs' });
       expect(artifact?.sizeBytes).toBeGreaterThan(0);
       expect(artifact?.sizeBytes).toBeLessThan(900_000);
       const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
@@ -974,19 +1178,28 @@ export const commandStack = platform.composition;
       expect(source).toContain('account.reindex');
       expect(logicalSource).toContain('applik8s-command-outbox-relayed');
       expect(logicalSource).toContain('applik8s-command-processor-observation');
+      expect(logicalSource).toContain('recordTerminalFailure');
+      expect(logicalSource).toContain('applik8s-command-terminal-recorder-missing');
+      expect(logicalSource).toContain('applik8s-command-processor-startup-wait');
+      expect(logicalSource).toContain('applik8s-processor-startup-timeout');
+      expect(logicalSource).toContain('PostgreSQL');
+      expect(logicalSource).toContain('JetStream event log');
+      expect(logicalSource).toContain('JetStream command consumer');
       expect(logicalSource).toContain('applik8s-command-processor-draining');
       expect(logicalSource).toContain('applik8s-command-processor-drain-failure');
       expect(logicalSource).toContain('applik8s-processor-ready');
       expect(logicalSource).toContain('oldest_pending_seconds');
       expect(logicalSource).toContain('consumerLag');
-      expect(source).toContain('nats://applik8s-events.commands.svc:4222');
+      expect(source).toContain('APPLIK8S_NATS_SERVERS');
+      expect(logicalSource).toContain('APPLIK8S_PROCESSOR_CONCURRENCY');
+      expect(JSON.stringify(artifact?.resources)).toContain('nats://applik8s-events.commands.svc:4222');
       expect(source).toContain('jsonSchema');
       expect(source).toMatch(/\.models\s*\.Audit/);
       expect(source).not.toContain('npm install');
       expect(source).not.toContain('bun install');
       expect(Math.max(...source.split('\n').map((line) => line.length))).toBeLessThan(1_000);
       await expect(execFileAsync(process.execPath, [artifact?.sourcePath ?? ''], {
-        env: { ...process.env, DATABASE_URL: 'postgres://invalid:invalid@127.0.0.1:1/invalid' },
+        env: { ...process.env, DATABASE_URL: 'postgres://invalid:invalid@127.0.0.1:1/invalid', APPLIK8S_NATS_SERVERS: '["nats://127.0.0.1:1"]', APPLIK8S_PROCESSOR_CONCURRENCY: '4' },
         timeout: 5_000,
       })).rejects.toMatchObject({
         stderr: expect.not.stringContaining('Dynamic require of'),
@@ -996,9 +1209,14 @@ export const commandStack = platform.composition;
         spec: {
           guarantees: { delivery: 'atLeastOnce', authority: 'postgresInboxAndDeclaredOrdering', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
           capacity: { replicas: 2, concurrencyPerReplica: 4, maximumInFlight: 8, maxAckPending: 12, requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } },
-          runtime: { packageManagerAtStartup: false, image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2' },
+          runtime: { packageManagerAtStartup: false, distribution: 'ociImage', image: artifact?.container.image, baseImage: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2' },
+          container: expect.objectContaining({ image: artifact?.container.image, contextPath: artifact?.container.contextPath }),
         },
       });
+      // Empty NetworkPolicy rule arrays are semantically redundant and the API server
+      // normalizes them away. Emitting one makes KRO observe a mutation after every SSA,
+      // so it can never leave its reconciliation barrier and project root status.
+      expect(JSON.stringify(result.value.artifacts.resources)).not.toContain('"ingress":[]');
       expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
         expect.objectContaining({
           apiVersion: 'kro.run/v1alpha1',
@@ -1014,13 +1232,12 @@ export const commandStack = platform.composition;
             ]),
           }),
         }),
-        expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'account-commands-source', namespace: 'commands' }) }),
         expect.objectContaining({ apiVersion: 'jetstream.nats.io/v1beta2', kind: 'Stream', metadata: expect.objectContaining({ name: 'applik8s-events', namespace: 'commands' }), spec: expect.objectContaining({ name: 'APPLIK8S_EVENTS', subjects: ['applik8s.>'], duplicateWindow: '2m' }) }),
         expect.objectContaining({
           apiVersion: 'networking.k8s.io/v1',
           kind: 'NetworkPolicy',
           metadata: expect.objectContaining({ name: 'account-commands', namespace: 'commands' }),
-          spec: expect.objectContaining({ policyTypes: ['Ingress', 'Egress'], ingress: [], egress: expect.arrayContaining([expect.objectContaining({ ports: expect.arrayContaining([expect.objectContaining({ port: 4222 }), expect.objectContaining({ port: 5432 })]) })]) }),
+          spec: expect.objectContaining({ policyTypes: ['Ingress', 'Egress'], egress: expect.arrayContaining([expect.objectContaining({ ports: expect.arrayContaining([expect.objectContaining({ port: 4222 }), expect.objectContaining({ port: 5432 })]) })]) }),
         }),
         expect.objectContaining({
           apiVersion: 'apps/v1',
@@ -1028,7 +1245,7 @@ export const commandStack = platform.composition;
           metadata: expect.objectContaining({ name: 'account-commands', namespace: 'commands' }),
           spec: expect.objectContaining({
             replicas: 2,
-            strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 0, maxSurge: 1 } },
+            strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
             template: expect.objectContaining({ spec: expect.objectContaining({
               automountServiceAccountToken: false,
               nodeSelector: { 'kubernetes.io/os': 'linux' },
@@ -1036,11 +1253,14 @@ export const commandStack = platform.composition;
               securityContext: expect.objectContaining({ runAsNonRoot: true, seccompProfile: { type: 'RuntimeDefault' } }),
               containers: [expect.objectContaining({
                 name: 'processor',
-                image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2',
+                image: artifact?.container.image,
                 imagePullPolicy: 'IfNotPresent',
                 securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
                 resources: { requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } },
-                env: expect.arrayContaining([{ name: 'APPLIK8S_NATS_TOKEN', valueFrom: { secretKeyRef: { name: 'nats-auth', key: 'token', optional: false } } }]),
+                env: expect.arrayContaining([
+                  { name: 'APPLIK8S_PROCESSOR_CONCURRENCY', value: '4' },
+                  { name: 'APPLIK8S_NATS_TOKEN', valueFrom: { secretKeyRef: { name: 'nats-auth', key: 'token', optional: false } } },
+                ]),
               })],
             }) }),
           }),
@@ -1118,7 +1338,7 @@ export const notesModelApp = sdk.kubernetesComposition({
       expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
         expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'notes-db', namespace: 'notes' }) }),
         expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', metadata: expect.objectContaining({ name: 'notes-model-migration', namespace: 'notes' }) }),
-        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'notes-model-store', namespace: 'notes' }) }),
+        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'note-model-store', namespace: 'notes' }) }),
       ]));
       expect(result.value.artifacts.resources).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ apiVersion: 'v1', kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }),
@@ -1320,12 +1540,93 @@ export const operator = createOperator({ prefix: 'ready:', authoringGraph: 'UNUS
         portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
       });
 
-      expect(result.ok).toBe(true);
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
       if (!result.ok) return;
       const generatedDispatcher = await readFile(join(dir, 'dist', 'bundle', 'handler-dispatcher.generated.ts'), 'utf8');
       expect(generatedDispatcher).toContain('function resolveMessage');
-      expect(generatedDispatcher).toContain('const deps = { "prefix":');
+      expect(generatedDispatcher).toContain("{ \"prefix\": ('ready:') }");
       expect(generatedDispatcher).not.toContain('UNUSED_AUTHORING_GRAPH_SENTINEL');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('uses defining-module provenance when an unrelated module has the same helper name', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-static-helper-collision-'));
+    try {
+      const helperA = join(dir, 'helper-a.ts');
+      const helperB = join(dir, 'helper-b.ts');
+      const entrypoint = join(dir, 'operator-entry.ts');
+      await writeFile(helperA, `export function ownedMetadata(name: string): string { return 'a:' + name; }\n`);
+      await writeFile(helperB, `export function ownedMetadata(name: string): string { return 'b:' + name; }\n`);
+      await writeFile(entrypoint, `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/sdk/src/index.ts'))};
+import { ownedMetadata } from './helper-a.js';
+import './helper-b.js';
+const spec = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'WorkSpec' }, schema: { type: 'object', properties: {} } };
+const status = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'WorkStatus' }, schema: { type: 'object', properties: { result: { type: 'string' } } } };
+export const Work = sdk.crd({ apiVersion: 'collision.applik8s.dev/v1alpha1', kind: 'Work', spec, status });
+export const operator = sdk.operator({ name: 'helper-collision', resources: { Work }, handlers: [
+  Work.on.reconcile((work) => { work.status.result = ownedMetadata(work.metadata.name); }),
+] });
+`);
+
+      const result = await createCompilerPipeline().run({
+        entrypoint,
+        operatorName: 'helper-collision',
+        dispatcherMode: 'staticSerializable',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const generatedDispatcher = await readFile(join(dir, 'dist', 'bundle', 'handler-dispatcher.generated.ts'), 'utf8');
+      expect(generatedDispatcher).toContain("return 'a:' + name");
+      expect(generatedDispatcher).not.toContain("return 'b:' + name");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('isolates same-named helpers when both modules are reachable through aliases', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-static-helper-aliases-'));
+    try {
+      const helperA = join(dir, 'helper-a.ts');
+      const helperB = join(dir, 'helper-b.ts');
+      const entrypoint = join(dir, 'operator-entry.ts');
+      await writeFile(helperA, `export function ownedMetadata(name: string): string { return 'a:' + name; }\n`);
+      await writeFile(helperB, `export function ownedMetadata(name: string): string { return 'b:' + name; }\n`);
+      await writeFile(entrypoint, `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/sdk/src/index.ts'))};
+import { ownedMetadata as ownedA } from './helper-a.js';
+import { ownedMetadata as ownedB } from './helper-b.js';
+const spec = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'WorkSpec' }, schema: { type: 'object', properties: {} } };
+const status = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'WorkStatus' }, schema: { type: 'object', properties: { result: { type: 'string' } } } };
+export const Work = sdk.crd({ apiVersion: 'aliases.applik8s.dev/v1alpha1', kind: 'Work', spec, status });
+export const operator = sdk.operator({ name: 'helper-aliases', resources: { Work }, handlers: [
+  Work.on.reconcile((work: any) => { work.status.result = ownedA(work.metadata.name) + ownedB(work.metadata.name); }),
+] });
+`);
+
+      const result = await createCompilerPipeline().run({
+        entrypoint,
+        operatorName: 'helper-aliases',
+        dispatcherMode: 'staticSerializable',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
+      if (!result.ok) return;
+      const generatedDispatcher = await readFile(join(dir, 'dist', 'bundle', 'handler-dispatcher.generated.ts'), 'utf8');
+      expect(generatedDispatcher).toContain("return 'a:' + name");
+      expect(generatedDispatcher).toContain("return 'b:' + name");
+      expect(generatedDispatcher).toContain('ownedA, ownedB');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -1448,6 +1749,60 @@ export const imagePipeline = sdk.operator({
     }
   }, 120_000);
 
+  it('preserves nested status object fields by name through generated dispatch', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-nested-status-dispatch-'));
+    try {
+      const entrypoint = join(dir, 'operator-entry.ts');
+      await writeFile(entrypoint, `import { sdk } from ${JSON.stringify(join(process.cwd(), 'packages/sdk/src/index.ts'))};
+
+interface VolumeSpec { source: string }
+interface VolumeStatus { volumes?: Array<{ conditions?: Array<{ type: string; status: string; observedGeneration?: number; lastTransitionTime?: string }> }> }
+const spec = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'VolumeSpec' }, schema: { type: 'object', required: ['source'], properties: { source: { type: 'string' } } } };
+const status = { kind: 'jsonSchema' as const, ref: { kind: 'jsonSchema' as const, exportName: 'VolumeStatus' }, schema: { type: 'object', properties: { volumes: { type: 'array', items: { type: 'object', properties: { conditions: { type: 'array', items: { type: 'object', properties: { type: { type: 'string' }, status: { type: 'string' }, observedGeneration: { type: 'integer' }, lastTransitionTime: { type: 'string' } } } } } } } } } };
+export const VolumeJob = sdk.crd<VolumeSpec, VolumeStatus>({ apiVersion: 'storage.applik8s.dev/v1alpha1', kind: 'VolumeJob', spec, status });
+export const operator = sdk.operator({ name: 'nested-status', resources: { VolumeJob }, handlers: [
+  VolumeJob.on.reconcile((job) => { job.status.volumes = [{ conditions: [{ type: 'Ready', status: 'True', observedGeneration: 17, lastTransitionTime: '2026-07-14T12:34:56Z' }] }]; }),
+] });
+`);
+
+      const result = await createCompilerPipeline().run({
+        entrypoint,
+        operatorName: 'nested-status',
+        dispatcherMode: 'staticSerializable',
+        outDir: join(dir, 'dist'),
+        runtimeVersionRange: '^0.1.0',
+        handlerAbiVersion: 'applik8s.handler/v1alpha1',
+        adapter: 'wasmComponent',
+        portability: { deterministicBuild: true, allowEnvironmentAccess: false, allowFilesystemAccess: false, allowNetworkAccess: false, allowedHostImports: [], sourceMaps: { emit: true, includeSourceContent: false, redactPaths: false } },
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const dispatcherPath = join(dir, 'dist/bundle/handler-dispatcher.generated.ts');
+      const dispatcherTestPath = join(dir, 'dist/bundle/handler-dispatcher.node-test.ts');
+      const dispatcherSource = await readFile(dispatcherPath, 'utf8');
+      await writeFile(dispatcherTestPath, dispatcherSource.replace("import { kubernetesRead } from 'applik8s:handler/kubernetes';\n", "const kubernetesRead = () => { throw new Error('unexpected kubernetes-read'); };\n"));
+      // static-import-exception: this test loads a compiler-generated dispatcher from a temporary output directory.
+      const dispatcher = await import(`${pathToFileURL(dispatcherTestPath).href}?case=nested-status`);
+      const output = JSON.parse(await dispatcher.handle(JSON.stringify({
+        abiVersion: 'applik8s.handler/v1alpha1',
+        handlerId: 'VolumeJob.reconcile.0',
+        event: 'reconcile',
+        object: { apiVersion: 'storage.applik8s.dev/v1alpha1', kind: 'VolumeJob', metadata: { name: 'volume-a', namespace: 'storage' }, spec: { source: 'source-a' } },
+        runtime: { reconcileId: 'VolumeJob-volume-a' },
+      })));
+      const statusOperation = output.operations.find((operation: { readonly kind?: string }) => operation.kind === 'status');
+      expect(statusOperation?.status?.volumes?.[0]?.conditions?.[0]).toEqual({
+        type: 'Ready',
+        status: 'True',
+        observedGeneration: 17,
+        lastTransitionTime: '2026-07-14T12:34:56Z',
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('compiles an exported operator through the integrated pipeline', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-integrated-compiler-'));
 
@@ -1517,8 +1872,7 @@ export const imagePipeline = sdk.operator({
       expect(result.value.manifest.spec.container?.baseImage).toMatchObject({
         registry: 'ghcr.io',
         repository: 'yehudacohen/applik8s-operator-host',
-        tag: 'v0.4.1',
-        digest: 'sha256:467f3e36eab0509c738025f9ea3e117320d9af3843eba9e5d3ac451c625b7869',
+        tag: 'v0.6.0',
       });
       expect(result.value.manifest.spec.container?.files).toEqual([
         { source: 'operator-manifest.json', destination: '/etc/applik8s/operator-manifest.json' },
@@ -1567,7 +1921,7 @@ export const imagePipeline = sdk.operator({
       const deployment = parse(await readFile(result.value.artifacts.generatedDeploymentYamlPath, 'utf8'));
       const container = deployment.spec.template.spec.containers[0];
       expect(deployment.metadata.annotations).toMatchObject({
-        'applik8s.dev/bundle-digest': result.value.manifest.spec.bundle.digest,
+        'applik8s.dev/build-identity-digest': result.value.manifest.spec.bundle.buildIdentityDigest,
         'applik8s.dev/source-digest': result.value.manifest.spec.bundle.sourceDigest,
         'applik8s.dev/compiler-version': result.value.manifest.spec.bundle.compilerVersion,
         'applik8s.dev/handler-abi': 'applik8s.handler/v1alpha1',
@@ -1596,7 +1950,7 @@ export const imagePipeline = sdk.operator({
         'applik8s.dev/unsupported-native-modules': 'denied',
       });
       expect(deployment.spec.template.metadata.annotations).toMatchObject({
-        'applik8s.dev/bundle-digest': result.value.manifest.spec.bundle.digest,
+        'applik8s.dev/build-identity-digest': result.value.manifest.spec.bundle.buildIdentityDigest,
         'applik8s.dev/handler-abi': 'applik8s.handler/v1alpha1',
       });
       expect(deployment.spec.template.spec.securityContext).toEqual({
@@ -1606,6 +1960,7 @@ export const imagePipeline = sdk.operator({
         seccompProfile: { type: 'RuntimeDefault' },
       });
       expect(deployment.spec.template.spec.volumes).toEqual([{ name: 'tmp', emptyDir: {} }]);
+      expect(deployment.spec.template.spec.terminationGracePeriodSeconds).toBe(45);
       expect(container.image).toMatch(/^applik8s\/image-pipeline-operator:[a-f0-9]{12}$/);
       expect(container.securityContext).toEqual({
         allowPrivilegeEscalation: false,
@@ -1622,7 +1977,7 @@ export const imagePipeline = sdk.operator({
       expect(container.env).toContainEqual({ name: 'OTEL_METRIC_EXPORT_INTERVAL', value: '30000' });
       expect(container.env).toContainEqual({
         name: 'OTEL_RESOURCE_ATTRIBUTES',
-        value: `service.namespace=applik8s,applik8s.operator=image-pipeline,applik8s.bundle_digest=${result.value.manifest.spec.bundle.digest}`,
+        value: `service.namespace=applik8s,applik8s.operator=image-pipeline,applik8s.build_identity_digest=${result.value.manifest.spec.bundle.buildIdentityDigest}`,
       });
       expect(container.startupProbe).toMatchObject({
         httpGet: { path: '/healthz', port: 'health' },
@@ -1634,11 +1989,15 @@ export const imagePipeline = sdk.operator({
       expect(container.livenessProbe).toMatchObject({ initialDelaySeconds: 60, failureThreshold: 12, periodSeconds: 10, timeoutSeconds: 5 });
       expect(container.readinessProbe.httpGet).toEqual({ path: '/readyz', port: 'health' });
       expect(container.readinessProbe).toMatchObject({ initialDelaySeconds: 1, failureThreshold: 12, periodSeconds: 5, timeoutSeconds: 5 });
+      expect(container.resources).toEqual({
+        requests: { cpu: '100m', memory: '128Mi' },
+        limits: { cpu: '1', memory: '1Gi' },
+      });
       expect(result.value.manifest.spec.bundle.artifacts).toContainEqual(expect.objectContaining({ kind: 'javascript-source-map', path: result.value.artifacts.sourceMapPath }));
       expect(result.value.manifest.spec.bundle.artifacts).toContainEqual(expect.objectContaining({ kind: 'esbuild-metafile' }));
       const dockerfile = await readFile(result.value.artifacts.generatedImageDockerfilePath ?? '', 'utf8');
       expect(dockerfile).toContain(
-        'ARG APPLIK8S_BASE_IMAGE=ghcr.io/yehudacohen/applik8s-operator-host:v0.4.1@sha256:467f3e36eab0509c738025f9ea3e117320d9af3843eba9e5d3ac451c625b7869',
+        'ARG APPLIK8S_BASE_IMAGE=ghcr.io/yehudacohen/applik8s-operator-host:v0.6.0',
       );
       expect(dockerfile).toContain(['FROM $', '{APPLIK8S_BASE_IMAGE}'].join(''));
       expect(dockerfile).toContain('COPY --chown=65532:65532 operator-manifest.json /etc/applik8s/operator-manifest.json');

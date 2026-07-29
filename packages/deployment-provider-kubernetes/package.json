@@ -1,0 +1,29 @@
+{
+  "name": "@applik8s/deployment-provider-kubernetes",
+  "version": "0.6.0",
+  "description": "Kubernetes-specific Alchemy provider resources for Applik8s deployment.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/deployment-provider-kubernetes"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^1.3.0",
+    "alchemy": "2.0.0-beta.58",
+    "effect": "4.0.0-beta.84"
+  }
+}

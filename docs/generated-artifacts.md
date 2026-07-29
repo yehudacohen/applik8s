@@ -6,7 +6,7 @@
 
 ## Layout
 
-- `operator-manifest.json`: canonical manifest consumed by the Rust host and by TypeKro install synthesis.
+- `operator-manifest.json`: canonical manifest consumed by the Rust host and by TypeKro install synthesis. Installed connection builds include the environment-specific alias bindings; portable builds do not.
 - `contract/runtime-contract.json`: runtime contract schema and ABI metadata.
 - `contract/applik8s-handler.wit`: WIT interface for the generated handler component.
 - `wasm/handler.wasm`: WASM component loaded by the operator host.
@@ -41,6 +41,7 @@ For release review, `routes.manifest.json` is the fastest way to confirm the gen
 
 - CRDs include only structural schema accepted by the shared compiler gate.
 - RBAC rules should match declared operator permissions, generated CRD permissions, status/finalizer permissions, Events, capabilities, and leader-election Leases when enabled.
+- Kubernetes connection Secret rules must remain namespaced, use `resourceNames`, and must not grant the remote resource envelope in the management cluster.
 - Deployment image and env should match the manifest container recipe.
 - Generated app-server source ConfigMaps should include `routes.manifest.json`, `route-<id>.mjs`, `bindings.mjs`, `runtime.mjs`, `server.mjs`, and `server.mjs.map` when `app.server(...)` is used.
 - Generated route modules should include source diagnostics comments, and `server.mjs` should include `applik8s-server-route-failure` logging.
@@ -79,7 +80,7 @@ kubectl apply --server-side --field-manager=applik8s-gitops --filename dist/appl
 
 Use `typeKro.composition(operator.definition, manifest, options)` from `@applik8s/applik8s` or `@applik8s/typekro-adapter` when another TypeKro graph should install the operator and create instances of its owned CRDs. The lower-level `asComposition()` alias remains available for adapter authors.
 
-The TypeKro adapter consumes the same manifest and schema gates as plain YAML emission. It does not invent different RBAC, schema, or runtime semantics.
+The TypeKro adapter consumes the same manifest and schema gates as plain YAML emission. It does not invent different RBAC, schema, runtime, or Kubernetes-connection semantics. TypeKro composition compilation accepts a per-operator connection-binding map so nested installs receive the same exact binding validation as plain YAML.
 
 For the integrated v0.2 path, export the applik8s operator and wrapped TypeKro composition from the same entrypoint, then run:
 

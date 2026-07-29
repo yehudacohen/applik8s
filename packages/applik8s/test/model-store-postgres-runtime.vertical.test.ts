@@ -1,12 +1,19 @@
+// typecast-file-boundary: PostgreSQL vertical fixtures decode controlled fake result rows into the same runtime shapes used by the adapter.
 import postgres from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { sql as drizzleSql } from 'drizzle-orm';
+import { pgTable, text } from 'drizzle-orm/pg-core';
+import { app } from '../src/application.js';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
 import { applicationModelMigrationPreflightSql, applicationModelMigrationSql, type ApplicationRuntimeModelContract } from '../src/application-models.js';
-import { closePostgresModelCommandRuntime, executePostgresModelCommand, isRetryablePostgresTransactionError } from '../src/model-command-postgres-runtime.js';
+import { closePostgresModelCommandRuntime, executePostgresModelCommand, isRetryablePostgresTransactionError, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
 import { closePostgresModelClients, createPostgresModelClient } from '../src/model-store-postgres-runtime.js';
+import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor } from '../src/native-models.js';
+import { applicationRelationalFrameworkMigrationSql } from '../src/relational-runtime.js';
 import { command, event } from '../src/dsl.js';
-import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/event-log-jetstream-runtime.js';
+import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/postgres-outbox-runtime.js';
 import { type } from 'arktype';
+import { applicationRequestContextValues } from '../src/command-principal.js';
 
 const liveDatabaseUrl = process.env.APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL;
 
@@ -37,6 +44,35 @@ describe('Postgres ModelStore script runtime', () => {
     expect(isRetryablePostgresTransactionError({ code: '40001' })).toBe(true);
     expect(isRetryablePostgresTransactionError({ code: '23505' })).toBe(false);
     expect(isRetryablePostgresTransactionError(new Error('connection failed'))).toBe(false);
+  });
+
+  it('persists an idempotent redacted terminal result without handler or model side effects', async () => {
+    const queries: { readonly query: string; readonly parameters?: readonly unknown[] }[] = [];
+    const transaction = {
+      async unsafe(query: string, parameters?: readonly unknown[]) {
+        queries.push({ query, ...(parameters ? { parameters } : {}) });
+        return query.startsWith('SELECT scope FROM applik8s_command_results') ? [] : [];
+      },
+      json(value: unknown) { return value; },
+    };
+    const sql = { async begin(handler: (value: typeof transaction) => Promise<void>) { return handler(transaction); } } as unknown as postgres.Sql;
+    await recordPostgresModelCommandTerminalFailure({
+      bindingId: 'Account-create',
+      model: scriptNoteModel('accounts'),
+      message: { id: 'command-1', input: { displayName: 'Ada' }, targetKey: 'account-1', idempotencyKey: 'once', context: { values: {}, digest: 'a'.repeat(64) } },
+      sql,
+    }, { code: 'processing_failed', attempts: 5 });
+
+    expect(queries.map(({ query }) => query)).toEqual([
+      'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+      'SELECT scope FROM applik8s_command_results WHERE scope = $1 LIMIT 1',
+      expect.stringContaining('INSERT INTO applik8s_command_inbox'),
+      expect.stringContaining('INSERT INTO applik8s_command_results'),
+    ]);
+    const resultParameters = queries[3]?.parameters;
+    expect(resultParameters?.[1]).toEqual({ name: 'internalFailure', payload: { code: 'processing_failed', attempts: 5 } });
+    expect(JSON.stringify(queries)).not.toContain('Error');
+    expect(queries.some(({ query }) => /model_transitions|event_outbox|model_changes/.test(query))).toBe(false);
   });
 
   it('fails closed with diagnostics when script execution has no database credentials', async () => {
@@ -333,6 +369,193 @@ describe.runIf(liveDatabaseUrl)('Postgres ModelStore script runtime live databas
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(commandModel.tableName)}`);
   });
 
+  it('executes direct native create, update, and delete operations with committed lifecycle events and replay', async () => {
+    if (!liveDatabaseUrl) {
+      throw new Error('Live direct native CRUD test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    }
+    const directTableName = `applik8s_direct_card_${process.pid}`;
+    const cards = pgTable(directTableName, {
+      id: text('id').primaryKey(),
+      title: text('title').notNull(),
+      ownerId: text('owner_id').notNull().default(drizzleSql<string>`nullif(current_setting('applik8s.principal.id', true), '')`),
+      revision: text('revision').notNull(),
+    });
+    const direct = app(`direct-native-${process.pid}`);
+    const Database = direct.database.postgres('direct-native', { schema: { cards } });
+    const CardBase = direct.model(cards, { name: `DirectCard${process.pid}`, database: Database, revision: 'revision' });
+    const ArchiveCard = command(`direct-card-${process.pid}.archive.v1`, {
+      input: type({ cardId: 'string' }),
+      output: type({ archived: 'boolean' }),
+    });
+    const Card = CardBase.action('archive', ArchiveCard, {
+      key: ({ cardId }) => cardId,
+      history: true,
+    }, async (card) => {
+      card.patch({ spec: { title: 'archived' } });
+      return { archived: true };
+    });
+    const model = nativeApplicationModelBindingFor(Card);
+    const create = applicationModelCommandBindingForOperation(Card.create);
+    const update = applicationModelCommandBindingForOperation(Card.update);
+    const remove = applicationModelCommandBindingForOperation(Card.delete);
+    const archive = applicationModelCommandBindingForOperation(Card.archive);
+    const admittedContext = {
+      values: applicationRequestContextValues(
+        { id: 'author-1', claims: { role: 'author' } },
+        'chirp-authz-v1',
+        { tenantId: 'direct-native-live' },
+      ),
+      digest: 'a'.repeat(64),
+      changeScopes: {
+        global: 'c'.repeat(64),
+        'context:tenantId': 'd'.repeat(64),
+      },
+    } as const;
+    if (!model || !create || !update || !remove || !archive) throw new Error('Direct native lifecycle bindings were not installed.');
+
+    await sql.unsafe(`CREATE TABLE ${quoteIdentifier(directTableName)} (id text PRIMARY KEY, title text NOT NULL, owner_id text DEFAULT nullif(current_setting('applik8s.principal.id', true), '') NOT NULL, revision text NOT NULL)`);
+    await sql.unsafe(applicationModelMigrationSql(model.runtime));
+    await sql.unsafe(applicationRelationalFrameworkMigrationSql(Database, [Card]));
+    try {
+      const created = await create.execute({ id: 'card-1', title: 'created', revision: 'input-r1' }, {
+        id: 'direct-create-1',
+        targetKey: 'card-1',
+        idempotencyKey: 'direct-create-idempotency-1',
+        context: admittedContext,
+        databaseUrl: liveDatabaseUrl,
+      });
+      const replayedCreate = await create.execute({ id: 'card-1', title: 'created', revision: 'input-r1' }, {
+        id: 'direct-create-replay',
+        targetKey: 'card-1',
+        idempotencyKey: 'direct-create-idempotency-1',
+        context: admittedContext,
+        databaseUrl: liveDatabaseUrl,
+      });
+      expect(created).toMatchObject({
+        replayed: false,
+        output: { identity: 'card-1', value: { id: 'card-1', title: 'created', ownerId: 'author-1' }, revision: expect.any(String) },
+        model: { id: 'card-1', spec: { id: 'card-1', title: 'created', ownerId: 'author-1' }, revision: expect.any(String) },
+        events: [expect.objectContaining({
+          contract: { name: `models.DirectCard${process.pid}.created`, version: 'v1' },
+          payload: { operation: 'create', identity: 'card-1', value: expect.objectContaining({ id: 'card-1', title: 'created', ownerId: 'author-1' }), revision: expect.any(String) },
+        })],
+      });
+      expect(replayedCreate).toMatchObject({
+        replayed: true,
+        output: created.output,
+        model: created.model,
+        events: [],
+      });
+
+      await expect(create.execute({ id: 'card-without-actor', title: 'rejected', revision: 'input-r2' }, {
+        id: 'direct-create-without-actor',
+        targetKey: 'card-without-actor',
+        idempotencyKey: 'direct-create-without-actor',
+        context: {
+          values: { tenantId: 'direct-native-live' },
+          digest: 'b'.repeat(64),
+          changeScopes: { global: 'e'.repeat(64), 'context:tenantId': 'f'.repeat(64) },
+        },
+        databaseUrl: liveDatabaseUrl,
+      })).rejects.toMatchObject({ code: '23502' });
+      await expect(sql.unsafe(`SELECT count(*)::int AS count FROM ${quoteIdentifier(directTableName)} WHERE id = $1`, ['card-without-actor'])).resolves.toEqual([{ count: 0 }]);
+
+      const updated = await update.execute({ identity: 'card-1', patch: { title: 'updated' } }, {
+        id: 'direct-update-1',
+        targetKey: 'card-1',
+        idempotencyKey: 'direct-update-idempotency-1',
+        context: admittedContext,
+        databaseUrl: liveDatabaseUrl,
+      });
+      expect(updated).toMatchObject({
+        replayed: false,
+        output: { identity: 'card-1', value: { id: 'card-1', title: 'updated' }, revision: expect.any(String) },
+        events: [expect.objectContaining({
+          contract: { name: `models.DirectCard${process.pid}.updated`, version: 'v1' },
+          payload: {
+            operation: 'update',
+            identity: 'card-1',
+            previous: expect.objectContaining({ title: 'created' }),
+            current: expect.objectContaining({ title: 'updated' }),
+            revision: expect.any(String),
+          },
+        })],
+      });
+
+      const archived = await archive.execute({ cardId: 'card-1' }, {
+        id: 'direct-archive-1',
+        targetKey: 'card-1',
+        idempotencyKey: 'direct-archive-idempotency-1',
+        context: admittedContext,
+        databaseUrl: liveDatabaseUrl,
+      });
+      expect(archived).toMatchObject({
+        replayed: false,
+        output: { archived: true },
+        model: { spec: expect.objectContaining({ id: 'card-1', title: 'archived', ownerId: 'author-1' }) },
+        events: [expect.objectContaining({
+          contract: { name: `models.DirectCard${process.pid}.archive.completed`, version: 'v1' },
+          payload: {
+            operation: 'archive',
+            identity: 'card-1',
+            previous: expect.objectContaining({ title: 'updated' }),
+            current: expect.objectContaining({ title: 'archived' }),
+            result: { archived: true },
+            revision: expect.any(String),
+          },
+        })],
+      });
+
+      const deleted = await remove.execute({ identity: 'card-1' }, {
+        id: 'direct-delete-1',
+        targetKey: 'card-1',
+        idempotencyKey: 'direct-delete-idempotency-1',
+        context: admittedContext,
+        databaseUrl: liveDatabaseUrl,
+      });
+      const replayedDelete = await remove.execute({ identity: 'card-1' }, {
+        id: 'direct-delete-replay',
+        targetKey: 'card-1',
+        idempotencyKey: 'direct-delete-idempotency-1',
+        context: admittedContext,
+        databaseUrl: liveDatabaseUrl,
+      });
+      expect(deleted).toMatchObject({
+        replayed: false,
+        deleted: true,
+        output: { identity: 'card-1', deleted: true },
+        events: [expect.objectContaining({
+          contract: { name: `models.DirectCard${process.pid}.deleted`, version: 'v1' },
+          payload: {
+            operation: 'delete',
+            identity: 'card-1',
+            previous: expect.objectContaining({ id: 'card-1', title: 'archived' }),
+            tombstone: { identity: 'card-1', deleted: true },
+            revision: expect.any(String),
+          },
+        })],
+      });
+      expect(replayedDelete).toMatchObject({
+        replayed: true,
+        deleted: true,
+        output: deleted.output,
+        model: deleted.model,
+        events: [],
+      });
+      await expect(sql.unsafe(`SELECT count(*)::int AS count FROM ${quoteIdentifier(directTableName)}`)).resolves.toEqual([{ count: 0 }]);
+    } finally {
+      await sql.unsafe(
+        'DELETE FROM applik8s_public_stream_events WHERE contract_name LIKE $1',
+        [`models.DirectCard${process.pid}.%`],
+      );
+      await sql.unsafe(
+        'DELETE FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[])',
+        [[create.name, update.name, archive.name, remove.name]],
+      );
+      await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(directTableName)}`);
+    }
+  });
+
   it('serializes concurrent same-key commands and rolls back state plus outbox before commit', async () => {
     if (!liveDatabaseUrl) {
       throw new Error('Live command concurrency test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
@@ -445,7 +668,7 @@ describe.runIf(liveDatabaseUrl)('Postgres ModelStore script runtime live databas
     await expect(executePostgresModelCommand<{ readonly count: number }, Record<string, never>, Record<string, never>, { readonly ok: boolean }>({
       bindingId: `${bindingId}-effect`, command: { name: 'counter.effect', version: 'v1' }, model,
       message: { id: 'effect-message', input: {}, targetKey: 'fallback-counter', idempotencyKey: 'effect-request' }, databaseUrl: liveDatabaseUrl,
-      async handler() { await globalThis['fetch']('http://127.0.0.1:1/forbidden'); return { ok: true }; },
+      async handler() { await globalThis.fetch('http://127.0.0.1:1/forbidden'); return { ok: true }; },
     })).rejects.toThrow(/applik8s-command-external-effect-forbidden/);
     await expect(client.get({ id: 'fallback-counter' })).resolves.toMatchObject({ spec: { count: 11 } });
 
@@ -472,12 +695,16 @@ describe.runIf(liveDatabaseUrl)('Postgres ModelStore script runtime live databas
 
     const cleanup = await cleanupPostgresCommandData({ databaseUrl: liveDatabaseUrl, bindingIds: [bindingId], auditWindowSeconds: 30 * 24 * 60 * 60, publishedOutboxWindowSeconds: 24 * 60 * 60, batchSize: 100, now: '2026-07-11T00:00:00.000Z' });
     expect(cleanup).toEqual({ eventOutboxDeleted: 1, commandOutboxDeleted: 0, commandsDeleted: 1 });
-    await expect(sql.unsafe('SELECT scope FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[]) ORDER BY scope', [[bindingId, otherBindingId]])).resolves.toMatchObject([
-      { scope: `${bindingId}-pending` },
-      { scope: `${bindingId}-recent` },
-      { scope: `${otherBindingId}-expired` },
-    ]);
+    const retained = await sql.unsafe('SELECT scope FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[]) ORDER BY scope', [[bindingId, otherBindingId]]);
+    expect(retained).toHaveLength(3);
+    expect(retained).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: `${bindingId}-pending` }),
+      expect.objectContaining({ scope: `${bindingId}-recent` }),
+      expect.objectContaining({ scope: `${otherBindingId}-expired` }),
+    ]));
     await expect(observePostgresOutboxLag(liveDatabaseUrl)).resolves.toEqual(expect.objectContaining({ pendingEvents: expect.any(Number), pendingCommands: expect.any(Number), oldestPendingSeconds: expect.any(Number) }));
+    await sql.unsafe('DELETE FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[]))', [[bindingId, otherBindingId]]);
+    await sql.unsafe('DELETE FROM applik8s_command_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[]))', [[bindingId, otherBindingId]]);
     await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[])', [[bindingId, otherBindingId]]);
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(cleanupModel.tableName)}`);
   });

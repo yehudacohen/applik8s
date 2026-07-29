@@ -1,0 +1,42 @@
+apiVersion: applications.chirp.dev/v1alpha1
+kind: ChirpInstallation
+metadata:
+  name: chirp
+  namespace: chirp-control
+spec:
+  name: chirp
+  hostname: chirp.localhost
+  profile: starter
+  version: 0.7.0-dev
+  features:
+    automatedAccounts: true
+    analytics: true
+    media: true
+  lifecycle:
+    # This disposable local installation owns its per-installation Harbor
+    # project. Dedicated sites should retain it until backup/export policy has
+    # completed and been reviewed.
+    databaseDeletion: retain
+    registryProjectDeletion: delete
+    purgeRegistryRepositories: true
+  backup:
+    enabled: true
+    # CloudNativePG uses a six-field cron expression (seconds first).
+    schedule: "0 0 2 * * *"
+    retentionPolicy: 14d
+  exposure:
+    mode: node-port
+    # Choose a distinct port for each simultaneously installed local site.
+    nodePort: 30080
+    # Ignored by the local NodePort branch, but required if this installation
+    # is later moved to managed ingress.
+    certificateIssuerName: letsencrypt-prod
+  identity:
+    # Deterministic identity is an explicit local-test contract. Dedicated and
+    # external profiles must select trusted-header and provide an issuer.
+    mode: deterministic-local
+    authorizationVersion: chirp-local-policy-v1
+    infrastructure:
+      mode: external
+      namespace: chirp-identity-unused
+      deletionPolicy: retain

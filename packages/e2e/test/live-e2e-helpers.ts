@@ -40,6 +40,21 @@ export async function kubectl(args: readonly string[]): Promise<{ readonly stdou
   return exec('kubectl', args, process.cwd());
 }
 
+export async function waitForKubernetesResourceDeleted(
+  resource: string,
+  timeout: number,
+): Promise<void> {
+  const started = Date.now();
+  let last = '';
+  while (Date.now() - started < timeout) {
+    const result = await kubectl(['get', resource, '--ignore-not-found=true', '--output=name']);
+    last = result.stdout.trim();
+    if (last === '') return;
+    await sleep(2_000);
+  }
+  throw new Error(`Timed out waiting for ${resource} to be deleted. Last value: ${last}`);
+}
+
 export async function docker(args: readonly string[], cwd: string): Promise<{ readonly stdout: string; readonly stderr: string }> {
   return exec('docker', args, cwd);
 }

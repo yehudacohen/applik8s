@@ -290,23 +290,32 @@ export function resolveOperatorInstalls<TSpec extends KroCompatibleType, TStatus
       if (!manifest) {
         return err('BUNDLE_INVALID', `Captured TypeKro operator install ${install.operatorName} is missing a compiled applik8s OperatorBundle manifest.`);
       }
-      const defaultNamespace = options.defaultNamespace ?? install.operator.deployment?.namespace;
+      const operator = {
+        ...install.operator,
+        deployment: { ...install.operator.deployment, ...install.deployment },
+      };
+      const defaultNamespace = options.defaultNamespace ?? operator.deployment?.namespace;
       const adapterOptions: TypeKroAdapterOptions = {
         compositionName: options.compositionName?.(install.operatorName) ?? install.operatorName,
         ...(options.factoryOptions ? { factoryOptions: options.factoryOptions } : {}),
         ...(defaultNamespace ? { defaultNamespace } : {}),
       };
-      const lowered = asComposition(install.operator, manifest, adapterOptions);
+      const lowered = asComposition(operator, manifest, adapterOptions);
       if (!lowered.ok) {
         return lowered;
       }
-      generatedCrdPrerequisites.push(...operatorGeneratedCrdPrerequisites(install.operator, manifest));
+      generatedCrdPrerequisites.push(...operatorGeneratedCrdPrerequisites(operator));
       // typecast: asComposition returns the operator-install composition shape required by install replay.
       resolvedInstallCompositions.set(install.operatorName, lowered.value as TypeKroOperatorComposition);
     }
 
     // typecast: replay preserves the original composition's public spec/status generic contract.
-    return ok(createResolvedListenerComposition(source, options, resolvedInstallCompositions, generatedCrdPrerequisites) as TypeKroListenerComposition<TSpec, TStatus>);
+    return ok(createResolvedListenerComposition(
+      source,
+      options,
+      resolvedInstallCompositions,
+      uniqueGeneratedCrdPrerequisites(generatedCrdPrerequisites),
+    ) as TypeKroListenerComposition<TSpec, TStatus>);
   } catch (cause) {
     return err('BUNDLE_INVALID', cause instanceof Error ? cause.message : 'Failed to resolve captured TypeKro operator installs.');
   }
@@ -1202,7 +1211,7 @@ function installResources<
   replicas: number
 ): readonly KubernetesManifestResource[] {
   const operatorName = operator.name;
-  validateDeploymentOperationalSafety(operatorName, replicas, manifest);
+  validateDeploymentOperationalSafety(operatorName, replicas, manifest, deployment);
   const serviceAccountName = deployment?.serviceAccountName ?? `${operatorName}-controller`;
   const clusterRbac = requiresClusterRbac(operator, deployment, namespace);
   const image = manifest.spec.container ? imageRefString(manifest.spec.container.image) : undefined;
@@ -1210,12 +1219,28 @@ function installResources<
     throw new Error('Operator manifest is missing the compiler-derived runtime image.');
   }
   const ownedResources = resources.filter(isOwnedResource);
+  const connectionSecretPermissions = connectionSecretPermissionRules(manifest);
+  const clusterPermissions = clusterRbac
+    ? manifest.spec.permissions.filter((permission) => !connectionSecretPermissions.includes(permission))
+    : [];
+  const namespacedPermissions = clusterRbac ? connectionSecretPermissions : manifest.spec.permissions;
   return [
-    ...ownedResources.map((resource, index) => crdDocument(resource, `ownedCrd${index + 1}`, manifest)),
+    ...ownedResources.map((resource, index) => crdDocument(resource, `ownedCrd${index + 1}`)),
     serviceAccountDocument(serviceAccountName, namespace, manifest),
-    rbacRoleDocument(operatorName, manifest.spec.permissions, namespace, clusterRbac, manifest),
-    rbacBindingDocument(operatorName, serviceAccountName, namespace, clusterRbac, manifest),
-    deploymentDocument(manifest, serviceAccountName, image, namespace, replicas),
+    ...(clusterPermissions.length > 0 ? [
+      rbacRoleDocument(operatorName, clusterPermissions, namespace, true, manifest),
+      rbacBindingDocument(operatorName, serviceAccountName, namespace, true, manifest),
+    ] : []),
+    ...(namespacedPermissions.length > 0 ? [
+      rbacRoleDocument(operatorName, namespacedPermissions, namespace, false, manifest, clusterRbac ? 'connection-secrets' : 'controller'),
+      rbacBindingDocument(operatorName, serviceAccountName, namespace, false, manifest, clusterRbac ? 'connection-secrets' : 'controller'),
+    ] : []),
+    deploymentDocument(manifest, serviceAccountName, image, namespace, replicas, deployment),
+    operatorNetworkPolicyDocument(manifest, namespace),
+    // TypeKro install replicas may be a schema-derived CEL expression at graph
+    // construction time. Emitting the bounded PDB unconditionally keeps later
+    // scale-up safe; maxUnavailable: 1 does not constrain a one-replica rollout.
+    operatorPodDisruptionBudgetDocument(manifest, namespace),
   ];
 }
 
@@ -1226,6 +1251,7 @@ function requiresClusterRbac<
   if (deployment?.scope === 'Cluster') return true;
   if (Object.values(operator.resources).some((resource) => resource.scope === 'Cluster')) return true;
   return Object.values(operator.reads ?? {}).some((resource) => {
+    if (resource.access === 'connection') return false;
     if (resource.scope === 'Cluster' || resource.namespaces === 'all') return true;
     if (!resource.namespaces || resource.namespaces.length === 0) return false;
     return resource.namespaces.some((namespace) => namespace !== controllerNamespace);
@@ -1234,17 +1260,15 @@ function requiresClusterRbac<
 
 function operatorGeneratedCrdPrerequisites(
   operator: OperatorDefinition,
-  manifest: OperatorManifest
 ): readonly PrerequisiteResource[] {
   // typecast: SDK operator resources are ResourceDefinition values with event sources; CRD emission only needs erased resource metadata.
   const resources = Object.values(operator.resources) as unknown as readonly AnyResourceDefinition[];
   const crds = resources
     .filter(isOwnedResource)
-    .map((resource, index): PrerequisiteResource => {
+    .map((resource): PrerequisiteResource => {
       const document = crdDocument(
         resource,
-        `${operator.name.replace(/[^a-zA-Z0-9]/g, '')}PrerequisiteCrd${index + 1}`,
-        manifest
+        `${resource.kind.replace(/[^a-zA-Z0-9]/g, '')}${resource.apiVersion.replace(/[^a-zA-Z0-9]/g, '')}PrerequisiteCrd`,
       );
       // typecast: this concrete CRD is cluster-scoped; only the adapter's erased manifest union carries unrelated optional RBAC fields.
       return { ...document, scope: 'cluster' } as unknown as PrerequisiteResource;
@@ -1252,7 +1276,38 @@ function operatorGeneratedCrdPrerequisites(
   return crds;
 }
 
-function validateDeploymentOperationalSafety(operatorName: string, replicas: number, manifest: OperatorManifest): void {
+function uniqueGeneratedCrdPrerequisites(
+  resources: readonly PrerequisiteResource[],
+): readonly PrerequisiteResource[] {
+  const unique = new Map<string, PrerequisiteResource>();
+  for (const resource of resources) {
+    const metadata = Reflect.get(resource, 'metadata');
+    const name = isJsonObject(metadata) && typeof metadata.name === 'string'
+      ? metadata.name
+      : undefined;
+    const apiVersion = Reflect.get(resource, 'apiVersion');
+    const kind = Reflect.get(resource, 'kind');
+    if (typeof apiVersion !== 'string' || typeof kind !== 'string' || !name) {
+      throw new Error('Generated CRD prerequisite has no complete Kubernetes identity.');
+    }
+    const key = `${apiVersion}\u0000${kind}\u0000${name}`;
+    const existing = unique.get(key);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(resource)) {
+      throw new Error(
+        `Generated CRD prerequisite ${apiVersion}/${kind}/${name} has conflicting schemas across captured operators.`,
+      );
+    }
+    if (!existing) unique.set(key, resource);
+  }
+  return [...unique.values()];
+}
+
+function validateDeploymentOperationalSafety(
+  operatorName: string,
+  replicas: number,
+  manifest: OperatorManifest,
+  deployment: OperatorDeploymentOptions | undefined,
+): void {
   const leaderElection = manifest.spec.runtime?.leaderElection;
   if (replicas > 1 && !leaderElection?.enabled) {
     throw new Error(`Operator ${operatorName} requested ${replicas} replicas, but multi-replica operators require runtime.leaderElection.enabled.`);
@@ -1260,6 +1315,19 @@ function validateDeploymentOperationalSafety(operatorName: string, replicas: num
   const unsupportedConcurrency = unsupportedRuntimeConcurrency(manifest.spec.runtime?.concurrency);
   if (unsupportedConcurrency) {
     throw new Error(unsupportedConcurrency);
+  }
+  const terminationGracePeriodSeconds = deployment?.terminationGracePeriodSeconds;
+  if (terminationGracePeriodSeconds !== undefined
+    && (!Number.isInteger(terminationGracePeriodSeconds) || terminationGracePeriodSeconds < 1 || terminationGracePeriodSeconds > 600)) {
+    throw new Error('deployment.terminationGracePeriodSeconds must be an integer between 1 and 600.');
+  }
+  for (const [path, value] of Object.entries({
+    'resources.requests.cpu': deployment?.resources?.requests?.cpu,
+    'resources.requests.memory': deployment?.resources?.requests?.memory,
+    'resources.limits.cpu': deployment?.resources?.limits?.cpu,
+    'resources.limits.memory': deployment?.resources?.limits?.memory,
+  })) {
+    if (value !== undefined && !value.trim()) throw new Error(`deployment.${path} must not be empty.`);
   }
 }
 
@@ -1279,13 +1347,17 @@ function unsupportedRuntimeConcurrency(concurrency: ConcurrencyConfig | undefine
   return undefined;
 }
 
-function crdDocument(resource: AnyResourceDefinition, id: string, manifest: OperatorManifest): KubernetesManifestResource {
+function crdDocument(resource: AnyResourceDefinition, id: string): KubernetesManifestResource {
   const { group } = splitApiVersion(resource.apiVersion);
   return {
     apiVersion: 'apiextensions.k8s.io/v1',
     kind: 'CustomResourceDefinition',
     id,
-    metadata: metadata(`${resource.plural}.${group}`, undefined, manifest),
+    metadata: {
+      name: `${resource.plural}.${group}`,
+      labels: managedLabels(),
+      annotations: {},
+    },
     spec: {
       group,
       scope: resource.scope,
@@ -1373,12 +1445,12 @@ function serviceAccountDocument(name: string, namespace: string, manifest: Opera
   };
 }
 
-function rbacRoleDocument(operatorName: string, permissions: readonly PermissionRule[], namespace: string, clusterRbac: boolean, manifest: OperatorManifest): KubernetesManifestResource {
-  const name = clusterRbac ? clusterRbacName(operatorName, namespace) : `${operatorName}-controller`;
+function rbacRoleDocument(operatorName: string, permissions: readonly PermissionRule[], namespace: string, clusterRbac: boolean, manifest: OperatorManifest, suffix = 'controller'): KubernetesManifestResource {
+  const name = clusterRbac ? clusterRbacName(operatorName, namespace) : `${operatorName}-${suffix}`;
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: clusterRbac ? 'ClusterRole' : 'Role',
-    id: clusterRbac ? 'operatorClusterRole' : 'operatorRole',
+    id: clusterRbac ? 'operatorClusterRole' : suffix === 'controller' ? 'operatorRole' : 'operatorConnectionSecretRole',
     metadata: metadata(name, clusterRbac ? undefined : namespace, manifest),
     rules: permissions.map((permission) => compactObject({
       apiGroups: [...permission.apiGroups],
@@ -1389,12 +1461,12 @@ function rbacRoleDocument(operatorName: string, permissions: readonly Permission
   };
 }
 
-function rbacBindingDocument(operatorName: string, serviceAccountName: string, namespace: string, clusterRbac: boolean, manifest: OperatorManifest): KubernetesManifestResource {
-  const name = clusterRbac ? clusterRbacName(operatorName, namespace) : `${operatorName}-controller`;
+function rbacBindingDocument(operatorName: string, serviceAccountName: string, namespace: string, clusterRbac: boolean, manifest: OperatorManifest, suffix = 'controller'): KubernetesManifestResource {
+  const name = clusterRbac ? clusterRbacName(operatorName, namespace) : `${operatorName}-${suffix}`;
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: clusterRbac ? 'ClusterRoleBinding' : 'RoleBinding',
-    id: clusterRbac ? 'operatorClusterRoleBinding' : 'operatorRoleBinding',
+    id: clusterRbac ? 'operatorClusterRoleBinding' : suffix === 'controller' ? 'operatorRoleBinding' : 'operatorConnectionSecretRoleBinding',
     metadata: metadata(name, clusterRbac ? undefined : namespace, manifest),
     roleRef: {
       apiGroup: 'rbac.authorization.k8s.io',
@@ -1409,11 +1481,39 @@ function rbacBindingDocument(operatorName: string, serviceAccountName: string, n
   };
 }
 
+function connectionSecretPermissionRules(manifest: OperatorManifest): readonly PermissionRule[] {
+  const secretNames = new Set(Object.values(manifest.spec.kubernetesConnectionBindings ?? {})
+    .map((binding) => binding.kubeconfigSecretRef.name));
+  return manifest.spec.permissions.filter((permission) =>
+    permission.apiGroups.length === 1
+    && permission.apiGroups[0] === ''
+    && permission.resources.length === 1
+    && permission.resources[0] === 'secrets'
+    && permission.verbs.length === 1
+    && permission.verbs[0] === 'get'
+    && permission.resourceNames?.length === 1
+    && secretNames.has(permission.resourceNames[0] ?? ''));
+}
+
 function clusterRbacName(operatorName: string, namespace: string): string {
   return `${namespace}-${operatorName}-controller`;
 }
 
-function deploymentDocument(manifest: OperatorManifest, serviceAccountName: string, image: string, namespace: string, replicas: number): KubernetesManifestResource {
+function deploymentDocument(
+  manifest: OperatorManifest,
+  serviceAccountName: string,
+  image: string,
+  namespace: string,
+  replicas: number,
+  deployment: OperatorDeploymentOptions | undefined,
+): KubernetesManifestResource {
+  const configuredResources = deployment?.resources;
+  const resources = {
+    requests: { cpu: '100m', memory: '128Mi', ...configuredResources?.requests },
+    // Match the compiler's measured ComponentizeJS/Wasmtime execution
+    // envelope while preserving explicit per-operator overrides.
+    limits: { cpu: '1', memory: '1Gi', ...configuredResources?.limits },
+  };
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
@@ -1422,15 +1522,29 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
     spec: {
       replicas,
       selector: { matchLabels: appLabels(manifest.metadata.name) },
+      strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
       template: {
         metadata: { labels: appLabels(manifest.metadata.name), annotations: auditAnnotations(manifest) },
         spec: {
           serviceAccountName,
+          terminationGracePeriodSeconds: deployment?.terminationGracePeriodSeconds ?? 45,
+          securityContext: {
+            runAsNonRoot: true,
+            runAsUser: 65532,
+            runAsGroup: 65532,
+            seccompProfile: { type: 'RuntimeDefault' },
+          },
           containers: [
             {
               name: 'operator-host',
               image,
               imagePullPolicy: 'IfNotPresent',
+              securityContext: {
+                allowPrivilegeEscalation: false,
+                readOnlyRootFilesystem: true,
+                capabilities: { drop: ['ALL'] },
+              },
+              volumeMounts: [{ name: 'tmp', mountPath: '/tmp' }],
               ports: [{ name: 'health', containerPort: 8080 }],
               env: operatorHostEnv(manifest),
               startupProbe: {
@@ -1447,16 +1561,45 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
                 timeoutSeconds: 5,
               },
               readinessProbe: {
-                httpGet: { path: '/readyz', port: 'health' },
+                httpGet: { path: manifest.spec.runtime?.leaderElection?.enabled ? '/healthz' : '/readyz', port: 'health' },
                 initialDelaySeconds: 1,
                 failureThreshold: 12,
                 periodSeconds: 5,
                 timeoutSeconds: 5,
               },
+              resources,
             },
           ],
+          volumes: [{ name: 'tmp', emptyDir: {} }],
         },
       },
+    },
+  };
+}
+
+function operatorNetworkPolicyDocument(manifest: OperatorManifest, namespace: string): KubernetesManifestResource {
+  return {
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'NetworkPolicy',
+    id: 'operatorNetworkPolicy',
+    metadata: metadata(manifest.metadata.name, namespace, manifest),
+    spec: {
+      podSelector: { matchLabels: appLabels(manifest.metadata.name) },
+      policyTypes: ['Ingress'],
+      ingress: [{ ports: [{ protocol: 'TCP', port: 8080 }] }],
+    },
+  };
+}
+
+function operatorPodDisruptionBudgetDocument(manifest: OperatorManifest, namespace: string): KubernetesManifestResource {
+  return {
+    apiVersion: 'policy/v1',
+    kind: 'PodDisruptionBudget',
+    id: 'operatorPodDisruptionBudget',
+    metadata: metadata(manifest.metadata.name, namespace, manifest),
+    spec: {
+      maxUnavailable: 1,
+      selector: { matchLabels: appLabels(manifest.metadata.name) },
     },
   };
 }
@@ -1470,7 +1613,7 @@ function operatorHostEnv(manifest: OperatorManifest): readonly JsonObject[] {
     { name: 'APPLIK8S_HEALTH_ADDR', value: '0.0.0.0:8080' },
     { name: 'APPLIK8S_HANDLER_TIMEOUT_SECONDS', value: String(manifest.spec.runtime?.handlerTimeoutSeconds ?? 30) },
     { name: 'OTEL_SERVICE_NAME', value: manifest.metadata.name },
-    { name: 'OTEL_RESOURCE_ATTRIBUTES', value: `service.namespace=applik8s,applik8s.operator=${manifest.metadata.name},applik8s.bundle_digest=${manifest.spec.bundle.digest}` },
+    { name: 'OTEL_RESOURCE_ATTRIBUTES', value: `service.namespace=applik8s,applik8s.operator=${manifest.metadata.name},applik8s.build_identity_digest=${manifest.spec.bundle.buildIdentityDigest}` },
     { name: 'OTEL_METRIC_EXPORT_INTERVAL', value: '30000' },
     ...(replayArtifacts?.enabled && replayArtifacts.directory ? [
       { name: 'APPLIK8S_REPLAY_ARTIFACT_DIR', value: replayArtifacts.directory },
@@ -1515,7 +1658,7 @@ function auditAnnotations(manifest: OperatorManifest): Readonly<Record<string, s
   const storageVersions = manifest.spec.ownedCrds.map((crd) => `${crd.apiVersion}/${crd.kind}=${crd.storageVersion}`);
   const conversionStrategies = manifest.spec.ownedCrds.map((crd) => `${crd.apiVersion}/${crd.kind}=${crd.conversionStrategy}`);
   return {
-    'applik8s.dev/bundle-digest': manifest.spec.bundle.digest,
+    'applik8s.dev/build-identity-digest': manifest.spec.bundle.buildIdentityDigest,
     'applik8s.dev/source-digest': manifest.spec.bundle.sourceDigest,
     'applik8s.dev/compiler-version': manifest.spec.bundle.compilerVersion,
     'applik8s.dev/handler-abi': manifest.spec.handlerAbi,

@@ -1,9 +1,10 @@
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 
 const failures = [];
 
 const packageJson = JSON.parse(await readFile('package.json', 'utf8'));
-for (const script of ['applik8s', 'build:imagejob', 'build:tenant-platform-v04', 'test:imagejob', 'test:readme-live', 'check:v04:local', 'check:v04:prerelease:orbstack', 'benchmark:v041:record', 'benchmark:v041:live', 'check:v041:performance']) {
+for (const script of ['applik8s', 'build:imagejob', 'build:tenant-platform-v04', 'build:tenant-platform-v05', 'build:v06-generated-proof', 'test:imagejob', 'test:readme-live', 'check:v04:local', 'check:v04:scorecard', 'check:v04:prerelease:orbstack', 'check:v05:local', 'check:v05:scorecard', 'check:v05:prerelease:orbstack', 'check:v06:local', 'check:v06:chirp-build', 'check:v06:prerelease:orbstack', 'benchmark:v041:record', 'benchmark:v041:live', 'check:v041:performance']) {
   if (!packageJson.scripts?.[script]) {
     failures.push(`package.json: missing ${script} script used by public docs.`);
   }
@@ -30,6 +31,7 @@ for (const snippet of requiredSnippets) {
 const publicDocs = [
   'README.md',
   'docs/first-run.md',
+  'docs/npm-first-run.md',
   'docs/imagejob-golden-path.md',
   'docs/generated-artifacts.md',
   'docs/api-reference.md',
@@ -38,8 +40,15 @@ const publicDocs = [
   'docs/replay-debugging.md',
   'docs/runtime-image.md',
   'docs/commands.md',
+  'docs/workflows.md',
+  'docs/v0.5-scorecard.md',
+  'docs/v0.6-scorecard.md',
+  'docs/v0.6-foundation.md',
+  'docs/native-models-and-live-queries.md',
+  'docs/v0.4-scorecard.md',
   'docs/release-evidence-v0.4.md',
   'docs/release-evidence-v0.4.1.md',
+  'docs/release-evidence-v0.6.md',
   'docs/stabilization-boundary.md',
   'docs/future-surface.md',
   'docs/scale-boundaries.md',
@@ -49,7 +58,22 @@ const publicDocs = [
 for (const path of publicDocs) {
   const text = await read(path);
   rejectContains(path, text, 'packages/applik8s/src/cli.ts');
+  rejectContains(path, text, 'packages/cli/src/cli.ts');
   rejectContains(path, text, 'job.batch.ConfigMap');
+  rejectContains(path, text, 'createApplik8sStart');
+  rejectContains(path, text, 'Applik8sAuthenticationHandler');
+  rejectContains(path, text, '@applik8s/tanstack-start/testing');
+  rejectContains(path, text, '@applik8s/applik8s/testing');
+  rejectContains(path, text, '@applik8s/tanstack-start/react');
+  rejectContains(path, text, '@applik8s/vite/server');
+}
+
+for (const path of await sourceFiles('examples')) {
+  if (path.includes('/test/') || path.endsWith('.test.ts')) continue;
+  const text = await read(path);
+  if (/\.on\.(?:command|action)\s*\(/.test(text)) {
+    failures.push(`${path}: public examples must use direct named model actions instead of compatibility-only .on.command/.on.action registration.`);
+  }
 }
 
 requireContains('README.md', readme, 'docs/first-run.md');
@@ -67,6 +91,14 @@ if (failures.length > 0) {
 
 async function read(path) {
   return readFile(path, 'utf8');
+}
+
+async function sourceFiles(path) {
+  const metadata = await stat(path);
+  if (metadata.isFile()) return path.endsWith('.ts') || path.endsWith('.tsx') ? [path] : [];
+  return (await Promise.all((await readdir(path))
+    .filter((entry) => !['node_modules', 'dist', '.applik8s'].includes(entry))
+    .map((entry) => sourceFiles(join(path, entry))))).flat();
 }
 
 function requireContains(path, text, snippet) {

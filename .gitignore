@@ -5,8 +5,15 @@ node_modules/
 dist/
 .package-build/
 target/
+.applik8s/
 .applik8s-tmp/
+.alchemy/
+.output/
+.vinxi/
+.tanstack/
 coverage/
+playwright-report/
+test-results/
 
 *.log
 *.tmp

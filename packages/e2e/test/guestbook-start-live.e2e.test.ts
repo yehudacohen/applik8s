@@ -1,0 +1,766 @@
+// typecast-file-boundary: Live E2E fixtures decode generated manifests and Kubernetes responses to assert external runtime behavior.
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, expect, it } from "vitest";
+import {
+  collectV06ClusterIdentity,
+  collectV06GitIdentity,
+  createV06AssertionEvidence,
+  discardV06Evidence,
+  writeV06EvidenceReceipt,
+} from "../../../scripts/v06-evidence";
+import {
+  assertExpectedKubectlContext,
+  describeLive,
+  exec,
+  formatSettledOutput,
+  kubectl,
+  sleep,
+  waitForKubernetesResourceDeleted,
+} from "./live-e2e-helpers";
+
+// KRO deliberately retains generated CRDs active for safe reuse. Keep the
+// disposable live API identity stable so repeated runs reuse one contract
+// instead of leaking a new PID-shaped CRD on every invocation.
+const applicationName =
+  process.env.APPLIK8S_E2E_GUESTBOOK_NAME ?? "guestbook-start-live-v2";
+const namespace =
+  process.env.APPLIK8S_E2E_GUESTBOOK_NAMESPACE ??
+  `applik8s-v06-guestbook-${process.pid}`;
+const context = process.env.APPLIK8S_E2E_CONTEXT ?? "orbstack";
+const nodePort =
+  process.env.APPLIK8S_E2E_GUESTBOOK_NODE_PORT ??
+  String(31_000 + (process.pid % 1_000));
+const exampleRoot = join(process.cwd(), "examples/guestbook-start");
+const hostName = `${applicationName}-web`;
+const operatorNames = [
+  "publish-new-guestbook-entry",
+  "republish-guestbook-entry",
+] as const;
+const publishedMessage = `Generated GuestBook golden path ${Date.now()}`;
+const restartMessage = `Restart-resumed GuestBook golden path ${Date.now()}`;
+
+let deploymentAttempted = false;
+let proofComplete = false;
+let tempDir: string | undefined;
+const evidencePath = join(
+  process.cwd(),
+  ".applik8s-tmp/evidence/v0.6/guestbook-start.json",
+);
+const evidenceRunId = randomUUID();
+const evidenceStartedAt = new Date().toISOString();
+
+describeLive("v0.6 GuestBook Start golden path on OrbStack", () => {
+  beforeAll(async () => {
+    await discardV06Evidence(evidencePath);
+    await assertExpectedKubectlContext();
+    await kubectl(["get", "crd/resourcegraphdefinitions.kro.run"]);
+    process.env.APPLIK8S_APPLICATION_NAME = applicationName;
+    process.env.APPLIK8S_NAMESPACE = namespace;
+    process.env.APPLIK8S_NODE_PORT = nodePort;
+    await exec("bun", ["run", "build:packages"], process.cwd());
+    tempDir = await mkdtemp(join(tmpdir(), "applik8s-guestbook-start-live-"));
+    const instancePath = join(tempDir, "guestbook.yaml");
+    await writeFile(
+      instancePath,
+      `apiVersion: ${applicationName}.applik8s.dev/v1alpha1
+kind: ${pascalCase(applicationName)}
+metadata:
+  name: ${applicationName}
+  namespace: ${namespace}
+spec: {}
+`,
+    );
+    deploymentAttempted = true;
+    await exec(
+      "bun",
+      [
+        "run",
+        "../../packages/cli/src/bin.ts",
+        "deploy",
+        "src/application.ts",
+        "--context",
+        context,
+        "--instance",
+        instancePath,
+      ],
+      exampleRoot,
+    );
+  }, 1_200_000);
+
+  afterAll(async () => {
+    let cleanupFailure: unknown;
+    try {
+      if (
+        deploymentAttempted &&
+        (await access(
+          join(
+            exampleRoot,
+            ".applik8s/deploy/typekro/typekro-composition.json",
+          ),
+        )
+          .then(() => true)
+          .catch(() => false))
+      ) {
+        // Runtime-created domain fixtures are not graph children. Remove them
+        // before asking TypeKro to retire the generated API and installation;
+        // all Application/root, RGD, CRD, and Namespace ownership remains with
+        // the Applik8s CLI and TypeKro factories.
+        await kubectl([
+          "delete",
+          "guestbookentries.guestbook.applik8s.dev",
+          "--all",
+          "--namespace",
+          namespace,
+          "--ignore-not-found=true",
+          "--wait=true",
+          "--timeout=60s",
+        ]);
+        await exec(
+          "bun",
+          [
+            "run",
+            "../../packages/cli/src/bin.ts",
+            "delete",
+            "src/application.ts",
+            "--context",
+            context,
+          ],
+          exampleRoot,
+        );
+        await waitForKubernetesResourceDeleted(
+          `namespace/${namespace}`,
+          900_000,
+        );
+        await waitForKubernetesResourceDeleted(
+          `resourcegraphdefinition/${applicationName}`,
+          900_000,
+        );
+        await assertRetainedGeneratedCrdIsEmpty();
+      }
+      if (proofComplete) await writeEvidenceReceipt();
+    } catch (cause) {
+      cleanupFailure = cause;
+    } finally {
+      delete process.env.APPLIK8S_APPLICATION_NAME;
+      delete process.env.APPLIK8S_NAMESPACE;
+      delete process.env.APPLIK8S_NODE_PORT;
+      if (tempDir && process.env.APPLIK8S_KEEP_TMP !== "1")
+        await rm(tempDir, { recursive: true, force: true });
+    }
+    if (cleanupFailure) throw cleanupFailure;
+  }, 1_500_000);
+
+  it("runs browser-shaped commands through Kubernetes reconciliation and resumable invalidation", async () => {
+    try {
+      await waitForDeployment(hostName, 600_000);
+      await Promise.all(
+        operatorNames.map((name) => waitForDeployment(name, 600_000)),
+      );
+      await assertNoDeploymentContainerRestarts([hostName, ...operatorNames]);
+      let forward = await startPortForward(`service/${hostName}`, 3000);
+      try {
+        await expect(
+          waitForJson(
+            `${forward.endpoint}/__applik8s/v1/readyz`,
+            {},
+            (value) => value.ready === true,
+          ),
+        ).resolves.toMatchObject({ ready: true });
+
+        const initial = await snapshot(forward.endpoint);
+        const firstInvalidation = waitForSseInvalidation(
+          forward.endpoint,
+          initial.cursor,
+        );
+        const created = await createEntry(
+          forward.endpoint,
+          "Codex E2E",
+          publishedMessage,
+          "published-once",
+        );
+        expect(created.reconciliation).toMatch(/notObserved|progressing|ready/);
+        await firstInvalidation;
+        const published = await waitForPublished(
+          forward.endpoint,
+          publishedMessage,
+        );
+        expect(published).toMatchObject({
+          author: "Codex E2E",
+          message: publishedMessage,
+        });
+
+        const rejectedInitial = await snapshot(forward.endpoint);
+        const rejectionInvalidation = waitForSseInvalidation(
+          forward.endpoint,
+          rejectedInitial.cursor,
+        );
+        const rejected = await createEntry(
+          forward.endpoint,
+          "Codex E2E",
+          "Links are rejected: https://example.invalid",
+          "rejected-once",
+        );
+        await rejectionInvalidation;
+        await waitForEntryPhase(rejected.output.identity, "Rejected");
+        expect((await snapshot(forward.endpoint)).value).not.toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: rejected.output.identity }),
+          ]),
+        );
+
+        const html = await fetch(forward.endpoint).then(async (response) => {
+          const value = await response.text();
+          if (!response.ok)
+            throw new Error(
+              `GuestBook SSR returned ${response.status}: ${value}`,
+            );
+          return value;
+        });
+        expect(html).toContain(publishedMessage);
+
+        const beforeRestart = await snapshot(forward.endpoint);
+        await forward.close();
+        await restartDeployment(hostName);
+        await Promise.all(operatorNames.map(restartDeployment));
+        forward = await startPortForward(`service/${hostName}`, 3000);
+        await waitForJson(
+          `${forward.endpoint}/__applik8s/v1/readyz`,
+          {},
+          (value) => value.ready === true,
+        );
+        const resumedInvalidation = waitForSseInvalidation(
+          forward.endpoint,
+          beforeRestart.cursor,
+        );
+        await createEntry(
+          forward.endpoint,
+          "Restart E2E",
+          restartMessage,
+          "restart-once",
+        );
+        await resumedInvalidation;
+        await expect(
+          waitForPublished(forward.endpoint, restartMessage),
+        ).resolves.toMatchObject({
+          author: "Restart E2E",
+          message: restartMessage,
+        });
+        await assertNoDeploymentContainerRestarts([hostName, ...operatorNames]);
+        proofComplete = true;
+      } finally {
+        await forward.close();
+      }
+    } catch (cause) {
+      const diagnostics = await Promise.allSettled([
+        kubectl([
+          "get",
+          "pods,deployments,services,guestbookentries",
+          "--namespace",
+          namespace,
+          "--output=wide",
+        ]),
+        kubectl([
+          "get",
+          "events",
+          "--namespace",
+          namespace,
+          "--sort-by=.lastTimestamp",
+        ]),
+        kubectl([
+          "logs",
+          "--namespace",
+          namespace,
+          `deployment/${hostName}`,
+          "--all-containers=true",
+          "--tail=500",
+        ]),
+        ...operatorNames.map((name) =>
+          kubectl([
+            "logs",
+            "--namespace",
+            namespace,
+            `deployment/${name}`,
+            "--all-containers=true",
+            "--tail=500",
+          ]),
+        ),
+      ]);
+      throw new Error(
+        `${cause instanceof Error ? cause.message : String(cause)}\n${diagnostics.map(formatSettledOutput).join("\n")}`,
+      );
+    }
+  }, 1_500_000);
+});
+
+interface PortForward {
+  readonly endpoint: string;
+  close(): Promise<void>;
+}
+
+interface Snapshot {
+  readonly value: readonly PublishedEntry[];
+  readonly cursor: string;
+}
+
+interface PublishedEntry {
+  readonly id: string;
+  readonly author: string;
+  readonly message: string;
+  readonly publishedAt: string;
+}
+
+interface CreatedEntry {
+  readonly reconciliation: string;
+  readonly output: {
+    readonly identity: string;
+    readonly value: unknown;
+    readonly revision?: string;
+  };
+}
+
+async function waitForDeployment(name: string, timeout: number): Promise<void> {
+  await waitForResource(`deployment/${name}`, Math.min(timeout, 120_000));
+  await kubectl([
+    "rollout",
+    "status",
+    `deployment/${name}`,
+    "--namespace",
+    namespace,
+    `--timeout=${Math.floor(timeout / 1_000)}s`,
+  ]);
+}
+
+async function waitForResource(
+  resource: string,
+  timeout: number,
+): Promise<void> {
+  const started = Date.now();
+  let last = "";
+  while (Date.now() - started < timeout) {
+    try {
+      await kubectl(["get", resource, "--namespace", namespace]);
+      return;
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+    }
+    await sleep(1_000);
+  }
+  throw new Error(
+    `Timed out waiting for ${resource} to be created. Last error: ${last}`,
+  );
+}
+
+async function restartDeployment(name: string): Promise<void> {
+  await kubectl([
+    "rollout",
+    "restart",
+    `deployment/${name}`,
+    "--namespace",
+    namespace,
+  ]);
+  await waitForDeployment(name, 600_000);
+}
+
+async function assertNoDeploymentContainerRestarts(
+  names: readonly string[],
+): Promise<void> {
+  const pods = JSON.parse(
+    (await kubectl(["get", "pods", "--namespace", namespace, "--output=json"]))
+      .stdout,
+  ) as {
+    readonly items?: readonly {
+      readonly metadata?: {
+        readonly name?: string;
+        readonly labels?: Readonly<Record<string, string>>;
+      };
+      readonly status?: {
+        readonly containerStatuses?: readonly {
+          readonly name?: string;
+          readonly restartCount?: number;
+          readonly lastState?: {
+            readonly terminated?: { readonly reason?: string };
+          };
+        }[];
+      };
+    }[];
+  };
+  for (const name of names) {
+    const deployment = JSON.parse(
+      (
+        await kubectl([
+          "get",
+          `deployment/${name}`,
+          "--namespace",
+          namespace,
+          "--output=json",
+        ])
+      ).stdout,
+    ) as {
+      readonly spec?: {
+        readonly selector?: {
+          readonly matchLabels?: Readonly<Record<string, string>>;
+        };
+      };
+    };
+    const selector = deployment.spec?.selector?.matchLabels;
+    if (!selector || Object.keys(selector).length === 0) {
+      throw new Error(
+        `Deployment ${name} has no concrete matchLabels selector.`,
+      );
+    }
+    const selected = (pods.items ?? []).filter((pod) =>
+      Object.entries(selector).every(
+        ([key, value]) => pod.metadata?.labels?.[key] === value,
+      ),
+    );
+    if (selected.length === 0)
+      throw new Error(`Deployment ${name} has no selected pod.`);
+    for (const pod of selected) {
+      for (const container of pod.status?.containerStatuses ?? []) {
+        if (
+          (container.restartCount ?? 0) !== 0 ||
+          container.lastState?.terminated?.reason
+        ) {
+          throw new Error(
+            `Deployment ${name} pod ${pod.metadata?.name ?? "<unknown>"} container ${container.name ?? "<unknown>"} restarted ${container.restartCount ?? 0} time(s); last reason ${container.lastState?.terminated?.reason ?? "unknown"}.`,
+          );
+        }
+      }
+    }
+  }
+}
+
+async function snapshot(endpoint: string): Promise<Snapshot> {
+  const response = await postJson(
+    `${endpoint}/__applik8s/v1/queries/GuestBookEntry.published/snapshot`,
+    {
+      input: { guestbook: "main", limit: 20 },
+    },
+  );
+  if (!Array.isArray(response.value) || typeof response.cursor !== "string") {
+    throw new Error(
+      `Unexpected GuestBook snapshot: ${JSON.stringify(response)}`,
+    );
+  }
+  return {
+    // typecast: the array guard above establishes the response collection; individual entries are validated by the assertions that consume them.
+    value: response.value as readonly PublishedEntry[],
+    cursor: response.cursor,
+  };
+}
+
+async function createEntry(
+  endpoint: string,
+  author: string,
+  message: string,
+  idempotencyKey: string,
+): Promise<CreatedEntry> {
+  const commandId = `${idempotencyKey}-${Date.now()}`;
+  const submission = await postJson(
+    `${endpoint}/__applik8s/v1/commands/GuestBookEntry.create/submit`,
+    {
+      input: { guestbook: "main", author, message },
+      commandId,
+      idempotencyKey,
+    },
+  );
+  if (typeof submission.progressCursor !== "string") {
+    throw new Error(
+      `Unexpected GuestBook command submission: ${JSON.stringify(submission)}`,
+    );
+  }
+  return waitForCommandResult(endpoint, submission.progressCursor);
+}
+
+async function waitForCommandResult(
+  endpoint: string,
+  cursor: string,
+): Promise<CreatedEntry> {
+  const value = await waitForJson(
+    `${endpoint}/__applik8s/v1/commands/GuestBookEntry.create/progress`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cursor }),
+    },
+    (value) =>
+      value.durableResult === "succeeded" && isCreatedOutput(value.output),
+  );
+  if (
+    typeof value.reconciliation !== "string" ||
+    !isCreatedOutput(value.output)
+  ) {
+    throw new Error(
+      `Unexpected GuestBook command result: ${JSON.stringify(value)}`,
+    );
+  }
+  return {
+    reconciliation: value.reconciliation,
+    output: value.output,
+  };
+}
+
+async function waitForPublished(
+  endpoint: string,
+  message: string,
+): Promise<PublishedEntry> {
+  let found: PublishedEntry | undefined;
+  await waitForJson(
+    `${endpoint}/__applik8s/v1/queries/GuestBookEntry.published/snapshot`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: { guestbook: "main", limit: 20 } }),
+    },
+    (value) => {
+      if (!Array.isArray(value.value)) return false;
+      // typecast: the live endpoint's public output schema validates this array before it reaches the test boundary.
+      found = (value.value as readonly PublishedEntry[]).find(
+        (entry) => entry.message === message,
+      );
+      return Boolean(found);
+    },
+  );
+  if (!found)
+    throw new Error(`Published GuestBook entry ${message} was not returned.`);
+  return found;
+}
+
+async function waitForEntryPhase(name: string, phase: string): Promise<void> {
+  const started = Date.now();
+  let last = "";
+  while (Date.now() - started < 120_000) {
+    try {
+      last = (
+        await kubectl([
+          "get",
+          `guestbookentries.guestbook.applik8s.dev/${name}`,
+          "--namespace",
+          namespace,
+          "--output=jsonpath={.status.phase}",
+        ])
+      ).stdout.trim();
+      if (last === phase) return;
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+    }
+    await sleep(1_000);
+  }
+  throw new Error(
+    `Timed out waiting for GuestBookEntry ${name} phase ${phase}; last value: ${last}`,
+  );
+}
+
+async function waitForSseInvalidation(
+  endpoint: string,
+  cursor: string,
+): Promise<void> {
+  const controller = new AbortController();
+  const response = await fetch(
+    `${endpoint}/__applik8s/v1/queries/GuestBookEntry.published/subscribe`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ input: { guestbook: "main", limit: 20 }, cursor }),
+      signal: controller.signal,
+    },
+  );
+  if (!response.ok || !response.body) {
+    throw new Error(
+      `GuestBook SSE returned ${response.status}: ${await response.text()}`,
+    );
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  const deadline = Date.now() + 60_000;
+  try {
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const result = await Promise.race([
+        reader.read().then((next) => ({ next })),
+        sleep(remaining).then(() => ({ timeout: true })),
+      ]);
+      if ("timeout" in result)
+        throw new Error("Timed out waiting for GuestBook SSE invalidation.");
+      if (result.next.done) break;
+      pending += decoder.decode(result.next.value, { stream: true });
+      const frames = pending.split("\n\n");
+      pending = frames.pop() ?? "";
+      if (frames.some((frame) => frame.includes("event: invalidate"))) return;
+    }
+    throw new Error("GuestBook SSE ended before an invalidation was observed.");
+  } finally {
+    controller.abort();
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
+async function postJson(
+  url: string,
+  body: object,
+): Promise<Record<string, unknown>> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  if (!response.ok)
+    throw new Error(`${url} returned ${response.status}: ${text}`);
+  // typecast: endpoint-specific callers validate every field they consume from this JSON object.
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
+async function waitForJson(
+  url: string,
+  init: RequestInit,
+  predicate: (value: Record<string, unknown>) => boolean,
+): Promise<Record<string, unknown>> {
+  const started = Date.now();
+  let last = "";
+  while (Date.now() - started < 120_000) {
+    try {
+      const response = await fetch(url, init);
+      last = await response.text();
+      if (response.ok) {
+        // typecast: the supplied predicate is the runtime validator for each polled endpoint response.
+        const value = JSON.parse(last) as Record<string, unknown>;
+        if (predicate(value)) return value;
+      }
+    } catch (error) {
+      last = error instanceof Error ? error.message : String(error);
+    }
+    await sleep(1_000);
+  }
+  throw new Error(`Timed out waiting for ${url}: ${last}`);
+}
+
+async function startPortForward(
+  resource: string,
+  remotePort: number,
+): Promise<PortForward> {
+  const child = spawn(
+    "kubectl",
+    [
+      "--context",
+      process.env.APPLIK8S_E2E_CONTEXT ?? "orbstack",
+      "port-forward",
+      "--namespace",
+      namespace,
+      resource,
+      `0:${remotePort}`,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let output = "";
+  child.stdout.on("data", (chunk) => {
+    output += String(chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    output += String(chunk);
+  });
+  const started = Date.now();
+  while (Date.now() - started < 30_000) {
+    const match = output.match(/Forwarding from 127\.0\.0\.1:(\d+)/);
+    if (match?.[1]) {
+      return {
+        endpoint: `http://127.0.0.1:${match[1]}`,
+        async close() {
+          if (child.exitCode !== null) return;
+          if (!child.killed) child.kill("SIGTERM");
+          await new Promise((resolve) => child.once("exit", resolve));
+        },
+      };
+    }
+    if (child.exitCode !== null)
+      throw new Error(`kubectl port-forward ${resource} exited: ${output}`);
+    await sleep(100);
+  }
+  child.kill("SIGTERM");
+  throw new Error(`Timed out starting port-forward for ${resource}: ${output}`);
+}
+
+async function writeEvidenceReceipt(): Promise<void> {
+  const completedAt = new Date().toISOString();
+  const assertions = [
+    "vite-application-build",
+    "application-host-ready",
+    "operator-ready",
+    "browser-command-submit",
+    "kubernetes-create",
+    "operator-publish",
+    "operator-reject",
+    "sse-invalidation",
+    "authoritative-requery",
+    "ssr-render",
+    "restart-resume",
+    "zero-container-restarts",
+    "cli-alchemy-typekro-delete",
+    "runtime-created-data-cleanup",
+    "generated-crd-retained-empty-for-reuse",
+    "namespace-removed",
+  ];
+  await writeV06EvidenceReceipt(evidencePath, {
+    suite: "guestbook-start",
+    run: { id: evidenceRunId, startedAt: evidenceStartedAt, completedAt },
+    candidate: {
+      git: await collectV06GitIdentity(),
+      cluster: await collectV06ClusterIdentity(context),
+    },
+    environment: {
+      context,
+      namespace,
+      application: applicationName,
+    },
+    assertionEvidence: createV06AssertionEvidence(
+      assertions.map((assertion) => ({
+        assertion,
+        test: "GuestBook Start live lifecycle",
+        observedAt: completedAt,
+      })),
+      evidenceRunId,
+    ),
+  });
+}
+
+function isCreatedOutput(value: unknown): value is CreatedEntry["output"] {
+  if (!value || typeof value !== "object") return false;
+  const identity = Reflect.get(value, "identity");
+  return typeof identity === "string" && identity.length > 0;
+}
+
+async function assertRetainedGeneratedCrdIsEmpty(): Promise<void> {
+  const plural = `${applicationName.toLowerCase().replaceAll(/[^a-z0-9]/g, "")}s`;
+  const crdName = `${plural}.${applicationName}.applik8s.dev`;
+  const crd = JSON.parse(
+    (await kubectl(["get", `crd/${crdName}`, "--output=json"])).stdout,
+  ) as {
+    readonly metadata?: {
+      readonly labels?: Readonly<Record<string, string>>;
+      readonly deletionTimestamp?: string;
+    };
+  };
+  expect(crd.metadata?.deletionTimestamp).toBeUndefined();
+  expect(crd.metadata?.labels).toMatchObject({
+    "kro.run/owned": "true",
+    "kro.run/resource-graph-definition-name": applicationName,
+  });
+  expect(
+    (
+      await kubectl(["get", crdName, "--all-namespaces", "--output=name"])
+    ).stdout.trim(),
+  ).toBe("");
+}
+
+function pascalCase(value: string): string {
+  return value
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join("");
+}

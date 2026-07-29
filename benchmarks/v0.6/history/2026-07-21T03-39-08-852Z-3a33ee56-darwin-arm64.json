@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 4,
+  "release": "v0.6",
+  "evidenceClass": "synthetic-local",
+  "limitations": [
+    "This benchmark measures in-process cache-key generation and projection replay only; it does not measure network, PostgreSQL, ClickHouse, Kubernetes scheduling, Harbor, Ceph, or multi-process contention.",
+    "The consumer-lag and projection-convergence values describe a finite synthetic replay, not a sustained production arrival rate.",
+    "Connection-pool, datastore, registry, object-storage, and cluster performance require explicit live evidence lanes."
+  ],
+  "generatedAt": "2026-07-21T03:39:08.852Z",
+  "git": {
+    "commit": "3a33ee5651ef672dc92d3b943041131cde64aca9",
+    "dirty": true,
+    "workingTreeDigest": "bd798a5fad6847d98a095ad49a239a95c89fc35c3e868023c2464bd7161dc960"
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpuModel": "Apple M5 Max",
+    "cpuCount": 18,
+    "runtime": "bun-1.3.13"
+  },
+  "operations": 20000,
+  "client": {
+    "durationMs": 40.05,
+    "cacheKeysPerSecond": 499330.58,
+    "latencyMs": {
+      "p50": 0,
+      "p95": 0,
+      "p99": 0.01,
+      "maximum": 0.67
+    },
+    "rssGrowthBytes": 56475648
+  },
+  "projection": {
+    "coldStartMs": 0.32,
+    "convergenceMs": 5.38,
+    "eventsPerSecond": 3714853.77,
+    "batches": 40,
+    "consumerLag": {
+      "initial": 20000,
+      "maximum": 20000,
+      "final": 0
+    },
+    "rssGrowthBytes": 6062080
+  },
+  "facade": {
+    "minimalGzipBytes": 259,
+    "marginalModelGzipBytes": 24
+  }
+}

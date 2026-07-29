@@ -1,8 +1,39 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
+  type ApplicationCrdSchemaCompatibilityContract,
+  type ApplicationDiagnosticContract,
+  type ApplicationDurableStatusOwnershipContract,
+  type ApplicationGeneratedResourceContract,
+  type ApplicationGraph,
+  type ApplicationJobRuntimeContract,
+  type ApplicationJobStatusLifecycleContract,
+  type ApplicationMigrationContract,
+  type ApplicationMigrationDriftCheckContract,
+  type ApplicationMigrationPlanContract,
+  type ApplicationModelMaterializationContract,
+  type ApplicationModelStoreGuaranteesContract,
+  type ApplicationModelStoreSemanticsContract,
+  type ApplicationObservabilityContract,
+  type ApplicationOperationTargetContract,
+  type ApplicationPhaseStatus,
+  type ApplicationProviderBindingContract,
+  type ApplicationProviderCompatibilityMatrixContract,
+  type ApplicationProviderInterfaceContract,
+  type ApplicationProviderInterfaceKind,
+  type ApplicationProviderNode,
+  type ApplicationProviderRequirement,
+  type ApplicationRuntimeModuleContract,
+  type ApplicationRuntimeModuleInterfaceContract,
+  type ApplicationRuntimeModuleManifestContract,
+  type ApplicationScheduleContract,
+  type ApplicationV03PressureTestContract,
+  type ApplicationWatchScopeLoweringContract,
   applicationGraphNodeKinds,
   applicationProviderInterfaceKinds,
+  type GeneratedJobContract,
+  type GeneratedJobDurableStatusUpdaterContract,
+  type GeneratedJobPhaseStatusContract,
   isApplicationGraphNodeKind,
   isApplicationProviderInterfaceKind,
   normalizeApplicationGraph,
@@ -24,42 +55,12 @@ import {
   validateApplicationRuntimeModuleManifestContract,
   validateApplicationV03PressureTestContract,
   validateApplicationWatchScopeLoweringContract,
-  type ApplicationGraph,
-  type ApplicationDurableStatusOwnershipContract,
-  type ApplicationGeneratedResourceContract,
-  type ApplicationModelStoreGuaranteesContract,
-  type ApplicationModelStoreSemanticsContract,
-  type ApplicationJobRuntimeContract,
-  type ApplicationJobStatusLifecycleContract,
-  type ApplicationDiagnosticContract,
-  type ApplicationCrdSchemaCompatibilityContract,
-  type ApplicationMigrationDriftCheckContract,
-  type ApplicationMigrationContract,
-  type ApplicationMigrationPlanContract,
-  type ApplicationModelMaterializationContract,
-  type ApplicationOperationTargetContract,
-  type ApplicationObservabilityContract,
-  type ApplicationPhaseStatus,
-  type ApplicationProviderBindingContract,
-  type ApplicationProviderCompatibilityMatrixContract,
-  type ApplicationProviderInterfaceKind,
-  type ApplicationProviderInterfaceContract,
-  type ApplicationProviderNode,
-  type ApplicationProviderRequirement,
-  type ApplicationRuntimeModuleContract,
-  type ApplicationRuntimeModuleInterfaceContract,
-  type ApplicationRuntimeModuleManifestContract,
-  type ApplicationScheduleContract,
-  type ApplicationV03PressureTestContract,
-  type ApplicationWatchScopeLoweringContract,
-  type GeneratedJobContract,
-  type GeneratedJobDurableStatusUpdaterContract,
-  type GeneratedJobPhaseStatusContract,
 } from '../src/index.js';
 
 describe('application graph substrate contract', () => {
   it('names the v0.3 substrate node and provider interfaces explicitly', () => {
     expect(applicationGraphNodeKinds).toEqual([
+      'installation',
       'crd',
       'model',
       'server',
@@ -71,6 +72,18 @@ describe('application graph substrate contract', () => {
       'event',
       'commandHandler',
       'processor',
+      'task',
+      'taskHandler',
+      'workflow',
+      'workflowHandler',
+      'workflowWorker',
+      'query',
+      'gateway',
+      'stream',
+      'streamProcessor',
+      'subscription',
+      'projection',
+      'objectStore',
       'job',
       'config',
       'secret',
@@ -92,11 +105,19 @@ describe('application graph substrate contract', () => {
       'Certificate',
       'DnsPublication',
       'CredentialStore',
+      'WorkflowEngine',
+      'ProjectionStore',
+      'ApplicationHost',
+      'ContainerRegistry',
+      'RequestIdentity',
+      'Authorization',
+      'StructuredGeneration',
     ]);
     expect(isApplicationGraphNodeKind('job')).toBe(true);
-    expect(isApplicationGraphNodeKind('workflow')).toBe(false);
+    expect(isApplicationGraphNodeKind('workflow')).toBe(true);
     expect(isApplicationProviderInterfaceKind('ModelStore')).toBe(true);
-    expect(isApplicationProviderInterfaceKind('Database')).toBe(false);
+    expect(isApplicationProviderInterfaceKind('ProjectionStore')).toBe(true);
+    expect(isApplicationProviderInterfaceKind('projection-store')).toBe(false);
   });
 
   it('represents an app as graph nodes before Kubernetes or TypeKro emission', () => {
@@ -297,6 +318,32 @@ describe('application graph substrate contract', () => {
     expect(serializeApplicationGraph(graph)).toContain('"apiVersion":"applik8s.appGraph/v1alpha1"');
   });
 
+  it('preserves opaque installation references across the durable graph boundary', () => {
+    const namespace = new Proxy({}, {
+      get(_target, property) {
+        if (property === Symbol.for('TypeKro.KubernetesRef')) return true;
+        if (property === 'resourceId') return '__schema__';
+        if (property === 'fieldPath') return 'spec.name';
+        return undefined;
+      },
+    });
+    const endpoint = { expression: '"http://" + string(schema.spec.hostname)', __isTemplate: true };
+    const base = guestBookSubstrateGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: base.nodes.map((node) => node.id === 'provider.model.postgres'
+        ? { ...node, config: { namespace, endpoint } }
+        : node),
+    };
+
+    const serialized = JSON.parse(serializeApplicationGraph(graph));
+    const provider = serialized.nodes.find((node: { id: string }) => node.id === 'provider.model.postgres');
+    expect(provider.config).toEqual({
+      endpoint: ['$', '{"http://" + string(schema.spec.hostname)}'].join(''),
+      namespace: ['$', '{schema.spec.name}'].join(''),
+    });
+  });
+
   it('keeps provider requirements and bindings as first-class graph contracts', () => {
     const graph = guestBookSubstrateGraph();
 
@@ -460,6 +507,13 @@ describe('application graph substrate contract', () => {
       'Certificate:failClosedReserved',
       'DnsPublication:failClosedReserved',
       'CredentialStore:failClosedReserved',
+      'WorkflowEngine:failClosedReserved',
+      'ProjectionStore:failClosedReserved',
+      'ApplicationHost:failClosedReserved',
+      'ContainerRegistry:failClosedReserved',
+      'RequestIdentity:failClosedReserved',
+      'Authorization:failClosedReserved',
+      'StructuredGeneration:failClosedReserved',
     ]);
     expect(contracts.flatMap(validateApplicationProviderInterfaceContract)).toEqual([]);
     expect(validateApplicationProviderInterfaceContract({ interface: 'Queue', surface: 'stablePublicApi', support: 'failClosedReserved', diagnostics: [] })).toEqual(expect.arrayContaining([
@@ -489,6 +543,23 @@ describe('application graph substrate contract', () => {
     ]));
   });
 
+  it('accepts versioned provider-package interfaces without extending the core built-in registry', () => {
+    const matrix = providerCompatibilityMatrix();
+    const projectionStore: ApplicationProviderInterfaceContract = {
+      apiVersion: 'applik8s.provider/v1alpha1',
+      interface: 'VectorStore',
+      version: 'v1alpha1',
+      requirements: ['atomicProjectionCheckpoint'],
+      guarantees: ['replaySafeProjectionWrites'],
+      implementation: { name: 'external-projection-package' },
+      surface: 'experimentalSurface',
+      support: 'implemented',
+      diagnostics: [],
+    };
+    expect(applicationProviderInterfaceKinds).not.toContain('VectorStore');
+    expect(validateApplicationProviderCompatibilityMatrixContract({ ...matrix, providers: [...matrix.providers, projectionStore] })).toEqual([]);
+  });
+
   it('defines provider requirement contracts for every v0.3 capability interface', () => {
     const purposes: Record<ApplicationProviderInterfaceKind, ApplicationProviderRequirement['purpose']> = {
       ModelStore: 'modelStore',
@@ -503,6 +574,13 @@ describe('application graph substrate contract', () => {
       Certificate: 'certificate',
       DnsPublication: 'dnsPublication',
       CredentialStore: 'credentialStore',
+      WorkflowEngine: 'workflowEngine',
+      ProjectionStore: 'projectionStore',
+      ApplicationHost: 'applicationHost',
+      ContainerRegistry: 'containerRegistry',
+      RequestIdentity: 'requestIdentity',
+      Authorization: 'authorization',
+      StructuredGeneration: 'taskCapability',
     };
     const requirements = applicationProviderInterfaceKinds.map((providerInterface) => ({
       id: `requirement.${providerInterface}`,
@@ -516,7 +594,7 @@ describe('application graph substrate contract', () => {
       },
     }) satisfies ApplicationProviderRequirement);
 
-    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['modelStore', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore']);
+    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['modelStore', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'projectionStore', 'applicationHost', 'containerRegistry', 'requestIdentity', 'authorization', 'taskCapability']);
     for (const requirement of requirements) {
       expect(requirement.diagnostics.missing).toContain(requirement.interface);
     }

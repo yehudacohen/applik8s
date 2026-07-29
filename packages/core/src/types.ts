@@ -8,4 +8,4 @@ export type * from './runtime.js';
 export type * from './manifest.js';
 export type * from './lifecycle.js';
 export type * from './application-graph.js';
-export { applicationGraphArtifactFileName, applicationGraphMetadataProperty, applicationGraphNodeKinds, applicationProviderInterfaceKinds, isApplicationGraphNodeKind, isApplicationProviderInterfaceKind, normalizeApplicationGraph, resolveApplicationGraphProviderRequirement, serializeApplicationGraph, validateApplicationGraph, validateApplicationGraphProviderBindings, validateApplicationGraphStructure } from './application-graph.js';
+export { applicationGraphArtifactFileName, applicationGraphMetadataProperty, applicationInstallationMetadataProperty, applicationTypeKroDefinitionProperty, applicationGraphNodeKinds, applicationProviderInterfaceKinds, isApplicationGraphNodeKind, isApplicationProviderInterfaceKind, normalizeApplicationGraph, resolveApplicationGraphProviderRequirement, serializeApplicationGraph, validateApplicationGraph, validateApplicationGraphProviderBindings, validateApplicationGraphStructure } from './application-graph.js';

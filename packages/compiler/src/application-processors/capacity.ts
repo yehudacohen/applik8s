@@ -4,7 +4,7 @@ export function generatedProcessorCapacity(processor: ApplicationProcessorNode) 
   return {
     replicas: processor.deployment.replicas,
     concurrencyPerReplica: processor.deployment.concurrency,
-    maximumInFlight: processor.deployment.replicas * processor.deployment.concurrency,
+    maximumInFlight: multipliedIntegerValue(processor.deployment.replicas, processor.deployment.concurrency),
     maxAckPending: processor.deployment.maxAckPending,
     requests: processor.deployment.resources.requests,
     limits: processor.deployment.resources.limits,
@@ -28,7 +28,7 @@ export function generatedProcessorDisruptionResource(
 export function generatedProcessorPodScheduling(processor: ApplicationProcessorNode, labels: Readonly<Record<string, string>>) {
   return {
     ...(processor.deployment.nodeSelector ? { nodeSelector: processor.deployment.nodeSelector } : {}),
-    ...(processor.deployment.replicas > 1 ? {
+    ...(typeof processor.deployment.replicas === 'string' || processor.deployment.replicas > 1 ? {
       topologySpreadConstraints: [{
         maxSkew: 1,
         topologyKey: 'kubernetes.io/hostname',
@@ -37,4 +37,16 @@ export function generatedProcessorPodScheduling(processor: ApplicationProcessorN
       }],
     } : {}),
   };
+}
+
+function multipliedIntegerValue(left: number | string, right: number | string): number | string {
+  if (typeof left === 'number' && typeof right === 'number') return left * right;
+  return `\${(${integerExpression(left)}) * (${integerExpression(right)})}`;
+}
+
+function integerExpression(value: number | string): string {
+  if (typeof value === 'number') return String(value);
+  const expression = /^\$\{(.+)\}$/.exec(value)?.[1];
+  if (!expression) throw new Error(`Expected a serialized installation integer expression, received ${JSON.stringify(value)}.`);
+  return expression;
 }

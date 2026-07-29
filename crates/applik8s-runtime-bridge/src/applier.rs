@@ -1,15 +1,22 @@
 use applik8s_runtime_contract::{
-    ApplyOwnership, FinalizerOperation, JsonPatchEntry, JsonPatchOperation, KubernetesEventType,
-    KubernetesObject, NormalizedOperationPlan, ObjectRef, Operation, PropagationPolicy,
+    ApplyOwnership, FinalizerOperation, JsonPatchEntry, JsonPatchOperation,
+    KubernetesConnectionName, KubernetesEventType, KubernetesObject, NormalizedOperationPlan,
+    ObjectRef, Operation, PropagationPolicy, RemoteMutationAuthority, RemoteMutationPrecondition,
 };
 use kube::Client;
-use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams, PostParams};
+use kube::api::{Api, DeleteParams, DynamicObject, Patch, PatchParams, PostParams, Preconditions};
 use kube::core::dynamic::ApiResource;
 use kube::core::gvk::GroupVersionKind;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::{OperationProgress, RuntimeBridgeError};
+use crate::remote_authority::{
+    inject_remote_apply_precondition, inject_remote_management_metadata, validate_remote_authority,
+    verify_remote_object_authority,
+};
+
+const REMOTE_CREATE_FIELD_MANAGER: &str = "applik8s-remote-create";
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct AppliedOperationSummary {
@@ -49,6 +56,7 @@ impl AppliedOperationSummary {
 
 pub struct KubeOperationPlanApplier {
     client: Client,
+    connection_clients: BTreeMap<KubernetesConnectionName, Client>,
     field_manager: String,
     plural_overrides: BTreeMap<(String, String), String>,
     force_status: bool,
@@ -58,6 +66,7 @@ impl KubeOperationPlanApplier {
     pub fn new(client: Client, field_manager: impl Into<String>) -> Self {
         Self {
             client,
+            connection_clients: BTreeMap::new(),
             field_manager: field_manager.into(),
             plural_overrides: default_plural_overrides(),
             force_status: false,
@@ -78,6 +87,7 @@ impl KubeOperationPlanApplier {
     pub fn with_field_manager(&self, field_manager: impl Into<String>) -> Self {
         Self {
             client: self.client.clone(),
+            connection_clients: self.connection_clients.clone(),
             field_manager: field_manager.into(),
             plural_overrides: self.plural_overrides.clone(),
             force_status: self.force_status,
@@ -86,6 +96,15 @@ impl KubeOperationPlanApplier {
 
     pub fn with_force_status(mut self, force_status: bool) -> Self {
         self.force_status = force_status;
+        self
+    }
+
+    pub fn with_connection_client(
+        mut self,
+        connection: KubernetesConnectionName,
+        client: Client,
+    ) -> Self {
+        self.connection_clients.insert(connection, client);
         self
     }
 
@@ -104,6 +123,8 @@ impl KubeOperationPlanApplier {
                     field_manager,
                     force,
                     ownership,
+                    connection,
+                    authority,
                 } => {
                     self.apply_resource(
                         owner,
@@ -111,6 +132,8 @@ impl KubeOperationPlanApplier {
                         field_manager.as_deref(),
                         *force,
                         ownership.as_ref(),
+                        connection.as_ref(),
+                        authority.as_ref(),
                     )
                     .await
                     .map_err(|error| {
@@ -125,19 +148,51 @@ impl KubeOperationPlanApplier {
                     })?;
                     summary.applied += 1;
                 }
-                Operation::Patch { ref_, patch } => {
-                    let api = self.api_for_ref(ref_).map_err(|error| {
-                        operation_failed(
-                            index,
-                            operation,
-                            owner,
-                            &self.field_manager,
-                            &summary,
-                            error,
-                        )
-                    })?;
+                Operation::Patch {
+                    ref_,
+                    patch,
+                    connection,
+                    authority,
+                } => {
+                    let api = self
+                        .api_for_ref(ref_, connection.as_ref())
+                        .map_err(|error| {
+                            operation_failed(
+                                index,
+                                operation,
+                                owner,
+                                &self.field_manager,
+                                &summary,
+                                error,
+                            )
+                        })?;
                     let patch_params = PatchParams::default();
-                    let patch_value = serde_json::to_value(patch)
+                    let mut guarded_patch = patch.clone();
+                    if let Some(authority) = authority.as_ref() {
+                        let precondition = self
+                            .verify_remote_mutation_authority(&api, &ref_.name, authority)
+                            .await
+                            .map_err(|error| {
+                                operation_failed(
+                                    index,
+                                    operation,
+                                    owner,
+                                    &self.field_manager,
+                                    &summary,
+                                    error,
+                                )
+                            })?;
+                        guarded_patch.insert(
+                            0,
+                            json_patch_test(
+                                "/metadata/resourceVersion",
+                                &precondition.resource_version,
+                            ),
+                        );
+                        guarded_patch
+                            .insert(0, json_patch_test("/metadata/uid", &precondition.uid));
+                    }
+                    let patch_value = serde_json::to_value(&guarded_patch)
                         .map_err(RuntimeBridgeError::from)
                         .map_err(|error| {
                             operation_failed(
@@ -178,17 +233,24 @@ impl KubeOperationPlanApplier {
                         })?;
                     summary.patched += 1;
                 }
-                Operation::Delete { ref_, options } => {
-                    let api = self.api_for_ref(ref_).map_err(|error| {
-                        operation_failed(
-                            index,
-                            operation,
-                            owner,
-                            &self.field_manager,
-                            &summary,
-                            error,
-                        )
-                    })?;
+                Operation::Delete {
+                    ref_,
+                    options,
+                    connection,
+                    authority,
+                } => {
+                    let api = self
+                        .api_for_ref(ref_, connection.as_ref())
+                        .map_err(|error| {
+                            operation_failed(
+                                index,
+                                operation,
+                                owner,
+                                &self.field_manager,
+                                &summary,
+                                error,
+                            )
+                        })?;
                     let mut params = DeleteParams::default();
                     if let Some(options) = options {
                         if let Some(grace_period_seconds) = options.grace_period_seconds {
@@ -205,6 +267,49 @@ impl KubeOperationPlanApplier {
                                 PropagationPolicy::Orphan => kube::api::PropagationPolicy::Orphan,
                             });
                         }
+                        if let Some(preconditions) = &options.preconditions {
+                            params.preconditions = Some(Preconditions {
+                                uid: Some(preconditions.uid.clone()),
+                                resource_version: preconditions.resource_version.clone(),
+                            });
+                        }
+                    }
+                    if let Some(authority) = authority.as_ref() {
+                        let precondition = self
+                            .verify_remote_mutation_authority(&api, &ref_.name, authority)
+                            .await
+                            .map_err(|error| {
+                                operation_failed(
+                                    index,
+                                    operation,
+                                    owner,
+                                    &self.field_manager,
+                                    &summary,
+                                    error,
+                                )
+                            })?;
+                        let authority_preconditions = Preconditions {
+                            uid: Some(precondition.uid),
+                            resource_version: Some(precondition.resource_version),
+                        };
+                        if let Some(declared) = params.preconditions.as_ref()
+                            && (declared.uid != authority_preconditions.uid
+                                || declared.resource_version
+                                    != authority_preconditions.resource_version)
+                        {
+                            return Err(operation_failed(
+                                index,
+                                operation,
+                                owner,
+                                &self.field_manager,
+                                &summary,
+                                RuntimeBridgeError::UnsupportedOperation(
+                                    "delete options preconditions do not match verified remote mutation authority"
+                                        .to_string(),
+                                ),
+                            ));
+                        }
+                        params.preconditions = Some(authority_preconditions);
                     }
                     match api.delete(&ref_.name, &params).await {
                         Ok(_) => {}
@@ -283,6 +388,7 @@ impl KubeOperationPlanApplier {
         Ok(summary)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn apply_resource(
         &self,
         owner: &ObjectRef,
@@ -290,13 +396,75 @@ impl KubeOperationPlanApplier {
         field_manager: Option<&str>,
         force: Option<bool>,
         ownership: Option<&ApplyOwnership>,
+        connection: Option<&KubernetesConnectionName>,
+        authority: Option<&RemoteMutationAuthority>,
     ) -> Result<(), RuntimeBridgeError> {
-        let api = self.api_for_object(resource)?;
-        let mut params = PatchParams::apply(field_manager.unwrap_or(&self.field_manager));
+        let api = self.api_for_object(resource, connection)?;
+        let patch_value = apply_resource_patch(owner, resource, ownership)?;
+        let mut patch_value = match authority {
+            Some(RemoteMutationAuthority::Managed {
+                identity,
+                source_uid,
+            }) => inject_remote_management_metadata(patch_value, identity, source_uid)?,
+            _ => patch_value,
+        };
+        let default_field_manager = if connection.is_some() {
+            "applik8s-remote"
+        } else {
+            &self.field_manager
+        };
+        let effective_field_manager = field_manager.unwrap_or(default_field_manager);
+        let mut cleanup_create_ownership = false;
+        if let Some(authority @ RemoteMutationAuthority::Managed { .. }) = authority {
+            match api.get(&resource.metadata.name).await {
+                Ok(object) => {
+                    let precondition = verify_remote_object_authority(&object, authority)?;
+                    cleanup_create_ownership = has_remote_create_ownership(&object);
+                    patch_value = inject_remote_apply_precondition(
+                        patch_value,
+                        &precondition.resource_version,
+                    )?;
+                }
+                Err(kube::Error::Api(error)) if error.code == 404 => {
+                    let object: DynamicObject = serde_json::from_value(patch_value)?;
+                    let params = PostParams {
+                        field_manager: Some(REMOTE_CREATE_FIELD_MANAGER.to_string()),
+                        ..PostParams::default()
+                    };
+                    // POST provides the create-only race boundary. Its temporary Update
+                    // ownership is removed only after an optimistic, same-value SSA has
+                    // established the durable manager. Both transitions carry exact
+                    // resourceVersion tests, so an interposed writer makes the operation
+                    // fail closed instead of being overwritten by force-conflicts.
+                    let created = api.create(&params, &object).await?;
+                    let precondition = verify_remote_object_authority(&created, authority)?;
+                    patch_value = inject_remote_apply_precondition(
+                        serde_json::to_value(object)?,
+                        &precondition.resource_version,
+                    )?;
+                    cleanup_create_ownership = true;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let mut params = PatchParams::apply(effective_field_manager);
         params.force = force.unwrap_or(false);
-        let patch = Patch::Apply(apply_resource_patch(owner, resource, ownership)?);
-        api.patch(&resource.metadata.name, &params, &patch).await?;
+        let patch = Patch::Apply(patch_value);
+        let applied = api.patch(&resource.metadata.name, &params, &patch).await?;
+        if cleanup_create_ownership {
+            remove_remote_create_ownership(&api, &resource.metadata.name, &applied).await?;
+        }
         Ok(())
+    }
+
+    async fn verify_remote_mutation_authority(
+        &self,
+        api: &Api<DynamicObject>,
+        name: &str,
+        authority: &RemoteMutationAuthority,
+    ) -> Result<RemoteMutationPrecondition, RuntimeBridgeError> {
+        let object = api.get(name).await?;
+        verify_remote_object_authority(&object, authority)
     }
 
     async fn patch_status(
@@ -304,7 +472,7 @@ impl KubeOperationPlanApplier {
         target: &ObjectRef,
         status: &Value,
     ) -> Result<(), RuntimeBridgeError> {
-        let api = self.api_for_ref(target)?;
+        let api = self.api_for_ref(target, None)?;
         let mut params = PatchParams::apply(&self.field_manager);
         params.force = self.force_status;
         let patch = Patch::Apply(prune_nulls(json!({
@@ -323,7 +491,7 @@ impl KubeOperationPlanApplier {
         operation: &FinalizerOperation,
         finalizer: &str,
     ) -> Result<(), RuntimeBridgeError> {
-        let api = self.api_for_ref(target)?;
+        let api = self.api_for_ref(target, None)?;
         let object = api.get(&target.name).await?;
         let mut finalizers = object.metadata.finalizers.unwrap_or_default();
         match operation {
@@ -416,6 +584,7 @@ impl KubeOperationPlanApplier {
     fn api_for_object(
         &self,
         object: &KubernetesObject,
+        connection: Option<&KubernetesConnectionName>,
     ) -> Result<Api<DynamicObject>, RuntimeBridgeError> {
         let ref_ = ObjectRef {
             api_version: object.api_version.clone(),
@@ -425,16 +594,32 @@ impl KubeOperationPlanApplier {
             uid: object.metadata.uid.clone(),
             resource_version: object.metadata.resource_version.clone(),
         };
-        self.api_for_ref(&ref_)
+        self.api_for_ref(&ref_, connection)
     }
 
-    fn api_for_ref(&self, ref_: &ObjectRef) -> Result<Api<DynamicObject>, RuntimeBridgeError> {
+    fn api_for_ref(
+        &self,
+        ref_: &ObjectRef,
+        connection: Option<&KubernetesConnectionName>,
+    ) -> Result<Api<DynamicObject>, RuntimeBridgeError> {
         let api_resource = api_resource(&ref_.api_version, &ref_.kind, &self.plural_overrides)?;
+        let client = match connection {
+            Some(connection) => self
+                .connection_clients
+                .get(connection)
+                .cloned()
+                .ok_or_else(|| {
+                    RuntimeBridgeError::InvalidPayload(format!(
+                        "Kubernetes connection client was not resolved for alias {connection}.",
+                    ))
+                })?,
+            None => self.client.clone(),
+        };
         Ok(match ref_.namespace.as_deref() {
             Some(namespace) => {
-                Api::<DynamicObject>::namespaced_with(self.client.clone(), namespace, &api_resource)
+                Api::<DynamicObject>::namespaced_with(client, namespace, &api_resource)
             }
-            None => Api::<DynamicObject>::all_with(self.client.clone(), &api_resource),
+            None => Api::<DynamicObject>::all_with(client, &api_resource),
         })
     }
 }
@@ -458,6 +643,74 @@ fn prune_nulls(value: Value) -> Value {
     }
 }
 
+fn has_remote_create_ownership(object: &DynamicObject) -> bool {
+    object
+        .metadata
+        .managed_fields
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .any(|entry| {
+            entry.subresource.as_deref().unwrap_or_default().is_empty()
+                && entry.manager.as_deref() == Some(REMOTE_CREATE_FIELD_MANAGER)
+                && entry.operation.as_deref() == Some("Update")
+        })
+}
+
+async fn remove_remote_create_ownership(
+    api: &Api<DynamicObject>,
+    name: &str,
+    object: &DynamicObject,
+) -> Result<(), RuntimeBridgeError> {
+    let indices = object
+        .metadata
+        .managed_fields
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            (entry.subresource.as_deref().unwrap_or_default().is_empty()
+                && entry.manager.as_deref() == Some(REMOTE_CREATE_FIELD_MANAGER)
+                && entry.operation.as_deref() == Some("Update"))
+            .then_some(index)
+        })
+        .rev()
+        .collect::<Vec<_>>();
+    if indices.is_empty() {
+        return Ok(());
+    }
+
+    let uid = object.metadata.uid.as_deref().ok_or_else(|| {
+        RuntimeBridgeError::InvalidPayload(
+            "remote SSA ownership cleanup requires metadata.uid".to_string(),
+        )
+    })?;
+    let resource_version = object.metadata.resource_version.as_deref().ok_or_else(|| {
+        RuntimeBridgeError::InvalidPayload(
+            "remote SSA ownership cleanup requires metadata.resourceVersion".to_string(),
+        )
+    })?;
+    let mut operations = vec![
+        json!({ "op": "test", "path": "/metadata/uid", "value": uid }),
+        json!({
+            "op": "test",
+            "path": "/metadata/resourceVersion",
+            "value": resource_version,
+        }),
+    ];
+    operations.extend(indices.into_iter().map(|index| {
+        json!({
+            "op": "remove",
+            "path": format!("/metadata/managedFields/{index}"),
+        })
+    }));
+    let patch = json_patch::Patch(serde_json::from_value(Value::Array(operations))?);
+    api.patch(name, &PatchParams::default(), &Patch::<Value>::Json(patch))
+        .await?;
+    Ok(())
+}
+
 fn apply_resource_patch(
     owner: &ObjectRef,
     resource: &KubernetesObject,
@@ -466,6 +719,15 @@ fn apply_resource_patch(
     let mut value = serde_json::to_value(resource)?;
     inject_owner_reference(owner, resource, ownership, &mut value)?;
     Ok(prune_nulls(value))
+}
+
+fn json_patch_test(path: &str, value: &str) -> JsonPatchEntry {
+    JsonPatchEntry {
+        op: JsonPatchOperation::Test,
+        path: path.to_string(),
+        value: Some(json!(value)),
+        from: None,
+    }
 }
 
 fn inject_owner_reference(
@@ -594,6 +856,7 @@ pub fn validate_operation_plan(
 ) -> Result<(), RuntimeBridgeError> {
     validate_ref(owner, "owner")?;
     let mut previous_order = 0;
+    let mut mutation_connections = BTreeSet::new();
     for (index, operation) in plan.operations.iter().enumerate() {
         let current_order = canonical_operation_order(operation);
         if current_order < previous_order {
@@ -611,6 +874,8 @@ pub fn validate_operation_plan(
                 resource,
                 field_manager,
                 ownership,
+                connection,
+                authority,
                 ..
             } => {
                 validate_kubernetes_object(resource, index)?;
@@ -618,9 +883,32 @@ pub fn validate_operation_plan(
                     validate_field_manager(index, field_manager)?;
                 }
                 validate_apply_ownership(resource, ownership.as_ref(), index)?;
+                validate_connection(connection.as_ref(), index)?;
+                if connection.is_some() && !matches!(ownership, Some(ApplyOwnership::None)) {
+                    return invalid_plan(
+                        index,
+                        "connection-scoped apply must set ownership.mode=none because Kubernetes owner references cannot cross clusters",
+                    );
+                }
+                validate_remote_authority(
+                    owner,
+                    connection.as_ref(),
+                    authority.as_ref(),
+                    index,
+                    true,
+                )?;
+                if let Some(connection) = connection {
+                    mutation_connections.insert(connection.clone());
+                }
             }
-            Operation::Patch { ref_, patch } => {
+            Operation::Patch {
+                ref_,
+                patch,
+                connection,
+                authority,
+            } => {
                 validate_ref(ref_, "patch.ref")?;
+                validate_connection(connection.as_ref(), index)?;
                 if patch.is_empty() {
                     return invalid_plan(
                         index,
@@ -628,10 +916,36 @@ pub fn validate_operation_plan(
                     );
                 }
                 validate_json_patch(index, patch)?;
+                validate_remote_authority(
+                    owner,
+                    connection.as_ref(),
+                    authority.as_ref(),
+                    index,
+                    false,
+                )?;
+                if let Some(connection) = connection {
+                    mutation_connections.insert(connection.clone());
+                }
             }
-            Operation::Delete { ref_, options } => {
+            Operation::Delete {
+                ref_,
+                options,
+                connection,
+                authority,
+            } => {
                 validate_ref(ref_, "delete.ref")?;
+                validate_connection(connection.as_ref(), index)?;
                 validate_delete_options(index, options.as_ref())?;
+                validate_remote_authority(
+                    owner,
+                    connection.as_ref(),
+                    authority.as_ref(),
+                    index,
+                    false,
+                )?;
+                if let Some(connection) = connection {
+                    mutation_connections.insert(connection.clone());
+                }
             }
             Operation::Status { status, ref_ } => {
                 if !status.is_object() {
@@ -669,6 +983,37 @@ pub fn validate_operation_plan(
                 }
             }
         }
+    }
+    if mutation_connections.len() > 1 {
+        return invalid_plan(
+            0,
+            "a v1 mutation plan may address at most one non-local Kubernetes connection",
+        );
+    }
+    Ok(())
+}
+
+fn validate_connection(
+    connection: Option<&KubernetesConnectionName>,
+    index: usize,
+) -> Result<(), RuntimeBridgeError> {
+    let Some(connection) = connection else {
+        return Ok(());
+    };
+    if connection.is_empty()
+        || connection.len() > 63
+        || !connection
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_lowercase())
+        || !connection.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
+    {
+        return invalid_plan(
+            index,
+            "connection must be a declared DNS-label-like logical alias",
+        );
     }
     Ok(())
 }
@@ -709,6 +1054,21 @@ fn validate_delete_options(
             );
         }
     }
+    if let Some(preconditions) = &options.preconditions {
+        if preconditions.uid.trim().is_empty() {
+            return invalid_plan(index, "delete.options.preconditions.uid must not be empty");
+        }
+        if preconditions
+            .resource_version
+            .as_deref()
+            .is_some_and(str::is_empty)
+        {
+            return invalid_plan(
+                index,
+                "delete.options.preconditions.resourceVersion must not be empty",
+            );
+        }
+    }
     Ok(())
 }
 
@@ -723,7 +1083,7 @@ fn validate_event_regarding(
     } else {
         owner
     };
-    if target.namespace.as_deref().map_or(true, str::is_empty) {
+    if target.namespace.as_deref().is_none_or(str::is_empty) {
         return invalid_plan(
             index,
             "event.regarding must be namespaced; provide an explicit namespaced regarding object or reconcile a namespaced owner",
@@ -1184,6 +1544,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn detects_only_the_temporary_remote_create_owner() {
+        let object: DynamicObject = serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "remote",
+                "managedFields": [
+                    { "manager": "applik8s-remote-create", "operation": "Update" },
+                    { "manager": "applik8s-remote", "operation": "Apply", "subresource": "status" },
+                    { "manager": "another-manager", "operation": "Apply" }
+                ]
+            }
+        }))
+        .expect("managed object deserializes");
+        assert!(has_remote_create_ownership(&object));
+
+        let claimed: DynamicObject = serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "remote",
+                "managedFields": [
+                    { "manager": "applik8s-remote", "operation": "Apply" }
+                ]
+            }
+        }))
+        .expect("claimed object deserializes");
+        assert!(!has_remote_create_ownership(&claimed));
+    }
+
+    #[test]
     fn default_owner_reference_is_injected_for_same_namespace_children() {
         let owner = owner_ref(Some("media"), Some("owner-uid"));
         let resource = config_map("hero-output", Some("media"), None);
@@ -1318,6 +1709,8 @@ mod tests {
                     ref_: foreign_owner,
                     block_owner_deletion: None,
                 }),
+                connection: None,
+                authority: None,
             }],
             diagnostics: None,
         };
@@ -1328,6 +1721,128 @@ mod tests {
     }
 
     #[test]
+    fn connection_scoped_apply_requires_explicit_no_ownership() {
+        let owner = owner_ref(Some("media"), Some("owner-uid"));
+        let connection = "destination".to_string();
+        let operation = |ownership| Operation::Apply {
+            resource: config_map("hero-output", Some("media"), None),
+            field_manager: None,
+            force: None,
+            ownership,
+            connection: Some(connection.clone()),
+            authority: Some(RemoteMutationAuthority::Managed {
+                identity: "imagejob/hero/config".to_string(),
+                source_uid: "owner-uid".to_string(),
+            }),
+        };
+
+        let invalid = NormalizedOperationPlan {
+            operations: vec![operation(None)],
+            diagnostics: None,
+        };
+        let error = validate_operation_plan(&owner, &invalid)
+            .expect_err("implicit local ownership must be rejected for a remote apply");
+        assert!(error.to_string().contains("ownership.mode=none"));
+
+        let valid = NormalizedOperationPlan {
+            operations: vec![operation(Some(ApplyOwnership::None))],
+            diagnostics: None,
+        };
+        validate_operation_plan(&owner, &valid)
+            .expect("explicit no-ownership remote apply validates");
+    }
+
+    #[test]
+    fn remote_mutations_require_authority_and_one_connection_scope() {
+        let owner = owner_ref(Some("media"), Some("owner-uid"));
+        let ref_ = owner_ref(Some("media"), Some("remote-uid"));
+        let unguarded = NormalizedOperationPlan {
+            operations: vec![Operation::Delete {
+                ref_: ref_.clone(),
+                options: None,
+                connection: Some("destination".to_string()),
+                authority: None,
+            }],
+            diagnostics: None,
+        };
+        assert!(
+            validate_operation_plan(&owner, &unguarded)
+                .expect_err("authority is required")
+                .to_string()
+                .contains("authority")
+        );
+
+        let two_connections = NormalizedOperationPlan {
+            operations: vec![
+                Operation::Patch {
+                    ref_: ref_.clone(),
+                    patch: vec![json_patch_test("/metadata/name", "pipeline")],
+                    connection: Some("source".to_string()),
+                    authority: Some(RemoteMutationAuthority::Existing {
+                        precondition: RemoteMutationPrecondition {
+                            uid: "remote-uid".to_string(),
+                            resource_version: "1".to_string(),
+                        },
+                    }),
+                },
+                Operation::Delete {
+                    ref_,
+                    options: None,
+                    connection: Some("destination".to_string()),
+                    authority: Some(RemoteMutationAuthority::Existing {
+                        precondition: RemoteMutationPrecondition {
+                            uid: "remote-uid".to_string(),
+                            resource_version: "1".to_string(),
+                        },
+                    }),
+                },
+            ],
+            diagnostics: None,
+        };
+        assert!(
+            validate_operation_plan(&owner, &two_connections)
+                .expect_err("multiple remote mutation connections are rejected")
+                .to_string()
+                .contains("at most one")
+        );
+    }
+
+    #[test]
+    fn managed_remote_authority_is_owner_bound_and_apply_is_optimistically_guarded() {
+        let owner = owner_ref(Some("media"), Some("owner-uid"));
+        let stale_source = NormalizedOperationPlan {
+            operations: vec![Operation::Apply {
+                resource: config_map("hero-output", Some("media"), None),
+                field_manager: None,
+                force: None,
+                ownership: Some(ApplyOwnership::None),
+                connection: Some("destination".to_string()),
+                authority: Some(RemoteMutationAuthority::Managed {
+                    identity: "imagejob/hero/config".to_string(),
+                    source_uid: "invented-uid".to_string(),
+                }),
+            }],
+            diagnostics: None,
+        };
+        assert!(
+            validate_operation_plan(&owner, &stale_source)
+                .expect_err("handler-asserted source identities fail closed")
+                .to_string()
+                .contains("reconciled owner metadata.uid")
+        );
+
+        let patch = inject_remote_apply_precondition(
+            serde_json::json!({ "metadata": { "name": "hero-output" } }),
+            "42",
+        )
+        .expect("precondition injects");
+        assert_eq!(
+            patch.pointer("/metadata/resourceVersion"),
+            Some(&json!("42"))
+        );
+    }
+
+    #[test]
     fn operation_failure_includes_explicit_apply_field_manager() {
         let owner = owner_ref(Some("media"), Some("owner-uid"));
         let operation = Operation::Apply {
@@ -1335,6 +1850,8 @@ mod tests {
             field_manager: Some("image-pipeline".to_string()),
             force: None,
             ownership: None,
+            connection: None,
+            authority: None,
         };
 
         let error = operation_failed(

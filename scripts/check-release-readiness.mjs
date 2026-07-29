@@ -1,20 +1,12 @@
 import { access, readFile } from 'node:fs/promises';
+import { publishablePackageManifestPaths } from './publishable-packages.mjs';
 
-const publishablePackages = [
-  'packages/applik8s/package.json',
-  'packages/core/package.json',
-  'packages/sdk/package.json',
-  'packages/compiler/package.json',
-  'packages/runtime-contract/package.json',
-  'packages/runtime/package.json',
-  'packages/testing/package.json',
-  'packages/typekro-adapter/package.json',
-  'packages/typetainer/package.json',
-];
+const publishablePackages = publishablePackageManifestPaths;
 
-const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.4.2';
+const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.6.0';
 const releaseLabel = `v${expectedVersion}`;
 const publishablePackageNames = new Set();
+const publishableManifests = new Map();
 
 const requiredDocs = [
   'README.md',
@@ -48,8 +40,19 @@ const requiredDocs = [
   'docs/release-evidence-v0.4.md',
   'docs/release-evidence-v0.4.1.md',
   'docs/release-evidence-v0.4.2.md',
+  'docs/release-evidence-v0.4.3.md',
+  'docs/release-evidence-v0.5.md',
+  'docs/release-evidence-v0.6.md',
   'docs/commands.md',
+  'docs/npm-first-run.md',
+  'docs/v0.4-scorecard.md',
+  'docs/v0.5-scorecard.md',
+  'docs/v0.6-scorecard.md',
+  'docs/v0.6-foundation.md',
+  'docs/native-models-and-live-queries.md',
+  'docs/workflows.md',
   'docs/guestbook-show-hn.md',
+  'docs/kubernetes-connections.md',
   'docs/kubernetes-compatibility.md',
 ];
 
@@ -68,6 +71,12 @@ const publicReleaseFiles = [
   'scripts/package-consumer-smoke.mjs',
   'scripts/check-package-audit.mjs',
   'scripts/published-release-orbstack-smoke.mjs',
+  'scripts/check-v04-scorecard.ts',
+  'scripts/check-v05-scorecard.ts',
+  'scripts/benchmark-v05.ts',
+  'scripts/check-v06-scorecard.ts',
+  'scripts/benchmark-v06.ts',
+  'scripts/verify-v04-live-evidence.mjs',
   'scripts/publish-packages.mjs',
   'security/npm-audit-baseline.json',
   '.github/workflows/ci.yml',
@@ -81,10 +90,19 @@ const publicReleaseFiles = [
   'docs/replay-debugging.md',
   'docs/runtime-diagnostics.md',
   'docs/commands.md',
+  'docs/npm-first-run.md',
+  'docs/v0.4-scorecard.md',
+  'docs/v0.5-scorecard.md',
+  'docs/v0.6-scorecard.md',
+  'docs/workflows.md',
   'docs/guestbook-show-hn.md',
   'docs/release-evidence-v0.4.md',
   'docs/release-evidence-v0.4.1.md',
   'docs/release-evidence-v0.4.2.md',
+  'docs/release-evidence-v0.4.3.md',
+  'docs/release-evidence-v0.5.md',
+  'docs/release-evidence-v0.6.md',
+  'docs/kubernetes-connections.md',
   'docs/security-model.md',
   'docs/build-supply-chain.md',
   'docs/leader-election.md',
@@ -93,6 +111,11 @@ const publicReleaseFiles = [
   'examples/imagejob.ts',
   'examples/guestbook.ts',
   'examples/tenant-platform.ts',
+  'examples/chirp-start/src/app.ts',
+  'examples/chirp-start/src/models.ts',
+  'examples/chirp-start/src/application.ts',
+  'examples/chirp-start/src/routes/index.tsx',
+  'examples/chirp-start/README.md',
   'examples/guestbook-minimal.ts',
   'examples/test/product-stories.character.test.ts',
   'packages/e2e/test/typekro-guestbook.e2e.test.ts',
@@ -126,8 +149,22 @@ const failures = [];
 
 for (const path of publishablePackages) {
   const manifest = JSON.parse(await readFile(path, 'utf8'));
+  publishableManifests.set(manifest.name, { path, manifest });
   if (typeof manifest.name === 'string') {
     publishablePackageNames.add(manifest.name);
+  }
+}
+
+const requiredGeneratedRuntimeDependencies = {
+  '@applik8s/vite': ['@applik8s/compiler', '@applik8s/server'],
+  '@applik8s/tanstack-start': ['@applik8s/client', '@applik8s/server', '@applik8s/vite'],
+};
+for (const [packageName, dependencies] of Object.entries(requiredGeneratedRuntimeDependencies)) {
+  const entry = publishableManifests.get(packageName);
+  for (const dependency of dependencies) {
+    if (entry?.manifest.dependencies?.[dependency] !== expectedVersion) {
+      failures.push(`${entry?.path ?? packageName}: generated runtime dependency ${dependency} must be declared at ${expectedVersion}.`);
+    }
   }
 }
 

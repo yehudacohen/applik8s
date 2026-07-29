@@ -1,6 +1,6 @@
 # Release Gates
 
-Release readiness has two layers: local gates and pre-release live gates. v0.4 retains the v0.3 substrate gates and adds durable-command, JetStream, Kubernetes-WASM, processor-recovery, and clean TypeKro lifecycle evidence.
+Release readiness has two layers: local gates and pre-release live gates. v0.6 retains the earlier substrate, command, workflow, connection, and DNS gates and adds native-model, PostgreSQL RLS, live-query, stream, projection, browser-client, performance-history, and generated TypeKro lifecycle evidence.
 
 ## Local Gates
 
@@ -16,6 +16,8 @@ This executes:
 - `bun run lint`
 - `bun run test:implemented`
 - `bun run test:character`
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`
 
 `bun run lint` also runs runtime-contract checks and the release-readiness checker.
@@ -41,13 +43,37 @@ bun run check:release
 The checker verifies:
 
 - publishable package metadata
-- version `0.4.2` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
+- version `0.6.0` by default, or `APPLIK8S_RELEASE_VERSION` when validating a different candidate
 - Apache-2.0 license metadata
 - public publish config
 - no `file:` dependency ranges in publishable packages
 - required public docs exist
 - public release files do not contain private branding or excluded product terms
 - internal-only package paths are absent from the public tree
+
+## v0.6 Native-Model and Reactive-Application Gates
+
+Run the complete local candidate gate:
+
+```sh
+bun run check:v06:local
+```
+
+It combines type, lint, module-boundary, full implemented, focused v0.6 contract, character, coordinated
+dry-pack, clean-consumer, executable scorecard, synthetic performance-budget, Rust formatting, Clippy,
+host-contract, and real ComponentizeJS/WIT/Wasmtime checks.
+
+Run the complete live candidate against the explicitly selected OrbStack context:
+
+```sh
+bun run check:v06:prerelease:orbstack
+```
+
+That lane refreshes PostgreSQL and ClickHouse integration receipts, deploys the generated v0.6
+application through TypeKro, proves RLS isolation, query invalidation, stream replay, projection
+checkpointing and restart/resume, deletes through the owning TypeKro factory, and requires unexpired live
+evidence in the executable scorecard. See `docs/release-evidence-v0.6.md` for the exact claims and
+`docs/v0.6-foundation.md` for provider and KRO lifecycle boundaries.
 
 ## Historical v0.2 Pre-Release Gates
 
@@ -140,6 +166,14 @@ bun run check:v04:local
 
 This covers command/event contracts, application-graph authority metadata, PostgreSQL transactional behavior, outbox recovery, generated processors, JetStream transport, packed packages, character tests, and Kubernetes SDK WASM artifacts.
 
+Run the executable evidence inventory:
+
+```sh
+bun run check:v04:scorecard
+```
+
+Its per-dimension `10/10` values mean all declared objective evidence checks pass; they are coverage scores, not subjective maturity claims. The inventory is versioned in `benchmarks/v0.4/scorecard.json`.
+
 Run the complete live release candidate against OrbStack:
 
 ```sh
@@ -180,8 +214,9 @@ Before announcing v0.3, capture:
 ## CI Evidence
 
 - `.github/workflows/ci.yml` runs local gates, package publish dry-run, and a clean packed-consumer import smoke test for normal repository changes.
-- `.github/workflows/release-evidence.yml` is a manual release-candidate workflow that builds `dist/applik8s`, uploads generated artifacts, and can run live prerelease gates when a base64 kubeconfig secret and `APPLIK8S_E2E_CONTEXT` variable are configured.
-- `.github/workflows/deploy.yml` runs the expiring reviewed npm audit baseline in addition to the local and package gates. Tag pushes publish the multi-architecture host image, publish npm packages through OIDC trusted publishing, verify released artifacts, and only then create the GitHub release.
+- `.github/workflows/release-evidence.yml` is a manual release-candidate workflow that builds `dist/applik8s` and uploads generated artifacts. It can run live prerelease gates against a cluster reachable from GitHub, or validate a non-secret base64 JSON attestation produced by an authorized maintainer on a loopback-only local cluster such as OrbStack.
+- A successful live Release Evidence run uploads an expiring artifact named for its exact commit. `.github/workflows/deploy.yml` refuses tag publication or npm recovery publication unless that exact commit has a successful, unexpired manual live attestation.
+- `.github/workflows/deploy.yml` runs the expiring reviewed npm audit baseline in addition to the local and package gates. After the live-evidence check, tag pushes publish the multi-architecture host image, publish npm packages through OIDC trusted publishing, verify released artifacts, and only then create the GitHub release.
 
 The dependency gate is:
 
@@ -193,7 +228,7 @@ It fails on new, changed, stale, or expired advisories. The current reviewed fin
 
 ## Publishing
 
-Publishing is tag-driven. Push tag `v0.4.2` only after the complete v0.4.2 gate passes. The deploy workflow uses npm trusted publishing for every `@applik8s/*` package and `packages: write` for the public GHCR operator host.
+Publishing is tag-driven. On the final release commit, first run **Release Evidence** with `run_live_e2e=true`. For a loopback-only cluster, run `bun run attest:v04:orbstack -- --out /tmp/applik8s-v0.4-live-evidence.json`, base64 that non-secret JSON into `live_attestation_b64`, and never upload a local kubeconfig merely to satisfy the workflow. Do not change the commit after the evidence workflow succeeds. Push the release tag only after that exact-commit gate passes. The deploy workflow uses npm trusted publishing for every `@applik8s/*` package and `packages: write` for the public GHCR operator host.
 
 Validate package contents and imports from unpacked tarballs before tagging:
 

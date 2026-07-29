@@ -10,6 +10,11 @@ interface ImageStatus {
   readonly phase?: string;
 }
 
+const remoteConnectionCapability = sdk.kubernetes.connection.required({
+  endpointPolicy: 'workload-cluster-apis',
+  permissions: [{ apiGroups: [''], resources: ['configmaps'], verbs: ['get', 'list', 'patch', 'delete'], namespaces: ['media', 'demo'] }],
+});
+
 const specSchema = {
   kind: 'jsonSchema',
   ref: { kind: 'jsonSchema', exportName: 'ImageSpec' },
@@ -32,6 +37,30 @@ const statusSchema = {
 } satisfies JsonSchemaSource<ImageStatus>;
 
 describe('generated handler dispatcher', () => {
+  it('infers Kubernetes connection aliases in operator-scoped handlers', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', spec: specSchema, status: statusSchema,
+    });
+    const processor = sdk.external.http({ baseUrl: 'https://processor.example.test', auth: 'none' });
+    const operator = sdk.operator({
+      name: 'typed-connection-pipeline',
+      resources: { ImageJob },
+      capabilities: { destination: remoteConnectionCapability, processor },
+      handlers: ({ resources }) => [
+        resources.ImageJob.on.context.reconcile((_job, ctx) => {
+          ctx.kubernetes.connection('destination');
+          // @ts-expect-error HTTP capability aliases cannot select a Kubernetes connection.
+          ctx.kubernetes.connection('processor');
+          // @ts-expect-error undeclared aliases cannot select a Kubernetes connection.
+          ctx.kubernetes.connection('missing');
+          return ctx.noop();
+        }),
+      ],
+    });
+
+    expect(operator.definition.handlers).toHaveLength(1);
+  });
+
   it('exposes typed built-in Kubernetes permission bundles', () => {
     const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
       apiVersion: 'media.applik8s.dev/v1alpha1',
@@ -211,6 +240,80 @@ describe('generated handler dispatcher', () => {
     });
   });
 
+  it('threads one host-resolved connection through apply, patch, and delete operations', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    // typecast: preserves this fixture's Kubernetes reference literals for exact operation-plan comparison.
+    const ref = { apiVersion: 'v1', kind: 'ConfigMap', name: 'remote-config', namespace: 'media' } as const;
+    const operator = sdk.operator({
+      name: 'connection-scoped-mutations',
+      resources: { ImageJob },
+      capabilities: { destination: remoteConnectionCapability },
+      handlers: [
+        ImageJob.on.reconcile((job) => {
+          const destination = job.kubernetes.connection('destination');
+          destination.resources.apply(job.k8s.ConfigMap({ name: 'remote-config', namespace: 'media' }), { ownership: { mode: 'none' }, authority: { mode: 'managed', identity: 'imagejob/hero/config', sourceUid: 'source-uid' } });
+          destination.resources.patch(ref, [{ op: 'add', path: '/data', value: { ready: 'true' } }], { authority: { mode: 'existing', precondition: { uid: 'remote-uid', resourceVersion: '42' } } });
+          destination.resources.delete(ref, { authority: { mode: 'existing', precondition: { uid: 'remote-uid', resourceVersion: '42' } } });
+        }),
+      ],
+    });
+
+    const output = await dispatchOperatorHandler(operator.definition, JSON.stringify({
+      abiVersion: 'applik8s.handler/v1alpha1',
+      handlerId: 'ImageJob.reconcile.0',
+      event: 'reconcile',
+      object: { apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', metadata: { name: 'hero', namespace: 'media' }, spec: { sourceUrl: 's3://hero' } },
+    }));
+
+    expect(JSON.parse(output)).toEqual({ operations: [
+      { kind: 'apply', resource: { apiVersion: 'v1', kind: 'ConfigMap', metadata: { name: 'remote-config', namespace: 'media' } }, ownership: { mode: 'none' }, connection: 'destination', authority: { mode: 'managed', identity: 'imagejob/hero/config', sourceUid: 'source-uid' } },
+      { kind: 'patch', ref, patch: [{ op: 'add', path: '/data', value: { ready: 'true' } }], connection: 'destination', authority: { mode: 'existing', precondition: { uid: 'remote-uid', resourceVersion: '42' } } },
+      { kind: 'delete', ref, connection: 'destination', authority: { mode: 'existing', precondition: { uid: 'remote-uid', resourceVersion: '42' } } },
+    ] });
+  });
+
+  it('preserves recorded connection cleanup when a context finalizer returns noop', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const operator = sdk.operator({
+      name: 'connection-finalizer',
+      resources: { ImageJob },
+      capabilities: { destination: remoteConnectionCapability },
+      handlers: [
+        ImageJob.on.context.finalize((job, ctx) => {
+          ctx.kubernetes.connection('destination').resources.delete(
+            { apiVersion: 'v1', kind: 'ConfigMap', name: 'remote-config', namespace: 'media' },
+            { authority: { mode: 'managed', identity: 'imagejob/hero/config', sourceUid: job.metadata.uid ?? '' } },
+          );
+          return ctx.noop();
+        }, { finalizer: 'media.applik8s.dev/remote-cleanup' }),
+      ],
+    });
+
+    const output = await dispatchOperatorHandler(operator.definition, JSON.stringify({
+      abiVersion: 'applik8s.handler/v1alpha1',
+      handlerId: 'ImageJob.finalize.0',
+      event: 'finalize',
+      object: { apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', metadata: { name: 'hero', namespace: 'media', uid: 'source-uid', finalizers: ['media.applik8s.dev/remote-cleanup'], deletionTimestamp: '2026-07-14T00:00:00Z' }, spec: { sourceUrl: 's3://hero' } },
+    }));
+
+    expect(JSON.parse(output)).toEqual({ operations: [{
+      kind: 'delete',
+      ref: { apiVersion: 'v1', kind: 'ConfigMap', name: 'remote-config', namespace: 'media' },
+      connection: 'destination',
+      authority: { mode: 'managed', identity: 'imagejob/hero/config', sourceUid: 'source-uid' },
+    }] });
+  });
+
   it('lowers operation-target dry-run plans through operationTargetArtifacts only', async () => {
     const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
       apiVersion: 'media.applik8s.dev/v1alpha1',
@@ -299,12 +402,14 @@ describe('generated handler dispatcher', () => {
     const operator = sdk.operator({
       name: 'guestbook',
       resources: { GuestBook, GuestBookEntry },
+      capabilities: { destination: remoteConnectionCapability },
       handlers: [
         GuestBook.on.reconcile(async (book) => {
-          const entries = await book.read.resource(GuestBookEntry).list({
+          const entries = await book.kubernetes.connection('destination').read.resource(GuestBookEntry).list({
             namespace: book.metadata.namespace ?? 'default',
             labels: { 'guestbook.applik8s.dev/book': book.metadata.name },
             orderBy: 'metadata.creationTimestamp',
+            limit: 100,
           });
           if (!entries.items.some((entry) => entry.spec.author === 'Ada')) {
             throw new Error('typed GuestBookEntry read result missing Ada');
@@ -328,13 +433,16 @@ describe('generated handler dispatcher', () => {
     }), {
       kubernetesRead(requestJson) {
         // typecast: test-only request inspection narrows parsed JSON to the expected host-read request envelope.
-        const request = JSON.parse(requestJson) as { readonly operation: string; readonly apiVersion: string; readonly kind: string; readonly query: object };
+        const request = JSON.parse(requestJson) as { readonly protocol: string; readonly operation: string; readonly apiVersion: string; readonly kind: string; readonly connection: string; readonly query: object };
         expect(request).toMatchObject({
           operation: 'list',
           apiVersion: 'demo.applik8s.dev/v1alpha1',
           kind: 'GuestBookEntry',
-          query: { namespace: 'demo', labels: { 'guestbook.applik8s.dev/book': 'main' }, orderBy: 'metadata.creationTimestamp' },
+          protocol: 'applik8s.kubernetes-connection/v1alpha1',
+          connection: 'destination',
+          query: { namespace: 'demo', labels: { 'guestbook.applik8s.dev/book': 'main' }, orderBy: 'metadata.creationTimestamp', limit: 100 },
         });
+        expect(request.query).not.toHaveProperty('connection');
         return JSON.stringify({
           ok: true,
           value: {

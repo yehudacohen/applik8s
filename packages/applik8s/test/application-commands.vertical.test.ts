@@ -1,7 +1,8 @@
-import { validateApplicationGraphStructure } from '@applik8s/core';
-import { app, applicationGraphFor, command, defineApplicationProvider, event, EventLog, ModelStore } from '@applik8s/applik8s';
+// typecast-file-boundary: vertical fixtures intentionally inspect erased command metadata after asserting its discriminators.
+import { app, applicationGraphFor, command, defineApplicationProvider, EventLog, event, ModelStore } from '@applik8s/applik8s';
 import { entity, type } from '@applik8s/applik8s/dsl';
 import { canonicalApplicationCommandKey } from '@applik8s/applik8s/processor-runtime';
+import { validateApplicationGraphStructure } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 
 const AccountEntity = entity('Account', {
@@ -33,6 +34,42 @@ describe('v0.4 application behavior contracts', () => {
     expect(canonicalApplicationCommandKey('account-1')).toBe('account-1');
     expect(canonicalApplicationCommandKey(42)).toBe('42');
     expect(canonicalApplicationCommandKey({ tenant: 'tenant-a', accountId: 'account-1' })).toBe('accountId=account-1&tenant=tenant-a');
+  });
+
+  it('installs typed named actions directly on schema-backed models', () => {
+    const platform = app('direct-action-platform');
+    platform.storage.postgres('action-db', { database: 'direct_actions' });
+    const Account = platform.model(AccountEntity, { schema: { transactions: 'required' } });
+    const AccountWithRename = Account.action('rename', RenameAccount, {
+      key: ({ accountId }) => accountId,
+      idempotencyKey: ({ requestId }) => requestId,
+      missing: 'reject',
+    }, async (account, input) => {
+      account.patch({ spec: { displayName: input.displayName } });
+      return { changed: true, displayName: input.displayName };
+    });
+
+    expect(AccountWithRename).toBe(Account);
+    expect(AccountWithRename.rename).toEqual(expect.any(Function));
+    expect(AccountWithRename.rename.operation).toEqual({
+      apiVersion: 'applik8s.operation/v1alpha1',
+      kind: 'applicationOperation',
+      id: 'account.rename.v1',
+      model: 'Account',
+      name: 'rename',
+      operation: 'custom',
+      transport: 'command',
+    });
+    expect(applicationGraphFor(platform.composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'model',
+        name: 'Account',
+        common: expect.objectContaining({
+          operations: expect.arrayContaining([expect.objectContaining({ name: 'rename', publicId: 'account.rename.v1' })]),
+        }),
+      }),
+    ]));
+    expect(() => Account.action('create', ReindexAccount, { key: ({ accountId }) => accountId }, async () => ({ accepted: true }))).toThrow(/cannot replace an existing model member/);
   });
 
   it('records inert commands, committed events, handlers, transaction participants, and inferred processors', () => {
@@ -71,9 +108,9 @@ describe('v0.4 application behavior contracts', () => {
     expect(graph?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'command', name: 'account.rename.v1', contract: expect.objectContaining({ name: 'account.rename', version: 'v1', input: expect.objectContaining({ jsonSchema: expect.objectContaining({ type: 'object', required: expect.arrayContaining(['accountId', 'displayName']) }) }), output: expect.objectContaining({ jsonSchema: expect.objectContaining({ type: 'object' }) }), errors: [expect.objectContaining({ name: 'accountNotFound', schema: expect.objectContaining({ jsonSchema: expect.objectContaining({ type: 'object' }) }) })] }) }),
       expect.objectContaining({ kind: 'event', name: 'account.changed.v1', contract: expect.objectContaining({ name: 'account.changed', version: 'v1', payload: expect.objectContaining({ jsonSchema: expect.objectContaining({ type: 'object' }) }) }) }),
-      expect.objectContaining({ kind: 'commandHandler', ordering: 'serial', missing: 'reject', effectBoundary: 'transactionSafeOnly', retention: { replayWindowSeconds: 604_800, auditWindowSeconds: 2_592_000, publishedOutboxWindowSeconds: 86_400, cleanupIntervalSeconds: 300, cleanupBatchSize: 1_000 }, projectionReadiness: { submissionAcknowledgement: 'transportOnly', durableResultAuthority: 'postgresCommandResults', duplicateRecovery: 'idempotentRedelivery', correlation: 'commandCorrelationCausation', resultRevisionAuthority: 'postgresCommandResults', stateRevisionAuthority: 'modelRevision', reconciliationLink: 'modelRevisionWhenPresent' }, transaction: expect.objectContaining({ models: expect.arrayContaining([{ nodeId: 'model.account' }, { nodeId: 'model.audit' }]), history: [{ nodeId: 'model.account' }], outbox: [{ nodeId: 'event.account.changed.v1' }] }) }),
+      expect.objectContaining({ kind: 'commandHandler', ordering: 'serial', missing: 'reject', effectBoundary: 'transactionSafeOnly', effectEnforcement: { sourceAnalysis: 'closedStructuralAllowlist', runtimeMembrane: 'asyncContextAmbientIo', externalEffects: 'outboxOrTaskOnly' }, retention: { replayWindowSeconds: 604_800, auditWindowSeconds: 2_592_000, publishedOutboxWindowSeconds: 86_400, cleanupIntervalSeconds: 300, cleanupBatchSize: 1_000 }, projectionReadiness: { submissionAcknowledgement: 'transportOnly', durableResultAuthority: 'postgresCommandResults', duplicateRecovery: 'idempotentRedelivery', correlation: 'commandCorrelationCausation', resultRevisionAuthority: 'postgresCommandResults', stateRevisionAuthority: 'modelRevision', reconciliationLink: 'modelRevisionWhenPresent' }, transaction: expect.objectContaining({ models: expect.arrayContaining([{ nodeId: 'model.account' }, { nodeId: 'model.audit' }]), history: [{ nodeId: 'model.account' }], outbox: [{ nodeId: 'event.account.changed.v1' }] }) }),
       expect.objectContaining({ kind: 'processor', runtime: 'node', runtimeImage: 'registry.example.test/applik8s-processor@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', deployment: { replicas: 3, concurrency: 4, maxAckPending: 12, resources: { requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } }, disruption: { maxUnavailable: 1 }, nodeSelector: { 'kubernetes.io/os': 'linux' } }, inference: 'generated', handlers: expect.arrayContaining([expect.objectContaining({ nodeId: expect.stringContaining('command-handler.') })]) }),
-      expect.objectContaining({ kind: 'provider', interface: 'EventLog', implementation: 'nats-jetstream', contract: expect.objectContaining({ support: 'implemented', surface: 'experimentalSurface' }) }),
+      expect.objectContaining({ kind: 'provider', interface: 'EventLog', implementation: 'nats-jetstream', contract: expect.objectContaining({ support: 'implemented', surface: 'stablePublicApi' }) }),
     ]));
     expect(graph?.providerRequirements).toEqual(expect.arrayContaining([expect.objectContaining({ interface: 'EventLog', purpose: 'eventLog', consumer: { nodeId: 'processor.account-commands' } })]));
     if (!graph) {
@@ -90,6 +127,67 @@ describe('v0.4 application behavior contracts', () => {
     })).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: expect.stringContaining('must retain the v0.4 projection-readiness authority contract') }),
     ]));
+    expect(validateApplicationGraphStructure({
+      ...graph,
+      nodes: graph.nodes.map((node) => node === handlerNode
+        // typecast: this negative fixture simulates an older handler without the executable enforcement contract.
+        ? ({ ...node, effectEnforcement: undefined } as never)
+        : node),
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: expect.stringContaining('must retain structural source enforcement') }),
+    ]));
+  });
+
+  it('co-locates compatible model commands in one explicitly named bounded processor', () => {
+    const platform = app('grouped-command-platform', { namespace: 'platform' });
+    platform.storage.postgres('command-db', { database: 'grouped_commands' });
+    const Account = platform.model(AccountEntity, { schema: { transactions: 'required' } });
+    const Audit = platform.model(AuditEntity, { schema: { transactions: 'required' } });
+    const processor = { group: 'domain-commands', replicas: 1, concurrency: 16 } as const;
+    Account.on.command(RenameAccount, { key: ({ accountId }) => accountId, processor }, async (_account, input) => ({ changed: false, displayName: input.displayName }));
+    Audit.on.command(ReindexAccount, { key: ({ accountId }) => accountId, processor }, async () => ({ accepted: true }));
+
+    const processors = applicationGraphFor(platform.composition)?.nodes.filter((node) => node.kind === 'processor');
+    expect(processors).toEqual([
+      expect.objectContaining({
+        name: 'domain-commands',
+        deployment: expect.objectContaining({ replicas: 1, concurrency: 16, maxAckPending: 16 }),
+        handlers: expect.arrayContaining([
+          { nodeId: 'command-handler.account-account.rename.v1' },
+          { nodeId: 'command-handler.audit-account.reindex.v1' },
+        ]),
+      }),
+    ]);
+  });
+
+  it('preserves typed installation capacity in the generated command processor contract', () => {
+    const platform = app('profiled-command-platform', {
+      apiVersion: 'applications.example.test/v1alpha1',
+      kind: 'ProfiledCommandPlatform',
+      spec: type({ profile: "'starter' | 'dedicated'" }),
+      status: type({ ready: 'boolean' }),
+      namespace: () => 'platform',
+    });
+    platform.storage.postgres('command-db', { database: 'profiled_commands' });
+    const Account = platform.model(AccountEntity, { schema: { transactions: 'required' } });
+    const replicas = platform.select(platform.installation.spec.profile, { starter: 1, dedicated: 3, default: 1 });
+    const concurrency = platform.select(platform.installation.spec.profile, { starter: 8, dedicated: 32, default: 8 });
+    const memory = platform.select(platform.installation.spec.profile, { starter: '128Mi', dedicated: '512Mi', default: '128Mi' });
+    Account.on.command(RenameAccount, {
+      key: ({ accountId }) => accountId,
+      processor: { replicas, concurrency, resources: { requests: { memory } } },
+    }, async (_account, input) => ({ changed: false, displayName: input.displayName }));
+
+    const processor = applicationGraphFor(platform.composition)?.nodes.find((node) => node.kind === 'processor');
+    expect(processor).toMatchObject({
+      kind: 'processor',
+      deployment: {
+        replicas: expect.stringMatching(/^\$\{schema\.spec\.profile/),
+        concurrency: expect.stringMatching(/^\$\{schema\.spec\.profile/),
+        maxAckPending: expect.stringMatching(/^\$\{\(.+\) \* \(.+\)\}$/),
+        resources: { requests: { memory: expect.stringMatching(/^\$\{schema\.spec\.profile/) } },
+      },
+    });
   });
 
   it('enforces the versioned input schema before key calculation, broker publication, or database access', async () => {
@@ -202,6 +300,7 @@ describe('v0.4 application behavior contracts', () => {
     const platformWithInvalidProcessorImage = app('invalid-processor-image-platform');
     const InvalidProcessorAccount = platformWithInvalidProcessorImage.model(AccountEntity, { schema: { transactions: 'required' } });
     expect(() => InvalidProcessorAccount.on.command(RenameAccount, { key: ({ accountId }) => accountId, processor: { image: '   ' } }, handler)).toThrow(/processor.image must be a non-empty OCI image reference/);
+    expect(() => InvalidProcessorAccount.on.command(ReindexAccount, { key: ({ accountId }) => accountId, processor: { group: 'Not Valid' } }, async () => ({ accepted: true }))).toThrow(/processor.group must be a valid lowercase Kubernetes name/);
 
     const platformWithInvalidCapacity = app('invalid-processor-capacity-platform');
     const InvalidCapacityAccount = platformWithInvalidCapacity.model(AccountEntity, { schema: { transactions: 'required' } });
@@ -213,5 +312,60 @@ describe('v0.4 application behavior contracts', () => {
       await fetch(`https://example.test/${input.accountId}`);
       return { changed: false, displayName: input.displayName };
     })).toThrow(/forbidden while model locks are held/);
+  });
+
+  it('rejects structural ambient-I/O, wall-clock, and dynamic-code escape paths while ignoring inert text', () => {
+    const cases: readonly { readonly name: string; readonly handler: (account: { readonly spec: { readonly displayName: string } }, input: { readonly displayName: string }) => Promise<{ readonly changed: boolean; readonly displayName: string }> }[] = [
+      {
+        name: 'computed-global-fetch',
+        handler: async (_account, input) => {
+          const method = 'fetch';
+          await globalThis[method](`https://example.test/${input.displayName}`);
+          return { changed: false, displayName: input.displayName };
+        },
+      },
+      {
+        name: 'node-builtin-loader',
+        handler: async (_account, input) => {
+          globalThis.process.getBuiltinModule('node:fs');
+          return { changed: false, displayName: input.displayName };
+        },
+      },
+      {
+        name: 'wall-clock-construction',
+        handler: async (_account, input) => {
+          const observedAt = new Date();
+          return { changed: observedAt.getTime() > 0, displayName: input.displayName };
+        },
+      },
+      {
+        name: 'constructor-escape',
+        handler: async (_account, input) => {
+          Object.constructor('return 1')();
+          return { changed: false, displayName: input.displayName };
+        },
+      },
+      {
+        name: 'dynamic-import',
+        handler: async (_account, input) => {
+          // static-import-exception: this fixture proves transaction handlers reject dynamic imports.
+          await import('node:fs');
+          return { changed: false, displayName: input.displayName };
+        },
+      },
+    ];
+
+    for (const item of cases) {
+      const platform = app(`unsafe-${item.name}`);
+      const Account = platform.model(AccountEntity, { schema: { transactions: 'required' } });
+      expect(() => Account.on.command(RenameAccount, { key: ({ accountId }) => accountId }, item.handler)).toThrow(/closed structural closures|forbidden while model locks are held|references module-scope identifier/);
+    }
+
+    const safe = app('safe-structural-text');
+    const SafeAccount = safe.model(AccountEntity, { schema: { transactions: 'required' } });
+    expect(() => SafeAccount.on.command(RenameAccount, { key: ({ accountId }) => accountId }, async (account, input, context) => {
+      const documentation = 'fetch process globalThis Date.now constructor';
+      return { changed: account.spec.displayName !== input.displayName && documentation.length > 0 && context.now.length > 0, displayName: input.displayName };
+    })).not.toThrow();
   });
 });

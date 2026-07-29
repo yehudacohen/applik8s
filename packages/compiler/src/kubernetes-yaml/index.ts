@@ -1,19 +1,19 @@
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
-
+import type { AnyResourceDefinition, AnyResourceVersionDefinition, ConcurrencyConfig, Diagnostic, JsonObject, OperatorDefinition, OperatorManifest, PermissionRule, Result, StatusConvention } from '@applik8s/core';
+import { imageRefString } from '@applik8s/typetainer';
 import type { V1CustomResourceColumnDefinition } from '@kubernetes/client-node/dist/gen/models/V1CustomResourceColumnDefinition.js';
 import type { V1CustomResourceDefinition } from '@kubernetes/client-node/dist/gen/models/V1CustomResourceDefinition.js';
 import type { V1Deployment } from '@kubernetes/client-node/dist/gen/models/V1Deployment.js';
 import type { V1JSONSchemaProps } from '@kubernetes/client-node/dist/gen/models/V1JSONSchemaProps.js';
+import type { V1NetworkPolicy } from '@kubernetes/client-node/dist/gen/models/V1NetworkPolicy.js';
 import type { V1ObjectMeta } from '@kubernetes/client-node/dist/gen/models/V1ObjectMeta.js';
+import type { V1PodDisruptionBudget } from '@kubernetes/client-node/dist/gen/models/V1PodDisruptionBudget.js';
 import type { V1PolicyRule } from '@kubernetes/client-node/dist/gen/models/V1PolicyRule.js';
 import type { V1Role } from '@kubernetes/client-node/dist/gen/models/V1Role.js';
 import type { V1RoleBinding } from '@kubernetes/client-node/dist/gen/models/V1RoleBinding.js';
 import type { V1ServiceAccount } from '@kubernetes/client-node/dist/gen/models/V1ServiceAccount.js';
 import { stringify } from 'yaml';
-import { imageRefString } from '@applik8s/typetainer';
-
-import type { AnyResourceDefinition, AnyResourceVersionDefinition, ConcurrencyConfig, Diagnostic, JsonObject, OperatorDefinition, OperatorManifest, PermissionRule, Result, StatusConvention } from '@applik8s/core';
 import { toKubernetesStructuralOpenApiSchema, validateStructuralOpenApiSchema } from '../kubernetes-schema/index.js';
 import { DEFAULT_OPERATOR_HOST_IMAGE_REFERENCE } from '../operator-host-image.js';
 
@@ -44,12 +44,25 @@ export async function emitOperatorKubernetesYaml(request: KubernetesYamlRequest)
       throw new Error('Operators requiring cluster or cross-namespace RBAC must set deployment.namespace so ClusterRoleBinding can reference the ServiceAccount namespace.');
     }
     validateDeploymentOperationalSafety(request.operator, request.manifest);
+    const connectionSecretPermissions = connectionSecretPermissionRules(request.manifest);
+    const clusterPermissions = clusterRbac
+      ? request.manifest.spec.permissions.filter((permission) => !connectionSecretPermissions.includes(permission))
+      : [];
+    const namespacedPermissions = clusterRbac ? connectionSecretPermissions : request.manifest.spec.permissions;
     const documents = [
-      ...ownedResources.map((resource) => crdDocument(resource, request.manifest)),
+      ...ownedResources.map((resource) => crdDocument(resource)),
       serviceAccountDocument(serviceAccountName, namespace, request.manifest),
-      rbacRoleDocument(request.operator.name, request.manifest.spec.permissions, namespace, clusterRbac, request.manifest),
-      rbacBindingDocument(request.operator.name, serviceAccountName, namespace, clusterRbac, request.manifest),
-      deploymentDocument(request.manifest, serviceAccountName, image, namespace, request.operator.deployment?.replicas),
+      ...(clusterPermissions.length > 0 ? [
+        rbacRoleDocument(request.operator.name, clusterPermissions, namespace, true, request.manifest),
+        rbacBindingDocument(request.operator.name, serviceAccountName, namespace, true, request.manifest),
+      ] : []),
+      ...(namespacedPermissions.length > 0 ? [
+        roleDocument(request.operator.name, namespacedPermissions, namespace, request.manifest, clusterRbac ? 'connection-secrets' : 'controller'),
+        roleBindingDocument(request.operator.name, serviceAccountName, namespace, request.manifest, clusterRbac ? 'connection-secrets' : 'controller'),
+      ] : []),
+      deploymentDocument(request.manifest, serviceAccountName, image, namespace, request.operator.deployment),
+      operatorNetworkPolicyDocument(request.manifest, namespace),
+      ...((request.operator.deployment?.replicas ?? 1) > 1 ? [operatorPodDisruptionBudgetDocument(request.manifest, namespace)] : []),
     ];
     const validation = validateGeneratedKubernetesDocuments(documents);
     if (!validation.ok) {
@@ -106,7 +119,7 @@ async function replaceDirectory(stagingDirectory: string, destination: string): 
 
 export type V1ClusterRole = Omit<V1Role, 'kind' | 'metadata'> & { readonly kind: 'ClusterRole'; readonly metadata: V1ObjectMeta };
 export type V1ClusterRoleBinding = Omit<V1RoleBinding, 'kind' | 'metadata' | 'roleRef'> & { readonly kind: 'ClusterRoleBinding'; readonly metadata: V1ObjectMeta; readonly roleRef: V1RoleBinding['roleRef'] };
-export type KubernetesDocument = V1CustomResourceDefinition | V1ServiceAccount | V1Role | V1RoleBinding | V1ClusterRole | V1ClusterRoleBinding | V1Deployment;
+export type KubernetesDocument = V1CustomResourceDefinition | V1ServiceAccount | V1Role | V1RoleBinding | V1ClusterRole | V1ClusterRoleBinding | V1Deployment | V1NetworkPolicy | V1PodDisruptionBudget;
 
 export function validateGeneratedKubernetesDocuments(documents: readonly KubernetesDocument[]): Result<readonly Diagnostic[]> {
   const diagnostics: Diagnostic[] = [];
@@ -174,13 +187,13 @@ export function validateGeneratedKubernetesDocuments(documents: readonly Kuberne
   return { ok: true, value: diagnostics };
 }
 
-function crdDocument(resource: AnyResourceDefinition, manifest: OperatorManifest): V1CustomResourceDefinition {
+function crdDocument(resource: AnyResourceDefinition): V1CustomResourceDefinition {
   const { group } = splitApiVersion(resource.apiVersion);
 
   return {
     apiVersion: 'apiextensions.k8s.io/v1',
     kind: 'CustomResourceDefinition',
-    metadata: metadata(`${resource.plural}.${group}`, undefined, manifest),
+    metadata: sharedCrdMetadata(`${resource.plural}.${group}`),
     spec: {
       group,
       scope: resource.scope,
@@ -191,6 +204,20 @@ function crdDocument(resource: AnyResourceDefinition, manifest: OperatorManifest
       },
       versions: resource.versions.map((version) => crdVersionDocument(resource, version)),
     },
+  };
+}
+
+/**
+ * CRDs are shared API contracts, not controller-instance workloads. Multiple
+ * independently deployed handlers may watch the same CRD; attaching one
+ * handler's name or bundle digest makes otherwise identical declarations
+ * conflict in TypeKro's strict operation merger and gives misleading
+ * ownership. The schema itself remains the authoritative drift boundary.
+ */
+function sharedCrdMetadata(name: string): V1ObjectMeta {
+  return {
+    name,
+    labels: managedLabels(),
   };
 }
 
@@ -296,11 +323,11 @@ function serviceAccountDocument(name: string, namespace: string | undefined, man
   };
 }
 
-function roleDocument(operatorName: string, permissions: readonly PermissionRule[], namespace: string | undefined, manifest: OperatorManifest): V1Role {
+function roleDocument(operatorName: string, permissions: readonly PermissionRule[], namespace: string | undefined, manifest: OperatorManifest, suffix = 'controller'): V1Role {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'Role',
-    metadata: metadata(`${operatorName}-controller`, namespace, manifest),
+    metadata: metadata(`${operatorName}-${suffix}`, namespace, manifest),
     rules: permissions.map((permission): V1PolicyRule => ({
       apiGroups: [...permission.apiGroups],
       resources: [...permission.resources],
@@ -328,15 +355,15 @@ function rbacRoleDocument(operatorName: string, permissions: readonly Permission
   return clusterRbac ? clusterRoleDocument(operatorName, permissions, namespace ?? 'default', manifest) : roleDocument(operatorName, permissions, namespace, manifest);
 }
 
-function roleBindingDocument(operatorName: string, serviceAccountName: string, namespace: string | undefined, manifest: OperatorManifest): V1RoleBinding {
+function roleBindingDocument(operatorName: string, serviceAccountName: string, namespace: string | undefined, manifest: OperatorManifest, suffix = 'controller'): V1RoleBinding {
   return {
     apiVersion: 'rbac.authorization.k8s.io/v1',
     kind: 'RoleBinding',
-    metadata: metadata(`${operatorName}-controller`, namespace, manifest),
+    metadata: metadata(`${operatorName}-${suffix}`, namespace, manifest),
     roleRef: {
       apiGroup: 'rbac.authorization.k8s.io',
       kind: 'Role',
-      name: `${operatorName}-controller`,
+      name: `${operatorName}-${suffix}`,
     },
     subjects: [
       {
@@ -346,6 +373,20 @@ function roleBindingDocument(operatorName: string, serviceAccountName: string, n
       },
     ],
   };
+}
+
+function connectionSecretPermissionRules(manifest: OperatorManifest): readonly PermissionRule[] {
+  const secretNames = new Set(Object.values(manifest.spec.kubernetesConnectionBindings ?? {})
+    .map((binding) => binding.kubeconfigSecretRef.name));
+  return manifest.spec.permissions.filter((permission) =>
+    permission.apiGroups.length === 1
+    && permission.apiGroups[0] === ''
+    && permission.resources.length === 1
+    && permission.resources[0] === 'secrets'
+    && permission.verbs.length === 1
+    && permission.verbs[0] === 'get'
+    && permission.resourceNames?.length === 1
+    && secretNames.has(permission.resourceNames[0] ?? ''));
 }
 
 function clusterRoleBindingDocument(operatorName: string, serviceAccountName: string, namespace: string, manifest: OperatorManifest): V1ClusterRoleBinding {
@@ -380,18 +421,32 @@ function rbacBindingDocument(operatorName: string, serviceAccountName: string, n
   return roleBindingDocument(operatorName, serviceAccountName, namespace, manifest);
 }
 
-function deploymentDocument(manifest: OperatorManifest, serviceAccountName: string, image: string, namespace: string | undefined, replicas?: number): V1Deployment {
+function deploymentDocument(manifest: OperatorManifest, serviceAccountName: string, image: string, namespace: string | undefined, deployment?: OperatorDefinition['deployment']): V1Deployment {
+  const configuredResources = deployment?.resources;
+  const resources = {
+    requests: { cpu: '100m', memory: '128Mi', ...configuredResources?.requests },
+    // ComponentizeJS handlers execute inside Wasmtime and can transiently
+    // exceed 512Mi while instantiating an otherwise small JavaScript bundle.
+    // Keep the request modest, but make the safe default limit reflect the
+    // measured runtime envelope. Authors can still tighten it explicitly.
+    limits: { cpu: '1', memory: '1Gi', ...configuredResources?.limits },
+  };
   return {
     apiVersion: 'apps/v1',
     kind: 'Deployment',
     metadata: metadata(manifest.metadata.name, namespace, manifest),
     spec: {
-      replicas: replicas ?? 1,
+      replicas: deployment?.replicas ?? 1,
       selector: { matchLabels: appLabels(manifest.metadata.name) },
+      // Operators must remain updatable on bounded single-node clusters. The
+      // default 25% surge rounds up to an extra Pod even for one replica and
+      // can deadlock a rollout precisely when the cluster is under pressure.
+      strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
       template: {
         metadata: { labels: appLabels(manifest.metadata.name), annotations: auditAnnotations(manifest) },
         spec: {
           serviceAccountName,
+          terminationGracePeriodSeconds: deployment?.terminationGracePeriodSeconds ?? 45,
           securityContext: {
             runAsNonRoot: true,
             runAsUser: 65532,
@@ -425,17 +480,43 @@ function deploymentDocument(manifest: OperatorManifest, serviceAccountName: stri
                 timeoutSeconds: 5,
               },
               readinessProbe: {
-                httpGet: { path: '/readyz', port: 'health' },
+                httpGet: { path: manifest.spec.runtime?.leaderElection?.enabled ? '/healthz' : '/readyz', port: 'health' },
                 initialDelaySeconds: 1,
                 failureThreshold: 12,
                 periodSeconds: 5,
                 timeoutSeconds: 5,
               },
+              resources,
             },
           ],
           volumes: [{ name: 'tmp', emptyDir: {} }],
         },
       },
+    },
+  };
+}
+
+function operatorNetworkPolicyDocument(manifest: OperatorManifest, namespace: string | undefined): V1NetworkPolicy {
+  return {
+    apiVersion: 'networking.k8s.io/v1',
+    kind: 'NetworkPolicy',
+    metadata: metadata(manifest.metadata.name, namespace, manifest),
+    spec: {
+      podSelector: { matchLabels: appLabels(manifest.metadata.name) },
+      policyTypes: ['Ingress'],
+      ingress: [{ ports: [{ protocol: 'TCP', port: 8080 }] }],
+    },
+  };
+}
+
+function operatorPodDisruptionBudgetDocument(manifest: OperatorManifest, namespace: string | undefined): V1PodDisruptionBudget {
+  return {
+    apiVersion: 'policy/v1',
+    kind: 'PodDisruptionBudget',
+    metadata: metadata(manifest.metadata.name, namespace, manifest),
+    spec: {
+      maxUnavailable: 1,
+      selector: { matchLabels: appLabels(manifest.metadata.name) },
     },
   };
 }
@@ -448,6 +529,18 @@ function validateDeploymentOperationalSafety(operator: OperatorDefinition, manif
   }
   if (leaderElection?.enabled && !operator.deployment?.namespace && !leaderElection.leaseNamespace) {
     throw new Error('deployment.namespace or runtime.leaderElection.leaseNamespace is required for leader-elected operator deployments.');
+  }
+  const terminationGracePeriodSeconds = operator.deployment?.terminationGracePeriodSeconds;
+  if (terminationGracePeriodSeconds !== undefined && (!Number.isInteger(terminationGracePeriodSeconds) || terminationGracePeriodSeconds < 1 || terminationGracePeriodSeconds > 600)) {
+    throw new Error('deployment.terminationGracePeriodSeconds must be an integer between 1 and 600.');
+  }
+  for (const [path, value] of Object.entries({
+    'resources.requests.cpu': operator.deployment?.resources?.requests?.cpu,
+    'resources.requests.memory': operator.deployment?.resources?.requests?.memory,
+    'resources.limits.cpu': operator.deployment?.resources?.limits?.cpu,
+    'resources.limits.memory': operator.deployment?.resources?.limits?.memory,
+  })) {
+    if (value !== undefined && !value.trim()) throw new Error(`deployment.${path} must not be empty.`);
   }
   const unsupportedConcurrency = unsupportedRuntimeConcurrency(manifest.spec.runtime?.concurrency);
   if (unsupportedConcurrency) {
@@ -480,7 +573,7 @@ function operatorHostEnv(manifest: OperatorManifest) {
     { name: 'APPLIK8S_HEALTH_ADDR', value: '0.0.0.0:8080' },
     { name: 'APPLIK8S_HANDLER_TIMEOUT_SECONDS', value: String(manifest.spec.runtime?.handlerTimeoutSeconds ?? 30) },
     { name: 'OTEL_SERVICE_NAME', value: manifest.metadata.name },
-    { name: 'OTEL_RESOURCE_ATTRIBUTES', value: `service.namespace=applik8s,applik8s.operator=${manifest.metadata.name},applik8s.bundle_digest=${manifest.spec.bundle.digest}` },
+    { name: 'OTEL_RESOURCE_ATTRIBUTES', value: `service.namespace=applik8s,applik8s.operator=${manifest.metadata.name},applik8s.build_identity_digest=${manifest.spec.bundle.buildIdentityDigest}` },
     { name: 'OTEL_METRIC_EXPORT_INTERVAL', value: '30000' },
     ...(replayArtifacts?.enabled && replayArtifacts.directory ? [
       { name: 'APPLIK8S_REPLAY_ARTIFACT_DIR', value: replayArtifacts.directory },
@@ -505,7 +598,7 @@ function auditAnnotations(manifest: OperatorManifest): Readonly<Record<string, s
   const storageVersions = manifest.spec.ownedCrds.map((crd) => `${crd.apiVersion}/${crd.kind}=${crd.storageVersion}`);
   const conversionStrategies = manifest.spec.ownedCrds.map((crd) => `${crd.apiVersion}/${crd.kind}=${crd.conversionStrategy}`);
   return {
-    'applik8s.dev/bundle-digest': manifest.spec.bundle.digest,
+    'applik8s.dev/build-identity-digest': manifest.spec.bundle.buildIdentityDigest,
     'applik8s.dev/source-digest': manifest.spec.bundle.sourceDigest,
     'applik8s.dev/compiler-version': manifest.spec.bundle.compilerVersion,
     'applik8s.dev/handler-abi': manifest.spec.handlerAbi,
@@ -554,6 +647,7 @@ function requiresClusterRbac(operator: OperatorDefinition, controllerNamespace: 
   if (operator.deployment?.scope === 'Cluster') return true;
   if (Object.values(operator.resources).some((resource) => resource.scope === 'Cluster')) return true;
   return Object.values(operator.reads ?? {}).some((resource) => {
+    if (resource.access === 'connection') return false;
     if (resource.scope === 'Cluster' || resource.namespaces === 'all') return true;
     if (!resource.namespaces || resource.namespaces.length === 0) return false;
     return !controllerNamespace || resource.namespaces.some((namespace) => namespace !== controllerNamespace);

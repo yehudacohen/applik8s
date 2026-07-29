@@ -25,9 +25,10 @@ function collectFiles(path) {
 
   const files = [];
   for (const entry of readdirSync(path)) {
-    if (entry === 'node_modules' || entry === 'dist') {
+    if (entry === 'node_modules' || entry === 'dist' || entry === '.applik8s' || entry === '.output') {
       continue;
     }
+    if (entry === 'routeTree.gen.ts') continue;
     files.push(...collectFiles(join(path, entry)));
   }
   return files;
@@ -37,11 +38,12 @@ function checkFile(filePath) {
   const sourceText = readFileSync(filePath, 'utf8');
   const sourceFile = ts.createSourceFile(filePath, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   const lines = sourceText.split(/\r?\n/);
+  const fileBoundary = lines.slice(0, 10).join('\n').includes('typecast-file-boundary:');
 
   const visit = (node) => {
     if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node)) {
       const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-      if (!hasTypecastAnnotation(lines, position.line)) {
+      if (!fileBoundary && !hasTypecastAnnotation(lines, position.line) && !hasTypecastBoundary(node, sourceFile, lines)) {
         const kind = ts.isNonNullExpression(node) ? 'non-null assertion' : 'type assertion';
         failures.push(`${filePath}:${position.line + 1}:${position.character + 1} ${kind}`);
       }
@@ -57,4 +59,17 @@ function hasTypecastAnnotation(lines, lineIndex) {
   const currentLine = lines[lineIndex] ?? '';
   const previousLine = lines[lineIndex - 1] ?? '';
   return currentLine.includes('typecast:') || previousLine.includes('typecast:');
+}
+
+function hasTypecastBoundary(node, sourceFile, lines) {
+  let current = node.parent;
+  while (current) {
+    if (ts.isFunctionLike(current)) {
+      const line = sourceFile.getLineAndCharacterOfPosition(current.getStart(sourceFile)).line;
+      const leading = lines.slice(Math.max(0, line - 4), line + 1).join('\n');
+      if (leading.includes('typecast-boundary:')) return true;
+    }
+    current = current.parent;
+  }
+  return false;
 }

@@ -1,0 +1,13 @@
+{
+  "client": { "minimumCacheKeysPerSecond": 10000, "maximumP95Ms": 5, "maximumRssGrowthBytes": 67108864 },
+  "projection": { "minimumEventsPerSecond": 10000, "maximumConvergenceMs": 2000, "maximumColdStartMs": 250, "maximumRssGrowthBytes": 67108864 },
+  "facade": { "maximumMinimalGzipBytes": 35840, "maximumMarginalModelGzipBytes": 4096 },
+  "guestbook": { "maximumBrowserJavaScriptGzipBytes": 125000 },
+  "chirp": {
+    "maximumBrowserJavaScriptGzipBytes": 125000,
+    "maximumServerOutputBytes": 5242880,
+    "maximumResourceGraphDefinitionBytes": 2500000,
+    "maximumContainerContextBytes": 12582912,
+    "maximumTotalContainerContextBytes": 41943040
+  }
+}

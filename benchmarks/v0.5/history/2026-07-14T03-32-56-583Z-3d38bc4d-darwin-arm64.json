@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "release": "v0.5",
+  "generatedAt": "2026-07-14T03:32:56.583Z",
+  "git": {
+    "commit": "3d38bc4d56990274dc9853bbc2dedcb928d95f9c",
+    "dirty": false
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpuModel": "Apple M5 Max",
+    "cpuCount": 18,
+    "runtime": "bun-1.3.13"
+  },
+  "observation": {
+    "operations": 1000,
+    "durationMs": 1.59,
+    "throughputPerSecond": 630451.04,
+    "latencyMs": {
+      "p50": 0,
+      "p95": 0,
+      "p99": 0.01,
+      "maximum": 0.28
+    },
+    "rssGrowthBytes": 360448
+  },
+  "graph": {
+    "builds": 25,
+    "nodes": 49,
+    "durationMs": 3380.08,
+    "buildsPerSecond": 7.4
+  },
+  "build": {
+    "durationMs": 6102.88,
+    "fileCount": 114,
+    "totalBytes": 75964516,
+    "maximumWorkflowJavaScriptBytes": 1807804,
+    "maximumWorkflowGzipBytes": 412836
+  },
+  "capacityScenarios": [
+    {
+      "replicas": 1,
+      "taskSlotsPerReplica": 16,
+      "durableSlotsPerReplica": 16,
+      "maximumTaskConcurrency": 16,
+      "requestedCpuMillicores": 100,
+      "requestedMemoryMiB": 128,
+      "limitedCpuMillicores": 1000,
+      "limitedMemoryMiB": 512,
+      "relativeRequestedCapacityCost": 1
+    },
+    {
+      "replicas": 2,
+      "taskSlotsPerReplica": 16,
+      "durableSlotsPerReplica": 16,
+      "maximumTaskConcurrency": 32,
+      "requestedCpuMillicores": 200,
+      "requestedMemoryMiB": 256,
+      "limitedCpuMillicores": 2000,
+      "limitedMemoryMiB": 1024,
+      "relativeRequestedCapacityCost": 2
+    },
+    {
+      "replicas": 4,
+      "taskSlotsPerReplica": 16,
+      "durableSlotsPerReplica": 16,
+      "maximumTaskConcurrency": 64,
+      "requestedCpuMillicores": 400,
+      "requestedMemoryMiB": 512,
+      "limitedCpuMillicores": 4000,
+      "limitedMemoryMiB": 2048,
+      "relativeRequestedCapacityCost": 4
+    }
+  ]
+}

@@ -101,7 +101,7 @@ describe('local operator vertical slice', () => {
     }
   });
 
-  it('reports JSON Schema keywords and shapes this SDK slice would otherwise ignore', () => {
+  it('validates supported JSON Schema patterns and reports malformed shapes', () => {
     const PatternJob = sdk.crd<ImageSpec, ImageStatus>({
       apiVersion: 'media.applik8s.dev/v1alpha1',
       kind: 'PatternJob',
@@ -122,17 +122,14 @@ describe('local operator vertical slice', () => {
     const validation = PatternJob.spec.validate({ sourceUrl: 'https://example.com/image.png', formats: ['webp'] });
     expect(validation.ok).toBe(false);
     if (!validation.ok) {
-      expect(validation.error.code).toBe('SCHEMA_UNSUPPORTED');
+      expect(validation.error.code).toBe('SCHEMA_INVALID');
     }
 
     const openApi = PatternJob.spec.emitOpenApiSchema();
     expect(openApi.ok).toBe(true);
     if (openApi.ok) {
-      expect(openApi.value.diagnostics).toContainEqual({
-        severity: 'warning',
-        code: 'SCHEMA_UNSUPPORTED',
-        message: '$.sourceUrl uses unsupported JSON Schema keyword pattern.',
-      });
+      expect(openApi.value.schema).toMatchObject({ properties: { sourceUrl: { type: 'string', pattern: '^s3://' } } });
+      expect(openApi.value.diagnostics).not.toContainEqual(expect.objectContaining({ message: expect.stringContaining('pattern') }));
     }
 
     const MalformedJob = sdk.crd<ImageSpec, ImageStatus>({

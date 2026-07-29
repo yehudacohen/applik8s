@@ -23,6 +23,22 @@ This is a manual, bounded scaling story. Lag-driven KEDA scaling is deliberately
 
 ## Performance evidence
 
+The current v0.6 lanes are:
+
+- `bun run benchmark:v06:record`, which records a Git/worktree- and hardware-identified synthetic-local
+  baseline for cache-key latency/throughput/RSS and finite projection cold start, lag, convergence,
+  throughput, and RSS; and
+- `bun run benchmark:v06:chirp-artifacts:record`, which builds the complete Chirp flagship and records
+  browser gzip, server output, RGD size, web/compiler wall time, and each generated OCI context.
+
+Both reports state their limitations. Neither measures PostgreSQL/ClickHouse contention, connection-pool
+saturation, sustained JetStream arrivals, Harbor transfer, Ceph throughput, Kubernetes startup, pod memory,
+or cost. Those require the explicit live benchmark lane and must not be inferred from local values. The
+current reports are [the v0.6 synthetic baseline](../benchmarks/v0.6/baseline.json) and
+[the Chirp artifact baseline](../benchmarks/v0.6/chirp-artifacts/baseline.json).
+
+### v0.4.1 historical lane
+
 `bun run benchmark:v041:record` records:
 
 - local bounded-scheduler throughput, latency, maximum concurrency, RSS, and heap growth

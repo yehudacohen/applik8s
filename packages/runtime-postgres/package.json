@@ -1,0 +1,25 @@
+{
+  "name": "@applik8s/runtime-postgres",
+  "version": "0.6.0",
+  "description": "PostgreSQL wire-client runtime for Applik8s models, commands, streams, and projections.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/runtime-postgres"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/applik8s": "0.6.0",
+    "drizzle-orm": "^0.45.1",
+    "postgres": "^3.4.7"
+  }
+}

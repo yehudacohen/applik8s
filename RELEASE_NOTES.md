@@ -1,5 +1,70 @@
 # Release Notes
 
+## v0.6.0
+
+v0.6 adds native relational models and the reactive application layer. A Drizzle table remains the single relational schema and relationship authority while Applik8s derives ArkType select, insert, and update contracts and attaches a provider-neutral model facet. The same table continues to work in ordinary Drizzle expressions; applications do not maintain a second field map.
+
+Trusted context is declared once and carried through query, stream, and projection boundaries. The PostgreSQL provider lowers that contract to row-level security, transaction-scoped admitted settings, generated migrations, advisory locking, migration history, and pooled-connection cleanup. Queries are bounded authoritative snapshots with opaque resumable invalidation rather than inferred row diffs.
+
+The release adds durable application streams, authorization-aware subscriptions, ClickHouse projections with idempotent writes and durable checkpoints, a framework-neutral browser store, React bindings, and a TanStack Start adapter. Generated gateways enforce authentication, query budgets, cursor integrity, subscription limits, replay bounds, and fail-closed model dependency declarations. Generated projection workers have bounded concurrency, restart-resume behavior, readiness, and explicit network access to application-owned ClickHouse installations.
+
+The application graph now records native model, database, query, stream, subscription, projection, gateway, migration, and provider relationships as inspectable contracts. The compiler emits TypeKro resources for CNPG, migrations, gateways, ClickHouse, projection workers, Services, RBAC, and NetworkPolicy, and retries server-side apply while a same-named object is still terminating. Projection-store materialization and reactive compiler lowering are separated into focused modules with enforced dependency directions and line budgets.
+
+The coordinated `0.6.0` package train includes `@applik8s/client`, `@applik8s/react`, and `@applik8s/tanstack-start`. Clean packed-consumer checks import every public entrypoint and build v0.4, v0.5, and v0.6 applications without workspace aliases. Runtime JSON Schema validation now enforces string patterns consistently with generated Kubernetes schemas.
+
+Generated query gateways can be passed directly to `app.expose(...)`; the gateway binding carries its generated Service name, namespace, and configured port so applications do not repeat compiler naming conventions. The GuestBook flagship makes its complete responsive UI and local/public deployment profiles visible in the rendered page. Its public profile demonstrates Ingress, namespaced cert-manager `Certificate`, ExternalDNS intent, and an HTTPS application-graph URL while remaining precise that platform-owned controllers, issuance, and DNS propagation are separate evidence.
+
+The clean production-dependency audit passes its reviewed expiring baseline but is not vulnerability-free: the latest TypeKro and ComponentizeJS releases still contribute seven upstream build-tool advisories, propagated by npm to twelve package findings. Generated runtime images do not contain that compiler dependency tree; the release fails on any unreviewed, changed, stale, or expired advisory.
+
+Live OrbStack evidence proves generated TypeKro apply, PostgreSQL RLS isolation, migration execution, gateway and projection readiness, SSE invalidation, stream replay, ClickHouse projection/checkpoint state, projection restart/resume, and TypeKro-owned application deletion. KRO 0.9 can leave completed ownerless Job Pods and an empty generated CRD finalizer during deletion; the disposable-cluster harness records and narrowly recovers those cases only after `factory.deleteInstance()` succeeds. This is an explicit dependency boundary, not a claim of native KRO lifecycle behavior.
+
+v0.6 does not claim distributed transactions, global exactly-once processing, automatic CDC for writes outside the observable transaction boundary, arbitrary analytical query planning, or production capacity from synthetic benchmarks. A second Kubernetes API server remains outside this release's evidence boundary.
+
+## v0.5.0
+
+v0.5 adds inert typed tasks and workflows, app-bound runtime handles, and a versioned `WorkflowEngine` provider contract. The first implementation pins Hatchet and its chart, runs it in PostgreSQL-only mode on external CNPG, disables RabbitMQ, and generates self-contained Node workers with health, graceful drain, retries, schedules, durable sleeps, child calls, event waits, cancellation, correlation propagation, fixed scaling, and optional KEDA task-stat scaling.
+
+Durable orchestration is deliberately effect-free: external work belongs in retry-safe tasks, and canonical state still commits through v0.4 model transactions. Compiler analysis follows captured module-scope helpers and rejects hidden network, database, Kubernetes, filesystem, wall-clock, randomness, and ambient-timer access from workflows.
+
+The longitudinal Tenant Platform adds onboarding and decommissioning workflows with compensation and explicit intervention. A fresh OrbStack Hatchet/CNPG proof exercises retry, idempotency, worker replacement during a durable wait, signal/resume, metadata propagation, compensation failure, cancellation, and TypeKro-first teardown.
+
+v0.5 also introduces bounded connection-scoped Kubernetes execution for operators that coordinate a separately authorized cluster. Portable bundles declare named permission and endpoint-policy requirements; installation artifacts bind those aliases to namespace-local kubeconfig Secrets without exposing credentials to WASM. Remote reads are typed and paginated, remote mutations require owner-bound managed identity or UID/resourceVersion evidence, and the host pins one credential revision per invocation. Connection permissions never become management-cluster RBAC, remote owner references and cross-cluster atomicity remain unsupported, and a v1 mutation plan may address only one remote connection.
+
+Operator-runtime DNS publication is now a first-class handler-safe primitive. The dedicated
+`@applik8s/applik8s/dns` entrypoint normalizes and digests A, AAAA, and CNAME intent, exposes a canonical
+typed ExternalDNS `DNSEndpoint`, validates explicit installation capabilities, and returns pure
+create/guarded-update/guarded-delete/observation decisions. Stable publication identity survives record
+changes; complete ownership metadata and durable UID evidence prevent accidental adoption or deletion.
+Exact metadata-mapped secondary watches reconcile one local owner without namespace fan-out, while
+connection-scoped publication uses bounded polling. ExternalDNS generation observation is deliberately
+not reported as provider success or DNS propagation.
+
+The Tenant Platform v0.5 artifact now uses that same local adapter to publish and revise tenant DNS with stable identity, exact owner wakeup, and guarded finalization. The pre-v0.6 maintainability pass also separates generated HTTP bundle construction, exposure normalization, graph serialization, compatibility policy, and deterministic TypeKro emission planning; ratcheted module ceilings and dependency-direction checks keep those boundaries enforceable. External provider packages can run the new registration-conformance harness before adding provider-specific semantic and live suites.
+
+The final operator-runtime hardening preserves source-module identity while statically capturing thin
+entrypoints and imported operator factories. Reachable declarations execute in isolated module scopes,
+including same-named helpers imported through different aliases; unresolved lexical state and capture
+cycles still fail closed. Nested status fields retain their names through ComponentizeJS, WIT, and
+Wasmtime, declared finalizers are attached and removed by the host, and focused handler-safe imports
+remain the supported minimal-WASM path.
+
+Two-replica operators now keep healthy followers Pod-ready, cooperatively yield CPU-bound WASM work so
+Lease renewal and health tasks continue, handle Kubernetes `SIGTERM`, release leadership during rolling
+replacement, and retain Lease-expiry failover for forced crashes. OrbStack evidence covers two distinct
+connection aliases with separate credentials and management identities against one API server. A
+genuinely separate second Kubernetes API server remains an explicit post-v0.5 portability proof rather
+than a release claim.
+
+## v0.4.3
+
+v0.4.3 is the final v0.4 correctness and release-discipline release. It closes the remaining gap between the durable-behavior implementation and its executable public contract without broadening into v0.5 workflow orchestration.
+
+Transactional command callbacks now have two independent enforcement layers. The compiler applies a closed structural allowlist that rejects ambient I/O, wall-clock and random globals, dynamic code, and routes to the Node global object. The runtime separately installs an async-context membrane over `fetch`, browser network constructors, and Node process escape hatches while a model transaction is open. The serialized ApplicationGraph records both mechanisms and requires external effects to leave the transaction through declared outboxes or future durable tasks.
+
+The release also makes the v0.4 command, event, handler, processor, Certificate, and DnsPublication surfaces consistently stable; adds a versioned executable scorecard over the longitudinal Tenant Platform graph; adds a clean npm first-run path; and enforces warning-free Rust formatting and Clippy gates across all targets. The scorecard's `10/10` values represent complete evidence coverage for declared v0.4 criteria, not a claim of perfect product maturity.
+
+Release publication is now gated by a successful, unexpired live prerelease attestation for the exact commit being tagged. The OrbStack Tenant Platform and Kubernetes-WASM suites pass with TypeKro-owned installation deletion, bounded namespace cleanup, and no manual deletion of KRO-owned resources.
+
 ## v0.4.2
 
 v0.4.2 closes the operator-image distribution gap in v0.4.1. The release publishes the Rust operator host to public GHCR for `linux/amd64` and `linux/arm64`, pins the compiler default to an immutable tagged manifest digest, and verifies a clean npm consumer can compile and build an operator from the public host before the GitHub release is created.

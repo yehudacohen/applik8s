@@ -137,6 +137,7 @@ fn delegates_reconcile_scheduling_to_kube_runtime_controller_primitives() {
 
     assert_eq!(controller_framework(), "kube-runtime::Controller");
     assert_eq!(strategy.framework, "kube-runtime::Controller");
+    assert_eq!(strategy.max_concurrent_reconciles, 1);
     assert_eq!(
         strategy.requeue_after(Duration::from_secs(5)),
         kube::runtime::controller::Action::requeue(Duration::from_secs(5))
@@ -1069,6 +1070,8 @@ fn builds_redacted_replay_artifacts_by_default() {
                 field_manager: Some("applik8s".to_string()),
                 force: Some(false),
                 ownership: None,
+                connection: None,
+                authority: None,
             },
             Operation::Status {
                 status: serde_json::json!({ "message": "contains s3cr3t" }),
@@ -1233,6 +1236,8 @@ fn accepts_operation_plans_with_declared_rbac_permissions() {
                 field_manager: None,
                 force: None,
                 ownership: None,
+                connection: None,
+                authority: None,
             },
             Operation::Status {
                 status: serde_json::json!({ "phase": "Ready" }),
@@ -1254,6 +1259,38 @@ fn accepts_operation_plans_with_declared_rbac_permissions() {
 
     applik8s_operator_host::validate_plan_rbac(&bundle, &owner, &plan)
         .expect("declared permissions allow plan");
+}
+
+#[test]
+fn remote_mutations_do_not_require_management_cluster_resource_rbac() {
+    let bundle = rbac_bundle(vec![]);
+    let owner = ObjectRef {
+        api_version: "media.applik8s.dev/v1alpha1".to_string(),
+        kind: "ImageJob".to_string(),
+        name: "hero".to_string(),
+        namespace: Some("media".to_string()),
+        uid: Some("source-uid".to_string()),
+        resource_version: Some("10".to_string()),
+    };
+    let plan = NormalizedOperationPlan {
+        operations: vec![Operation::Apply {
+            resource: k8s_object("v1", "ConfigMap", "hero-child", Some("destination")),
+            field_manager: None,
+            force: None,
+            ownership: Some(applik8s_runtime_contract::ApplyOwnership::None),
+            connection: Some("destination".to_string()),
+            authority: Some(
+                applik8s_runtime_contract::RemoteMutationAuthority::Managed {
+                    identity: "imagejob/hero/config".to_string(),
+                    source_uid: "source-uid".to_string(),
+                },
+            ),
+        }],
+        diagnostics: None,
+    };
+
+    applik8s_operator_host::validate_plan_rbac(&bundle, &owner, &plan)
+        .expect("remote permission envelopes must not become management-cluster RBAC");
 }
 
 #[tokio::test]
@@ -1552,6 +1589,8 @@ fn rejects_operation_plans_with_undeclared_rbac_permissions_before_effects() {
             field_manager: None,
             force: None,
             ownership: None,
+            connection: None,
+            authority: None,
         }],
         diagnostics: None,
     };
@@ -2321,6 +2360,51 @@ fn rejects_unsupported_runtime_concurrency_until_controller_policy_exists() {
 }
 
 #[test]
+fn rejects_connection_capable_bundle_on_older_host_before_invocation() {
+    let bundle = LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1",
+            "kind": "OperatorBundle",
+            "metadata": { "name": "image-pipeline", "annotations": { "applik8s.dev/namespace": "media" } },
+            "spec": {
+                "handlerAbi": "applik8s.handler/v1alpha1",
+                "requiresRuntime": ">=0.1.1, <0.2.0",
+                "permissions": [{ "apiGroups": [""], "resources": ["secrets"], "verbs": ["get"], "resourceNames": ["destination-kubeconfig"] }],
+                "capabilities": { "destination": {
+                    "name": "destination", "kind": "kubernetes",
+                    "permissions": [{ "apiGroups": ["apps"], "resources": ["deployments"], "verbs": ["get"], "namespaces": ["payments"] }],
+                    "kubernetesConnection": { "endpointPolicy": "workload-cluster-apis" },
+                    "execution": { "protocol": "applik8s.kubernetes-connection/v1alpha1" }
+                }},
+                "kubernetesConnectionBindings": { "destination": {
+                    "kubeconfigSecretRef": { "name": "destination-kubeconfig", "namespace": "media", "key": "kubeconfig" },
+                    "context": "destination",
+                    "endpointPolicy": { "name": "workload-cluster-apis", "version": "1", "scheme": "https", "hosts": ["destination.example.test"], "ports": [6443], "redirects": "deny" }
+                }}
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    };
+
+    let error = bundle
+        .validate_runtime_compatibility("0.4.3")
+        .expect_err("older host must reject");
+    assert!(
+        matches!(error, OperatorHostError::IncompatibleRuntime { .. }),
+        "unexpected error: {error:?}"
+    );
+}
+
+#[test]
+fn accepts_connection_capable_bundle_on_the_built_host_protocol_version() {
+    let bundle = compatibility_bundle(">=0.1.1, <0.2.0");
+
+    bundle
+        .validate_runtime_compatibility(env!("CARGO_PKG_VERSION"))
+        .expect("the built host accepts the connection protocol it ships");
+}
+
+#[test]
 fn parses_declared_host_import_allowlist_from_manifest() {
     let bundle = compatibility_bundle("^0.1.0");
 
@@ -2543,6 +2627,44 @@ async fn constructs_secondary_source_controllers_with_explicit_target_mapping() 
         .expect("secondary controller");
     assert_eq!(secondary.watch.kind, "Deployment");
     assert_eq!(secondary.watch.namespace.as_deref(), Some("sources"));
+}
+
+#[tokio::test]
+async fn constructs_exact_secondary_source_controller_from_annotation_mapping() {
+    let bundle = LoadedOperatorBundle {
+        manifest: serde_json::json!({
+            "apiVersion": "applik8s.operator/v1alpha1", "kind": "OperatorBundle",
+            "metadata": { "name": "dns-controller", "annotations": { "applik8s.dev/namespace": "dns-system" } },
+            "spec": {
+                "ownedCrds": [{ "apiVersion": "platform.applik8s.dev/v1alpha1", "kind": "PublicationOwner", "plural": "publicationowners", "scope": "Namespaced" }],
+                "watches": [{ "apiVersion": "platform.applik8s.dev/v1alpha1", "kind": "PublicationOwner", "plural": "publicationowners", "scope": "Namespaced", "events": ["reconcile"], "handlers": ["PublicationOwner.reconcile.0"] }],
+                "secondaryWatches": [{
+                    "source": { "apiVersion": "externaldns.k8s.io/v1alpha1", "kind": "DNSEndpoint", "plural": "dnsendpoints", "scope": "Namespaced" },
+                    "target": { "apiVersion": "platform.applik8s.dev/v1alpha1", "kind": "PublicationOwner", "plural": "publicationowners", "scope": "Namespaced" },
+                    "watch": { "namespace": "dns-system" },
+                    "mapper": { "mode": "targetNameFromSourceField", "source": { "kind": "annotation", "key": "dns.applik8s.dev/source-name" }, "namespace": "source" }
+                }]
+            }
+        }),
+        handler_wasm: vec![0, 97, 115, 109],
+    };
+    let controllers = bundle
+        .controllers(mock_kube_client())
+        .expect("construct exact secondary controller");
+    let secondary = controllers
+        .iter()
+        .find(|controller| controller.secondary.is_some())
+        .expect("exact secondary controller");
+    assert_eq!(secondary.watch.kind, "DNSEndpoint");
+    assert_eq!(secondary.watch.namespace.as_deref(), Some("dns-system"));
+    assert_eq!(
+        secondary
+            .secondary
+            .as_ref()
+            .and_then(|value| value.pointer("/mapper/mode"))
+            .and_then(serde_json::Value::as_str),
+        Some("targetNameFromSourceField")
+    );
 }
 
 #[test]
@@ -3501,11 +3623,8 @@ async fn kubernetes_read_error(
 fn mock_kube_client() -> kube::Client {
     let service = tower::service_fn(|_request: http::Request<kube::client::Body>| async move {
         Err::<http::Response<kube::client::Body>, tower::BoxError>(
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "mock kube client should not be called by validation-only tests",
-            )
-            .into(),
+            std::io::Error::other("mock kube client should not be called by validation-only tests")
+                .into(),
         )
     });
     kube::Client::new(service, "default")

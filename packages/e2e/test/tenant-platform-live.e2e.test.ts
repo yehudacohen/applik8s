@@ -2,13 +2,15 @@ import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
+import { canonicalApplicationCommandKey } from '@applik8s/applik8s/processor-runtime';
+import { eventLogSubject } from '@applik8s/runtime-nats';
 import { buildImplicitRuntimeImage } from '@applik8s/compiler';
 import type { OperatorManifest } from '@applik8s/core';
-import { canonicalApplicationCommandKey, eventLogSubject } from '@applik8s/applik8s/processor-runtime';
+import { type } from 'arktype';
 import { connect, StringCodec } from 'nats';
 import postgres from 'postgres';
-import { typeKroRuntimeBootstrap } from 'typekro';
+import { kubernetesComposition, typeKroRuntimeBootstrap } from 'typekro';
+import { namespace as kubernetesNamespace } from 'typekro/kubernetes';
 import { natsBootstrap } from 'typekro/nats';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 
@@ -35,6 +37,33 @@ let tempDir: string | undefined;
 let outDir: string | undefined;
 let deleteKroApplicationInstance: ((instance: AppInstanceRef) => Promise<void>) | undefined;
 let deleteJetStreamInfrastructure: (() => Promise<void>) | undefined;
+let deleteDisposableNamespaceWithTypeKro: (() => Promise<void>) | undefined;
+
+const disposableNamespaceComposition = kubernetesComposition<
+  { name: string },
+  { ready: boolean }
+>(
+  {
+    name: 'applik8s-e2e-disposable-namespace',
+    apiVersion: 'testing.applik8s.dev/v1alpha1',
+    kind: 'DisposableNamespace',
+    spec: type({ name: 'string' }),
+    status: type({ ready: 'boolean' }),
+  },
+  (spec) => {
+    kubernetesNamespace({
+      id: 'namespace',
+      metadata: {
+        name: spec.name,
+        labels: {
+          'app.kubernetes.io/managed-by': 'typekro',
+          'applik8s.dev/e2e-disposable': 'true',
+        },
+      },
+    });
+    return { ready: true };
+  },
+);
 
 describeLive('live Tenant Platform pressure test', () => {
   beforeAll(async () => {
@@ -42,7 +71,7 @@ describeLive('live Tenant Platform pressure test', () => {
     await docker(['build', '--file', 'Dockerfile.operator-host', '--tag', 'ghcr.io/applik8s/applik8s-operator-host:dev', '.'], process.cwd());
     await ensureKroRuntime();
     await ensureCnpgOperator();
-    await ensureNamespace(namespace);
+    await prepareDisposableNamespace();
     if (v04) await ensureJetStreamInfrastructureInstalled();
 
     tempDir = await mkdtemp(join(tmpdir(), 'applik8s-tenant-platform-live-'));
@@ -72,11 +101,11 @@ describeLive('live Tenant Platform pressure test', () => {
 
   afterAll(async () => {
     if (process.env.APPLIK8S_E2E_LIVE === '1') {
+      await deleteApplicationRuntimeFixtures();
       await deleteApplicationInstancesWithTypeKro();
-      await kubectl(['delete', 'resourcegraphdefinition', stackName, '--ignore-not-found=true', '--timeout=180s']);
-      await deleteApplicationCrds();
+      await assertApplicationDefinitionCleanedForReuse();
       if (v04) await deleteJetStreamInfrastructureWithTypeKro();
-      await kubectl(['delete', 'namespace', namespace, '--ignore-not-found=true', '--timeout=300s']);
+      await deleteDisposableNamespaceThroughTypeKro();
     }
     if (tempDir && process.env.APPLIK8S_KEEP_TMP !== '1') {
       await rm(tempDir, { recursive: true, force: true });
@@ -701,15 +730,49 @@ async function deleteApplicationInstancesWithTypeKro(): Promise<void> {
       namespace: item.metadata?.namespace,
     }))
     .filter((item: { readonly name?: unknown; readonly namespace?: unknown }): item is AppInstanceRef => typeof item.name === 'string' && typeof item.namespace === 'string') ?? [];
-  if (!deleteKroApplicationInstance && instances.length > 0) throw new Error('TypeKro application deletion was not initialized.');
-  for (const instance of instances) {
-    await deleteKroApplicationInstance?.(instance);
+  if (!deleteKroApplicationInstance) throw new Error('TypeKro application deletion was not initialized.');
+  const targets = instances.length > 0 ? instances : [{ name: stackName, namespace }];
+  for (const instance of targets) {
+    try {
+      await deleteKroApplicationInstance(instance);
+    } catch (cause) {
+      const [rootExists, rgdExists] = await Promise.all([
+        kubectl(['get', `${appPlural}.${apiGroup}/${instance.name}`, '--namespace', instance.namespace]).then(() => true, () => false),
+        kubectl(['get', `resourcegraphdefinition/${stackName}`]).then(() => true, () => false),
+      ]);
+      if (rootExists || rgdExists) throw cause;
+    }
   }
 }
 
 async function deleteJetStreamInfrastructureWithTypeKro(): Promise<void> {
   if (!deleteJetStreamInfrastructure) throw new Error('TypeKro JetStream infrastructure deletion was not initialized.');
   await deleteJetStreamInfrastructure();
+}
+
+async function prepareDisposableNamespace(): Promise<void> {
+  if (!namespace.startsWith('applik8s-tenant-platform-')) {
+    throw new Error(`Refusing TypeKro ownership for non-disposable namespace ${namespace}.`);
+  }
+  const factory = disposableNamespaceComposition.factory('direct', {
+    namespace: 'default',
+    waitForReady: true,
+    timeout: 600_000,
+  });
+  await factory.deploy({ name: namespace });
+  deleteDisposableNamespaceWithTypeKro = async () => {
+    try {
+      await factory.deleteInstance(namespace, { scopes: ['cluster'] });
+    } finally {
+      await factory.dispose();
+    }
+  };
+}
+
+async function deleteDisposableNamespaceThroughTypeKro(): Promise<void> {
+  if (!deleteDisposableNamespaceWithTypeKro) throw new Error('Disposable Namespace TypeKro deletion was not initialized.');
+  await deleteDisposableNamespaceWithTypeKro();
+  await expect(kubectl(['get', `namespace/${namespace}`])).rejects.toThrow();
 }
 
 async function assertJetStreamInfrastructureAbsent(originalError: unknown): Promise<void> {
@@ -738,7 +801,7 @@ async function assertJetStreamInfrastructureAbsent(originalError: unknown): Prom
   }
 }
 
-async function deleteApplicationCrds(): Promise<void> {
+async function deleteApplicationRuntimeFixtures(): Promise<void> {
   const crds = JSON.parse((await kubectl(['get', 'customresourcedefinitions', '--output=json'])).stdout)?.items
     ?.filter((item: { readonly spec?: { readonly group?: unknown } }) => item.spec?.group === apiGroup)
     .map((item: { readonly metadata?: { readonly name?: unknown }; readonly spec?: { readonly group?: unknown; readonly scope?: unknown; readonly names?: { readonly plural?: unknown } } }) => ({
@@ -750,32 +813,36 @@ async function deleteApplicationCrds(): Promise<void> {
     .filter((crd: { readonly name?: unknown; readonly group?: unknown; readonly scope?: unknown; readonly plural?: unknown }): crd is { readonly name: string; readonly group: string; readonly scope: string; readonly plural: string } =>
       typeof crd.name === 'string' && typeof crd.group === 'string' && typeof crd.scope === 'string' && typeof crd.plural === 'string') ?? [];
   for (const crd of crds) {
+    if (crd.name === `${appPlural}.${apiGroup}`) continue;
     const resource = `${crd.plural}.${crd.group}`;
     const scopeArgs = crd.scope === 'Namespaced' ? ['--all-namespaces'] : [];
     await kubectl(['delete', resource, '--all', ...scopeArgs, '--ignore-not-found=true', '--timeout=180s']);
-    await kubectl(['delete', `customresourcedefinition/${crd.name}`, '--ignore-not-found=true', '--wait=false']);
-    const started = Date.now();
-    while (Date.now() - started < 30_000) {
-      try {
-        await kubectl(['get', `customresourcedefinition/${crd.name}`]);
-      } catch {
-        break;
-      }
-      await sleep(1_000);
-    }
-    try {
-      await kubectl(['get', `customresourcedefinition/${crd.name}`]);
-    } catch {
-      continue;
-    }
-    const remaining = JSON.parse((await kubectl(['get', resource, ...scopeArgs, '--output=json'])).stdout)?.items ?? [];
-    if (remaining.length > 0) throw new Error(`Refusing to finalize CRD ${crd.name}; ${remaining.length} custom resources remain.`);
-    // OrbStack's K3s CRD cleanup controller can retain its finalizer after an
-    // authoritative empty list. Limit this escape hatch to disposable E2E API
-    // groups and only after proving there are no instances.
-    await kubectl(['patch', `customresourcedefinition/${crd.name}`, '--type=json', '-p=[{"op":"remove","path":"/metadata/finalizers"}]']);
-    await kubectl(['wait', '--for=delete', `customresourcedefinition/${crd.name}`, '--timeout=60s']);
   }
+}
+
+async function assertApplicationDefinitionCleanedForReuse(): Promise<void> {
+  await expect(kubectl(['get', `resourcegraphdefinition/${stackName}`])).rejects.toThrow();
+  const groupCrds = JSON.parse((await kubectl(['get', 'customresourcedefinitions', '--output=json'])).stdout)?.items
+    ?.filter((item: { readonly spec?: { readonly group?: unknown } }) => item.spec?.group === apiGroup)
+    .map((item: { readonly metadata?: { readonly name?: unknown; readonly labels?: unknown; readonly deletionTimestamp?: unknown } }) => ({
+      name: item.metadata?.name,
+      labels: item.metadata?.labels,
+      deletionTimestamp: item.metadata?.deletionTimestamp,
+    }))
+    .filter((item: { readonly name?: unknown }): item is { readonly name: string; readonly labels?: unknown; readonly deletionTimestamp?: unknown } => typeof item.name === 'string') ?? [];
+  const rootCrdName = `${appPlural}.${apiGroup}`;
+  const unexpected = groupCrds.filter((item: { readonly name: string }) => item.name !== rootCrdName).map((item: { readonly name: string }) => item.name);
+  if (unexpected.length > 0) {
+    throw new Error(`TypeKro application deletion left child CRDs behind: ${unexpected.join(', ')}`);
+  }
+  const root = groupCrds.find((item: { readonly name: string }) => item.name === rootCrdName);
+  if (!root) throw new Error(`TypeKro did not retain generated application CRD ${rootCrdName} for reuse.`);
+  expect(root.deletionTimestamp).toBeUndefined();
+  expect(root.labels).toMatchObject({
+    'kro.run/owned': 'true',
+    'kro.run/resource-graph-definition-name': stackName,
+  });
+  expect((await kubectl(['get', rootCrdName, '--all-namespaces', '--output=name'])).stdout.trim()).toBe('');
 }
 
 async function forwardedDatabaseUrl(port: number): Promise<string> {

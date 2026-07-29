@@ -14,11 +14,36 @@ export interface BundleDigestInput {
 }
 
 export function computeBundleDigest(input: BundleDigestInput): string {
+  return computeDigest(input, canonicalBundleArtifacts(input.artifacts));
+}
+
+/**
+ * Computes the stable execution identity of an operator from semantic inputs.
+ *
+ * ComponentizeJS/Wizer snapshots currently contain nondeterministic engine
+ * state, so byte-identical JavaScript and WIT inputs can produce different
+ * WASM bytes. The exact bundle digest still inventories those bytes for
+ * verification; deployment identity deliberately excludes backend products
+ * and debug-only artifacts so equivalent builds do not trigger image rebuilds
+ * or Kubernetes rollouts.
+ */
+export function computeBundleBuildIdentityDigest(input: BundleDigestInput): string {
+  const canonical = canonicalBundleArtifacts(input.artifacts);
+  const hasJavaScriptSource = canonical.some((artifact) => artifact.kind === 'javascript-bundle');
+  const semanticArtifacts = canonical.filter((artifact) =>
+    artifact.kind === 'javascript-bundle'
+    || artifact.kind === 'handler-wit'
+    || artifact.kind === 'runtime-contract'
+    || (!hasJavaScriptSource && artifact.kind === 'wasm-component'));
+  return computeDigest(input, semanticArtifacts);
+}
+
+function computeDigest(input: BundleDigestInput, artifacts: readonly BundleArtifact[]): string {
   return digestJson({
     compilerVersion: input.compilerVersion,
     handlerAbi: input.handlerAbi,
     operatorName: input.operatorName,
-    artifacts: canonicalBundleArtifacts(input.artifacts),
+    artifacts,
     handlerExports: input.handlerExports.map((handler) => ({
       event: handler.event,
       exportName: handler.exportName,

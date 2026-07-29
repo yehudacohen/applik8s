@@ -124,7 +124,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['app.model', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'provider.ModelStore']));
     expect(graph?.compatibility.documentedInternalContracts).toEqual(expect.arrayContaining(['ApplicationGraph']));
     expect(graph?.compatibility.experimentalSurfaces).toEqual(expect.arrayContaining(['app.graph']));
-    expect(graph?.compatibility.postV3Surfaces).toEqual(expect.arrayContaining(['workload-movement-operator', 'generic-workflow-orchestration', 'additional-provider-adapters']));
+    expect(graph?.compatibility.postV3Surfaces).toEqual(expect.arrayContaining(['workload-movement-operator', 'additional-provider-adapters']));
     expect(graph?.compatibility.labels).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'app.model', surface: 'stablePublicApi' }),
       expect.objectContaining({ name: 'provider.ModelStore', surface: 'stablePublicApi' }),
@@ -412,14 +412,21 @@ function providerInterfaces(): readonly ApplicationProviderInterfaceContract[] {
     { interface: 'IndexStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'CounterStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'EventSource', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
-    { interface: 'EventLog', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
+    { interface: 'EventLog', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'Secret', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'Queue', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'ObjectStorage', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'HttpExposure', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
-    { interface: 'Certificate', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
-    { interface: 'DnsPublication', surface: 'experimentalSurface', support: 'implemented', diagnostics: [] },
+    { interface: 'Certificate', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'StructuredGeneration', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'ProjectionStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'ContainerRegistry', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'RequestIdentity', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'Authorization', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   ];
 }
 

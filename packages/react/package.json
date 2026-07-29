@@ -1,0 +1,23 @@
+{
+  "name": "@applik8s/react",
+  "version": "0.6.0",
+  "description": "Router-independent React hooks for Applik8s live application queries.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/react"
+  },
+  "dependencies": {
+    "@applik8s/client": "0.6.0"
+  },
+  "peerDependencies": {
+    "react": ">=18.3.0 <20"
+  },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  }
+}

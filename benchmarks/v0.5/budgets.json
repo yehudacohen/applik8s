@@ -1,0 +1,15 @@
+{
+  "observation": {
+    "minimumThroughputPerSecond": 10000,
+    "maximumP95Ms": 1,
+    "maximumRssGrowthBytes": 33554432
+  },
+  "graph": {
+    "minimumBuildsPerSecond": 1
+  },
+  "build": {
+    "maximumDurationMs": 120000,
+    "maximumWorkflowJavaScriptBytes": 3000000,
+    "maximumWorkflowGzipBytes": 700000
+  }
+}

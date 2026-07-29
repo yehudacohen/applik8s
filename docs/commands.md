@@ -1,64 +1,134 @@
-# Durable model commands
+# Durable model operations
 
-`Model.on.command()` binds a versioned command to one authoritative model transaction. PostgreSQL owns idempotency, durable results, model revisions, history, transitions, and event/command outboxes. JetStream is acknowledged at-least-once transport; a broker acknowledgement is not a completed command result.
+Promoted Drizzle models derive durable `Model.create`, `Model.update`, and `Model.delete` operations directly
+from the table declaration. PostgreSQL owns idempotency, durable results, revisions, history, and the
+transactional outbox. JetStream provides acknowledged at-least-once delivery; a broker acknowledgement is
+not a completed operation result.
 
-## Ordering
+## Conventional lifecycle
 
-- `ordering: 'serial'` acquires an authoritative target-scoped PostgreSQL transaction lock before reading or changing the model.
-- `ordering: 'concurrent'` allows handlers for the same target to overlap. The final update uses an optimistic revision predicate. A conflict rolls the whole transaction back and reruns the deterministic handler under its bounded retry policy.
-- Commands for different keys can overlap in either mode; serialization is keyed, not processor-wide.
-
-## Missing targets
-
-- `missing: 'reject'` records and replays a durable `targetMissing` outcome.
-- `missing: { initialize }` creates the submitted key inside the command transaction before invoking the handler.
-- `missing: { route: 'fallback-key' }` routes a missing submitted key to that alternate key in the same model and transaction. Expected revisions, observations, history, emitted facts, and state-revision links refer to the effective alternate key.
-
-## Transactional outboxes
-
-Declare events under `transaction.outbox` and follow-up commands under `transaction.commands`. Handlers use `context.emit(...)` and `context.send(...)`; undeclared contracts and schema-invalid payloads fail before commit.
+Use the conventional operation for CRUD-shaped facts and attach transaction-authoritative validation or
+derivation with `beforeCommit`. React to the committed fact with the corresponding typed lifecycle handler:
 
 ```ts
-Account.on.command(RenameAccount, {
-  key: ({ accountId }) => accountId,
-  ordering: 'concurrent',
-  missing: { route: 'default-account' },
-  transaction: {
-    history: [Account],
-    outbox: [AccountChanged],
-    commands: [ReindexAccount],
-  },
+const Account = application.model(accounts, { name: 'Account', database: Database });
+
+Account.create.beforeCommit({
+  history: true,
+  events: [AccountChanged],
 }, async (account, input, context) => {
-  account.patch({ spec: { displayName: input.displayName } });
-  context.emit(AccountChanged, { accountId: account.id });
-  context.send(ReindexAccount, { accountId: account.id }, {
-    targetKey: account.id,
-    idempotencyKey: input.requestId,
-  });
-  return { changed: true };
+  if (context.principal?.id !== input.id) throw new Error('Account identity must match the principal.');
+  account.patch({ spec: { joinedAt: context.now } });
+  context.emit(AccountChanged, { accountId: account.id, changedAt: context.now });
+});
+
+Account.on.create('initialize-account', {
+  processor: { replicas: 1, concurrency: 8 },
+  retry: { maxAttempts: 5, deadLetter: true },
+}, async (created, context) => {
+  // created.value, created.identity, created.revision, and context are typed.
 });
 ```
 
-Event and command relays use stable message IDs. A crash after publish but before database acknowledgement safely republishes the same ID.
+Create events contain the committed value; update events contain `previous` and `current`; delete events
+contain the previous value and a typed tombstone. Lifecycle processing shares the same versioned event,
+transactional outbox, replay, bounded processor, retry, and dead-letter machinery as explicit events.
+
+The table remains the Drizzle table by identity. If a native table member collides with a convenience name
+such as `create` or `on`, the Drizzle member wins and the complete model API remains available through the
+symbol facet:
+
+```ts
+import { applicationModelFacet } from '@applik8s/applik8s';
+
+const model = Account[applicationModelFacet].api;
+await model.create(input);
+model.on.create('initialize-account', options, handler);
+```
+
+## Ordering and missing targets
+
+- Serial execution acquires an authoritative target-scoped PostgreSQL transaction lock before reading or
+  changing the model.
+- Concurrent execution uses an optimistic revision predicate. A conflict rolls the transaction back and
+  reruns deterministic work under its bounded retry policy.
+- Operations for different identities can overlap; serialization is target-scoped, not processor-wide.
+- A rejected missing target produces a durable, replayable `targetMissing` result.
+- An initializer creates a missing target inside the same transaction.
+- A fallback route changes the effective target inside the same model; history and outboxes refer to that
+  effective target.
+
+Conventional CRUD operations select safe framework defaults. A genuinely exceptional operation can declare
+different ordering or missing-target semantics explicitly.
+
+## Exceptional domain operations
+
+When CRUD, a task, or a workflow does not describe the behavior, declare one exceptional operation. The
+single declaration derives both the callable method and its typed committed completion event:
+
+```ts
+const Account = application
+  .model(accounts, { name: 'Account', database: Database })
+  .action('rotateRecoveryCodes', RotateRecoveryCodes, {
+    key: ({ accountId }) => accountId,
+    ordering: 'serial',
+    history: true,
+  }, async (account, input, context) => {
+    const result = await rotateCodesDeterministically(account, input, context);
+    account.patch({ spec: { recoveryCodesRevision: result.revision } });
+    return result;
+  });
+
+await Account.rotateRecoveryCodes(input);
+
+Account.on.rotateRecoveryCodes('audit-recovery-code-rotation', processorOptions, async (completed) => {
+  // completed.previous, completed.current, completed.result, identity, and revision are typed.
+});
+```
+
+Do not introduce an `.actions({...})` registry or a second completion event. Ordinary domain code uses
+direct lifecycle mutations or a named `Model.action(...)`. The lower-level `Model.on.command(...)` and
+`Model.on.action(...)` registrars remain available for explicit protocol integration and framework
+internals, but do not belong in golden-path examples.
+
+## Transactional outboxes
+
+Declare explicit domain events under `events` or `transaction.outbox`, and follow-up operations under
+`transaction.commands`. Handlers use `context.emit(...)` and `context.send(...)`; undeclared contracts and
+schema-invalid payloads fail before commit.
+
+```ts
+Post.create.beforeCommit({
+  history: true,
+  events: [PostPublished],
+  transaction: { models: [Account], commands: [CreateNotification] },
+}, async (post, input, context) => {
+  context.emit(PostPublished, { postId: post.id, authorId: post.value.authorId });
+  context.send(CreateNotification, notificationFor(post), {
+    targetKey: post.id,
+    idempotencyKey: context.id('publication-notification'),
+  });
+});
+```
+
+Event and command relays use stable message IDs. A crash after publish but before database acknowledgement
+safely republishes the same ID.
 
 ## Processor runtime image
 
-Inferred processors default to a multi-architecture, digest-pinned official Node 22 Alpine image. Applications that mirror or harden their own runtime can override it per model command; all handlers sharing the inferred model processor must agree on the same image:
-
-```ts
-Account.on.command(RenameAccount, {
-  key: ({ accountId }) => accountId,
-  processor: {
-    image: 'registry.example.com/platform/applik8s-node@sha256:…',
-  },
-}, handler);
-```
-
-The selected image is recorded in the application graph, generated processor manifest, and Deployment.
+Inferred processors are bundled into content-addressed OCI images built from a multi-architecture,
+digest-pinned Node runtime. Applications that mirror or harden their runtime can override the base through
+processor options; handlers sharing an inferred processor must agree on the same base. The generated
+manifest records the base, OCI recipe, source digest, and resolved workload image. Processor source is never
+transported through an executable ConfigMap.
 
 ## Transaction effect boundary
 
-Transactional handlers may use their target, declared transaction-scoped model participants, deterministic computation, `context.now`, `context.id`, and declared outboxes. Source analysis rejects direct external effects, while the Node runtime independently denies `fetch` reached through dynamic global access during handler execution. External work belongs in durable tasks or follow-up commands outside the transaction.
+Transactional hooks may use their target, declared transaction-scoped models, deterministic computation,
+`context.now`, `context.id`, and declared outboxes. Generation rejects ambient I/O, wall-clock/random
+globals, dynamic code, and Node-global escape routes. The runtime also installs an async-context membrane
+over ambient network and process escape points. This is a supported callback contract, not a hostile-code
+sandbox. External work belongs in durable tasks or follow-up operations outside the database transaction.
 
 ## Versioned providers
 
@@ -75,4 +145,5 @@ const WorkflowEngine = defineApplicationProvider<HatchetProvider>({
 application.provide(WorkflowEngine, hatchetProvider);
 ```
 
-The application graph records the provider contract version, requirements, guarantees, implementation identity, and compatibility surface.
+The application graph records provider contract versions, requirements, guarantees, implementation
+identity, and compatibility surface.

@@ -6,13 +6,15 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use applik8s_runtime_bridge::{
-    KubernetesHttpTransport, RuntimeBridgeError, capability_denied_payload, component_host_imports,
-    component_model_engine, decode_handler_input_payload, decode_handler_output_plan_payload,
-    invoke_handler_component_bytes, invoke_handler_component_bytes_with_timeout,
+    KubernetesHttpTransport, RuntimeBridgeError, capability_denied_payload,
+    compile_handler_component, component_host_imports, component_model_engine,
+    decode_handler_input_payload, decode_handler_output_plan_payload,
+    invoke_compiled_handler_component_with_timeout_async, invoke_handler_component_bytes,
+    invoke_handler_component_bytes_with_timeout,
     invoke_handler_component_bytes_with_timeout_and_capabilities_async,
-    invoke_handler_component_bytes_with_timeout_and_kubernetes_http_async, retry_after,
-    runtime_abi_version, validate_component_host_imports, validate_handler_input,
-    validate_operation_plan,
+    invoke_handler_component_bytes_with_timeout_and_kubernetes_http_async,
+    invoke_handler_component_bytes_with_timeout_async, retry_after, runtime_abi_version,
+    validate_component_host_imports, validate_handler_input, validate_operation_plan,
 };
 use kube::runtime::controller::Action;
 use wasmtime::Store;
@@ -219,6 +221,100 @@ fn bridge_invokes_handler_component_and_decodes_output_plan() {
 }
 
 #[test]
+fn compiled_handler_component_supports_repeated_isolated_invocations() {
+    let engine = component_model_engine().expect("component model engine configures");
+    let component =
+        compile_handler_component(&engine, &canonical_result_handler_component_bytes(), &[])
+            .expect("handler component compiles once");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime builds");
+
+    for _ in 0..3 {
+        let plan = runtime
+            .block_on(invoke_compiled_handler_component_with_timeout_async(
+                &engine,
+                &component,
+                valid_handler_input_payload(),
+                Duration::from_secs(1),
+            ))
+            .expect("compiled handler receives a fresh invocation Store");
+        assert!(plan.operations.is_empty());
+    }
+}
+
+#[test]
+fn componentized_handler_preserves_nested_status_fields_by_name() {
+    let workspace_root = workspace_root();
+    let temp_dir = test_temp_dir("componentize-js-nested-status");
+    fs::create_dir_all(&temp_dir).expect("test temp directory creates");
+    let js_path = temp_dir.join("handler.js");
+    let wit_path = temp_dir.join("handler.wit");
+    let wasm_path = temp_dir.join("handler.wasm");
+    fs::write(
+        &js_path,
+        r#"
+export function handle() {
+  return JSON.stringify({ operations: [{ kind: 'status', status: { volumes: [{ conditions: [{ type: 'Ready', status: 'True', observedGeneration: 17, lastTransitionTime: '2026-07-14T12:34:56Z' }] }] } }] });
+}
+"#,
+    )
+    .expect("nested status handler source writes");
+    fs::write(
+        &wit_path,
+        r#"package applik8s:handler;
+
+world handler {
+  import log: func(event-json: string);
+  import cancel: func(reason-json: string);
+  export handle: func(input-json: string) -> result<string, string>;
+}
+"#,
+    )
+    .expect("nested status handler WIT writes");
+
+    let output = Command::new(workspace_root.join("node_modules/.bin/componentize-js"))
+        .arg(&js_path)
+        .arg("--wit")
+        .arg(&wit_path)
+        .arg("--world-name")
+        .arg("handler")
+        .arg("--out")
+        .arg(&wasm_path)
+        .current_dir(workspace_root)
+        .output()
+        .expect("componentize-js command starts");
+    assert!(
+        output.status.success(),
+        "componentize-js failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let engine = component_model_engine().expect("component model engine configures");
+    let component_bytes = fs::read(&wasm_path).expect("emitted component reads");
+    let plan = invoke_handler_component_bytes_with_timeout(
+        &engine,
+        &component_bytes,
+        valid_handler_input_payload(),
+        &applik8s_runtime_bridge::canonical_host_imports(),
+        Duration::from_secs(30),
+    )
+    .expect("bridge invokes ComponentizeJS-emitted nested status handler");
+    let operation = serde_json::to_value(&plan.operations[0]).expect("status operation serializes");
+    let condition = operation
+        .pointer("/status/volumes/0/conditions/0")
+        .expect("nested condition is present");
+    assert_eq!(condition["type"], "Ready");
+    assert_eq!(condition["status"], "True");
+    assert_eq!(condition["observedGeneration"], 17);
+    assert_eq!(condition["lastTransitionTime"], "2026-07-14T12:34:56Z");
+
+    fs::remove_dir_all(&temp_dir).expect("test temp directory removes");
+}
+
+#[test]
 fn bridge_times_out_non_terminating_handler_component() {
     let engine = component_model_engine().expect("component model engine configures");
     let component_bytes = non_terminating_handler_component_bytes();
@@ -238,6 +334,44 @@ fn bridge_times_out_non_terminating_handler_component() {
         ),
         "expected HandlerTimedOut, got {error:?}"
     );
+}
+
+#[test]
+fn cpu_bound_guest_yields_to_control_plane_tasks_before_timeout() {
+    let engine = component_model_engine().expect("component model engine configures");
+    let component_bytes = non_terminating_handler_component_bytes();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("test runtime builds")
+        .block_on(async {
+            let invocation = invoke_handler_component_bytes_with_timeout_async(
+                &engine,
+                &component_bytes,
+                valid_handler_input_payload(),
+                &[],
+                Duration::from_millis(100),
+            );
+            tokio::pin!(invocation);
+
+            let timer_result =
+                tokio::time::timeout(Duration::from_millis(20), &mut invocation).await;
+            assert!(
+                timer_result.is_err(),
+                "the control-plane timer must run before the guest's own timeout"
+            );
+
+            let error = invocation
+                .await
+                .expect_err("non-terminating component still obeys its wall-clock timeout");
+            assert!(
+                matches!(
+                    error,
+                    RuntimeBridgeError::HandlerTimedOut { timeout_ms: 100 }
+                ),
+                "expected HandlerTimedOut, got {error:?}"
+            );
+        });
 }
 
 #[test]
@@ -301,8 +435,7 @@ world handler {
     )
     .expect("handler WIT writes");
 
-    let output = Command::new("bunx")
-        .arg("componentize-js")
+    let output = Command::new(workspace_root.join("node_modules/.bin/componentize-js"))
         .arg(&js_path)
         .arg("--wit")
         .arg(&wit_path)
@@ -408,16 +541,14 @@ export async function unreachableNodeOnlyBranch() {
     .expect("transformation helper writes");
     fs::write(
         &entry_path,
-        format!(
-            r#"
-import {{ transformFromEndpoint }} from './transformation.js';
+        r#"
+import { transformFromEndpoint } from './transformation.js';
 
-export async function handle(_inputJson) {{
+export async function handle(_inputJson) {
   const result = await transformFromEndpoint('http://kubernetes.default.svc/desired');
-  return JSON.stringify({{ operations: [{{ kind: 'status', status: {{ phase: result.replicas === 3 ? 'Ready' : 'NotReady', writes: result.writes }} }}] }});
-}}
-"#
-        ),
+  return JSON.stringify({ operations: [{ kind: 'status', status: { phase: result.replicas === 3 ? 'Ready' : 'NotReady', writes: result.writes } }] });
+}
+"#,
     )
     .expect("handler entry source writes");
     fs::write(
@@ -431,8 +562,7 @@ world handler {
     )
     .expect("handler WIT writes");
 
-    let bundle_output = Command::new("bunx")
-        .arg("esbuild")
+    let bundle_output = Command::new(workspace_root.join("node_modules/.bin/esbuild"))
         .arg(&entry_path)
         .arg("--bundle")
         .arg("--format=esm")
@@ -455,8 +585,7 @@ world handler {
         "unreachable Node-only dependency branch must be tree-shaken"
     );
 
-    let output = Command::new("bunx")
-        .arg("componentize-js")
+    let output = Command::new(workspace_root.join("node_modules/.bin/componentize-js"))
         .arg(&js_path)
         .arg("--wit")
         .arg(&wit_path)
@@ -919,6 +1048,8 @@ fn rejects_invalid_delete_ref_before_apply() {
                 resource_version: None,
             },
             options: None,
+            connection: None,
+            authority: None,
         }],
         diagnostics: None,
     };
@@ -961,6 +1092,53 @@ fn rejects_invalid_delete_options_before_apply() {
             "expected {expected:?}, got {error}"
         );
     }
+
+    for (preconditions, expected) in [
+        (
+            serde_json::json!({ "uid": "" }),
+            "preconditions.uid must not be empty",
+        ),
+        (
+            serde_json::json!({ "uid": "endpoint-uid", "resourceVersion": "" }),
+            "preconditions.resourceVersion must not be empty",
+        ),
+    ] {
+        let plan = decode_handler_output_plan_payload(serde_json::json!({
+            "operations": [{
+                "kind": "delete",
+                "ref": { "apiVersion": "externaldns.k8s.io/v1alpha1", "kind": "DNSEndpoint", "name": "publication", "namespace": "dns-system" },
+                "options": { "preconditions": preconditions }
+            }]
+        }))
+        .expect("guarded delete plan decodes");
+
+        let error =
+            validate_operation_plan(&owner, &plan).expect_err("invalid delete preconditions fail");
+        assert!(
+            error.to_string().contains(expected),
+            "expected {expected:?}, got {error}"
+        );
+    }
+}
+
+#[test]
+fn accepts_uid_and_resource_version_delete_preconditions() {
+    let owner = owner_ref();
+    let plan = decode_handler_output_plan_payload(serde_json::json!({
+        "operations": [{
+            "kind": "delete",
+            "ref": { "apiVersion": "externaldns.k8s.io/v1alpha1", "kind": "DNSEndpoint", "name": "publication", "namespace": "dns-system" },
+            "options": { "preconditions": { "uid": "endpoint-uid", "resourceVersion": "42" } }
+        }]
+    }))
+    .expect("guarded delete plan decodes");
+
+    validate_operation_plan(&owner, &plan).expect("guarded delete plan validates");
+    let serialized = serde_json::to_value(&plan).expect("guarded delete plan serializes");
+    assert_eq!(
+        serialized.pointer("/operations/0/options/preconditions"),
+        Some(&serde_json::json!({ "uid": "endpoint-uid", "resourceVersion": "42" }))
+    );
 }
 
 #[test]

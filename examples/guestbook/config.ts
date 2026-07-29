@@ -14,7 +14,7 @@ export interface GuestBookConfig {
   readonly hostname: string;
   readonly ingressClassName?: string;
   readonly issuerRef?: { readonly name: string; readonly kind: 'Issuer' | 'ClusterIssuer' };
-  readonly tlsSecretName?: string;
+  readonly certificateSecretName?: string;
   readonly dnsTtlSeconds: number;
 }
 
@@ -49,7 +49,7 @@ export function guestBookConfigFromEnvironment(env: Readonly<Record<string, stri
     hostname,
     ...(env.APPLIK8S_GUESTBOOK_INGRESS_CLASS ? { ingressClassName: env.APPLIK8S_GUESTBOOK_INGRESS_CLASS } : {}),
     ...(issuerName ? { issuerRef: { name: issuerName, kind: issuerKind } } : {}),
-    ...(env.APPLIK8S_GUESTBOOK_TLS_SECRET_NAME ? { tlsSecretName: env.APPLIK8S_GUESTBOOK_TLS_SECRET_NAME } : {}),
+    ...(env.APPLIK8S_GUESTBOOK_TLS_SECRET_NAME ? { certificateSecretName: env.APPLIK8S_GUESTBOOK_TLS_SECRET_NAME } : {}),
     dnsTtlSeconds,
   };
 }

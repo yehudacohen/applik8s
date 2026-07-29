@@ -2,22 +2,13 @@ import { execFile } from 'node:child_process';
 import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { publishOrderDirectories } from './publishable-packages.mjs';
 
 const execFileAsync = promisify(execFile);
 const npmCache = resolve('node_modules/.cache/applik8s-npm-publish');
 await mkdir(npmCache, { recursive: true });
 
-const packageDirs = [
-  'packages/core',
-  'packages/runtime-contract',
-  'packages/typetainer',
-  'packages/sdk',
-  'packages/compiler',
-  'packages/testing',
-  'packages/runtime',
-  'packages/typekro-adapter',
-  'packages/applik8s',
-];
+const packageDirs = publishOrderDirectories;
 
 const dryRun = process.argv.includes('--dry-run');
 

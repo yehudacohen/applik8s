@@ -1,0 +1,18 @@
+{
+  "packages/applik8s/src/application.ts": 3200,
+  "packages/applik8s/src/application-server-routing.ts": 250,
+  "packages/applik8s/src/application-events.ts": 80,
+  "packages/applik8s/src/application-server-bundle.ts": 725,
+  "packages/applik8s/src/application-exposure.ts": 80,
+  "packages/core/src/application-graph.ts": 3000,
+  "packages/core/src/application-graph-compatibility.ts": 110,
+  "packages/core/src/application-graph-serialization.ts": 100,
+  "packages/compiler/src/pipeline/index.ts": 1200,
+  "packages/compiler/src/pipeline/entrypoint-discovery.ts": 240,
+  "packages/compiler/src/pipeline/static-dispatcher.ts": 800,
+  "packages/compiler/src/pipeline/typekro-emission-plan.ts": 100,
+  "packages/applik8s/src/application-route-source.ts": 1200,
+  "packages/applik8s/src/application-workflows.ts": 600,
+  "packages/compiler/src/application-workflows/index.ts": 550,
+  "packages/runtime-hatchet/src/index.ts": 250
+}

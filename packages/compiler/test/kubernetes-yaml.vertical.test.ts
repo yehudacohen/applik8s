@@ -169,8 +169,8 @@ describe('Kubernetes YAML generation', () => {
       if (!manifest.ok) return;
       expect(manifest.value.spec.ownedCrds.map((resource) => resource.kind)).toEqual(['ImageJob']);
       expect(manifest.value.spec.readResources).toEqual([
-        { apiVersion: 'v1', kind: 'Namespace', plural: 'namespaces', scope: 'Cluster' },
-        { apiVersion: 'apps/v1', kind: 'Deployment', plural: 'deployments', scope: 'Namespaced', namespaces: ['destination'] },
+        { apiVersion: 'v1', kind: 'Namespace', plural: 'namespaces', scope: 'Cluster', access: 'local' },
+        { apiVersion: 'apps/v1', kind: 'Deployment', plural: 'deployments', scope: 'Namespaced', namespaces: ['destination'], access: 'local' },
       ]);
       expect(manifest.value.spec.permissions).toEqual(expect.arrayContaining([
         { apiGroups: [''], resources: ['namespaces'], verbs: ['get', 'list'] },
@@ -183,6 +183,56 @@ describe('Kubernetes YAML generation', () => {
       expect(documents.some((document) => document.kind === 'ClusterRole')).toBe(true);
       expect(documents.some((document) => document.kind === 'ClusterRoleBinding')).toBe(true);
       expect(documents.filter((document) => document.kind === 'CustomResourceDefinition')).toHaveLength(1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('emits connection Secret RBAC without granting remote resource access in the management cluster', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-connection-rbac-'));
+    try {
+      const ImageJob = sdk.crd<ImageSpec, ImageStatus>({ apiVersion: 'media.applik8s.dev/v1alpha1', kind: 'ImageJob', spec: imageSpecSchema, status: imageStatusSchema });
+      const externalOperator = sdk.operator({
+        name: 'connection-read-operator',
+        deployment: { namespace: 'operators' },
+        resources: { ImageJob },
+        reads: {
+          Deployment: sdk.kubernetes.resource({ apiVersion: 'apps/v1', kind: 'Deployment', namespaces: ['destination'], access: 'connection' }),
+        },
+        capabilities: {
+          destination: sdk.kubernetes.connection.required({
+            endpointPolicy: 'workload-cluster-apis',
+            permissions: [{ apiGroups: ['apps'], resources: ['deployments'], verbs: ['get', 'list'], namespaces: ['destination'] }],
+          }),
+        },
+        handlers: [],
+      });
+      const digest = 'sha256:0000000000000000000000000000000000000000000000000000000000000000';
+      const manifest = buildOperatorManifest({
+        operator: externalOperator.definition,
+        handlerArtifactPath: join(dir, 'handler.wasm'),
+        handlerArtifactDigest: digest,
+        runtimeContractPath: 'runtime-contract.json',
+        runtimeContractDigest: digest,
+        kubernetesConnectionBindings: {
+          destination: {
+            kubeconfigSecretRef: { name: 'destination-kubeconfig', namespace: 'operators', key: 'kubeconfig' },
+            context: 'destination',
+            endpointPolicy: { name: 'workload-cluster-apis', version: '1', scheme: 'https', hosts: ['api.destination.test'], ports: [6443], redirects: 'deny' },
+          },
+        },
+      });
+      expect(manifest.ok).toBe(true);
+      if (!manifest.ok) return;
+      const yaml = await emitOperatorKubernetesYaml({ manifest: manifest.value, operator: externalOperator.definition, outDir: join(dir, 'kubernetes') });
+      expect(yaml.ok).toBe(true);
+      if (!yaml.ok) return;
+      const documents = await Promise.all(yaml.value.paths.map(async (path) => parse(await readFile(path, 'utf8'))));
+      const role = documents.find((document) => document.kind === 'Role');
+      expect(role?.rules).toContainEqual({ apiGroups: [''], resources: ['secrets'], verbs: ['get'], resourceNames: ['destination-kubeconfig'] });
+      expect(role?.rules).not.toContainEqual(expect.objectContaining({ apiGroups: ['apps'], resources: ['deployments'] }));
+      expect(documents.some((document) => document.kind === 'ClusterRole')).toBe(false);
+      expect(manifest.value.spec.kubernetesConnectionBindings?.destination?.context).toBe('destination');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -263,7 +313,15 @@ describe('Kubernetes YAML generation', () => {
       });
       const operator = sdk.operator({
         name: 'leader-elected-operator',
-        deployment: { namespace: 'media', replicas: 2 },
+        deployment: {
+          namespace: 'media',
+          replicas: 2,
+          terminationGracePeriodSeconds: 75,
+          resources: {
+            requests: { cpu: '250m', memory: '192Mi' },
+            limits: { cpu: '2', memory: '768Mi' },
+          },
+        },
         runtime: {
           leaderElection: { enabled: true, leaseName: 'leader-elected-operator', leaseDurationSeconds: 15, renewDeadlineSeconds: 10, retryPeriodSeconds: 2 },
           concurrency: { workerCount: 1, maxInFlightPerResource: 1 },
@@ -289,9 +347,24 @@ describe('Kubernetes YAML generation', () => {
       const documents = await Promise.all(yaml.value.paths.map(async (path) => parse(await readFile(path, 'utf8'))));
       const deployment = documents.find((document) => document.kind === 'Deployment');
       const role = documents.find((document) => document.kind === 'Role');
+      const networkPolicy = documents.find((document) => document.kind === 'NetworkPolicy');
+      const disruptionBudget = documents.find((document) => document.kind === 'PodDisruptionBudget');
       const env = deployment?.spec.template.spec.containers[0].env;
 
       expect(deployment?.spec.replicas).toBe(2);
+      expect(deployment?.spec.strategy).toEqual({ type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } });
+      expect(deployment?.spec.template.spec.terminationGracePeriodSeconds).toBe(75);
+      expect(deployment?.spec.template.spec.containers[0].resources).toEqual({
+        requests: { cpu: '250m', memory: '192Mi' },
+        limits: { cpu: '2', memory: '768Mi' },
+      });
+      expect(deployment?.spec.template.spec.containers[0].readinessProbe.httpGet).toEqual({ path: '/healthz', port: 'health' });
+      expect(networkPolicy?.spec).toMatchObject({
+        podSelector: { matchLabels: { 'app.kubernetes.io/name': 'leader-elected-operator' } },
+        policyTypes: ['Ingress'],
+        ingress: [{ ports: [{ protocol: 'TCP', port: 8080 }] }],
+      });
+      expect(disruptionBudget?.spec).toEqual({ maxUnavailable: 1, selector: { matchLabels: { 'app.kubernetes.io/managed-by': 'applik8s', 'app.kubernetes.io/name': 'leader-elected-operator' } } });
       expect(env).toContainEqual({ name: 'APPLIK8S_LEADER_ELECTION_IDENTITY', valueFrom: { fieldRef: { fieldPath: 'metadata.name' } } });
       expect(role?.rules).toContainEqual({ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['get', 'update', 'patch'], resourceNames: ['leader-elected-operator'] });
       expect(role?.rules).toContainEqual({ apiGroups: ['coordination.k8s.io'], resources: ['leases'], verbs: ['create'] });
@@ -426,7 +499,7 @@ describe('Kubernetes YAML generation', () => {
     }
   });
 
-  it('fails closed when a CRD schema cannot be represented structurally', async () => {
+  it('preserves JSON Schema patterns in structural CRDs', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-structural-schema-'));
 
     try {
@@ -472,9 +545,11 @@ describe('Kubernetes YAML generation', () => {
         outDir: join(dir, 'kubernetes'),
       });
 
-      expect(yaml.ok).toBe(false);
-      if (!yaml.ok) {
-        expect(yaml.error.message).toContain('not structurally supported');
+      expect(yaml.ok).toBe(true);
+      if (yaml.ok) {
+        const documents = await Promise.all(yaml.value.paths.map(async (path) => parse(await readFile(path, 'utf8'))));
+        const crd = documents.find((document) => document.kind === 'CustomResourceDefinition');
+        expect(crd?.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.sourceUrl.pattern).toBe('^s3://');
       }
     } finally {
       await rm(dir, { recursive: true, force: true });

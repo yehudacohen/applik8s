@@ -1,0 +1,527 @@
+// typecast-file-boundary: Alchemy Output values are converted only at this backend adapter boundary.
+import type { ApplicationDeploymentGraph } from "@applik8s/deployment-contract";
+import {
+  ApplicationHarborProject,
+  type ApplicationHarborProjectAttributes,
+  type ApplicationHarborProjectProviderOptions,
+  applicationHarborProjectProvider,
+} from "@applik8s/deployment-provider-harbor";
+import {
+  ApplicationGeneratedSecret,
+  type ApplicationGeneratedSecretAttributes,
+  applicationGeneratedSecretProvider,
+} from "@applik8s/deployment-provider-kubernetes";
+import {
+  ApplicationContainerArtifact,
+  type ApplicationContainerArtifactAttributes,
+  type ApplicationContainerArtifactProviderOptions,
+  type ApplicationContainerArtifactRegistry,
+  applicationContainerArtifactProvider,
+} from "@applik8s/deployment-provider-oci";
+import type { AdaptedTypeKroDeployment } from "@applik8s/deployment-typekro";
+import { deploy as deployAlchemyStack } from "alchemy/Deploy";
+import { destroy as destroyAlchemyStack } from "alchemy/Destroy";
+import * as Output from "alchemy/Output";
+import * as Plan from "alchemy/Plan";
+import { evalStack, Stack } from "alchemy/Stack";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import {
+  type AlchemyArtifactBinding,
+  KroResource,
+  kroProvider,
+  materializeAlchemyResources,
+} from "typekro/alchemy";
+import {
+  artifactBaseId,
+  artifactNodes,
+  artifactPrerequisites,
+  artifactProps,
+} from "./artifact-resources.js";
+import {
+  generatedSecretNodes,
+  generatedSecretProps,
+} from "./generated-secrets.js";
+import { assertExecutableGraphCoverage } from "./graph-coverage.js";
+import {
+  harborProjectNodes,
+  harborProjectProps,
+} from "./harbor-resources.js";
+import {
+  type ApplicationAlchemyStackIdentity,
+  applicationAlchemyStackIdentity,
+} from "./identity.js";
+import { claimApplicationAlchemyStackIdentity } from "./identity-registry.js";
+import {
+  type ApplicationAlchemyLease,
+  acquireApplicationAlchemyLease,
+} from "./lease.js";
+import { runApplicationAlchemyEffect } from "./runtime.js";
+import { applicationAlchemyState } from "./state.js";
+import {
+  orderedTypeKroGroups,
+  typeKroGroupPrerequisites,
+  withOrderingOnlyPrerequisites,
+} from "./typekro-ordering.js";
+import { typeKroMaterializationComponents } from "./typekro-components.js";
+
+export interface ApplicationAlchemyDeploymentOptions {
+  readonly graph: ApplicationDeploymentGraph;
+  readonly adapted: AdaptedTypeKroDeployment;
+  readonly stateRoot: string;
+  readonly stage?: string;
+  readonly owner?: string;
+  readonly leaseTtlMs?: number;
+  readonly profile?: string;
+  readonly adopt?: boolean;
+  readonly dev?: boolean;
+  readonly artifactRegistry?: ApplicationContainerArtifactRegistry;
+  readonly artifactProvider?: ApplicationContainerArtifactProviderOptions;
+  readonly harborProvider?: ApplicationHarborProjectProviderOptions;
+}
+
+export interface ApplicationAlchemyPlanChange {
+  readonly id: string;
+  readonly type: string;
+  readonly action: "create" | "update" | "replace" | "noop" | "delete";
+}
+
+export interface ApplicationAlchemyPlanResult {
+  readonly stack: ApplicationAlchemyStackIdentity;
+  readonly stage: string;
+  readonly changes: readonly ApplicationAlchemyPlanChange[];
+  readonly declarationCount: number;
+  readonly deploymentEvidenceDigest: string;
+}
+
+export interface ApplicationAlchemyApplyResult {
+  readonly stack: ApplicationAlchemyStackIdentity;
+  readonly stage: string;
+  readonly declarationCount: number;
+  readonly deploymentEvidenceDigest: string;
+  readonly artifacts: readonly ApplicationContainerArtifactAttributes[];
+  /**
+   * Alchemy transaction completion is intentionally distinct from live
+   * Kubernetes/Application readiness.
+   */
+  readonly transaction: "applied";
+}
+
+export interface ApplicationAlchemyDestroyResult {
+  readonly stack: ApplicationAlchemyStackIdentity;
+  readonly stage: string;
+  readonly transaction: "destroyed";
+}
+
+export interface ApplicationAlchemyDeployment {
+  readonly stack: ApplicationAlchemyStackIdentity;
+  readonly stage: string;
+  plan(): Promise<ApplicationAlchemyPlanResult>;
+  apply(): Promise<ApplicationAlchemyApplyResult>;
+  destroy(): Promise<ApplicationAlchemyDestroyResult>;
+}
+
+export function createApplicationAlchemyDeployment(
+  options: ApplicationAlchemyDeploymentOptions,
+): ApplicationAlchemyDeployment {
+  assertExecutableGraphCoverage(options.graph);
+  if (
+    options.graph.metadata.identity.application !==
+    options.adapted.root.semanticPlan.composition
+  ) {
+    throw new Error(
+      `Alchemy deployment graph application ${options.graph.metadata.identity.application} does not match TypeKro composition ${options.adapted.root.semanticPlan.composition}.`,
+    );
+  }
+  const stack = applicationAlchemyStackIdentity(
+    options.graph.metadata.identity,
+    options.graph.metadata.strategy,
+  );
+  const stage = safeStage(options.stage ?? options.graph.metadata.identity.profile);
+  const state = applicationAlchemyState({ root: options.stateRoot });
+  const runtime = {
+    state,
+    ...(options.profile ? { profile: options.profile } : {}),
+    ...(options.adopt !== undefined ? { adopt: options.adopt } : {}),
+    ...(options.dev !== undefined ? { dev: options.dev } : {}),
+  };
+  const artifacts = artifactNodes(options.graph);
+  const harborProjects = harborProjectNodes(options.graph);
+  const generatedSecrets = generatedSecretNodes(options.graph);
+  if (artifacts.length > 0 && !options.artifactRegistry) {
+    throw new Error(
+      `Application deployment contains ${artifacts.length} artifact node(s), but no artifactRegistry was configured.`,
+    );
+  }
+  const providers = Layer.mergeAll(
+    kroProvider,
+    applicationContainerArtifactProvider(options.artifactProvider),
+    applicationGeneratedSecretProvider(),
+    applicationHarborProjectProvider(
+      options.harborProvider ?? {
+        resolveCredential: async (reference) => {
+          throw new Error(
+            `Harbor credential ${reference.namespace}/${reference.name} has no runtime resolver.`,
+          );
+        },
+      },
+    ),
+  );
+  const stackEffect = () =>
+    Stack(
+      stack.key,
+      // typecast: TypeKro's materializer currently exposes an
+      // typecast: kroProvider closes TypeKro's currently unknown Effect requirement.
+      { providers, state } as never,
+      // typecast: Stack's pinned Effect environment is closed by the providers above.
+      Effect.gen(function* () {
+        const bindings: Record<string, AlchemyArtifactBinding> = {};
+        const artifactOutputs: ApplicationContainerArtifactAttributes[] = [];
+        const artifactResources = new Map<
+          string,
+          ApplicationContainerArtifactAttributes
+        >();
+        const harborOutputs = new Map<
+          string,
+          ApplicationHarborProjectAttributes
+        >();
+        const namespaceDeclarationIds = new Set(
+          options.adapted.direct
+            .filter((group) => {
+              const node = options.graph.nodes.find(
+                (candidate) => candidate.id === group.deploymentNodeId,
+              );
+              return (
+                node?.kind === "kubernetesDirect" &&
+                node.spec.compositionId === "applik8s-namespace"
+              );
+            })
+            .flatMap((group) =>
+              group.declarations.map((declaration) => declaration.id),
+            ),
+        );
+        const namespaceDeclarations = options.adapted.declarations.filter(
+          (declaration) => namespaceDeclarationIds.has(declaration.id),
+        );
+        const namespaceResources =
+          namespaceDeclarations.length > 0
+            ? yield* materializeAlchemyResources(
+                KroResource,
+                namespaceDeclarations,
+                { artifacts: bindings },
+              )
+            : {};
+        const namespaceHandles = Object.values(namespaceResources);
+        const groupResources = new Map<string, readonly unknown[]>();
+        for (const group of options.adapted.direct) {
+          if (
+            group.declarations.some((declaration) =>
+              namespaceDeclarationIds.has(declaration.id),
+            )
+          ) {
+            groupResources.set(
+              group.deploymentNodeId,
+              group.declarations
+                .map((declaration) => namespaceResources[declaration.id])
+                .filter((resource) => resource !== undefined),
+            );
+          }
+        }
+        const generatedSecretOutputs = new Map<
+          string,
+          ApplicationGeneratedSecretAttributes
+        >();
+        for (const secret of generatedSecrets) {
+          const resource = yield* ApplicationGeneratedSecret(
+            secret.id,
+            generatedSecretProps(secret, options.graph, namespaceHandles),
+          );
+          bindings[secret.id] = {
+            resource,
+            outputs: {
+              name: resource.name,
+              namespace: resource.namespace,
+            },
+          };
+          generatedSecretOutputs.set(
+            secret.id,
+            resource as unknown as ApplicationGeneratedSecretAttributes,
+          );
+        }
+        for (const project of harborProjects) {
+          const resource = yield* ApplicationHarborProject(
+            project.id,
+            harborProjectProps(
+              project,
+              options.graph,
+              options.artifactRegistry,
+            ),
+          );
+          // typecast: Alchemy resolves resource Outputs before returning from
+          // typecast: deploy; the map is used only to create dependency inputs.
+          harborOutputs.set(
+            project.id,
+            resource as unknown as ApplicationHarborProjectAttributes,
+          );
+        }
+        for (const artifact of artifacts) {
+          const baseArtifactId = artifactBaseId(artifact);
+          const baseArtifact = baseArtifactId
+            ? artifactResources.get(baseArtifactId)
+            : undefined;
+          if (baseArtifactId && !baseArtifact) {
+            throw new Error(
+              `Artifact ${artifact.id} requires base artifact ${baseArtifactId}, but it has not been materialized.`,
+            );
+          }
+          const publishedBaseImage = baseArtifact
+            ? compatiblePublishedImmutableReference(baseArtifact)
+            : undefined;
+          const resource = yield* ApplicationContainerArtifact(
+            artifact.id,
+            {
+              ...artifactProps(
+                artifact,
+                options.artifactRegistry,
+                // typecast: artifactProps creates the provider's resolved
+                // typecast: props shape; Alchemy evaluates this Output before
+                // typecast: the provider receives its string build argument.
+                publishedBaseImage as unknown as string | undefined,
+              ),
+              prerequisites: artifactPrerequisites(
+                options.graph,
+                artifact.id,
+                harborOutputs,
+                artifactResources,
+              ),
+            },
+          );
+          artifactResources.set(
+            artifact.id,
+            resource as unknown as ApplicationContainerArtifactAttributes,
+          );
+          bindings[artifact.id] = {
+            resource,
+            outputs: {
+              immutableReference: resource.immutableReference,
+              taggedReference: resource.taggedReference,
+              digest: resource.digest,
+            },
+          };
+          // typecast: inside a Stack, Alchemy represents resource attributes as
+          // typecast: Outputs; deployAlchemyStack resolves them before returning.
+          artifactOutputs.push(
+            resource as unknown as ApplicationContainerArtifactAttributes,
+          );
+        }
+        const kubernetes: Record<string, unknown> = {
+          ...namespaceResources,
+        };
+        for (const group of orderedTypeKroGroups(
+          options.graph,
+          options.adapted,
+        )) {
+          if (groupResources.has(group.deploymentNodeId)) continue;
+          const prerequisiteHandles = typeKroGroupPrerequisites(
+            options.graph,
+            group.deploymentNodeId,
+          ).flatMap((nodeId) => groupResources.get(nodeId) ?? []);
+          const resources: Record<string, unknown> = {};
+          for (const component of typeKroMaterializationComponents(
+            group.declarations,
+          )) {
+            const componentPrerequisites = [
+              ...prerequisiteHandles,
+              ...component.orderingOnlyDeclarationIds.map((id) => {
+                const resource = resources[id];
+                if (!resource) {
+                  throw new Error(
+                    `TypeKro ordering-only dependency ${id} was not materialized before its consumer component.`,
+                  );
+                }
+                return resource;
+              }),
+            ];
+            const declarations = withOrderingOnlyPrerequisites(
+              component.declarations,
+              componentPrerequisites,
+            );
+            const componentResources = yield* materializeAlchemyResources(
+              KroResource,
+              declarations,
+              { artifacts: bindings },
+            );
+            Object.assign(resources, componentResources);
+          }
+          Object.assign(kubernetes, resources);
+          groupResources.set(
+            group.deploymentNodeId,
+            Object.values(resources),
+          );
+        }
+        return {
+          artifacts: artifactOutputs,
+          generatedSecrets: [...generatedSecretOutputs.values()],
+          namespaces: namespaceResources,
+          kubernetes,
+        };
+      }) as never,
+    );
+  return {
+    stack,
+    stage,
+    plan: () =>
+      withDeploymentLease(options, stack, async () => {
+        await claimApplicationAlchemyStackIdentity(options.stateRoot, stack);
+        // typecast: evalStack's generic output is erased by the
+        // typecast: the pinned runtime erases evalStack output; this callback returns Plan.Plan.
+        const plan = (await runApplicationAlchemyEffect(
+          evalStack(
+            stackEffect(),
+            (compiled) => Plan.make(compiled),
+            {
+              stage,
+              ...(options.dev !== undefined ? { dev: options.dev } : {}),
+            },
+          ),
+          runtime,
+        )) as Plan.Plan;
+        return {
+          stack,
+          stage,
+          changes: summarizePlan(plan),
+          declarationCount: options.adapted.declarationCount,
+          deploymentEvidenceDigest: options.adapted.evidenceDigest,
+        };
+      }),
+    apply: () =>
+      withDeploymentLease(options, stack, async () => {
+        await claimApplicationAlchemyStackIdentity(options.stateRoot, stack);
+        const output = (await runApplicationAlchemyEffect(
+          deployAlchemyStack({
+            stack: stackEffect(),
+            stage,
+            ...(options.dev !== undefined ? { dev: options.dev } : {}),
+          }),
+          runtime,
+        )) as {
+          readonly artifacts: readonly ApplicationContainerArtifactAttributes[];
+        };
+        return {
+          stack,
+          stage,
+          declarationCount: options.adapted.declarationCount,
+          deploymentEvidenceDigest: options.adapted.evidenceDigest,
+          artifacts: output.artifacts,
+          transaction: "applied",
+        };
+      }),
+    destroy: () =>
+      withDeploymentLease(options, stack, async () => {
+        await claimApplicationAlchemyStackIdentity(options.stateRoot, stack);
+        await runApplicationAlchemyEffect(
+          destroyAlchemyStack({
+            stack: stackEffect(),
+            stage,
+            ...(options.dev !== undefined ? { dev: options.dev } : {}),
+          }),
+          runtime,
+        );
+        return { stack, stage, transaction: "destroyed" };
+      }),
+  };
+}
+
+function compatiblePublishedImmutableReference(
+  artifact: ApplicationContainerArtifactAttributes,
+) {
+  // Alchemy can legitimately reuse state written before publication aliases
+  // became required outputs. Property access still produces an Output proxy,
+  // so JavaScript `??` cannot distinguish that legacy absence. Resolve both
+  // outputs inside Alchemy and prefer the publication endpoint only when the
+  // persisted value is a non-empty string.
+  return Output.map(
+    Output.all(
+      Output.asOutput(artifact.publishedImmutableReference),
+      Output.asOutput(artifact.immutableReference),
+    ),
+    ([published, immutable]) =>
+      selectPublishedImmutableReference(published, immutable),
+  );
+}
+
+export function selectPublishedImmutableReference(
+  published: unknown,
+  immutable: unknown,
+): string {
+  if (typeof published === "string" && published.trim()) return published;
+  if (typeof immutable === "string" && immutable.trim()) return immutable;
+  throw new Error(
+    "Container artifact has neither a published nor deployment immutable reference.",
+  );
+}
+
+function summarizePlan(plan: Plan.Plan): readonly ApplicationAlchemyPlanChange[] {
+  const changes: ApplicationAlchemyPlanChange[] = [];
+  for (const [id, node] of Object.entries(plan.resources)) {
+    changes.push({
+      id,
+      type: node.resource.Type,
+      action: node.action,
+    });
+  }
+  for (const [id, node] of Object.entries(plan.deletions)) {
+    if (!node) continue;
+    changes.push({
+      id,
+      type: node.resource.Type,
+      action: "delete",
+    });
+  }
+  return changes.sort(
+    (left, right) =>
+      left.id.localeCompare(right.id) || left.action.localeCompare(right.action),
+  );
+}
+
+async function withDeploymentLease<T>(
+  options: ApplicationAlchemyDeploymentOptions,
+  stack: ApplicationAlchemyStackIdentity,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const ttlMs = options.leaseTtlMs ?? 60_000;
+  const lease = await acquireApplicationAlchemyLease(options.stateRoot, stack, {
+    owner: options.owner ?? `pid-${process.pid}`,
+    ttlMs,
+    acquireTimeoutMs: 10_000,
+  });
+  return runWithHeartbeat(lease, ttlMs, operation);
+}
+
+async function runWithHeartbeat<T>(
+  lease: ApplicationAlchemyLease,
+  ttlMs: number,
+  operation: () => Promise<T>,
+): Promise<T> {
+  let heartbeatFailure: unknown;
+  const interval = setInterval(() => {
+    lease.heartbeat().catch((cause: unknown) => {
+      heartbeatFailure = cause;
+    });
+  }, Math.max(100, Math.floor(ttlMs / 3)));
+  try {
+    const result = await operation();
+    if (heartbeatFailure) throw heartbeatFailure;
+    return result;
+  } finally {
+    clearInterval(interval);
+    await lease.release();
+  }
+}
+
+function safeStage(value: string): string {
+  if (!/^[a-zA-Z0-9._-]+$/.test(value) || value === "." || value === "..") {
+    throw new Error(`Alchemy stage ${value} is invalid.`);
+  }
+  return value;
+}

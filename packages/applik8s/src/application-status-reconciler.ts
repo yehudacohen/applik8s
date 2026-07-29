@@ -1,6 +1,7 @@
 import { externalRef } from 'typekro';
 import { clusterRole as typeKroClusterRole, clusterRoleBinding as typeKroClusterRoleBinding, configMap as typeKroConfigMap, deployment as typeKroDeployment, role as typeKroRole, roleBinding as typeKroRoleBinding, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import { generatedJobStatusRuntimeBundle } from './application-runtime-modules.js';
+import { applicationTypeKroString } from './application-typekro-values.js';
 
 export interface ApplicationStatusReconcilerAppResourceTarget {
   readonly apiVersion: string;
@@ -102,7 +103,7 @@ function emitGeneratedJobStatusReconcilerResources(state: ApplicationGeneratedJo
     roleRef: { apiGroup: 'rbac.authorization.k8s.io', kind: 'Role', name: reconcilerName },
   });
   if (namespace) {
-    const clusterRoleName = `${utilities.kubernetesNameSegment(namespace)}-${reconcilerName}`;
+    const clusterRoleName = applicationTypeKroString(namespace, '-', reconcilerName);
     typeKroClusterRole({
       id: utilities.graphResourceId(reconcilerName, 'clusterRole'),
       apiVersion: 'rbac.authorization.k8s.io/v1',
@@ -133,7 +134,7 @@ function emitGeneratedJobStatusReconcilerResources(state: ApplicationGeneratedJo
           serviceAccountName: reconcilerName,
           containers: [{
             name: 'status-reconciler',
-            image: 'node:22-alpine',
+            image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2',
             command: [
               'node',
               '--input-type=module',

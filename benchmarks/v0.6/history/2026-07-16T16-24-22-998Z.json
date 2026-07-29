@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 3,
+  "release": "v0.6",
+  "evidenceClass": "synthetic-local",
+  "limitations": [
+    "No network, PostgreSQL, ClickHouse, Kubernetes scheduler, or multi-process contention is measured by this microbenchmark.",
+    "Datastore and cluster performance require the explicit live benchmark/evidence lanes."
+  ],
+  "generatedAt": "2026-07-16T16:24:22.998Z",
+  "operations": 20000,
+  "client": {
+    "durationMs": 28.46,
+    "cacheKeysPerSecond": 702768.47
+  },
+  "projection": {
+    "durationMs": 3.3,
+    "eventsPerSecond": 6059076.6,
+    "rssGrowthBytes": 4898816
+  },
+  "facade": {
+    "minimalGzipBytes": 259,
+    "marginalModelGzipBytes": 24
+  }
+}

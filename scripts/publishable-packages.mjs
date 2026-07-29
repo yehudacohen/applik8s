@@ -1,0 +1,73 @@
+export const publishablePackageNames = Object.freeze([
+  'applik8s',
+  'cli',
+  'client',
+  'react',
+  'server',
+  'vite',
+  'tanstack-start',
+  'core',
+  'deployment-contract',
+  'deployment-compiler',
+  'deployment-typekro',
+  'deployment-provider-harbor',
+  'deployment-provider-kubernetes',
+  'deployment-provider-oci',
+  'deployment-alchemy',
+  'sdk',
+  'compiler',
+  'runtime-contract',
+  'runtime',
+  'runtime-s3',
+  'runtime-hatchet',
+  'runtime-nats',
+  'runtime-kubernetes',
+  'runtime-postgres',
+  'testing',
+  'typekro-adapter',
+  'typetainer',
+]);
+
+export const publishablePackageDirectories = Object.freeze(
+  publishablePackageNames.map((name) => `packages/${name}`),
+);
+
+export const publishablePackageManifestPaths = Object.freeze(
+  publishablePackageDirectories.map((directory) => `${directory}/package.json`),
+);
+
+const publishOrder = [
+  'core',
+  'deployment-contract',
+  'deployment-compiler',
+  'deployment-typekro',
+  'deployment-provider-harbor',
+  'deployment-provider-kubernetes',
+  'deployment-provider-oci',
+  'deployment-alchemy',
+  'runtime-contract',
+  'typetainer',
+  'sdk',
+  'testing',
+  'runtime',
+  'typekro-adapter',
+  'client',
+  'react',
+  'server',
+  'vite',
+  'tanstack-start',
+  'applik8s',
+  'runtime-s3',
+  'runtime-hatchet',
+  'runtime-nats',
+  'runtime-kubernetes',
+  'runtime-postgres',
+  'compiler',
+  'cli',
+];
+
+if (publishOrder.length !== publishablePackageNames.length || publishOrder.some((name) => !publishablePackageNames.includes(name))) {
+  throw new Error('The Applik8s publish order must contain every publishable package exactly once.');
+}
+
+export const publishOrderDirectories = Object.freeze(publishOrder.map((name) => `packages/${name}`));
