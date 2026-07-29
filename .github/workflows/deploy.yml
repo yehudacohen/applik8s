@@ -170,11 +170,9 @@ jobs:
       - name: Publish packages to npm
         run: bun run publish:packages
         env:
-          # Trusted publishing is preferred for established packages. npm falls
-          # back to this granular token when an exact release introduces a new
-          # package name, which cannot have an OIDC publisher until it exists.
-          # Explicit provenance keeps both paths supply-chain attributable.
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Every coordinated package is pre-bootstrapped and explicitly trusts
+          # this workflow. npm authenticates with the job's short-lived OIDC
+          # identity; no repository publishing token is available here.
           NPM_CONFIG_PROVENANCE: 'true'
 
   publish-host-image:
