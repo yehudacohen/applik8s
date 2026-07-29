@@ -42,6 +42,7 @@ export const v06ReleaseEvidenceContract = Object.freeze({
 		"authoritative-requery",
 		"ssr-render",
 		"restart-resume",
+		"zero-container-restarts",
 		"cli-alchemy-typekro-delete",
 		"runtime-created-data-cleanup",
 		"generated-crd-retained-empty-for-reuse",
@@ -56,6 +57,8 @@ export const v06ReleaseEvidenceContract = Object.freeze({
 	]),
 	chirp: Object.freeze([
 		"ssr",
+		"principal-derived-registration",
+		"transactional-credential-link",
 		"jetstream-command",
 		"postgres-transactional-outbox",
 		"valkey-generation-projection",

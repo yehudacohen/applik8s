@@ -96,12 +96,21 @@ function validateReceipt(receipt, suite, requiredAssertions) {
 	if (!Array.isArray(receipt.assertions))
 		throw new Error(`${suite} evidence has no assertion list.`);
 	const assertions = new Set(receipt.assertions);
+	if (assertions.size !== receipt.assertions.length)
+		throw new Error(`${suite} evidence contains duplicate assertions.`);
 	const missing = requiredAssertions.filter(
 		(assertion) => !assertions.has(assertion),
 	);
 	if (missing.length > 0)
 		throw new Error(
 			`${suite} evidence is missing assertions: ${missing.join(", ")}.`,
+		);
+	const unrecognized = receipt.assertions.filter(
+		(assertion) => !requiredAssertions.includes(assertion),
+	);
+	if (unrecognized.length > 0)
+		throw new Error(
+			`${suite} evidence contains unrecognized assertions: ${unrecognized.join(", ")}.`,
 		);
 	if (
 		!Array.isArray(receipt.assertionEvidence) ||
