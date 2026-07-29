@@ -5,6 +5,7 @@ import type {
   ApplicationAIAgentNode,
   ApplicationGraph,
   ApplicationHandlerDependencies,
+  ApplicationModelNode,
   ApplicationOperationCatalog,
   ApplicationOperationDescriptor,
   ApplicationProviderNode,
@@ -57,6 +58,8 @@ interface ApplicationAgentCompilerContract {
     readonly workloadAuthority: ApplicationWorkloadAuthorityEnvelope;
   }[];
   readonly namespace: string;
+  readonly state: NonNullable<ApplicationModelNode['runtime']>;
+  readonly route: JsonObject;
 }
 
 export async function emitGeneratedApplicationAgents(options: {
@@ -143,6 +146,36 @@ function applicationAgentCompilerContract(
     }
     return { operation, transport: tool.transport, workloadAuthority: authority };
   });
+  const stateModels = graph.nodes.filter(
+    (
+      node,
+    ): node is ApplicationModelNode & {
+      readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+    } =>
+      node.kind === 'model'
+      && node.database.nodeId === agent.state.nodeId
+      && Boolean(node.runtime),
+  );
+  const stateRuntime = stateModels[0]?.runtime;
+  if (!stateRuntime) {
+    throw new Error(
+      `Application agent ${agent.id} durable provider ${agent.state.nodeId} has no provider-native relational model runtime. Declare Conversation/Run/Attempt models on that database before compilation.`,
+    );
+  }
+  const stateIdentities = new Set(
+    stateModels.map((model) =>
+      JSON.stringify({
+        connectionEnvName: model.runtime.connectionEnvName,
+        secretName: model.runtime.secretName,
+        secretKey: model.runtime.secretKey,
+        secretNamespace: model.runtime.secretNamespace,
+      })),
+  );
+  if (stateIdentities.size > 1) {
+    throw new Error(
+      `Application agent ${agent.id} durable provider ${agent.state.nodeId} resolves inconsistent connection secrets.`,
+    );
+  }
   const namespace = graph.metadata.namespace ?? stringValue(providerConfig.namespace) ?? 'default';
   return {
     application: graph.metadata.name,
@@ -152,6 +185,8 @@ function applicationAgentCompilerContract(
     operationCatalog,
     tools,
     namespace,
+    state: stateRuntime,
+    route: applicationAgentRoute(agent, providerConfig),
   };
 }
 
@@ -275,8 +310,11 @@ function generatedAgentSource(contract: ApplicationAgentCompilerContract): strin
     ? JSON.stringify(contract.agent.instructions.value)
     : 'instructions';
   return `
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
-import { createApplicationAIAgentRequestHandler } from '@applik8s/runtime-ai';
+import postgres from 'postgres';
+import { createApplicationAIAttemptRuntime } from '@applik8s/ai';
+import { createApplicationAIAgentRequestHandler, createPostgresApplicationAIAttemptStore } from '@applik8s/runtime-ai';
 import { callback as handler } from './handler.generated.js';
 ${contract.agent.instructions.kind === 'closure'
     ? "import { callback as instructions } from './instructions.generated.js';"
@@ -289,14 +327,32 @@ const contract = ${JSON.stringify({
     serviceIdentity: contract.agent.serviceIdentity,
     model: contract.agent.model,
     provider: contract.providerConfig,
+    route: contract.route,
+    state: contract.state,
     tools: contract.tools,
     budgets: contract.agent.budgets,
+    executionPolicy: contract.agent.executionPolicy,
     deployment: contract.agent.deployment,
   })};
 
-// Principal admission, durable attempt reservation, and canonical operation
-// invocation remain fail-closed until their provider runtimes are attached.
-// They are deliberately not inferred from client-supplied JSON.
+function requiredEnv(name) {
+  const value = process.env[name];
+  if (!value) throw new Error('Missing required environment variable ' + name);
+  return value;
+}
+const sql = postgres(requiredEnv(${JSON.stringify(contract.state.connectionEnvName)}), {
+  max: Math.max(4, contract.deployment.maximumConcurrency + 2),
+  idle_timeout: 20,
+  connect_timeout: 10,
+  prepare: false,
+});
+const attemptStore = createPostgresApplicationAIAttemptStore({ sql });
+await attemptStore.prepare();
+const attemptRuntime = createApplicationAIAttemptRuntime({ store: attemptStore });
+
+// Principal admission and canonical operation invocation remain fail-closed
+// until their provider runtimes are attached. Neither is inferred from
+// client-supplied JSON.
 const unavailable = (capability) => async () => {
   throw new Error('Generated agent ' + contract.name + ' requires ' + capability + '.');
 };
@@ -318,7 +374,132 @@ const handle = createApplicationAIAgentRequestHandler({
   timeoutMs: contract.budgets.timeoutMs,
   maximumConcurrency: contract.deployment.maximumConcurrency,
   admit: unavailable('canonical execution-principal admission'),
-  reserveAttempt: unavailable('durable AI attempt storage'),
+  async reserveAttempt({ principal, threadId, runId, logicalModel, request }) {
+    const invocationId = 'invocation_' + createHash('sha256')
+      .update(contract.application)
+      .update('\\0')
+      .update(contract.nodeId)
+      .update('\\0')
+      .update(principal.id)
+      .update('\\0')
+      .update(runId)
+      .digest('hex');
+    await attemptRuntime.reserveInvocation({
+      invocationId,
+      conversationId: threadId,
+      protocolRunId: runId,
+      agentRunId: principal.executionId,
+      logicalModel,
+      request,
+      admittedPrincipal: principal,
+    });
+    const decision = await attemptRuntime.reserveAttempt({
+      invocationId,
+      redactedRequestMetadata: {
+        threadId,
+        runId,
+        messageCount: request.messages.length,
+      },
+      route: contract.route,
+      retry: contract.executionPolicy.uncertainCompletion === 'retry-if-replay-safe'
+        ? 'if-replay-safe'
+        : 'never',
+    });
+    if (decision.action !== 'dispatch') {
+      throw new Error(
+        'AI invocation ' + invocationId + ' resolved durable action ' + decision.action
+        + '; stream joining and terminal replay must complete before redispatch.',
+      );
+    }
+    return {
+      runId,
+      invocationId,
+      attemptId: decision.attempt.id,
+      version: decision.attempt.version,
+    };
+  },
+  attemptLifecycle: {
+    async dispatching(reservation) {
+      const attempt = await attemptRuntime.transition(
+        reservation.invocationId,
+        reservation.attemptId,
+        reservation.version,
+        { state: 'dispatching', recovery: 'joinable' },
+      );
+      return { ...reservation, version: attempt.version };
+    },
+    async append(reservation, event) {
+      await attemptRuntime.appendDelta(
+        reservation.invocationId,
+        reservation.attemptId,
+        event,
+      );
+      return { ...reservation, version: reservation.version + 1 };
+    },
+    async completeProvider(reservation, terminal) {
+      const usage = terminal.usage
+        ? {
+            apiVersion: 'applik8s.aiUsage/v1alpha1',
+            invocationId: reservation.invocationId,
+            attemptId: reservation.attemptId,
+            ...(Number.isInteger(terminal.usage.promptTokens)
+              ? { inputTokens: terminal.usage.promptTokens }
+              : {}),
+            ...(Number.isInteger(terminal.usage.completionTokens)
+              ? { outputTokens: terminal.usage.completionTokens }
+              : {}),
+            ...(Number.isInteger(terminal.usage.cachedInputTokens)
+              ? { cachedInputTokens: terminal.usage.cachedInputTokens }
+              : {}),
+            ...(Number.isInteger(terminal.usage.reasoningTokens)
+              ? { reasoningTokens: terminal.usage.reasoningTokens }
+              : {}),
+            confidence: 'provider-reported',
+          }
+        : undefined;
+      const attempt = await attemptRuntime.transition(
+        reservation.invocationId,
+        reservation.attemptId,
+        reservation.version,
+        {
+          state: 'provider-completed',
+          recovery: 'terminal',
+          ...(usage ? { usage } : {}),
+        },
+      );
+      return { ...reservation, version: attempt.version };
+    },
+    async commitCanonical(reservation, terminal) {
+      const attempt = await attemptRuntime.commitCanonicalResult(
+        reservation.invocationId,
+        reservation.attemptId,
+        terminal.messageId,
+      );
+      return { ...reservation, version: attempt.version };
+    },
+    async fail(reservation, failure) {
+      if (failure.classification === 'cancelled') {
+        await attemptRuntime.cancel(
+          reservation.invocationId,
+          failure.reason,
+        );
+        return { ...reservation, version: reservation.version + 1 };
+      }
+      const attempt = await attemptRuntime.transition(
+        reservation.invocationId,
+        reservation.attemptId,
+        reservation.version,
+        {
+          state: failure.classification,
+          recovery: failure.classification === 'completion-uncertain'
+            ? 'uncertain'
+            : 'terminal',
+          terminalReason: failure.reason,
+        },
+      );
+      return { ...reservation, version: attempt.version };
+    },
+  },
   invoke: unavailable('canonical operation invocation'),
   handler,
 });
@@ -347,6 +528,7 @@ async function shutdown() {
   if (stopping) return;
   stopping = true;
   await new Promise((resolveShutdown) => server.close(resolveShutdown));
+  await sql.end({ timeout: 5 });
 }
 process.once('SIGTERM', () => { void shutdown(); });
 process.once('SIGINT', () => { void shutdown(); });
@@ -421,6 +603,16 @@ function generatedAgentResources(
                 env: [
                   { name: 'NODE_ENV', value: 'production' },
                   { name: 'NODE_OPTIONS', value: '--enable-source-maps' },
+                  {
+                    name: contract.state.connectionEnvName,
+                    valueFrom: {
+                      secretKeyRef: {
+                        name: contract.state.secretName,
+                        key: contract.state.secretKey,
+                        optional: false,
+                      },
+                    },
+                  },
                 ],
                 readinessProbe: {
                   httpGet: {
@@ -508,4 +700,62 @@ function stringValue(value: unknown): string | undefined {
 
 function isJsonObject(value: unknown): value is JsonObject {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function applicationAgentRoute(
+  agent: ApplicationAIAgentNode,
+  provider: JsonObject,
+): JsonObject {
+  const policyRevision = `sha256:${createHash('sha256')
+    .update(JSON.stringify(provider))
+    .digest('hex')}`;
+  if (provider.kind === 'ai-deterministic') {
+    return {
+      policyRevision,
+      logicalModel: agent.model.name,
+      providerClass: 'deterministic',
+      backend: 'deterministic',
+      concreteModel: 'deterministic',
+      capabilities: [...agent.model.capabilities],
+      route: `deterministic/${agent.model.name}`,
+      fallbackChain: [],
+    };
+  }
+  if (provider.kind !== 'envoy-ai-gateway') {
+    throw new Error(
+      `Application agent ${agent.id} uses unsupported AI provider ${String(provider.kind)}.`,
+    );
+  }
+  const models = isJsonObject(provider.models) ? provider.models : undefined;
+  const modelRouteCandidate = models?.[agent.model.name];
+  const modelRoute = isJsonObject(modelRouteCandidate)
+    ? modelRouteCandidate
+    : undefined;
+  const backends: JsonObject[] = modelRoute && Array.isArray(modelRoute.backends)
+    ? modelRoute.backends.filter(isJsonObject)
+    : [];
+  const selected = backends[0];
+  if (!selected
+    || typeof selected.name !== 'string'
+    || typeof selected.providerClass !== 'string'
+    || typeof selected.model !== 'string') {
+    throw new Error(
+      `Application agent ${agent.id} logical model ${agent.model.name} has no valid Envoy AI Gateway backend route.`,
+    );
+  }
+  return {
+    policyRevision,
+    logicalModel: agent.model.name,
+    providerClass: selected.providerClass,
+    backend: selected.name,
+    concreteModel: selected.model,
+    capabilities: Array.isArray(selected.capabilities)
+      ? selected.capabilities
+      : [...agent.model.capabilities],
+    route: `envoy-ai-gateway/${agent.model.name}`,
+    fallbackChain: backends
+      .slice(1)
+      .map((backend) => backend.name)
+      .filter((name): name is string => typeof name === 'string'),
+  };
 }

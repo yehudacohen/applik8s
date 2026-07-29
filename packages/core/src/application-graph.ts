@@ -4,8 +4,6 @@ import type {
   ApplicationKubernetesCreateAuthorityContract,
   ApplicationKubernetesQueryAuthorityContract,
 } from './application-graph-gateway.js';
-import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, NamespaceName, ObjectRef, ResourceScope, SourceLocation } from './common.js';
-import type { PermissionRule } from './resource.js';
 import type {
   ApplicationIdentityReference,
   ApplicationOperationId,
@@ -14,6 +12,8 @@ import type {
   ApplicationScopeExpression,
   ApplicationStaticAuthorityManifest,
 } from './application-operation-authority.js';
+import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, NamespaceName, ObjectRef, ResourceScope, SourceLocation } from './common.js';
+import type { PermissionRule } from './resource.js';
 
 export type {
   ApplicationHandlerDependencies,
@@ -23,15 +23,15 @@ export type {
 } from './application-graph-gateway.js';
 
 import { validateApplicationGraphCompatibility } from './application-graph-compatibility.js';
+import type { ApplicationNestedInstallationNode } from './application-graph-installation.js';
+import { applicationModelNodeStructureDiagnostics, applicationObservabilityStructureDiagnostics, applicationProviderBindingDiagnostic, applicationProviderRefDiagnostics, applicationProviderRefsForNode, compareStrings, uniqueApplicationProviderRefs, validateApplicationRouteDiagnosticsContract } from './application-graph-node-validation.js';
+import { applicationReactiveNodeStructureMessages } from './application-graph-reactive-validation.js';
+import { normalizeApplicationGraphArtifact, serializeNormalizedApplicationGraph } from './application-graph-serialization.js';
 import {
   type ApplicationProfileProviderSelectionContract,
   validateApplicationProfileDescriptor,
   validateApplicationProfileProviderSelection,
 } from './application-profile.js';
-import type { ApplicationNestedInstallationNode } from './application-graph-installation.js';
-import { applicationModelNodeStructureDiagnostics, applicationObservabilityStructureDiagnostics, applicationProviderBindingDiagnostic, applicationProviderRefDiagnostics, applicationProviderRefsForNode, compareStrings, uniqueApplicationProviderRefs, validateApplicationRouteDiagnosticsContract } from './application-graph-node-validation.js';
-import { applicationReactiveNodeStructureMessages } from './application-graph-reactive-validation.js';
-import { normalizeApplicationGraphArtifact, serializeNormalizedApplicationGraph } from './application-graph-serialization.js';
 
 export type { ApplicationInstallationArtifactContract, ApplicationNestedInstallationNode } from './application-graph-installation.js';
 export { applicationInstallationMetadataProperty } from './application-graph-installation.js';
@@ -797,6 +797,8 @@ export interface ApplicationAIAgentNode extends ApplicationGraphNodeBase<'aiAgen
     };
   };
   readonly inference: ApplicationProviderRef<'AI'>;
+  /** Durable authority for conversations, invocations, attempts, and usage. */
+  readonly state: ApplicationProviderRef<'TransactionalDatabase'>;
   readonly instructions:
     | { readonly kind: 'static'; readonly value: string }
     | {
@@ -3009,6 +3011,10 @@ function applicationAIAgentNodeStructureDiagnostics(
   const provider = graph.nodes.find((candidate) => candidate.id === node.inference.nodeId);
   if (provider?.kind !== 'provider' || provider.interface !== 'AI') {
     messages.push(`Application AI agent ${node.id} requires AI provider ${node.inference.nodeId}.`);
+  }
+  const stateProvider = graph.nodes.find((candidate) => candidate.id === node.state.nodeId);
+  if (stateProvider?.kind !== 'provider' || stateProvider.interface !== 'TransactionalDatabase') {
+    messages.push(`Application AI agent ${node.id} requires durable state provider ${node.state.nodeId}.`);
   }
   const authority = graph.nodes.find((candidate) => candidate.kind === 'authorityManifest');
   const identityDeclared = authority?.kind === 'authorityManifest'

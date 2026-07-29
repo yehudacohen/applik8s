@@ -131,6 +131,9 @@ export function registerApplicationAgent<
         }
       : undefined,
   );
+  const stateProviderNodeId = applicationProviderGraphNodeId(
+    'TransactionalDatabase',
+  );
   const nodeId = `aiAgent.${kubernetesNameSegment(normalizedName)}`;
   const deployment = options.deployment ?? {};
   const node: ApplicationAIAgentNode = {
@@ -147,6 +150,10 @@ export function registerApplicationAgent<
       ...(qualification ? { inference: { qualification } } : {}),
     },
     inference: { interface: 'AI', nodeId: providerNodeId },
+    state: {
+      interface: 'TransactionalDatabase',
+      nodeId: stateProviderNodeId,
+    },
     instructions,
     tools,
     ...(options.responseSchemaDigest
@@ -199,6 +206,11 @@ export function registerApplicationAgent<
     to: { nodeId },
     relationship: 'provides',
   });
+  addApplicationGraphEdge(state, {
+    from: { nodeId: stateProviderNodeId },
+    to: { nodeId },
+    relationship: 'provides',
+  });
   for (const tool of tools) {
     if (!tool.graphNode) continue;
     addApplicationGraphEdge(state, {
@@ -217,6 +229,21 @@ export function registerApplicationAgent<
     diagnostics: {
       missing: `Application agent ${normalizedName} requires one compatible AI provider.`,
       ambiguous: `Application agent ${normalizedName} resolves more than one compatible AI provider.`,
+    },
+  });
+  addApplicationProviderRequirement(state, {
+    id: `requirement.${nodeId}.state`,
+    interface: 'TransactionalDatabase',
+    consumer: { nodeId },
+    provider: {
+      interface: 'TransactionalDatabase',
+      nodeId: stateProviderNodeId,
+    },
+    required: true,
+    purpose: 'agentDurability',
+    diagnostics: {
+      missing: `Application agent ${normalizedName} requires one durable TransactionalDatabase provider.`,
+      ambiguous: `Application agent ${normalizedName} resolves more than one durable TransactionalDatabase provider.`,
     },
   });
 

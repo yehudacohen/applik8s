@@ -2,6 +2,8 @@
 // execution principals are validated before erased AI/tool generics are
 // restored at this runtime boundary.
 
+export * from './postgres-attempt-store.js';
+
 import type { ApplicationAIAgentHandler } from '@applik8s/ai';
 import type {
   ApplicationTanStackAgentRuntime,
@@ -61,6 +63,38 @@ export interface ApplicationAIAgentAttemptReservation {
   readonly invocationId: string;
   readonly attemptId: string;
   readonly runId: string;
+  readonly version: number;
+}
+
+export interface ApplicationAIAgentAttemptLifecycle {
+  readonly dispatching: (
+    reservation: ApplicationAIAgentAttemptReservation,
+  ) => Promise<ApplicationAIAgentAttemptReservation>;
+  readonly append: (
+    reservation: ApplicationAIAgentAttemptReservation,
+    event: Readonly<Record<string, unknown>>,
+  ) => Promise<ApplicationAIAgentAttemptReservation>;
+  readonly completeProvider: (
+    reservation: ApplicationAIAgentAttemptReservation,
+    terminal: {
+      readonly messageId: string;
+      readonly usage?: Readonly<Record<string, unknown>>;
+    },
+  ) => Promise<ApplicationAIAgentAttemptReservation>;
+  readonly commitCanonical: (
+    reservation: ApplicationAIAgentAttemptReservation,
+    terminal: {
+      readonly messageId: string;
+      readonly content: string;
+    },
+  ) => Promise<ApplicationAIAgentAttemptReservation>;
+  readonly fail: (
+    reservation: ApplicationAIAgentAttemptReservation,
+    failure: {
+      readonly classification: 'provider-failed' | 'completion-uncertain' | 'cancelled';
+      readonly reason: string;
+    },
+  ) => Promise<ApplicationAIAgentAttemptReservation>;
 }
 
 export interface ApplicationAIAgentRequestBody
@@ -104,6 +138,7 @@ export interface ApplicationAIAgentRuntimeOptions<
   ) =>
     | Promise<ApplicationAIAgentAttemptReservation>
     | ApplicationAIAgentAttemptReservation;
+  readonly attemptLifecycle: ApplicationAIAgentAttemptLifecycle;
   readonly invoke: (
     operation: ApplicationOperationDescriptor,
     input: unknown,
@@ -145,7 +180,7 @@ export function createApplicationAIAgentRequestHandler<TResult>(
       assertAgentRequest(body);
       const principal = await options.admit(request, body);
       assertAgentPrincipal(principal, options.name);
-      const reservation = await options.reserveAttempt({
+      let reservation = await options.reserveAttempt({
         principal,
         threadId: body.threadId,
         runId: body.runId,
@@ -155,6 +190,7 @@ export function createApplicationAIAgentRequestHandler<TResult>(
       if (reservation.runId !== body.runId) {
         throw new Error(`Agent ${options.name} attempt reservation changed protocol run identity.`);
       }
+      reservation = await options.attemptLifecycle.dispatching(reservation);
       const instructions = typeof options.instructions === 'string'
         ? options.instructions
         : await options.instructions(body.data ?? {});
@@ -205,12 +241,33 @@ export function createApplicationAIAgentRequestHandler<TResult>(
             tanstack: runtime,
           },
         );
-        if (result instanceof Response) return result;
+        if (result instanceof Response) {
+          throw new Error(
+            `Agent ${options.name} returned an opaque Response; managed agents must return a native TanStack stream or a serializable result so durability remains observable.`,
+          );
+        }
         if (isAsyncIterable(result)) {
-          return toServerSentEventsResponse(result as AsyncIterable<StreamChunk>, {
+          return toServerSentEventsResponse(durableAgentStream(
+            result as AsyncIterable<StreamChunk>,
+            reservation,
+            options.attemptLifecycle,
+            controller.signal,
+          ), {
             abortController: controller,
           });
         }
+        const messageId = `message-${reservation.attemptId}`;
+        reservation = await options.attemptLifecycle.completeProvider(
+          reservation,
+          { messageId },
+        );
+        await options.attemptLifecycle.commitCanonical(
+          reservation,
+          {
+            messageId,
+            content: JSON.stringify(result),
+          },
+        );
         return Response.json({ result });
       } finally {
         clearTimeout(timeout);
@@ -223,6 +280,75 @@ export function createApplicationAIAgentRequestHandler<TResult>(
       active -= 1;
     }
   };
+}
+
+async function* durableAgentStream(
+  source: AsyncIterable<StreamChunk>,
+  initialReservation: ApplicationAIAgentAttemptReservation,
+  lifecycle: ApplicationAIAgentAttemptLifecycle,
+  signal: AbortSignal,
+): AsyncIterable<StreamChunk> {
+  let reservation = initialReservation;
+  let terminal = false;
+  let messageId: string | undefined;
+  let content = '';
+  try {
+    for await (const chunk of source) {
+      const event = jsonRecord(chunk, 'TanStack AI stream event');
+      reservation = await lifecycle.append(reservation, event);
+      if (
+        chunk.type === EventType.TEXT_MESSAGE_START
+        || chunk.type === EventType.TEXT_MESSAGE_CONTENT
+        || chunk.type === EventType.TEXT_MESSAGE_END
+      ) {
+        messageId = chunk.messageId;
+      }
+      if (chunk.type === EventType.TEXT_MESSAGE_CONTENT) {
+        content += chunk.delta;
+      }
+      if (chunk.type === EventType.RUN_ERROR) {
+        terminal = true;
+        reservation = await lifecycle.fail(reservation, {
+          classification: 'provider-failed',
+          reason: streamErrorReason(chunk),
+        });
+      } else if (chunk.type === EventType.RUN_FINISHED) {
+        if (!messageId) {
+          throw new Error(
+            `AI attempt ${reservation.attemptId} completed without an assistant message identity.`,
+          );
+        }
+        reservation = await lifecycle.completeProvider(reservation, {
+          messageId,
+          ...(chunk.usage
+            ? { usage: jsonRecord(chunk.usage, 'TanStack AI usage') }
+            : {}),
+        });
+        reservation = await lifecycle.commitCanonical(reservation, {
+          messageId,
+          content,
+        });
+        terminal = true;
+      }
+      yield chunk;
+    }
+    if (!terminal) {
+      reservation = await lifecycle.fail(reservation, {
+        classification: signal.aborted ? 'cancelled' : 'completion-uncertain',
+        reason: signal.aborted
+          ? 'The admitted agent request was cancelled before a terminal provider event.'
+          : 'The provider stream ended without a terminal TanStack AI event.',
+      });
+    }
+  } catch (error) {
+    if (!terminal) {
+      await lifecycle.fail(reservation, {
+        classification: signal.aborted ? 'cancelled' : 'completion-uncertain',
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+    throw error;
+  }
 }
 
 export function applicationAITextAdapter(
@@ -463,6 +589,25 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
     && (typeof value === 'object' || typeof value === 'function')
     && typeof Reflect.get(value, Symbol.asyncIterator) === 'function',
   );
+}
+
+function jsonRecord(
+  value: unknown,
+  description: string,
+): Readonly<Record<string, unknown>> {
+  const normalized = JSON.parse(JSON.stringify(value)) as unknown;
+  if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) {
+    throw new Error(`${description} must be a JSON object.`);
+  }
+  return normalized as Readonly<Record<string, unknown>>;
+}
+
+function streamErrorReason(
+  chunk: Extract<StreamChunk, { readonly type: typeof EventType.RUN_ERROR }>,
+): string {
+  const message = Reflect.get(chunk, 'message');
+  if (typeof message === 'string' && message.trim()) return message;
+  return 'The provider emitted a terminal TanStack AI error event.';
 }
 
 export type {

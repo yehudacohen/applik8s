@@ -135,7 +135,7 @@ export function applicationProviderRefsForNode(node: ApplicationGraphNode): read
     case 'workflowWorker':
       return [node.workflowEngine];
     case 'aiAgent':
-      return [node.inference];
+      return [node.inference, node.state];
     case 'projection':
       return [node.provider];
     case 'objectStore':

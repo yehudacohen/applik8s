@@ -100,6 +100,22 @@ describe('generated application AI agents', () => {
             template: expect.objectContaining({
               spec: expect.objectContaining({
                 automountServiceAccountToken: false,
+                containers: [
+                  expect.objectContaining({
+                    env: expect.arrayContaining([
+                      {
+                        name: 'APPLIK8S_DATABASE_APPLICATION_URL',
+                        valueFrom: {
+                          secretKeyRef: {
+                            name: 'application-app',
+                            key: 'uri',
+                            optional: false,
+                          },
+                        },
+                      },
+                    ]),
+                  }),
+                ],
               }),
             }),
           }),
@@ -123,7 +139,10 @@ describe('generated application AI agents', () => {
       },
     });
     const source = await readFile(artifact.sourcePath, 'utf8');
-    expect(source).toContain('canonical execution-principal admission');
+    const normalizedSource = source.replaceAll('\\\n', '');
+    expect(normalizedSource).toContain('canonical execution-principal admission');
+    expect(normalizedSource).toContain('applik8s_ai_attempts');
+    expect(normalizedSource).toContain('completion-uncertain');
     expect(source).not.toContain('packageManagerAtStartup');
     expect(artifact.sizeBytes).toBeLessThan(1_500_000);
   });

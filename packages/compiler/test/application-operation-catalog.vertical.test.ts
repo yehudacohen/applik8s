@@ -244,7 +244,8 @@ describe('application operation catalog compilation', () => {
   it('serializes the exact maximum workload authority for declared task operation dependencies', () => {
     const base = graph('public');
     const catalog = compileApplicationOperationCatalog(base, { revision: 'catalog-workload' });
-    const operationId = catalog.operations[0]!.id;
+    const operationId = catalog.operations[0]?.id;
+    if (!operationId) throw new Error('Expected one compiled operation.');
     const workloadGraph = {
       ...base,
       nodes: [
@@ -334,7 +335,8 @@ describe('application operation catalog compilation', () => {
     const catalog = compileApplicationOperationCatalog(base, {
       revision: 'catalog-agent',
     });
-    const operation = catalog.operations[0]!;
+    const operation = catalog.operations[0];
+    if (!operation) throw new Error('Expected one compiled operation.');
     const workloadGraph: ApplicationGraph = {
       ...base,
       nodes: [
@@ -366,6 +368,10 @@ describe('application operation catalog compilation', () => {
             constraints: {},
           },
           inference: { interface: 'AI', nodeId: 'provider.ai' },
+          state: {
+            interface: 'TransactionalDatabase',
+            nodeId: 'provider.transactional-database',
+          },
           instructions: { kind: 'static', value: 'Publish only admitted posts.' },
           tools: [{
             operationId: operation.id,
