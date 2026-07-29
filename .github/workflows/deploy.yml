@@ -19,6 +19,11 @@ on:
         options:
           - 'false'
           - 'true'
+      reuse_host_image_digest:
+        description: Existing immutable operator-host digest to verify and reuse; leave empty to build the image
+        required: false
+        default: ''
+        type: string
 
 permissions:
   actions: read
@@ -125,8 +130,13 @@ jobs:
     needs:
       - test
       - publish-host-image
+      - verify-existing-host-image
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_npm == 'true')
+    if: >-
+      always() &&
+      (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_npm == 'true')) &&
+      needs.test.result == 'success' &&
+      (needs['publish-host-image'].result == 'success' || needs['verify-existing-host-image'].result == 'success')
     permissions:
       contents: write
       id-token: write
@@ -170,7 +180,9 @@ jobs:
   publish-host-image:
     name: Publish operator host image
     needs: test
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_npm == 'true')
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_npm == 'true' && inputs.reuse_host_image_digest == '')
     permissions:
       contents: read
       packages: write
@@ -178,6 +190,47 @@ jobs:
     with:
       source_ref: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', inputs.release_version) }}
       image_tag: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', inputs.release_version) }}
+
+  verify-existing-host-image:
+    name: Verify existing immutable operator host image
+    needs: test
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.publish_npm == 'true' &&
+      inputs.reuse_host_image_digest != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      IMAGE: ghcr.io/yehudacohen/applik8s-operator-host
+    steps:
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Verify immutable digest, anonymous access, and platforms
+        env:
+          DIGEST: ${{ inputs.reuse_host_image_digest }}
+          IMAGE_TAG: v${{ inputs.release_version }}
+        run: |
+          if [[ ! "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "reuse_host_image_digest must be a sha256 digest: $DIGEST" >&2
+            exit 1
+          fi
+          TOKEN="$(curl --fail --silent --show-error --get \
+            --data-urlencode "scope=repository:yehudacohen/applik8s-operator-host:pull" \
+            https://ghcr.io/token | jq -er '.token')"
+          TAG_DIGEST="$(curl --fail --silent --show-error --head \
+            --header "Authorization: Bearer $TOKEN" \
+            --header 'Accept: application/vnd.oci.image.index.v1+json' \
+            "https://ghcr.io/v2/yehudacohen/applik8s-operator-host/manifests/$IMAGE_TAG" \
+            | tr -d '\r' | awk -F': ' 'tolower($1) == "docker-content-digest" { print $2 }')"
+          if [ "$TAG_DIGEST" != "$DIGEST" ]; then
+            echo "$IMAGE:$IMAGE_TAG resolves to $TAG_DIGEST, not approved digest $DIGEST" >&2
+            exit 1
+          fi
+          docker buildx imagetools inspect "$IMAGE@$DIGEST" | tee /tmp/operator-host-manifest.txt
+          grep -q 'Platform:.*linux/amd64' /tmp/operator-host-manifest.txt
+          grep -q 'Platform:.*linux/arm64' /tmp/operator-host-manifest.txt
 
   verify-published:
     name: Verify published npm and host artifacts
