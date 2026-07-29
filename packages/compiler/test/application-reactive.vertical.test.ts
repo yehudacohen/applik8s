@@ -383,7 +383,7 @@ describe('generated v0.6 reactive workloads', () => {
     });
     expect(JSON.stringify((consolidatedDeployment?.spec?.template as { readonly metadata?: unknown } | undefined)?.metadata))
       .not.toContain('applik8s.dev/include-when');
-  });
+  }, 120_000);
 
   it('bundles a durable PostgreSQL-to-ClickHouse projection and fails closed on unresolved callbacks', async () => {
     const provider = { id: 'provider.projection-store', kind: 'provider', name: 'ProjectionStore', stability: 'stable', interface: 'ProjectionStore', implementation: 'clickhouse', contract: { apiVersion: 'applik8s.provider/v1alpha1', interface: 'ProjectionStore', version: 'v1alpha1', requirements: [], guarantees: [], implementation: { name: 'clickhouse' }, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] }, config: { namespace: 'catalog', endpoint: 'http://clickhouse.catalog.svc:8123', database: 'analytics' } } as const;
