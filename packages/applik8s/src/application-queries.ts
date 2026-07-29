@@ -1,20 +1,20 @@
+import { type ApplicationOperationAuthorizationContract, type ApplicationQueryOperation, createApplicationQueryOperation, observeApplicationOperationAuthority } from '@applik8s/client';
 import type {
   ApplicationKubernetesQueryAuthorityContract,
   ApplicationMessageContractSchema,
   ApplicationSerializedCallbackContract,
   JsonObject,
 } from '@applik8s/core';
-import { createApplicationQueryOperation, observeApplicationOperationAuthority, type ApplicationOperationAuthorizationContract, type ApplicationQueryOperation } from '@applik8s/client';
 import type { Type } from 'arktype';
+import type { ApplicationDatabaseBinding } from './application.js';
+import { serializeApplicationCallback } from './application-callback.js';
 import type { ApplicationGraphState } from './application-graph-state.js';
 import { addApplicationGraphEdge, addApplicationGraphNode } from './application-graph-state.js';
-import type { ApplicationDatabaseBinding } from './application.js';
+import { applicationTypeKroSerializedValue } from './application-typekro-values.js';
 import type { ApplicationModelRelationshipContract, CommonApplicationModelFacet } from './native-models.js';
 import { getApplicationModelFacet } from './native-models.js';
 import type { ApplicationRelationalContext } from './relational-runtime.js';
 import type { ApplicationTrustedContext } from './trusted-context.js';
-import { serializeApplicationCallback } from './application-callback.js';
-import { applicationTypeKroSerializedValue } from './application-typekro-values.js';
 
 export interface ApplicationQueryPrincipal {
   readonly id: string;
@@ -333,6 +333,9 @@ export function registerApplicationModelView<TInput, TOutput, TPrincipal extends
     operation: 'query',
     transport: 'query',
     ...(authorityState.current ? { authority: authorityState.current } : {}),
+  }, undefined, {
+    input: options.input,
+    output: options.output,
   });
   // typecast: the operation's generic input/output pair comes from the same binding schemas and the private registry intentionally erases only those generics.
   applicationQueryOperationBindings.set(operation, binding as ApplicationQueryBinding);

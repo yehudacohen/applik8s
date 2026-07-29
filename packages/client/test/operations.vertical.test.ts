@@ -6,6 +6,7 @@ import {
   createApplicationQueryOperation,
   decorateApplicationMutationOperation,
   getApplicationOperationContract,
+  getApplicationOperationSchemas,
   installApplicationMutationHook,
   installApplicationOperationRuntime,
   installApplicationQueryHook,
@@ -78,6 +79,24 @@ describe('application operations', () => {
     const decorated = decorateApplicationMutationOperation(native, createContract);
     expect(decorated).toBe(native);
     await expect(decorated({ message: 'hello' })).resolves.toEqual({ identity: 'hello' });
+  });
+
+  it('preserves authoring schemas as hidden operation metadata without changing the public contract', () => {
+    const input = { '~standard': { version: 1, vendor: 'test' } };
+    const output = { '~standard': { version: 1, vendor: 'test' } };
+    const operation = createApplicationMutationOperation(
+      createContract,
+      async () => ({ identity: 'created' }),
+      { input, output },
+    );
+    expect(getApplicationOperationSchemas(operation)).toEqual({ input, output });
+    expect(Object.keys(operation)).not.toContain('applicationOperationSchemas');
+    expect(() =>
+      decorateApplicationMutationOperation(operation, createContract, {
+        input: { other: true },
+        output,
+      }),
+    ).toThrow(/cannot be rebound to different authoring schemas/);
   });
 
   it('delegates useMutation to the installed React adapter', () => {

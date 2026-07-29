@@ -1,18 +1,37 @@
 // typecast-file-boundary: operation decorators preserve generic input/output associations while installing runtime metadata on callable functions.
-import type { ApplicationQuerySnapshot } from './protocol.js';
+
 import type {
   ApplicationOperationId,
   ApplicationOperationTransport,
   ApplicationScopeExpression,
   ApplicationScopeScalar,
 } from '@applik8s/core';
-import { ApplicationCommandClient } from './command-store.js';
 import { createHttpApplicationCommandTransport } from './command-http-transport.js';
+import { ApplicationCommandClient } from './command-store.js';
 import { createHttpApplicationQueryTransport } from './http-transport.js';
+import type { ApplicationQuerySnapshot } from './protocol.js';
 import { createHttpApplicationRuntimeTransport } from './runtime-http-transport.js';
 import { ApplicationQueryClient } from './store.js';
 
 export const applicationOperationContract = Symbol.for('@applik8s/application-operation');
+export const applicationOperationSchemas = Symbol.for('@applik8s/application-operation-schemas');
+
+/**
+ * Authoring-time schemas associated with a callable operation. The values stay
+ * opaque here so browser-safe operation handles do not acquire a schema-library
+ * dependency. Adapters such as @applik8s/ai-tanstack may require Standard
+ * Schema-compatible values and fail closed when an operation has only a
+ * serialized runtime schema.
+ */
+export interface ApplicationOperationSchemaBinding<TInput = unknown, TOutput = unknown> {
+  readonly input: unknown;
+  readonly output: unknown;
+  /** Type-only association retained by the callable operation. */
+  readonly '~types'?: {
+    readonly input: TInput;
+    readonly output: TOutput;
+  };
+}
 
 export interface ApplicationOperationContract {
   readonly apiVersion: 'applik8s.operation/v1alpha1';
@@ -204,6 +223,7 @@ export interface ApplicationMutationHookOptions<TInput> {
 export interface ApplicationOperation<TInput, TOutput, TTarget = unknown> extends AuthorizableOperation<TInput, TOutput, TTarget> {
   (input: TInput): Promise<TOutput>;
   readonly [applicationOperationContract]: ApplicationOperationContract;
+  readonly [applicationOperationSchemas]?: ApplicationOperationSchemaBinding<TInput, TOutput>;
   readonly operation: ApplicationOperationContract;
 }
 
@@ -239,11 +259,13 @@ export interface ApplicationQuerySuspenseResult<TValue> {
 export interface ApplicationQueryOperation<TInput, TValue, TTarget = unknown> extends AuthorizableOperation<TInput, TValue, TTarget> {
   (input: TInput): ApplicationQueryInvocation<TValue>;
   readonly [applicationOperationContract]: ApplicationOperationContract;
+  readonly [applicationOperationSchemas]?: ApplicationOperationSchemaBinding<TInput, TValue>;
   readonly operation: ApplicationOperationContract;
 }
 
 export interface ApplicationOperationLike {
   readonly [applicationOperationContract]: ApplicationOperationContract;
+  readonly [applicationOperationSchemas]?: ApplicationOperationSchemaBinding;
   readonly operation: ApplicationOperationContract;
   readonly authority: ApplicationOperationAuthorizationContract;
 }
@@ -323,6 +345,7 @@ export function observeApplicationOperationAuthority(
 export function createApplicationMutationOperation<TInput, TOutput, TTarget = unknown>(
   contract: ApplicationOperationContract,
   invoke?: (input: TInput) => Promise<TOutput>,
+  schemas?: ApplicationOperationSchemaBinding<TInput, TOutput>,
 ): ApplicationMutationOperation<TInput, TOutput, TTarget> {
   const callable = ((input: TInput) => {
     if (invoke) return invoke(input);
@@ -332,13 +355,14 @@ export function createApplicationMutationOperation<TInput, TOutput, TTarget = un
     }
     return runtime.execute<TInput, TOutput>(contract, input);
   }) as ApplicationMutationOperation<TInput, TOutput, TTarget>;
-  return decorateApplicationMutationOperation(callable, contract);
+  return decorateApplicationMutationOperation(callable, contract, schemas);
 }
 
 /** Creates a direct callable whose authority is an authenticated server runtime rather than a durable command processor. */
 export function createApplicationRuntimeOperation<TInput, TOutput, TTarget = unknown>(
   contract: ApplicationOperationContract,
   invoke?: (input: TInput) => Promise<TOutput>,
+  schemas?: ApplicationOperationSchemaBinding<TInput, TOutput>,
 ): ApplicationOperation<TInput, TOutput, TTarget> {
   assertApplicationOperationContract(contract);
   if (contract.transport !== 'runtime') throw new Error(`Application runtime operation ${contract.id} must use runtime transport.`);
@@ -348,7 +372,9 @@ export function createApplicationRuntimeOperation<TInput, TOutput, TTarget = unk
     if (!runtime) throw new Error(`Application runtime operation ${contract.id} has no active authenticated runtime.`);
     return runtime.execute<TInput, TOutput>(contract, input);
   }) as ApplicationOperation<TInput, TOutput, TTarget>;
-  return decorateAuthorizableOperation(callable, contract);
+  const decorated = decorateAuthorizableOperation(callable, contract);
+  if (schemas) bindApplicationOperationSchemas(decorated, schemas);
+  return decorated;
 }
 
 export function createApplicationQueryOperation<TInput, TValue, TTarget = unknown>(
@@ -356,6 +382,7 @@ export function createApplicationQueryOperation<TInput, TValue, TTarget = unknow
   authority?: {
     readonly snapshot: (operation: ApplicationOperationContract, input: TInput) => Promise<ApplicationQuerySnapshot<TValue>>;
   },
+  schemas?: ApplicationOperationSchemaBinding<TInput, TValue>,
 ): ApplicationQueryOperation<TInput, TValue, TTarget> {
   assertApplicationOperationContract(contract);
   if (contract.transport !== 'query' || contract.operation !== 'query') {
@@ -390,7 +417,9 @@ export function createApplicationQueryOperation<TInput, TValue, TTarget = unknow
       return hook<TInput, TValue>(contract, input, true) as ApplicationQuerySuspenseResult<TValue>;
     },
   })) as ApplicationQueryOperation<TInput, TValue, TTarget>;
-  return decorateAuthorizableOperation(callable, contract);
+  const decorated = decorateAuthorizableOperation(callable, contract);
+  if (schemas) bindApplicationOperationSchemas(decorated, schemas);
+  return decorated;
 }
 
 export function attachApplicationOperations<
@@ -414,6 +443,7 @@ export function attachApplicationOperations<
 export function decorateApplicationMutationOperation<TInput, TOutput, TTarget = unknown>(
   callable: (input: TInput) => Promise<TOutput>,
   contract: ApplicationOperationContract,
+  schemas?: ApplicationOperationSchemaBinding<TInput, TOutput>,
 ): ApplicationMutationOperation<TInput, TOutput, TTarget> {
   assertApplicationOperationContract(contract);
   const existing = Reflect.get(callable, applicationOperationContract) as ApplicationOperationContract | undefined;
@@ -421,7 +451,9 @@ export function decorateApplicationMutationOperation<TInput, TOutput, TTarget = 
     if (JSON.stringify(existing) !== JSON.stringify(contract)) {
       throw new Error(`Application operation ${existing.id} cannot be rebound as ${contract.id}.`);
     }
-    return callable as ApplicationMutationOperation<TInput, TOutput, TTarget>;
+    const decorated = callable as ApplicationMutationOperation<TInput, TOutput, TTarget>;
+    if (schemas) bindApplicationOperationSchemas(decorated, schemas);
+    return decorated;
   }
   const decorated = decorateAuthorizableOperation(callable as ApplicationMutationOperation<TInput, TOutput, TTarget>, contract);
   Object.defineProperties(decorated, {
@@ -436,7 +468,37 @@ export function decorateApplicationMutationOperation<TInput, TOutput, TTarget = 
       enumerable: false,
     },
   });
+  if (schemas) bindApplicationOperationSchemas(decorated, schemas);
   return decorated;
+}
+
+export function bindApplicationOperationSchemas<TInput, TOutput>(
+  operation: ApplicationOperation<TInput, TOutput> | ApplicationQueryOperation<TInput, TOutput>,
+  schemas: ApplicationOperationSchemaBinding<TInput, TOutput>,
+): void {
+  const existing = Reflect.get(operation, applicationOperationSchemas) as
+    | ApplicationOperationSchemaBinding<TInput, TOutput>
+    | undefined;
+  if (existing) {
+    if (existing.input !== schemas.input || existing.output !== schemas.output) {
+      throw new Error(`Application operation ${operation.operation.id} cannot be rebound to different authoring schemas.`);
+    }
+    return;
+  }
+  Object.defineProperty(operation, applicationOperationSchemas, {
+    value: Object.freeze({ input: schemas.input, output: schemas.output }),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+}
+
+export function getApplicationOperationSchemas<TInput, TOutput>(
+  operation: ApplicationOperation<TInput, TOutput> | ApplicationQueryOperation<TInput, TOutput>,
+): ApplicationOperationSchemaBinding<TInput, TOutput> | undefined {
+  return Reflect.get(operation, applicationOperationSchemas) as
+    | ApplicationOperationSchemaBinding<TInput, TOutput>
+    | undefined;
 }
 
 export function getApplicationOperationContract(value: unknown): ApplicationOperationContract | undefined {
@@ -633,7 +695,7 @@ export function completeApplicationBoundOperationInput(
       'Operation alias input must be an object.',
     );
   }
-  const overridden = dependency.boundKeys.filter((key) => Object.prototype.hasOwnProperty.call(supplied, key));
+  const overridden = dependency.boundKeys.filter((key) => Object.hasOwn(supplied, key));
   if (overridden.length > 0) {
     throw new ApplicationBoundFieldOverrideError(
       String(dependency.operation.operation.id),

@@ -1,21 +1,22 @@
 // typecast-file-boundary: Drizzle table identity and schema-normalized registries preserve generics that must be restored after runtime identity checks.
+
+import { type ApplicationMutationOperation, type ApplicationQueryOperation, createApplicationMutationOperation, decorateApplicationMutationOperation, observeApplicationOperationAuthority } from '@applik8s/client';
 import type { JsonObject, JsonValue, ResourceDefinition, ResourceInstanceInput, ResourceObject, RuntimeSchema } from '@applik8s/core';
-import { createApplicationMutationOperation, decorateApplicationMutationOperation, observeApplicationOperationAuthority, type ApplicationMutationOperation, type ApplicationQueryOperation } from '@applik8s/client';
 import { normalizeSchema } from '@applik8s/sdk';
 import { type as arkType, type Type } from 'arktype';
 import { createInsertSchema, createSelectSchema, createUpdateSchema } from 'drizzle-arktype';
-import { createTableRelationsHelpers, extractTablesRelationalConfig, getTableColumns, getTableName, isTable, Many, normalizeRelation, One, type InferInsertModel, type InferSelectModel, type Relation, type Relations, type Table } from 'drizzle-orm';
-import { getTableConfig, type AnyPgTable } from 'drizzle-orm/pg-core';
+import { createTableRelationsHelpers, extractTablesRelationalConfig, getTableColumns, getTableName, type InferInsertModel, type InferSelectModel, isTable, Many, normalizeRelation, One, type Relation, type Relations, type Table } from 'drizzle-orm';
+import { type AnyPgTable, getTableConfig } from 'drizzle-orm/pg-core';
+import type { ApplicationReconcileHandler, ApplicationReconcileOptions, ApplicationResourceControllerBinding } from './application-events.js';
 import type { ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandHandler, ApplicationModelCommandOptions } from './application-models.js';
+import type { ApplicationKubernetesModelViewOptions, ApplicationModelViewOptions, ApplicationQueryPrincipal, ApplicationQuerySourceBinding } from './application-queries.js';
+import type { ApplicationStreamProcessContext, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding } from './application-reactive.js';
 import type {
   ApplicationSearchDocument,
   ApplicationSearchField,
   ApplicationSearchIndexBinding,
 } from './application-search.js';
-import type { ApplicationKubernetesModelViewOptions, ApplicationModelViewOptions, ApplicationQueryPrincipal, ApplicationQuerySourceBinding } from './application-queries.js';
-import type { ApplicationStreamProcessContext, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding } from './application-reactive.js';
-import type { ApplicationReconcileHandler, ApplicationReconcileOptions, ApplicationResourceControllerBinding } from './application-events.js';
-import { event, type CommandDefinition, type EventDefinition } from './dsl.js';
+import { type CommandDefinition, type EventDefinition, event } from './dsl.js';
 import { applicationModelFacet, getRequiredDrizzleApplicationModelFacet } from './native-model-runtime.js';
 
 export { applicationModelFacet, getRequiredDrizzleApplicationModelFacet } from './native-model-runtime.js';
@@ -982,6 +983,9 @@ function installApplicationModelCommand<TTable extends AnyPgTable, TInput extend
       name,
       operation: 'custom',
       transport: 'command',
+    }, undefined, {
+      input: command.input,
+      output: command.output,
     });
   applicationModelCommandOperationBindings.set(operation, binding);
   observeApplicationOperationAuthority(operation, (authority) => binding.classify(authority));

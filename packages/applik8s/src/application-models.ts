@@ -1,17 +1,17 @@
 // typecast-file-boundary: schema-normalized model contracts cross erased runtime registries here; casts restore their declaration-time generics after identity checks.
 import { createHash } from 'node:crypto';
 import { type ApplicationMutationOperation, type ApplicationOperationAuthorizationContract, type ApplicationOperationLike, createApplicationMutationOperation, observeApplicationOperationAuthority } from '@applik8s/client';
-import type { ApplicationAuthorizationReceipt, ApplicationCommandHandlerNode, ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelNode, ApplicationModelOperationGraphContract, ApplicationTransactionalDatabaseGuaranteesContract, ApplicationTransactionalDatabaseSemanticsContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, JsonValue } from '@applik8s/core';
-import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
+import type { ApplicationAuthorizationReceipt, ApplicationCommandHandlerNode, ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelNode, ApplicationModelOperationGraphContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, ApplicationTransactionalDatabaseGuaranteesContract, ApplicationTransactionalDatabaseSemanticsContract, JsonValue } from '@applik8s/core';
 import { applicationAuthorityPostgresSchemaStatements } from '@applik8s/operations';
+import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import { type ApplicationEventLogResourceState, emitApplicationEventLogResources } from './application-event-log-resources.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
+import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
 import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions, sameApplicationProcessorDeployment } from './application-processor-policy.js';
 import type { ApplicationAnalyticalDatabaseProvider, ApplicationEventLogProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState, ApplicationTransactionalDatabaseProvider } from './application-providers.js';
-import { applicationEventLogImplementation, applicationTransactionalDatabaseImplementation, applicationProviderImplementationName, applicationProviderInterface, applicationProviderQualificationFor, applicationProviderSelectionFor } from './application-providers.js';
-import { applicationProviderGraphNodeId } from './application-identifiers.js';
+import { applicationEventLogImplementation, applicationProviderImplementationName, applicationProviderInterface, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationTransactionalDatabaseImplementation } from './application-providers.js';
 import { analyzeApplicationServerRouteSource, applicationCommandSourceViolations, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString, applicationTypeKroValueIdentity } from './application-typekro-values.js';
 import type { ApplicationCommandPrincipal } from './command-principal.js';
@@ -19,8 +19,8 @@ import type { CommandDefinition, EntityDefinition, EventDefinition } from './dsl
 import type { ApplicationEventLogPublisher, EventLogPublishAcknowledgement } from './event-log-runtime.js';
 import type { PostgresModelCommandResult } from './model-command-postgres-runtime.js';
 import { canonicalApplicationCommandKey, executePostgresModelCommand } from './model-command-postgres-runtime.js';
-import { createPostgresModelClient } from './transactional-database-postgres-runtime.js';
 import { applicationModelCommandBindingForOperation, applicationModelFacet, bindApplicationModelCommandOperation, type DrizzleAnalyticalApplicationModelFacet, type DrizzleApplicationModelFacet, getApplicationModelFacet, nativeApplicationModelBindingFor } from './native-models.js';
+import { createPostgresModelClient } from './transactional-database-postgres-runtime.js';
 
 const applicationModelCommandAuthorities = new WeakMap<object, Map<string, ApplicationOperationAuthorizationContract>>();
 
@@ -1388,6 +1388,9 @@ function installApplicationModelOperation<
     name,
     operation: 'custom',
     transport: 'command',
+  }, undefined, {
+    input: definition.input,
+    output: definition.output,
   });
   bindApplicationModelCommandOperation(operation, binding);
   observeApplicationOperationAuthority(operation, (authority) => binding.classify(authority));

@@ -51,8 +51,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/cli/src/cli.ts', 'packages/cli/src/application-deployment-command.ts'],
-    forbidden: [/^@applik8s\/(?!compiler(?:\/diagnostics)?$)/, /^typekro(?:\/|$)/, /^@kubernetes\//],
-    rationale: 'The CLI may route through the explicit deployment and migration facades, but must not reach provider, TypeKro, or Kubernetes implementations directly.',
+    forbidden: [/^@applik8s\/(?!compiler(?:\/diagnostics)?$|core(?:\/|$)|deployment-contract(?:\/|$))/, /^typekro(?:\/|$)/, /^@kubernetes\//],
+    rationale: 'The CLI may consume portable compiler diagnostics, core authority, and deployment contracts, but must not reach provider, TypeKro, or Kubernetes implementations directly.',
   },
   {
     roots: ['packages/runtime-s3/src'],
@@ -66,8 +66,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/runtime-nats/src'],
-    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
-    rationale: 'The NATS runtime may implement provider-neutral Applik8s event-log contracts but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$)|core(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The NATS runtime may implement provider-neutral Applik8s and core authority contracts but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
   },
   {
     roots: ['packages/runtime-kubernetes/src'],
@@ -91,8 +91,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/client/src', 'packages/react/src'],
-    forbidden: [/^node:/, /^@kubernetes\/client-node$/, /^@applik8s\/(?!client(?:\/|$))/, /^typekro(?:\/|$)/],
-    rationale: 'Browser packages may depend only on the browser-safe client contract and transport package.',
+    forbidden: [/^node:/, /^@kubernetes\/client-node$/, /^@applik8s\/(?!client(?:\/|$)|core(?:\/|$))/, /^typekro(?:\/|$)/],
+    rationale: 'Browser packages may depend only on browser-safe client and portable core authority contracts.',
   },
   {
     roots: ['packages/vite/src/index.ts'],
