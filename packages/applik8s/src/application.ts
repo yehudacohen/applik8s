@@ -1,6 +1,8 @@
 // typecast-file-boundary: the application builder joins ArkType, Drizzle, TypeKro, and graph registries whose runtime identities preserve generics erased by TypeScript.
-import type { AnyResourceDefinition, ApplicationGeneratedResourceContract, ApplicationGraph, ApplicationObservabilityContract, ApplicationOperationAuthorityGraphContract, ApplicationProfileProviderSelectionContract, ApplicationProviderInterfaceKind, HandlerRegistration, JsonObject, JsonValue, NormalizedOperationPlan, OperationTarget, OperatorDeploymentOptions, PermissionRule, PlanTargetOptions, ResourceDefinition, ResourceIndex, ResourceObject, Result } from '@applik8s/core';
+
+import type { ApplicationTanStackAIAgentRequest } from '@applik8s/ai-tanstack';
 import type { ApplicationOperation } from '@applik8s/client';
+import type { AnyResourceDefinition, ApplicationGeneratedResourceContract, ApplicationGraph, ApplicationObservabilityContract, ApplicationOperationAuthorityGraphContract, ApplicationProfileProviderSelectionContract, ApplicationProviderInterfaceKind, HandlerRegistration, JsonObject, JsonValue, NormalizedOperationPlan, OperationTarget, OperatorDeploymentOptions, PermissionRule, PlanTargetOptions, ResourceDefinition, ResourceIndex, ResourceObject, Result } from '@applik8s/core';
 import { applicationGraphMetadataProperty, applicationInstallationMetadataProperty, applicationTypeKroDefinitionProperty, normalizeApplicationGraph } from '@applik8s/core';
 import type { CrdOptions, SchemaInput } from '@applik8s/sdk';
 import { sdk as baseSdk, normalizeSchema, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
@@ -14,12 +16,19 @@ import { Cel, externalRef } from 'typekro';
 import { cluster as typeKroCnpgCluster, scheduledBackup as typeKroCnpgScheduledBackup } from 'typekro/cnpg';
 import { configMap as typeKroConfigMap, deployment as typeKroDeployment, role as typeKroRole, roleBinding as typeKroRoleBinding, service as typeKroService, serviceAccount as typeKroServiceAccount } from 'typekro/kubernetes';
 import { valkey as typeKroValkey } from 'typekro/valkey';
-import { recordApplicationCrdGraph } from './application-crd-graph.js';
 import {
-  applicationAuthorityRegistrar,
+  type ApplicationAgentBinding,
+  type ApplicationAgentHandler,
+  type ApplicationAgentOptions,
+  registerApplicationAgent,
+} from './application-ai.js';
+import { emitApplicationAnalyticalDatabaseResources } from './application-analytical-database-resources.js';
+import {
   type ApplicationAuthorityGraphState,
   type ApplicationAuthorityRegistrar,
+  applicationAuthorityRegistrar,
 } from './application-authority.js';
+import { recordApplicationCrdGraph } from './application-crd-graph.js';
 import { type ApplicationReconcileHandler, type ApplicationReconcileOptions, type ApplicationResourceControllerBinding, type ApplicationResourceEventHandlers, createApplicationResourceEventOperator } from './application-events.js';
 import { type ApplicationGeneratedJobResourceState, type ApplicationJobBinding, type ApplicationJobOptions, type ApplicationScheduleOptions, emitApplicationGeneratedJob, emitApplicationModelMigrationResources } from './application-generated-job-resources.js';
 import type { ApplicationServerRuntimeIndex } from './application-generated-runtime-sources.js';
@@ -56,22 +65,6 @@ import {
 import { type ApplicationObjectStoreBinding, type ApplicationObjectStoreOptions, registerApplicationObjectStore } from './application-object-storage.js';
 import { applicationOperatorWatchScopeContracts } from './application-operator-watches.js';
 import type { ApplicationProcessorOptions } from './application-processor-policy.js';
-import { emitApplicationAnalyticalDatabaseResources } from './application-analytical-database-resources.js';
-import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationTransactionalDatabaseProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationSearchProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
-import { ApplicationHost, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationTransactionalDatabaseImplementation, applicationPostgresClusterSpec, applicationAnalyticalDatabaseImplementation, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isApplicationSearchProvider, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
-import { type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
-import {
-  applicationSearchIndexRegistrar,
-  bindApplicationSearchModel,
-  createApplicationSearchRegistrar,
-  type ApplicationSearchDocument,
-  type ApplicationSearchField,
-  type ApplicationSearchIndexBinding,
-  type ApplicationSearchIndexOptions,
-  type ApplicationSearchIndexRegistrar,
-  type ApplicationSearchRootOptions,
-} from './application-search.js';
-import { type ApplicationAnalyticalProjectionBinding, type ApplicationAnalyticalProjectionOptions, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationOnlineProjectionBinding, type ApplicationOnlineProjectionOptions, type ApplicationProjectionOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions, registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationStreamProcessor, registerApplicationSubscription } from './application-reactive.js';
 import {
   type ApplicationProfile,
   type ApplicationProfileVariant,
@@ -79,11 +72,26 @@ import {
   applicationProfileVariantsFromSchema,
   createApplicationProfileRuntime,
 } from './application-profiles.js';
+import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationTransactionalDatabaseProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
+import { ApplicationHost, applicationAnalyticalDatabaseImplementation, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationPostgresClusterSpec, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applicationTransactionalDatabaseImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isApplicationSearchProvider, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
+import { type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
+import { type ApplicationAnalyticalProjectionBinding, type ApplicationAnalyticalProjectionOptions, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationOnlineProjectionBinding, type ApplicationOnlineProjectionOptions, type ApplicationProjectionOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions, registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationStreamProcessor, registerApplicationSubscription } from './application-reactive.js';
 import type { ApplicationRouteSourceLocation, ApplicationServerRouteSourceAnalysis, SerializedApplicationServerRouteWithDependencies } from './application-route-source.js';
 import { analyzeApplicationServerRouteSource, normalizeSerializableFunctionSource, routeAnalysisCallsMethod, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 import { generatedApplicationRuntimeModuleBundle } from './application-runtime-modules.js';
+import {
+  type ApplicationSearchDocument,
+  type ApplicationSearchField,
+  type ApplicationSearchIndexBinding,
+  type ApplicationSearchIndexOptions,
+  type ApplicationSearchIndexRegistrar,
+  type ApplicationSearchRootOptions,
+  applicationSearchIndexRegistrar,
+  bindApplicationSearchModel,
+  createApplicationSearchRegistrar,
+} from './application-search.js';
 import { bundleGeneratedApplicationServerSourceBundle, generatedApplicationServerBindingsSource, generatedApplicationServerHonoEntrypointSource, generatedApplicationServerRouteModuleSource, generatedApplicationServerRouteModules, generatedApplicationServerRoutesSource, kroSafeJavaScriptSourceBundle, mountedConfigMapSourceBundle, routeManifestEntry } from './application-server-bundle.js';
-import { applicationRuntimeResource, assertDistinctRuntimeBindingNames, assertRuntimeBindingNames, createRouteRecorder, inferApplicationServerPermissions, mergeApplicationKubernetesRbacRules, transactionalDatabaseEnvironmentVariables, type SerializedApplicationServerCaptures, serializeApplicationServerCaptures, serializeApplicationServerRoutes, serializedApplicationServerCaptureAliases } from './application-server-routing.js';
+import { applicationRuntimeResource, assertDistinctRuntimeBindingNames, assertRuntimeBindingNames, createRouteRecorder, inferApplicationServerPermissions, mergeApplicationKubernetesRbacRules, type SerializedApplicationServerCaptures, serializeApplicationServerCaptures, serializeApplicationServerRoutes, serializedApplicationServerCaptureAliases, transactionalDatabaseEnvironmentVariables } from './application-server-routing.js';
 import { generatedApplicationServerRuntimeSource, runtimeIndexTable } from './application-server-runtime.js';
 import type { ApplicationGeneratedJobStatusProjectionState, ApplicationStatusReconcilerAppResourceTarget } from './application-status-reconciler.js';
 import { emitApplicationGeneratedJobStatusReconcilers } from './application-status-reconciler.js';
@@ -94,21 +102,21 @@ import type { EntityDefinition, EventDefinition, StreamDefinition, TaskDefinitio
 import { type ApplicationKubernetesCreatePolicy, applicationModelViewRegistrar, bindApplicationModelViews, bindNativeApplicationModelActionEvents, bindNativeApplicationModelBeforeCommit, bindNativeApplicationModelBinding, bindNativeApplicationModelCommands, bindNativeApplicationModelLifecycle, bindNativeKubernetesLifecycle, type DrizzleAnalyticalApplicationModelFacet, getApplicationModelFacet, getRequiredDrizzleApplicationModelFacet, nativeApplicationModelActionEventRegistrar, nativeApplicationModelBeforeCommitRegistrar, nativeApplicationModelCommandRegistrar, nativeApplicationModelLifecycleRegistrar, nativeKubernetesLifecycleRegistrar, type PromoteAnalyticalDrizzleTableOptions, type PromoteDrizzleTableOptions, type PromotedAnalyticalDrizzleTable, type PromotedDrizzleTable, type PromotedKubernetesResource, promoteAnalyticalDrizzleTable, promoteDrizzleTable, promoteKubernetesResource } from './native-models.js';
 import type { ApplicationPostgresRlsPolicy } from './trusted-context.js';
 
-export type { ApplicationFinalizeEventHandler, ApplicationReconcileHandler, ApplicationReconcileOptions, ApplicationResourceControllerBinding, ApplicationResourceEventHandlers, ApplicationResourceObject } from './application-events.js';
+export type { ApplicationAgentBinding, ApplicationAgentDeploymentOptions, ApplicationAgentHandler, ApplicationAgentOptions } from './application-ai.js';
 export type { ApplicationAuthorityRegistrar, ApplicationAuthoritySelection, ApplicationOutcomeBinding, ApplicationOutcomeOptions, ApplicationPermissionBinding, ApplicationServiceIdentityBinding } from './application-authority.js';
+export type { ApplicationFinalizeEventHandler, ApplicationReconcileHandler, ApplicationReconcileOptions, ApplicationResourceControllerBinding, ApplicationResourceEventHandlers, ApplicationResourceObject } from './application-events.js';
 export type { ApplicationJobBinding, ApplicationJobOptions, ApplicationScheduleOptions } from './application-generated-job-resources.js';
 export type { ApplicationInstallationClient, ApplicationInstallationConnectOptions, ApplicationInstallationReference, ApplicationInstallationTransport, ApplicationInstallationWatchOptions } from './application-installation-client.js';
 export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationCommandSubmissionAcknowledgement, ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandContext, ApplicationModelCommandDeliveryOptions, ApplicationModelCommandHandler, ApplicationModelCommandOptions, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
 export type { ApplicationObjectMetadata, ApplicationObjectPutRequest, ApplicationObjectReference, ApplicationObjectStorageRuntime, ApplicationObjectStoreBinding, ApplicationObjectStoreOptions, ApplicationSignedObjectIntent } from './application-object-storage.js';
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
 export type { ApplicationProfile, ApplicationProfileBranchOptions, ApplicationProfileVariant, ApplicationProfileVariantOverride, ApplicationQualifiedProviderBinding } from './application-profiles.js';
-export type { ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalPostgresDatabaseOptions, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationObjectStorageProvider, ApplicationOciContainerRegistryProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationQualifiableProviderToken, ApplicationQueueProvider, ApplicationRequestAdmission, ApplicationRequestIdentityProvider, ApplicationRequestIdentityProviderToken, ApplicationSecretProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
+export type { ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalPostgresDatabaseOptions, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationObjectStorageProvider, ApplicationOciContainerRegistryProvider, ApplicationOpenSearchProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresReadinessPolicy, ApplicationPostgresSearchProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiableProviderToken, ApplicationQualifiedProviderToken, ApplicationQueueProvider, ApplicationRequestAdmission, ApplicationRequestIdentityProvider, ApplicationRequestIdentityProviderToken, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken, ApplicationSecretProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
 export { AnalyticalDatabase, Analytics, ApplicationHost, Authorization, Certificate, ContainerRegistry, CounterStore, CredentialStore, Database, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ObjectStorage, providers, Queue, RequestIdentity, Search, Secret, StructuredGeneration, TransactionalDatabase, WorkflowEngine } from './application-providers.js';
-export type { ApplicationOpenSearchProvider, ApplicationPostgresSearchProvider, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken } from './application-providers.js';
-export type { ApplicationSearchComparison, ApplicationSearchDocument, ApplicationSearchFacetBucket, ApplicationSearchField, ApplicationSearchFieldHandle, ApplicationSearchHit, ApplicationSearchIndexBinding, ApplicationSearchIndexOptions, ApplicationSearchPath, ApplicationSearchRequest, ApplicationSearchResult, ApplicationSearchRootOptions, ApplicationSearchSort, ApplicationSearchSource, ApplicationUnaliasedSearchField } from './application-search.js';
-export { search } from './application-search.js';
 export type { ApplicationKubernetesModelViewOptions, ApplicationModelViewOptions, ApplicationOnlineProjectionQueryBinding, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryAuthorizationRequest, ApplicationQuerySourceBinding } from './application-queries.js';
 export type { ApplicationAnalyticalProjectionBinding, ApplicationAnalyticalProjectionOptions, ApplicationGatewayAdmission, ApplicationGatewayBinding, ApplicationGatewayOptions, ApplicationOnlineProjectionBinding, ApplicationOnlineProjectionOptions, ApplicationProjectionBinding, ApplicationProjectionOptions, ApplicationStreamBinding, ApplicationStreamOptions, ApplicationStreamProcessContext, ApplicationStreamProcessHandler, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding, ApplicationStreamScheduleFunctions, ApplicationStreamScheduleTargets, ApplicationStreamTaskFunctions, ApplicationStreamTaskTargets, ApplicationSubscriptionBinding, ApplicationSubscriptionOptions } from './application-reactive.js';
+export type { ApplicationSearchComparison, ApplicationSearchDocument, ApplicationSearchFacetBucket, ApplicationSearchField, ApplicationSearchFieldHandle, ApplicationSearchHit, ApplicationSearchIndexBinding, ApplicationSearchIndexOptions, ApplicationSearchPath, ApplicationSearchRequest, ApplicationSearchResult, ApplicationSearchRootOptions, ApplicationSearchSort, ApplicationSearchSource, ApplicationUnaliasedSearchField } from './application-search.js';
+export { search } from './application-search.js';
 export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskObjectFunctions, ApplicationTaskObjectStores, ApplicationTaskOperationFunctions, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjectionFunctions, ApplicationTaskProjections, ApplicationTaskProjectionTarget, ApplicationTaskQueries, ApplicationTaskQueryFunctions, ApplicationTaskReference, ApplicationTaskServicePrincipal, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference, ApplicationWorkflowResultOptions, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
 export { ApplicationDurableError, isApplicationDurableError } from './application-workflows.js';
 export type { ApplicationKubernetesCreatePlacement, ApplicationKubernetesCreatePolicy, ApplicationKubernetesCreateRequest, ApplicationModelActionCompletedEvent, ApplicationModelActionCompletedRegistrar, ApplicationModelBeforeCommitHandler, ApplicationModelBeforeCommitOptions, ApplicationModelCreateEvent, ApplicationModelCreateEventHandler, ApplicationModelDeleteEvent, ApplicationModelDeleteEventHandler, ApplicationModelDeleteInput, ApplicationModelLifecycleRegistrar, ApplicationModelMutationOperation, ApplicationModelUpdateEvent, ApplicationModelUpdateEventHandler, ApplicationModelUpdateInput, DrizzleAnalyticalApplicationModelFacet, PromotedAnalyticalDrizzleTable } from './native-models.js';
@@ -124,6 +132,15 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   readonly server: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
   readonly storage: ApplicationStorageRegistrar;
   readonly database: ApplicationDatabaseRegistrar;
+  agent<
+    const TName extends string,
+    TRequest extends ApplicationTanStackAIAgentRequest,
+    TResult,
+  >(
+    name: TName,
+    options: ApplicationAgentOptions,
+    handler: ApplicationAgentHandler<TRequest, TResult>,
+  ): ApplicationAgentBinding<TName, TRequest, TResult>;
   operator<TBinding>(operator: (options: OperatorDeploymentOptions) => TBinding, options: OperatorDeploymentOptions): TBinding;
   resource<TSpec extends object, TStatus extends object = Record<string, never>>(name: string, options: ApplicationResourceOptions<TSpec, TStatus>): ResourceDefinition<TSpec, TStatus>;
   crd<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options: ApplicationCrdOptions<TSpec, TStatus>): PromotedKubernetesResource<TSpec, TStatus>;
@@ -1267,7 +1284,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
             nativeOptions,
           );
           const previewFacet = getApplicationModelFacet(previewModel);
-          if (!previewFacet || previewFacet.provider !== 'analytical-database') {
+          if (previewFacet?.provider !== 'analytical-database') {
             throw new Error(
               `Analytical model ${getTableName(entityOrName)} did not install its analytical facet.`,
             );
@@ -1705,6 +1722,22 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       const binding = preview.aggregate(aggregateName, aggregateOptions);
       replays.push((scope) => {
         scope.aggregate(aggregateName, aggregateOptions);
+      });
+      invalidate();
+      return binding;
+    },
+    agent<
+      const TName extends string,
+      TRequest extends ApplicationTanStackAIAgentRequest,
+      TResult,
+    >(
+      agentName: TName,
+      agentOptions: ApplicationAgentOptions,
+      handler: ApplicationAgentHandler<TRequest, TResult>,
+    ): ApplicationAgentBinding<TName, TRequest, TResult> {
+      const binding = preview.agent(agentName, agentOptions, handler);
+      replays.push((scope) => {
+        scope.agent(agentName, agentOptions, handler);
       });
       invalidate();
       return binding;
@@ -2156,7 +2189,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
             ...(nativeOptions.schema ? { schema: nativeOptions.schema } : {}),
           });
           const facet = getApplicationModelFacet(promoted);
-          if (!facet || facet.provider !== 'analytical-database') {
+          if (facet?.provider !== 'analytical-database') {
             throw new Error(
               `Analytical model ${getTableName(entityOrName)} did not install its analytical facet.`,
             );
@@ -2423,6 +2456,9 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       const workload = emitApplicationAggregateResources(name, options);
       return applicationAggregateBinding(name, options, workload);
     },
+    agent(name, options, handler) {
+      return registerApplicationAgent(state, name, options, handler);
+    },
     task(definition, options, handler) {
       return registerApplicationTask(state, definition, options, handler);
     },
@@ -2499,7 +2535,7 @@ function recordApplicationProfileSelectionGraph(
     (node) => node.kind === 'provider' && node.id === providerNodeId,
   );
   const provider = index >= 0 ? state.graphNodes[index] : undefined;
-  if (!provider || provider.kind !== 'provider') {
+  if (provider?.kind !== 'provider') {
     throw new Error(
       `Application profile ${profile.profileId} could not find provider ${profile.qualification.capability}.`,
     );

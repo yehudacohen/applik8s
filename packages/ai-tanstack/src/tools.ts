@@ -1,13 +1,25 @@
 // typecast-file-boundary: Standard Schema runtime validation proves the erased callable-operation schema generics restored at this adapter boundary.
+
+import type { ApplicationAIAgentRequest } from '@applik8s/ai';
 import type { ApplicationOperation, ApplicationQueryOperation } from '@applik8s/client';
 import { getApplicationOperationSchemas } from '@applik8s/client';
-import type { ApplicationExecutionPrincipal } from '@applik8s/core';
-import type { StandardSchemaV1 } from '@standard-schema/spec';
+import type { ApplicationExecutionPrincipal, JsonObject } from '@applik8s/core';
+import { toRuntimeSchema } from '@applik8s/sdk/schema-runtime';
+import type { StandardJSONSchemaV1, StandardSchemaV1 } from '@standard-schema/spec';
 import {
+  type AnyTextAdapter,
+  type AnyTool,
   isStandardSchema,
+  type ModelMessage,
   type ServerTool,
   toolDefinition,
+  type UIMessage,
 } from '@tanstack/ai';
+
+export interface ApplicationTanStackAIAgentRequest
+  extends ApplicationAIAgentRequest {
+  readonly messages: Array<UIMessage | ModelMessage>;
+}
 
 export type ApplicationTanStackToolOperation<TInput, TOutput> =
   | ApplicationOperation<TInput, TOutput>
@@ -37,6 +49,18 @@ export interface ApplicationTanStackToolExecutionContext {
   ): Promise<TOutput>;
 }
 
+/**
+ * Native TanStack values injected into one application.agent(...) execution.
+ * Persistence stays opaque until TanStack publishes its server-side contract;
+ * compatibility gates reject unsupported substitutes.
+ */
+export interface ApplicationTanStackAgentRuntime {
+  readonly adapter: AnyTextAdapter;
+  readonly tools: AnyTool[];
+  readonly persistence: unknown;
+  readonly execution: ApplicationTanStackToolExecutionContext;
+}
+
 export interface ApplicationTanStackToolOptions<TName extends string = string> {
   readonly name?: TName;
   readonly description?: string;
@@ -45,6 +69,40 @@ export interface ApplicationTanStackToolOptions<TName extends string = string> {
    * invocation under the supplied ExecutionPrincipal.
    */
   readonly needsApproval?: boolean;
+}
+
+/**
+ * Rehydrates one compiler-normalized operation schema as a native Standard
+ * Schema value. The JSON Schema remains the single serialized contract; this
+ * adapter adds only the protocol methods TanStack AI expects at runtime.
+ */
+export function applicationTanStackStandardSchema<TValue>(
+  schema: JsonObject,
+  name: string,
+): StandardSchemaV1<TValue, TValue> & StandardJSONSchemaV1<TValue, TValue> {
+  const runtime = toRuntimeSchema<TValue & object>({
+    kind: 'jsonSchema',
+    ref: { kind: 'jsonSchema', moduleSpecifier: `generated:ai-tool:${name}` },
+    schema,
+  });
+  return Object.freeze({
+    '~standard': {
+      version: 1 as const,
+      vendor: 'applik8s',
+      validate(value: unknown) {
+        // typecast: the runtime schema validator owns the unknown-to-JSON
+        // boundary and returns TValue only after structural validation.
+        const result = runtime.validate(value as never);
+        return result.ok
+          ? { value: result.value as TValue }
+          : { issues: [{ message: result.error.message }] };
+      },
+      jsonSchema: {
+        input: () => structuredClone(schema),
+        output: () => structuredClone(schema),
+      },
+    },
+  });
 }
 
 export type ApplicationTanStackServerTool<

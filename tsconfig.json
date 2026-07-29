@@ -65,6 +65,7 @@
       "@applik8s/runtime-kubernetes": ["packages/runtime-kubernetes/src/index.ts"],
       "@applik8s/runtime-postgres": ["packages/runtime-postgres/src/index.ts"],
       "@applik8s/runtime-opensearch": ["packages/runtime-opensearch/src/index.ts"],
+      "@applik8s/runtime-ai": ["packages/runtime-ai/src/index.ts"],
       "@applik8s/operations": ["packages/operations/src/index.ts"],
       "@applik8s/runtime-contract": ["packages/runtime-contract/src/index.ts"],
       "@applik8s/typekro-adapter": ["packages/typekro-adapter/src/index.ts"],

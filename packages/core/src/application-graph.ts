@@ -1,3 +1,4 @@
+// typecast-file-boundary: normalized graph parsing validates every discriminator and JSON contract before restoring the portable ApplicationGraph union.
 import type {
   ApplicationHandlerDependencies,
   ApplicationKubernetesCreateAuthorityContract,
@@ -7,6 +8,7 @@ import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, Nam
 import type { PermissionRule } from './resource.js';
 import type {
   ApplicationIdentityReference,
+  ApplicationOperationId,
   ApplicationOperationInvocationDependency,
   ApplicationOperationTransport,
   ApplicationScopeExpression,
@@ -75,6 +77,7 @@ export type ApplicationGraphNodeKind =
   | 'workflow'
   | 'workflowHandler'
   | 'workflowWorker'
+  | 'aiAgent'
   | 'query'
   | 'gateway'
   | 'stream'
@@ -110,6 +113,7 @@ export const applicationGraphNodeKinds = [
   'workflow',
   'workflowHandler',
   'workflowWorker',
+  'aiAgent',
   'query',
   'gateway',
   'stream',
@@ -147,7 +151,8 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'ContainerRegistry'
   | 'RequestIdentity'
   | 'Authorization'
-  | 'StructuredGeneration';
+  | 'StructuredGeneration'
+  | 'AI';
 
 /** Built-ins remain strongly named while versioned provider packages may add interfaces without editing core. */
 export type ApplicationProviderInterfaceKind = ApplicationBuiltInProviderInterfaceKind | (string & {});
@@ -174,6 +179,7 @@ export const applicationProviderInterfaceKinds = [
   'RequestIdentity',
   'Authorization',
   'StructuredGeneration',
+  'AI',
 ] as const satisfies readonly ApplicationProviderInterfaceKind[];
 
 // typecast: v0.3 predates the experimental EventLog surface introduced for v0.4 durable behavior.
@@ -241,6 +247,7 @@ export type ApplicationGraphNode =
   | ApplicationWorkflowNode
   | ApplicationWorkflowHandlerNode
   | ApplicationWorkflowWorkerNode
+  | ApplicationAIAgentNode
   | ApplicationQueryNode
   | ApplicationGatewayNode
   | ApplicationStreamNode
@@ -754,6 +761,99 @@ export interface ApplicationWorkflowWorkerNode extends ApplicationGraphNodeBase<
     /** Network egress posture for external-effect tasks. */
     readonly egress: 'allowAll' | 'sameNamespace';
     readonly scaling: { readonly mode: 'fixed' } | { readonly mode: 'kedaHatchetSlots'; readonly minReplicas: number; readonly maxReplicas: number; readonly pollingIntervalSeconds: number };
+  };
+  readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
+}
+
+/**
+ * Portable execution plan for one server-side AI agent. Framework-specific
+ * adapter objects are resolved at runtime and never serialized into the graph.
+ */
+export interface ApplicationAIAgentNode extends ApplicationGraphNodeBase<'aiAgent'> {
+  readonly serviceIdentity: ApplicationIdentityReference;
+  readonly model: {
+    readonly apiVersion: 'applik8s.aiModel/v1alpha1';
+    readonly name: string;
+    readonly capabilities: readonly string[];
+    readonly constraints: {
+      readonly dataResidency?: readonly string[];
+      readonly complianceTags?: readonly string[];
+      readonly maximumInputCostPerMillion?: number;
+      readonly maximumOutputCostPerMillion?: number;
+      readonly minimumContextTokens?: number;
+      readonly minimumOutputTokens?: number;
+      readonly latencyClass?: 'interactive' | 'standard' | 'batch';
+      readonly availabilityClass?: 'standard' | 'high';
+      readonly allowedProviderClasses?: readonly string[];
+    };
+    readonly inference?: {
+      readonly qualification: {
+        readonly apiVersion: 'applik8s.providerQualification/v1alpha1';
+        readonly capability: string;
+        readonly name: string;
+        readonly compatibilityRevision: string;
+        readonly key: string;
+      };
+    };
+  };
+  readonly inference: ApplicationProviderRef<'AI'>;
+  readonly instructions:
+    | { readonly kind: 'static'; readonly value: string }
+    | {
+        readonly kind: 'closure';
+        readonly source: string;
+        readonly dependencies?: ApplicationHandlerDependencies;
+        readonly location?: SourceLocation;
+        readonly unresolved?: readonly string[];
+      };
+  readonly tools: readonly {
+    readonly operationId: ApplicationOperationId;
+    readonly operationVersion: string;
+    readonly transport: 'command' | 'query' | 'runtime';
+    readonly graphNode?: ApplicationGraphNodeRef;
+    readonly authority: {
+      readonly classification:
+        | 'unclassified'
+        | 'public'
+        | 'assigned'
+        | 'runtime-grantable'
+        | 'application-policy';
+      readonly grantable: boolean;
+      readonly delegable: boolean;
+      readonly scope: ApplicationScopeExpression;
+    };
+  }[];
+  readonly responseSchemaDigest?: string;
+  readonly budgets: {
+    readonly maximumInputTokens?: number;
+    readonly maximumOutputTokens?: number;
+    readonly maximumCostMicrounits?: number;
+    readonly timeoutMs: number;
+  };
+  readonly executionPolicy: {
+    readonly callerDelegation: 'forbidden' | 'declared';
+    readonly uncertainCompletion: 'escalate' | 'retry-if-replay-safe';
+  };
+  readonly compatibility: {
+    readonly apiVersion: 'applik8s.aiCompatibility/v1alpha1';
+    readonly tanstackAI: string;
+    readonly tanstackAIClient: string;
+    readonly tanstackAIReact: string;
+    readonly tanstackAIPersistence: string | 'unreleased';
+    readonly agUi: string;
+    readonly applik8sAdapter: string;
+  };
+  readonly handlerSource: string;
+  readonly handlerDependencies?: ApplicationHandlerDependencies;
+  readonly sourceLocation?: SourceLocation;
+  readonly runtime: 'node';
+  readonly lifecycle: 'longLived';
+  readonly deployment: {
+    readonly replicas: ApplicationGraphNumberValue;
+    readonly port: number;
+    readonly healthPort: number;
+    readonly gracefulShutdownSeconds: number;
+    readonly maximumConcurrency: number;
   };
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
 }
@@ -2840,6 +2940,8 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
       return applicationWorkflowHandlerNodeStructureDiagnostics(node, graph);
     case 'workflowWorker':
       return applicationWorkflowWorkerNodeStructureDiagnostics(node, graph);
+    case 'aiAgent':
+      return applicationAIAgentNodeStructureDiagnostics(node, graph);
     case 'query':
       return applicationReactiveNodeStructureMessages(node, graph).map(applicationGraphStructureDiagnostic);
     case 'gateway':
@@ -2885,6 +2987,71 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
     default:
       return [];
   }
+}
+
+function applicationAIAgentNodeStructureDiagnostics(
+  node: ApplicationAIAgentNode,
+  graph: ApplicationGraph,
+): readonly Diagnostic[] {
+  const messages: string[] = [];
+  if (!node.handlerSource.trim()) {
+    messages.push(`Application AI agent ${node.id} must retain a serializable execution closure.`);
+  }
+  if (node.model.capabilities.length === 0) {
+    messages.push(`Application AI agent ${node.id} logical model must declare at least one capability.`);
+  }
+  if (node.tools.length === 0) {
+    messages.push(`Application AI agent ${node.id} must declare at least one operation tool.`);
+  }
+  for (const operationId of duplicateStrings(node.tools.map((tool) => tool.operationId))) {
+    messages.push(`Application AI agent ${node.id} declares operation tool ${operationId} more than once.`);
+  }
+  const provider = graph.nodes.find((candidate) => candidate.id === node.inference.nodeId);
+  if (provider?.kind !== 'provider' || provider.interface !== 'AI') {
+    messages.push(`Application AI agent ${node.id} requires AI provider ${node.inference.nodeId}.`);
+  }
+  const authority = graph.nodes.find((candidate) => candidate.kind === 'authorityManifest');
+  const identityDeclared = authority?.kind === 'authorityManifest'
+    && authority.manifest.identities.some((identity) => identity.id === node.serviceIdentity.id);
+  if (!identityDeclared) {
+    messages.push(`Application AI agent ${node.id} service identity ${node.serviceIdentity.id} is absent from the application authority manifest.`);
+  }
+  for (const tool of node.tools) {
+    if (tool.graphNode && !graph.nodes.some((candidate) => candidate.id === tool.graphNode?.nodeId)) {
+      messages.push(`Application AI agent ${node.id} tool ${tool.operationId} references missing graph node ${tool.graphNode.nodeId}.`);
+    }
+    const staticallyGranted = authority?.kind === 'authorityManifest'
+      && authority.manifest.grants.some((grant) =>
+        grant.identity.id === node.serviceIdentity.id
+        && grant.operationIds.includes(tool.operationId));
+    const available = tool.authority.classification === 'public'
+      || staticallyGranted
+      || (tool.authority.classification === 'runtime-grantable' && tool.authority.grantable)
+      || (node.executionPolicy.callerDelegation === 'declared' && tool.authority.delegable);
+    if (!available) {
+      messages.push(
+        `Application AI agent ${node.id} tool ${tool.operationId} is unavailable: declare baseline authority, a requestable grant, or explicit caller delegation.`,
+      );
+    }
+  }
+  if ((typeof node.deployment.replicas === 'number' && node.deployment.replicas < 1)
+    || node.deployment.port < 1
+    || node.deployment.healthPort < 1
+    || node.deployment.maximumConcurrency < 1
+    || node.deployment.gracefulShutdownSeconds < 1) {
+    messages.push(`Application AI agent ${node.id} deployment bounds must be positive.`);
+  }
+  return messages.map(applicationGraphStructureDiagnostic);
+}
+
+function duplicateStrings(values: readonly string[]): readonly string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) duplicates.add(value);
+    else seen.add(value);
+  }
+  return [...duplicates].sort(compareStrings);
 }
 
 function applicationCommandNodeStructureDiagnostics(node: ApplicationCommandNode): readonly Diagnostic[] {

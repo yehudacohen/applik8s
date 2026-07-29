@@ -12,10 +12,11 @@ describe('TypeKro compiler lowering plan', () => {
       processors: [resource('Deployment', 'processor', 'app')],
       workflows: [resource('Deployment', 'worker', 'app')],
       reactive: [resource('Deployment', 'gateway', 'app')],
+      agents: [resource('Deployment', 'researcher', 'app')],
     });
     expect(plan.apiVersion).toBe('applik8s.compiler.typekro-plan/v1alpha1');
-    expect(plan.resources.map((item) => `${item.kind}/${item.metadata.name}`)).toEqual(['ConfigMap/shared', 'Service/api', 'Deployment/processor', 'Deployment/worker', 'Deployment/gateway']);
-    expect(plan.sources).toEqual({ factory: 1, composition: 2, migrations: 0, processors: 1, workflows: 1, reactive: 1 });
+    expect(plan.resources.map((item) => `${item.kind}/${item.metadata.name}`)).toEqual(['ConfigMap/shared', 'Service/api', 'Deployment/processor', 'Deployment/worker', 'Deployment/gateway', 'Deployment/researcher']);
+    expect(plan.sources).toEqual({ factory: 1, composition: 2, migrations: 0, processors: 1, workflows: 1, reactive: 1, agents: 1 });
   });
 
   it('bounds generated KRO node ids to Kubernetes label-safe lengths without collisions', () => {

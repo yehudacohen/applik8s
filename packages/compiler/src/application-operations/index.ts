@@ -1,3 +1,4 @@
+// typecast-file-boundary: the compiler validates graph node discriminators and schema descriptors before lowering them to canonical operation and authority artifacts.
 import { createHash } from 'node:crypto';
 import type {
   ApplicationGraph,
@@ -30,7 +31,7 @@ export function compileApplicationWorkloadAuthority(
     throw new Error(`Operation catalog ${catalog.application} does not belong to ${graph.metadata.name}.`);
   }
   const operations = new Map(catalog.operations.map((operation) => [operation.id, operation]));
-  const envelopes = graph.nodes
+  const taskEnvelopes = graph.nodes
     .filter((node) => node.kind === 'taskHandler')
     .flatMap((handler) => (handler.operations ?? []).map((dependency) => {
       const operation = operations.get(dependency.authority.operationId);
@@ -71,9 +72,50 @@ export function compileApplicationWorkloadAuthority(
         delegation: 'forbidden' as const,
         impersonation: 'forbidden' as const,
       };
-    }))
+    }));
+  const agentEnvelopes = graph.nodes
+    .filter((node) => node.kind === 'aiAgent')
+    .flatMap((agent) => agent.tools.map((tool) => {
+      const operation = operations.get(tool.operationId);
+      if (!operation) {
+        throw new Error(
+          `AI agent ${agent.id} workload authority references unavailable operation ${tool.operationId}.`,
+        );
+      }
+      const workloadIdentity = {
+        id: `identity:${graph.metadata.name}:workload:${agent.id}`,
+        kind: 'workload' as const,
+        issuer: `applik8s://${graph.metadata.name}`,
+        subject: agent.id,
+      };
+      const transports = operation.authority.transports
+        ?? [...new Set(operation.transports.map((transport) => transport.transport))];
+      return {
+        apiVersion: 'applik8s.workloadAuthority/v1alpha1' as const,
+        id: `workload-authority:${digestJson({
+          application: graph.metadata.name,
+          agent: agent.id,
+          operationId: tool.operationId,
+          authority: tool.authority,
+          catalogRevision: catalog.revision,
+        }).slice('sha256:'.length)}`,
+        workloadIdentity,
+        serviceIdentity: agent.serviceIdentity,
+        operationId: operation.id,
+        catalogRevision: catalog.revision,
+        restrictions: {
+          target: tool.authority.scope,
+          predicates: [],
+        },
+        inputSchemaDigest: operation.input.digest,
+        audiences: operation.authority.audiences ?? [workloadIdentity.id],
+        transports,
+        delegation: 'forbidden' as const,
+        impersonation: 'forbidden' as const,
+      };
+    }));
+  return [...taskEnvelopes, ...agentEnvelopes]
     .sort((left, right) => left.id.localeCompare(right.id));
-  return envelopes;
 }
 
 export function compileApplicationOperationCatalog(

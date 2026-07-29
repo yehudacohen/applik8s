@@ -803,6 +803,19 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
     },
   });
 
+  const identitySchema = arktypePropertySchema(selectSchema, identityFields[0] as string);
+  const snapshotSchema = arkType({
+    identity: identitySchema,
+    value: selectSchema,
+    'revision?': 'string',
+  });
+  const updateInputSchema = arkType({
+    identity: identitySchema,
+    patch: updateSchema,
+  });
+  const deleteInputSchema = arkType({ identity: identitySchema });
+  const tombstoneSchema = arkType({ identity: identitySchema, deleted: 'true' });
+
   const createOperation = applicationModelMutationOperation<
     InferInsertModel<TTable>,
     ApplicationModelSnapshot<InferSelectModel<TTable>, ConventionalTableIdentity<TTable>>,
@@ -815,6 +828,9 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
     name: 'create',
     operation: 'create',
     transport: 'command',
+  }, {
+    input: insertSchema,
+    output: snapshotSchema,
   });
   const updateOperation = applicationModelMutationOperation<
     ApplicationModelUpdateInput<Partial<InferInsertModel<TTable>>, ConventionalTableIdentity<TTable>>,
@@ -828,6 +844,9 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
     name: 'update',
     operation: 'update',
     transport: 'command',
+  }, {
+    input: updateInputSchema,
+    output: snapshotSchema,
   });
   const deleteOperation = applicationModelMutationOperation<
     ApplicationModelDeleteInput<ConventionalTableIdentity<TTable>>,
@@ -841,6 +860,9 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
     name: 'delete',
     operation: 'delete',
     transport: 'command',
+  }, {
+    input: deleteInputSchema,
+    output: tombstoneSchema,
   });
 
   const lifecycleRegistrars = {
@@ -936,8 +958,16 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
 
 function applicationModelMutationOperation<TInput extends object, TOutput, TValue extends object>(
   contract: Parameters<typeof createApplicationMutationOperation>[0],
+  schemas?: {
+    readonly input: unknown;
+    readonly output: unknown;
+  },
 ): ApplicationModelMutationOperation<TInput, TOutput, TValue> {
-  const operation = createApplicationMutationOperation<TInput, TOutput, TValue>(contract) as unknown as ApplicationModelMutationOperation<TInput, TOutput, TValue>;
+  const operation = createApplicationMutationOperation<TInput, TOutput, TValue>(
+    contract,
+    undefined,
+    schemas,
+  ) as unknown as ApplicationModelMutationOperation<TInput, TOutput, TValue>;
   Object.defineProperty(operation, 'beforeCommit', {
     value: (
       options: ApplicationModelBeforeCommitOptions<TInput, TValue>,

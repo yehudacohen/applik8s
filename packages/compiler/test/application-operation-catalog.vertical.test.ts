@@ -1,3 +1,4 @@
+// typecast-file-boundary: compiler catalog fixtures intentionally assemble erased graph contracts to exercise normalization and rejection paths.
 import type { ApplicationGraph } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../src/application-operations/index.js';
@@ -322,6 +323,109 @@ describe('application operation catalog compilation', () => {
           boundKeys: ['postId'],
         }),
         transports: ['event'],
+        delegation: 'forbidden',
+        impersonation: 'forbidden',
+      }),
+    ]);
+  });
+
+  it('serializes one workload authority envelope per declared AI agent tool', () => {
+    const base = graph('public');
+    const catalog = compileApplicationOperationCatalog(base, {
+      revision: 'catalog-agent',
+    });
+    const operation = catalog.operations[0]!;
+    const workloadGraph: ApplicationGraph = {
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: 'provider.ai',
+          kind: 'provider',
+          name: 'AI',
+          stability: 'stable',
+          interface: 'AI',
+          implementation: 'envoy-ai-gateway',
+          config: {},
+        },
+        {
+          id: 'aiAgent.publisher',
+          kind: 'aiAgent',
+          name: 'publisher',
+          stability: 'stable',
+          serviceIdentity: {
+            id: 'identity:chirp:service:publisher',
+            kind: 'service',
+            issuer: 'applik8s://chirp',
+            subject: 'publisher',
+          },
+          model: {
+            apiVersion: 'applik8s.aiModel/v1alpha1',
+            name: 'fast',
+            capabilities: ['chat', 'tools'],
+            constraints: {},
+          },
+          inference: { interface: 'AI', nodeId: 'provider.ai' },
+          instructions: { kind: 'static', value: 'Publish only admitted posts.' },
+          tools: [{
+            operationId: operation.id,
+            operationVersion: operation.version,
+            transport: 'command',
+            graphNode: { nodeId: 'model.post' },
+            authority: {
+              classification: 'public',
+              grantable: false,
+              delegable: false,
+              scope: {
+                kind: 'compare',
+                field: 'state',
+                operator: 'eq',
+                value: { kind: 'literal', value: 'draft' },
+              },
+            },
+          }],
+          budgets: { timeoutMs: 120_000 },
+          executionPolicy: {
+            callerDelegation: 'forbidden',
+            uncertainCompletion: 'escalate',
+          },
+          compatibility: {
+            apiVersion: 'applik8s.aiCompatibility/v1alpha1',
+            tanstackAI: '0.42.0',
+            tanstackAIClient: '0.22.1',
+            tanstackAIReact: '0.18.1',
+            tanstackAIPersistence: 'unreleased',
+            agUi: '0.0.52',
+            applik8sAdapter: 'applik8s.ai-tanstack/v1alpha1',
+          },
+          handlerSource: 'async () => ({})',
+          runtime: 'node',
+          lifecycle: 'longLived',
+          deployment: {
+            replicas: 1,
+            port: 3000,
+            healthPort: 8081,
+            gracefulShutdownSeconds: 30,
+            maximumConcurrency: 16,
+          },
+        },
+      ],
+    };
+
+    expect(compileApplicationWorkloadAuthority(workloadGraph, catalog)).toEqual([
+      expect.objectContaining({
+        workloadIdentity: expect.objectContaining({
+          subject: 'aiAgent.publisher',
+        }),
+        serviceIdentity: expect.objectContaining({
+          id: 'identity:chirp:service:publisher',
+        }),
+        operationId: operation.id,
+        restrictions: {
+          target: expect.objectContaining({ kind: 'compare', field: 'state' }),
+          predicates: [],
+        },
+        inputSchemaDigest: operation.input.digest,
         delegation: 'forbidden',
         impersonation: 'forbidden',
       }),

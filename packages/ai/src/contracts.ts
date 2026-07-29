@@ -1,3 +1,4 @@
+// typecast-file-boundary: provider-neutral AI constructors validate JSON-like model and provider inputs before restoring their declared contract types.
 import type {
   ApplicationExecutionPrincipal,
   ApplicationIdentityReference,
@@ -235,28 +236,25 @@ export interface ApplicationAIAgentOptions {
 
 export interface ApplicationAIAgentRequest {
   readonly threadId: string;
-  readonly messages: readonly unknown[];
+  readonly messages: unknown[];
   readonly resume?: unknown;
 }
 
-export interface ApplicationAIAgentRuntimeContext {
+export interface ApplicationAIAgentRuntimeContext<TTanStack = unknown> {
   readonly runId: string;
   readonly invocationId: string;
   readonly principal: ApplicationExecutionPrincipal;
   readonly signal: AbortSignal;
-  readonly tanstack: {
-    readonly adapter: unknown;
-    readonly tools: readonly unknown[];
-    readonly persistence: unknown;
-  };
+  readonly tanstack: TTanStack;
 }
 
 export type ApplicationAIAgentHandler<
   TRequest extends ApplicationAIAgentRequest = ApplicationAIAgentRequest,
   TResult = unknown,
+  TTanStack = unknown,
 > = (
   request: TRequest,
-  context: ApplicationAIAgentRuntimeContext,
+  context: ApplicationAIAgentRuntimeContext<TTanStack>,
 ) => TResult | Promise<TResult>;
 
 export interface ApplicationAIAgentDefinition<

@@ -443,6 +443,9 @@ export function recordApplicationProviderGraph(
       ...(providerInterface === 'Search' && implementation && typeof implementation === 'object'
         ? { search: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
+      ...(providerInterface === 'AI' && implementation && typeof implementation === 'object'
+        ? { ai: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
     },
   });
 }

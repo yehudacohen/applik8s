@@ -586,6 +586,7 @@ describe('application graph substrate contract', () => {
       RequestIdentity: 'requestIdentity',
       Authorization: 'authorization',
       StructuredGeneration: 'taskCapability',
+      AI: 'taskCapability',
     };
     const requirements = applicationProviderInterfaceKinds.map((providerInterface) => ({
       id: `requirement.${providerInterface}`,

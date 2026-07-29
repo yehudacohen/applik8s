@@ -10,14 +10,16 @@ import type {
   Diagnostic,
   JsonObject,
   OperatorDefinition,
-  OperatorManifest,
   Result,
 } from '@applik8s/core';
 import { applicationGraphArtifactFileName, applicationOperationCatalogArtifactFileName, applicationWorkloadAuthorityArtifactFileName, serializeApplicationGraph, validateApplicationGraph } from '@applik8s/core';
 import { parseAllDocuments, stringify } from 'yaml';
+import type { GeneratedApplicationAgentArtifact } from '../application-agents/index.js';
+import { emitGeneratedApplicationAgents } from '../application-agents/index.js';
 import { applicationGraphStringValue } from '../application-installation-values.js';
 import type { GeneratedApplicationMigrationArtifact } from '../application-migrations/index.js';
 import { emitGeneratedApplicationMigrations } from '../application-migrations/index.js';
+import { compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 import type { GeneratedApplicationProcessorArtifact } from '../application-processors/index.js';
 import { emitGeneratedApplicationProcessors } from '../application-processors/index.js';
 import type { GeneratedApplicationReactiveArtifact } from '../application-reactive/index.js';
@@ -27,7 +29,6 @@ import {
 } from '../application-reactive/index.js';
 import type { GeneratedApplicationWorkflowArtifact } from '../application-workflows/index.js';
 import { emitGeneratedApplicationWorkflows } from '../application-workflows/index.js';
-import { compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 import { compilerArtifactLayout } from '../artifacts/index.js';
 import { bundleHandlerEntrypoint } from '../bundling/index.js';
 import type {
@@ -169,6 +170,7 @@ export interface TypeKroCompositionBundleManifest extends JsonObject {
     readonly processors?: readonly TypeKroCompositionProcessorArtifactReference[];
     readonly workflows?: readonly TypeKroCompositionWorkflowArtifactReference[];
     readonly reactive?: readonly TypeKroCompositionReactiveArtifactReference[];
+    readonly agents?: readonly TypeKroCompositionAgentArtifactReference[];
   };
 }
 
@@ -199,6 +201,15 @@ export interface TypeKroCompositionWorkflowArtifactReference extends JsonObject 
 export interface TypeKroCompositionReactiveArtifactReference extends JsonObject {
   readonly name: string;
   readonly kind: 'queryGateway' | 'projectionWorker' | 'streamProcessorWorker';
+  readonly manifest: string;
+  readonly source: string;
+  readonly digest: string;
+  readonly sizeBytes: number;
+  readonly container: TypeKroCompositionContainerArtifactReference;
+}
+
+export interface TypeKroCompositionAgentArtifactReference extends JsonObject {
+  readonly name: string;
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
@@ -239,6 +250,7 @@ export interface TypeKroCompositionArtifacts {
   readonly operationCatalogJsonPath?: string;
   readonly workloadAuthorityJsonPath?: string;
   readonly workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[];
+  readonly agentArtifacts: readonly GeneratedApplicationAgentArtifact[];
   readonly migrationArtifacts: readonly GeneratedApplicationMigrationArtifact[];
   readonly processorArtifacts: readonly GeneratedApplicationProcessorArtifact[];
   readonly workflowArtifacts: readonly GeneratedApplicationWorkflowArtifact[];
@@ -411,6 +423,15 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const workloadAuthority = request.applicationGraph && operationCatalog
       ? compileApplicationWorkloadAuthority(request.applicationGraph, operationCatalog)
       : [];
+    const agentArtifacts = request.applicationGraph
+      ? await emitGeneratedApplicationAgents({
+          graph: request.applicationGraph,
+          ...(operationCatalog ? { operationCatalog } : {}),
+          workloadAuthority,
+          outDir: join(request.outDir, 'agents'),
+          entrypoint: request.entrypoint,
+        })
+      : [];
     const migrationArtifacts = request.applicationGraph
       ? await emitGeneratedApplicationMigrations({ graph: request.applicationGraph, outDir: join(request.outDir, 'migrations'), entrypoint: request.entrypoint })
       : [];
@@ -445,8 +466,13 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           artifacts: reactiveArtifacts,
         }) as unknown as readonly TypeKroCompositionResource[]
       : [];
+    // typecast: generated agent resources are concrete Kubernetes JSON objects
+    // and pass through the shared TypeKro serialization path.
+    const agentResources = agentArtifacts.flatMap(
+      (artifact) => artifact.resources,
+    ) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated host resources are concrete Kubernetes JSON objects and share the TypeKro emission contract.
-    const generatedResources = [...migrationResources, ...processorResources, ...workflowResources, ...reactiveResources, ...hostResources as unknown as readonly TypeKroCompositionResource[]];
+    const generatedResources = [...migrationResources, ...processorResources, ...workflowResources, ...reactiveResources, ...agentResources, ...hostResources as unknown as readonly TypeKroCompositionResource[]];
     const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition, request.applicationGraph?.metadata, request.applicationInstallation);
     const factoryArtifacts = request.applicationGraph
       ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, generatedResources, request.applicationGraph.metadata.name, request.applicationInstallation, request.applicationGraph)
@@ -458,6 +484,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
       processors: processorResources,
       workflows: workflowResources,
       reactive: reactiveResources,
+      agents: agentResources,
     });
     const resources = emissionPlan.resources;
     const resourcesDir = join(request.outDir, 'resources');
@@ -539,6 +566,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         ...(processorArtifacts.length > 0 ? { processors: processorArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
         ...(workflowArtifacts.length > 0 ? { workflows: workflowArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
         ...(reactiveArtifacts.length > 0 ? { reactive: reactiveArtifacts.map((artifact) => ({ name: artifact.name, kind: artifact.kind, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
+        ...(agentArtifacts.length > 0 ? { agents: agentArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
       },
     };
 
@@ -587,6 +615,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         ...(operationCatalogJsonPath ? { operationCatalogJsonPath } : {}),
         ...(workloadAuthorityJsonPath ? { workloadAuthorityJsonPath } : {}),
         workloadAuthority,
+        agentArtifacts,
         migrationArtifacts,
         processorArtifacts,
         workflowArtifacts,

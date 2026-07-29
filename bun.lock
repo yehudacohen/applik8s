@@ -19,6 +19,7 @@
         "@applik8s/deployment-provider-oci": "0.6.0",
         "@applik8s/deployment-typekro": "0.6.0",
         "@applik8s/react": "0.6.0",
+        "@applik8s/runtime-ai": "0.6.0",
         "@applik8s/runtime-opensearch": "0.6.0",
         "@applik8s/sdk": "0.6.0",
         "@applik8s/server": "0.6.0",
@@ -125,6 +126,7 @@
         "@applik8s/ai": "0.6.0",
         "@applik8s/client": "0.6.0",
         "@applik8s/core": "0.6.0",
+        "@applik8s/sdk": "0.6.0",
         "@standard-schema/spec": "1.1.0",
         "@tanstack/ai": "0.42.0",
         "@tanstack/ai-client": "0.22.1",
@@ -134,6 +136,8 @@
       "name": "@applik8s/applik8s",
       "version": "0.6.0",
       "dependencies": {
+        "@applik8s/ai": "0.6.0",
+        "@applik8s/ai-tanstack": "0.6.0",
         "@applik8s/client": "0.6.0",
         "@applik8s/core": "0.6.0",
         "@applik8s/operations": "0.6.0",
@@ -200,6 +204,7 @@
         "@applik8s/deployment-compiler": "0.6.0",
         "@applik8s/deployment-contract": "0.6.0",
         "@applik8s/operations": "0.6.0",
+        "@applik8s/runtime-ai": "0.6.0",
         "@applik8s/runtime-contract": "0.6.0",
         "@applik8s/runtime-hatchet": "0.6.0",
         "@applik8s/runtime-kubernetes": "0.6.0",
@@ -309,6 +314,18 @@
       "version": "0.6.0",
       "dependencies": {
         "@applik8s/core": "0.6.0",
+      },
+    },
+    "packages/runtime-ai": {
+      "name": "@applik8s/runtime-ai",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/ai": "0.6.0",
+        "@applik8s/ai-tanstack": "0.6.0",
+        "@applik8s/client": "0.6.0",
+        "@applik8s/core": "0.6.0",
+        "@tanstack/ai": "0.42.0",
+        "@tanstack/ai-openai": "0.17.1",
       },
     },
     "packages/runtime-contract": {
@@ -489,6 +506,8 @@
     "@applik8s/react": ["@applik8s/react@workspace:packages/react"],
 
     "@applik8s/runtime": ["@applik8s/runtime@workspace:packages/runtime"],
+
+    "@applik8s/runtime-ai": ["@applik8s/runtime-ai@workspace:packages/runtime-ai"],
 
     "@applik8s/runtime-contract": ["@applik8s/runtime-contract@workspace:packages/runtime-contract"],
 
@@ -1110,6 +1129,8 @@
 
     "@tanstack/ai-event-client": ["@tanstack/ai-event-client@0.6.8", "", { "dependencies": { "@tanstack/devtools-event-client": "^0.4.1" } }, "sha512-h7/HLz9u2LF9ba6uKFMnSZkFlkzQONJ5u3Hi+4qGxpsHyvcGRtW6v186jaFLoklndhEwyC49ytkC4eafi7Qq8w=="],
 
+    "@tanstack/ai-openai": ["@tanstack/ai-openai@0.17.1", "", { "dependencies": { "@tanstack/ai-utils": "0.3.1", "@tanstack/openai-base": "0.9.9", "openai": "^6.41.0" }, "peerDependencies": { "@tanstack/ai": "^0.42.0", "zod": "^4.0.0" } }, "sha512-gXv/D2CKBVjJxdJOawJ00wFCwKDuO3Br1y/nfgOqNKsH75cq+wVc9nBsxTEPZIK5N1zb+TDLQqUy1OfMvaQCpg=="],
+
     "@tanstack/ai-react": ["@tanstack/ai-react@0.18.1", "", { "dependencies": { "@tanstack/ai-client": "0.22.1" }, "peerDependencies": { "@mcp-ui/client": "^7", "@tanstack/ai": "^0.42.0", "@types/react": ">=18.0.0", "react": ">=18.0.0" }, "optionalPeers": ["@mcp-ui/client"] }, "sha512-Xk44ZgzcjHwVrOFgYEJse1bHkauSyxWEpS41e7tThvewsT295k0FR5tbHXG36n5N7r3OA/PtIjtq9nqIHG8Sag=="],
 
     "@tanstack/ai-utils": ["@tanstack/ai-utils@0.3.1", "", {}, "sha512-fgbjd5DohL3k5rTWr/KInauLVYMiHVm0cnmTsNrzL3cr4wWhEld5vmFSrjiwUWACAuONjZa+uBXuS+ZSO8fwDQ=="],
@@ -1117,6 +1138,8 @@
     "@tanstack/devtools-event-client": ["@tanstack/devtools-event-client@0.4.4", "", { "bin": { "intent": "./bin/intent.js" } }, "sha512-6T5Yop/793YI+H+5J8Hsyj4kCih9sl4t3ElLgKioW5hk3ocn+ZdSJ94tT7vL7uabxSugWYBZlOTMPzEw2puvQw=="],
 
     "@tanstack/history": ["@tanstack/history@1.162.0", "", {}, "sha512-79pf/RkhteYZTRgcR4F9kbk84P2N8rugQJswxfIqovlbRiT3yI7eBE+5QorIrZaOKktsgzRlXh1l/du/xpl4iA=="],
+
+    "@tanstack/openai-base": ["@tanstack/openai-base@0.9.9", "", { "dependencies": { "@tanstack/ai-utils": "0.3.1", "openai": "^6.41.0" }, "peerDependencies": { "@tanstack/ai": "^0.42.0" } }, "sha512-7vphMGJEGQCxaDLnxqNU6uxSv1NN5FFBnn0P/dfd28uh7kIcjbP1fF+rpqvcHNvMCmiATw9SFAlaa6bWrNBTgQ=="],
 
     "@tanstack/react-router": ["@tanstack/react-router@1.170.18", "", { "dependencies": { "@tanstack/history": "1.162.0", "@tanstack/react-store": "^0.9.3", "@tanstack/router-core": "1.171.15", "isbot": "^5.1.22" }, "peerDependencies": { "react": ">=18.0.0 || >=19.0.0", "react-dom": ">=18.0.0 || >=19.0.0" } }, "sha512-wpbGYZEp/fmz1q4bn7BD8VZ+/VZ7GBqSJv5V969pU+chP8y7dquWDmKTFMohvUegb9lg12m1uPVvD6kB2wORvQ=="],
 
@@ -1693,6 +1716,8 @@
     "once": ["once@1.4.0", "", { "dependencies": { "wrappy": "1" } }, "sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w=="],
 
     "onetime": ["onetime@5.1.2", "", { "dependencies": { "mimic-fn": "^2.1.0" } }, "sha512-kbpaSSGJTWdAY5KPVeMOKXSrPtr8C8C7wodJbcsd51jRnmD+GZu8Y0VoU6Dm5Z4vWr0Ig/1NKuWRKf7j5aaYSg=="],
+
+    "openai": ["openai@6.49.0", "", { "peerDependencies": { "@aws-sdk/credential-provider-node": ">=3.972.0 <4", "@smithy/hash-node": ">=4.3.0 <5", "@smithy/signature-v4": ">=5.4.0 <6", "ws": "^8.18.0", "zod": "^3.25 || ^4.0" }, "optionalPeers": ["@aws-sdk/credential-provider-node", "@smithy/hash-node", "@smithy/signature-v4", "ws", "zod"] }, "sha512-aYCc0C6L864eR6WSYIwQGyXriw/nIyZx0ObvhzOEVuk0zoBDpynjSbrionWI7q65B5H8jJX0DXR9snEzM6bfPg=="],
 
     "openid-client": ["openid-client@6.8.4", "", { "dependencies": { "jose": "^6.2.2", "oauth4webapi": "^3.8.5" } }, "sha512-QSw0BA08piujetEwfZsHoTrDpMEha7GDZDicQqVwX4u0ChCjefvjDB++TZ8BTg76UpwhzIQgdvvfgfl3HpCSAw=="],
 

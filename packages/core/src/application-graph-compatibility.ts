@@ -51,7 +51,7 @@ function stablePublicApiForApplicationGraphNode(node: ApplicationGraphNode): str
   if (node.kind === 'job') return node.schedule ? 'app.schedule' : 'app.job';
   const apiByNodeKind: Partial<Record<ApplicationGraphNodeKind, string>> = {
     crd: 'app.crd', model: 'app.model', server: 'app.server', aggregate: 'app.aggregate', config: 'app.config', secret: 'app.secret', exposure: 'app.expose',
-    command: 'command', event: 'event', commandHandler: 'Model.on.command', processor: 'Model.on.command', task: 'task', taskHandler: 'app.task', workflow: 'workflow', workflowHandler: 'app.workflow', workflowWorker: 'app.workflow', query: 'app.query', gateway: 'app.gateway', stream: 'app.stream', subscription: 'app.subscription', projection: 'app.projection',
+    command: 'command', event: 'event', commandHandler: 'Model.on.command', processor: 'Model.on.command', task: 'task', taskHandler: 'app.task', workflow: 'workflow', workflowHandler: 'app.workflow', workflowWorker: 'app.workflow', aiAgent: 'app.agent', query: 'app.query', gateway: 'app.gateway', stream: 'app.stream', subscription: 'app.subscription', projection: 'app.projection',
   };
   return apiByNodeKind[node.kind];
 }
