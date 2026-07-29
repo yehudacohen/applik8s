@@ -149,7 +149,7 @@ export interface ApplicationSearchRuntime<TDocument extends object> {
       evidence: ApplicationSearchRebuildValidation,
     ) => void | Promise<void>;
   }): Promise<ApplicationSearchRebuildResult>;
-  retire(generation: string): void;
+  retire(generation: string): Promise<void>;
   search(
     request: ApplicationSearchRequest<TDocument>,
     admission: ApplicationSearchAdmissionScope<TDocument>,
@@ -167,6 +167,7 @@ export interface DeterministicApplicationSearchRuntimeOptions<
   readonly cursorSecret: string;
   readonly fields: Readonly<Record<keyof TDocument & string, {
     readonly kind: 'text' | 'facet' | 'filter' | 'sort' | 'values' | 'minimum' | 'maximum' | 'count';
+    readonly boost?: number;
   }>>;
   readonly hydration: ApplicationSearchHydration<TDocument>;
   readonly changes: ApplicationSearchChangeSource;
@@ -255,6 +256,7 @@ export function createDeterministicApplicationSearchRuntime<
       `Search index ${options.logicalIndex} requires a non-empty cursor secret.`,
     );
   }
+  validateRuntimeFields(options.fields);
   const fanOutCeiling = boundedInteger(
     options.fanOutCeiling,
     1,
@@ -570,7 +572,7 @@ export function createDeterministicApplicationSearchRuntime<
         throw error;
       }
     },
-    retire(generation) {
+    async retire(generation) {
       if (generation === activeGeneration) {
         throw new Error(
           `Search index ${options.logicalIndex} cannot retire its active generation.`,
@@ -582,7 +584,7 @@ export function createDeterministicApplicationSearchRuntime<
     },
     async search(request, admission) {
       validateSearchRequest(request, options.fields);
-      validateAdmission(admission);
+      validateAdmission(admission, options.fields);
       const generation = currentGeneration();
       const queryDigest = digest({
         text: request.text ?? '',
@@ -721,13 +723,7 @@ function validateSearchRequest<TDocument extends object>(
   if (request.text !== undefined && !request.text.trim()) {
     throw new Error('Search text must not be empty when supplied.');
   }
-  for (const key of Object.keys(request.where ?? {})) {
-    if (!(key in fields)) throw new Error(`Search filter field ${key} is not indexed.`);
-    const kind = Reflect.get(fields, key)?.kind;
-    if (!['filter', 'facet', 'minimum', 'maximum', 'count'].includes(kind)) {
-      throw new Error(`Search field ${key} is not filterable.`);
-    }
-  }
+  validateWhere(request.where ?? {}, fields, 'request');
   for (const facet of request.facets ?? []) {
     if (fields[facet.name]?.kind !== 'facet') {
       throw new Error(`Search field ${facet.name} is not facetable.`);
@@ -747,6 +743,7 @@ function validateSearchRequest<TDocument extends object>(
 
 function validateAdmission<TDocument extends object>(
   admission: ApplicationSearchAdmissionScope<TDocument>,
+  fields: DeterministicApplicationSearchRuntimeOptions<TDocument>['fields'],
 ): void {
   if (
     !admission.principalId
@@ -756,6 +753,88 @@ function validateAdmission<TDocument extends object>(
     throw new Error(
       'Search requires an admitted principal, trusted-context digest, and authorization version.',
     );
+  }
+  validateWhere(admission.where, fields, 'admission');
+}
+
+function validateWhere<TDocument extends object>(
+  where: ApplicationSearchAdmissionScope<TDocument>['where'],
+  fields: DeterministicApplicationSearchRuntimeOptions<TDocument>['fields'],
+  source: 'admission' | 'request',
+): void {
+  for (const [key, comparison] of Object.entries(where)) {
+    if (!(key in fields)) {
+      throw new Error(
+        `Search ${source} filter field ${key} is not indexed.`,
+      );
+    }
+    const kind = Reflect.get(fields, key)?.kind;
+    if (
+      !['filter', 'facet', 'minimum', 'maximum', 'count'].includes(kind)
+    ) {
+      throw new Error(
+        `Search field ${key} is not filterable for ${source} scope.`,
+      );
+    }
+    validateComparison(
+      comparison as ApplicationSearchComparison<unknown>,
+      key,
+    );
+  }
+}
+
+function validateComparison(
+  comparison: ApplicationSearchComparison<unknown>,
+  field: string,
+): void {
+  if (comparison === undefined) {
+    throw new Error(`Search filter field ${field} cannot be undefined.`);
+  }
+  if (
+    comparison
+    && typeof comparison === 'object'
+    && !Array.isArray(comparison)
+    && !(comparison instanceof Date)
+  ) {
+    const keys = Object.keys(comparison);
+    const supported = new Set([
+      'eq',
+      'ne',
+      'in',
+      'lt',
+      'lte',
+      'gt',
+      'gte',
+    ]);
+    if (keys.length === 0 || keys.some((key) => !supported.has(key))) {
+      throw new Error(
+        `Search filter field ${field} has an empty or unsupported comparison.`,
+      );
+    }
+  }
+}
+
+function validateRuntimeFields<TDocument extends object>(
+  fields: DeterministicApplicationSearchRuntimeOptions<TDocument>['fields'],
+): void {
+  for (
+    const [name, field] of Object.entries(fields) as readonly [
+      string,
+      { readonly kind: string; readonly boost?: number },
+    ][]
+  ) {
+    if (
+      field.boost !== undefined
+      && (
+        field.kind !== 'text'
+        || !Number.isFinite(field.boost)
+        || field.boost <= 0
+      )
+    ) {
+      throw new Error(
+        `Search field ${name} boost must be a positive finite number on a text field.`,
+      );
+    }
   }
 }
 
@@ -815,14 +894,31 @@ function scoreDocument<TDocument extends object>(
   const terms = text.toLocaleLowerCase().split(/\s+/u).filter(Boolean);
   return (Object.entries(fields) as [
     string,
-    { readonly kind: DeterministicApplicationSearchRuntimeOptions<TDocument>['fields'][keyof TDocument & string]['kind'] },
+    {
+      readonly kind: DeterministicApplicationSearchRuntimeOptions<TDocument>['fields'][keyof TDocument & string]['kind'];
+      readonly boost?: number;
+    },
   ][])
     .filter(([, field]) => field.kind === 'text')
-    .reduce((score, [name]) => {
+    .reduce((score, [name, field]) => {
       const value = Reflect.get(document, name);
-      if (typeof value !== 'string') return score;
-      const normalized = value.toLocaleLowerCase();
-      return score + terms.filter((term) => normalized.includes(term)).length;
+      const values = Array.isArray(value)
+        ? value.filter(
+            (candidate): candidate is string =>
+              typeof candidate === 'string',
+          )
+        : typeof value === 'string'
+          ? [value]
+          : [];
+      const matches = values.reduce(
+        (count, candidate) => {
+          const normalized = candidate.toLocaleLowerCase();
+          return count
+            + terms.filter((term) => normalized.includes(term)).length;
+        },
+        0,
+      );
+      return score + matches * (field.boost ?? 1);
     }, 0);
 }
 

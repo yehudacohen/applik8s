@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import type { ApplicationSearchFieldHandle } from '../src/application-search.js';
 import type {
   ApplicationSearchChangeSource,
   ApplicationSearchCommittedChange,
@@ -12,7 +13,6 @@ import {
   ApplicationSearchHistoryLossError,
   createDeterministicApplicationSearchRuntime,
 } from '../src/search-runtime.js';
-import type { ApplicationSearchFieldHandle } from '../src/application-search.js';
 
 interface ProductDocument {
   readonly id: string;
@@ -20,6 +20,17 @@ interface ProductDocument {
   readonly title: string;
   readonly categoryName: string;
   readonly marketValue: number;
+}
+
+function requiredDocument(
+  documents: ReadonlyMap<string, ProductDocument>,
+  identity: string,
+): ProductDocument {
+  const candidate = documents.get(identity);
+  if (!candidate) {
+    throw new Error(`Expected search document ${identity}.`);
+  }
+  return candidate;
 }
 
 function change(
@@ -149,7 +160,7 @@ function fixture(options: {
     fields: {
       id: { kind: 'filter' },
       organizationId: { kind: 'filter' },
-      title: { kind: 'text' },
+      title: { kind: 'text', boost: 4 },
       categoryName: { kind: 'facet' },
       marketValue: { kind: 'sort' },
     },
@@ -187,7 +198,7 @@ describe('search projection runtime', () => {
     await state.runtime.apply(change(1));
 
     state.documents.set('product-1', {
-      ...state.documents.get('product-1')!,
+      ...requiredDocument(state.documents, 'product-1'),
       categoryName: 'Collectibles',
     });
     state.affected.set('change-2', ['product-1']);
@@ -260,7 +271,7 @@ describe('search projection runtime', () => {
       checkpoint: 2,
       previousGenerations: ['initial'],
     });
-    state.runtime.retire('initial');
+    await state.runtime.retire('initial');
     expect(state.runtime.state().previousGenerations).toEqual([]);
   });
 
@@ -342,6 +353,7 @@ describe('search projection runtime', () => {
     );
     expect(first.hits).toHaveLength(1);
     expect(first.hits[0]?.document.organizationId).toBe('org-a');
+    expect(first.hits[0]?.score).toBe(4);
     expect(first.facets.categoryName).toEqual([
       { value: 'Pokemon', count: 1 },
     ]);
@@ -355,13 +367,14 @@ describe('search projection runtime', () => {
       { orderBy: { field: 'marketValue', direction: 'desc' }, limit: 1 },
       bothOrganizations,
     );
-    expect(paged.cursor).toBeDefined();
+    const pagedCursor = paged.cursor;
+    if (!pagedCursor) throw new Error('Expected a second search page.');
     await expect(
       state.runtime.search(
         {
           orderBy: { field: 'marketValue', direction: 'desc' },
           limit: 1,
-          cursor: paged.cursor!,
+          cursor: pagedCursor,
         },
         { ...bothOrganizations, contextDigest: 'different-context' },
       ),
@@ -374,11 +387,35 @@ describe('search projection runtime', () => {
         {
           orderBy: { field: 'marketValue', direction: 'desc' },
           limit: 1,
-          cursor: paged.cursor!,
+          cursor: pagedCursor,
         },
         bothOrganizations,
       ),
     ).rejects.toThrow(/physicalGeneration/);
+  });
+
+  test('fails closed when mandatory admission references undeclared or non-filterable fields', async () => {
+    const state = fixture();
+    await state.runtime.rebuild({ generation: 'generation-2' });
+
+    await expect(
+      state.runtime.search(
+        {},
+        {
+          ...orgA,
+          where: { undeclared: 'value' },
+        } as never,
+      ),
+    ).rejects.toThrow(/admission filter field undeclared is not indexed/);
+    await expect(
+      state.runtime.search(
+        {},
+        {
+          ...orgA,
+          where: { title: 'Charizard' },
+        },
+      ),
+    ).rejects.toThrow(/title is not filterable for admission scope/);
   });
 
   test('rejects a cursor after its active generation advances to a new committed checkpoint', async () => {
@@ -390,7 +427,8 @@ describe('search projection runtime', () => {
       { orderBy: { field: 'marketValue', direction: 'desc' }, limit: 1 },
       admission,
     );
-    expect(first.cursor).toBeDefined();
+    const firstCursor = first.cursor;
+    if (!firstCursor) throw new Error('Expected a second search page.');
 
     state.affected.set('change-1', ['product-1']);
     await state.runtime.apply(change(1));
@@ -400,7 +438,7 @@ describe('search projection runtime', () => {
         {
           orderBy: { field: 'marketValue', direction: 'desc' },
           limit: 1,
-          cursor: first.cursor!,
+          cursor: firstCursor,
         },
         admission,
       ),
