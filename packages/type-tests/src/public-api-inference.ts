@@ -1,5 +1,5 @@
 import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
-import { app as defineApplication, applicationModelFacet, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationModelStoreProvider, type ApplicationSecretBinding, type ApplicationTaskBinding, type ApplicationWorkflowBinding, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, DnsPublication, EventSource, event, HttpExposure, IndexStore, ModelStore, ObjectStorage, Queue, Secret, task, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { AnalyticalDatabase, app as defineApplication, applicationModelFacet, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationSecretBinding, type ApplicationTaskBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, DnsPublication, EventSource, event, HttpExposure, IndexStore, ObjectStorage, Queue, Secret, task, TransactionalDatabase, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import type {
   ApplicationDurableStatusOwnershipContract,
@@ -131,14 +131,69 @@ const OnboardAccount = workflow('account.onboard.v1', {
   signals: { approval: appSchemaType({ approved: 'boolean' }) },
 });
 
-const accountModelStore = ModelStore.postgres({
+const accountModelStore = TransactionalDatabase.postgres({
   name: 'accounts-db',
   namespace: 'accounts',
   database: 'accounts',
-  migrations: ModelStore.migrations.generatedJob({ jobName: 'accounts-model-migration' }),
+  migrations: TransactionalDatabase.migrations.generatedJob({ jobName: 'accounts-model-migration' }),
 });
 
-const accountModelStoreProvider: ApplicationModelStoreProvider = accountModelStore;
+const accountModelStoreProvider: ApplicationTransactionalDatabaseProvider = accountModelStore;
+const analyticalDatabase = AnalyticalDatabase.clickhouse({ name: 'accounts-analytics' });
+
+const ProfileInstallation = appSchemaType({
+  name: 'string',
+  profile: "'starter' | 'dedicated' | 'external'",
+});
+const profileApplication = defineApplication('profile-types', {
+  spec: ProfileInstallation,
+  status: appSchemaType({ ready: 'boolean' }),
+});
+const PrimaryDatabase = TransactionalDatabase.named('primary');
+const profileDeployment = profileApplication.profile(
+  profileApplication.installation.spec,
+  'profile',
+);
+const incompleteProfileDatabase = profileDeployment
+  .provide(PrimaryDatabase)
+  .starter(() => TransactionalDatabase.postgres({ database: 'starter' }))
+  .dedicated(() => TransactionalDatabase.postgres({ database: 'dedicated' }));
+// @ts-expect-error exhaustive bindings name the still-unhandled external variant.
+incompleteProfileDatabase.exhaustive();
+incompleteProfileDatabase.external((spec) => {
+  const externalProfile: 'external' = spec.profile;
+  expectTypeUsage(externalProfile);
+  return TransactionalDatabase.postgres({
+    database: 'external',
+    provision: false,
+    cluster: {
+      apiVersion: 'postgresql.cnpg.io/v1',
+      kind: 'Cluster',
+      name: 'shared',
+    },
+  });
+}).exhaustive();
+const injectedPrimaryDatabase = profileApplication.inject(PrimaryDatabase);
+// @ts-expect-error ClickHouse does not satisfy a transactional database qualification.
+profileDeployment.starter.override(PrimaryDatabase, analyticalDatabase);
+expectTypeUsage(injectedPrimaryDatabase);
+const ProfileAnalytics = AnalyticalDatabase.named('analytics');
+profileDeployment
+  .provide(ProfileAnalytics)
+  .starter(() => AnalyticalDatabase.clickhouse({ name: 'starter' }))
+  .dedicated(() => AnalyticalDatabase.clickhouse({ name: 'dedicated' }))
+  .external(() => AnalyticalDatabase.clickhouse({ name: 'external' }))
+  .exhaustive();
+const injectedProfileAnalytics = profileApplication.inject(ProfileAnalytics);
+const analyticalProjectionProvider: NonNullable<
+  ApplicationAnalyticalProjectionOptions<object, object>['provider']
+> = injectedProfileAnalytics;
+// @ts-expect-error An analytical provider cannot satisfy authoritative transactional model semantics.
+profileApplication.model('InvalidAnalyticalAuthority', {
+  spec: appSchemaType({ id: 'string' }),
+  database: injectedProfileAnalytics,
+});
+expectTypeUsage(analyticalProjectionProvider);
 
 const modelStoreGuarantees = {
   identity: 'stableId',
@@ -240,7 +295,7 @@ const unlowerableWatchScopeContract = {
 
 const migrationDriftCheckContract = {
   model: { nodeId: 'model.account' },
-  provider: { interface: 'ModelStore', nodeId: 'provider.model-store' },
+  provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' },
   observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'accounts-db' },
   expectedRevision: 'sha256:accounts-schema-v1',
   policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' },
@@ -392,16 +447,16 @@ const _invalidPartialV03PressureTestContract: ApplicationV03PressureTestContract
   requiredMigrationDriftChecks: [migrationDriftCheckContract],
 };
 
-expectTypeUsage(accountModelStoreProvider, modelStoreGuarantees, generatedJobContract, generatedJobPhaseStatusContract, generatedJobStatusUpdaterContract, generatedRuntimeModuleContract, operationTargetContract, operationTargetLoweringArtifacts, watchScopeLoweringContract, unlowerableWatchScopeContract, migrationDriftCheckContract, v03PressureTestContract);
+expectTypeUsage(accountModelStoreProvider, analyticalDatabase, modelStoreGuarantees, generatedJobContract, generatedJobPhaseStatusContract, generatedJobStatusUpdaterContract, generatedRuntimeModuleContract, operationTargetContract, operationTargetLoweringArtifacts, watchScopeLoweringContract, unlowerableWatchScopeContract, migrationDriftCheckContract, v03PressureTestContract);
 
-// @ts-expect-error ModelStore providers must use the typed provider object, not a string alias.
-const _invalidStringModelStoreProvider: ApplicationModelStoreProvider = 'postgres';
+// @ts-expect-error TransactionalDatabase providers must use the typed provider object, not a string alias.
+const _invalidStringModelStoreProvider: ApplicationTransactionalDatabaseProvider = 'postgres';
 
-// @ts-expect-error ModelStore providers must declare the supported provider kind.
-const _invalidMissingKindModelStoreProvider: ApplicationModelStoreProvider = { name: 'accounts-db' };
+// @ts-expect-error TransactionalDatabase providers must declare the supported provider kind.
+const _invalidMissingKindModelStoreProvider: ApplicationTransactionalDatabaseProvider = { name: 'accounts-db' };
 
-// @ts-expect-error only the typed Postgres ModelStore provider is supported for the v0.3 substrate contract.
-const _invalidProviderKindModelStoreProvider: ApplicationModelStoreProvider = { kind: 'mysql', name: 'accounts-db' };
+// @ts-expect-error only the typed PostgreSQL TransactionalDatabase provider is supported.
+const _invalidProviderKindModelStoreProvider: ApplicationTransactionalDatabaseProvider = { kind: 'mysql', name: 'accounts-db' };
 
 let accountModelForScriptExecution: ApplicationModelBinding<AccountSpec, AccountStatus> | undefined;
 
@@ -412,9 +467,9 @@ appSdk.kubernetesComposition({
   spec: appSchemaType({ namespace: 'string' }),
   status: appSchemaType({ ready: 'boolean' }),
 }, (spec, app) => {
-  const store = app.provide(ModelStore, accountModelStore);
+  const store = app.provide(TransactionalDatabase, accountModelStore);
   app.provide(WorkflowEngine, WorkflowEngine.hatchet({ namespace: spec.namespace, provision: false, workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: spec.namespace } }));
-  const modelDefaults = app.defaults({ models: accountModelStore });
+  const modelDefaults = app.defaults({ database: accountModelStore });
   const maintenanceJob: ApplicationJobBinding = app.job('compact-accounts', { taskKind: 'maintenance', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo compact'] });
   const maintenanceSchedule: ApplicationJobBinding = app.schedule('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
   const maintenanceJobStatusPath: string = maintenanceJob.statusPath;
@@ -481,21 +536,23 @@ appSdk.kubernetesComposition({
   expectTypeUsage(modelDefaults, maintenanceJob, maintenanceSchedule, maintenanceJobStatusPath, maintenanceScheduleDiagnostics, maintenanceJobDryRun, maintenanceSchedulePlan, provisionAccount, onboardAccount, renameBinding);
 
   app.server('accounts-web', { namespace: spec.namespace }, (server) => {
-    server.post('/accounts', async () => {
+    const createAccountRoute = server.post('create-account', '/accounts', async () => {
       const created = await Account.create({ spec: { email: 'ada@example.com', displayName: 'Ada' } });
       const createdObject: ApplicationModelObject<AccountSpec, AccountStatus> = created;
       const email: string = created.spec.email;
       expectTypeUsage(createdObject, email);
       return created;
-    });
-    server.get('/accounts', async (request) => {
+    }).public();
+    const listAccountsRoute = server.get('list-accounts', '/accounts', async (request) => {
       const page = await Account.index('accounts-by-email', { partitionBy: 'email', unique: true }).query(request.query.email ?? '', { limit: 10 });
       const first: ApplicationModelObject<AccountSpec, AccountStatus> | undefined = page.items[0];
       expectTypeUsage(first);
       return page;
-    });
+    }).requires({ id: 'permission.accounts.read' });
+    expectTypeUsage(createAccountRoute.permission, listAccountsRoute.authority);
   });
   const web = app.server('accounts-admin', { namespace: spec.namespace, models: { Account } }, (server) => {
+    // Compatibility-only unnamed routes retain the same authorizable handle.
     server.get('/accounts/:id', async (request) => Account.get({ id: request.query.id ?? '' }));
   });
   const webUrl: string = web.url;
@@ -513,16 +570,16 @@ appSdk.kubernetesComposition({
   status: appSchemaType({ ready: 'boolean' }),
 }, (_spec, app) => {
   // @ts-expect-error ModelStore does not accept string provider aliases.
-  app.provide(ModelStore, 'postgres');
-  // @ts-expect-error app.defaults({ models }) must receive a typed ModelStore provider or provider binding.
-  app.defaults({ models: 'postgres' });
+  app.provide(TransactionalDatabase, 'postgres');
+  // @ts-expect-error app.defaults({ database }) must receive a typed TransactionalDatabase provider or provider binding.
+  app.defaults({ database: 'postgres' });
   // @ts-expect-error app.model store must be a typed ModelStore provider or ModelStore provider binding.
-  app.model(AccountEntity, { store: { kind: 'mysql' } });
+  app.model(AccountEntity, { database: { kind: 'mysql' } });
   const indexStoreBinding = app.provide(IndexStore, 'valkey');
   // @ts-expect-error Model defaults cannot receive a provider binding for a different provider token.
-  app.defaults({ models: indexStoreBinding });
+  app.defaults({ database: indexStoreBinding });
   // @ts-expect-error Model defaults must receive the typed Postgres ModelStore provider declaration.
-  app.defaults({ models: { kind: 'mysql' } });
+  app.defaults({ database: { kind: 'mysql' } });
 
   return { ready: true };
 });
@@ -970,7 +1027,7 @@ const ArchiveDirectLifecyclePost = command('posts.archive.v1', {
   input: appSchemaType({ postId: 'string' }),
   output: appSchemaType({ archived: 'boolean' }),
 });
-const DirectLifecyclePostWithArchive = DirectLifecyclePost.action('archive', ArchiveDirectLifecyclePost, {
+const DirectLifecyclePostWithArchive = DirectLifecyclePost.operation('archive', ArchiveDirectLifecyclePost, {
   key: ({ postId }) => postId,
 }, async (post) => ({ archived: post.value.body.length >= 0 }));
 DirectLifecyclePostWithArchive.on.archive('type-archived-post', {}, async (archived, context) => {
@@ -981,7 +1038,7 @@ DirectLifecyclePostWithArchive.on.archive('type-archived-post', {}, async (archi
   expectTypeUsage(operation, result, previous, current, context.idempotencyKey);
 });
 
-// @ts-expect-error exceptional completion registrars are derived only for declared action names.
+// @ts-expect-error exceptional completion registrars are derived only for declared operation names.
 DirectLifecyclePostWithArchive.on.restore('invalid-restore-handler', {}, async () => undefined);
 
 DirectLifecyclePost.create.beforeCommit({}, async (_post, _input, context) => {
@@ -996,8 +1053,8 @@ DirectLifecyclePost.create.beforeCommit({}, async (_post, _input, context) => {
   context.send(DirectLifecyclePost.create, { id: 'missing-required-fields' }, { targetKey: 'child-post' });
 });
 
-// @ts-expect-error lifecycle registration uses typed method names rather than arbitrary action strings.
-DirectLifecyclePost.on.action('create', {}, async () => undefined);
+// @ts-expect-error lifecycle registration uses typed method names rather than arbitrary operation strings.
+DirectLifecyclePost.on.operation('create', {}, async () => undefined);
 
 // @ts-expect-error no undeclared domain verb appears on a promoted model.
 DirectLifecyclePost.publish({ id: 'post-1' });

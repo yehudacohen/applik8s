@@ -23,6 +23,7 @@ export interface CompileApplicationDeploymentGraphRequest {
   readonly mode?: ApplicationDeploymentGraphMode;
   readonly strategy: ApplicationDeploymentStrategy;
   readonly installationSpec: DeploymentJsonObject;
+  readonly profileTransition?: DeploymentJsonObject;
   readonly artifacts: readonly ApplicationArtifactRequirement[];
   readonly materializedComposition?: {
     readonly resources: readonly DeploymentJsonObject[];

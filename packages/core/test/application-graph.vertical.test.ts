@@ -31,6 +31,7 @@ import {
   type ApplicationWatchScopeLoweringContract,
   applicationGraphNodeKinds,
   applicationProviderInterfaceKinds,
+  applicationV03ProviderInterfaceKinds,
   type GeneratedJobContract,
   type GeneratedJobDurableStatusUpdaterContract,
   type GeneratedJobPhaseStatusContract,
@@ -90,10 +91,11 @@ describe('application graph substrate contract', () => {
       'exposure',
       'provider',
       'permission',
+      'authorityManifest',
       'typeKroResource',
     ]);
     expect(applicationProviderInterfaceKinds).toEqual([
-      'ModelStore',
+      'TransactionalDatabase',
       'IndexStore',
       'CounterStore',
       'EventSource',
@@ -106,7 +108,7 @@ describe('application graph substrate contract', () => {
       'DnsPublication',
       'CredentialStore',
       'WorkflowEngine',
-      'ProjectionStore',
+      'AnalyticalDatabase',
       'ApplicationHost',
       'ContainerRegistry',
       'RequestIdentity',
@@ -115,8 +117,8 @@ describe('application graph substrate contract', () => {
     ]);
     expect(isApplicationGraphNodeKind('job')).toBe(true);
     expect(isApplicationGraphNodeKind('workflow')).toBe(true);
-    expect(isApplicationProviderInterfaceKind('ModelStore')).toBe(true);
-    expect(isApplicationProviderInterfaceKind('ProjectionStore')).toBe(true);
+    expect(isApplicationProviderInterfaceKind('TransactionalDatabase')).toBe(true);
+    expect(isApplicationProviderInterfaceKind('AnalyticalDatabase')).toBe(true);
     expect(isApplicationProviderInterfaceKind('projection-store')).toBe(false);
   });
 
@@ -305,13 +307,13 @@ describe('application graph substrate contract', () => {
       'job.entry-migration',
       'model.entry',
       'permission.web',
-      'provider.model.postgres',
+      'provider.transactional-database.postgres',
       'server.web',
     ]);
     expect(normalizeApplicationGraph(reordered).edges.map((edge) => `${edge.from.nodeId}:${edge.relationship}:${edge.to.nodeId}`)).toEqual([
       'job.entry-migration:dependsOn:model.entry',
       'permission.web:writes:server.web',
-      'provider.model.postgres:provides:model.entry',
+      'provider.transactional-database.postgres:provides:model.entry',
       'server.web:dependsOn:model.entry',
     ]);
     expect(serializeApplicationGraph(reordered)).toBe(serializeApplicationGraph(graph));
@@ -331,13 +333,13 @@ describe('application graph substrate contract', () => {
     const base = guestBookSubstrateGraph();
     const graph: ApplicationGraph = {
       ...base,
-      nodes: base.nodes.map((node) => node.id === 'provider.model.postgres'
+      nodes: base.nodes.map((node) => node.id === 'provider.transactional-database.postgres'
         ? { ...node, config: { namespace, endpoint } }
         : node),
     };
 
     const serialized = JSON.parse(serializeApplicationGraph(graph));
-    const provider = serialized.nodes.find((node: { id: string }) => node.id === 'provider.model.postgres');
+    const provider = serialized.nodes.find((node: { id: string }) => node.id === 'provider.transactional-database.postgres');
     expect(provider.config).toEqual({
       endpoint: ['$', '{"http://" + string(schema.spec.hostname)}'].join(''),
       namespace: ['$', '{schema.spec.name}'].join(''),
@@ -348,12 +350,12 @@ describe('application graph substrate contract', () => {
     const graph = guestBookSubstrateGraph();
 
     expect(graph.providerRequirements).toEqual([
-      expect.objectContaining({ id: 'requirement.model.entry.store', interface: 'ModelStore', consumer: { nodeId: 'model.entry' } }),
+      expect.objectContaining({ id: 'requirement.model.entry.database', interface: 'TransactionalDatabase', consumer: { nodeId: 'model.entry' } }),
     ]);
     expect(graph.providerBindings).toEqual([
       expect.objectContaining({
-        requirement: 'requirement.model.entry.store',
-        provider: { interface: 'ModelStore', nodeId: 'provider.model.postgres' },
+        requirement: 'requirement.model.entry.database',
+        provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.postgres' },
         generatedResources: expect.arrayContaining([expect.objectContaining({ kind: 'Cluster', name: 'guestbook-db' })]),
       }),
     ]);
@@ -392,7 +394,7 @@ describe('application graph substrate contract', () => {
       ]),
     });
     expect(graph.providerBindings[0]?.metadataLinks).toEqual(expect.arrayContaining([
-      expect.objectContaining({ purpose: 'providerDependency', graphNode: { nodeId: 'provider.model.postgres' } }),
+      expect.objectContaining({ purpose: 'providerDependency', graphNode: { nodeId: 'provider.transactional-database.postgres' } }),
     ]));
     expect(validateApplicationGraphStructure({
       ...graph,
@@ -490,12 +492,12 @@ describe('application graph substrate contract', () => {
   });
 
   it('labels provider interfaces as implemented or fail-closed reserved for the v0.3 boundary', () => {
-    const contracts: readonly ApplicationProviderInterfaceContract[] = applicationProviderInterfaceKinds.map((providerInterface) => providerInterface === 'ModelStore'
+    const contracts: readonly ApplicationProviderInterfaceContract[] = applicationProviderInterfaceKinds.map((providerInterface) => providerInterface === 'TransactionalDatabase'
       ? { interface: providerInterface, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] }
       : { interface: providerInterface, surface: 'stablePublicApi', support: 'failClosedReserved', diagnostics: [{ event: 'applik8s-provider-requirement-missing', severity: 'error', subject: { nodeId: `provider.${providerInterface}` }, reason: 'ProviderInterfaceReserved', message: `${providerInterface} is a stable v0.3 provider interface but has no generated adapter in the current slice.`, retryable: false }] });
 
     expect(contracts.map((contract) => `${contract.interface}:${contract.support}`)).toEqual([
-      'ModelStore:implemented',
+      'TransactionalDatabase:implemented',
       'IndexStore:failClosedReserved',
       'CounterStore:failClosedReserved',
       'EventSource:failClosedReserved',
@@ -508,7 +510,7 @@ describe('application graph substrate contract', () => {
       'DnsPublication:failClosedReserved',
       'CredentialStore:failClosedReserved',
       'WorkflowEngine:failClosedReserved',
-      'ProjectionStore:failClosedReserved',
+      'AnalyticalDatabase:failClosedReserved',
       'ApplicationHost:failClosedReserved',
       'ContainerRegistry:failClosedReserved',
       'RequestIdentity:failClosedReserved',
@@ -525,7 +527,7 @@ describe('application graph substrate contract', () => {
   it('freezes the v0.3 provider compatibility matrix across every provider interface', () => {
     const matrix = providerCompatibilityMatrix();
 
-    expect(matrix.providers.map((provider) => provider.interface)).toEqual(applicationProviderInterfaceKinds);
+    expect(matrix.providers.map((provider) => provider.interface)).toEqual([...new Set([...applicationProviderInterfaceKinds, ...applicationV03ProviderInterfaceKinds])]);
     expect(matrix.requiredForV03).toEqual(expect.arrayContaining(['ModelStore', 'CredentialStore', 'HttpExposure']));
     expect(validateApplicationProviderCompatibilityMatrixContract(matrix)).toEqual([]);
     expect(validateApplicationProviderCompatibilityMatrixContract({
@@ -536,7 +538,7 @@ describe('application graph substrate contract', () => {
       requiredForV03: ['ModelStore'],
     })).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: 'Application provider compatibility matrix must declare apiVersion applik8s.providerCompatibility/v1alpha1.' }),
-      expect.objectContaining({ message: 'Application provider compatibility matrix declares ModelStore more than once.' }),
+      expect.objectContaining({ message: 'Application provider compatibility matrix declares TransactionalDatabase more than once.' }),
       expect.objectContaining({ message: 'Application provider compatibility matrix must label Queue.' }),
       expect.objectContaining({ message: 'Application provider compatibility matrix must mark CredentialStore required for v0.3.' }),
       expect.objectContaining({ message: 'Application provider compatibility matrix must mark HttpExposure required for v0.3.' }),
@@ -562,6 +564,8 @@ describe('application graph substrate contract', () => {
 
   it('defines provider requirement contracts for every v0.3 capability interface', () => {
     const purposes: Record<ApplicationProviderInterfaceKind, ApplicationProviderRequirement['purpose']> = {
+      TransactionalDatabase: 'modelStore',
+      AnalyticalDatabase: 'projectionStore',
       ModelStore: 'modelStore',
       IndexStore: 'indexStore',
       CounterStore: 'counterStore',
@@ -1013,7 +1017,7 @@ describe('application graph substrate contract', () => {
   it('freezes migration drift-check contracts before implementing live schema enforcement', () => {
     const driftCheck: ApplicationMigrationDriftCheckContract = {
       model: { nodeId: 'model.account' },
-      provider: { interface: 'ModelStore', nodeId: 'provider.model-store' },
+      provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' },
       observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'accounts-db' },
       expectedRevision: 'sha256:accounts-schema-v1',
       policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' },
@@ -1041,17 +1045,17 @@ describe('application graph substrate contract', () => {
       name: 'tenant-platform-pressure-test',
       graph: { apiVersion: graph.apiVersion, path: 'application-graph.json', digest: graphDigest },
       requiredNodes: graphNodeKinds,
-      requiredProviders: [...applicationProviderInterfaceKinds],
+      requiredProviders: [...applicationV03ProviderInterfaceKinds],
       requiredRuntimeModules: ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'],
       requiredOperationTargets: [{ id: 'operation-target.tenant-stack', target: { nodeId: 'typeKroResource.tenant-stack' }, operations: ['apply', 'delete'], execution: { contexts: ['handler', 'generatedJob', 'generatedServer', 'typeKro'], ordering: 'dependencyAware', runtimeValidation: 'beforeEffects', failurePolicy: 'failClosed' }, lowering: { mode: 'typeKroResource', artifact: { kind: 'typeKroResource', path: 'plans/tenant-stack.apply.json' }, failurePolicy: 'failClosed' }, dryRun: { supported: true, artifact: { kind: 'typeKroResource', path: 'plans/tenant-stack.dry-run.json' }, failurePolicy: 'failClosed' }, ownership: { ownerReferences: 'required', orphanPolicy: 'retain' }, finalizers: { required: true, finalizer: 'platform.applik8s.dev/tenant-stack', cleanupOperation: 'deleteTarget' }, permissions: [{ apiGroups: ['platform.applik8s.dev'], resources: ['tenantstacks'], verbs: ['create', 'patch', 'delete'] }], diagnostics: [] }],
       requiredWatchScopes: [
         { scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', labels: { 'tenant.applik8s.dev/name': 'tenant-a' } }, lowering: 'labelSelector', runtime: { mode: 'sharedInformer', resyncPolicy: 'bounded', cancellation: 'onScopeRemoved' }, permissions: [{ apiGroups: ['apps'], resources: ['deployments'], verbs: ['list', 'watch'] }], failurePolicy: 'failClosed', diagnostics: [] },
         { scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', labels: {} }, lowering: 'labelSelector', permissions: [], failurePolicy: 'failClosed', diagnostics: [{ event: 'applik8s-watch-scope-unlowerable', severity: 'error', subject: { apiVersion: 'apps/v1', kind: 'Deployment' }, reason: 'UnsupportedLabelSelectorExpression', message: 'Unsupported watch predicate fails closed instead of broadening runtime watches.', retryable: false }] },
       ],
-      requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'ModelStore', nodeId: 'provider.model-store' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'accounts-db' }, expectedRevision: 'sha256:accounts-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Schema drift blocks migration.', retryable: false }] }],
+      requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'accounts-db' }, expectedRevision: 'sha256:accounts-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Schema drift blocks migration.', retryable: false }] }],
       requiredModelStoreSemantics: [modelStoreSemantics()],
       requiredRuntimeModuleInterfaces: [runtimeModuleInterface([{ kind: 'modelRuntime', name: 'postgres-models' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createServerRuntime', kind: 'function', stability: 'stable' }], 'required')],
-      requiredProviderInterfaces: applicationProviderInterfaceKinds.map((provider) => ({ interface: provider, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] })),
+      requiredProviderInterfaces: [...new Set([...applicationProviderInterfaceKinds, ...applicationV03ProviderInterfaceKinds])].map((provider) => ({ interface: provider, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] })),
       providerCompatibility: providerCompatibilityMatrix(),
       requiredStatusOwnership: [{ primary: 'applicationStatus', durableAuthority: 'generatedStatusConfigMap', releasePolicy: 'kroStatusProjectionRequired', applicationStatusProjection: 'requiredAuthoritative', appStatusSchema: 'required', appStatusSchemaContract: { statusRoot: 'status.applik8s', jobsPath: 'status.applik8s.jobs', schema: 'generatedJobStatusMap', ownership: 'kroStatusProjection', pruningBehavior: 'failClosed' }, durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'tenant-platform-pressure-test-status-reconciler-status' }, fallbackStore: { ...generatedStatusConfigMapContract(), objectOwnership: 'runtimeCreatedResource' }, concurrency: generatedStatusConcurrencyContract(), observability: generatedStatusObservabilityContract(), conflictPolicy: 'mergePatch', diagnostics: [{ event: 'applik8s-status-projection-unavailable', severity: 'error', subject: { nodeId: 'job.accounts-model-migration' }, reason: 'KroStatusProjectionRequired', message: 'KRO-owned status hydration is required.', retryable: false }] }],
       requiredStatusEvidence: statusEvidence(),
@@ -1104,20 +1108,20 @@ describe('application graph substrate contract', () => {
   });
 
   it('defines provider requirement and binding contracts before provider implementation', () => {
-    const requirement: ApplicationProviderRequirement<'ModelStore'> = {
-      id: 'requirement.model.entry.store',
-      interface: 'ModelStore',
+    const requirement: ApplicationProviderRequirement<'TransactionalDatabase'> = {
+      id: 'requirement.model.entry.database',
+      interface: 'TransactionalDatabase',
       consumer: { nodeId: 'model.entry' },
       required: true,
-      purpose: 'modelStore',
+      purpose: 'transactionalDatabase',
       diagnostics: {
-        missing: 'Model GuestBookEntry requires a ModelStore provider. Bind one with app.provide(ModelStore, ...) or app.defaults({ models: ... }).',
-        ambiguous: 'Model GuestBookEntry has multiple ModelStore providers. Bind the model to one provider explicitly.',
+        missing: 'Model GuestBookEntry requires a TransactionalDatabase provider. Bind one with app.provide(TransactionalDatabase, ...) or app.defaults({ database: ... }).',
+        ambiguous: 'Model GuestBookEntry has multiple TransactionalDatabase providers. Bind the model to one provider explicitly.',
       },
     };
-    const binding: ApplicationProviderBindingContract<'ModelStore'> = {
+    const binding: ApplicationProviderBindingContract<'TransactionalDatabase'> = {
       requirement: requirement.id,
-      provider: { interface: 'ModelStore', nodeId: 'provider.model.postgres' },
+      provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.postgres' },
       generatedResources: [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'guestbook-db' }],
       runtime: {
         env: { APPLIK8S_MODEL_PROVIDER: 'postgres' },
@@ -1126,8 +1130,8 @@ describe('application graph substrate contract', () => {
       },
     };
 
-    expect(requirement.interface).toBe('ModelStore');
-    expect(requirement.diagnostics.missing).toContain('app.provide(ModelStore');
+    expect(requirement.interface).toBe('TransactionalDatabase');
+    expect(requirement.diagnostics.missing).toContain('app.provide(TransactionalDatabase');
     expect(binding.generatedResources[0]).toMatchObject({ kind: 'Cluster', name: 'guestbook-db' });
     expect(binding.runtime.permissions?.[0]?.resources).toEqual(['secrets']);
   });
@@ -1138,19 +1142,19 @@ describe('application graph substrate contract', () => {
 
     const missingProvider: ApplicationGraph = {
       ...graph,
-      nodes: graph.nodes.filter((node) => node.id !== 'provider.model.postgres'),
+      nodes: graph.nodes.filter((node) => node.id !== 'provider.transactional-database.postgres'),
     };
     expect(validateApplicationGraphProviderBindings(missingProvider)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         severity: 'error',
         code: 'COMPATIBILITY_FAILED',
-        message: expect.stringContaining('requires ModelStore provider provider.model.postgres'),
+        message: expect.stringContaining('requires TransactionalDatabase provider provider.transactional-database.postgres'),
       }),
     ]));
 
     const mismatchedProvider: ApplicationGraph = {
       ...graph,
-      nodes: graph.nodes.map((node) => node.id === 'provider.model.postgres' ? { ...node, interface: 'IndexStore' } : node),
+      nodes: graph.nodes.map((node) => node.id === 'provider.transactional-database.postgres' ? { ...node, interface: 'IndexStore' } : node),
     };
     expect(validateApplicationGraphProviderBindings(mismatchedProvider)).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: expect.stringContaining('but the provider node implements IndexStore') }),
@@ -1159,12 +1163,12 @@ describe('application graph substrate contract', () => {
 
   it('validates provider node release contracts before lowering', () => {
     const graph = guestBookSubstrateGraph();
-    const provider = graph.nodes.find((node): node is ApplicationProviderNode => node.kind === 'provider' && node.id === 'provider.model.postgres');
+    const provider = graph.nodes.find((node): node is ApplicationProviderNode => node.kind === 'provider' && node.id === 'provider.transactional-database.postgres');
     if (!provider) {
-      throw new Error('test fixture missing provider.model.postgres');
+      throw new Error('test fixture missing provider.transactional-database.postgres');
     }
     if (!provider.contract) {
-      throw new Error('test fixture missing provider.model.postgres contract');
+      throw new Error('test fixture missing provider.transactional-database.postgres contract');
     }
 
     expect(validateApplicationGraphStructure(graph)).toEqual([]);
@@ -1175,7 +1179,7 @@ describe('application graph substrate contract', () => {
         ? { ...provider, contract: { ...provider.contract, interface: 'IndexStore' } as never }
         : node),
     })).toEqual(expect.arrayContaining([
-      expect.objectContaining({ message: 'Application provider node provider.model.postgres contract interface IndexStore must match provider interface ModelStore.' }),
+      expect.objectContaining({ message: 'Application provider node provider.transactional-database.postgres contract interface IndexStore must match provider interface TransactionalDatabase.' }),
     ]));
     expect(validateApplicationGraphStructure({
       ...graph,
@@ -1184,7 +1188,7 @@ describe('application graph substrate contract', () => {
         ? { ...provider, contract: { interface: 'Queue', surface: 'stablePublicApi', support: 'failClosedReserved', diagnostics: [] } as never }
         : node),
     })).toEqual(expect.arrayContaining([
-      expect.objectContaining({ message: 'Application provider node provider.model.postgres contract interface Queue must match provider interface ModelStore.' }),
+      expect.objectContaining({ message: 'Application provider node provider.transactional-database.postgres contract interface Queue must match provider interface TransactionalDatabase.' }),
       expect.objectContaining({ message: 'Application provider interface Queue is stable but fail-closed reserved without diagnostics.' }),
     ]));
   });
@@ -1262,7 +1266,7 @@ describe('application graph substrate contract', () => {
           name: 'TtlEntry',
           stability: 'experimental',
           entity: { name: 'TtlEntry' },
-          store: { interface: 'ModelStore', nodeId: 'provider.model.postgres' },
+          database: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.postgres' },
           schema: {
             identity: ['id'],
             constraints: [],
@@ -1273,7 +1277,7 @@ describe('application graph substrate contract', () => {
           },
           materialization: {
             mode: 'providerBacked',
-            provider: { interface: 'ModelStore', nodeId: 'provider.model.postgres-replica' },
+            provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.postgres-replica' },
             backingResources: [],
             connection: {},
             runtimeBoundary: { serializedCallbacks: 'generatedRuntimeClient', scriptExecution: 'scriptRuntimeClient' },
@@ -1343,7 +1347,7 @@ describe('application graph substrate contract', () => {
       expect.objectContaining({ message: 'Application graph contains duplicate node id model.entry.' }),
       expect.objectContaining({ message: 'Application graph edge server.missing:dependsOn:model.missing references missing source node server.missing.' }),
       expect.objectContaining({ message: 'Application graph edge server.missing:dependsOn:model.missing references missing target node model.missing.' }),
-      expect.objectContaining({ message: 'Application model node model.ttl-entry has inconsistent ModelStore refs between store and materialization.provider.' }),
+      expect.objectContaining({ message: 'Application model node model.ttl-entry has inconsistent TransactionalDatabase refs between database and materialization.provider.' }),
       expect.objectContaining({ message: 'Application model node model.ttl-entry declares generatedJob migrations but no migration job depends on it.' }),
       expect.objectContaining({ message: 'Application model node model.ttl-entry uses ttl retention without ttlSeconds.' }),
       expect.objectContaining({ message: 'Application job node job.bad-retry initial phase must not be terminal.' }),
@@ -1358,7 +1362,7 @@ describe('application graph substrate contract', () => {
   it('combines structural and provider validation for the lowering gate', () => {
     const graph: ApplicationGraph = {
       ...guestBookSubstrateGraph(),
-      nodes: guestBookSubstrateGraph().nodes.filter((node) => node.id !== 'provider.model.postgres'),
+      nodes: guestBookSubstrateGraph().nodes.filter((node) => node.id !== 'provider.transactional-database.postgres'),
       edges: [
         ...guestBookSubstrateGraph().edges,
         { from: { nodeId: 'job.missing' }, to: { nodeId: 'model.entry' }, relationship: 'dependsOn' },
@@ -1367,22 +1371,22 @@ describe('application graph substrate contract', () => {
 
     expect(validateApplicationGraph(graph)).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: 'Application graph edge job.missing:dependsOn:model.entry references missing source node job.missing.' }),
-      expect.objectContaining({ message: expect.stringContaining('Application graph node model.entry requires ModelStore provider provider.model.postgres') }),
+      expect.objectContaining({ message: expect.stringContaining('Application graph node model.entry requires TransactionalDatabase provider provider.transactional-database.postgres') }),
     ]));
   });
 
   it('validates explicit provider requirements and requirement consumers before lowering', () => {
     const graph = guestBookSubstrateGraph();
-    const explicitRequirement: ApplicationProviderRequirement<'ModelStore'> = {
-      id: 'requirement.model.entry.store',
-      interface: 'ModelStore',
+    const explicitRequirement: ApplicationProviderRequirement<'TransactionalDatabase'> = {
+      id: 'requirement.model.entry.database',
+      interface: 'TransactionalDatabase',
       consumer: { nodeId: 'model.entry' },
-      provider: { interface: 'ModelStore', nodeId: 'provider.model.postgres' },
+      provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.postgres' },
       required: true,
-      purpose: 'modelStore',
+      purpose: 'transactionalDatabase',
       diagnostics: {
-        missing: 'Model GuestBookEntry requires a ModelStore provider.',
-        ambiguous: 'Model GuestBookEntry has multiple ModelStore providers.',
+        missing: 'Model GuestBookEntry requires a TransactionalDatabase provider.',
+        ambiguous: 'Model GuestBookEntry has multiple TransactionalDatabase providers.',
       },
     };
 
@@ -1390,35 +1394,35 @@ describe('application graph substrate contract', () => {
 
     expect(validateApplicationGraphProviderBindings(graph, [{
       ...explicitRequirement,
-      provider: { interface: 'ModelStore', nodeId: 'provider.model.missing' },
+      provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.missing' },
     }])).toEqual([
-      expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.store requires ModelStore provider provider.model.missing, but that provider node is missing.' }),
+      expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.database requires TransactionalDatabase provider provider.transactional-database.missing, but that provider node is missing.' }),
     ]);
 
     expect(validateApplicationGraphProviderBindings(graph, [{
       ...explicitRequirement,
       consumer: { nodeId: 'model.missing' },
     }])).toEqual([
-      expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.store references missing consumer model.missing.' }),
+      expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.database references missing consumer model.missing.' }),
     ]);
   });
 
   it('validates missing and ambiguous provider requirements from graph providers', () => {
-    const requirement: ApplicationProviderRequirement<'ModelStore'> = {
-      id: 'requirement.model.entry.store',
-      interface: 'ModelStore',
+    const requirement: ApplicationProviderRequirement<'TransactionalDatabase'> = {
+      id: 'requirement.model.entry.database',
+      interface: 'TransactionalDatabase',
       consumer: { nodeId: 'model.entry' },
       required: true,
-      purpose: 'modelStore',
+      purpose: 'transactionalDatabase',
       diagnostics: {
-        missing: 'Model GuestBookEntry requires a ModelStore provider.',
-        ambiguous: 'Model GuestBookEntry has multiple ModelStore providers.',
+        missing: 'Model GuestBookEntry requires a TransactionalDatabase provider.',
+        ambiguous: 'Model GuestBookEntry has multiple TransactionalDatabase providers.',
       },
     };
     const graph = guestBookSubstrateGraph();
 
     expect(validateApplicationGraphProviderBindings({ ...graph, nodes: graph.nodes.filter((node) => node.kind !== 'provider'), providerRequirements: [], providerBindings: [] }, [requirement])).toEqual(expect.arrayContaining([
-      expect.objectContaining({ message: 'Model GuestBookEntry requires a ModelStore provider.' }),
+      expect.objectContaining({ message: 'Model GuestBookEntry requires a TransactionalDatabase provider.' }),
     ]));
     expect(validateApplicationGraphProviderBindings({
       ...graph,
@@ -1426,10 +1430,10 @@ describe('application graph substrate contract', () => {
       providerBindings: [],
       nodes: [
         ...graph.nodes,
-        { id: 'provider.model.postgres-replica', kind: 'provider', name: 'postgres-replica', stability: 'stable', interface: 'ModelStore', implementation: 'postgres' },
+        { id: 'provider.transactional-database.postgres-replica', kind: 'provider', name: 'postgres-replica', stability: 'stable', interface: 'TransactionalDatabase', implementation: 'postgres' },
       ],
     }, [requirement])).toEqual([
-      expect.objectContaining({ message: 'Model GuestBookEntry has multiple ModelStore providers.' }),
+      expect.objectContaining({ message: 'Model GuestBookEntry has multiple TransactionalDatabase providers.' }),
     ]);
   });
 
@@ -1439,15 +1443,15 @@ describe('application graph substrate contract', () => {
 
     expect(resolveApplicationGraphProviderRequirement(graph, requirement)).toMatchObject({
       status: 'resolved',
-      provider: { id: 'provider.model.postgres', interface: 'ModelStore', implementation: 'postgres' },
+      provider: { id: 'provider.transactional-database.postgres', interface: 'TransactionalDatabase', implementation: 'postgres' },
       diagnostics: [],
     });
     expect(resolveApplicationGraphProviderRequirement(graph, {
       ...requirement,
-      provider: { interface: 'ModelStore', nodeId: 'provider.model.postgres' },
+      provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.postgres' },
     })).toMatchObject({
       status: 'resolved',
-      provider: { id: 'provider.model.postgres' },
+      provider: { id: 'provider.transactional-database.postgres' },
       diagnostics: [],
     });
   });
@@ -1455,33 +1459,33 @@ describe('application graph substrate contract', () => {
   it('fails provider resolution closed for missing, ambiguous, invalid consumer, and invalid explicit provider cases', () => {
     const graph = guestBookSubstrateGraph();
     const requirement = modelStoreRequirement();
-    const replicaProvider: ApplicationProviderNode<'ModelStore'> = {
-      id: 'provider.model.postgres-replica',
+    const replicaProvider: ApplicationProviderNode<'TransactionalDatabase'> = {
+      id: 'provider.transactional-database.postgres-replica',
       kind: 'provider',
       name: 'postgres-replica',
       stability: 'stable',
-      interface: 'ModelStore',
+      interface: 'TransactionalDatabase',
       implementation: 'postgres',
     };
     const missing = resolveApplicationGraphProviderRequirement({ ...graph, nodes: graph.nodes.filter((node) => node.kind !== 'provider') }, requirement);
     const ambiguous = resolveApplicationGraphProviderRequirement({ ...graph, nodes: [...graph.nodes, replicaProvider] }, requirement);
     const invalidConsumer = resolveApplicationGraphProviderRequirement(graph, { ...requirement, consumer: { nodeId: 'model.missing' } });
-    const invalidProvider = resolveApplicationGraphProviderRequirement(graph, { ...requirement, provider: { interface: 'ModelStore', nodeId: 'provider.model.missing' } });
+    const invalidProvider = resolveApplicationGraphProviderRequirement(graph, { ...requirement, provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.missing' } });
     const invalidProviderInterface = resolveApplicationGraphProviderRequirement(graph, {
       ...requirement,
       // typecast: this malformed requirement simulates corrupted serialized graph input that bypasses TypeScript.
-      provider: { interface: 'IndexStore', nodeId: 'provider.model.postgres' } as never,
+      provider: { interface: 'IndexStore', nodeId: 'provider.transactional-database.postgres' } as never,
     });
 
-    expect(missing).toMatchObject({ status: 'missing', candidates: [], diagnostics: [expect.objectContaining({ message: 'Model GuestBookEntry requires a ModelStore provider.' })] });
-    expect(ambiguous).toMatchObject({ status: 'ambiguous', candidates: [expect.objectContaining({ id: 'provider.model.postgres' }), expect.objectContaining({ id: 'provider.model.postgres-replica' })] });
-    expect(invalidConsumer).toMatchObject({ status: 'invalidConsumer', candidates: [], diagnostics: [expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.store references missing consumer model.missing.' })] });
-    expect(invalidProvider).toMatchObject({ status: 'invalidProvider', candidates: [], diagnostics: [expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.store requires ModelStore provider provider.model.missing, but that provider node is missing.' })] });
+    expect(missing).toMatchObject({ status: 'missing', candidates: [], diagnostics: [expect.objectContaining({ message: 'Model GuestBookEntry requires a TransactionalDatabase provider.' })] });
+    expect(ambiguous).toMatchObject({ status: 'ambiguous', candidates: [expect.objectContaining({ id: 'provider.transactional-database.postgres' }), expect.objectContaining({ id: 'provider.transactional-database.postgres-replica' })] });
+    expect(invalidConsumer).toMatchObject({ status: 'invalidConsumer', candidates: [], diagnostics: [expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.database references missing consumer model.missing.' })] });
+    expect(invalidProvider).toMatchObject({ status: 'invalidProvider', candidates: [], diagnostics: [expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.database requires TransactionalDatabase provider provider.transactional-database.missing, but that provider node is missing.' })] });
     expect(invalidProviderInterface).toMatchObject({
       status: 'invalidProvider',
       diagnostics: expect.arrayContaining([
-        expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.store requires ModelStore, but its explicit provider ref is for IndexStore.' }),
-        expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.store requires IndexStore provider provider.model.postgres, but the provider node implements ModelStore.' }),
+        expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.database requires TransactionalDatabase, but its explicit provider ref is for IndexStore.' }),
+        expect.objectContaining({ message: 'Application provider requirement requirement.model.entry.database requires IndexStore provider provider.transactional-database.postgres, but the provider node implements TransactionalDatabase.' }),
       ]),
     });
   });
@@ -1489,7 +1493,7 @@ describe('application graph substrate contract', () => {
   it('defines model materialization and generated job runtime contracts before implementation', () => {
     const modelMaterialization: ApplicationModelMaterializationContract = {
       mode: 'providerBacked',
-      provider: { interface: 'ModelStore', nodeId: 'provider.model.postgres' },
+      provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.postgres' },
       backingResources: [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'guestbook-db' }],
       connection: {
         env: { DATABASE_URL_SECRET: 'guestbook-db-app' },
@@ -1523,16 +1527,16 @@ describe('application graph substrate contract', () => {
   });
 });
 
-function modelStoreRequirement(): ApplicationProviderRequirement<'ModelStore'> {
+function modelStoreRequirement(): ApplicationProviderRequirement<'TransactionalDatabase'> {
   return {
-    id: 'requirement.model.entry.store',
-    interface: 'ModelStore',
+    id: 'requirement.model.entry.database',
+    interface: 'TransactionalDatabase',
     consumer: { nodeId: 'model.entry' },
     required: true,
-    purpose: 'modelStore',
+    purpose: 'transactionalDatabase',
     diagnostics: {
-      missing: 'Model GuestBookEntry requires a ModelStore provider.',
-      ambiguous: 'Model GuestBookEntry has multiple ModelStore providers.',
+      missing: 'Model GuestBookEntry requires a TransactionalDatabase provider.',
+      ambiguous: 'Model GuestBookEntry has multiple TransactionalDatabase providers.',
     },
   };
 }
@@ -1549,10 +1553,11 @@ function diagnostic(event: ApplicationDiagnosticContract['event'], nodeId: strin
 }
 
 function providerCompatibilityMatrix(): ApplicationProviderCompatibilityMatrixContract {
+  const providers = [...new Set([...applicationProviderInterfaceKinds, ...applicationV03ProviderInterfaceKinds])];
   return {
     apiVersion: 'applik8s.providerCompatibility/v1alpha1',
-    requiredForV03: applicationProviderInterfaceKinds.filter((provider) => provider !== 'EventLog'),
-    providers: applicationProviderInterfaceKinds.map((provider) => ({ interface: provider, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] })),
+    requiredForV03: applicationV03ProviderInterfaceKinds,
+    providers: providers.map((provider) => ({ interface: provider, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] })),
   };
 }
 
@@ -1757,13 +1762,13 @@ function guestBookSubstrateGraph(): ApplicationGraph {
     metadata: { name: 'guestbook' },
     nodes: [
       {
-        id: 'provider.model.postgres',
+        id: 'provider.transactional-database.postgres',
         kind: 'provider',
         name: 'postgres',
         stability: 'stable',
-        interface: 'ModelStore',
+        interface: 'TransactionalDatabase',
         implementation: 'postgres',
-        contract: { interface: 'ModelStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+        contract: { interface: 'TransactionalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
         config: { database: 'guestbook' },
       },
       {
@@ -1772,7 +1777,7 @@ function guestBookSubstrateGraph(): ApplicationGraph {
         name: 'GuestBookEntry',
         stability: 'stable',
         entity: { name: 'GuestBookEntry' },
-        store: { interface: 'ModelStore', nodeId: 'provider.model.postgres' },
+        database: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.postgres' },
         schema: {
           identity: ['id'],
           constraints: [{ name: 'entry-author-message', kind: 'unique', fields: ['guestbook', 'author', 'message'] }],
@@ -1792,7 +1797,7 @@ function guestBookSubstrateGraph(): ApplicationGraph {
         },
         materialization: {
           mode: 'providerBacked',
-          provider: { interface: 'ModelStore', nodeId: 'provider.model.postgres' },
+          provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.postgres' },
           backingResources: [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'guestbook-db' }],
           connection: {
             env: { DATABASE_URL_SECRET: 'guestbook-db-app' },
@@ -1854,7 +1859,7 @@ function guestBookSubstrateGraph(): ApplicationGraph {
       },
     ],
     edges: [
-      { from: { nodeId: 'provider.model.postgres' }, to: { nodeId: 'model.entry' }, relationship: 'provides' },
+      { from: { nodeId: 'provider.transactional-database.postgres' }, to: { nodeId: 'model.entry' }, relationship: 'provides' },
       { from: { nodeId: 'job.entry-migration' }, to: { nodeId: 'model.entry' }, relationship: 'dependsOn' },
       { from: { nodeId: 'server.web' }, to: { nodeId: 'model.entry' }, relationship: 'dependsOn' },
       { from: { nodeId: 'permission.web' }, to: { nodeId: 'server.web' }, relationship: 'writes' },
@@ -1862,8 +1867,8 @@ function guestBookSubstrateGraph(): ApplicationGraph {
     providerRequirements: [modelStoreRequirement()],
     providerBindings: [
       {
-        requirement: 'requirement.model.entry.store',
-        provider: { interface: 'ModelStore', nodeId: 'provider.model.postgres' },
+        requirement: 'requirement.model.entry.database',
+        provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.postgres' },
         generatedResources: [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'guestbook-db' }],
         runtime: {
           env: { DATABASE_URL_SECRET: 'guestbook-db-app' },
@@ -1871,7 +1876,7 @@ function guestBookSubstrateGraph(): ApplicationGraph {
           readiness: { dependencies: [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'guestbook-db' }], condition: 'Ready', timeoutSeconds: 300 },
         },
         metadataLinks: [
-          { graphNode: { nodeId: 'provider.model.postgres' }, artifact: { kind: 'providerContract', path: 'providers/model-store/postgres.json' }, purpose: 'providerDependency' },
+          { graphNode: { nodeId: 'provider.transactional-database.postgres' }, artifact: { kind: 'providerContract', path: 'providers/transactional-database/postgres.json' }, purpose: 'providerDependency' },
         ],
       },
     ],

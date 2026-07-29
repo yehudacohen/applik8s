@@ -44,6 +44,31 @@ describe("Application deployment compiler", () => {
     );
   });
 
+  it("carries the reviewed profile transition into the portable plan identity", () => {
+    const profileTransition = {
+      apiVersion: "applik8s.profileTransitionPlan/v1alpha1",
+      installation: { namespace: "applik8s-system", name: "guestbook" },
+      mode: "transition",
+      entries: [
+        {
+          qualification: "TransactionalDatabase@v1alpha1:primary",
+          from: "starter",
+          to: "dedicated",
+          kind: "replicate-cutover",
+        },
+      ],
+      acknowledgements: [],
+    } as const;
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      profileTransition,
+    });
+    expect(result.graph.metadata.profileTransition).toEqual(
+      profileTransition,
+    );
+    expect(validateApplicationDeploymentGraph(result.graph).valid).toBe(true);
+  });
+
   it("uses one exact contributor registration without executing effects", () => {
     let invocations = 0;
     const contributor: ApplicationDeploymentContributor = {

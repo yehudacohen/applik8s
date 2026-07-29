@@ -89,6 +89,9 @@ export function compileApplicationDeploymentGraph(
       strategy: request.strategy,
       sourceGraphDigest: request.sourceGraphDigest,
       compilerVersion: request.compilerVersion,
+      ...(request.profileTransition
+        ? { profileTransition: request.profileTransition }
+        : {}),
     },
     nodes: deploymentNodes,
     edges: [

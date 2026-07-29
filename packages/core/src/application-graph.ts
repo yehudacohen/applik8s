@@ -5,6 +5,13 @@ import type {
 } from './application-graph-gateway.js';
 import type { ApiVersion, Condition, Diagnostic, JsonObject, KubernetesName, NamespaceName, ObjectRef, ResourceScope, SourceLocation } from './common.js';
 import type { PermissionRule } from './resource.js';
+import type {
+  ApplicationIdentityReference,
+  ApplicationOperationInvocationDependency,
+  ApplicationOperationTransport,
+  ApplicationScopeExpression,
+  ApplicationStaticAuthorityManifest,
+} from './application-operation-authority.js';
 
 export type {
   ApplicationHandlerDependencies,
@@ -14,6 +21,11 @@ export type {
 } from './application-graph-gateway.js';
 
 import { validateApplicationGraphCompatibility } from './application-graph-compatibility.js';
+import {
+  type ApplicationProfileProviderSelectionContract,
+  validateApplicationProfileDescriptor,
+  validateApplicationProfileProviderSelection,
+} from './application-profile.js';
 import type { ApplicationNestedInstallationNode } from './application-graph-installation.js';
 import { applicationModelNodeStructureDiagnostics, applicationObservabilityStructureDiagnostics, applicationProviderBindingDiagnostic, applicationProviderRefDiagnostics, applicationProviderRefsForNode, compareStrings, uniqueApplicationProviderRefs, validateApplicationRouteDiagnosticsContract } from './application-graph-node-validation.js';
 import { applicationReactiveNodeStructureMessages } from './application-graph-reactive-validation.js';
@@ -76,6 +88,7 @@ export type ApplicationGraphNodeKind =
   | 'exposure'
   | 'provider'
   | 'permission'
+  | 'authorityManifest'
   | 'typeKroResource';
 
 // typecast: the runtime node-kind registry is intentionally kept as a literal tuple while checked against the public union.
@@ -110,10 +123,14 @@ export const applicationGraphNodeKinds = [
   'exposure',
   'provider',
   'permission',
+  'authorityManifest',
   'typeKroResource',
 ] as const satisfies readonly ApplicationGraphNodeKind[];
 
 export type ApplicationBuiltInProviderInterfaceKind =
+  | 'TransactionalDatabase'
+  | 'AnalyticalDatabase'
+  /** @deprecated Use TransactionalDatabase. Removed at 1.0. */
   | 'ModelStore'
   | 'IndexStore'
   | 'CounterStore'
@@ -127,6 +144,7 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'DnsPublication'
   | 'CredentialStore'
   | 'WorkflowEngine'
+  /** @deprecated Use AnalyticalDatabase. Removed at 1.0. */
   | 'ProjectionStore'
   | 'ApplicationHost'
   | 'ContainerRegistry'
@@ -139,7 +157,7 @@ export type ApplicationProviderInterfaceKind = ApplicationBuiltInProviderInterfa
 
 // typecast: the runtime provider-interface registry is intentionally kept as a literal tuple while checked against the public union.
 export const applicationProviderInterfaceKinds = [
-  'ModelStore',
+  'TransactionalDatabase',
   'IndexStore',
   'CounterStore',
   'EventSource',
@@ -152,7 +170,7 @@ export const applicationProviderInterfaceKinds = [
   'DnsPublication',
   'CredentialStore',
   'WorkflowEngine',
-  'ProjectionStore',
+  'AnalyticalDatabase',
   'ApplicationHost',
   'ContainerRegistry',
   'RequestIdentity',
@@ -238,6 +256,7 @@ export type ApplicationGraphNode =
   | ApplicationExposureNode
   | ApplicationProviderNode
   | ApplicationPermissionNode
+  | ApplicationAuthorityManifestNode
   | ApplicationTypeKroResourceNode;
 
 export interface ApplicationGraphNodeBase<TKind extends ApplicationGraphNodeKind> {
@@ -260,7 +279,7 @@ export interface ApplicationCrdNode extends ApplicationGraphNodeBase<'crd'> {
 
 export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> {
   readonly entity: ApplicationEntityContract;
-  readonly store: ApplicationProviderRef<'ModelStore'>;
+  readonly database: ApplicationProviderRef<'TransactionalDatabase'>;
   readonly schema: ApplicationModelSchemaContract;
   readonly materialization: ApplicationModelMaterializationContract;
   /** Present for explicitly promoted native tables/resources; absent for legacy JSONB models. */
@@ -319,6 +338,22 @@ export interface ApplicationModelOperationGraphContract {
   readonly input?: ApplicationMessageContractSchema;
   readonly output?: ApplicationMessageContractSchema;
   readonly authorization: 'application-defined' | 'provider-enforced' | 'undeclared';
+  readonly authority?: ApplicationOperationAuthorityGraphContract;
+}
+
+export interface ApplicationOperationAuthorityGraphContract {
+  readonly classification: 'unclassified' | 'public' | 'assigned' | 'runtime-grantable' | 'application-policy';
+  readonly permissionIds: readonly string[];
+  readonly grantable: boolean;
+  readonly delegable: boolean;
+  readonly scope: ApplicationScopeExpression;
+  readonly audiences?: readonly string[];
+  readonly transports?: readonly ApplicationOperationTransport[];
+  readonly lifetime?: {
+    readonly expiresIn?: string;
+    readonly maximumUses?: number;
+    readonly outcomeId?: string;
+  };
 }
 
 export interface ApplicationModelRelationshipGraphContract {
@@ -483,6 +518,8 @@ export interface ApplicationTaskNode extends ApplicationGraphNodeBase<'task'> {
 export interface ApplicationTaskHandlerNode extends ApplicationGraphNodeBase<'taskHandler'> {
   readonly task: ApplicationGraphNodeRef;
   readonly workflowEngine: ApplicationProviderRef<'WorkflowEngine'>;
+  /** Optional logical service identity whose static grants form the workload baseline. */
+  readonly serviceIdentity?: ApplicationIdentityReference;
   /** Runtime capabilities explicitly injected into this external-effect task. */
   readonly capabilities?: readonly ApplicationProviderRef[];
   /**
@@ -494,6 +531,8 @@ export interface ApplicationTaskHandlerNode extends ApplicationGraphNodeBase<'ta
     readonly alias: string;
     readonly command: ApplicationGraphNodeRef;
     readonly handler: ApplicationGraphNodeRef;
+    /** Canonical least-privilege operation dependency for this workload. */
+    readonly authority: ApplicationOperationInvocationDependency;
   }[];
   /** Authenticated bounded queries explicitly injected into this task. */
   readonly queries?: readonly {
@@ -601,6 +640,7 @@ export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> 
   readonly output: ApplicationMessageContractSchema;
   readonly reads: readonly ApplicationQueryReadContract[];
   readonly authorization: 'application-defined';
+  readonly authority?: ApplicationOperationAuthorityGraphContract;
   readonly trustedContext: readonly string[];
   readonly budgets: {
     readonly timeoutMs: number;
@@ -902,7 +942,12 @@ export interface ApplicationProviderRequirement<TInterface extends ApplicationPr
   readonly consumer: ApplicationGraphNodeRef;
   readonly provider?: ApplicationProviderRef<TInterface>;
   readonly required: true;
-  readonly purpose: 'modelStore' | 'indexStore' | 'counterStore' | 'eventSource' | 'eventLog' | 'secret' | 'queue' | 'objectStorage' | 'httpExposure' | 'certificate' | 'dnsPublication' | 'credentialStore' | 'containerRegistry' | (string & {});
+  readonly purpose: 'transactionalDatabase' | 'analyticalDatabase' | 'indexStore' | 'counterStore' | 'eventSource' | 'eventLog' | 'secret' | 'queue' | 'objectStorage' | 'httpExposure' | 'certificate' | 'dnsPublication' | 'credentialStore' | 'containerRegistry'
+    /** @deprecated Historical v0.3 graph value. */
+    | 'modelStore'
+    /** @deprecated Historical v0.6 graph value. */
+    | 'projectionStore'
+    | (string & {});
   readonly diagnostics: ApplicationProviderRequirementDiagnostics;
 }
 
@@ -956,6 +1001,10 @@ export interface ApplicationPermissionNode extends ApplicationGraphNodeBase<'per
   readonly owner: ApplicationGraphNodeRef;
   readonly rules: readonly PermissionRule[];
   readonly mode: 'explicit' | 'inferred' | 'explicitAndInferred';
+}
+
+export interface ApplicationAuthorityManifestNode extends ApplicationGraphNodeBase<'authorityManifest'> {
+  readonly manifest: ApplicationStaticAuthorityManifest;
 }
 
 export interface ApplicationTypeKroResourceNode extends ApplicationGraphNodeBase<'typeKroResource'> {
@@ -1196,7 +1245,7 @@ export interface ApplicationModelRetentionSemanticsContract {
 
 export interface ApplicationModelMaterializationContract {
   readonly mode: 'providerBacked';
-  readonly provider: ApplicationProviderRef<'ModelStore'>;
+  readonly provider: ApplicationProviderRef<'TransactionalDatabase'>;
   readonly backingResources: readonly ApplicationResourceRef[];
   readonly connection: ApplicationProviderRuntimeContract;
   readonly runtimeBoundary: ApplicationModelRuntimeBoundaryContract;
@@ -1243,7 +1292,7 @@ export interface ApplicationMigrationCompatibilityPolicy {
 
 export interface ApplicationMigrationDriftCheckContract {
   readonly model: ApplicationGraphNodeRef;
-  readonly provider: ApplicationProviderRef<'ModelStore'>;
+  readonly provider: ApplicationProviderRef<'TransactionalDatabase'>;
   readonly observedSchemaSource: ApplicationResourceRef;
   readonly expectedRevision: string;
   readonly policy: ApplicationMigrationCompatibilityPolicy;
@@ -1300,8 +1349,10 @@ export interface ApplicationRetentionPolicy {
 
 export interface ApplicationRouteContract {
   readonly id: string;
+  readonly named?: boolean;
   readonly method: string;
   readonly path: string;
+  readonly authority?: ApplicationOperationAuthorityGraphContract;
   readonly diagnostics?: ApplicationRouteDiagnosticsContract;
   readonly sourceLocation?: SourceLocation;
   readonly metadataLinks?: readonly ApplicationGraphMetadataLink[];
@@ -2856,6 +2907,28 @@ function applicationTaskHandlerNodeStructureDiagnostics(node: ApplicationTaskHan
     if (nodes.get(operation.command.nodeId)?.kind !== 'command') diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} operation ${operation.alias} must reference a command node.`));
     const handler = nodes.get(operation.handler.nodeId);
     if (handler?.kind !== 'commandHandler' || handler.command.nodeId !== operation.command.nodeId) diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} operation ${operation.alias} must reference the matching command handler.`));
+    if (operation.authority.alias !== operation.alias
+      || !operation.authority.operationId.startsWith('applik8s://')
+      || operation.authority.invocation !== 'context.invoke'
+      || operation.authority.authorization !== 'reauthorize'
+      || operation.authority.terminal !== true) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} operation ${operation.alias} must retain one canonical terminal reauthorizing dependency.`));
+    }
+    if (!operation.authority.restrictions.target) {
+      diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} operation ${operation.alias} must explicitly select .on(...), .where(...), .all(), or an execution binding; bare dependencies cannot broaden workload authority.`));
+    }
+    const binding = operation.authority.binding;
+    if (binding) {
+      const keys = new Set(binding.boundKeys);
+      if (binding.operationId !== operation.authority.operationId
+        || binding.source !== 'input'
+        || binding.boundKeys.length === 0
+        || keys.size !== binding.boundKeys.length
+        || !binding.projectionDigest.trim()
+        || !binding.projectionSource.trim()) {
+        diagnostics.push(applicationGraphStructureDiagnostic(`Application task handler ${node.id} operation ${operation.alias} has an invalid exact input execution binding.`));
+      }
+    }
   }
   const queryAliases = new Set<string>();
   for (const query of node.queries ?? []) {
@@ -2930,6 +3003,32 @@ function applicationServerRouteStructureDiagnostics(node: ApplicationServerNode)
 
 function applicationProviderNodeStructureDiagnostics(node: ApplicationProviderNode): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
+  const profile = node.config?.profile;
+  if (
+    profile
+    && typeof profile === 'object'
+    && !Array.isArray(profile)
+    && Reflect.get(profile, 'apiVersion') === 'applik8s.profileProvider/v1alpha1'
+  ) {
+    const selection =
+      profile as unknown as ApplicationProfileProviderSelectionContract;
+    for (const message of validateApplicationProfileDescriptor(selection.descriptor)) {
+      diagnostics.push(applicationGraphStructureDiagnostic(message));
+    }
+    for (const message of validateApplicationProfileProviderSelection(
+      selection,
+      selection.descriptor,
+    )) {
+      diagnostics.push(applicationGraphStructureDiagnostic(message));
+    }
+    if (selection.qualification.capability !== node.interface) {
+      diagnostics.push(
+        applicationGraphStructureDiagnostic(
+          `Application provider node ${node.id} profile qualification ${selection.qualification.capability} must match provider interface ${node.interface}.`,
+        ),
+      );
+    }
+  }
   if (!node.contract) {
     return diagnostics;
   }

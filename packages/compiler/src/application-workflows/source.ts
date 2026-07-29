@@ -4,7 +4,7 @@ import { writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { ApplicationStreamNode, ApplicationTaskHandlerNode, ApplicationWorkflowHandlerNode } from '@applik8s/core';
 import type { Plugin } from 'esbuild';
-import { structuredGenerationSelection, type WorkflowContract, type WorkflowTaskObjectContract, type WorkflowTaskProjectionContract } from './contracts.js';
+import { structuredGenerationSelection, type WorkflowContract, type WorkflowOperationAliasContract, type WorkflowTaskObjectContract, type WorkflowTaskProjectionContract } from './contracts.js';
 import { jsName, kubernetesName, numberConfig, objectConfig, stringConfig, workflowObjectEnabledEnvironment } from './utilities.js';
 
 function absoluteDependencyImports(source: string, resolveDir: string): string {
@@ -29,6 +29,18 @@ function operationPrincipalVariable(id: string): string {
   return `principal_${createHash('sha256').update(id).digest('hex').slice(0, 12)}`;
 }
 
+function workflowOperationAliasesSource(
+  aliases: Readonly<Record<string, WorkflowOperationAliasContract>>,
+): string {
+  const entries = Object.entries(aliases).map(([alias, binding]) => {
+    const projection = binding.projectionSource
+      ? `, project: (${binding.projectionSource})`
+      : '';
+    return `${JSON.stringify(alias)}: { commandId: ${JSON.stringify(binding.commandId)}, operationId: ${JSON.stringify(binding.operationId)}, boundKeys: ${JSON.stringify(binding.boundKeys)}, envelope: ${JSON.stringify(binding.envelope)}${projection} }`;
+  });
+  return `{ ${entries.join(', ')} }`;
+}
+
 export function generatedWorkerSource(contract: WorkflowContract): string {
   const handlers = [...contract.tasks.map((entry) => entry.handler), ...contract.workflows.map((entry) => entry.handler)];
   const handlerImports = handlers
@@ -45,7 +57,14 @@ export function generatedWorkerSource(contract: WorkflowContract): string {
     const queries = contract.queryEffects?.aliases[handler.id] ?? {};
     const projections = contract.projectionEffects?.aliases[handler.id] ?? {};
 		const objects = contract.objectEffects?.aliases[handler.id] ?? {};
-    const principal = handler.operationPrincipalSource ? `${operationPrincipalVariable(handler.id)}(validInput)` : 'undefined';
+    const principal = handler.serviceIdentity
+      ? JSON.stringify({
+          id: handler.serviceIdentity.id,
+          authorizationVersion: contract.operationCatalog?.revision ?? 'canonical-authority',
+        })
+      : handler.operationPrincipalSource
+        ? `${operationPrincipalVariable(handler.id)}(validInput)`
+        : 'undefined';
     return `
 const ${jsName(task.id)} = hatchet.task({
   name: ${JSON.stringify(task.name)},
@@ -55,7 +74,7 @@ const ${jsName(task.id)} = hatchet.task({
   scheduleTimeout: ${JSON.stringify(`${handler.scheduleTimeoutSeconds}s`)},
   fn: async (input, context) => {
     const validInput = validate(${JSON.stringify(task.contract.input.jsonSchema)}, input, ${JSON.stringify(`${task.name}.input`)});
-    const output = await ${handlerVariable(handler.id)}(validInput, taskContext(context, ${JSON.stringify(task.name)}, ${JSON.stringify(errors)}, ${JSON.stringify(capabilities)}, ${JSON.stringify(operations)}, ${JSON.stringify(queries)}, ${JSON.stringify(projections)}, ${JSON.stringify(objects)}, ${principal}));
+    const output = await ${handlerVariable(handler.id)}(validInput, taskContext(context, ${JSON.stringify(task.name)}, ${JSON.stringify(errors)}, ${JSON.stringify(capabilities)}, ${workflowOperationAliasesSource(operations)}, ${JSON.stringify(queries)}, ${JSON.stringify(projections)}, ${JSON.stringify(objects)}, ${principal}, validInput, ${handler.executionTimeoutSeconds}));
     return validate(${JSON.stringify(task.contract.output.jsonSchema)}, output, ${JSON.stringify(`${task.name}.output`)});
   },
 });`;
@@ -86,6 +105,8 @@ const ${jsName(workflow.id)} = hatchet.durableTask({
     : '';
   const operationImports = contract.operationEffects
     ? `import { createApplicationTaskOperationRuntime } from '@applik8s/applik8s/task-operation-runtime';
+import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
+import postgres from 'postgres';
 import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';`
     : '';
   const queryImports = contract.queryEffects
@@ -221,11 +242,16 @@ function declaredFailure(contractName, errorSchemas, name, payload) {
   const validPayload = validate(schema, payload, contractName + '.errors.' + name);
   throw new Error('applik8s-durable-error:' + JSON.stringify({ name, payload: validPayload }));
 }
-function taskContext(context, contractName, errorSchemas, declaredCapabilities, declaredOperations, declaredQueries, declaredProjections, declaredObjects, principal) {
-  const base = metadata(context);
+function taskContext(context, contractName, errorSchemas, declaredCapabilities, declaredOperations, declaredQueries, declaredProjections, declaredObjects, principal, executionSource, executionTimeoutSeconds) {
+  const raw = metadata(context);
+  const base = {
+    ...raw,
+    deadline: new Date(Date.now() + executionTimeoutSeconds * 1000).toISOString(),
+    cancellationRevision: 'active:' + raw.invocationId,
+  };
   return {
     ...base,
-    operations: operationRuntime ? operationRuntime.bind(declaredOperations, principal, base) : Object.freeze({}),
+    operations: operationRuntime ? operationRuntime.bind(declaredOperations, principal, base, executionSource) : Object.freeze({}),
     queries: queryRuntime ? queryRuntime.bind(declaredQueries, principal, base) : Object.freeze({}),
     projections: Object.freeze(Object.fromEntries(Object.entries(declaredProjections).map(([alias, id]) => {
       const runtime = projectionRuntimes[id];
@@ -285,6 +311,7 @@ async function shutdown() {
   stopping = true; ready = false;
   await worker.stop();
   if (operationRuntime) await operationRuntime.close();
+  if (operationAuthoritySql) await operationAuthoritySql.end({ timeout: 5 });
   await Promise.all(projectionSources.map((source) => source.close()));
   server.close();
 }
@@ -344,13 +371,52 @@ export function generatedOperationPrincipalModule(handler: ApplicationTaskHandle
 
 function generatedWorkflowOperationRuntime(contract: WorkflowContract): string {
   const effects = contract.operationEffects;
-  if (!effects) return 'const operationRuntime = undefined;';
+  if (!effects) return 'const operationRuntime = undefined;\nconst operationAuthoritySql = undefined;';
+  if (!contract.operationCatalog) {
+    throw new Error(`Workflow worker ${contract.worker.id} declares protected operations without an operation catalog.`);
+  }
+  const databaseEnvironments = new Set(effects.operations.map(({ model }) => model.runtime.connectionEnvName));
+  if (databaseEnvironments.size !== 1) {
+    throw new Error(`Workflow worker ${contract.worker.id} protected operations span multiple authority databases.`);
+  }
+  const authorityDatabaseEnvironment = [...databaseEnvironments][0]!;
   const config = effects.eventLog.config ?? {};
   const commands = effects.operations.map(({ handler, command, model }) => `{ id: ${JSON.stringify(`${command.contract.name}.${command.contract.version}`)}, bindingId: ${JSON.stringify(handler.name)}, model: ${JSON.stringify(model.name)}, inputSchema: ${JSON.stringify(command.contract.input.jsonSchema)}, databaseUrl: requiredEnv(${JSON.stringify(model.runtime.connectionEnvName)}), key: (${handler.key.source})${handler.idempotencyKey ? `, idempotencyKey: (${handler.idempotencyKey.source})` : ''} }`).join(',\n');
-  return `const operationRuntime = createApplicationTaskOperationRuntime({
+  return `const operationAuthoritySql = postgres(requiredEnv(${JSON.stringify(authorityDatabaseEnvironment)}), { max: 6, idle_timeout: 20, connect_timeout: 10, prepare: false });
+const operationAuthority = createApplicationOperationAuthorityRuntime({
+  sql: operationAuthoritySql,
+  application: ${JSON.stringify(contract.graphName)},
+  catalog: ${JSON.stringify(contract.operationCatalog)},
+  ${contract.authorityManifest ? `authorityManifest: ${JSON.stringify(contract.authorityManifest)},` : ''}
+});
+await operationAuthority.prepare();
+const operationRuntime = createApplicationTaskOperationRuntime({
   commands: [${commands}],
   cursorSecret: requiredEnv('APPLIK8S_TASK_OPERATION_CONTEXT_SECRET'),
   eventLogPublisher: createJetStreamEventLog({ servers: JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS')), stream: ${JSON.stringify(stringConfig(config.stream) || 'APPLIK8S_EVENTS')}, subjectPrefix: ${JSON.stringify(stringConfig(config.subjectPrefix) || 'applik8s')}, connectionName: ${JSON.stringify(`applik8s-workflow-${contract.worker.name}`)}, ...(process.env.APPLIK8S_NATS_TOKEN ? { token: process.env.APPLIK8S_NATS_TOKEN } : {}), ...(process.env.APPLIK8S_NATS_USER ? { user: process.env.APPLIK8S_NATS_USER, pass: process.env.APPLIK8S_NATS_PASSWORD ?? '' } : {}) }),
+  admitExecution: ({ principal, invocation, envelopes, trustedContextDigest }) => {
+    const envelope = envelopes[0];
+    if (!envelope) throw new Error('Application task execution has no workload authority envelope.');
+    return operationAuthority.admitExecutionPrincipal({
+      executionKind: 'task',
+      executionId: invocation.invocationId,
+      attempt: invocation.attempt,
+      workloadIdentity: envelope.workloadIdentity,
+      ...(envelope.serviceIdentity ? { serviceIdentity: envelope.serviceIdentity } : {}),
+      causalPrincipal: { id: 'identity:causal:' + principal.id, kind: 'external', issuer: 'applik8s.task-principal', subject: principal.id },
+      envelopes,
+      trustedContextDigest,
+      audience: [...new Set(envelopes.flatMap((candidate) => candidate.audiences))],
+      deadline: invocation.deadline ?? new Date(Date.now() + 60_000).toISOString(),
+      cancellationRevision: invocation.cancellationRevision ?? ('active:' + invocation.invocationId),
+    });
+  },
+  authorizeExecution: ({ cancellationRevision, ...request }) => operationAuthority.authorizeExecution({
+    ...request,
+    audience: request.envelope.audiences[0] ?? request.envelope.workloadIdentity.id,
+    transport: 'event',
+    currentCancellationRevision: cancellationRevision,
+  }),
 });`;
 }
 

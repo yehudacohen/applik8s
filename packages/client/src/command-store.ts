@@ -32,9 +32,11 @@ export class ApplicationCommandFailedError extends Error {
   constructor(
     readonly command: string,
     readonly commandId: string,
-    readonly failure: { readonly code: 'processing_failed'; readonly attempts?: number },
+    readonly failure: { readonly code: 'processing_failed' | 'authorization_denied'; readonly attempts?: number },
   ) {
-    super(`Application command ${command} failed after exhausting bounded processing attempts.`);
+    super(failure.code === 'authorization_denied'
+      ? `Application command ${command} was denied when its durable authorization was revalidated.`
+      : `Application command ${command} failed after exhausting bounded processing attempts.`);
     this.name = 'ApplicationCommandFailedError';
   }
 }

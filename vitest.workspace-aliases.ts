@@ -54,6 +54,7 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/runtime-nats': fileURLToPath(new URL('./packages/runtime-nats/src/index.ts', import.meta.url)),
     '@applik8s/runtime-kubernetes': fileURLToPath(new URL('./packages/runtime-kubernetes/src/index.ts', import.meta.url)),
     '@applik8s/runtime-postgres': fileURLToPath(new URL('./packages/runtime-postgres/src/index.ts', import.meta.url)),
+    '@applik8s/operations': fileURLToPath(new URL('./packages/operations/src/index.ts', import.meta.url)),
     '@applik8s/runtime-contract': fileURLToPath(new URL('./packages/runtime-contract/src/index.ts', import.meta.url)),
     '@applik8s/typekro-adapter': fileURLToPath(new URL('./packages/typekro-adapter/src/index.ts', import.meta.url)),
     '@applik8s/typetainer': fileURLToPath(new URL('./packages/typetainer/src/index.ts', import.meta.url)),

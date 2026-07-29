@@ -1,7 +1,9 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { queryInputKey, type ApplicationQueryEvent, type ApplicationQueryMultiplexErrorFrame, type ApplicationQueryMultiplexFrame, type ApplicationQueryMultiplexSubscription, type ApplicationQuerySnapshot } from '@applik8s/client';
+import { validateApplicationAuthorizationReceipt, type ApplicationAuthorizationReceipt } from '@applik8s/core';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { validateQueryInput, validateQueryOutput } from './application-query-runtime.js';
+import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import { applicationAdmittedContextDigest, type ApplicationAdmittedContext, type ApplicationRelationalContext } from './relational-runtime.js';
 import { validateTrustedContextValue } from './trusted-context.js';
 
@@ -27,6 +29,19 @@ export interface ApplicationQueryGatewayOptions<TRequest, TPrincipal extends App
   readonly subscriptionLimits?: { readonly perPrincipal?: number; readonly total?: number };
   readonly subscriptionLimiter?: ApplicationSubscriptionLimiter;
   readonly audit?: (record: ApplicationQueryGatewayAuditRecord) => void;
+  /**
+   * Canonical operation-authority boundary. Generated production gateways
+   * provide this in addition to the query's domain predicate; the returned
+   * receipt is pinned into every cursor and revalidated on resume.
+   */
+  readonly authorizeOperation?: (request: {
+    readonly boundary: 'admission' | 'subscription-resume';
+    readonly query: ApplicationQueryBinding<unknown, unknown, TPrincipal>;
+    readonly input: unknown;
+    readonly identity: ApplicationGatewayIdentity<TPrincipal>;
+    readonly inputDigest: string;
+    readonly trustedContextDigest: string;
+  }) => ApplicationAuthorizationReceipt | false | Promise<ApplicationAuthorizationReceipt | false>;
 }
 
 export interface ApplicationSubscriptionLimiter {
@@ -76,11 +91,18 @@ export interface ApplicationQueryGatewayHttpOptions {
 }
 
 interface CursorPayload {
-  readonly version: 2;
+  readonly version: 2 | 3;
   readonly query: string;
   readonly inputKey: string;
   readonly contextBinding: string;
   readonly authorizationBinding: string;
+  readonly applicationBinding?: string;
+  readonly principalBinding?: string;
+  readonly operationId?: string;
+  readonly operationVersion?: string;
+  readonly catalogRevision?: string;
+  readonly authorityRevision?: string;
+  readonly receiptId?: string;
   readonly sequence: number;
   /** Provider checkpoint/generation bound into the HMAC for non-relational snapshot authorities. */
   readonly providerRevision?: string;
@@ -113,6 +135,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
         options.audit?.({ event: 'authorization-denied', query: query.id, principal: identity.principal.id });
         throw new ApplicationQueryAuthorizationError(query.id);
       }
+      const receipt = await authorizeQueryOperation(options, 'admission', query, input, identity);
       if (!query.database) throw new Error(`Application query ${query.id} has no snapshot authority. Bind its first implementation to a registered database or declare reset-only provider behavior.`);
       const context = options.context(identity);
       const result = await withTimeout(context.snapshot(query.database, async () => {
@@ -127,11 +150,12 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       enforceResultBudget(query, output);
       const inputKey = queryInputKey(input);
       const cursor = encodeCursor(options.cursorSecret, {
-        version: 2,
+        version: receipt ? 3 : 2,
         query: query.id,
         inputKey,
         contextBinding: cursorBinding(options.cursorSecret, 'context', applicationAdmittedContextDigest(identity.admittedContext)),
         authorizationBinding: cursorBinding(options.cursorSecret, 'authorization', identity.authorizationVersion),
+        ...(receipt ? receiptCursorFields(options.cursorSecret, receipt) : {}),
         sequence: result.sequence,
         ...(providerSnapshot ? { providerRevision: providerSnapshot.revision } : {}),
         expiresAt: now().getTime() + cursorTtlSeconds * 1_000,
@@ -157,6 +181,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
         options.audit?.({ event: 'authorization-denied', query: query.id, principal: identity.principal.id });
         throw new ApplicationQueryAuthorizationError(query.id);
       }
+      const receipt = await authorizeQueryOperation(options, 'subscription-resume', query, input, identity);
       if (!limiter.acquire(identity.principal.id)) {
         options.audit?.({ event: 'subscription-denied', query: query.id, principal: identity.principal.id, reason: 'limit' });
         throw new ApplicationQuerySubscriptionLimitError(query.id);
@@ -174,6 +199,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
           inputKey: queryInputKey(input),
           contextDigest: applicationAdmittedContextDigest(identity.admittedContext),
           authorizationVersion: identity.authorizationVersion,
+          ...(receipt ? { receipt } : {}),
           now: now().getTime(),
         });
       } catch (error) {
@@ -186,7 +212,11 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       let lastHeartbeat = started;
       while (!subscribeOptions.signal?.aborted && now().getTime() - started < maxSessionMs) {
         const currentIdentity = await admittedIdentity(options, request, query, input);
-        if (currentIdentity.authorizationVersion !== identity.authorizationVersion || applicationAdmittedContextDigest(currentIdentity.admittedContext) !== applicationAdmittedContextDigest(identity.admittedContext) || !await query.authorize(currentIdentity.principal, input, currentIdentity.admittedContext.values)) {
+        const currentReceipt = await authorizeQueryOperation(options, 'subscription-resume', query, input, currentIdentity);
+        if (currentIdentity.authorizationVersion !== identity.authorizationVersion
+          || applicationAdmittedContextDigest(currentIdentity.admittedContext) !== applicationAdmittedContextDigest(identity.admittedContext)
+          || !sameReceiptRevision(receipt, currentReceipt)
+          || !await query.authorize(currentIdentity.principal, input, currentIdentity.admittedContext.values)) {
           options.audit?.({ event: 'subscription-reset', query: query.id, principal: identity.principal.id, reason: 'authorizationChanged' });
           yield resetEvent(query.id, 'authorizationChanged', now());
           return;
@@ -469,7 +499,14 @@ function encodeCursor(secret: string, payload: CursorPayload): string {
 }
 
 // typecast-boundary: HMAC verification precedes the closed cursor shape and every identity/version/expiry field is checked below.
-function decodeCursor(secret: string, cursor: string, expected: { readonly query: string; readonly inputKey: string; readonly contextDigest: string; readonly authorizationVersion: string; readonly now: number }): CursorPayload {
+function decodeCursor(secret: string, cursor: string, expected: {
+  readonly query: string;
+  readonly inputKey: string;
+  readonly contextDigest: string;
+  readonly authorizationVersion: string;
+  readonly now: number;
+  readonly receipt?: ApplicationAuthorizationReceipt;
+}): CursorPayload {
   const [body, signature, extra] = cursor.split('.');
   if (!body || !signature || extra) throw new CursorValidationError('cursorInvalid');
   const calculated = createHmac('sha256', secret).update(body).digest();
@@ -478,17 +515,88 @@ function decodeCursor(secret: string, cursor: string, expected: { readonly query
   if (supplied.length !== calculated.length || !timingSafeEqual(supplied, calculated)) throw new CursorValidationError('cursorInvalid');
   let payload: CursorPayload;
   try { payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as CursorPayload; } catch { throw new CursorValidationError('cursorInvalid'); }
-  if (payload.version !== 2 || !Number.isSafeInteger(payload.sequence) || payload.sequence < 0 || !opaqueCursorField(payload.contextBinding) || !opaqueCursorField(payload.authorizationBinding)) throw new CursorValidationError('cursorInvalid');
+  if ((payload.version !== 2 && payload.version !== 3) || !Number.isSafeInteger(payload.sequence) || payload.sequence < 0 || !opaqueCursorField(payload.contextBinding) || !opaqueCursorField(payload.authorizationBinding)) throw new CursorValidationError('cursorInvalid');
   if (payload.providerRevision !== undefined && (typeof payload.providerRevision !== 'string' || payload.providerRevision.length < 1 || payload.providerRevision.length > 512)) throw new CursorValidationError('cursorInvalid');
   if (payload.query !== expected.query) throw new CursorValidationError('queryVersionChanged');
   if (payload.inputKey !== expected.inputKey) throw new CursorValidationError('cursorInvalid');
   if (payload.contextBinding !== cursorBinding(secret, 'context', expected.contextDigest)) throw new CursorValidationError('contextChanged');
   if (payload.authorizationBinding !== cursorBinding(secret, 'authorization', expected.authorizationVersion)) throw new CursorValidationError('authorizationChanged');
+  if (expected.receipt) {
+    const fields = receiptCursorFields(secret, expected.receipt);
+    if (payload.version !== 3
+      || payload.applicationBinding !== fields.applicationBinding
+      || payload.principalBinding !== fields.principalBinding
+      || payload.operationId !== fields.operationId
+      || payload.operationVersion !== fields.operationVersion
+      || payload.catalogRevision !== fields.catalogRevision
+      || payload.authorityRevision !== fields.authorityRevision) {
+      throw new CursorValidationError('authorizationChanged');
+    }
+  } else if (payload.version === 3) {
+    throw new CursorValidationError('authorizationChanged');
+  }
   if (payload.expiresAt < expected.now) throw new CursorValidationError('cursorExpired');
   return payload;
 }
 
-function cursorBinding(secret: string, domain: 'authorization' | 'context', value: string): string { return createHmac('sha256', secret).update(`applik8s.query-cursor.${domain}\0`).update(value).digest('base64url'); }
+async function authorizeQueryOperation<TRequest, TPrincipal extends ApplicationQueryPrincipal>(
+  options: ApplicationQueryGatewayOptions<TRequest, TPrincipal>,
+  boundary: 'admission' | 'subscription-resume',
+  query: ApplicationQueryBinding<unknown, unknown, TPrincipal>,
+  input: unknown,
+  identity: ApplicationGatewayIdentity<TPrincipal>,
+): Promise<ApplicationAuthorizationReceipt | undefined> {
+  if (!options.authorizeOperation) return undefined;
+  const inputDigest = applicationOperationInputDigest(input);
+  const trustedContextDigest = applicationAdmittedContextDigest(identity.admittedContext);
+  const result = await options.authorizeOperation({
+    boundary,
+    query,
+    input,
+    identity,
+    inputDigest,
+    trustedContextDigest,
+  });
+  if (!result) throw new ApplicationQueryAuthorizationError(query.id);
+  const diagnostics = validateApplicationAuthorizationReceipt(result);
+  if (diagnostics.length > 0
+    || result.principal.id !== identity.principal.id
+    || result.inputDigest !== inputDigest
+    || result.trustedContextDigest !== trustedContextDigest) {
+    throw new Error(`Application query ${query.id} authority returned an invalid receipt: ${diagnostics.map((diagnostic) => diagnostic.message).join(' ')}`);
+  }
+  return result;
+}
+
+function receiptCursorFields(secret: string, receipt: ApplicationAuthorizationReceipt): Pick<
+  CursorPayload,
+  'applicationBinding' | 'principalBinding' | 'operationId' | 'operationVersion' | 'catalogRevision' | 'authorityRevision' | 'receiptId'
+> {
+  return {
+    applicationBinding: cursorBinding(secret, 'application', receipt.application),
+    principalBinding: cursorBinding(secret, 'principal', receipt.principal.id),
+    operationId: receipt.operationId,
+    operationVersion: receipt.operationVersion,
+    catalogRevision: receipt.catalogRevision,
+    authorityRevision: receipt.authorityRevision,
+    receiptId: receipt.id,
+  };
+}
+
+function sameReceiptRevision(
+  admitted: ApplicationAuthorizationReceipt | undefined,
+  current: ApplicationAuthorizationReceipt | undefined,
+): boolean {
+  if (!admitted || !current) return admitted === current;
+  return admitted.operationId === current.operationId
+    && admitted.application === current.application
+    && admitted.operationVersion === current.operationVersion
+    && admitted.catalogRevision === current.catalogRevision
+    && admitted.authorityRevision === current.authorityRevision
+    && admitted.principal.id === current.principal.id;
+}
+
+function cursorBinding(secret: string, domain: 'application' | 'authorization' | 'context' | 'principal', value: string): string { return createHmac('sha256', secret).update(`applik8s.query-cursor.${domain}\0`).update(value).digest('base64url'); }
 function opaqueCursorField(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value); }
 
 class CursorValidationError extends Error {

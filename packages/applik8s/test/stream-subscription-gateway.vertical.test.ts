@@ -1,4 +1,5 @@
 import { createApplicationStreamSubscriptionGateway, type ApplicationReplayPage } from '@applik8s/applik8s';
+import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
 import { describe, expect, test, vi } from 'vitest';
 
 const cursorSecret = 'stream-subscription-test-secret-with-32-characters';
@@ -20,6 +21,16 @@ describe('authenticated public stream subscriptions', () => {
     const replay = await response?.json() as { readonly cursor: string; readonly items: readonly unknown[] };
     expect(replay.items).toHaveLength(1);
     expect(replay.cursor).not.toContain('context-private');
+    const cursorBody = JSON.parse(
+      Buffer.from(replay.cursor.split('.')[0] ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    expect(cursorBody).toMatchObject({ version: 2, subscription: 'card-events' });
+    expect(cursorBody).not.toHaveProperty('principalId');
+    expect(cursorBody).not.toHaveProperty('authorizationVersion');
+    expect(cursorBody).not.toHaveProperty('contextDigest');
+    expect(JSON.stringify(cursorBody)).not.toContain('user-1');
+    expect(JSON.stringify(cursorBody)).not.toContain('membership-1');
+    expect(JSON.stringify(cursorBody)).not.toContain('context-private');
     expect(read).toHaveBeenCalledWith(0, 100);
     expect(close).toHaveBeenCalledOnce();
 
@@ -44,9 +55,30 @@ describe('authenticated public stream subscriptions', () => {
     const denied = fixture({ async read() { return page; } }, { authorize: false });
     await expect(denied.handle(request('/streams/card-events/replay', {}))).resolves.toMatchObject({ status: 403 });
   });
+
+  test('pins canonical operation authority and rejects a cursor after its authority revision changes', async () => {
+    const source = { async read() { return { items: [], nextSequence: 0, exhausted: true, retentionFloor: 0 }; } };
+    const first = fixture(source, { authorityRevision: 'authority-1' });
+    const response = await first.handle(request('/streams/card-events/replay', {}));
+    const cursor = (await response?.json() as { readonly cursor: string }).cursor;
+    const cursorBody = JSON.parse(
+      Buffer.from(cursor.split('.')[0] ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    expect(cursorBody).toMatchObject({
+      version: 2,
+      operationId: 'applik8s://stream-fixture/queries/cards.changed/operations/subscribe',
+      operationVersion: 'v1',
+      catalogRevision: 'catalog-1',
+      authorityRevision: 'authority-1',
+    });
+    expect(cursorBody.applicationBinding).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    const changed = fixture(source, { authorityRevision: 'authority-2' });
+    await expect(changed.handle(request('/streams/card-events/replay', { cursor }))).resolves.toMatchObject({ status: 400 });
+  });
 });
 
-function fixture(source: { read(after: number, limit: number): Promise<ApplicationReplayPage<object>>; close?(): Promise<void> }, options: { readonly principalId?: string; readonly authorize?: boolean } = {}) {
+function fixture(source: { read(after: number, limit: number): Promise<ApplicationReplayPage<object>>; close?(): Promise<void> }, options: { readonly principalId?: string; readonly authorize?: boolean; readonly authorityRevision?: string } = {}) {
   return createApplicationStreamSubscriptionGateway({
     subscriptions: [{
       name: 'card-events',
@@ -69,8 +101,53 @@ function fixture(source: { read(after: number, limit: number): Promise<Applicati
       open: () => source,
     }],
     authenticate: async () => ({ principal: { id: options.principalId ?? 'user-1' }, authorizationVersion: 'membership-1', contextDigest: 'context-private' }),
+    ...(options.authorityRevision ? {
+      authorizeOperation: async ({ identity, inputDigest, trustedContextDigest }) => streamReceipt(
+        identity.principal.id,
+        options.authorityRevision ?? 'authority-1',
+        inputDigest,
+        trustedContextDigest,
+      ),
+    } : {}),
     cursorSecret,
   });
 }
 
 function request(path: string, body: object): Request { return new Request(`https://catalog.test${path}`, { method: 'POST', body: JSON.stringify(body) }); }
+
+function streamReceipt(
+  principalId: string,
+  authorityRevision: string,
+  inputDigest: string,
+  trustedContextDigest: string,
+): ApplicationAuthorizationReceipt {
+  return {
+    apiVersion: 'applik8s.authorizationReceipt/v1alpha1',
+    application: 'stream-fixture',
+    id: `receipt-${authorityRevision}`,
+    operationId: 'applik8s://stream-fixture/queries/cards.changed/operations/subscribe',
+    operationVersion: 'v1',
+    catalogRevision: 'catalog-1',
+    authorityRevision,
+    principal: {
+      id: principalId,
+      identity: { id: `identity-${principalId}`, kind: 'human', issuer: 'fixture', subject: principalId },
+      kind: 'human',
+      authenticationMethod: 'fixture',
+      audience: ['stream-gateway'],
+      trustedContextDigest,
+      catalogRevision: 'catalog-1',
+      authorityRevision,
+      admittedAt: '2026-07-15T12:00:00.000Z',
+    },
+    trustedContextDigest,
+    matchedPermissionIds: [],
+    matchedGrantIds: [],
+    inputDigest,
+    target: { kind: 'all' },
+    scopeEvidence: [{ kind: 'all' }],
+    audience: 'stream-gateway',
+    transport: 'http',
+    admittedAt: '2026-07-15T12:00:00.000Z',
+  };
+}

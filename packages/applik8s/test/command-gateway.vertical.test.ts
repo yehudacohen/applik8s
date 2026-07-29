@@ -127,4 +127,146 @@ describe('authenticated command gateway', () => {
     expect(JSON.stringify(body)).not.toContain('must-not-leak');
     await gateway.close();
   });
+
+  it('persists canonical operation authorization receipts into durable command envelopes', async () => {
+    const publish = vi.fn(async () => ({
+      stream: 'events',
+      sequence: 1,
+      duplicate: false,
+      subject: 'command',
+      messageId: 'command-authorized',
+    }));
+    const principalContract = {
+      id: 'principal:user-1',
+      identity: { id: 'identity:user-1', kind: 'human' as const, issuer: 'test', subject: 'user-1' },
+      kind: 'human' as const,
+      authenticationMethod: 'test',
+      audience: ['chirp'],
+      trustedContextDigest: 'replaced-by-admission',
+      catalogRevision: 'catalog-1',
+      authorityRevision: 'authority-1',
+      admittedAt: '2026-07-29T00:00:00.000Z',
+    };
+    let durableReceipt: unknown;
+    const unsafe = vi.fn(async (statement: string, parameters: readonly unknown[]) => {
+      if (statement.includes('INSERT INTO applik8s_command_admissions')) {
+        durableReceipt = JSON.parse(String(parameters[4]));
+        return [{ scope: parameters[0] }];
+      }
+      if (statement.includes('SELECT authorization_receipt')) {
+        return [{ authorization_receipt: durableReceipt }];
+      }
+      if (statement.includes('applik8s_command_results')) {
+        return [{ output: { changed: true }, error: null, model_revision: 'revision-2' }];
+      }
+      throw new Error(`Unexpected SQL in command gateway fixture: ${statement}`);
+    });
+    let resultReadAllowed = true;
+    const revalidateOperation = vi.fn(async () => resultReadAllowed
+      ? { allowed: true as const }
+      : { allowed: false as const, code: 'AUTHORITY_REVOKED', message: 'revoked' });
+    const gateway = createApplicationCommandGateway({
+      commands: [{
+        id: 'cards.rename.v1',
+        bindingId: 'Card-cards.rename.v1',
+        model: 'Card',
+        operationId: 'applik8s://models/Card/operations/rename',
+        operationVersion: 'v1',
+        inputSchema: { type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] },
+        databaseUrl: 'postgres://unused',
+        sql: { unsafe } as never,
+        key: (input) => String(Reflect.get(input, 'cardId')),
+      }],
+      authenticate: async () => ({
+        principal: { id: 'user-1' },
+        principalContract,
+        trustedContext: { organizationId: 'organization-1' },
+        authorizationVersion: 'authority-1',
+      }),
+      authorizeOperation: async (request) => ({
+        allowed: true,
+        receipt: {
+          apiVersion: 'applik8s.authorizationReceipt/v1alpha1',
+          application: 'test',
+          id: 'receipt-1',
+          operationId: 'applik8s://models/Card/operations/rename',
+          operationVersion: 'v1',
+          catalogRevision: request.principal.catalogRevision,
+          authorityRevision: request.principal.authorityRevision,
+          principal: { ...request.principal, trustedContextDigest: request.trustedContextDigest },
+          trustedContextDigest: request.trustedContextDigest,
+          matchedPermissionIds: ['permission:card.rename'],
+          matchedGrantIds: ['grant:card.rename'],
+          inputDigest: request.inputDigest,
+          target: { kind: 'target', model: 'Card', identity: { id: request.targetKey } },
+          scopeEvidence: [],
+          audience: 'chirp',
+          transport: 'http',
+          admittedAt: '2026-07-29T00:00:00.000Z',
+        },
+      }),
+      revalidateOperation,
+      cursorSecret: 'a-secure-test-secret-with-at-least-32-characters',
+      eventLogPublisher: { publish, async drain() {} },
+    });
+
+    const response = await gateway.handle(new Request('https://catalog.test/commands/cards.rename.v1/submit', {
+      method: 'POST',
+      body: JSON.stringify({
+        input: { cardId: 'card-1' },
+        commandId: 'command-authorized',
+        idempotencyKey: 'rename-once',
+      }),
+    }));
+
+    expect(response?.status).toBe(202);
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      authorizationReceipt: expect.objectContaining({
+        id: 'receipt-1',
+        operationId: 'applik8s://models/Card/operations/rename',
+        trustedContextDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    }), 'commands');
+    const submission = await response?.json() as { readonly progressCursor: string };
+    const cursorBody = JSON.parse(
+      Buffer.from(submission.progressCursor.split('.')[0] ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    expect(cursorBody).toMatchObject({
+      version: 3,
+      operationId: 'applik8s://models/Card/operations/rename',
+      operationVersion: 'v1',
+      catalogRevision: 'catalog-1',
+      authorityRevision: 'authority-1',
+      receiptBinding: expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),
+    });
+    expect(JSON.stringify(cursorBody)).not.toContain('principal:user-1');
+    expect(JSON.stringify(cursorBody)).not.toContain('receipt-1');
+
+    const progress = await gateway.handle(new Request(
+      'https://catalog.test/commands/cards.rename.v1/progress',
+      { method: 'POST', body: JSON.stringify({ cursor: submission.progressCursor }) },
+    ));
+    expect(progress?.status).toBe(200);
+    await expect(progress?.json()).resolves.toMatchObject({
+      durableResult: 'succeeded',
+      output: { changed: true },
+    });
+    expect(revalidateOperation).toHaveBeenCalledWith(expect.objectContaining({
+      boundary: 'result-read',
+      receipt: expect.objectContaining({ id: 'receipt-1' }),
+      principal: expect.objectContaining({ id: 'principal:user-1' }),
+    }));
+
+    resultReadAllowed = false;
+    const deniedProgress = await gateway.handle(new Request(
+      'https://catalog.test/commands/cards.rename.v1/progress',
+      { method: 'POST', body: JSON.stringify({ cursor: submission.progressCursor }) },
+    ));
+    expect(deniedProgress?.status).toBe(403);
+    await expect(deniedProgress?.json()).resolves.toEqual({
+      error: 'forbidden',
+      code: 'AUTHORITY_REVOKED',
+    });
+    await gateway.close();
+  });
 });

@@ -1,5 +1,6 @@
 // typecast-file-boundary: the observer validates untyped Kubernetes status payloads before projecting typed readiness.
 import type { ResolvedApplicationContainerRegistry } from '@applik8s/applik8s/deployment-registry';
+import type { DeploymentJsonObject } from '@applik8s/deployment-contract';
 import { makeKubernetesApiClient } from './kubernetes-api-client.js';
 
 export interface ApplicationDeploymentObserverIo {
@@ -17,6 +18,83 @@ export interface ApplicationInstallationReadiness {
   readonly state: 'pending' | 'ready' | 'failed';
   readonly summary: string;
   readonly url?: string;
+}
+
+/**
+ * Read the currently admitted installation spec before planning a profile
+ * transition. A missing CRD or object means this is a fresh installation;
+ * malformed live state fails closed.
+ */
+export async function readApplicationInstanceSpec(
+  context: string,
+  instance: ObservedApplicationInstance,
+): Promise<DeploymentJsonObject | undefined> {
+  const [group, version] = instance.apiVersion.split('/');
+  if (!group || !version) {
+    throw new Error(
+      `Application instance apiVersion ${instance.apiVersion} is not a grouped Kubernetes API version.`,
+    );
+  }
+  // static-import-exception: Kubernetes observation belongs only in the Node deployment host.
+  const kubernetes = await import('@kubernetes/client-node');
+  const kubeConfig = new kubernetes.KubeConfig();
+  kubeConfig.loadFromDefault();
+  kubeConfig.setCurrentContext(context);
+  const extensions = makeKubernetesApiClient(
+    kubeConfig,
+    kubernetes.ApiextensionsV1Api,
+  );
+  const crds = await extensions.listCustomResourceDefinition({});
+  const crd = crds.items.find(
+    (candidate) =>
+      candidate.spec.group === group
+      && candidate.spec.names.kind === instance.kind
+      && candidate.spec.versions.some(
+        (candidateVersion) =>
+          candidateVersion.name === version && candidateVersion.served,
+      ),
+  );
+  const plural = crd?.spec.names.plural;
+  if (!plural) return undefined;
+  const customObjects = makeKubernetesApiClient(
+    kubeConfig,
+    kubernetes.CustomObjectsApi,
+  );
+  const resource = await customObjects
+    .getNamespacedCustomObject({
+      group,
+      version,
+      namespace: instance.namespace,
+      plural,
+      name: instance.name,
+    })
+    .catch((cause: unknown) => {
+      if (kubernetesStatusCode(cause) === 404) return undefined;
+      throw cause;
+    });
+  if (!resource) return undefined;
+  return applicationInstanceSpec(resource, instance);
+}
+
+export function applicationInstanceSpec(
+  resource: unknown,
+  instance: ObservedApplicationInstance,
+): DeploymentJsonObject {
+  if (!resource || typeof resource !== 'object' || Array.isArray(resource)) {
+    throw new Error(
+      `Live ${instance.apiVersion}/${instance.kind}/${instance.namespace}/${instance.name} is not a JSON object.`,
+    );
+  }
+  const spec = Reflect.get(resource, 'spec');
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+    throw new Error(
+      `Live ${instance.apiVersion}/${instance.kind}/${instance.namespace}/${instance.name} has no JSON object spec.`,
+    );
+  }
+  assertDeploymentJson(spec, 'live installation spec');
+  // typecast-boundary: assertDeploymentJson recursively rejected every
+  // non-JSON value and the object/array root distinction is checked above.
+  return spec as DeploymentJsonObject;
 }
 
 /** Reject stale instance readiness until KRO accepts the exact graph generation just applied. */
@@ -322,6 +400,39 @@ export async function verifyApplicationRegistryPullSecret(
   if (secret.type !== 'kubernetes.io/dockerconfigjson' || !secret.data?.['.dockerconfigjson']) {
     throw new Error(`ContainerRegistry pull Secret ${registry.pullSecret.namespace}/${registry.pullSecret.name} must be type kubernetes.io/dockerconfigjson with .dockerconfigjson data.`);
   }
+}
+
+function assertDeploymentJson(value: unknown, path: string): void {
+  if (
+    value === null
+    || typeof value === 'string'
+    || typeof value === 'boolean'
+  ) {
+    return;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new Error(`${path} contains a non-finite number.`);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const [index, entry] of value.entries()) {
+      assertDeploymentJson(entry, `${path}[${index}]`);
+    }
+    return;
+  }
+  if (value && typeof value === 'object') {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error(`${path} contains a non-JSON object.`);
+    }
+    for (const [key, entry] of Object.entries(value)) {
+      assertDeploymentJson(entry, `${path}.${key}`);
+    }
+    return;
+  }
+  throw new Error(`${path} contains a non-JSON value.`);
 }
 
 function kubernetesStatusCode(cause: unknown): number | undefined {

@@ -83,7 +83,7 @@ export interface ApplicationCommandProgress {
   readonly progressCursor?: string;
   readonly output?: unknown;
   readonly rejection?: { readonly name: string; readonly payload: unknown };
-  readonly failure?: { readonly code: 'processing_failed'; readonly attempts?: number };
+  readonly failure?: { readonly code: 'processing_failed' | 'authorization_denied'; readonly attempts?: number };
   readonly modelRevision?: string;
   readonly workflow?: 'notStarted' | 'running' | 'waiting' | 'succeeded' | 'failed' | 'cancelled';
   readonly reconciliation?: 'notObserved' | 'progressing' | 'ready' | 'failed';

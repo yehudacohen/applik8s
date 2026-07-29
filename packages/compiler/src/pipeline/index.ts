@@ -5,6 +5,7 @@ import type {
   ApplicationGraph,
   ApplicationGraphArtifactReference,
   ApplicationInstallationArtifactContract,
+  ApplicationWorkloadAuthorityEnvelope,
   BundleArtifact,
   Diagnostic,
   JsonObject,
@@ -12,7 +13,7 @@ import type {
   OperatorManifest,
   Result,
 } from '@applik8s/core';
-import { applicationGraphArtifactFileName, serializeApplicationGraph, validateApplicationGraph } from '@applik8s/core';
+import { applicationGraphArtifactFileName, applicationOperationCatalogArtifactFileName, applicationWorkloadAuthorityArtifactFileName, serializeApplicationGraph, validateApplicationGraph } from '@applik8s/core';
 import { parseAllDocuments, stringify } from 'yaml';
 import { applicationGraphStringValue } from '../application-installation-values.js';
 import type { GeneratedApplicationMigrationArtifact } from '../application-migrations/index.js';
@@ -26,6 +27,7 @@ import {
 } from '../application-reactive/index.js';
 import type { GeneratedApplicationWorkflowArtifact } from '../application-workflows/index.js';
 import { emitGeneratedApplicationWorkflows } from '../application-workflows/index.js';
+import { compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 import { compilerArtifactLayout } from '../artifacts/index.js';
 import { bundleHandlerEntrypoint } from '../bundling/index.js';
 import type {
@@ -108,6 +110,7 @@ export interface CompileOperatorPipeline {
 
 export interface CompileTypeKroCompositionRequest extends CompileOperatorRequest {
   readonly compositionName?: string;
+  readonly operationCatalogPolicy?: 'development' | 'production';
   readonly operatorKubernetesConnectionBindings?: Readonly<Record<string, NonNullable<CompileOptions['kubernetesConnectionBindings']>>>;
 }
 
@@ -150,6 +153,18 @@ export interface TypeKroCompositionBundleManifest extends JsonObject {
     readonly resourceCount: number;
     readonly operators: readonly TypeKroCompositionOperatorArtifactReference[];
     readonly applicationGraph?: ApplicationGraphArtifactReference;
+    readonly operationCatalog?: {
+      readonly apiVersion: 'applik8s.operationCatalog/v1alpha1';
+      readonly revision: string;
+      readonly path: string;
+      readonly digest: string;
+    };
+    readonly workloadAuthority?: {
+      readonly apiVersion: 'applik8s.workloadAuthoritySet/v1alpha1';
+      readonly path: string;
+      readonly digest: string;
+      readonly count: number;
+    };
     readonly migrations?: readonly TypeKroCompositionMigrationArtifactReference[];
     readonly processors?: readonly TypeKroCompositionProcessorArtifactReference[];
     readonly workflows?: readonly TypeKroCompositionWorkflowArtifactReference[];
@@ -221,6 +236,9 @@ export interface TypeKroCompositionArtifacts {
   readonly resourceYamlPaths: readonly string[];
   readonly instanceYamlPaths: readonly string[];
   readonly applicationGraphJsonPath?: string;
+  readonly operationCatalogJsonPath?: string;
+  readonly workloadAuthorityJsonPath?: string;
+  readonly workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[];
   readonly migrationArtifacts: readonly GeneratedApplicationMigrationArtifact[];
   readonly processorArtifacts: readonly GeneratedApplicationProcessorArtifact[];
   readonly workflowArtifacts: readonly GeneratedApplicationWorkflowArtifact[];
@@ -243,6 +261,7 @@ interface EmitTypeKroCompositionArtifactsRequest {
   readonly operatorCompiles: readonly CompileResult[];
   readonly applicationGraph?: ApplicationGraph;
   readonly applicationInstallation?: ApplicationInstallationArtifactContract;
+  readonly operationCatalogPolicy?: 'development' | 'production';
 }
 
 const defaultStages: readonly CompilerPipelineStageName[] = [
@@ -353,6 +372,7 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
     operatorCompiles,
     ...(applicationGraph ? { applicationGraph } : {}),
     ...(applicationInstallation ? { applicationInstallation } : {}),
+    ...(request.operationCatalogPolicy ? { operationCatalogPolicy: request.operationCatalogPolicy } : {}),
     ...(composition.value.name ? { exportName: composition.value.name } : {}),
   });
   if (!artifacts.ok) {
@@ -383,17 +403,31 @@ function portableOperatorDefinition(definition: OperatorDefinition): OperatorDef
 
 async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionArtifactsRequest): Promise<Result<TypeKroCompositionArtifacts>> {
   try {
+    const operationCatalog = request.applicationGraph
+      ? compileApplicationOperationCatalog(request.applicationGraph, {
+          requireClassified: request.operationCatalogPolicy === 'production',
+        })
+      : undefined;
+    const workloadAuthority = request.applicationGraph && operationCatalog
+      ? compileApplicationWorkloadAuthority(request.applicationGraph, operationCatalog)
+      : [];
     const migrationArtifacts = request.applicationGraph
       ? await emitGeneratedApplicationMigrations({ graph: request.applicationGraph, outDir: join(request.outDir, 'migrations'), entrypoint: request.entrypoint })
       : [];
     const processorArtifacts = request.applicationGraph
-      ? await emitGeneratedApplicationProcessors({ graph: request.applicationGraph, outDir: join(request.outDir, 'processors'), entrypoint: request.entrypoint })
+      ? await emitGeneratedApplicationProcessors({ graph: request.applicationGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'processors'), entrypoint: request.entrypoint })
       : [];
     const workflowArtifacts = request.applicationGraph
-      ? await emitGeneratedApplicationWorkflows({ graph: request.applicationGraph, outDir: join(request.outDir, 'workflows'), entrypoint: request.entrypoint })
+      ? await emitGeneratedApplicationWorkflows({
+          graph: request.applicationGraph,
+          ...(operationCatalog ? { operationCatalog } : {}),
+          workloadAuthority,
+          outDir: join(request.outDir, 'workflows'),
+          entrypoint: request.entrypoint,
+        })
       : [];
     const reactiveArtifacts = request.applicationGraph
-      ? await emitGeneratedApplicationReactive({ graph: request.applicationGraph, outDir: join(request.outDir, 'reactive'), entrypoint: request.entrypoint })
+      ? await emitGeneratedApplicationReactive({ graph: request.applicationGraph, ...(operationCatalog ? { operationCatalog } : {}), outDir: join(request.outDir, 'reactive'), entrypoint: request.entrypoint })
       : [];
     const hostResources = request.applicationGraph
       ? await generatedApplicationHostResources({ graph: request.applicationGraph, entrypoint: request.entrypoint, outDir: join(request.outDir, 'application-host') })
@@ -439,6 +473,8 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const applyScriptPath = join(request.outDir, 'apply.sh');
     const templateManifestListPath = join(request.outDir, 'template-manifests.txt');
     const applicationGraphJsonPath = request.applicationGraph ? join(request.outDir, applicationGraphArtifactFileName) : undefined;
+    const operationCatalogJsonPath = request.applicationGraph ? join(request.outDir, applicationOperationCatalogArtifactFileName) : undefined;
+    const workloadAuthorityJsonPath = request.applicationGraph ? join(request.outDir, applicationWorkloadAuthorityArtifactFileName) : undefined;
     const resourceYamlPaths: string[] = [];
     const instanceYamlPaths: string[] = [];
     const templateFingerprints = typeKroTemplateResourceFingerprints(resources);
@@ -447,6 +483,19 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
       await writeFile(applicationGraphJsonPath, serializeApplicationGraph(request.applicationGraph));
     }
     const applicationGraphDigest = applicationGraphJsonPath ? await digestFile(applicationGraphJsonPath) : undefined;
+    if (operationCatalog && operationCatalogJsonPath) {
+      await writeFile(operationCatalogJsonPath, `${JSON.stringify(operationCatalog, null, 2)}\n`);
+    }
+    const operationCatalogDigest = operationCatalogJsonPath ? await digestFile(operationCatalogJsonPath) : undefined;
+    if (workloadAuthorityJsonPath) {
+      await writeFile(workloadAuthorityJsonPath, `${JSON.stringify({
+        apiVersion: 'applik8s.workloadAuthoritySet/v1alpha1',
+        application: request.applicationGraph?.metadata.name,
+        catalogRevision: operationCatalog?.revision,
+        envelopes: workloadAuthority,
+      }, null, 2)}\n`);
+    }
+    const workloadAuthorityDigest = workloadAuthorityJsonPath ? await digestFile(workloadAuthorityJsonPath) : undefined;
 
     const manifest: TypeKroCompositionBundleManifest = {
       apiVersion: 'applik8s.dev/v1alpha1',
@@ -463,6 +512,22 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
             apiVersion: request.applicationGraph.apiVersion,
             path: applicationGraphJsonPath,
             digest: applicationGraphDigest,
+          },
+        } : {}),
+        ...(operationCatalog && operationCatalogJsonPath && operationCatalogDigest ? {
+          operationCatalog: {
+            apiVersion: operationCatalog.apiVersion,
+            revision: operationCatalog.revision,
+            path: operationCatalogJsonPath,
+            digest: operationCatalogDigest,
+          },
+        } : {}),
+        ...(workloadAuthorityJsonPath && workloadAuthorityDigest ? {
+          workloadAuthority: {
+            apiVersion: 'applik8s.workloadAuthoritySet/v1alpha1',
+            path: workloadAuthorityJsonPath,
+            digest: workloadAuthorityDigest,
+            count: workloadAuthority.length,
           },
         } : {}),
         ...(migrationArtifacts.length > 0 ? { migrations: migrationArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
@@ -519,6 +584,9 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         resourceYamlPaths,
         instanceYamlPaths,
         ...(applicationGraphJsonPath ? { applicationGraphJsonPath } : {}),
+        ...(operationCatalogJsonPath ? { operationCatalogJsonPath } : {}),
+        ...(workloadAuthorityJsonPath ? { workloadAuthorityJsonPath } : {}),
+        workloadAuthority,
         migrationArtifacts,
         processorArtifacts,
         workflowArtifacts,

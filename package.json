@@ -28,6 +28,7 @@
     "packages/runtime-nats",
     "packages/runtime-kubernetes",
     "packages/runtime-postgres",
+    "packages/operations",
     "packages/testing",
     "packages/typekro-adapter",
     "packages/typetainer",

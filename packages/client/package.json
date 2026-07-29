@@ -13,5 +13,8 @@
   },
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "dependencies": {
+    "@applik8s/core": "0.6.0"
   }
 }

@@ -6,16 +6,20 @@ import type {
   ApplicationGraph,
   ApplicationModelNode,
   ApplicationObjectStoreNode,
+  ApplicationOperationCatalog,
   ApplicationProjectionNode,
   ApplicationProviderNode,
   ApplicationQueryNode,
   ApplicationStreamNode,
   ApplicationTaskHandlerNode,
   ApplicationTaskNode,
+  ApplicationStaticAuthorityManifest,
+  ApplicationWorkloadAuthorityEnvelope,
   ApplicationWorkflowHandlerNode,
   ApplicationWorkflowNode,
   ApplicationWorkflowWorkerNode,
 } from '@applik8s/core';
+import ts from 'typescript';
 import { applicationGraphStringValue } from '../application-installation-values.js';
 import { kubernetesName, objectConfig, stringConfig } from './utilities.js';
 
@@ -30,6 +34,8 @@ export interface WorkflowContract {
   readonly workflows: readonly { readonly handler: ApplicationWorkflowHandlerNode; readonly workflow: ApplicationWorkflowNode }[];
   readonly capabilities: readonly ApplicationProviderNode[];
   readonly operationEffects?: WorkflowOperationEffectsContract;
+  readonly operationCatalog?: ApplicationOperationCatalog;
+  readonly authorityManifest?: ApplicationStaticAuthorityManifest;
   readonly queryEffects?: WorkflowQueryEffectsContract;
   readonly projectionEffects?: WorkflowProjectionEffectsContract;
 	readonly objectEffects?: WorkflowObjectEffectsContract;
@@ -45,6 +51,7 @@ export interface WorkflowContract {
 interface WorkflowTaskOperationContract {
   readonly taskHandlerId: string;
   readonly alias: string;
+  readonly authority: NonNullable<ApplicationTaskHandlerNode['operations']>[number]['authority'];
   readonly handler: ApplicationCommandHandlerNode;
   readonly command: ApplicationCommandNode;
   readonly model: ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> };
@@ -52,9 +59,17 @@ interface WorkflowTaskOperationContract {
 
 interface WorkflowOperationEffectsContract {
   readonly operations: readonly WorkflowTaskOperationContract[];
-  readonly aliases: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  readonly aliases: Readonly<Record<string, Readonly<Record<string, WorkflowOperationAliasContract>>>>;
   readonly eventLog: ApplicationProviderNode;
   readonly cursorSecret: { readonly name: string; readonly key: string };
+}
+
+export interface WorkflowOperationAliasContract {
+  readonly commandId: string;
+  readonly operationId: string;
+  readonly boundKeys: readonly string[];
+  readonly projectionSource?: string;
+  readonly envelope: ApplicationWorkloadAuthorityEnvelope;
 }
 
 interface WorkflowTaskQueryContract {
@@ -109,7 +124,12 @@ export interface StructuredGenerationSelectionConfig {
   readonly default: Readonly<Record<string, unknown>>;
 }
 
-export function workflowContract(graph: ApplicationGraph, worker: ApplicationWorkflowWorkerNode): WorkflowContract {
+export function workflowContract(
+  graph: ApplicationGraph,
+  worker: ApplicationWorkflowWorkerNode,
+  operationCatalog?: ApplicationOperationCatalog,
+  workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[] = [],
+): WorkflowContract {
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const provider = nodes.get(worker.workflowEngine.nodeId);
   if (provider?.kind !== 'provider' || provider.interface !== 'WorkflowEngine' || provider.implementation !== 'hatchet') {
@@ -149,7 +169,7 @@ export function workflowContract(graph: ApplicationGraph, worker: ApplicationWor
     }
   }
   for (const capability of capabilities.values()) validateWorkflowCapability(capability, namespace, worker);
-  const operationEffects = workflowOperationEffects(graph, nodes, tasks, namespace, worker);
+  const operationEffects = workflowOperationEffects(graph, nodes, tasks, namespace, worker, workloadAuthority);
   const queryEffects = workflowQueryEffects(graph, nodes, tasks, namespace, worker);
   const projectionEffects = workflowProjectionEffects(nodes, tasks, namespace, worker);
 	const objectEffects = workflowObjectEffects(nodes, tasks, namespace, worker);
@@ -168,6 +188,12 @@ export function workflowContract(graph: ApplicationGraph, worker: ApplicationWor
     workflows,
     capabilities: [...capabilities.values()].sort((left, right) => left.id.localeCompare(right.id)),
     ...(operationEffects ? { operationEffects } : {}),
+    ...(operationEffects && operationCatalog ? { operationCatalog } : {}),
+    ...(operationEffects
+      ? graph.nodes.find((node) => node.kind === 'authorityManifest')
+        ? { authorityManifest: graph.nodes.find((node) => node.kind === 'authorityManifest')!.manifest }
+        : {}
+      : {}),
     ...(queryEffects ? { queryEffects } : {}),
     ...(projectionEffects ? { projectionEffects } : {}),
 		...(objectEffects ? { objectEffects } : {}),
@@ -324,16 +350,18 @@ function workflowOperationEffects(
   tasks: readonly { readonly handler: ApplicationTaskHandlerNode; readonly task: ApplicationTaskNode }[],
   namespace: string,
   worker: ApplicationWorkflowWorkerNode,
+  workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
 ): WorkflowOperationEffectsContract | undefined {
   const operations: WorkflowTaskOperationContract[] = [];
-  const aliases: Record<string, Record<string, string>> = {};
+  const aliases: Record<string, Record<string, WorkflowOperationAliasContract>> = {};
   const cursorSecrets = new Map<string, { readonly name: string; readonly key: string }>();
   for (const { handler } of tasks) {
     if ((handler.operations?.length ?? 0) === 0) continue;
     if (!handler.operationPrincipalSource) throw new Error(`Workflow task ${handler.id} declares operations without a service-principal derivation.`);
     if ((handler.operationPrincipalUnresolved?.length ?? 0) > 0) throw new Error(`Workflow task ${handler.id} operation principal contains unresolved identifiers: ${handler.operationPrincipalUnresolved?.join(', ')}.`);
-    const taskAliases: Record<string, string> = {};
+    const taskAliases: Record<string, WorkflowOperationAliasContract> = {};
     for (const operation of handler.operations ?? []) {
+      validateWorkflowExecutionBinding(handler.id, operation.alias, operation.authority.binding);
       const command = nodes.get(operation.command.nodeId);
       const commandHandler = nodes.get(operation.handler.nodeId);
       if (command?.kind !== 'command' || commandHandler?.kind !== 'commandHandler' || commandHandler.command.nodeId !== command.id) {
@@ -341,6 +369,12 @@ function workflowOperationEffects(
       }
       const model = nodes.get(commandHandler.model.nodeId);
       if (model?.kind !== 'model' || !model.runtime) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} has no relational model runtime.`);
+      const envelope = workloadAuthority.find((candidate) =>
+        candidate.operationId === operation.authority.operationId
+        && candidate.workloadIdentity.subject === handler.id);
+      if (!envelope) {
+        throw new Error(`Workflow task ${handler.id} operation ${operation.alias} has no compiled workload authority envelope.`);
+      }
       assertWorkflowSecretNamespace(model.runtime.secretNamespace, namespace, `Workflow task ${handler.id} operation ${operation.alias} database Secret`);
       const gateways = [...nodes.values()].filter((candidate): candidate is ApplicationGatewayNode => candidate.kind === 'gateway'
         && candidate.materialization === 'generatedDeployment'
@@ -354,8 +388,23 @@ function workflowOperationEffects(
       const secretName = applicationGraphStringValue(gateway.cursorSecret.name);
       if (!secretName || !gateway.cursorSecret.key) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} gateway cursor Secret is not concrete.`);
       cursorSecrets.set(`${secretName}\0${gateway.cursorSecret.key}`, { name: secretName, key: gateway.cursorSecret.key });
-      operations.push({ taskHandlerId: handler.id, alias: operation.alias, handler: commandHandler, command, model: model as ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> } });
-      taskAliases[operation.alias] = `${command.contract.name}.${command.contract.version}`;
+      operations.push({
+        taskHandlerId: handler.id,
+        alias: operation.alias,
+        authority: operation.authority,
+        handler: commandHandler,
+        command,
+        model: model as ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> },
+      });
+      taskAliases[operation.alias] = {
+        commandId: `${command.contract.name}.${command.contract.version}`,
+        operationId: operation.authority.operationId,
+        boundKeys: operation.authority.binding?.boundKeys ?? [],
+        ...(operation.authority.binding
+          ? { projectionSource: operation.authority.binding.projectionSource }
+          : {}),
+        envelope,
+      };
     }
     aliases[handler.id] = taskAliases;
   }
@@ -372,6 +421,128 @@ function workflowOperationEffects(
     eventLog,
     cursorSecret: [...cursorSecrets.values()][0] as { readonly name: string; readonly key: string },
   };
+}
+
+function validateWorkflowExecutionBinding(
+  handlerId: string,
+  alias: string,
+  binding: NonNullable<ApplicationTaskHandlerNode['operations']>[number]['authority']['binding'] | undefined,
+): void {
+  if (!binding) return;
+  const sourceFile = ts.createSourceFile(
+    `${handlerId}.${alias}.binding.ts`,
+    `const __applik8sProjection = (${binding.projectionSource});`,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const declaration = sourceFile.statements[0];
+  const initializer = declaration && ts.isVariableStatement(declaration)
+    ? declaration.declarationList.declarations[0]?.initializer
+    : undefined;
+  const expression = initializer && ts.isParenthesizedExpression(initializer)
+    ? initializer.expression
+    : initializer;
+  if (!expression || (!ts.isArrowFunction(expression) && !ts.isFunctionExpression(expression))) {
+    throw new Error(`Workflow task ${handlerId} operation ${alias} execution binding must be one serializable projection function.`);
+  }
+  const parameter = expression.parameters[0];
+  if (expression.parameters.length !== 1 || !parameter || !ts.isIdentifier(parameter.name)) {
+    throw new Error(`Workflow task ${handlerId} operation ${alias} execution binding must declare exactly one source parameter.`);
+  }
+  const sourceName = parameter.name.text;
+  if (ts.isBlock(expression.body)) {
+    throw new Error(`Workflow task ${handlerId} operation ${alias} execution binding must use an expression body so its complete returned key set is statically provable.`);
+  }
+  const returned = executionBindingObjectBranches(expression.body);
+  if (returned.length === 0) {
+    throw new Error(`Workflow task ${handlerId} operation ${alias} execution binding does not return a statically provable object.`);
+  }
+  const expected = [...binding.boundKeys].sort();
+  for (const branch of returned) {
+    const keys = executionBindingObjectKeys(branch, handlerId, alias);
+    if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+      throw new Error(`Workflow task ${handlerId} operation ${alias} execution binding must return exactly ${expected.join(', ')} on every branch; received ${keys.join(', ')}.`);
+    }
+    for (const property of branch.properties) {
+      if (ts.isPropertyAssignment(property)) assertPureExecutionBindingValue(property.initializer, sourceName, handlerId, alias);
+      else if (ts.isShorthandPropertyAssignment(property) && property.name.text !== sourceName) {
+        throw new Error(`Workflow task ${handlerId} operation ${alias} execution binding shorthand ${property.name.text} is not derived from its source parameter.`);
+      }
+    }
+  }
+}
+
+function executionBindingObjectBranches(expression: ts.Expression): readonly ts.ObjectLiteralExpression[] {
+  if (ts.isParenthesizedExpression(expression)) return executionBindingObjectBranches(expression.expression);
+  if (ts.isObjectLiteralExpression(expression)) return [expression];
+  if (ts.isConditionalExpression(expression)) {
+    return [
+      ...executionBindingObjectBranches(expression.whenTrue),
+      ...executionBindingObjectBranches(expression.whenFalse),
+    ];
+  }
+  return [];
+}
+
+function executionBindingObjectKeys(
+  value: ts.ObjectLiteralExpression,
+  handlerId: string,
+  alias: string,
+): readonly string[] {
+  const keys = value.properties.map((property) => {
+    if (ts.isSpreadAssignment(property)
+      || !('name' in property)
+      || !property.name
+      || ts.isComputedPropertyName(property.name)
+      || (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property))) {
+      throw new Error(`Workflow task ${handlerId} operation ${alias} execution binding cannot use spreads, computed keys, methods, or accessors.`);
+    }
+    return ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) || ts.isNumericLiteral(property.name)
+      ? property.name.text
+      : undefined;
+  });
+  if (keys.some((key) => key === undefined)) {
+    throw new Error(`Workflow task ${handlerId} operation ${alias} execution binding contains an unsupported property name.`);
+  }
+  const normalized = keys as string[];
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error(`Workflow task ${handlerId} operation ${alias} execution binding contains duplicate keys.`);
+  }
+  return normalized.sort();
+}
+
+function assertPureExecutionBindingValue(
+  expression: ts.Expression,
+  sourceName: string,
+  handlerId: string,
+  alias: string,
+): void {
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)
+      || ts.isNewExpression(node)
+      || ts.isAwaitExpression(node)
+      || ts.isYieldExpression(node)
+      || ts.isDeleteExpression(node)
+      || ts.isPostfixUnaryExpression(node)
+      || (ts.isPrefixUnaryExpression(node)
+        && (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken))
+      || ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+        && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
+      throw new Error(`Workflow task ${handlerId} operation ${alias} execution binding must be deterministic and side-effect free.`);
+    }
+    if (ts.isIdentifier(node)) {
+      const parent = node.parent;
+      const isPropertyName = (ts.isPropertyAccessExpression(parent) && parent.name === node)
+        || (ts.isPropertyAssignment(parent) && parent.name === node)
+        || (ts.isShorthandPropertyAssignment(parent) && parent.name === node);
+      if (!isPropertyName && node.text !== sourceName && node.text !== 'undefined') {
+        throw new Error(`Workflow task ${handlerId} operation ${alias} execution binding references undeclared identifier ${node.text}; inline a source-derived expression.`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(expression);
 }
 
 function assertWorkflowSecretNamespace(value: unknown, namespace: string, owner: string): void {

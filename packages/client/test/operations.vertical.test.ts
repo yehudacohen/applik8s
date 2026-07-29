@@ -171,4 +171,67 @@ describe('application operations', () => {
     expect(Reflect.get(model, 'published')).toBe(published);
     expect(() => attachApplicationOperations(model, { name: published })).toThrow(/cannot replace existing model member name/);
   });
+
+  it('classifies the same direct callable as public or permission-assigned authority', () => {
+    const create = createApplicationMutationOperation(createContract, async () => ({ id: 'entry-1' }));
+    expect(create.authority.classification).toBe('unclassified');
+    expect(create.public()).toBe(create);
+    expect(create.authority).toMatchObject({
+      classification: 'public',
+      grantable: false,
+      permissionIds: [],
+    });
+
+    expect(create.requires({ id: 'permission:guestbook-editor' })).toBe(create);
+    expect(create.authority).toMatchObject({
+      classification: 'assigned',
+      permissionIds: ['permission:guestbook-editor'],
+    });
+    expect(create.permission).toEqual({
+      operation: create,
+      operationId: createContract.id,
+    });
+    expect(getApplicationOperationContract(create)?.authority).toEqual(create.authority);
+  });
+
+  it('builds serializable target scopes and terminal execution bindings from the callable handle', () => {
+    const create = createApplicationMutationOperation<
+      { message: string; guestbookId: string },
+      { id: string },
+      { authorId: string; tenantId: string }
+    >(createContract, async () => ({ id: 'entry-1' }));
+    const scoped = create
+      .where((target) => target.tenantId.eq({ source: 'principal', path: 'identity.tenantId' }))
+      .on({ model: 'GuestBookEntry', identity: { id: 'entry-1' } })
+      .where((target) => target.authorId.eq('author-1'));
+    expect(scoped).toMatchObject({
+      target: { kind: 'target', model: 'GuestBookEntry', identity: { id: 'entry-1' } },
+      predicates: [
+        {
+          kind: 'compare',
+          field: 'tenantId',
+          operator: 'eq',
+          value: { kind: 'reference', source: 'principal', path: 'identity.tenantId' },
+        },
+        {
+          kind: 'compare',
+          field: 'authorId',
+          operator: 'eq',
+          value: { kind: 'literal', value: 'author-1' },
+        },
+      ],
+    });
+
+    const bound = scoped.onInput((input: { guestbookId: string }) => ({
+      guestbookId: input.guestbookId,
+    }));
+    expect(bound).toMatchObject({
+      operation: create,
+      source: 'input',
+      boundKeys: ['guestbookId'],
+    });
+    expect(Reflect.has(bound, 'where')).toBe(false);
+    expect(Reflect.has(bound, 'on')).toBe(false);
+    expect(Reflect.has(bound, 'all')).toBe(false);
+  });
 });

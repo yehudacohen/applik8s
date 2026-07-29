@@ -202,7 +202,7 @@ describe('v0.5 durable task and workflow contracts', () => {
       output: type({ identity: 'string' }),
     });
     platform.task(WriteRecord, {
-      operations: { create: RecordModel.create },
+      operations: { create: RecordModel.create.all() },
       queries: { recent: RecordModel.recent },
       principal: (input) => ({ id: `writer:${input.id}`, claims: { role: 'record-writer' }, authorizationVersion: 'records-v1' }),
     }, async (input, context) => {
@@ -215,7 +215,15 @@ describe('v0.5 durable task and workflow contracts', () => {
     expect(graph?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'taskHandler',
-        operations: [{ alias: 'create', command: { nodeId: 'command.models.record.create.v1' }, handler: { nodeId: 'command-handler.record-models.record.create.v1' } }],
+        operations: [expect.objectContaining({
+          alias: 'create',
+          command: { nodeId: 'command.models.record.create.v1' },
+          handler: { nodeId: 'command-handler.record-models.record.create.v1' },
+          authority: expect.objectContaining({
+            operationId: 'applik8s://models/Record/operations/create',
+            restrictions: { target: { kind: 'all' }, predicates: [] },
+          }),
+        })],
         queries: [{ alias: 'recent', query: { nodeId: 'query.Record.recent' } }],
         operationPrincipalSource: expect.stringContaining('record-writer'),
       }),

@@ -1,5 +1,10 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  validateApplicationAuthorizationReceipt,
+  type ApplicationAuthorizationReceipt,
+} from '@applik8s/core';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
+import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationSubscriptionLimiter } from './query-gateway.js';
 import { createApplicationSubscriptionLimiter } from './query-gateway.js';
 import type { ApplicationStreamBinding } from './application-reactive.js';
@@ -34,14 +39,26 @@ export interface ApplicationStreamSubscriptionGatewayOptions<TPrincipal extends 
   readonly now?: () => Date;
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly audit?: (record: { readonly event: 'replay' | 'opened' | 'closed' | 'reset' | 'denied'; readonly subscription: string; readonly principal: string; readonly reason?: string }) => void;
+  readonly authorizeOperation?: (request: {
+    readonly boundary: 'admission' | 'subscription-resume';
+    readonly subscription: ApplicationStreamSubscriptionRuntimeBinding<TPrincipal>;
+    readonly identity: ApplicationStreamSubscriptionIdentity<TPrincipal>;
+    readonly inputDigest: string;
+    readonly trustedContextDigest: string;
+  }) => ApplicationAuthorizationReceipt | false | Promise<ApplicationAuthorizationReceipt | false>;
 }
 
 interface StreamCursor {
-  readonly version: 1;
+  readonly version: 2;
   readonly subscription: string;
-  readonly principalId: string;
-  readonly authorizationVersion: string;
-  readonly contextDigest: string;
+  readonly principalBinding: string;
+  readonly authorizationBinding: string;
+  readonly contextBinding: string;
+  readonly applicationBinding?: string;
+  readonly operationId?: string;
+  readonly operationVersion?: string;
+  readonly catalogRevision?: string;
+  readonly authorityRevision?: string;
   readonly sequence: number;
   readonly expiresAt: number;
 }
@@ -78,7 +95,8 @@ export function createApplicationStreamSubscriptionGateway<TPrincipal extends Ap
           options.audit?.({ event: 'denied', subscription: subscription.name, principal: identity.principal.id });
           return json({ error: 'forbidden' }, 403);
         }
-        const cursor = cursorForRequest(options.cursorSecret, subscription.name, identity, body.value.cursor, now().getTime(), cursorTtlSeconds);
+        const receipt = await authorizeStreamOperation(options, 'admission', subscription, identity);
+        const cursor = cursorForRequest(options.cursorSecret, subscription.name, identity, receipt, body.value.cursor, now().getTime(), cursorTtlSeconds);
         if (route.operation === 'replay') {
           const requestedLimit = body.value.limit === undefined ? pageSize : Number(body.value.limit);
           if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > pageSize) return json({ error: 'invalid_limit' }, 400);
@@ -112,7 +130,10 @@ export function createApplicationStreamSubscriptionGateway<TPrincipal extends Ap
             try {
               while (!session.signal.aborted && now().getTime() - startedAt < maxSessionMs) {
                 const currentIdentity = await admitted(options, request);
-                if (!sameIdentity(identity, currentIdentity) || !await subscription.authorize(currentIdentity.principal)) {
+                const currentReceipt = await authorizeStreamOperation(options, 'subscription-resume', subscription, currentIdentity);
+                if (!sameIdentity(identity, currentIdentity)
+                  || !sameReceiptRevision(receipt, currentReceipt)
+                  || !await subscription.authorize(currentIdentity.principal)) {
                   enqueue(controller, encoder, 'reset', { protocol: 'applik8s.stream/v1alpha1', kind: 'reset', subscription: subscription.name, reason: 'authorizationChanged' });
                   options.audit?.({ event: 'reset', subscription: subscription.name, principal: identity.principal.id, reason: 'authorizationChanged' });
                   break;
@@ -170,22 +191,105 @@ async function admitted<TPrincipal extends ApplicationQueryPrincipal>(options: A
   return identity;
 }
 
-function cursorForRequest<TPrincipal extends ApplicationQueryPrincipal>(secret: string, subscription: string, identity: ApplicationStreamSubscriptionIdentity<TPrincipal>, value: unknown, now: number, ttlSeconds: number): StreamCursor {
-  if (value === undefined || value === null || value === '') return { version: 1, subscription, principalId: identity.principal.id, authorizationVersion: identity.authorizationVersion, contextDigest: identity.contextDigest, sequence: 0, expiresAt: now + ttlSeconds * 1_000 };
+function cursorForRequest<TPrincipal extends ApplicationQueryPrincipal>(
+  secret: string,
+  subscription: string,
+  identity: ApplicationStreamSubscriptionIdentity<TPrincipal>,
+  receipt: ApplicationAuthorizationReceipt | undefined,
+  value: unknown,
+  now: number,
+  ttlSeconds: number,
+): StreamCursor {
+  const bindings = streamCursorBindings(secret, identity, receipt);
+  if (value === undefined || value === null || value === '') return { version: 2, subscription, ...bindings, sequence: 0, expiresAt: now + ttlSeconds * 1_000 };
   if (typeof value !== 'string') throw new Error('Application stream cursor must be a string.');
   const cursor = decodeCursor(secret, value, now);
-  if (cursor.subscription !== subscription || !sameIdentityCursor(cursor, identity)) throw new Error('Application stream cursor identity is invalid.');
+  if (cursor.subscription !== subscription || !sameCursorBindings(cursor, bindings)) throw new Error('Application stream cursor identity is invalid.');
   return cursor;
 }
 
 function retentionGap(sequence: number, page: ApplicationReplayPage<object>): boolean { return sequence > 0 && page.retentionFloor > sequence; }
 function advanceCursor(cursor: StreamCursor, sequence: number, now: number, ttlSeconds: number): StreamCursor { return { ...cursor, sequence, expiresAt: now + ttlSeconds * 1_000 }; }
 function sameIdentity<TPrincipal extends ApplicationQueryPrincipal>(left: ApplicationStreamSubscriptionIdentity<TPrincipal>, right: ApplicationStreamSubscriptionIdentity<TPrincipal>): boolean { return left.principal.id === right.principal.id && left.authorizationVersion === right.authorizationVersion && left.contextDigest === right.contextDigest; }
-function sameIdentityCursor<TPrincipal extends ApplicationQueryPrincipal>(cursor: StreamCursor, identity: ApplicationStreamSubscriptionIdentity<TPrincipal>): boolean { return cursor.principalId === identity.principal.id && cursor.authorizationVersion === identity.authorizationVersion && cursor.contextDigest === identity.contextDigest; }
+function streamCursorBindings<TPrincipal extends ApplicationQueryPrincipal>(
+  secret: string,
+  identity: ApplicationStreamSubscriptionIdentity<TPrincipal>,
+  receipt: ApplicationAuthorizationReceipt | undefined,
+): Pick<StreamCursor, 'principalBinding' | 'authorizationBinding' | 'contextBinding' | 'applicationBinding' | 'operationId' | 'operationVersion' | 'catalogRevision' | 'authorityRevision'> {
+  return {
+    principalBinding: streamBinding(secret, 'principal', identity.principal.id),
+    authorizationBinding: streamBinding(secret, 'authorization', identity.authorizationVersion),
+    contextBinding: streamBinding(secret, 'context', identity.contextDigest),
+    ...(receipt ? {
+      applicationBinding: streamBinding(secret, 'application', receipt.application),
+      operationId: receipt.operationId,
+      operationVersion: receipt.operationVersion,
+      catalogRevision: receipt.catalogRevision,
+      authorityRevision: receipt.authorityRevision,
+    } : {}),
+  };
+}
+
+function sameCursorBindings(
+  cursor: StreamCursor,
+  expected: ReturnType<typeof streamCursorBindings>,
+): boolean {
+  return cursor.principalBinding === expected.principalBinding
+    && cursor.authorizationBinding === expected.authorizationBinding
+    && cursor.contextBinding === expected.contextBinding
+    && cursor.applicationBinding === expected.applicationBinding
+    && cursor.operationId === expected.operationId
+    && cursor.operationVersion === expected.operationVersion
+    && cursor.catalogRevision === expected.catalogRevision
+    && cursor.authorityRevision === expected.authorityRevision;
+}
+
+async function authorizeStreamOperation<TPrincipal extends ApplicationQueryPrincipal>(
+  options: ApplicationStreamSubscriptionGatewayOptions<TPrincipal>,
+  boundary: 'admission' | 'subscription-resume',
+  subscription: ApplicationStreamSubscriptionRuntimeBinding<TPrincipal>,
+  identity: ApplicationStreamSubscriptionIdentity<TPrincipal>,
+): Promise<ApplicationAuthorizationReceipt | undefined> {
+  if (!options.authorizeOperation) return undefined;
+  const inputDigest = applicationOperationInputDigest({ subscription: subscription.name });
+  const result = await options.authorizeOperation({
+    boundary,
+    subscription,
+    identity,
+    inputDigest,
+    trustedContextDigest: identity.contextDigest,
+  });
+  if (!result) throw new Error(`Application stream subscription ${subscription.name} is forbidden.`);
+  const diagnostics = validateApplicationAuthorizationReceipt(result);
+  if (diagnostics.length > 0
+    || result.principal.id !== identity.principal.id
+    || result.inputDigest !== inputDigest
+    || result.trustedContextDigest !== identity.contextDigest) {
+    throw new Error(`Application stream subscription ${subscription.name} authority returned an invalid receipt: ${diagnostics.map((diagnostic) => diagnostic.message).join(' ')}`);
+  }
+  return result;
+}
+
+function sameReceiptRevision(
+  admitted: ApplicationAuthorizationReceipt | undefined,
+  current: ApplicationAuthorizationReceipt | undefined,
+): boolean {
+  if (!admitted || !current) return admitted === current;
+  return admitted.application === current.application
+    && admitted.operationId === current.operationId
+    && admitted.operationVersion === current.operationVersion
+    && admitted.catalogRevision === current.catalogRevision
+    && admitted.authorityRevision === current.authorityRevision
+    && admitted.principal.id === current.principal.id;
+}
+
+function streamBinding(secret: string, domain: 'application' | 'authorization' | 'context' | 'principal', value: string): string {
+  return createHmac('sha256', secret).update(`applik8s.stream-cursor.${domain}\0`).update(value).digest('base64url');
+}
 
 function encodeCursor(secret: string, cursor: StreamCursor): string { const body = Buffer.from(JSON.stringify(cursor)).toString('base64url'); return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`; }
 // typecast: the signed cursor is decoded only after HMAC verification and scoped sequence/expiry checks.
-function decodeCursor(secret: string, value: string, now: number): StreamCursor { const [body, signature, extra] = value.split('.'); if (!body || !signature || extra) throw new Error('Application stream cursor is invalid.'); const expected = createHmac('sha256', secret).update(body).digest(); const supplied = Buffer.from(signature, 'base64url'); if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new Error('Application stream cursor is invalid.'); const parsed: unknown = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); if (!parsed || typeof parsed !== 'object') throw new Error('Application stream cursor is invalid.'); const cursor = parsed as StreamCursor; if (cursor.version !== 1 || !Number.isSafeInteger(cursor.sequence) || cursor.sequence < 0 || cursor.expiresAt < now) throw new Error('Application stream cursor is invalid or expired.'); return cursor; }
+function decodeCursor(secret: string, value: string, now: number): StreamCursor { const [body, signature, extra] = value.split('.'); if (!body || !signature || extra) throw new Error('Application stream cursor is invalid.'); const expected = createHmac('sha256', secret).update(body).digest(); const supplied = Buffer.from(signature, 'base64url'); if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new Error('Application stream cursor is invalid.'); const parsed: unknown = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')); if (!parsed || typeof parsed !== 'object') throw new Error('Application stream cursor is invalid.'); const cursor = parsed as StreamCursor; if (cursor.version !== 2 || !Number.isSafeInteger(cursor.sequence) || cursor.sequence < 0 || cursor.expiresAt < now) throw new Error('Application stream cursor is invalid or expired.'); return cursor; }
 
 function enqueue(controller: ReadableStreamDefaultController<Uint8Array>, encoder: TextEncoder, event: string, value: unknown): void { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`)); }
 async function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> { if (signal?.aborted) return; await new Promise<void>((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal?.removeEventListener('abort', abort); resolve(); } signal?.addEventListener('abort', abort, { once: true }); }); }

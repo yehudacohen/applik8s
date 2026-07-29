@@ -16,7 +16,7 @@ export function applicationAlchemyStackIdentity(
   identity: ApplicationDeploymentIdentity,
   strategy: ApplicationDeploymentStrategy,
 ): ApplicationAlchemyStackIdentity {
-  const fields = [
+  const requiredFields = [
     identity.connection.provider,
     identity.connection.cluster,
     identity.connection.digest,
@@ -25,9 +25,19 @@ export function applicationAlchemyStackIdentity(
     identity.instance,
     identity.profile,
   ];
-  if (fields.some((field) => !field.trim())) {
+  if (requiredFields.some((field) => !field.trim())) {
     throw new Error("Alchemy Stack identity fields must be non-empty.");
   }
+  // The installation is the state and lifecycle authority. Its selected
+  // profile is mutable installation data and must not create a parallel stack.
+  const fields = [
+    identity.connection.provider,
+    identity.connection.cluster,
+    identity.connection.digest,
+    identity.application,
+    identity.controlPlaneNamespace,
+    identity.instance,
+  ];
   const canonical = fields
     .map((field) => `${new TextEncoder().encode(field).length}:${field}`)
     .join("|");

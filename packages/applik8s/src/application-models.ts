@@ -1,15 +1,17 @@
 // typecast-file-boundary: schema-normalized model contracts cross erased runtime registries here; casts restore their declaration-time generics after identity checks.
 import { createHash } from 'node:crypto';
-import { type ApplicationMutationOperation, type ApplicationOperationLike, createApplicationMutationOperation } from '@applik8s/client';
-import type { ApplicationCommandHandlerNode, ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelNode, ApplicationModelOperationGraphContract, ApplicationModelStoreGuaranteesContract, ApplicationModelStoreSemanticsContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, JsonValue } from '@applik8s/core';
+import { type ApplicationMutationOperation, type ApplicationOperationAuthorizationContract, type ApplicationOperationLike, createApplicationMutationOperation, observeApplicationOperationAuthority } from '@applik8s/client';
+import type { ApplicationAuthorizationReceipt, ApplicationCommandHandlerNode, ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelNode, ApplicationModelOperationGraphContract, ApplicationModelStoreGuaranteesContract, ApplicationModelStoreSemanticsContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, JsonValue } from '@applik8s/core';
 import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
+import { applicationAuthorityPostgresSchemaStatements } from '@applik8s/operations';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import { type ApplicationEventLogResourceState, emitApplicationEventLogResources } from './application-event-log-resources.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
 import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions, sameApplicationProcessorDeployment } from './application-processor-policy.js';
-import type { ApplicationEventLogProvider, ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderState } from './application-providers.js';
-import { applicationEventLogImplementation, applicationModelStoreImplementation, applicationProviderImplementationName, applicationProviderInterface } from './application-providers.js';
+import type { ApplicationEventLogProvider, ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState, ApplicationTransactionalDatabaseProvider } from './application-providers.js';
+import { applicationEventLogImplementation, applicationModelStoreImplementation, applicationProviderImplementationName, applicationProviderInterface, applicationProviderQualificationFor, applicationProviderSelectionFor } from './application-providers.js';
+import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import { analyzeApplicationServerRouteSource, applicationCommandSourceViolations, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString, applicationTypeKroValueIdentity } from './application-typekro-values.js';
 import type { ApplicationCommandPrincipal } from './command-principal.js';
@@ -20,8 +22,12 @@ import { canonicalApplicationCommandKey, executePostgresModelCommand } from './m
 import { createPostgresModelClient } from './model-store-postgres-runtime.js';
 import { applicationModelCommandBindingForOperation, applicationModelFacet, bindApplicationModelCommandOperation, type DrizzleApplicationModelFacet, getApplicationModelFacet, nativeApplicationModelBindingFor } from './native-models.js';
 
+const applicationModelCommandAuthorities = new WeakMap<object, Map<string, ApplicationOperationAuthorizationContract>>();
+
 export interface ApplicationModelOptions<TSpec extends object = object, TStatus extends object = Record<string, never>> {
   readonly name?: string;
+  readonly database?: ApplicationTransactionalDatabaseProvider | ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
+  /** @deprecated Use database. Removed at 1.0. */
   readonly store?: ApplicationModelStoreProvider | ApplicationProviderBinding<ApplicationModelStoreProvider>;
   readonly schema?: ApplicationModelSchemaOptions<TSpec, TStatus>;
 }
@@ -58,9 +64,16 @@ export interface ApplicationModelBinding<TSpec extends object, TStatus extends o
   index(name: string, options?: ApplicationModelIndexOptions<TSpec, TStatus>): ApplicationModelIndexBinding<TSpec, TStatus>;
   transaction<TResult>(handler: (model: ApplicationModelTransactionClient<TSpec, TStatus>) => TResult | Promise<TResult>): Promise<TResult>;
   /** Declares a durable domain operation and installs its typed callable directly on this model. */
+  operation<const TName extends string, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+    name: TName,
+    operation: CommandDefinition<TInput, TOutput, TErrors>,
+    options: ApplicationModelCommandOptions<TInput, TSpec>,
+    handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
+  ): this & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>>;
+  /** @deprecated Use model.operation(name, ...) instead. Removed at 1.0. */
   action<const TName extends string, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
     name: TName,
-    action: CommandDefinition<TInput, TOutput, TErrors>,
+    operation: CommandDefinition<TInput, TOutput, TErrors>,
     options: ApplicationModelCommandOptions<TInput, TSpec>,
     handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
   ): this & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>>;
@@ -97,7 +110,7 @@ export interface ApplicationModelCommandOptions<
   readonly retry?: ApplicationRetryPolicy;
   readonly retention?: Partial<ApplicationCommandRetentionContract>;
   readonly processor?: ApplicationProcessorOptions;
-  /** Compiler-owned direct model operation name. Prefer model.action(name, ...) over setting this explicitly. */
+  /** Compiler-owned direct model operation name. Prefer model.operation(name, ...) over setting this explicitly. */
   readonly publicName?: string;
   /** @internal Compiler-owned conventional mutation classification. */
   readonly __operation?: ApplicationModelOperationGraphContract['operation'];
@@ -196,6 +209,7 @@ export interface ApplicationModelCommandDeliveryOptions {
     readonly digest: string;
     readonly changeScopes?: Readonly<Record<string, string>>;
   };
+  readonly authorizationReceipt?: ApplicationAuthorizationReceipt;
   readonly databaseUrl?: string;
   /** Internal durable-envelope override used by declared command outboxes. */
   readonly targetKey?: string;
@@ -215,6 +229,8 @@ export interface ApplicationModelCommandBinding<TInput extends object = object, 
   readonly model: string;
   readonly command: string;
   readonly processor: string;
+  /** Compiler-authoring bridge from the direct handle to its canonical graph operation. */
+  classify(authority: ApplicationOperationAuthorizationContract): void;
   send(input: TInput, delivery: Omit<ApplicationModelCommandDeliveryOptions, 'databaseUrl' | 'targetKey' | 'idempotencyKey'>): Promise<ApplicationCommandSubmissionAcknowledgement>;
   execute(input: TInput, delivery: ApplicationModelCommandDeliveryOptions): Promise<PostgresModelCommandResult<TSpec, TStatus, TOutput>>;
   drain(): Promise<void>;
@@ -255,7 +271,7 @@ export interface ApplicationRuntimeModelContract {
 }
 
 export interface ApplicationModelBackendContract {
-  readonly interface: 'ModelStore';
+  readonly interface: 'TransactionalDatabase';
   readonly provider?: ApplicationProviderBinding<ApplicationModelStoreProvider>;
   readonly runtimeBoundary: {
     readonly serializedCallbacks: 'generatedRuntimeClient';
@@ -321,9 +337,15 @@ export interface ApplicationModelEventRegistrar<TSpec extends object, TStatus ex
     options: ApplicationModelCommandOptions<TInput, TSpec>,
     handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
   ): ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus>;
-  /** Low-level registration surface used by model.action(...). Prefer the direct named method in application code. */
+  /** Low-level registration surface used by model.operation(...). Prefer the direct named method in application code. */
+  operation<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+    operation: CommandDefinition<TInput, TOutput, TErrors>,
+    options: ApplicationModelCommandOptions<TInput, TSpec>,
+    handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
+  ): ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus>;
+  /** @deprecated Use model.on.operation(...) instead. Removed at 1.0. */
   action<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
-    action: CommandDefinition<TInput, TOutput, TErrors>,
+    operation: CommandDefinition<TInput, TOutput, TErrors>,
     options: ApplicationModelCommandOptions<TInput, TSpec>,
     handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
   ): ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus>;
@@ -340,10 +362,10 @@ interface ApplicationModelGraphState extends ApplicationGraphState, ApplicationP
   readonly appResource?: { readonly kind: string };
 }
 
-export function resolveApplicationModelStore(state: ApplicationModelGraphState, entityName: string, store: ApplicationModelOptions['store']): ApplicationModelStoreProvider {
-  const implementation = applicationModelStoreImplementation(store) ?? applicationModelStoreImplementation(state.providers.models) ?? applicationModelStoreImplementation(state.defaults.models);
+export function resolveApplicationModelStore(state: ApplicationModelGraphState, entityName: string, database: ApplicationModelOptions['database'] | ApplicationModelOptions['store']): ApplicationModelStoreProvider {
+  const implementation = applicationModelStoreImplementation(database) ?? applicationModelStoreImplementation(state.providers.models) ?? applicationModelStoreImplementation(state.defaults.models);
   if (!implementation) {
-    throw new Error(`app.model(${JSON.stringify(entityName)}) requires a typed ModelStore provider. Bind the golden path with app.storage.postgres("name"), use app.provide(ModelStore, { kind: "postgres", ... }), app.defaults({ models: provider }), or pass { store: provider } before enabling a model-backed entity.`);
+    throw new Error(`app.model(${JSON.stringify(entityName)}) requires a typed TransactionalDatabase provider. Bind the golden path with app.database.postgres("name"), use app.provide(TransactionalDatabase, TransactionalDatabase.postgres(...)), app.defaults({ database: provider }), or pass { database: provider }.`);
   }
   return implementation;
 }
@@ -351,18 +373,30 @@ export function resolveApplicationModelStore(state: ApplicationModelGraphState, 
 export function recordApplicationModelGraph<TSpec extends object, TStatus extends object>(state: ApplicationModelGraphState, entity: EntityDefinition<TSpec, TStatus>, provider: ApplicationModelStoreProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined, runtime: ApplicationRuntimeModelContract): void {
   const modelName = options?.name ?? entity.name;
   const nodeId = applicationGraphNodeId('model', modelName);
-  const providerNodeId = applicationProviderNodeId('ModelStore');
+  const qualification = applicationProviderQualificationFor(
+    options?.database ?? options?.store,
+  );
+  const providerNodeId = applicationProviderNodeId(
+    'TransactionalDatabase',
+    qualification,
+  );
   const providerResources = applicationModelStoreProviderResources(provider, modelName);
   const migration = provider.migrations ?? { strategy: 'none', compatibility: 'schemaCompatibleOnly' };
   const schema = options?.schema;
-  recordApplicationProviderGraph(state, 'ModelStore', 'modelStore', provider);
+  recordApplicationProviderGraph(
+    state,
+    'TransactionalDatabase',
+    'transactionalDatabase',
+    provider,
+    qualification,
+  );
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'model',
     name: modelName,
     stability: 'stable',
     entity: { name: entity.name },
-    store: { interface: 'ModelStore', nodeId: providerNodeId },
+    database: { interface: 'TransactionalDatabase', nodeId: providerNodeId },
     schema: {
       identity: applicationModelIdentity(schema),
       constraints: applicationModelStoreConstraints(schema),
@@ -374,7 +408,7 @@ export function recordApplicationModelGraph<TSpec extends object, TStatus extend
     },
     materialization: {
       mode: 'providerBacked',
-      provider: { interface: 'ModelStore', nodeId: providerNodeId },
+      provider: { interface: 'TransactionalDatabase', nodeId: providerNodeId },
       backingResources: providerResources,
       connection: applicationModelStoreRuntime(provider, modelName, providerResources),
       runtimeBoundary: applicationModelRuntimeBoundary(),
@@ -403,22 +437,22 @@ export function recordApplicationModelGraph<TSpec extends object, TStatus extend
     })),
   });
   addApplicationGraphEdge(state, { from: { nodeId: providerNodeId }, to: { nodeId }, relationship: 'provides' });
-  const requirementId = applicationModelStoreRequirementId(modelName);
+  const requirementId = applicationTransactionalDatabaseRequirementId(modelName);
   addApplicationProviderRequirement(state, {
     id: requirementId,
-    interface: 'ModelStore',
+    interface: 'TransactionalDatabase',
     consumer: { nodeId },
-    provider: { interface: 'ModelStore', nodeId: providerNodeId },
+    provider: { interface: 'TransactionalDatabase', nodeId: providerNodeId },
     required: true,
-    purpose: 'modelStore',
+    purpose: 'transactionalDatabase',
     diagnostics: {
-      missing: `Model ${modelName} requires a ModelStore provider. Bind the golden path with app.storage.postgres("name"), use app.provide(ModelStore, { kind: "postgres", ... }), or pass an explicit store.`,
-      ambiguous: `Model ${modelName} has multiple ModelStore providers. Bind the model to one provider explicitly.`,
+      missing: `Model ${modelName} requires a TransactionalDatabase provider. Bind the golden path with app.database.postgres("name"), use app.provide(TransactionalDatabase, { kind: "postgres", ... }), or pass an explicit database.`,
+      ambiguous: `Model ${modelName} has multiple TransactionalDatabase providers. Bind the model to one provider explicitly.`,
     },
   });
   addApplicationProviderBinding(state, {
     requirement: requirementId,
-    provider: { interface: 'ModelStore', nodeId: providerNodeId },
+    provider: { interface: 'TransactionalDatabase', nodeId: providerNodeId },
     generatedResources: providerResources,
     runtime: applicationModelStoreRuntime(provider, modelName, providerResources),
     metadataLinks: [{ graphNode: { nodeId: providerNodeId }, artifact: { kind: 'providerContract', name: `${modelName}-model-store` }, purpose: 'providerDependency' }],
@@ -437,16 +471,16 @@ export function recordApplicationNativeModelGraph<TTable extends AnyPgTable>(
   migrations: { readonly artifact?: string; readonly digest?: string } = {},
 ): void {
   const nodeId = applicationGraphNodeId('model', model.name);
-  const providerNodeId = applicationProviderNodeId('ModelStore');
+  const providerNodeId = applicationProviderNodeId('TransactionalDatabase');
   const providerResources = applicationModelStoreProviderResources(provider, model.name);
-  recordApplicationProviderGraph(state, 'ModelStore', 'nativeRelationalModel', provider);
+  recordApplicationProviderGraph(state, 'TransactionalDatabase', 'nativeRelationalModel', provider);
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'model',
     name: model.name,
     stability: 'stable',
     entity: { name: model.name },
-    store: { interface: 'ModelStore', nodeId: providerNodeId },
+    database: { interface: 'TransactionalDatabase', nodeId: providerNodeId },
     schema: {
       identity: model.identity.fields,
       constraints: model.relationships.filter((relationship) => relationship.integrity === 'foreign-key').map((relationship) => ({ name: `${model.name}_${relationship.name}_fk`, fields: relationship.fields, kind: 'foreignKey' as const })),
@@ -465,7 +499,7 @@ export function recordApplicationNativeModelGraph<TTable extends AnyPgTable>(
     },
     materialization: {
       mode: 'providerBacked',
-      provider: { interface: 'ModelStore', nodeId: providerNodeId },
+      provider: { interface: 'TransactionalDatabase', nodeId: providerNodeId },
       backingResources: providerResources,
       connection: applicationModelStoreRuntime(provider, model.name, providerResources),
       runtimeBoundary: applicationModelRuntimeBoundary(),
@@ -503,14 +537,14 @@ export function recordApplicationNativeModelGraph<TTable extends AnyPgTable>(
     })),
   });
   addApplicationGraphEdge(state, { from: { nodeId: providerNodeId }, to: { nodeId }, relationship: 'provides' });
-  const requirementId = applicationModelStoreRequirementId(model.name);
+  const requirementId = applicationTransactionalDatabaseRequirementId(model.name);
   addApplicationProviderRequirement(state, {
     id: requirementId,
-    interface: 'ModelStore',
+    interface: 'TransactionalDatabase',
     consumer: { nodeId },
-    provider: { interface: 'ModelStore', nodeId: providerNodeId },
+    provider: { interface: 'TransactionalDatabase', nodeId: providerNodeId },
     required: true,
-    purpose: 'modelStore',
+    purpose: 'transactionalDatabase',
     diagnostics: {
       missing: `Native relational model ${model.name} requires its registered PostgreSQL database provider.`,
       ambiguous: `Native relational model ${model.name} is associated with more than one PostgreSQL database provider.`,
@@ -518,7 +552,7 @@ export function recordApplicationNativeModelGraph<TTable extends AnyPgTable>(
   });
   addApplicationProviderBinding(state, {
     requirement: requirementId,
-    provider: { interface: 'ModelStore', nodeId: providerNodeId },
+    provider: { interface: 'TransactionalDatabase', nodeId: providerNodeId },
     generatedResources: providerResources,
     runtime: applicationModelStoreRuntime(provider, model.name, providerResources),
     metadataLinks: [{ graphNode: { nodeId: providerNodeId }, artifact: { kind: 'providerContract', name: `${model.name}-native-relational-model-store` }, purpose: 'providerDependency' }],
@@ -599,6 +633,8 @@ export function recordApplicationModelCommandGraph<
 
   const modelNode = state.graphNodes.find((node): node is ApplicationModelNode => node.id === modelNodeId && node.kind === 'model');
   if (!modelNode?.common) throw new Error(`Model ${model.name} command ${command.id} cannot attach its public operation to a missing model graph node.`);
+  const authorityKey = `${model.name}:${publicName}`;
+  const registeredAuthority = applicationModelCommandAuthorities.get(command)?.get(authorityKey);
   const operation: ApplicationModelOperationGraphContract = {
     name: publicName,
     operation: options.__operation ?? 'custom',
@@ -607,6 +643,7 @@ export function recordApplicationModelCommandGraph<
     input: declaredMessageSchema(command.input, `${command.id}.input`),
     output: declaredMessageSchema(command.output, `${command.id}.output`),
     authorization: 'application-defined',
+    ...(registeredAuthority ? { authority: registeredAuthority } : {}),
   };
   const operations = [...(modelNode.common.operations ?? []).filter((candidate) => candidate.name !== publicName), operation];
   addApplicationGraphNode(state, { ...modelNode, common: { ...modelNode.common, operations } });
@@ -765,6 +802,16 @@ export function recordApplicationModelCommandGraph<
     model: model.name,
     command: command.id,
     processor: processorName,
+    classify(authority) {
+      const authorities = applicationModelCommandAuthorities.get(command) ?? new Map();
+      authorities.set(authorityKey, authority);
+      applicationModelCommandAuthorities.set(command, authorities);
+      const current = state.graphNodes.find((node): node is ApplicationModelNode => node.id === modelNodeId && node.kind === 'model');
+      if (!current?.common) throw new Error(`Model operation ${model.name}.${publicName} cannot classify a missing model graph node.`);
+      const operations = (current.common.operations ?? []).map((candidate) =>
+        candidate.name === publicName ? { ...candidate, authority } : candidate);
+      addApplicationGraphNode(state, { ...current, common: { ...current.common, operations } });
+    },
     async send(input, delivery) {
       validateApplicationMessage(command.input, input, `${command.id}.input`);
       const key = targetKey(input);
@@ -1194,7 +1241,7 @@ export type ApplicationModelCommandRegistrar<TSpec extends object, TStatus exten
   handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
 ) => ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus>;
 
-function installApplicationModelAction<
+function installApplicationModelOperation<
   TSpec extends object,
   TStatus extends object,
   const TName extends string,
@@ -1204,27 +1251,28 @@ function installApplicationModelAction<
 >(
   model: ApplicationModelBinding<TSpec, TStatus>,
   name: TName,
-  action: CommandDefinition<TInput, TOutput, TErrors>,
+  definition: CommandDefinition<TInput, TOutput, TErrors>,
   options: ApplicationModelCommandOptions<TInput, TSpec>,
   handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
 ): ApplicationModelBinding<TSpec, TStatus> & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>> {
   if (!/^[$A-Z_a-z][$\w]*$/.test(name)) {
-    throw new Error(`Application model action name ${JSON.stringify(name)} must be a JavaScript identifier.`);
+    throw new Error(`Application model operation name ${JSON.stringify(name)} must be a JavaScript identifier.`);
   }
   if (name in model) {
-    throw new Error(`Application model action ${name} cannot replace an existing model member.`);
+    throw new Error(`Application model operation ${name} cannot replace an existing model member.`);
   }
-  const binding = model.on.action(action, { ...options, publicName: name }, handler);
+  const binding = model.on.operation(definition, { ...options, publicName: name }, handler);
   const operation = createApplicationMutationOperation<TInput, TOutput>({
     apiVersion: 'applik8s.operation/v1alpha1',
     kind: 'applicationOperation',
-    id: action.id,
+    id: definition.id,
     model: model.name,
     name,
     operation: 'custom',
     transport: 'command',
   });
   bindApplicationModelCommandOperation(operation, binding);
+  observeApplicationOperationAuthority(operation, (authority) => binding.classify(authority));
   Object.defineProperty(model, name, {
     value: operation,
     enumerable: false,
@@ -1244,7 +1292,7 @@ export function applicationModelBinding<TSpec extends object, TStatus extends ob
     entity,
     runtime,
     backend: {
-      interface: 'ModelStore',
+      interface: 'TransactionalDatabase',
       runtimeBoundary: applicationModelRuntimeBoundary(),
       transactions: transactionSemantics,
       queryConsistency: 'providerDefined',
@@ -1275,8 +1323,11 @@ export function applicationModelBinding<TSpec extends object, TStatus extends ob
       }
       return scriptClient().transaction(handler);
     },
-    action(actionName, action, actionOptions, handler) {
-      return installApplicationModelAction(this, actionName, action, actionOptions, handler);
+    operation(operationName, operation, operationOptions, handler) {
+      return installApplicationModelOperation(this, operationName, operation, operationOptions, handler);
+    },
+    action(operationName, operation, operationOptions, handler) {
+      return installApplicationModelOperation(this, operationName, operation, operationOptions, handler);
     },
     on: {
       created: () => applicationModelUnsupportedEvent(name, 'created'),
@@ -1288,11 +1339,17 @@ export function applicationModelBinding<TSpec extends object, TStatus extends ob
         }
         return commandRegistrar(command, commandOptions, handler);
       },
-      action(action, actionOptions, handler) {
+      operation(operation, operationOptions, handler) {
         if (!commandRegistrar) {
-          throw new Error(`Model ${name}.on.action(...) has no application graph registration context and fails closed.`);
+          throw new Error(`Model ${name}.on.operation(...) has no application graph registration context and fails closed.`);
         }
-        return commandRegistrar(action, actionOptions, handler);
+        return commandRegistrar(operation, operationOptions, handler);
+      },
+      action(operation, operationOptions, handler) {
+        if (!commandRegistrar) {
+          throw new Error(`Model ${name}.on.operation(...) has no application graph registration context and fails closed.`);
+        }
+        return commandRegistrar(operation, operationOptions, handler);
       },
     },
   };
@@ -1330,8 +1387,12 @@ export function applicationRuntimeModelContract<TSpec extends object, TStatus ex
 export function applicationModelMigrationSql(model: ApplicationRuntimeModelContract): string {
   const migrationPlan = applicationModelMigrationPlan(model);
   const statements = [
+    ...applicationAuthorityPostgresSchemaStatements,
     `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_model_migrations')} (\n  id text PRIMARY KEY,\n  model text NOT NULL,\n  revision text NOT NULL,\n  plan jsonb NOT NULL,\n  applied_at timestamptz NOT NULL DEFAULT now()\n);`,
-    `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_inbox')} (\n  scope text PRIMARY KEY,\n  binding_id text NOT NULL,\n  model text NOT NULL,\n  target_key text NOT NULL,\n  idempotency_key text NOT NULL,\n  message_id text NOT NULL,\n  input jsonb NOT NULL,\n  received_at timestamptz NOT NULL DEFAULT now()\n);`,
+    `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_admissions')} (\n  scope text PRIMARY KEY,\n  command text NOT NULL,\n  binding_id text NOT NULL,\n  command_id text NOT NULL,\n  authorization_receipt jsonb NOT NULL,\n  admitted_at timestamptz NOT NULL DEFAULT now()\n);`,
+    `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_admissions_cleanup')} ON ${quoteSqlIdentifier('applik8s_command_admissions')} (binding_id, admitted_at);`,
+    `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_inbox')} (\n  scope text PRIMARY KEY,\n  binding_id text NOT NULL,\n  model text NOT NULL,\n  target_key text NOT NULL,\n  idempotency_key text NOT NULL,\n  message_id text NOT NULL,\n  input jsonb NOT NULL,\n  authorization_receipt jsonb,\n  received_at timestamptz NOT NULL DEFAULT now()\n);`,
+    `ALTER TABLE ${quoteSqlIdentifier('applik8s_command_inbox')} ADD COLUMN IF NOT EXISTS authorization_receipt jsonb;`,
     `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_results')} (\n  scope text PRIMARY KEY REFERENCES ${quoteSqlIdentifier('applik8s_command_inbox')}(scope) ON DELETE CASCADE,\n  output jsonb,\n  error jsonb,\n  model_revision text NOT NULL,\n  model_snapshot jsonb,\n  model_deleted boolean NOT NULL DEFAULT false,\n  completed_at timestamptz NOT NULL DEFAULT now(),\n  CHECK ((output IS NULL) <> (error IS NULL))\n);`,
     `ALTER TABLE ${quoteSqlIdentifier('applik8s_command_results')} ADD COLUMN IF NOT EXISTS model_snapshot jsonb;`,
     `ALTER TABLE ${quoteSqlIdentifier('applik8s_command_results')} ADD COLUMN IF NOT EXISTS model_deleted boolean NOT NULL DEFAULT false;`,
@@ -1566,8 +1627,8 @@ function quoteSqlLiteral(value: string): string {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function applicationModelStoreRequirementId(modelName: string): string {
-  return `requirement.${applicationGraphNodeId('model', modelName)}.store`;
+function applicationTransactionalDatabaseRequirementId(modelName: string): string {
+  return `requirement.${applicationGraphNodeId('model', modelName)}.database`;
 }
 
 function applicationModelStoreReconciliation(provider: ApplicationModelStoreProvider): {
@@ -1678,12 +1739,28 @@ function recordApplicationModelMigrationJobGraph(state: ApplicationModelGraphSta
   addApplicationGraphEdge(state, { from: { nodeId }, to: { nodeId: modelNodeId }, relationship: 'dependsOn' });
 }
 
-function recordApplicationProviderGraph(state: ApplicationGraphState, tokenName: string | undefined, bindingKind: string, implementation: unknown): void {
+function recordApplicationProviderGraph(
+  state: ApplicationGraphState,
+  tokenName: string | undefined,
+  bindingKind: string,
+  implementation: unknown,
+  qualification?: ApplicationProviderQualification,
+): void {
   const providerInterface = applicationProviderInterface(tokenName);
   if (!providerInterface) {
     return;
   }
-  const nodeId = applicationProviderNodeId(providerInterface);
+  const selectedImplementation =
+    applicationProviderSelectionFor(implementation) ?? implementation;
+  const nodeId = applicationProviderNodeId(providerInterface, qualification);
+  let existingConfig: Readonly<Record<string, JsonValue>> | undefined;
+  for (let index = state.graphNodes.length - 1; index >= 0; index -= 1) {
+    const candidate = state.graphNodes[index];
+    if (candidate?.kind === 'provider' && candidate.id === nodeId) {
+      existingConfig = candidate.config;
+      break;
+    }
+  }
   const eventLog = providerInterface === 'EventLog' ? applicationEventLogImplementation(implementation) : undefined;
   addApplicationGraphNode(state, {
     id: nodeId,
@@ -1691,18 +1768,22 @@ function recordApplicationProviderGraph(state: ApplicationGraphState, tokenName:
     name: providerInterface,
     stability: 'stable',
     interface: providerInterface,
-    implementation: applicationProviderImplementationName(implementation),
-    contract: applicationProviderInterfaceContract(providerInterface, implementation),
+    implementation: applicationProviderImplementationName(selectedImplementation),
+    contract: applicationProviderInterfaceContract(providerInterface, selectedImplementation),
     config: {
+      ...(existingConfig ?? {}),
       bindingKind,
-      provider: applicationProviderImplementationName(implementation),
+      provider: applicationProviderImplementationName(selectedImplementation),
+      ...(qualification
+        ? { qualification: qualification as unknown as JsonValue }
+        : {}),
       // Deployment lowering consumes the normalized ApplicationGraph, not the
       // authoring closure. Preserve the complete validated provider
       // contract—including typed installation references and lifecycle data—
       // so ownership, backup, and external-provider decisions remain possible
       // at the deployment boundary.
-      ...(providerInterface === 'ModelStore' && implementation && typeof implementation === 'object'
-        ? { modelStore: applicationTypeKroGraphValue(implementation) as JsonValue }
+      ...(providerInterface === 'TransactionalDatabase' && selectedImplementation && typeof selectedImplementation === 'object'
+        ? { transactionalDatabase: applicationTypeKroGraphValue(selectedImplementation) as JsonValue }
         : {}),
       ...(eventLog ? {
         name: eventLog.name ?? 'applik8s-events',
@@ -1722,14 +1803,14 @@ function recordApplicationProviderGraph(state: ApplicationGraphState, tokenName:
 }
 
 function applicationProviderInterfaceContract(providerInterface: ApplicationProviderInterfaceKind, implementation: unknown): ApplicationProviderInterfaceContract {
-  const implemented = (providerInterface === 'ModelStore' && applicationProviderImplementationName(implementation) === 'postgres')
+  const implemented = (providerInterface === 'TransactionalDatabase' && applicationProviderImplementationName(implementation) === 'postgres')
     || (providerInterface === 'EventLog' && applicationProviderImplementationName(implementation) === 'nats-jetstream');
   return {
     apiVersion: 'applik8s.provider/v1alpha1',
     interface: providerInterface,
     version: 'v1alpha1',
     requirements: providerInterface === 'EventLog' ? ['durableTransport'] : ['applicationRuntimeBinding'],
-    guarantees: providerInterface === 'ModelStore'
+    guarantees: providerInterface === 'TransactionalDatabase'
       ? ['sameDomainTransactions', 'durableResults', 'transactionalOutbox']
       : providerInterface === 'EventLog'
         ? ['atLeastOnce', 'stableMessageIds', 'replay']
@@ -1741,8 +1822,11 @@ function applicationProviderInterfaceContract(providerInterface: ApplicationProv
   };
 }
 
-function applicationProviderNodeId(providerInterface: ApplicationProviderInterfaceKind): string {
-  return applicationGraphNodeId('provider', providerInterface);
+function applicationProviderNodeId(
+  providerInterface: ApplicationProviderInterfaceKind,
+  qualification?: ApplicationProviderQualification,
+): string {
+  return applicationProviderGraphNodeId(providerInterface, qualification);
 }
 
 function applicationGraphNodeId(kind: string, name: string): string {

@@ -1,7 +1,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { ApplicationCommandProgress, ApplicationCommandSubmission } from '@applik8s/client';
-import type { JsonObject, JsonValue } from '@applik8s/core';
+import { validateApplicationAuthorizationReceipt, type ApplicationAuthorizationReceipt, type ApplicationPrincipal, type JsonObject, type JsonValue } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
+import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationGatewayAdmission } from './application-reactive.js';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
 import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
@@ -13,8 +14,12 @@ import { applicationAdmittedContextDigest, applicationRelationalChangeScopes } f
 
 export interface ApplicationGatewayCommandRuntimeContract {
   readonly id: string;
+  readonly application?: string;
   readonly bindingId: string;
   readonly model: string;
+  /** Canonical operation-catalog identity emitted by the v0.7 compiler. */
+  readonly operationId?: string;
+  readonly operationVersion?: string;
   readonly inputSchema: JsonObject;
   readonly databaseUrl: string;
   readonly sql?: ApplicationPostgresSql;
@@ -29,13 +34,50 @@ export interface ApplicationGatewayCommandRuntimeContract {
 export interface ApplicationCommandGatewayOptions<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly commands: readonly ApplicationGatewayCommandRuntimeContract[];
   readonly authenticate: (request: Request) => ApplicationGatewayAdmission | Promise<ApplicationGatewayAdmission>;
-  readonly authorize: (request: {
+  /**
+   * Canonical admission seam. Identity providers authenticate the request;
+   * the operation authority pins catalog/authority revisions and trusted
+   * context for this concrete command audience.
+   */
+  readonly admitPrincipal?: (request: {
+    readonly admission: ApplicationGatewayAdmission;
+    readonly command: ApplicationGatewayCommandRuntimeContract;
+    readonly trustedContextDigest: string;
+  }) => ApplicationPrincipal | Promise<ApplicationPrincipal>;
+  /** @deprecated Compatibility callback. Prefer authorizeOperation so the durable envelope receives a canonical receipt. */
+  readonly authorize?: (request: {
     readonly principal: TPrincipal;
     readonly authorizationVersion: string;
     readonly trustedContext: Readonly<Record<string, JsonValue>>;
     readonly command: string;
     readonly input: unknown;
   }) => boolean | Promise<boolean>;
+  readonly authorizeOperation?: (request: {
+    readonly principal: ApplicationPrincipal;
+    readonly authorizationVersion: string;
+    readonly trustedContext: Readonly<Record<string, JsonValue>>;
+    readonly command: ApplicationGatewayCommandRuntimeContract;
+    readonly input: object;
+    readonly commandId: string;
+    readonly idempotencyKey: string;
+    readonly targetKey: string;
+    readonly targetDigest: string;
+    readonly trustedContextDigest: string;
+    readonly inputDigest: string;
+  }) => Promise<
+    | { readonly allowed: true; readonly receipt: ApplicationAuthorizationReceipt }
+    | { readonly allowed: false; readonly code: string; readonly message: string }
+  >;
+  readonly revalidateOperation?: (request: {
+    readonly receipt: ApplicationAuthorizationReceipt;
+    readonly boundary: 'result-read';
+    readonly principal: ApplicationPrincipal;
+    readonly command: ApplicationGatewayCommandRuntimeContract;
+    readonly trustedContextDigest: string;
+  }) => Promise<
+    | { readonly allowed: true }
+    | { readonly allowed: false; readonly code: string; readonly message: string }
+  >;
   readonly cursorSecret: string;
   readonly eventLogPublisher: Pick<ApplicationEventLogPublisher, 'publish' | 'drain'> & Partial<Pick<ApplicationEventLogPublisher, 'verify'>>;
   readonly cursorTtlSeconds?: number;
@@ -51,7 +93,7 @@ export interface ApplicationCommandGateway {
 }
 
 interface ProgressCursor {
-  readonly version: 2;
+  readonly version: 2 | 3;
   readonly command: string;
   readonly commandId: string;
   readonly correlationId: string;
@@ -60,6 +102,11 @@ interface ProgressCursor {
   readonly principalBinding: string;
   readonly authorizationBinding: string;
   readonly contextBinding: string;
+  readonly receiptBinding?: string;
+  readonly operationId?: string;
+  readonly operationVersion?: string;
+  readonly catalogRevision?: string;
+  readonly authorityRevision?: string;
   readonly expiresAt: number;
 }
 
@@ -67,6 +114,12 @@ interface ProgressCursor {
 // typecast-boundary: authenticated JSON is validated before generic command callbacks and PostgreSQL rows cross typed protocol boundaries.
 export function createApplicationCommandGateway<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(options: ApplicationCommandGatewayOptions<TPrincipal>): ApplicationCommandGateway {
   if (options.cursorSecret.length < 32) throw new Error('Application command gateway cursorSecret must contain at least 32 characters.');
+  if (!options.authorize && !options.authorizeOperation) {
+    throw new Error('Application command gateway requires authorizeOperation or the deprecated authorize callback.');
+  }
+  if (options.authorizeOperation && !options.revalidateOperation) {
+    throw new Error('Application command gateway canonical operation authority requires revalidateOperation for durable result reads.');
+  }
   const commands = new Map(options.commands.map((command) => [command.id, command]));
   if (commands.size !== options.commands.length) throw new Error('Application command gateway command registrations must be unique.');
   const publisher = options.eventLogPublisher;
@@ -87,7 +140,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
         const admission = await admitted(options, request);
         if (route.operation === 'submit') {
           const input = validateCommandInput(command, body.value.input);
-          if (!await options.authorize({
+          if (options.authorize && !await options.authorize({
             principal: admission.principal as TPrincipal,
             authorizationVersion: admission.authorizationVersion,
             trustedContext: admission.trustedContext,
@@ -105,11 +158,66 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
           const correlationId = commandId;
           const durableContext = applicationRequestContextValues(admission.principal, admission.authorizationVersion, admission.trustedContext);
           const contextDigest = applicationAdmittedContextDigest({ values: durableContext, digestSecret: options.cursorSecret });
-          const envelope = { id: commandId, contract: commandContract(command.id), payload: input, recordedAt: now().toISOString(), correlationId, partitionKey: targetKey, routing: { binding: command.bindingId, targetKey, idempotencyKey: command.idempotencyKey?.(input) ?? idempotencyKey }, ...(typeof body.value.expectedRevision === 'string' ? { expectedRevision: body.value.expectedRevision } : {}), trustedContext: { values: durableContext, digest: contextDigest, changeScopes: applicationRelationalChangeScopes({ values: durableContext, digestSecret: options.cursorSecret }) } };
+          const routedIdempotencyKey = command.idempotencyKey?.(input) ?? idempotencyKey;
+          const durableScope = applicationCommandScope(command.bindingId, command.model, targetKey, routedIdempotencyKey, contextDigest);
+          const inputDigest = applicationOperationInputDigest(input);
+          let authorizationReceipt: ApplicationAuthorizationReceipt | undefined;
+          if (options.authorizeOperation) {
+            const principalContract = await options.admitPrincipal?.({ admission, command, trustedContextDigest: contextDigest })
+              ?? admission.principalContract;
+            if (!principalContract) {
+              throw new Error('Application command gateway canonical operation authority requires an admitted principalContract.');
+            }
+            const authorization = await options.authorizeOperation({
+              principal: principalContract,
+              authorizationVersion: admission.authorizationVersion,
+              trustedContext: admission.trustedContext,
+              command,
+              input,
+              commandId,
+              idempotencyKey: routedIdempotencyKey,
+              targetKey,
+              targetDigest: durableScope,
+              trustedContextDigest: contextDigest,
+              inputDigest,
+            });
+            if (!authorization.allowed) return json({ error: 'forbidden', code: authorization.code }, 403);
+            assertCommandAuthorizationReceipt(
+              authorization.receipt,
+              command,
+              principalContract,
+              contextDigest,
+              inputDigest,
+            );
+            authorizationReceipt = authorization.receipt;
+            const sql = command.sql ?? await database(databases, command.databaseUrl);
+            await persistCommandAdmission(sql, {
+              scope: durableScope,
+              command: command.id,
+              bindingId: command.bindingId,
+              commandId,
+              receipt: authorizationReceipt,
+            });
+          }
+          const envelope = {
+            id: commandId,
+            contract: commandContract(command.id),
+            payload: input,
+            recordedAt: now().toISOString(),
+            correlationId,
+            partitionKey: targetKey,
+            routing: { binding: command.bindingId, targetKey, idempotencyKey: routedIdempotencyKey },
+            ...(typeof body.value.expectedRevision === 'string' ? { expectedRevision: body.value.expectedRevision } : {}),
+            trustedContext: {
+              values: durableContext,
+              digest: contextDigest,
+              changeScopes: applicationRelationalChangeScopes({ values: durableContext, digestSecret: options.cursorSecret }),
+            },
+            ...(authorizationReceipt ? { authorizationReceipt } : {}),
+          };
           await publisher.publish(envelope, 'commands');
-          const durableScope = applicationCommandScope(command.bindingId, command.model, targetKey, envelope.routing.idempotencyKey, contextDigest);
           const cursor = encodeCursor(options.cursorSecret, {
-            version: 2,
+            version: authorizationReceipt ? 3 : 2,
             command: command.id,
             commandId,
             correlationId,
@@ -117,6 +225,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
             principalBinding: cursorBinding(options.cursorSecret, 'principal', admission.principal.id),
             authorizationBinding: cursorBinding(options.cursorSecret, 'authorization', admission.authorizationVersion),
             contextBinding: cursorBinding(options.cursorSecret, 'context', contextDigest),
+            ...(authorizationReceipt ? commandReceiptCursorFields(options.cursorSecret, authorizationReceipt) : {}),
             expiresAt: now().getTime() + cursorTtlSeconds * 1000,
           });
           const submission: ApplicationCommandSubmission = { protocol: 'applik8s.command/v1alpha1', command: command.id, commandId, correlationId, transport: 'acknowledged', durableResult: 'pending', progressCursor: cursor, workflow: 'notStarted', reconciliation: 'notObserved' };
@@ -131,12 +240,36 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
         const contextDigest = applicationAdmittedContextDigest({ values: durableContext, digestSecret: options.cursorSecret });
         if (cursor.contextBinding !== cursorBinding(options.cursorSecret, 'context', contextDigest)) return json({ error: 'cursor_invalid' }, 400);
         const sql = command.sql ?? await database(databases, command.databaseUrl);
+        if (cursor.version === 3) {
+          const principalContract = await options.admitPrincipal?.({ admission, command, trustedContextDigest: contextDigest })
+            ?? admission.principalContract;
+          if (!options.revalidateOperation || !principalContract) {
+            throw new Error('Application command gateway cannot revalidate a protected result without canonical operation authority and an admitted principalContract.');
+          }
+          const receipt = await readCommandAdmission(sql, cursor.durableScope);
+          assertCommandAuthorizationReceipt(
+            receipt,
+            command,
+            principalContract,
+            contextDigest,
+            receipt.inputDigest,
+          );
+          assertCommandReceiptCursor(options.cursorSecret, cursor, receipt);
+          const authorization = await options.revalidateOperation({
+            receipt,
+            boundary: 'result-read',
+            principal: principalContract,
+            command,
+            trustedContextDigest: contextDigest,
+          });
+          if (!authorization.allowed) return json({ error: 'forbidden', code: authorization.code }, 403);
+        }
         const rows = await sql.unsafe('SELECT output, error, model_revision FROM applik8s_command_results WHERE scope = $1 LIMIT 1', [cursor.durableScope]);
         const row = rows[0] as { readonly output?: unknown; readonly error?: unknown; readonly model_revision?: unknown } | undefined;
         if (!row) return json(progress(cursor, encoded, 'pending'), 200);
         if (row.error) {
           const error = durableRejection(row.error);
-          const failure = durableProcessingFailure(error);
+          const failure = durableTerminalFailure(error);
           if (failure) return json({ ...progress(cursor, encoded, 'failed'), failure, ...(typeof row.model_revision === 'string' ? { modelRevision: row.model_revision } : {}) }, 200);
           return json({ ...progress(cursor, encoded, 'rejected'), rejection: error, ...(typeof row.model_revision === 'string' ? { modelRevision: row.model_revision } : {}) }, 200);
         }
@@ -196,12 +329,113 @@ function database(databases: Map<string, Promise<ApplicationPostgresSql>>, url: 
 function requiredString(value: unknown, field: string): string { if (typeof value !== 'string' || !value.trim()) throw new Error(`Application command ${field} is required.`); return value; }
 function progress(cursor: ProgressCursor, encoded: string, durableResult: 'pending' | 'succeeded' | 'rejected' | 'failed'): ApplicationCommandProgress { return { protocol: 'applik8s.command/v1alpha1', command: cursor.command, commandId: cursor.commandId, correlationId: cursor.correlationId, transport: 'acknowledged', durableResult, progressCursor: encoded, workflow: 'notStarted', reconciliation: durableResult === 'succeeded' ? 'progressing' : durableResult === 'failed' ? 'failed' : 'notObserved' }; }
 function durableRejection(value: unknown): { readonly name: string; readonly payload: unknown } { if (!value || typeof value !== 'object') return { name: 'unknown', payload: null }; const name = Reflect.get(value, 'name'); return { name: typeof name === 'string' ? name : 'unknown', payload: Reflect.get(value, 'payload') ?? null }; }
-function durableProcessingFailure(value: { readonly name: string; readonly payload: unknown }): { readonly code: 'processing_failed'; readonly attempts?: number } | undefined { if (value.name !== 'internalFailure' || !value.payload || typeof value.payload !== 'object' || Reflect.get(value.payload, 'code') !== 'processing_failed') return undefined; const attempts = Reflect.get(value.payload, 'attempts'); return { code: 'processing_failed', ...(Number.isSafeInteger(attempts) && Number(attempts) > 0 ? { attempts: Number(attempts) } : {}) }; }
+function durableTerminalFailure(value: { readonly name: string; readonly payload: unknown }): { readonly code: 'processing_failed' | 'authorization_denied'; readonly attempts?: number } | undefined { if (value.name !== 'internalFailure' || !value.payload || typeof value.payload !== 'object') return undefined; const code = Reflect.get(value.payload, 'code'); if (code !== 'processing_failed' && code !== 'authorization_denied') return undefined; const attempts = Reflect.get(value.payload, 'attempts'); return { code, ...(Number.isSafeInteger(attempts) && Number(attempts) > 0 ? { attempts: Number(attempts) } : {}) }; }
+
+async function persistCommandAdmission(
+  sql: ApplicationPostgresSql,
+  admission: {
+    readonly scope: string;
+    readonly command: string;
+    readonly bindingId: string;
+    readonly commandId: string;
+    readonly receipt: ApplicationAuthorizationReceipt;
+  },
+): Promise<void> {
+  const rows = await sql.unsafe(
+    `INSERT INTO applik8s_command_admissions (scope, command, binding_id, command_id, authorization_receipt)
+VALUES ($1, $2, $3, $4, $5::jsonb)
+ON CONFLICT (scope) DO UPDATE
+SET command = EXCLUDED.command
+WHERE applik8s_command_admissions.command = EXCLUDED.command
+  AND applik8s_command_admissions.binding_id = EXCLUDED.binding_id
+  AND applik8s_command_admissions.command_id = EXCLUDED.command_id
+  AND applik8s_command_admissions.authorization_receipt = EXCLUDED.authorization_receipt
+RETURNING scope`,
+    [admission.scope, admission.command, admission.bindingId, admission.commandId, JSON.stringify(admission.receipt)],
+  );
+  if (rows.length === 0) {
+    throw new Error(`Application command admission ${admission.scope} conflicts with an existing durable authorization receipt.`);
+  }
+}
+
+async function readCommandAdmission(
+  sql: ApplicationPostgresSql,
+  scope: string,
+): Promise<ApplicationAuthorizationReceipt> {
+  const rows = await sql.unsafe(
+    'SELECT authorization_receipt FROM applik8s_command_admissions WHERE scope = $1 LIMIT 1',
+    [scope],
+  );
+  const value = rows[0] && typeof rows[0] === 'object'
+    ? Reflect.get(rows[0], 'authorization_receipt')
+    : undefined;
+  if (!value || typeof value !== 'object') {
+    throw new Error(`Application command admission ${scope} has no durable authorization receipt.`);
+  }
+  // typecast: the complete receipt is validated before it crosses the durable boundary.
+  return value as ApplicationAuthorizationReceipt;
+}
+
+function assertCommandAuthorizationReceipt(
+  receipt: ApplicationAuthorizationReceipt,
+  command: ApplicationGatewayCommandRuntimeContract,
+  principal: ApplicationPrincipal,
+  trustedContextDigest: string,
+  inputDigest: string,
+): void {
+  const diagnostics = validateApplicationAuthorizationReceipt(receipt);
+  const expectedVersion = command.operationVersion ?? commandContract(command.id).version;
+  if (diagnostics.length > 0
+    || receipt.principal.id !== principal.id
+    || (command.application !== undefined && receipt.application !== command.application)
+    || receipt.catalogRevision !== principal.catalogRevision
+    || receipt.authorityRevision !== principal.authorityRevision
+    || receipt.trustedContextDigest !== trustedContextDigest
+    || receipt.inputDigest !== inputDigest
+    || receipt.operationVersion !== expectedVersion
+    || (command.operationId !== undefined && receipt.operationId !== command.operationId)
+    || receipt.transport !== 'http') {
+    throw new Error(
+      `Application command ${command.id} authority returned an invalid receipt: ${
+        diagnostics.map((diagnostic) => diagnostic.message).join(' ') || 'operation, principal, context, input, or transport binding mismatch.'
+      }`,
+    );
+  }
+}
+
+function commandReceiptCursorFields(
+  secret: string,
+  receipt: ApplicationAuthorizationReceipt,
+): Pick<ProgressCursor, 'receiptBinding' | 'operationId' | 'operationVersion' | 'catalogRevision' | 'authorityRevision'> {
+  return {
+    receiptBinding: cursorBinding(secret, 'receipt', receipt.id),
+    operationId: receipt.operationId,
+    operationVersion: receipt.operationVersion,
+    catalogRevision: receipt.catalogRevision,
+    authorityRevision: receipt.authorityRevision,
+  };
+}
+
+function assertCommandReceiptCursor(
+  secret: string,
+  cursor: ProgressCursor,
+  receipt: ApplicationAuthorizationReceipt,
+): void {
+  const expected = commandReceiptCursorFields(secret, receipt);
+  if (cursor.version !== 3
+    || cursor.receiptBinding !== expected.receiptBinding
+    || cursor.operationId !== expected.operationId
+    || cursor.operationVersion !== expected.operationVersion
+    || cursor.catalogRevision !== expected.catalogRevision
+    || cursor.authorityRevision !== expected.authorityRevision) {
+    throw new Error('Application command cursor authorization changed.');
+  }
+}
 
 function encodeCursor(secret: string, payload: ProgressCursor): string { const body = Buffer.from(JSON.stringify(payload)).toString('base64url'); return `${body}.${createHmac('sha256', secret).update(body).digest('base64url')}`; }
-function cursorBinding(secret: string, domain: 'principal' | 'authorization' | 'context', value: string): string { return createHmac('sha256', secret).update(`applik8s.command-cursor.${domain}\0`).update(value).digest('base64url'); }
+function cursorBinding(secret: string, domain: 'principal' | 'authorization' | 'context' | 'receipt', value: string): string { return createHmac('sha256', secret).update(`applik8s.command-cursor.${domain}\0`).update(value).digest('base64url'); }
 // typecast: the signed cursor is decoded only after its HMAC, version, and expiry invariants are checked.
-function decodeCursor(secret: string, value: string, now: number): ProgressCursor { const [body, signature, extra] = value.split('.'); if (!body || !signature || extra) throw new Error('Application command cursor is invalid.'); const expected = createHmac('sha256', secret).update(body).digest(); const supplied = Buffer.from(signature, 'base64url'); if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new Error('Application command cursor is invalid.'); const cursor = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as ProgressCursor; if (cursor.version !== 2 || cursor.expiresAt < now || !cursor.command || !cursor.commandId || !cursor.correlationId || !/^sha256:[a-f0-9]{64}$/.test(cursor.durableScope) || !opaqueCursorField(cursor.principalBinding) || !opaqueCursorField(cursor.authorizationBinding) || !opaqueCursorField(cursor.contextBinding)) throw new Error('Application command cursor is invalid or expired.'); return cursor; }
+function decodeCursor(secret: string, value: string, now: number): ProgressCursor { const [body, signature, extra] = value.split('.'); if (!body || !signature || extra) throw new Error('Application command cursor is invalid.'); const expected = createHmac('sha256', secret).update(body).digest(); const supplied = Buffer.from(signature, 'base64url'); if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new Error('Application command cursor is invalid.'); const cursor = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as ProgressCursor; if ((cursor.version !== 2 && cursor.version !== 3) || cursor.expiresAt < now || !cursor.command || !cursor.commandId || !cursor.correlationId || !/^sha256:[a-f0-9]{64}$/.test(cursor.durableScope) || !opaqueCursorField(cursor.principalBinding) || !opaqueCursorField(cursor.authorizationBinding) || !opaqueCursorField(cursor.contextBinding) || (cursor.version === 3 && (!opaqueCursorField(cursor.receiptBinding) || typeof cursor.operationId !== 'string' || typeof cursor.operationVersion !== 'string' || typeof cursor.catalogRevision !== 'string' || typeof cursor.authorityRevision !== 'string'))) throw new Error('Application command cursor is invalid or expired.'); return cursor; }
 function opaqueCursorField(value: unknown): value is string { return typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value); }
 
 // typecast-boundary: parsed JSON is proven to be a non-array object before the record-shaped body is returned.

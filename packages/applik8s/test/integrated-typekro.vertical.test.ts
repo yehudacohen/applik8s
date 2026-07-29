@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
-import type { ApplicationModelBinding, ApplicationModelStoreProvider, ApplicationProviderToken } from '@applik8s/applik8s';
-import { app, applicationGraphFor, Certificate, ContainerRegistry, CounterStore, CredentialStore, cel, DnsPublication, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ModelStore, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, Secret, sdk, typeKro } from '@applik8s/applik8s';
+import type { ApplicationModelBinding, ApplicationProviderToken, ApplicationTransactionalDatabaseProvider } from '@applik8s/applik8s';
+import { app, applicationGraphFor, Certificate, ContainerRegistry, CounterStore, CredentialStore, cel, DnsPublication, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, Secret, sdk, TransactionalDatabase, typeKro } from '@applik8s/applik8s';
 import type { ApplicationRuntimeModuleInterfaceContract, ApplicationRuntimeModuleManifestContract, OperationTarget, Result } from '@applik8s/core';
 import { serializeApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationJobStatusLifecycleContract, validateApplicationModelStoreSemanticsContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract } from '@applik8s/core';
 import { transformSync } from 'esbuild';
@@ -13,6 +13,7 @@ import { generatedApplicationRuntimeModuleKinds, generatedApplicationRuntimeModu
 import { generatedRuntimeModuleSource, generatedRuntimeModuleSourcePreamble } from '../src/application-runtime-module-sources.js';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
 import { type GeneratedServerRuntimeBundleContract, validateGeneratedServerRuntimeBundleContract } from '../src/application-server-runtime-bundle.js';
+import { serializeApplicationServerCaptures } from '../src/application-server-routing.js';
 import { entity, field, label, metadata, type } from '../src/dsl.js';
 import * as kubernetesFactories from '../src/factories/kubernetes.js';
 import { cnpg, rook, simple, valkey } from '../src/factories.js';
@@ -97,7 +98,7 @@ describe('integrated TypeKro package surface', () => {
     expect(sdk.app).toBe(app);
     expect(sdk.kubernetesComposition).toBe(kubernetesComposition);
     expect(providers.IndexStore).toBe(IndexStore);
-    expect(providers.ModelStore).toBe(ModelStore);
+    expect(providers.TransactionalDatabase).toBe(TransactionalDatabase);
     expect(providers.CounterStore).toBe(CounterStore);
     expect(providers.EventSource).toBe(EventSource);
     expect(providers.Secret).toBe(Secret);
@@ -193,7 +194,7 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     });
     expect(applicationGraphFor(modelImplicitDefaultComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore', implementation: 'postgres' }),
+      expect.objectContaining({ id: 'provider.transactional-database', kind: 'provider', name: 'TransactionalDatabase', implementation: 'postgres' }),
       expect.objectContaining({ id: 'model.note', kind: 'model', name: 'Note' }),
     ]));
 
@@ -204,11 +205,11 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.defaults({ models: { kind: 'postgres' } });
+      app.defaults({ database: { kind: 'postgres' } });
       return { ready: true };
     });
     expect(applicationGraphFor(modelDefaultComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore', implementation: 'postgres', config: expect.objectContaining({ bindingKind: 'default', provider: 'postgres', modelStore: { kind: 'postgres' } }) }),
+      expect.objectContaining({ id: 'provider.transactional-database', kind: 'provider', name: 'TransactionalDatabase', implementation: 'postgres', config: expect.objectContaining({ bindingKind: 'default', provider: 'postgres', transactionalDatabase: { kind: 'postgres' } }) }),
     ]));
 
     expect(() => sdk.kubernetesComposition({
@@ -218,7 +219,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const store = app.provide(ModelStore, { kind: 'postgres', name: 'notes-db', database: 'notes' });
+      const store = app.provide(TransactionalDatabase, { kind: 'postgres', name: 'notes-db', database: 'notes' });
       const Note = app.model(NoteEntity, { store });
       Note.on.created(async () => undefined);
       return { ready: true };
@@ -425,7 +426,7 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     })).toThrow(/requires a Certificate provider/);
 
-    const postgresModelStore: ApplicationModelStoreProvider = {
+    const postgresModelStore: ApplicationTransactionalDatabaseProvider = {
       kind: 'postgres',
       name: 'notes-db',
       database: 'notes',
@@ -444,7 +445,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.defaults({ models: postgresModelStore });
+      app.defaults({ database: postgresModelStore });
       app.model(NoteEntity, {
         schema: {
           identity: ['id'],
@@ -457,7 +458,7 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     });
     expect(applicationGraphFor(defaultProviderModelComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', implementation: 'postgres', config: expect.objectContaining({ bindingKind: 'modelStore', provider: 'postgres', modelStore: expect.objectContaining({ kind: 'postgres', name: 'notes-db', database: 'notes' }) }) }),
+      expect.objectContaining({ id: 'provider.transactional-database', kind: 'provider', implementation: 'postgres', config: expect.objectContaining({ bindingKind: 'transactionalDatabase', provider: 'postgres', transactionalDatabase: expect.objectContaining({ kind: 'postgres', name: 'notes-db', database: 'notes' }) }) }),
       expect.objectContaining({
         id: 'model.note',
         schema: expect.objectContaining({
@@ -481,18 +482,18 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const provider = app.provide(ModelStore, postgresModelStore);
-      expect(provider).toEqual({ kind: 'applicationProvider', token: ModelStore, implementation: postgresModelStore });
+      const provider = app.provide(TransactionalDatabase, postgresModelStore);
+      expect(provider).toEqual({ kind: 'applicationProvider', token: TransactionalDatabase, implementation: postgresModelStore });
       return { ready: true };
     });
     const modelProviderGraph = applicationGraphFor(modelProviderComposition);
     expect(modelProviderGraph?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore', implementation: 'postgres', config: expect.objectContaining({ bindingKind: 'provided', provider: 'postgres', modelStore: expect.objectContaining({ kind: 'postgres', name: 'notes-db', database: 'notes' }) }) }),
+      expect.objectContaining({ id: 'provider.transactional-database', kind: 'provider', name: 'TransactionalDatabase', implementation: 'postgres', config: expect.objectContaining({ bindingKind: 'provided', provider: 'postgres', transactionalDatabase: expect.objectContaining({ kind: 'postgres', name: 'notes-db', database: 'notes' }) }) }),
     ]));
     if (!modelProviderGraph) {
       throw new Error('expected notes-model-provider-app to attach an application graph');
     }
-    expect(serializeApplicationGraph(modelProviderGraph)).toContain('"provider.model-store"');
+    expect(serializeApplicationGraph(modelProviderGraph)).toContain('"provider.transactional-database"');
 
     let directModel: ApplicationModelBinding<{ readonly message: string }, { readonly phase?: string }> | undefined;
     const directProviderModelComposition = sdk.kubernetesComposition({
@@ -502,13 +503,13 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      directModel = app.model(NoteEntity, { store: postgresModelStore });
+      directModel = app.model(NoteEntity, { database: postgresModelStore });
       expect(directModel.kind).toBe('applicationModel');
       return { ready: true };
     });
     const directProviderModelGraph = applicationGraphFor(directProviderModelComposition);
     expect(directProviderModelGraph?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'model.note', kind: 'model', name: 'Note', store: { interface: 'ModelStore', nodeId: 'provider.model-store' } }),
+      expect.objectContaining({ id: 'model.note', kind: 'model', name: 'Note', database: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' } }),
       expect.objectContaining({ id: 'job.notes-model-migration', kind: 'job', task: { taskKind: 'migration' } }),
     ]));
     expect(directProviderModelGraph?.nodes).toEqual(expect.arrayContaining([
@@ -547,22 +548,22 @@ describe('integrated TypeKro package surface', () => {
       }),
     ]));
     expect(directProviderModelGraph?.providerRequirements).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'requirement.model.note.store', interface: 'ModelStore', consumer: { nodeId: 'model.note' }, provider: { interface: 'ModelStore', nodeId: 'provider.model-store' } }),
+      expect.objectContaining({ id: 'requirement.model.note.database', interface: 'TransactionalDatabase', consumer: { nodeId: 'model.note' }, provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' } }),
     ]));
     expect(directProviderModelGraph?.providerBindings).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        requirement: 'requirement.model.note.store',
-        provider: { interface: 'ModelStore', nodeId: 'provider.model-store' },
+        requirement: 'requirement.model.note.database',
+        provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' },
         generatedResources: expect.arrayContaining([expect.objectContaining({ kind: 'Cluster', name: 'notes-db' })]),
         runtime: expect.objectContaining({
           env: expect.objectContaining({ DATABASE_URL_SECRET: 'notes-db-app' }),
           readiness: expect.objectContaining({ dependencies: [expect.objectContaining({ kind: 'Cluster', name: 'notes-db' })] }),
         }),
-        metadataLinks: expect.arrayContaining([expect.objectContaining({ purpose: 'providerDependency', graphNode: { nodeId: 'provider.model-store' } })]),
+        metadataLinks: expect.arrayContaining([expect.objectContaining({ purpose: 'providerDependency', graphNode: { nodeId: 'provider.transactional-database' } })]),
       }),
     ]));
     expect(directProviderModelGraph?.edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({ from: { nodeId: 'provider.model-store' }, to: { nodeId: 'model.note' }, relationship: 'provides' }),
+      expect.objectContaining({ from: { nodeId: 'provider.transactional-database' }, to: { nodeId: 'model.note' }, relationship: 'provides' }),
       expect.objectContaining({ from: { nodeId: 'job.notes-model-migration' }, to: { nodeId: 'model.note' }, relationship: 'dependsOn' }),
     ]));
     if (!directModel) {
@@ -580,21 +581,21 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const provider = app.provide(ModelStore, postgresModelStore);
-      const model = app.model(NoteEntity, { store: provider });
+      const provider = app.provide(TransactionalDatabase, postgresModelStore);
+      const model = app.model(NoteEntity, { database: provider });
       expect(model.backend).toMatchObject({
-        interface: 'ModelStore',
+        interface: 'TransactionalDatabase',
         runtimeBoundary: { serializedCallbacks: 'generatedRuntimeClient', scriptExecution: 'scriptRuntimeClient' },
         transactions: 'supported',
       });
       return { ready: true };
     });
     expect(applicationGraphFor(providedModelComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', implementation: 'postgres' }),
+      expect.objectContaining({ id: 'provider.transactional-database', kind: 'provider', implementation: 'postgres' }),
       expect.objectContaining({ id: 'model.note', kind: 'model', materialization: expect.objectContaining({ mode: 'providerBacked' }) }),
     ]));
 
-    const untypedModelStoreToken: ApplicationProviderToken<unknown> = { name: 'ModelStore' };
+    const untypedModelStoreToken: ApplicationProviderToken<unknown> = { name: 'TransactionalDatabase' };
     expect(() => sdk.kubernetesComposition({
       name: 'notes-postgres-model-provider-app',
       apiVersion: 'notes.applik8s.dev/v1alpha1',
@@ -604,7 +605,7 @@ describe('integrated TypeKro package surface', () => {
     }, (_spec, app) => {
       app.provide(untypedModelStoreToken, 'postgres');
       return { ready: true };
-    })).toThrow(/app\.provide\(ModelStore, \.\.\.\) currently supports only the typed Postgres ModelStore provider declaration/);
+    })).toThrow(/app\.provide\(TransactionalDatabase, \.\.\.\) currently supports only the typed PostgreSQL database provider declaration/);
 
     expect(() => sdk.kubernetesComposition({
       name: 'notes-counter-provider-app',
@@ -804,13 +805,13 @@ describe('integrated TypeKro package surface', () => {
       expect.objectContaining({ id: 'model.account', kind: 'model', name: 'Account' }),
       expect.objectContaining({ id: 'server.admin', kind: 'server', name: 'admin' }),
       expect.objectContaining({ id: 'operator.tenant-controller', kind: 'operator', name: 'tenant-controller' }),
-      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore', implementation: 'postgres' }),
+      expect.objectContaining({ id: 'provider.transactional-database', kind: 'provider', name: 'TransactionalDatabase', implementation: 'postgres' }),
     ]));
     expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining([
       'app.resource',
       'app.http',
       'app.reconcile',
-      'app.storage.postgres',
+      'app.database.postgres',
     ]));
   });
 
@@ -880,7 +881,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.model(NoteEntity, { store: { kind: 'postgres', name: 'notes-db', namespace: 'notes', database: 'notes' } });
+      app.model(NoteEntity, { database: { kind: 'postgres', name: 'notes-db', namespace: 'notes', database: 'notes' } });
       return { ready: true };
     });
 
@@ -899,7 +900,7 @@ describe('integrated TypeKro package surface', () => {
       name: 'notes-retained-model-app', apiVersion: 'notes.applik8s.dev/v1alpha1', kind: 'NotesRetainedModelApp',
       spec: type({}), status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.model(NoteEntity, { store: ModelStore.postgres({
+      app.model(NoteEntity, { database: TransactionalDatabase.postgres({
         name: 'notes-authority', namespace: 'notes', database: 'notes', ownership: 'direct-provisioned',
         lifecycle: { deletionPolicy: 'retain' }, storage: { size: '20Gi' },
         backup: {
@@ -1057,9 +1058,9 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const store = app.provide(ModelStore, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app' });
+      const store = app.provide(TransactionalDatabase, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app' });
       const Account = app.model(AccountEntity, {
-        store,
+        database: store,
         schema: {
           constraints: [{ name: 'account-email-unique', kind: 'unique', fields: ['email'] }],
           indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }],
@@ -1114,9 +1115,9 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const store = app.provide(ModelStore, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob' } });
+      const store = app.provide(TransactionalDatabase, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob' } });
       const Account = app.model(AccountEntity, {
-        store,
+        database: store,
         schema: {
           identity: ['id'],
           constraints: [{ name: 'account-email-unique', kind: 'unique', fields: ['email'] }],
@@ -1164,8 +1165,8 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const store = app.provide(ModelStore, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob' } });
-      const Account = app.model(AccountEntity, { store, schema: { indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }] } });
+      const store = app.provide(TransactionalDatabase, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob' } });
+      const Account = app.model(AccountEntity, { database: store, schema: { indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }] } });
       app.server('web', { namespace: 'platform' }, (server) => {
         server.post('/accounts', async () => Account.create({ spec: { email: 'ada@example.com', displayName: 'Ada' } }));
       });
@@ -1277,9 +1278,9 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const store = app.provide(ModelStore, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob', jobName: 'accounts-model-migration' } });
+      const store = app.provide(TransactionalDatabase, { kind: 'postgres', name: 'app-db', namespace: 'platform', database: 'app', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob', jobName: 'accounts-model-migration' } });
       app.model(AccountEntity, {
-        store,
+        database: store,
         schema: {
           constraints: [{ name: 'account-email-unique', kind: 'unique', fields: ['email'] }],
           indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }],
@@ -1354,7 +1355,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      model = app.model(NoteEntity, { store: { kind: 'postgres', name: 'notes-db', database: 'notes' } });
+      model = app.model(NoteEntity, { database: { kind: 'postgres', name: 'notes-db', database: 'notes' } });
       return { ready: true };
     });
     if (!model) {
@@ -1396,7 +1397,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.model(NoteEntity, { store: { kind: 'postgres', name: 'notes-db', namespace: 'notes', database: 'notes', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob', jobName: 'notes-model-migration' } } });
+      app.model(NoteEntity, { database: { kind: 'postgres', name: 'notes-db', namespace: 'notes', database: 'notes', migrations: { strategy: 'generatedJob', compatibility: 'requiresExplicitMigration', apply: 'generatedJob', jobName: 'notes-model-migration' } } });
       return { ready: true };
     });
 
@@ -2121,11 +2122,12 @@ describe('integrated TypeKro package surface', () => {
     expect(graph?.compatibility.labels).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'ApplicationGraph', surface: 'documentedInternalContract' }),
       expect.objectContaining({ name: 'app.model', surface: 'stablePublicApi', implementation: 'implemented' }),
-      expect.objectContaining({ name: 'provider.ModelStore', surface: 'stablePublicApi', implementation: 'implemented' }),
+      expect.objectContaining({ name: 'provider.TransactionalDatabase', surface: 'stablePublicApi', implementation: 'implemented' }),
       expect.objectContaining({ name: 'provider.Queue', surface: 'stablePublicApi', implementation: 'implemented' }),
     ]));
     const providerImplementationByName = new Map(graph?.compatibility.labels.filter((label) => label.name.startsWith('provider.')).map((label) => [label.name, label.implementation]));
     expect(providerImplementationByName).toEqual(new Map([
+      ['provider.AnalyticalDatabase', 'implemented'],
       ['provider.Authorization', 'implemented'],
       ['provider.Certificate', 'implemented'],
       ['provider.CounterStore', 'implemented'],
@@ -2135,12 +2137,11 @@ describe('integrated TypeKro package surface', () => {
       ['provider.EventSource', 'implemented'],
       ['provider.HttpExposure', 'implemented'],
       ['provider.IndexStore', 'implemented'],
-      ['provider.ModelStore', 'implemented'],
       ['provider.ObjectStorage', 'implemented'],
-      ['provider.ProjectionStore', 'implemented'],
       ['provider.Queue', 'implemented'],
       ['provider.Secret', 'implemented'],
       ['provider.StructuredGeneration', 'implemented'],
+      ['provider.TransactionalDatabase', 'implemented'],
       ['provider.WorkflowEngine', 'implemented'],
     ]));
     expect(graph?.compatibility.labels.filter((label) => label.name.startsWith('provider.')).every((label) => label.implementation === 'implemented')).toBe(true);
@@ -2161,8 +2162,8 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const store = ModelStore.postgres({ name: 'accounts-db', database: 'accounts', migrations: ModelStore.migrations.generatedJob({ jobName: 'accounts-model-migration' }) });
-      const Account = app.model(AccountEntity, { store, schema: { identity: ['id'], constraints: [{ name: 'account-email-unique', kind: 'unique', fields: ['email'] }], indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }], transactions: 'supported', retention: { mode: 'retain' } } });
+      const store = TransactionalDatabase.postgres({ name: 'accounts-db', database: 'accounts', migrations: TransactionalDatabase.migrations.generatedJob({ jobName: 'accounts-model-migration' }) });
+      const Account = app.model(AccountEntity, { database: store, schema: { identity: ['id'], constraints: [{ name: 'account-email-unique', kind: 'unique', fields: ['email'] }], indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }], transactions: 'supported', retention: { mode: 'retain' } } });
       app.server('admin', {}, (server) => {
         server.get('/accounts/:id', async (request) => Account.get({ id: request.query.id ?? '' }));
       });
@@ -2192,21 +2193,21 @@ describe('integrated TypeKro package surface', () => {
       'provider.event-source',
       'provider.http-exposure',
       'provider.index-store',
-      'provider.model-store',
       'provider.object-storage',
       'provider.queue',
       'provider.secret',
+      'provider.transactional-database',
       'provider.workflow-engine',
       'server.admin',
     ]);
     expect(nodesById.get('job.cleanup-accounts')).toMatchObject({ id: 'job.cleanup-accounts', kind: 'job', schedule: expect.objectContaining({ cron: '0 3 * * *' }) });
     expect(nodesById.get('job.repair-accounts')).toMatchObject({ id: 'job.repair-accounts', kind: 'job', observability: expect.objectContaining({ diagnosticsArtifact: { kind: 'jobDiagnostics', name: 'repair-accounts-diagnostics' } }) });
-    expect(nodesById.get('model.account')).toMatchObject({ id: 'model.account', kind: 'model', materialization: expect.objectContaining({ mode: 'providerBacked', provider: { interface: 'ModelStore', nodeId: 'provider.model-store' } }) });
-    expect(nodesById.get('provider.model-store')).toMatchObject({ id: 'provider.model-store', kind: 'provider', interface: 'ModelStore', implementation: 'postgres' });
+    expect(nodesById.get('model.account')).toMatchObject({ id: 'model.account', kind: 'model', materialization: expect.objectContaining({ mode: 'providerBacked', provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' } }) });
+    expect(nodesById.get('provider.transactional-database')).toMatchObject({ id: 'provider.transactional-database', kind: 'provider', interface: 'TransactionalDatabase', implementation: 'postgres' });
     expect(nodesById.get('server.admin')).toMatchObject({ id: 'server.admin', kind: 'server', observability: expect.objectContaining({ health: { mode: 'http', readinessPath: '/-/healthz', livenessPath: '/-/healthz' } }) });
     expect(graph?.edges.map((edge) => `${edge.from.nodeId}:${edge.relationship}:${edge.to.nodeId}`)).toEqual([
       'job.accounts-model-migration:dependsOn:model.account',
-      'provider.model-store:provides:model.account',
+      'provider.transactional-database:provides:model.account',
     ]);
     expect(graph?.compatibility.stablePublicApis).toEqual([
       'Model.action',
@@ -2217,8 +2218,11 @@ describe('integrated TypeKro package surface', () => {
       'Model.on.command',
       'Model.on.create',
       'Model.on.delete',
+      'Model.on.operation',
       'Model.on.update',
+      'Model.operation',
       'Model.update',
+      'Provider.named',
       'Resource.increment',
       'Resource.index',
       'Stream.process',
@@ -2229,16 +2233,19 @@ describe('integrated TypeKro package surface', () => {
       'app.any',
       'app.config',
       'app.crd',
+      'app.database.postgres',
       'app.defaults',
       'app.expose',
       'app.gateway',
       'app.http',
+      'app.inject',
       'app.installation',
       'app.interpolate',
       'app.job',
       'app.model',
       'app.objectStore',
       'app.on',
+      'app.profile',
       'app.projection',
       'app.provide',
       'app.query',
@@ -2249,7 +2256,6 @@ describe('integrated TypeKro package surface', () => {
       'app.select',
       'app.selectProvider',
       'app.server',
-      'app.storage.postgres',
       'app.stream',
       'app.subscription',
       'app.task',
@@ -2257,6 +2263,7 @@ describe('integrated TypeKro package surface', () => {
       'app.workflow',
       'command',
       'event',
+      'provider.AnalyticalDatabase',
       'provider.Authorization',
       'provider.Certificate',
       'provider.CounterStore',
@@ -2266,12 +2273,11 @@ describe('integrated TypeKro package surface', () => {
       'provider.EventSource',
       'provider.HttpExposure',
       'provider.IndexStore',
-      'provider.ModelStore',
       'provider.ObjectStorage',
-      'provider.ProjectionStore',
       'provider.Queue',
       'provider.Secret',
       'provider.StructuredGeneration',
+      'provider.TransactionalDatabase',
       'provider.WorkflowEngine',
       'sdk.kubernetesComposition',
       'stream',
@@ -2291,28 +2297,33 @@ describe('integrated TypeKro package surface', () => {
       partitionBy: label('notes.applik8s.dev/book'),
       orderBy: metadata.creationTimestamp.desc(),
     });
-    const increment = 1;
+    let increment = 1;
+    // Prevent the test transform from constant-folding away the closure.
+    if (Date.now() < 0) increment = 2;
 
-    expect(() => sdk.kubernetesComposition({
-      name: 'notes-app-aggregate-closure-capture',
-      apiVersion: 'notes.applik8s.dev/v1alpha1',
-      kind: 'NotesAppAggregateClosureCapture',
-      spec: type({}),
-      status: type({ ready: 'boolean' }),
-    }, (_spec, app) => {
-      app.defaults({ indexes: 'valkey' });
-      app.aggregate('noteStats', {
-        source: byBook,
-        target: {
-          resource: Note,
-          name: 'main',
-          status: (stats: { readonly count: number }) => ({ count: stats.count }),
-        },
-        initial: { count: 0 },
-        reduce: (stats: { readonly count: number }) => ({ count: stats.count + increment }),
+    expect(() => {
+      const composition = sdk.kubernetesComposition({
+        name: 'notes-app-aggregate-closure-capture',
+        apiVersion: 'notes.applik8s.dev/v1alpha1',
+        kind: 'NotesAppAggregateClosureCapture',
+        spec: type({}),
+        status: type({ ready: 'boolean' }),
+      }, (_spec, app) => {
+        app.defaults({ indexes: 'valkey' });
+        app.aggregate('noteStats', {
+          source: byBook,
+          target: {
+            resource: Note,
+            name: 'main',
+            status: (stats: { readonly count: number }) => ({ count: stats.count }),
+          },
+          initial: { count: 0 },
+          reduce: (stats: { readonly count: number }) => ({ count: stats.count + increment }),
+        });
+        return { ready: true };
       });
-      return { ready: true };
-    })).toThrow(/app\.aggregate noteStats reduce references module-scope identifier\(s\) that are not available inside the generated runtime: increment/);
+      void composition.resources;
+    }).toThrow(/app\.aggregate noteStats reduce references module-scope identifier\(s\) that are not available inside the generated runtime: increment/);
   });
 
   it('infers app.server resource CRUD RBAC from typed resource actions', () => {
@@ -2636,27 +2647,14 @@ describe('integrated TypeKro package surface', () => {
   });
 
   it('fails fast when function captures close over undeclared values', () => {
-    const Note = sdk.crd({
-      apiVersion: 'notes.applik8s.dev/v1alpha1',
-      kind: 'Note',
-      spec: type({ message: 'string' }),
-      status: type({ phase: 'string?' }),
-    });
-    const prefix = 'page';
-    const label = (value: number) => `${prefix}-${value}`;
+    const label = Function(
+      'value',
+      'return `${missingPrefix}-${value}`;',
+    ) as (value: number) => string;
 
-    expect(() => sdk.kubernetesComposition({
-      name: 'notes-app-function-capture',
-      apiVersion: 'notes.applik8s.dev/v1alpha1',
-      kind: 'NotesAppFunctionCapture',
-      spec: type({ namespace: 'string?' }),
-      status: type({ ready: 'boolean' }),
-    }, (_spec, app) => {
-      app.server('web', { resources: { Note }, captures: { label } }, (server) => {
-        server.get('/config', async () => ({ label: label(10) }));
-      });
-      return { ready: true };
-    })).toThrow(/app\.server capture "label" references module-scope identifier\(s\) that are not available inside the generated runtime: prefix/);
+    expect(() =>
+      serializeApplicationServerCaptures({ label }),
+    ).toThrow(/app\.server capture "label" references module-scope identifier\(s\) that are not available inside the generated runtime: missingPrefix/);
   });
 
   it('uses the default Valkey IndexStore for request-path index queries', () => {

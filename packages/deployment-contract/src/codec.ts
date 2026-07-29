@@ -83,13 +83,16 @@ function validateMetadata(value: unknown, diagnostics: string[]): void {
     value,
     path,
     ["identity", "mode", "strategy", "sourceGraphDigest", "compilerVersion"],
-    [],
+    ["profileTransition"],
     diagnostics,
   );
   enumString(value.mode, ["fresh"], `${path}.mode`, diagnostics);
   enumString(value.strategy, ["direct", "kro"], `${path}.strategy`, diagnostics);
   string(value.sourceGraphDigest, `${path}.sourceGraphDigest`, diagnostics);
   string(value.compilerVersion, `${path}.compilerVersion`, diagnostics);
+  if (value.profileTransition !== undefined) {
+    validateProfileTransition(value.profileTransition, diagnostics);
+  }
   const identityPath = `${path}.identity`;
   if (!record(value.identity, identityPath, diagnostics)) return;
   exactKeys(
@@ -129,6 +132,63 @@ function validateMetadata(value: unknown, diagnostics: string[]): void {
       diagnostics,
     );
   }
+}
+
+function validateProfileTransition(
+  value: unknown,
+  diagnostics: string[],
+): void {
+  const path = '$.metadata.profileTransition';
+  if (!record(value, path, diagnostics)) return;
+  exactKeys(
+    value,
+    path,
+    ['apiVersion', 'installation', 'mode', 'entries', 'acknowledgements'],
+    [],
+    diagnostics,
+  );
+  literal(
+    value.apiVersion,
+    'applik8s.profileTransitionPlan/v1alpha1',
+    `${path}.apiVersion`,
+    diagnostics,
+  );
+  enumString(
+    value.mode,
+    ['fresh', 'unchanged', 'transition'],
+    `${path}.mode`,
+    diagnostics,
+  );
+  const installationPath = `${path}.installation`;
+  if (record(value.installation, installationPath, diagnostics)) {
+    exactKeys(
+      value.installation,
+      installationPath,
+      ['namespace', 'name'],
+      [],
+      diagnostics,
+    );
+    string(
+      value.installation.namespace,
+      `${installationPath}.namespace`,
+      diagnostics,
+    );
+    string(
+      value.installation.name,
+      `${installationPath}.name`,
+      diagnostics,
+    );
+  }
+  if (array(value.entries, `${path}.entries`, diagnostics)) {
+    for (const [index, entry] of value.entries.entries()) {
+      jsonValue(entry, `${path}.entries[${index}]`, diagnostics);
+    }
+  }
+  stringArray(
+    value.acknowledgements,
+    `${path}.acknowledgements`,
+    diagnostics,
+  );
 }
 
 function validateNode(value: unknown, path: string, diagnostics: string[]): void {

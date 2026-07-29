@@ -1,6 +1,6 @@
 // typecast-file-boundary: Drizzle table identity and schema-normalized registries preserve generics that must be restored after runtime identity checks.
 import type { JsonObject, JsonValue, ResourceDefinition, ResourceInstanceInput, ResourceObject, RuntimeSchema } from '@applik8s/core';
-import { createApplicationMutationOperation, decorateApplicationMutationOperation, type ApplicationMutationOperation, type ApplicationQueryOperation } from '@applik8s/client';
+import { createApplicationMutationOperation, decorateApplicationMutationOperation, observeApplicationOperationAuthority, type ApplicationMutationOperation, type ApplicationQueryOperation } from '@applik8s/client';
 import { normalizeSchema } from '@applik8s/sdk';
 import { type as arkType, type Type } from 'arktype';
 import { createInsertSchema, createSelectSchema, createUpdateSchema } from 'drizzle-arktype';
@@ -118,7 +118,7 @@ export interface ApplicationModelMutationOperation<
   TInput extends object,
   TOutput,
   TValue extends object,
-> extends ApplicationMutationOperation<TInput, TOutput> {
+> extends ApplicationMutationOperation<TInput, TOutput, TValue> {
   /**
    * Adds one transaction-authoritative policy hook without changing the
    * conventional create/update/delete public operation or its event stream.
@@ -246,8 +246,14 @@ export interface DrizzleApplicationModelFacet<TTable extends AnyPgTable, TIdenti
       options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
       handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
     ): ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>>;
+    operation<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+      operation: CommandDefinition<TInput, TOutput, TErrors>,
+      options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+      handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
+    ): ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>>;
+    /** @deprecated Use on.operation(...) instead. Removed at 1.0. */
     action<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
-      action: CommandDefinition<TInput, TOutput, TErrors>,
+      operation: CommandDefinition<TInput, TOutput, TErrors>,
       options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
       handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
     ): ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>>;
@@ -272,9 +278,18 @@ export interface DrizzleApplicationModelApi<
     options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
     handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
   ): PromotedDrizzleTable<TTable, TIdentity> & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>>;
+  operation<const TName extends string, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+    name: TName,
+    operation: CommandDefinition<TInput, TOutput, TErrors>,
+    options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+    handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
+  ): PromotedDrizzleTable<TTable, TIdentity>
+    & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>>
+    & { readonly on: ApplicationModelLifecycleRegistrar<InferSelectModel<TTable>, TIdentity> & Readonly<Record<TName, ApplicationModelActionCompletedRegistrar<TName, InferSelectModel<TTable>, TOutput, TIdentity>>> };
+  /** @deprecated Use operation(name, ...) instead. Removed at 1.0. */
   action<const TName extends string, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
     name: TName,
-    action: CommandDefinition<TInput, TOutput, TErrors>,
+    operation: CommandDefinition<TInput, TOutput, TErrors>,
     options: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
     handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
   ): PromotedDrizzleTable<TTable, TIdentity>
@@ -459,6 +474,7 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
     'on',
     'view',
     'command',
+    'operation',
     'action',
   ] as const;
   const directMemberCollisions = Object.freeze(
@@ -512,14 +528,23 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
         // typecast: the registrar is installed by app.model for this exact promoted table and runtime row schema.
         return registrar(command as CommandDefinition<object, object, Readonly<Record<string, object>>>, commandOptions as ApplicationModelCommandOptions<object, object>, handler as unknown as ApplicationModelCommandHandler<object, Record<string, never>, object, object, Readonly<Record<string, object>>>) as unknown as ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>>;
       },
-      action<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
-        action: CommandDefinition<TInput, TOutput, TErrors>,
-        actionOptions: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+      operation<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+        operation: CommandDefinition<TInput, TOutput, TErrors>,
+        operationOptions: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
         handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
       ): ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>> {
         const registrar = nativeModelCommandRegistrars.get(table);
-        if (!registrar) throw new Error(`Native model ${name} must be registered through app.model(table) before declaring durable actions.`);
-        return registrar(action as CommandDefinition<object, object, Readonly<Record<string, object>>>, actionOptions as ApplicationModelCommandOptions<object, object>, handler as unknown as ApplicationModelCommandHandler<object, Record<string, never>, object, object, Readonly<Record<string, object>>>) as unknown as ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>>;
+        if (!registrar) throw new Error(`Native model ${name} must be registered through app.model(table) before declaring durable operations.`);
+        return registrar(operation as CommandDefinition<object, object, Readonly<Record<string, object>>>, operationOptions as ApplicationModelCommandOptions<object, object>, handler as unknown as ApplicationModelCommandHandler<object, Record<string, never>, object, object, Readonly<Record<string, object>>>) as unknown as ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>>;
+      },
+      action<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+        operation: CommandDefinition<TInput, TOutput, TErrors>,
+        operationOptions: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+        handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
+      ): ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>> {
+        const registrar = nativeModelCommandRegistrars.get(table);
+        if (!registrar) throw new Error(`Native model ${name} must be registered through app.model(table) before declaring durable operations.`);
+        return registrar(operation as CommandDefinition<object, object, Readonly<Record<string, object>>>, operationOptions as ApplicationModelCommandOptions<object, object>, handler as unknown as ApplicationModelCommandHandler<object, Record<string, never>, object, object, Readonly<Record<string, object>>>) as unknown as ApplicationModelCommandBinding<TInput, TOutput, InferSelectModel<TTable>, Record<string, never>>;
       },
     }),
     ref() {
@@ -612,12 +637,12 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
     commandOptions: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
     handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
   ) => installApplicationModelCommand(table, operationName, command, commandOptions, handler);
-  const actionModel = <TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+  const operationModel = <TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
     operationName: string,
-    action: CommandDefinition<TInput, TOutput, TErrors>,
-    actionOptions: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
+    operation: CommandDefinition<TInput, TOutput, TErrors>,
+    operationOptions: ApplicationModelCommandOptions<TInput, InferSelectModel<TTable>>,
     handler: ApplicationModelCommandHandler<InferSelectModel<TTable>, Record<string, never>, TInput, TOutput, TErrors>,
-  ) => installApplicationModelAction(table, operationName, action, actionOptions, handler);
+  ) => installApplicationModelOperation(table, operationName, operation, operationOptions, handler);
   // typecast-boundary: every member is derived from this exact table; the
   // private object-returning installers regain their generic public surface at
   // this single collision-safe API boundary.
@@ -628,7 +653,8 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
     on: lifecycleRegistrars,
     view: viewModel,
     command: commandModel,
-    action: actionModel,
+    operation: operationModel,
+    action: operationModel,
   }) as DrizzleApplicationModelApi<TTable>;
 
   Object.defineProperty(table, applicationModelFacet, {
@@ -648,6 +674,7 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
     on: collisionSafeApi.on,
     view: collisionSafeApi.view,
     command: collisionSafeApi.command,
+    operation: collisionSafeApi.operation,
     action: collisionSafeApi.action,
   };
   for (const [member, value] of Object.entries(directMembers)) {
@@ -665,7 +692,7 @@ export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, op
 function applicationModelMutationOperation<TInput extends object, TOutput, TValue extends object>(
   contract: Parameters<typeof createApplicationMutationOperation>[0],
 ): ApplicationModelMutationOperation<TInput, TOutput, TValue> {
-  const operation = createApplicationMutationOperation<TInput, TOutput>(contract) as ApplicationModelMutationOperation<TInput, TOutput, TValue>;
+  const operation = createApplicationMutationOperation<TInput, TOutput, TValue>(contract) as unknown as ApplicationModelMutationOperation<TInput, TOutput, TValue>;
   Object.defineProperty(operation, 'beforeCommit', {
     value: (
       options: ApplicationModelBeforeCommitOptions<TInput, TValue>,
@@ -713,6 +740,7 @@ function installApplicationModelCommand<TTable extends AnyPgTable, TInput extend
       transport: 'command',
     });
   applicationModelCommandOperationBindings.set(operation, binding);
+  observeApplicationOperationAuthority(operation, (authority) => binding.classify(authority));
   Object.defineProperty(model, name, {
     value: operation,
     enumerable: false,
@@ -722,7 +750,7 @@ function installApplicationModelCommand<TTable extends AnyPgTable, TInput extend
   return model;
 }
 
-function installApplicationModelAction<TTable extends AnyPgTable, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
+function installApplicationModelOperation<TTable extends AnyPgTable, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
   model: TTable,
   name: string,
   command: CommandDefinition<TInput, TOutput, TErrors>,

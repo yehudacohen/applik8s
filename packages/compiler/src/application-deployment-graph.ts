@@ -32,6 +32,7 @@ export interface EmitApplicationDeploymentGraphRequest {
   readonly profile: string;
   readonly strategy: ApplicationDeploymentStrategy;
   readonly installationSpec: Readonly<Record<string, unknown>>;
+  readonly profileTransition?: Readonly<Record<string, unknown>>;
 }
 
 export interface EmittedApplicationDeploymentGraph {
@@ -66,6 +67,9 @@ export async function emitApplicationDeploymentGraph(
     request.graph.metadata.namespace,
   );
   const installationSpec = jsonObject(request.installationSpec, "installation spec");
+  const profileTransition = request.profileTransition
+    ? jsonObject(request.profileTransition, "profile transition")
+    : undefined;
   const connectionDigest = digestApplicationDeploymentValue({
     provider: "kubernetes",
     context: request.context,
@@ -87,6 +91,7 @@ export async function emitApplicationDeploymentGraph(
     },
     strategy: request.strategy,
     installationSpec,
+    ...(profileTransition ? { profileTransition } : {}),
     artifacts,
     materializedComposition,
     generatedSecrets,

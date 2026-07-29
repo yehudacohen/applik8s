@@ -123,6 +123,36 @@ describe('generated JetStream command processor runtime', () => {
     expect(mismatchedCalls).toEqual(['term:unknown applik8s command binding']);
   });
 
+  it('revalidates a durable authorization receipt before executing protected effects', async () => {
+    const calls: string[] = [];
+    const execute = vi.fn(async () => undefined);
+    const message = fakeMessage({
+      ...commandEnvelope(),
+      authorizationReceipt: authorizationReceipt(),
+    }, 1, calls);
+
+    await expect(handleJetStreamCommandMessage(message, fakeJetStream(), {
+      bindings: [{
+        bindingId: 'Account-account.rename.v1',
+        contract: { name: 'account.rename', version: 'v1' },
+        execute,
+        revalidateAuthorization: async (receipt, boundary, delivery) => {
+          expect(receipt.id).toBe('receipt-1');
+          expect(boundary).toBe('execution');
+          expect(delivery.authorizationReceipt).toEqual(receipt);
+          return { allowed: false, code: 'AUTHORIZATION_GRANT_REVOKED', message: 'revoked' };
+        },
+        recordTerminalFailure: async (_input, _delivery, failure) => {
+          calls.push(`record:${failure.code}:${failure.attempts}`);
+        },
+      }],
+      subjectPrefix: 'applik8s',
+    })).resolves.toBe('acked');
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(calls).toEqual(['record:authorization_denied:1', 'ack']);
+  });
+
   it('runs different deliveries with bounded concurrency and waits for every in-flight commit', async () => {
     let active = 0;
     let maximum = 0;
@@ -178,6 +208,38 @@ function commandEnvelope(): object {
     recordedAt: '2026-07-10T12:00:00.000Z',
     expectedRevision: 'revision-expected',
     routing: { binding: 'Account-account.rename.v1', targetKey: 'routed-account', idempotencyKey: 'outbox-request' },
+  };
+}
+
+function authorizationReceipt(): object {
+  return {
+    apiVersion: 'applik8s.authorizationReceipt/v1alpha1',
+    application: 'test',
+    id: 'receipt-1',
+    operationId: 'applik8s://models/Account/operations/rename',
+    operationVersion: 'v1',
+    catalogRevision: 'catalog-1',
+    authorityRevision: 'authority-1',
+    principal: {
+      id: 'principal-1',
+      identity: { id: 'identity-1', kind: 'human', issuer: 'test', subject: 'user-1' },
+      kind: 'human',
+      authenticationMethod: 'test',
+      audience: ['accounts'],
+      trustedContextDigest: 'sha256:context',
+      catalogRevision: 'catalog-1',
+      authorityRevision: 'authority-1',
+      admittedAt: '2026-07-29T00:00:00.000Z',
+    },
+    trustedContextDigest: 'sha256:context',
+    matchedPermissionIds: ['permission:rename'],
+    matchedGrantIds: ['grant:rename'],
+    inputDigest: 'sha256:input',
+    target: { kind: 'target', model: 'Account', identity: { id: 'account-1' } },
+    scopeEvidence: [],
+    audience: 'accounts',
+    transport: 'event',
+    admittedAt: '2026-07-29T00:00:00.000Z',
   };
 }
 

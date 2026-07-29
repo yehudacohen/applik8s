@@ -34,7 +34,7 @@ export function createHttpApplicationCommandTransport(options: HttpApplicationCo
 function validateProgress(progress: ApplicationCommandProgress, command: string): void {
   if (progress.protocol !== 'applik8s.command/v1alpha1' || progress.command !== command || !progress.commandId || !progress.correlationId || !['idle', 'submitting', 'acknowledged', 'failed'].includes(progress.transport) || !['unknown', 'pending', 'succeeded', 'rejected', 'failed'].includes(progress.durableResult)) throw new Error(`Command response for ${command} violates the Applik8s command protocol.`);
   if (progress.durableResult === 'rejected' && !progress.rejection) throw new Error(`Rejected command response for ${command} omits its declared rejection.`);
-  if (progress.durableResult === 'failed' && progress.failure?.code !== 'processing_failed') throw new Error(`Failed command response for ${command} omits its safe terminal failure.`);
+  if (progress.durableResult === 'failed' && progress.failure?.code !== 'processing_failed' && progress.failure?.code !== 'authorization_denied') throw new Error(`Failed command response for ${command} omits its safe terminal failure.`);
 }
 
 async function resolvedHeaders(headers: HttpApplicationCommandTransportOptions['headers']): Promise<Readonly<Record<string, string>>> { if (!headers) return {}; return typeof headers === 'function' ? headers() : headers; }

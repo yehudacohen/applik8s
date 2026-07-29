@@ -2,6 +2,7 @@
 import type { ApplicationModelChange, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryBinding, ApplicationRelationalContext } from '@applik8s/applik8s';
 import { app, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationStreamSubscriptionGateway, createApplicationSubscriptionLimiter, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
+import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { describe, expect, test } from 'vitest';
 
@@ -43,6 +44,45 @@ function fakeContext(pages: readonly { readonly items: readonly (ApplicationMode
   };
 }
 
+function queryReceipt(
+  principalId: string,
+  authorityRevision: string,
+  overrides: Partial<ApplicationAuthorizationReceipt> = {},
+): ApplicationAuthorizationReceipt {
+  const catalogRevision = overrides.catalogRevision ?? 'catalog-1';
+  const trustedContextDigest = overrides.trustedContextDigest ?? 'trusted-context-1';
+  return {
+    apiVersion: 'applik8s.authorizationReceipt/v1alpha1',
+    application: 'test',
+    id: overrides.id ?? `receipt-${authorityRevision}`,
+    operationId: overrides.operationId ?? 'applik8s://query-gateway-fixture/query/cards.list.v1@v1',
+    operationVersion: overrides.operationVersion ?? 'v1',
+    catalogRevision,
+    authorityRevision,
+    principal: overrides.principal ?? {
+      id: principalId,
+      identity: { id: `identity-${principalId}`, kind: 'human', issuer: 'fixture', subject: principalId },
+      kind: 'human',
+      authenticationMethod: 'fixture',
+      audience: ['query-gateway'],
+      trustedContextDigest,
+      catalogRevision,
+      authorityRevision,
+      admittedAt: '2026-07-15T12:00:00.000Z',
+    },
+    trustedContextDigest,
+    matchedPermissionIds: overrides.matchedPermissionIds ?? ['permission-query'],
+    matchedGrantIds: overrides.matchedGrantIds ?? ['grant-query'],
+    inputDigest: overrides.inputDigest ?? 'input-digest-1',
+    target: overrides.target ?? { kind: 'all' },
+    scopeEvidence: overrides.scopeEvidence ?? [{ kind: 'all' }],
+    audience: overrides.audience ?? 'query-gateway',
+    transport: overrides.transport ?? 'http',
+    admittedAt: overrides.admittedAt ?? '2026-07-15T12:00:00.000Z',
+    ...overrides,
+  };
+}
+
 describe('v0.6 authenticated query gateway', () => {
   test('binds the app declaration directly to an authenticated Request/Response runtime', async () => {
     const { catalog, query } = queryFixture();
@@ -79,6 +119,53 @@ describe('v0.6 authenticated query gateway', () => {
     const iterator = gateway.subscribe({}, query.id, { limit: 5 }, snapshot.cursor)[Symbol.asyncIterator]();
     const event = await iterator.next();
     expect(event.value).toMatchObject({ kind: 'invalidate', id: 'cards.list.v1:6', models: ['Card'] });
+  });
+
+  test('pins canonical operation authority into opaque cursors and resets on revision change', async () => {
+    const { query } = queryFixture();
+    let authorityRevision = 'authority-1';
+    const gateway = createApplicationQueryGateway({
+      queries: [query as ApplicationQueryBinding<unknown, unknown>],
+      authenticate: async () => ({
+        principal: { id: 'allowed' },
+        admittedContext: {
+          values: { organizationId: 'organization-1' },
+          digestSecret: 'context-digest-secret-context-digest-secret',
+        },
+        authorizationVersion: 'permissions-1',
+      }),
+      authorizeOperation: async ({ boundary, identity, inputDigest, trustedContextDigest }) => queryReceipt(
+        identity.principal.id,
+        authorityRevision,
+        { id: `receipt-${boundary}-${authorityRevision}`, inputDigest, trustedContextDigest },
+      ),
+      context: () => fakeContext(),
+      cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
+      now: () => new Date('2026-07-15T12:00:00.000Z'),
+      sleep: async () => undefined,
+    });
+
+    const snapshot = await gateway.snapshot({}, query.id, { limit: 5 });
+    const cursorBody = JSON.parse(
+      Buffer.from(snapshot.cursor.split('.')[0] ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    expect(cursorBody).toMatchObject({
+      version: 3,
+      operationId: 'applik8s://query-gateway-fixture/query/cards.list.v1@v1',
+      operationVersion: 'v1',
+      catalogRevision: 'catalog-1',
+      authorityRevision: 'authority-1',
+    });
+    expect(cursorBody.applicationBinding).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(cursorBody.principalBinding).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(JSON.stringify(cursorBody)).not.toContain('allowed');
+    expect(JSON.stringify(cursorBody)).not.toContain('"test"');
+    expect(JSON.stringify(cursorBody)).not.toContain('trusted-context-1');
+
+    authorityRevision = 'authority-2';
+    expect(
+      (await gateway.subscribe({}, query.id, { limit: 5 }, snapshot.cursor)[Symbol.asyncIterator]().next()).value,
+    ).toMatchObject({ kind: 'reset', reason: 'authorizationChanged' });
   });
 
   test('uses one query protocol for an online projection and invalidates again when its checkpoint catches up', async () => {

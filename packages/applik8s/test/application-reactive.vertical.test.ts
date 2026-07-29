@@ -148,7 +148,7 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     expect(graph?.nodes.find((node) => node.kind === 'streamProcessor')).toMatchObject({ delivery: 'at-least-once', checkpoint: 'postgres', failure: 'deadLetter', deployment: { replicas: 1, concurrency: 4 } });
     expect(graph?.nodes.find((node) => node.kind === 'subscription')).toMatchObject({ delivery: 'sse', suspension: 'bounded-failures' });
     expect(graph?.nodes.find((node) => node.kind === 'projection')).toMatchObject({ rebuildable: true, duplicateHandling: 'idempotent', rebuild: 'full-replay' });
-    expect(graph?.nodes.find((node) => node.kind === 'provider' && node.interface === 'ProjectionStore')).toMatchObject({ implementation: 'clickhouse' });
+    expect(graph?.nodes.find((node) => node.kind === 'provider' && node.interface === 'AnalyticalDatabase')).toMatchObject({ implementation: 'clickhouse' });
     expect(validateApplicationGraph(graph)).toEqual([]);
     expect(validateApplicationGraphCompatibilityPolicy(graph)).toEqual([]);
   });

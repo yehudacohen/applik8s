@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { JsonValue } from '@applik8s/core';
+import type { ApplicationAuthorizationReceipt, JsonValue } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { type } from 'arktype';
 
@@ -113,6 +113,8 @@ export interface ApplicationMessageEnvelope<TPayload extends object> {
     /** Opaque data-isolation scopes computed by the secret-holding admission boundary. */
     readonly changeScopes?: Readonly<Record<string, string>>;
   };
+  /** Canonical admission proof persisted for execution/pre-commit revalidation. */
+  readonly authorizationReceipt?: ApplicationAuthorizationReceipt;
 }
 
 export interface ApplicationStateRevisionRef {

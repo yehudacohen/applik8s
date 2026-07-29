@@ -1,10 +1,10 @@
 // typecast-file-boundary: Chirp composes ArkType-derived optional installation proxies into provider contracts whose inactive branches are concretized only after spec validation.
-import { Authorization, ContainerRegistry, defaultApplicationEventLogProvider, app as defineApplication, IndexStore, ObjectStorage, ProjectionStore, RequestIdentity, StructuredGeneration, WorkflowEngine } from '@applik8s/applik8s';
+import { AnalyticalDatabase, Authorization, ContainerRegistry, defaultApplicationEventLogProvider, app as defineApplication, IndexStore, ObjectStorage, RequestIdentity, StructuredGeneration, WorkflowEngine } from '@applik8s/applik8s';
 import type { ApplicationIdentityInfrastructure } from '@applik8s/applik8s';
 import { type } from 'arktype';
 import { externalInfrastructureProviders } from './providers/external';
 import { authenticateChirpRequest, chirpAuthorization, probeChirpIdentity } from './providers/identity';
-import { localContainerRegistry, localObjectStorage, localProjectionStore, localWorkflowEngine } from './providers/local';
+import { localAnalyticalDatabase, localContainerRegistry, localObjectStorage, localWorkflowEngine } from './providers/local';
 
 export const InstallationSpec = type({
   name: 'string',
@@ -333,7 +333,7 @@ app.provide(WorkflowEngine, localWorkflowEngine(namespace, capacity, true, {
   workerTokenSecretName: app.select(app.installation.spec.profile, { external: external.workflows.workerTokenSecretName, default: 'hatchet-client-config' }),
   tls: app.select(app.installation.spec.profile, { external: external.workflows.tls, default: false }),
 }));
-app.provide(ProjectionStore, localProjectionStore(namespace, capacity, app.installation.spec.features.analytics, {
+app.provide(AnalyticalDatabase, localAnalyticalDatabase(namespace, capacity, app.installation.spec.features.analytics, {
   provision: app.select(app.installation.spec.profile, { external: false, default: true }),
   endpoint: app.select(app.installation.spec.profile, { external: external.analytics.endpoint, default: app.interpolate`http://clickhouse-chirp-analytics.${namespace}.svc.cluster.local:8123` }),
   database: app.select(app.installation.spec.profile, { external: external.analytics.database, default: 'chirp' }),

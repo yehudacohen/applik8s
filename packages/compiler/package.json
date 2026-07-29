@@ -32,9 +32,11 @@
     "@applik8s/runtime-nats": "0.6.0",
     "@applik8s/runtime-kubernetes": "0.6.0",
     "@applik8s/runtime-postgres": "0.6.0",
+    "@applik8s/operations": "0.6.0",
     "@hatchet-dev/typescript-sdk": "1.24.3",
     "@applik8s/typetainer": "0.6.0",
     "esbuild": "^0.28.1",
+    "postgres": "^3.4.7",
     "typescript": "^5.3.0",
     "yaml": "^2.9.0"
   }

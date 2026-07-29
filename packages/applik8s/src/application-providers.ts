@@ -1,5 +1,6 @@
 // typecast-file-boundary: provider constructors validate structural runtime input before restoring provider-specific discriminated contracts.
 import type { ApplicationMigrationContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef } from '@applik8s/core';
+import { Cel } from 'typekro';
 import type { OryIdentityStackConfig, OryPlatformStackConfig } from 'typekro/ory';
 import { applicationTypeKroExpressionValue, applicationTypeKroString } from './application-typekro-values.js';
 import { StructuredGeneration, isApplicationStructuredGenerationProvider } from './structured-generation.js';
@@ -13,7 +14,9 @@ export interface ApplicationIndexBackendSelectionOptions {
 
 export type ApplicationIndexBackend = ApplicationValkeyIndexBackend;
 
-export type ApplicationModelStoreProvider = ApplicationPostgresModelStoreProvider;
+export type ApplicationTransactionalDatabaseProvider = ApplicationPostgresModelStoreProvider;
+/** @deprecated Use ApplicationTransactionalDatabaseProvider. Removed at 1.0. */
+export type ApplicationModelStoreProvider = ApplicationTransactionalDatabaseProvider;
 
 export type ApplicationHttpExposureProvider =
   | 'ingress'
@@ -145,7 +148,9 @@ export interface ApplicationClickHouseProjectionStoreProvider {
   readonly passwordKey?: string;
 }
 
-export type ApplicationProjectionStoreProvider = ApplicationClickHouseProjectionStoreProvider;
+export type ApplicationAnalyticalDatabaseProvider = ApplicationClickHouseProjectionStoreProvider;
+/** @deprecated Use ApplicationAnalyticalDatabaseProvider. Removed at 1.0. */
+export type ApplicationProjectionStoreProvider = ApplicationAnalyticalDatabaseProvider;
 
 export type ApplicationContainerRegistryEndpoint =
   | { readonly kind: 'origin'; readonly origin: string }
@@ -494,6 +499,8 @@ export interface ApplicationExternalDnsPublicationProvider {
 }
 
 export interface ApplicationDefaults {
+  readonly database?: ApplicationTransactionalDatabaseProvider | ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
+  /** @deprecated Use database. Removed at 1.0. */
   readonly models?: ApplicationModelStoreProvider | ApplicationProviderBinding<ApplicationModelStoreProvider>;
   readonly indexes?: unknown;
   readonly counters?: ApplicationCounterStoreProvider;
@@ -506,6 +513,8 @@ export interface ApplicationDefaults {
   readonly expose?: ApplicationHttpExposureProvider | ApplicationProviderBinding<ApplicationHttpExposureProvider>;
   readonly certificates?: ApplicationCertificateProvider | ApplicationProviderBinding<ApplicationCertificateProvider>;
   readonly dns?: ApplicationDnsPublicationProvider | ApplicationProviderBinding<ApplicationDnsPublicationProvider>;
+  readonly analytics?: ApplicationAnalyticalDatabaseProvider | ApplicationProviderBinding<ApplicationAnalyticalDatabaseProvider>;
+  /** @deprecated Use analytics. Removed at 1.0. */
   readonly projections?: ApplicationProjectionStoreProvider | ApplicationProviderBinding<ApplicationProjectionStoreProvider>;
 }
 
@@ -522,12 +531,88 @@ export interface ApplicationProviderToken<TImplementation = unknown> {
   readonly __implementation?: TImplementation;
 }
 
+export interface ApplicationProviderQualification<TName extends string = string> {
+  readonly apiVersion: 'applik8s.providerQualification/v1alpha1';
+  readonly capability: string;
+  readonly name: TName;
+  readonly compatibilityRevision: string;
+  readonly key: `${string}@${string}:${TName}`;
+}
+
+export interface ApplicationQualifiedProviderToken<
+  TImplementation = unknown,
+  TName extends string = string,
+> extends ApplicationProviderToken<TImplementation> {
+  readonly kind: 'applicationQualifiedProvider';
+  readonly base: ApplicationProviderToken<TImplementation>;
+  readonly qualification: ApplicationProviderQualification<TName>;
+}
+
+export interface ApplicationQualifiableProviderToken<TImplementation = unknown>
+  extends ApplicationProviderToken<TImplementation> {
+  named<const TName extends string>(
+    name: TName,
+  ): ApplicationQualifiedProviderToken<TImplementation, TName>;
+}
+
 export interface ApplicationTypedProviderContract {
   readonly apiVersion: 'applik8s.provider/v1alpha1';
   readonly interface: string;
   readonly version: string;
   readonly requirements: readonly string[];
   readonly guarantees: readonly string[];
+}
+
+type ApplicationProviderImplementation<TToken> =
+  TToken extends ApplicationProviderToken<infer TImplementation>
+    ? TImplementation
+    : never;
+
+function applicationQualifiableProviderToken<
+  TToken extends ApplicationQualifiableProviderToken<unknown>,
+>(token: Omit<TToken, 'named'>): TToken {
+  const compatibilityRevision = token.contract?.version ?? 'v1alpha1';
+  const qualified = Object.defineProperty(token, 'named', {
+    value: <const TName extends string>(
+      name: TName,
+    ): ApplicationQualifiedProviderToken<ApplicationProviderImplementation<TToken>, TName> => {
+      if (!/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(name)) {
+        throw new Error(
+          `Application provider qualifier ${JSON.stringify(name)} must be a stable lower-case identifier.`,
+        );
+      }
+      const key = `${token.name}@${compatibilityRevision}:${name}` as const;
+      const result: ApplicationQualifiedProviderToken<ApplicationProviderImplementation<TToken>, TName> = {
+        kind: 'applicationQualifiedProvider',
+        name: token.name,
+        ...(token.description ? { description: token.description } : {}),
+        ...(token.contract ? { contract: token.contract } : {}),
+        ...(token.accepts
+          ? {
+              accepts: (
+                implementation: unknown,
+              ): implementation is ApplicationProviderImplementation<TToken> =>
+                token.accepts!(implementation),
+            }
+          : {}),
+        // typecast: the input is exactly the public token with only named() omitted.
+        base: token as unknown as ApplicationProviderToken<ApplicationProviderImplementation<TToken>>,
+        qualification: {
+          apiVersion: 'applik8s.providerQualification/v1alpha1',
+          capability: token.name,
+          name,
+          compatibilityRevision,
+          key,
+        },
+      };
+      return Object.freeze(result);
+    },
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  // typecast: defineProperty installs the one method omitted from the input token.
+  return qualified as unknown as TToken;
 }
 
 export function defineApplicationProvider<TImplementation>(options: {
@@ -537,23 +622,25 @@ export function defineApplicationProvider<TImplementation>(options: {
   readonly requirements?: readonly string[];
   readonly guarantees?: readonly string[];
   readonly accepts: (implementation: unknown) => implementation is TImplementation;
-}): ApplicationProviderToken<TImplementation> {
+}): ApplicationQualifiableProviderToken<TImplementation> {
   if (!/^[A-Z][A-Za-z0-9]*$/.test(options.interface)) throw new Error(`Application provider interface ${JSON.stringify(options.interface)} must be a stable UpperCamelCase identifier.`);
   if (!/^v[1-9][0-9]*(?:(?:alpha|beta)[1-9][0-9]*)?$/.test(options.version)) throw new Error(`Application provider interface ${options.interface} must declare an explicit version such as v1 or v1alpha1.`);
-  return {
+  return applicationQualifiableProviderToken({
     name: options.interface,
     ...(options.description ? { description: options.description } : {}),
     contract: { apiVersion: 'applik8s.provider/v1alpha1', interface: options.interface, version: options.version, requirements: [...(options.requirements ?? [])], guarantees: [...(options.guarantees ?? [])] },
     accepts: options.accepts,
-  };
+  });
 }
 
-export interface ApplicationModelStoreProviderToken extends ApplicationProviderToken<ApplicationModelStoreProvider> {
+export interface ApplicationTransactionalDatabaseProviderToken extends ApplicationQualifiableProviderToken<ApplicationTransactionalDatabaseProvider> {
   postgres(options?: ApplicationPostgresModelStoreOptions): ApplicationPostgresModelStoreProvider;
   readonly migrations: {
     generatedJob(options?: ApplicationGeneratedModelStoreMigrationJobOptions): ApplicationModelStoreMigrationPolicy;
   };
 }
+/** @deprecated Use ApplicationTransactionalDatabaseProviderToken. Removed at 1.0. */
+export type ApplicationModelStoreProviderToken = ApplicationTransactionalDatabaseProviderToken;
 
 export interface ApplicationCertificateProviderToken extends ApplicationProviderToken<ApplicationCertificateProvider> {
   certManager(options: Omit<ApplicationCertManagerCertificateProvider, 'kind'>): ApplicationCertManagerCertificateProvider;
@@ -572,9 +659,11 @@ export interface ApplicationWorkflowEngineProviderToken extends ApplicationProvi
   hatchet(options?: Omit<ApplicationHatchetWorkflowEngineProvider, 'kind'>): ApplicationHatchetWorkflowEngineProvider;
 }
 
-export interface ApplicationProjectionStoreProviderToken extends ApplicationProviderToken<ApplicationProjectionStoreProvider> {
+export interface ApplicationAnalyticalDatabaseProviderToken extends ApplicationQualifiableProviderToken<ApplicationAnalyticalDatabaseProvider> {
   clickhouse(options?: Omit<ApplicationClickHouseProjectionStoreProvider, 'kind'>): ApplicationClickHouseProjectionStoreProvider;
 }
+/** @deprecated Use ApplicationAnalyticalDatabaseProviderToken. Removed at 1.0. */
+export type ApplicationProjectionStoreProviderToken = ApplicationAnalyticalDatabaseProviderToken;
 
 export interface ApplicationContainerRegistryProviderToken extends ApplicationProviderToken<ApplicationContainerRegistryProvider> {
   orbstack(): ApplicationOrbstackContainerRegistryProvider;
@@ -642,10 +731,10 @@ export const IndexStore: ApplicationIndexStoreProviderToken = {
   },
 };
 
-export const ModelStore: ApplicationModelStoreProviderToken = {
-  name: 'ModelStore',
-  description: 'Default app-scoped storage-backed model provider.',
-  contract: builtInProviderContract('ModelStore', ['transactions', 'strongReads']),
+export const TransactionalDatabase: ApplicationTransactionalDatabaseProviderToken = applicationQualifiableProviderToken({
+  name: 'TransactionalDatabase',
+  description: 'Canonical transactional database provider for application models.',
+  contract: builtInProviderContract('TransactionalDatabase', ['transactions', 'strongReads']),
   postgres(options = {}) {
     const provider: ApplicationPostgresModelStoreProvider = { kind: 'postgres', ...options };
     assertApplicationPostgresModelStoreLifecycle(provider);
@@ -661,7 +750,9 @@ export const ModelStore: ApplicationModelStoreProviderToken = {
       };
     },
   },
-};
+});
+/** @deprecated Use TransactionalDatabase. Removed at 1.0. */
+export const ModelStore = TransactionalDatabase;
 
 export const CounterStore: ApplicationProviderToken<ApplicationCounterStoreProvider> = {
   name: 'CounterStore',
@@ -774,15 +865,17 @@ export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = {
   },
 };
 
-export const ProjectionStore: ApplicationProjectionStoreProviderToken = {
-  name: 'ProjectionStore',
-  description: 'Rebuildable analytical projection storage; durable replay remains owned by the source stream.',
-  contract: builtInProviderContract('ProjectionStore', ['idempotentInsert', 'checkpoint', 'fullRebuild']),
+export const AnalyticalDatabase: ApplicationAnalyticalDatabaseProviderToken = applicationQualifiableProviderToken({
+  name: 'AnalyticalDatabase',
+  description: 'Rebuildable analytical database; durable replay remains owned by the source stream.',
+  contract: builtInProviderContract('AnalyticalDatabase', ['idempotentInsert', 'checkpoint', 'fullRebuild']),
   accepts: isClickHouseProjectionStoreProvider,
   clickhouse(options = {}) {
     return { kind: 'clickhouse', ...options };
   },
-};
+});
+/** @deprecated Use AnalyticalDatabase. Removed at 1.0. */
+export const ProjectionStore = AnalyticalDatabase;
 
 export const ContainerRegistry: ApplicationContainerRegistryProviderToken = {
   name: 'ContainerRegistry',
@@ -914,7 +1007,7 @@ function builtInProviderContract(providerInterface: string, guarantees: readonly
 }
 
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, ModelStore, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ProjectionStore, ApplicationHost, ContainerRegistry, RequestIdentity, Authorization, StructuredGeneration } as const;
+export const providers = { IndexStore, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ApplicationHost, ContainerRegistry, RequestIdentity, Authorization, StructuredGeneration } as const;
 
 export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
   if (!name) return undefined;
@@ -946,7 +1039,7 @@ export const defaultApplicationWorkflowEngineProvider: ApplicationWorkflowEngine
 
 export const defaultApplicationProviders: {
   readonly IndexStore: ApplicationValkeyIndexBackend;
-  readonly ModelStore: ApplicationPostgresModelStoreProvider;
+  readonly TransactionalDatabase: ApplicationPostgresModelStoreProvider;
   readonly CounterStore: ApplicationCounterStoreProvider;
   readonly EventSource: ApplicationEventSourceProvider;
   readonly Secret: ApplicationSecretProvider;
@@ -959,7 +1052,7 @@ export const defaultApplicationProviders: {
   readonly WorkflowEngine: ApplicationWorkflowEngineProvider;
 } = {
   IndexStore: { kind: 'valkey' },
-  ModelStore: { kind: 'postgres' },
+  TransactionalDatabase: { kind: 'postgres' },
   CounterStore: { kind: 'kubernetes-resource-counter', flushMs: 1000 },
   EventSource: { kind: 'kubernetes-watch', resyncSeconds: 300 },
   Secret: { kind: 'kubernetes-secret', defaultOwnership: 'external' },
@@ -982,7 +1075,22 @@ export function isClickHouseProjectionStoreProvider(value: unknown): value is Ap
 
 export function applicationProjectionStoreImplementation(value: unknown): ApplicationProjectionStoreProvider | undefined {
   if (isClickHouseProjectionStoreProvider(value)) return value;
-  if (isApplicationProviderBinding(value) && value.token === ProjectionStore && isClickHouseProjectionStoreProvider(value.implementation)) return value.implementation;
+  const implementation = isApplicationProviderBinding(value)
+    && applicationProviderBaseToken(value.token) === ProjectionStore
+    ? value.implementation
+    : value;
+  if (isClickHouseProjectionStoreProvider(implementation)) return implementation;
+  if (
+    isApplicationProviderSelection(implementation)
+    && [
+      ...Object.values(implementation.cases),
+      implementation.default,
+    ].every(isClickHouseProjectionStoreProvider)
+  ) {
+    return applicationSelectedClickHouseProvider(
+      implementation as ApplicationProviderSelectionValue<ApplicationClickHouseProjectionStoreProvider>,
+    );
+  }
   return undefined;
 }
 
@@ -1035,6 +1143,20 @@ export function isValkeyIndexDefault(value: unknown): boolean {
 export function applyApplicationProvider<TImplementation>(state: ApplicationProviderState, token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): void {
   if (isApplicationProviderSelection(implementation)) {
     const candidates = [...Object.values(implementation.cases), implementation.default];
+    if (applicationProviderTokenName(token) === 'TransactionalDatabase') {
+      if (candidates.some((candidate) => !isPostgresModelStoreProvider(candidate))) {
+        throw new Error('Application profile TransactionalDatabase branches must each satisfy the transactional PostgreSQL provider contract.');
+      }
+      state.providers.models = implementation;
+      return;
+    }
+    if (applicationProviderTokenName(token) === 'AnalyticalDatabase') {
+      if (candidates.some((candidate) => !isClickHouseProjectionStoreProvider(candidate))) {
+        throw new Error('Application profile AnalyticalDatabase branches must each satisfy the analytical database provider contract.');
+      }
+      state.providers.projections = implementation;
+      return;
+    }
     if ((token as unknown) === ContainerRegistry) {
       if (candidates.some((candidate) => !isApplicationContainerRegistryProvider(candidate))) {
         throw new Error('app.selectProvider(...) ContainerRegistry branches must each be a valid registry provider.');
@@ -1051,7 +1173,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
       state.providers.extensions['StructuredGeneration@v1alpha1'] = implementation;
       return;
     }
-    throw new Error(`app.selectProvider(...) is not yet supported for ${applicationProviderTokenName(token)}. Supported provider selections are ContainerRegistry and StructuredGeneration.`);
+    throw new Error(`Application profile provider selection is not yet supported for ${applicationProviderTokenName(token)}.`);
   }
   if (applicationProviderTokenName(token) === 'IndexStore') {
     if (!isValkeyIndexDefault(implementation)) {
@@ -1060,9 +1182,9 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.indexes = implementation;
     return;
   }
-  if (applicationProviderTokenName(token) === 'ModelStore') {
+  if (applicationProviderTokenName(token) === 'TransactionalDatabase') {
     if (!isPostgresModelStoreProvider(implementation)) {
-      throw new Error('app.provide(ModelStore, ...) currently supports only the typed Postgres ModelStore provider declaration. Use { kind: "postgres", ... } until additional ModelStore providers are implemented.');
+      throw new Error('app.provide(TransactionalDatabase, ...) currently supports only the typed PostgreSQL database provider declaration. Use TransactionalDatabase.postgres(...).');
     }
     state.providers.models = implementation;
     return;
@@ -1088,9 +1210,9 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.dns = implementation;
     return;
   }
-  if (applicationProviderTokenName(token) === 'ProjectionStore') {
+  if (applicationProviderTokenName(token) === 'AnalyticalDatabase') {
     if (!isClickHouseProjectionStoreProvider(implementation)) {
-      throw new Error('app.provide(ProjectionStore, ...) currently supports the ClickHouse projection provider. Use ProjectionStore.clickhouse(...).');
+      throw new Error('app.provide(AnalyticalDatabase, ...) currently supports the ClickHouse analytical provider. Use AnalyticalDatabase.clickhouse(...).');
     }
     state.providers.projections = implementation;
     return;
@@ -1172,6 +1294,51 @@ export interface ApplicationProviderSelectionValue<TImplementation = unknown> {
   readonly default: TImplementation;
 }
 
+const applicationProviderSelectionMetadata = Symbol.for(
+  'Applik8s.ApplicationProviderSelection',
+);
+
+export function applicationProviderSelectionFor<TImplementation>(
+  value: unknown,
+): ApplicationProviderSelectionValue<TImplementation> | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const selection = Reflect.get(value, applicationProviderSelectionMetadata);
+  return isApplicationProviderSelection(selection)
+    ? selection as ApplicationProviderSelectionValue<TImplementation>
+    : undefined;
+}
+
+export function isApplicationQualifiedProviderToken<TImplementation = unknown>(
+  value: unknown,
+): value is ApplicationQualifiedProviderToken<TImplementation> {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'applicationQualifiedProvider'
+    && Reflect.get(value, 'base')
+    && Reflect.get(value, 'qualification'),
+  );
+}
+
+export function applicationProviderQualificationFor(
+  value: unknown,
+): ApplicationProviderQualification | undefined {
+  if (isApplicationQualifiedProviderToken(value)) {
+    return value.qualification;
+  }
+  if (
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'applicationProvider'
+  ) {
+    const token = Reflect.get(value, 'token');
+    return isApplicationQualifiedProviderToken(token)
+      ? token.qualification
+      : undefined;
+  }
+  return undefined;
+}
+
 export function isApplicationProviderSelection(value: unknown): value is ApplicationProviderSelectionValue {
   return Boolean(
     value
@@ -1182,6 +1349,17 @@ export function isApplicationProviderSelection(value: unknown): value is Applica
     && typeof Reflect.get(value, 'cases') === 'object'
     && Object.hasOwn(value, 'default'),
   );
+}
+
+export function applicationProviderSelectionSatisfies<TImplementation>(
+  value: unknown,
+  accepts: (implementation: unknown) => implementation is TImplementation,
+): boolean {
+  if (!isApplicationProviderSelection(value)) return false;
+  return [
+    ...Object.values(value.cases),
+    value.default,
+  ].every((candidate) => accepts(candidate));
 }
 
 function applicationProviderStateField(tokenName: string | undefined): 'counters' | 'events' | 'eventLogs' | 'secrets' | 'queues' | 'objects' | 'credentials' | undefined {
@@ -1284,36 +1462,248 @@ export function applicationModelStoreImplementation(store: unknown): Application
     assertApplicationPostgresModelStoreLifecycle(store);
     return store;
   }
-  if (isApplicationProviderBinding(store) && store.token === ModelStore && isPostgresModelStoreProvider(store.implementation)) {
-    assertApplicationPostgresModelStoreLifecycle(store.implementation);
-    return store.implementation;
+  if (
+    isApplicationProviderBinding(store)
+    && applicationProviderBaseToken(store.token) === ModelStore
+  ) {
+    if (isPostgresModelStoreProvider(store.implementation)) {
+      assertApplicationPostgresModelStoreLifecycle(store.implementation);
+      return store.implementation;
+    }
+    if (
+      isApplicationProviderSelection(store.implementation)
+      && [
+        ...Object.values(store.implementation.cases),
+        store.implementation.default,
+      ].every(isPostgresModelStoreProvider)
+    ) {
+      return applicationSelectedPostgresProvider(
+        store.implementation as ApplicationProviderSelectionValue<ApplicationPostgresModelStoreProvider>,
+      );
+    }
   }
   return undefined;
+}
+
+function applicationProviderBaseToken(
+  token: ApplicationProviderToken<unknown>,
+): ApplicationProviderToken<unknown> {
+  return token
+    && typeof token === 'object'
+    && Reflect.get(token, 'kind') === 'applicationQualifiedProvider'
+    && Reflect.get(token, 'base')
+    ? Reflect.get(token, 'base') as ApplicationProviderToken<unknown>
+    : token;
+}
+
+function applicationSelectedPostgresProvider(
+  selection: ApplicationProviderSelectionValue<ApplicationPostgresModelStoreProvider>,
+): ApplicationPostgresModelStoreProvider {
+  const fallback = selection.default;
+  const selected = {
+    ...fallback,
+    kind: 'postgres' as const,
+    ...applicationSelectedProviderStringField(selection, 'name'),
+    ...applicationSelectedProviderStringField(selection, 'clusterName'),
+    ...applicationSelectedProviderStringField(selection, 'namespace'),
+    ...applicationSelectedProviderStringField(selection, 'database'),
+    ...applicationSelectedProviderStringField(selection, 'connectionSecretKey'),
+  };
+  const connectionSecret = applicationSelectedProviderResourceReference(
+    selection,
+    'connectionSecret',
+  );
+  const provider = {
+    ...selected,
+    ...(connectionSecret ? { connectionSecret } : {}),
+  };
+  Object.defineProperty(provider, applicationProviderSelectionMetadata, {
+    value: selection,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  assertApplicationPostgresModelStoreLifecycle(provider);
+  return provider;
+}
+
+function applicationSelectedClickHouseProvider(
+  selection: ApplicationProviderSelectionValue<ApplicationClickHouseProjectionStoreProvider>,
+): ApplicationClickHouseProjectionStoreProvider {
+  const fallback = selection.default;
+  const stringFields = [
+    'name',
+    'namespace',
+    'version',
+    'storageSize',
+    'storageClassName',
+    'endpoint',
+    'database',
+    'usernameKey',
+    'passwordKey',
+  ] as const;
+  const selected = {
+    ...fallback,
+    kind: 'clickhouse' as const,
+    ...Object.fromEntries(
+      stringFields.flatMap((field) => {
+        const value = applicationSelectedProviderValue(
+          selection,
+          (provider) => provider[field],
+        );
+        return value === undefined ? [] : [[field, value]];
+      }),
+    ),
+  } as ApplicationClickHouseProjectionStoreProvider;
+  const enabled = applicationSelectedProviderValue(
+    selection,
+    (provider) => provider.enabled,
+  );
+  const provision = applicationSelectedProviderValue(
+    selection,
+    (provider) => provider.provision,
+  );
+  const credentialsSecret = applicationSelectedClickHouseResourceReference(
+    selection,
+  );
+  const provider: ApplicationClickHouseProjectionStoreProvider = {
+    ...selected,
+    ...(enabled === undefined ? {} : { enabled }),
+    ...(provision === undefined ? {} : { provision }),
+    ...(credentialsSecret ? { credentialsSecret } : {}),
+  };
+  Object.defineProperty(provider, applicationProviderSelectionMetadata, {
+    value: selection,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return provider;
+}
+
+function applicationSelectedClickHouseResourceReference(
+  selection: ApplicationProviderSelectionValue<ApplicationClickHouseProjectionStoreProvider>,
+): ApplicationResourceRef | undefined {
+  const references = [
+    ...Object.values(selection.cases),
+    selection.default,
+  ].map((provider) => provider.credentialsSecret);
+  if (references.every((reference) => reference === undefined)) return undefined;
+  const value = <TKey extends keyof ApplicationResourceRef>(
+    key: TKey,
+  ): ApplicationResourceRef[TKey] | undefined =>
+    applicationSelectedProviderValue(
+      selection,
+      (provider) => provider.credentialsSecret?.[key],
+    ) as ApplicationResourceRef[TKey] | undefined;
+  const apiVersion = value('apiVersion');
+  const kind = value('kind');
+  const name = value('name');
+  const namespace = value('namespace');
+  if (!apiVersion || !kind) return undefined;
+  return {
+    apiVersion,
+    kind,
+    ...(name ? { name } : {}),
+    ...(namespace ? { namespace } : {}),
+  };
+}
+
+function applicationSelectedProviderStringField(
+  selection: ApplicationProviderSelectionValue<ApplicationPostgresModelStoreProvider>,
+  field:
+    | 'name'
+    | 'clusterName'
+    | 'namespace'
+    | 'database'
+    | 'connectionSecretKey',
+): Partial<Record<typeof field, string>> {
+  const value = applicationSelectedProviderValue(
+    selection,
+    (provider) => provider[field],
+  );
+  return value === undefined ? {} : { [field]: value };
+}
+
+function applicationSelectedProviderResourceReference(
+  selection: ApplicationProviderSelectionValue<ApplicationPostgresModelStoreProvider>,
+  field: 'connectionSecret',
+): ApplicationResourceRef | undefined {
+  const references = [
+    ...Object.values(selection.cases),
+    selection.default,
+  ].map((provider) => provider[field]);
+  if (references.every((reference) => reference === undefined)) return undefined;
+  const value = <TKey extends keyof ApplicationResourceRef>(
+    key: TKey,
+  ): ApplicationResourceRef[TKey] | undefined =>
+    applicationSelectedProviderValue(
+      selection,
+      (provider) => provider[field]?.[key],
+    ) as ApplicationResourceRef[TKey] | undefined;
+  const apiVersion = value('apiVersion');
+  const kind = value('kind');
+  const name = value('name');
+  const namespace = value('namespace');
+  if (!apiVersion || !kind) return undefined;
+  return {
+    apiVersion,
+    kind,
+    ...(name ? { name } : {}),
+    ...(namespace ? { namespace } : {}),
+  };
+}
+
+function applicationSelectedProviderValue<TProvider, TValue>(
+  selection: ApplicationProviderSelectionValue<TProvider>,
+  read: (provider: TProvider) => TValue | undefined,
+): TValue | undefined {
+  const branches = Object.entries(selection.cases).map(
+    ([variant, provider]) => [variant, read(provider)] as const,
+  );
+  const fallback = read(selection.default);
+  const serialized = [...branches.map(([, value]) => value), fallback].map(
+    applicationProviderSelectionValueExpression,
+  );
+  if (serialized.every((value) => value === serialized[0])) return fallback;
+  const expression = branches.reduceRight(
+    (otherwise, [variant, value]) =>
+      `${selection.selector} == ${JSON.stringify(variant)} ? ${applicationProviderSelectionValueExpression(value)} : (${otherwise})`,
+    applicationProviderSelectionValueExpression(fallback),
+  );
+  return Cel.expr<TValue>(expression) as TValue;
+}
+
+function applicationProviderSelectionValueExpression(value: unknown): string {
+  const expression = applicationTypeKroExpressionValue(value);
+  if (expression) return expression;
+  if (value === undefined) return 'null';
+  return JSON.stringify(value);
 }
 
 function assertApplicationPostgresModelStoreLifecycle(provider: ApplicationPostgresModelStoreProvider): void {
   if (provider.ownership !== undefined
     && !applicationTypeKroExpressionValue(provider.ownership)
     && !['application-graph', 'direct-provisioned', 'external'].includes(provider.ownership)) {
-    throw new Error('ModelStore.postgres ownership must be application-graph, direct-provisioned, external, or a typed installation expression.');
+    throw new Error('TransactionalDatabase.postgres ownership must be application-graph, direct-provisioned, external, or a typed installation expression.');
   }
   if (provider.provision !== undefined
     && typeof provider.provision !== 'boolean'
     && !applicationTypeKroExpressionValue(provider.provision)) {
-    throw new Error('ModelStore.postgres provision must be boolean or a typed installation expression.');
+    throw new Error('TransactionalDatabase.postgres provision must be boolean or a typed installation expression.');
   }
   const ownership = provider.ownership ?? (provider.provision === false || provider.cluster ? 'external' : 'application-graph');
   if (ownership === 'direct-provisioned' && (provider.provision === false || provider.cluster)) {
-    throw new Error('ModelStore.postgres({ ownership: "direct-provisioned" }) cannot disable provisioning or reference an external cluster.');
+    throw new Error('TransactionalDatabase.postgres({ ownership: "direct-provisioned" }) cannot disable provisioning or reference an external cluster.');
   }
   if (ownership === 'direct-provisioned' && !provider.lifecycle) {
-    throw new Error('ModelStore.postgres({ ownership: "direct-provisioned" }) requires lifecycle.deletionPolicy to be declared explicitly.');
+    throw new Error('TransactionalDatabase.postgres({ ownership: "direct-provisioned" }) requires lifecycle.deletionPolicy to be declared explicitly.');
   }
   if (ownership === 'external' && provider.provision !== false && !provider.cluster) {
-    throw new Error('ModelStore.postgres({ ownership: "external" }) requires provision: false or an explicit cluster reference.');
+    throw new Error('TransactionalDatabase.postgres({ ownership: "external" }) requires provision: false or an explicit cluster reference.');
   }
   if (ownership === 'application-graph' && provider.lifecycle?.deletionPolicy === 'retain') {
-    throw new Error('ModelStore.postgres graph ownership cannot retain the database after Application deletion. Use ownership: "direct-provisioned" or "external" for retained data.');
+    throw new Error('TransactionalDatabase.postgres graph ownership cannot retain the database after Application deletion. Use ownership: "direct-provisioned" or "external" for retained data.');
   }
   assertApplicationPostgresBackupPolicy(provider.backup);
 }
@@ -1321,17 +1711,17 @@ function assertApplicationPostgresModelStoreLifecycle(provider: ApplicationPostg
 function assertApplicationPostgresBackupPolicy(policy: ApplicationPostgresBackupPolicy | undefined): void {
   if (!policy) return;
   if (!applicationTypeKroExpressionValue(policy.schedule) && !policy.schedule.trim()) {
-    throw new Error('ModelStore.postgres backup.schedule must be a non-empty six-field cron expression.');
+    throw new Error('TransactionalDatabase.postgres backup.schedule must be a non-empty six-field cron expression.');
   }
   if (!applicationTypeKroExpressionValue(policy.retentionPolicy) && !/^\d+[dwm]$/.test(policy.retentionPolicy)) {
-    throw new Error('ModelStore.postgres backup.retentionPolicy must be a duration such as "7d" or "4w".');
+    throw new Error('TransactionalDatabase.postgres backup.retentionPolicy must be a duration such as "7d" or "4w".');
   }
   if (policy.destination.kind === 's3') {
     if (!applicationTypeKroExpressionValue(policy.destination.destinationPath) && !/^s3:\/\/[A-Za-z0-9]/.test(policy.destination.destinationPath)) {
-      throw new Error('ModelStore.postgres S3 backup.destinationPath must be an s3:// URL.');
+      throw new Error('TransactionalDatabase.postgres S3 backup.destinationPath must be an s3:// URL.');
     }
     if (!policy.destination.credentialsSecret.name?.trim()) {
-      throw new Error('ModelStore.postgres S3 backup credentialsSecret must reference a named Secret.');
+      throw new Error('TransactionalDatabase.postgres S3 backup credentialsSecret must reference a named Secret.');
     }
   }
 }
@@ -1369,7 +1759,7 @@ function applicationPostgresClusterBackupSpec(policy: ApplicationPostgresBackupP
     };
   }
   const secretName = policy.destination.credentialsSecret.name;
-  if (!secretName) throw new Error('ModelStore.postgres S3 backup credentialsSecret must reference a named Secret.');
+  if (!secretName) throw new Error('TransactionalDatabase.postgres S3 backup credentialsSecret must reference a named Secret.');
   return {
     retentionPolicy: policy.retentionPolicy,
     target: policy.target ?? 'prefer-standby',
@@ -1409,7 +1799,7 @@ export function applicationProviderTokenName(token: ApplicationProviderToken<unk
 }
 
 export function applicationProviderInterface(tokenName: string | undefined): ApplicationProviderInterfaceKind | undefined {
-  if (tokenName === 'IndexStore' || tokenName === 'ModelStore' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ProjectionStore' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'RequestIdentity' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
+  if (tokenName === 'IndexStore' || tokenName === 'TransactionalDatabase' || tokenName === 'AnalyticalDatabase' || tokenName === 'ModelStore' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ProjectionStore' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'RequestIdentity' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
     return tokenName;
   }
   return undefined;

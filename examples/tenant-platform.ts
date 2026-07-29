@@ -323,7 +323,7 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
       retention: { mode: 'ttl', ttlSeconds: 60 * 60 * 24 * 14 },
     },
   });
-  const AccountWithRename = config.durableBehavior ? Account.action('rename', RenameTenantAccount, {
+  const AccountWithRename = config.durableBehavior ? Account.operation('rename', RenameTenantAccount, {
     key: ({ accountId }) => accountId,
     ordering: 'serial',
     processor: { replicas: 2, concurrency: 4 },
@@ -485,7 +485,7 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
     service: { port: 80 },
     env: { TENANT_PLATFORM_NAMESPACE: config.namespace },
   }, (http) => {
-    http.post('/tenants/:tenant/transition', async ({ params, form }) => {
+    http.post('transition-tenant', '/tenants/:tenant/transition', async ({ params, form }) => {
       const tenantId = params.tenant ?? 'default';
       const requestId = form.string('requestId');
       const phase = form.enum('phase', ['Ready', 'Decommissioned', 'NeedsIntervention']);
@@ -497,15 +497,15 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
         return existing ? models.patch({ id: tenantId }, { spec }) : models.create({ id: tenantId, spec });
       });
     });
-    http.post('/tenants/:tenant/accounts', async ({ params, form }) => Account.create({
+    http.post('create-account', '/tenants/:tenant/accounts', async ({ params, form }) => Account.create({
       tenant: params.tenant ?? 'default',
       email: form.string('email').trim().toLowerCase(),
       displayName: form.string('displayName'),
       role: form.enum('role', ['owner', 'admin', 'viewer']),
     }));
-    http.get('/tenants/:tenant/accounts', async ({ params }) => Account.index('accounts-by-tenant', { partitionBy: 'tenant', orderBy: ['email'] }).query(params.tenant ?? 'default', { limit: 50 }));
-    http.get('/tenants/:tenant/audit', async ({ params, query }) => AuditRecord.index('audit-by-tenant-time', { partitionBy: 'tenant', orderBy: ['createdAt'] }).query(params.tenant ?? 'default', { limit: 100, cursor: query.cursor }));
-    http.post('/tenants/:tenant/invitations', async ({ params, form }) => {
+    http.get('list-accounts', '/tenants/:tenant/accounts', async ({ params }) => Account.index('accounts-by-tenant', { partitionBy: 'tenant', orderBy: ['email'] }).query(params.tenant ?? 'default', { limit: 50 }));
+    http.get('list-audit', '/tenants/:tenant/audit', async ({ params, query }) => AuditRecord.index('audit-by-tenant-time', { partitionBy: 'tenant', orderBy: ['createdAt'] }).query(params.tenant ?? 'default', { limit: 100, cursor: query.cursor }));
+    http.post('create-invitation', '/tenants/:tenant/invitations', async ({ params, form }) => {
       const tenant = params.tenant ?? 'default';
       const email = form.string('email').trim().toLowerCase();
       const role = form.enum('role', ['admin', 'viewer']);
@@ -513,8 +513,8 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
       await AuditRecord.create({ tenant, actor: 'tenant-admin-api', action: 'invitation.created', subject: invitation.id, createdAt: new Date().toISOString() });
       return invitation;
     });
-    http.get('/tenants/:tenant/invitations', async ({ params }) => Invitation.index('invitations-by-tenant', { partitionBy: 'tenant', orderBy: ['expiresAt'] }).query(params.tenant ?? 'default', { limit: 50 }));
-    http.get('/tenants/:tenant/usage', async ({ params, query }) => UsageSample.index('usage-by-tenant-metric', { partitionBy: 'tenant', orderBy: ['sampledAt'] }).query(params.tenant ?? 'default', { limit: 100, cursor: query.cursor }));
+    http.get('list-invitations', '/tenants/:tenant/invitations', async ({ params }) => Invitation.index('invitations-by-tenant', { partitionBy: 'tenant', orderBy: ['expiresAt'] }).query(params.tenant ?? 'default', { limit: 50 }));
+    http.get('list-usage', '/tenants/:tenant/usage', async ({ params, query }) => UsageSample.index('usage-by-tenant-metric', { partitionBy: 'tenant', orderBy: ['sampledAt'] }).query(params.tenant ?? 'default', { limit: 100, cursor: query.cursor }));
   });
 
   tenantPlatform.reconcile(Tenant, config.durableBehavior ? async (tenant) => {

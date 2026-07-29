@@ -4,6 +4,7 @@ import type {
   ApplicationSerializedCallbackContract,
   JsonObject,
 } from '@applik8s/core';
+import { createApplicationQueryOperation, observeApplicationOperationAuthority, type ApplicationOperationAuthorizationContract, type ApplicationQueryOperation } from '@applik8s/client';
 import type { Type } from 'arktype';
 import type { ApplicationGraphState } from './application-graph-state.js';
 import { addApplicationGraphEdge, addApplicationGraphNode } from './application-graph-state.js';
@@ -13,7 +14,6 @@ import { getApplicationModelFacet } from './native-models.js';
 import type { ApplicationRelationalContext } from './relational-runtime.js';
 import type { ApplicationTrustedContext } from './trusted-context.js';
 import { serializeApplicationCallback } from './application-callback.js';
-import { createApplicationQueryOperation, type ApplicationQueryOperation } from '@applik8s/client';
 import { applicationTypeKroSerializedValue } from './application-typekro-values.js';
 
 export interface ApplicationQueryPrincipal {
@@ -160,6 +160,8 @@ export interface ApplicationQueryOptions<TInput, TOutput, TPrincipal extends App
     readonly model: object;
     readonly name: string;
   };
+  /** Compiler-owned replay bridge; never serialized into the application graph. */
+  readonly __authorityState?: ApplicationQueryAuthorityState;
 }
 
 export type ApplicationModelViewOptions<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined> =
@@ -191,6 +193,10 @@ export interface ApplicationQueryBinding<TInput = unknown, TOutput = unknown, TP
 }
 
 const applicationQueryOperationBindings = new WeakMap<object, ApplicationQueryBinding>();
+interface ApplicationQueryAuthorityState {
+  current?: ApplicationOperationAuthorizationContract;
+}
+const applicationQueryAuthorityStates = new WeakMap<object, ApplicationQueryAuthorityState>();
 
 export function applicationQueryBindingForOperation(value: unknown): ApplicationQueryBinding | undefined {
   return (typeof value === 'object' || typeof value === 'function') && value !== null
@@ -199,6 +205,7 @@ export function applicationQueryBindingForOperation(value: unknown): Application
 }
 
 export function registerApplicationQuery<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined>(state: ApplicationGraphState, id: string, options: ApplicationQueryOptions<TInput, TOutput, TPrincipal, TSource>): ApplicationQueryBinding<TInput, TOutput, TPrincipal, TSource> {
+  const authorityState = options.__authorityState ?? authorityStateFor(options);
   const parsed = parseVersionedQueryId(id);
   const nodeId = `query.${id}`;
   if (state.graphNodes.some((node) => node.id === nodeId)) throw new Error(`Application query ${id} is already registered.`);
@@ -256,6 +263,7 @@ export function registerApplicationQuery<TInput, TOutput, TPrincipal extends App
     output: querySchema(options.output),
     reads,
     authorization: 'application-defined',
+    ...(authorityState.current ? { authority: authorityState.current } : {}),
     trustedContext: (options.context ?? []).map((context) => context.name).sort(),
     budgets,
     snapshotResume: database || kubernetes ? 'resumableInvalidation' : 'resetOnly',
@@ -309,10 +317,12 @@ export function registerApplicationModelView<TInput, TOutput, TPrincipal extends
   if (!facet) throw new Error('Application model views require a promoted application model.');
   if (!/^[a-z][A-Za-z0-9]*$/.test(name)) throw new Error(`Application model view ${JSON.stringify(name)} must be a lowerCamelCase identifier.`);
   const id = `${facet.name}.${name}`;
+  const authorityState = authorityStateFor(options);
   const binding = registerApplicationQuery(state, id, {
     ...options,
     reads: [model, ...(options.reads ?? [])],
     modelOperation: { model, name },
+    __authorityState: authorityState,
   });
   const operation = createApplicationQueryOperation<TInput, TOutput>({
     apiVersion: 'applik8s.operation/v1alpha1',
@@ -322,10 +332,26 @@ export function registerApplicationModelView<TInput, TOutput, TPrincipal extends
     name,
     operation: 'query',
     transport: 'query',
+    ...(authorityState.current ? { authority: authorityState.current } : {}),
   });
   // typecast: the operation's generic input/output pair comes from the same binding schemas and the private registry intentionally erases only those generics.
   applicationQueryOperationBindings.set(operation, binding as ApplicationQueryBinding);
+  observeApplicationOperationAuthority(operation, (authority) => {
+    authorityState.current = authority;
+    const nodeId = `query.${id}`;
+    const query = state.graphNodes.find((node) => node.id === nodeId && node.kind === 'query');
+    if (!query || query.kind !== 'query') throw new Error(`Application model view ${id} cannot classify a missing query graph node.`);
+    addApplicationGraphNode(state, { ...query, authority });
+  });
   return operation;
+}
+
+function authorityStateFor(value: object): ApplicationQueryAuthorityState {
+  const existing = applicationQueryAuthorityStates.get(value);
+  if (existing) return existing;
+  const created: ApplicationQueryAuthorityState = {};
+  applicationQueryAuthorityStates.set(value, created);
+  return created;
 }
 
 function projectionQueryAuthority(state: ApplicationGraphState, id: string, source: ApplicationQuerySourceBinding): { readonly nodeId: string; readonly storage: 'online' | 'analytical' } {

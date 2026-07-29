@@ -25,9 +25,10 @@ import {
   normalizeApplicationTlsIntent,
 } from './application-exposure.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode } from './application-graph-state.js';
-import { graphResourceId, kubernetesNameSegment } from './application-identifiers.js';
+import { applicationProviderGraphNodeId, graphResourceId, kubernetesNameSegment } from './application-identifiers.js';
 import {
   type ApplicationHttpExposureProvider,
+  type ApplicationProviderQualification,
   type ApplicationProviderState,
   type ApplicationTypedProviderContract,
   type ApplicationValkeyIndexBackend,
@@ -232,7 +233,7 @@ export function emitApplicationExposure(
       graphNode: { nodeId },
       resource: certificateResource,
       artifact: { kind: 'typeKroResource', name: certificateName },
-      dependsOn: [{ nodeId: applicationProviderNodeId('Certificate') }],
+      dependsOn: [{ nodeId: applicationProviderGraphNodeId('Certificate') }],
     });
   }
   const publicUrl = applicationTypeKroString(tlsIntent.mode === 'disabled' ? 'http://' : 'https://', hostnames[0]);
@@ -257,7 +258,7 @@ export function emitApplicationExposure(
     name,
     stability: 'stable',
     ...(options.enabled === undefined ? {} : { enabled: applicationTypeKroGraphValue(options.enabled) as boolean | `\${${string}}` }),
-    provider: { interface: 'HttpExposure', nodeId: applicationProviderNodeId('HttpExposure') },
+    provider: { interface: 'HttpExposure', nodeId: applicationProviderGraphNodeId('HttpExposure') },
     service: exposedService,
     hostnames,
     tlsIntent: graphTlsIntent,
@@ -265,13 +266,13 @@ export function emitApplicationExposure(
     publicUrl,
     transport: { kind: 'ingress', ...(ingressClassName ? { ingressClassName } : {}) },
     readiness,
-    ...(certificateProvider ? { certificate: { interface: 'Certificate', nodeId: applicationProviderNodeId('Certificate') } } : {}),
-    ...(dnsProvider ? { dnsPublication: { interface: 'DnsPublication', nodeId: applicationProviderNodeId('DnsPublication') } } : {}),
+    ...(certificateProvider ? { certificate: { interface: 'Certificate', nodeId: applicationProviderGraphNodeId('Certificate') } } : {}),
+    ...(dnsProvider ? { dnsPublication: { interface: 'DnsPublication', nodeId: applicationProviderGraphNodeId('DnsPublication') } } : {}),
     generatedResources,
   });
-  addApplicationGraphEdge(state, { from: { nodeId: applicationProviderNodeId('HttpExposure') }, to: { nodeId }, relationship: 'provides' });
-  if (certificateProvider) addApplicationGraphEdge(state, { from: { nodeId: applicationProviderNodeId('Certificate') }, to: { nodeId }, relationship: 'provides' });
-  if (dnsProvider) addApplicationGraphEdge(state, { from: { nodeId: applicationProviderNodeId('DnsPublication') }, to: { nodeId }, relationship: 'provides' });
+  addApplicationGraphEdge(state, { from: { nodeId: applicationProviderGraphNodeId('HttpExposure') }, to: { nodeId }, relationship: 'provides' });
+  if (certificateProvider) addApplicationGraphEdge(state, { from: { nodeId: applicationProviderGraphNodeId('Certificate') }, to: { nodeId }, relationship: 'provides' });
+  if (dnsProvider) addApplicationGraphEdge(state, { from: { nodeId: applicationProviderGraphNodeId('DnsPublication') }, to: { nodeId }, relationship: 'provides' });
   return {
     kind: 'applicationExposure', name, provider: 'HttpExposure', resourceName, ...(namespace ? { namespace } : {}), hostnames,
     tlsIntent, dnsIntent, publicUrl, readiness, statusPath: `exposure/${name}`,
@@ -339,7 +340,7 @@ function emitApplicationNodePortExposure(
     name,
     stability: 'stable',
     ...(options.enabled === undefined ? {} : { enabled: applicationTypeKroGraphValue(options.enabled) as boolean | `\${${string}}` }),
-    provider: { interface: 'HttpExposure', nodeId: applicationProviderNodeId('HttpExposure') },
+    provider: { interface: 'HttpExposure', nodeId: applicationProviderGraphNodeId('HttpExposure') },
     service: exposedService,
     hostnames,
     tlsIntent,
@@ -360,7 +361,7 @@ function emitApplicationNodePortExposure(
       artifact: { kind: 'kubernetesManifest', name: resourceName },
     }],
   });
-  addApplicationGraphEdge(state, { from: { nodeId: applicationProviderNodeId('HttpExposure') }, to: { nodeId }, relationship: 'provides' });
+  addApplicationGraphEdge(state, { from: { nodeId: applicationProviderGraphNodeId('HttpExposure') }, to: { nodeId }, relationship: 'provides' });
   return {
     kind: 'applicationExposure', name, provider: 'HttpExposure', resourceName, ...(namespace ? { namespace } : {}),
     hostnames, tlsIntent, dnsIntent, publicUrl, readiness, statusPath: `exposure/${name}`,
@@ -373,6 +374,7 @@ export function recordApplicationProviderGraph(
   bindingKind: string,
   implementation: unknown,
   typedContract?: ApplicationTypedProviderContract,
+  qualification?: ApplicationProviderQualification,
 ): void {
   const resolvedContract = typedContract ?? applicationTypedProviderContract(tokenName);
   const providerInterface = applicationProviderInterface(tokenName) ?? resolvedContract?.interface;
@@ -386,7 +388,7 @@ export function recordApplicationProviderGraph(
         allowDeferredResolution: true,
       })
     : undefined;
-  const nodeId = applicationProviderNodeId(providerInterface);
+  const nodeId = applicationProviderGraphNodeId(providerInterface, qualification);
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'provider',
@@ -406,6 +408,9 @@ export function recordApplicationProviderGraph(
     config: {
       bindingKind,
       provider: applicationProviderImplementationName(implementation),
+      ...(qualification
+        ? { qualification: qualification as unknown as JsonValue }
+        : {}),
       ...(requestIdentityAuthentication ? {
         identity: applicationTypeKroGraphValue({
           authenticationSource: requestIdentityAuthentication.source,
@@ -420,8 +425,8 @@ export function recordApplicationProviderGraph(
       ...(tokenName === 'ApplicationHost' && implementation && typeof implementation === 'object'
         ? { host: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
-      ...(tokenName === 'ModelStore' && implementation && typeof implementation === 'object'
-        ? { modelStore: applicationTypeKroGraphValue(implementation) as JsonValue }
+      ...(providerInterface === 'TransactionalDatabase' && implementation && typeof implementation === 'object'
+        ? { transactionalDatabase: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
       ...(tokenName === 'ContainerRegistry' && implementation && typeof implementation === 'object'
         ? { containerRegistry: applicationTypeKroGraphValue(implementation) as JsonValue }
@@ -432,8 +437,8 @@ export function recordApplicationProviderGraph(
       ...(tokenName === 'ObjectStorage' && implementation && typeof implementation === 'object' && Reflect.get(implementation, 'kind') === 's3'
         ? { objectStorage: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
-      ...(tokenName === 'ProjectionStore' && implementation && typeof implementation === 'object' && Reflect.get(implementation, 'kind') === 'clickhouse'
-        ? { projectionStore: applicationTypeKroGraphValue(implementation) as JsonValue }
+      ...(providerInterface === 'AnalyticalDatabase' && implementation && typeof implementation === 'object'
+        ? { analyticalDatabase: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
     },
   });
@@ -543,13 +548,9 @@ function applicationTypeKroObjectLike(value: unknown): value is object {
 }
 
 function ensureProviderGraph(state: ApplicationInfrastructureState, tokenName: string, bindingKind: string, implementation: unknown): void {
-  if (!state.graphNodes.some((node) => node.id === applicationProviderNodeId(tokenName))) {
+  if (!state.graphNodes.some((node) => node.id === applicationProviderGraphNodeId(tokenName))) {
     recordApplicationProviderGraph(state, tokenName, bindingKind, implementation);
   }
-}
-
-function applicationProviderNodeId(providerInterface: string): string {
-  return applicationGraphNodeId('provider', providerInterface);
 }
 
 function applicationGraphNodeId(kind: string, name: string): string {

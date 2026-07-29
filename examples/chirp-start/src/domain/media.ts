@@ -71,7 +71,7 @@ const VerifyMedia = task('media.verify.v1', {
  */
 export const verifyMedia = app.task(VerifyMedia, {
 	objects: { attachments: Attachments },
-	operations: { updateMedia: MediaModel.update },
+	operations: { updateMedia: MediaModel.update.all() },
 	principal: (input) => ({
 		id: input.ownerId,
 		claims: { role: 'media-worker', attachmentId: input.attachmentId },

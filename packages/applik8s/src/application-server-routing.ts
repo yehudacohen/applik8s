@@ -1,4 +1,9 @@
 import type { AnyResourceDefinition, JsonValue, ResourceIndex } from '@applik8s/core';
+import {
+  createApplicationRuntimeOperation,
+  observeApplicationOperationAuthority,
+  type ApplicationOperation,
+} from '@applik8s/client';
 import type { ApplicationServerRuntimeResource } from './application-generated-runtime-sources.js';
 import { apiGroupForApiVersion, unique } from './application-identifiers.js';
 import type { ApplicationRuntimeModelContract } from './application-models.js';
@@ -15,7 +20,7 @@ import {
   type SerializedApplicationServerRouteWithDependencies,
 } from './application-route-source.js';
 import type {
-  ApplicationPermissionRule,
+  ApplicationKubernetesRbacRule,
   ApplicationRouteHandler,
   ApplicationServer,
   ApplicationServerCaptureFunction,
@@ -43,20 +48,20 @@ export interface ApplicationServerPermissionInferenceRequest {
   readonly indexes: Readonly<Record<string, ResourceIndex<object, object>>>;
   readonly indexBackend: { readonly kind: 'valkey'; readonly host: string; readonly port: number } | undefined;
   readonly cache: readonly ResourceIndex<object, object>[];
-  readonly explicit: readonly ApplicationPermissionRule[];
+  readonly explicit: readonly ApplicationKubernetesRbacRule[];
 }
 
 export function applicationRuntimeResource(resource: Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>): ApplicationServerRuntimeResource {
   return { apiVersion: resource.apiVersion, kind: resource.kind, plural: resource.plural, scope: resource.scope };
 }
 
-export function modelStoreEnvironmentVariables(models: Readonly<Record<string, ApplicationRuntimeModelContract>>, serverNamespace: string | undefined): readonly { readonly name: string; readonly valueFrom: { readonly secretKeyRef: { readonly name: string; readonly key: string } } }[] {
+export function transactionalDatabaseEnvironmentVariables(models: Readonly<Record<string, ApplicationRuntimeModelContract>>, serverNamespace: string | undefined): readonly { readonly name: string; readonly valueFrom: { readonly secretKeyRef: { readonly name: string; readonly key: string } } }[] {
   const byEnvName = new Map<string, { readonly name: string; readonly valueFrom: { readonly secretKeyRef: { readonly name: string; readonly key: string } } }>();
   for (const model of Object.values(models)) {
     const secretNamespace = model.secretNamespace ?? 'default';
     const podNamespace = serverNamespace ?? 'default';
     if (secretNamespace !== podNamespace) {
-      throw new Error(`app.server cannot bind model ${JSON.stringify(model.name)} because its ModelStore Secret ${model.secretName} is in namespace ${secretNamespace}, but the server is in namespace ${podNamespace}. Run the server in the same namespace or provide a same-namespace connectionSecret.`);
+      throw new Error(`app.server cannot bind model ${JSON.stringify(model.name)} because its TransactionalDatabase Secret ${model.secretName} is in namespace ${secretNamespace}, but the server is in namespace ${podNamespace}. Run the server in the same namespace or provide a same-namespace connectionSecret.`);
     }
     byEnvName.set(model.connectionEnvName, { name: model.connectionEnvName, valueFrom: { secretKeyRef: { name: model.secretName, key: model.secretKey } } });
   }
@@ -114,9 +119,9 @@ export function serializeApplicationServerRoutes(
   return routes.map((route) => serializeApplicationServerRoute(route, bindingNames, dynamicAccessDisallowedBindings));
 }
 
-export function inferApplicationServerPermissions(request: ApplicationServerPermissionInferenceRequest): readonly ApplicationPermissionRule[] {
+export function inferApplicationServerPermissions(request: ApplicationServerPermissionInferenceRequest): readonly ApplicationKubernetesRbacRule[] {
   const cachedIndexes = new Set(request.indexBackend ? request.cache : []);
-  const inferred: ApplicationPermissionRule[] = [];
+  const inferred: ApplicationKubernetesRbacRule[] = [];
   for (const route of request.routes) {
     const analysis = analyzeApplicationServerRouteSource(route.handlerSource);
     for (const [name, resource] of Object.entries(request.resources)) {
@@ -126,21 +131,66 @@ export function inferApplicationServerPermissions(request: ApplicationServerPerm
       if (!cachedIndexes.has(index) && routeAnalysisCallsMethod(analysis, name, 'query')) inferred.push(resourceOperationPermission(index.resource, 'query'));
     }
   }
-  return mergeApplicationPermissionRules([...request.explicit, ...inferred]);
+  return mergeApplicationKubernetesRbacRules([...request.explicit, ...inferred]);
 }
 
-export function createRouteRecorder(routes: ApplicationServerRoute[]): ApplicationServer {
-  const record = (method: ApplicationServerRoute['method'], path: string, handler: ApplicationRouteHandler) => {
-    const extracted = extractApplicationRouteHandlerSource(method);
+export function createRouteRecorder(serverName: string, routes: ApplicationServerRoute[]): ApplicationServer {
+  const record = (
+    method: ApplicationServerRoute['method'],
+    nameOrPath: string,
+    pathOrHandler: string | ApplicationRouteHandler,
+    maybeHandler?: ApplicationRouteHandler,
+  ): ApplicationOperation<Parameters<ApplicationRouteHandler>[0], unknown> => {
+    const named = typeof pathOrHandler === 'string';
+    const name = named ? nameOrPath : routeId(method, nameOrPath, routes.length);
+    const path = named ? pathOrHandler : nameOrPath;
+    const handler = named ? maybeHandler : pathOrHandler;
+    if (typeof handler !== 'function') {
+      throw new Error(`app.http(${JSON.stringify(serverName)}) route ${method} ${path} requires a handler.`);
+    }
+    if (!name.trim() || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) {
+      throw new Error(`app.http(${JSON.stringify(serverName)}) route name ${JSON.stringify(name)} must be a stable non-empty identifier.`);
+    }
+    if (routes.some((route) => route.id === name)) {
+      throw new Error(`app.http(${JSON.stringify(serverName)}) route name ${JSON.stringify(name)} is already declared.`);
+    }
+    const extracted = extractApplicationRouteHandlerSource(method, named ? 2 : 1);
     const fallbackSource = normalizeSerializableFunctionSource(handler.toString().trim());
-    routes.push({
-      id: routeId(method, path, routes.length), method, path,
+    const route: ApplicationServerRoute = {
+      id: name,
+      named,
+      method,
+      path,
       handlerSource: extracted?.source ?? fallbackSource,
       handlerSourceKind: extracted ? 'source' : 'functionToString',
       ...(extracted ? { handlerSourceLocation: extracted.location } : {}),
+    };
+    routes.push(route);
+    const operation = createApplicationRuntimeOperation<Parameters<ApplicationRouteHandler>[0], unknown>({
+      apiVersion: 'applik8s.operation/v1alpha1',
+      kind: 'applicationOperation',
+      id: `applik8s://http/${serverName}/operations/${name}`,
+      model: serverName,
+      name,
+      operation: 'custom',
+      transport: 'runtime',
+      version: 'v1',
+    }, async (request) => handler(request));
+    observeApplicationOperationAuthority(operation, (authority) => {
+      Object.assign(route, { authority });
     });
+    return operation;
   };
-  return { get: (path, handler) => record('GET', path, handler), post: (path, handler) => record('POST', path, handler) };
+  return {
+    get: ((...args: [string, ApplicationRouteHandler] | [string, string, ApplicationRouteHandler]) =>
+      args.length === 2
+        ? record('GET', args[0], args[1])
+        : record('GET', args[0], args[1], args[2])) as ApplicationServer['get'],
+    post: ((...args: [string, ApplicationRouteHandler] | [string, string, ApplicationRouteHandler]) =>
+      args.length === 2
+        ? record('POST', args[0], args[1])
+        : record('POST', args[0], args[1], args[2])) as ApplicationServer['post'],
+  };
 }
 
 function serializeApplicationServerFunctionCapture(name: string, value: ApplicationServerCaptureFunction, captureNames: ReadonlySet<string>): SerializedApplicationServerFunctionCapture {
@@ -198,11 +248,11 @@ function resourceOperationsInSource(analysis: ApplicationServerRouteSourceAnalys
   return (Object.keys(resourceOperationVerbs) as ApplicationServerResourceOperation[]).filter((operation) => routeAnalysisCallsMethod(analysis, bindingName, operation));
 }
 
-function resourceOperationPermission(resource: Pick<AnyResourceDefinition, 'apiVersion' | 'plural'>, operation: ApplicationServerResourceOperation): ApplicationPermissionRule {
+function resourceOperationPermission(resource: Pick<AnyResourceDefinition, 'apiVersion' | 'plural'>, operation: ApplicationServerResourceOperation): ApplicationKubernetesRbacRule {
   return { apiGroups: [apiGroupForApiVersion(resource.apiVersion)], resources: [resource.plural], verbs: resourceOperationVerbs[operation] };
 }
 
-export function mergeApplicationPermissionRules(permissions: readonly ApplicationPermissionRule[]): readonly ApplicationPermissionRule[] {
+export function mergeApplicationKubernetesRbacRules(permissions: readonly ApplicationKubernetesRbacRule[]): readonly ApplicationKubernetesRbacRule[] {
   const merged = new Map<string, { apiGroups: string[]; resources: string[]; verbs: string[]; resourceNames?: string[] }>();
   for (const permission of permissions) {
     const apiGroups = [...permission.apiGroups].sort();

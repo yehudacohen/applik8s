@@ -4,6 +4,7 @@ import type { Stats } from 'node:fs';
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import type { ApplicationGraph, ApplicationModelNode, JsonObject } from '@applik8s/core';
+import { applicationAuthorityPostgresSchemaStatements } from '@applik8s/operations';
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { applicationGraphStringValue } from '../application-installation-values.js';
@@ -154,7 +155,11 @@ async function sqlFiles(root: string): Promise<string[]> {
 
 function frameworkMigrationSql(models: readonly ApplicationModelNode[]): string {
   const statements = [
-    'CREATE TABLE IF NOT EXISTS applik8s_command_inbox (scope text PRIMARY KEY, binding_id text NOT NULL, model text NOT NULL, target_key text NOT NULL, idempotency_key text NOT NULL, message_id text NOT NULL, input jsonb NOT NULL, received_at timestamptz NOT NULL DEFAULT now());',
+    ...applicationAuthorityPostgresSchemaStatements,
+    'CREATE TABLE IF NOT EXISTS applik8s_command_admissions (scope text PRIMARY KEY, command text NOT NULL, binding_id text NOT NULL, command_id text NOT NULL, authorization_receipt jsonb NOT NULL, admitted_at timestamptz NOT NULL DEFAULT now());',
+    'CREATE INDEX IF NOT EXISTS applik8s_command_admissions_cleanup ON applik8s_command_admissions (binding_id, admitted_at);',
+    'CREATE TABLE IF NOT EXISTS applik8s_command_inbox (scope text PRIMARY KEY, binding_id text NOT NULL, model text NOT NULL, target_key text NOT NULL, idempotency_key text NOT NULL, message_id text NOT NULL, input jsonb NOT NULL, authorization_receipt jsonb, received_at timestamptz NOT NULL DEFAULT now());',
+    'ALTER TABLE applik8s_command_inbox ADD COLUMN IF NOT EXISTS authorization_receipt jsonb;',
     'CREATE TABLE IF NOT EXISTS applik8s_command_results (scope text PRIMARY KEY REFERENCES applik8s_command_inbox(scope) ON DELETE CASCADE, output jsonb, error jsonb, model_revision text NOT NULL, model_snapshot jsonb, model_deleted boolean NOT NULL DEFAULT false, completed_at timestamptz NOT NULL DEFAULT now(), CHECK ((output IS NULL) <> (error IS NULL)));',
     'ALTER TABLE applik8s_command_results ADD COLUMN IF NOT EXISTS model_snapshot jsonb;',
     'ALTER TABLE applik8s_command_results ADD COLUMN IF NOT EXISTS model_deleted boolean NOT NULL DEFAULT false;',

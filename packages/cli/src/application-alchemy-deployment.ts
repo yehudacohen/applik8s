@@ -74,7 +74,10 @@ export async function createGeneratedApplicationAlchemyDeployment<
     source: options.source,
     spec: options.spec,
     stateRoot: resolve(options.projectRoot, '.applik8s', 'state', 'alchemy'),
-    stage: graph.metadata.identity.profile,
+    // The Alchemy stage is the stable installation lifecycle. Profile changes
+    // are planned inside that same state graph rather than creating an
+    // unrelated stack that cannot diff or migrate the prior provider.
+    stage: 'installation',
     owner: options.owner ?? `applik8s-cli:${process.pid}`,
     artifactRegistry,
     artifactProvider: applicationAlchemyArtifactProvider(),

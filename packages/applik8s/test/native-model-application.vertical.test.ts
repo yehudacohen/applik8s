@@ -187,6 +187,7 @@ describe('v0.6 app-scoped native model promotion', () => {
       authorize: () => true,
       run: async () => [],
     });
+    Card.published.public();
 
     expect(Card.published.operation).toMatchObject({
       id: 'Card.published',
@@ -202,6 +203,7 @@ describe('v0.6 app-scoped native model promotion', () => {
         name: 'published',
         kind: 'view',
       },
+      authority: expect.objectContaining({ classification: 'public', grantable: false }),
     });
   });
 
@@ -446,7 +448,7 @@ describe('v0.6 app-scoped native model promotion', () => {
     });
   });
 
-  test('derives one direct exceptional action and its typed completion stream from one declaration', () => {
+  test('derives one direct exceptional operation and its typed completion stream from one declaration', () => {
     const schema = catalogSchema();
     const catalog = app('native-action-fixture');
     const Database = catalog.database.postgres('catalog', { schema });
@@ -455,9 +457,12 @@ describe('v0.6 app-scoped native model promotion', () => {
       input: type({ cardId: 'string' }),
       output: type({ archived: 'boolean' }),
     });
-    const Card = BaseCard.action('archive', ArchiveCard, {
+    const Card = BaseCard.operation('archive', ArchiveCard, {
       key: ({ cardId }) => cardId,
     }, async () => ({ archived: true }));
+    Card.archive
+      .requires({ id: 'permission:card-archiver' })
+      .authorize({ maximumUses: 1 });
     const completed = Card.on.archive('record-card-archive', {
       budgets: { timeoutMs: 2_000 },
     }, async (archived, context) => {
@@ -471,14 +476,27 @@ describe('v0.6 app-scoped native model promotion', () => {
     expect(Card.archive.operation).toMatchObject({ id: 'cards.archive.v1', model: 'Card', name: 'archive', transport: 'command' });
     expect(completed.source.definition).toMatchObject({ id: 'models.Card.archive.completed.v1' });
     expect(applicationGraphFor(catalog.composition)?.nodes.find((node) => node.kind === 'model' && node.name === 'Card')).toMatchObject({
-      common: { operations: expect.arrayContaining([expect.objectContaining({ name: 'archive', publicId: 'cards.archive.v1' })]) },
+      common: {
+        operations: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'archive',
+            publicId: 'cards.archive.v1',
+            authority: expect.objectContaining({
+              classification: 'assigned',
+              permissionIds: ['permission:card-archiver'],
+              grantable: true,
+              lifetime: { maximumUses: 1 },
+            }),
+          }),
+        ]),
+      },
     });
     expect(applicationGraphFor(catalog.composition)?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'event.models.card.archive.completed.v1', kind: 'event' }),
       expect.objectContaining({ id: 'stream.models.card.archive.completed.v1', kind: 'stream' }),
       expect.objectContaining({ id: 'streamProcessor.record-card-archive', kind: 'streamProcessor' }),
     ]));
-    expect(applicationGraphFor(catalog.composition)?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['Model.action', 'Model.on.action', 'Model.command']));
+    expect(applicationGraphFor(catalog.composition)?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['Model.operation', 'Model.on.operation', 'Model.command']));
   });
 
   test('fails closed when multiple registered databases make promotion ambiguous', () => {

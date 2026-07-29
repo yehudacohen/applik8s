@@ -18,6 +18,7 @@ interface BuildCommandOptions {
   readonly typekro?: boolean;
   readonly compositionName?: string;
   readonly connectionBindings?: string;
+  readonly production?: boolean;
 }
 
 interface ChildProcessOptions {
@@ -62,6 +63,7 @@ function createProgram(io: CliIo): Command {
     .option('--typekro', 'compile an exported Applik8s TypeKro composition')
     .option('--composition-name <name>', 'TypeKro composition export name')
     .option('--connection-bindings <path>', 'JSON connection bindings')
+    .option('--production', 'enforce production operation classification and release contracts')
     .action(async (entrypoint: string, options: BuildCommandOptions) => {
       const code = await runBuild(entrypoint, options, io);
       if (code !== 0) throw new CommanderError(code, 'applik8s.build.failed', 'Build failed.');
@@ -80,6 +82,12 @@ function createProgram(io: CliIo): Command {
     .option('--skip-app-build', 'skip the application package build')
     .option('--skip-image-build', 'reject image-building deployment work')
     .option('--plan-only', 'compile and preview without applying effects')
+    .option(
+      '--acknowledge <token>',
+      'acknowledge one exact installation-scoped destructive profile transition',
+      collectOption,
+      [],
+    )
     .option('--runtime-entrypoint <path>', 'internal prebuilt application module used by the Node deployment host')
     .action(async (entrypoint: string, options: ApplicationDeployCommandOptions) => {
       const code = await runDeploy(entrypoint, options, io);
@@ -266,6 +274,10 @@ function isBunRuntime(): boolean {
   return typeof process.versions.bun === 'string';
 }
 
+function collectOption(value: string, previous: readonly string[]): string[] {
+  return [...previous, value];
+}
+
 function defaultIo(): CliIo {
   return {
     cwd: process.cwd(),
@@ -284,7 +296,9 @@ export {
   stageExplicitApplicationInstance,
 } from './application-deployment-files.js';
 export {
+  applicationInstanceSpec,
   applicationInstallationReadiness,
+  readApplicationInstanceSpec,
   resourceGraphDefinitionReadiness,
   waitForApplicationEndpoint,
 } from './application-deployment-observer.js';

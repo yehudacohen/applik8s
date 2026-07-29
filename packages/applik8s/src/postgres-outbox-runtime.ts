@@ -34,6 +34,7 @@ export interface CommandDataCleanupResult {
   readonly eventOutboxDeleted: number;
   readonly commandOutboxDeleted: number;
   readonly commandsDeleted: number;
+  readonly admissionsDeleted: number;
 }
 
 export interface PostgresOutboxLag {
@@ -76,7 +77,7 @@ async function relayPostgresOutbox(options: EventOutboxRelayOptions, table: 'app
 }
 
 export async function cleanupPostgresCommandData(options: CommandDataCleanupOptions): Promise<CommandDataCleanupResult> {
-  if (options.bindingIds.length === 0) return { eventOutboxDeleted: 0, commandOutboxDeleted: 0, commandsDeleted: 0 };
+  if (options.bindingIds.length === 0) return { eventOutboxDeleted: 0, commandOutboxDeleted: 0, commandsDeleted: 0, admissionsDeleted: 0 };
   const auditWindowSeconds = positiveInteger(options.auditWindowSeconds, 'auditWindowSeconds');
   const publishedOutboxWindowSeconds = positiveInteger(options.publishedOutboxWindowSeconds, 'publishedOutboxWindowSeconds');
   const batchSize = Math.min(10_000, positiveInteger(options.batchSize ?? 1_000, 'batchSize'));
@@ -107,11 +108,46 @@ export async function cleanupPostgresCommandData(options: CommandDataCleanupOpti
     AND NOT EXISTS (SELECT 1 FROM applik8s_command_outbox command_outbox WHERE command_outbox.scope = inbox.scope AND (command_outbox.published_at IS NULL OR command_outbox.published_at >= $2::timestamptz - make_interval(secs => $4)))
   ORDER BY inbox.received_at, inbox.scope LIMIT $5
 ) DELETE FROM applik8s_command_inbox inbox USING candidates WHERE inbox.scope = candidates.scope RETURNING inbox.scope`, [options.bindingIds, now, auditWindowSeconds, publishedOutboxWindowSeconds, batchSize]);
-      return { eventOutboxDeleted: eventRows.length, commandOutboxDeleted: commandRows.length, commandsDeleted: inboxRows.length };
+      const admissionRows = await transaction.unsafe(`WITH candidates AS (
+  SELECT admission.scope FROM applik8s_command_admissions admission
+  WHERE admission.binding_id = ANY($1::text[])
+    AND admission.admitted_at < $2::timestamptz - make_interval(secs => $3)
+    AND NOT EXISTS (SELECT 1 FROM applik8s_command_inbox inbox WHERE inbox.scope = admission.scope)
+  ORDER BY admission.admitted_at, admission.scope LIMIT $4
+) DELETE FROM applik8s_command_admissions admission USING candidates WHERE admission.scope = candidates.scope RETURNING admission.scope, admission.command_id, admission.authorization_receipt`, [options.bindingIds, now, auditWindowSeconds, batchSize]);
+      for (const row of admissionRows) {
+        const receipt = jsonRecord(row.authorization_receipt);
+        const application = receipt && typeof receipt.application === 'string' ? receipt.application : undefined;
+        const catalogRevision = receipt && typeof receipt.catalogRevision === 'string' ? receipt.catalogRevision : undefined;
+        const commandId = typeof row.command_id === 'string' ? row.command_id : undefined;
+        if (!application || !catalogRevision || !commandId) continue;
+        await transaction.unsafe(
+          `DELETE FROM applik8s_operation_catalog_references
+           WHERE application = $1 AND revision = $2 AND kind = 'envelope' AND reference_id = $3`,
+          [application, catalogRevision, commandId],
+        );
+      }
+      return { eventOutboxDeleted: eventRows.length, commandOutboxDeleted: commandRows.length, commandsDeleted: inboxRows.length, admissionsDeleted: admissionRows.length };
     });
   } finally {
     await sql.end({ timeout: 1 });
   }
+}
+
+function jsonRecord(value: unknown): Readonly<Record<string, unknown>> | undefined {
+  if (typeof value === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Readonly<Record<string, unknown>>
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : undefined;
 }
 
 export async function observePostgresOutboxLag(databaseUrl: string): Promise<PostgresOutboxLag> {

@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type ApplicationDeploymentGraph,
+  digestApplicationDeploymentGraph,
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
 import {
@@ -104,6 +105,9 @@ describe("Alchemy deployment backend", () => {
       }),
     ]);
     expect(plan.declarationCount).toBe(1);
+    expect(plan.planIdentityDigest).toBe(
+      digestApplicationDeploymentGraph(graph),
+    );
   });
 
   it("adds outer graph prerequisites to declarations with native TypeKro dependencies", async () => {

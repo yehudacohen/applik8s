@@ -2,12 +2,18 @@
 import { dirname, join, resolve } from 'node:path';
 import { access, readFile } from 'node:fs/promises';
 import {
+  planApplicationProfileTransitions,
+  type ApplicationProfileTransitionPlan,
+} from '@applik8s/core';
+import type { DeploymentJsonObject } from '@applik8s/deployment-contract';
+import {
   loadTypeKroCompositionEntrypoint,
   resolveApplicationBuildPackage,
   resolveGeneratedApplicationDeleteTarget,
   stageExplicitApplicationInstance,
 } from './application-deployment-files.js';
 import {
+  readApplicationInstanceSpec,
   verifyApplicationRegistryPullSecret,
   waitForApplicationEndpoint,
   waitForApplicationInstanceReadiness,
@@ -36,6 +42,7 @@ export interface ApplicationDeployCommandOptions {
   readonly skipImageBuild?: boolean;
   readonly planOnly?: boolean;
   readonly runtimeEntrypoint?: string;
+  readonly acknowledge?: readonly string[];
 }
 
 export interface ApplicationDeleteCommandOptions {
@@ -59,6 +66,7 @@ export interface ApplicationDeploymentCommandRuntime {
       readonly typekro?: boolean;
       readonly compositionName?: string;
       readonly connectionBindings?: string;
+      readonly production?: boolean;
     },
     io: ApplicationDeploymentCommandIo,
   ): Promise<number>;
@@ -68,6 +76,7 @@ type ApplicationDeploymentPhase =
   | 'application-build'
   | 'composition-compile'
   | 'instance-selection'
+  | 'profile-transition'
   | 'deployment-plan'
   | 'registry-resolution'
   | 'pull-secret-verification'
@@ -81,6 +90,7 @@ const remediation: Readonly<Record<ApplicationDeploymentPhase, string>> = {
   'application-build': 'Run the application package build directly and fix its first reported error.',
   'composition-compile': 'Run applik8s build --typekro and inspect the compiler diagnostic.',
   'instance-selection': 'Provide exactly one authored root Application CR with --instance <path>.',
+  'profile-transition': 'Inspect the current and desired installation profiles, then supply only the exact acknowledgement printed by the plan when a reviewed destructive transition is intentional.',
   'deployment-plan': 'Inspect application-deployment-graph.json and fix the first invalid identity, dependency, output, ownership, or lifecycle diagnostic.',
   'registry-resolution': 'Verify the selected Kubernetes context, registry Service, and provider endpoint.',
   'pull-secret-verification': 'Ensure the graph-created pull Secret is present in every authored workload namespace.',
@@ -115,6 +125,9 @@ export async function runApplicationDeploy(
   const buildCode = await runPhase('composition-compile', io, () => runtime.runBuild(entrypoint, {
     outDir,
     typekro: true,
+    // Deploy is a production boundary: externally reachable operations must
+    // never reach a cluster with the development-only unclassified default.
+    production: true,
     compositionName: options.compositionName ?? 'app',
     ...(options.connectionBindings ? { connectionBindings: options.connectionBindings } : {}),
   }, io));
@@ -126,14 +139,27 @@ export async function runApplicationDeploy(
     options.instance ? resolve(io.cwd, options.instance) : undefined,
   ));
   io.stdout(`Application instance: ${instance.apiVersion}/${instance.kind}/${instance.name} in ${instance.namespace}`);
+  const previousInstallationSpec = await runPhase(
+    'profile-transition',
+    io,
+    () => readApplicationInstanceSpec(options.context, instance),
+  );
   const emitted = await runPhase('deployment-plan', io, () => emitDeploymentGraph(
     bundlePath,
     options.context,
     instance,
     io.cwd,
     options.strategy ?? 'kro',
+    previousInstallationSpec,
+    options.acknowledge ?? [],
   ));
   io.stdout(`Application deployment graph: ${emitted.nodeCount} nodes, ${emitted.artifactCount} artifacts, ${emitted.digest}`);
+  io.stdout(`Profile transition plan: ${emitted.profileTransition.mode}, ${emitted.profileTransition.entries.length} provider transition(s)`);
+  for (const entry of emitted.profileTransition.entries) {
+    io.stdout(
+      `  ${entry.qualification}: ${entry.from} -> ${entry.to} (${entry.transition.kind}${entry.transition.destructive ? ', destructive' : ''})`,
+    );
+  }
   const registry = await runPhase('registry-resolution', io, () =>
     resolveDeploymentContainerRegistry(bundlePath, options.context, instance.spec, io));
   const source = await runPhase('alchemy-plan', io, () => loadTypeKroCompositionEntrypoint(
@@ -242,7 +268,15 @@ async function emitDeploymentGraph(
   },
   projectRoot: string,
   strategy: 'direct' | 'kro',
-): Promise<{ readonly path: string; readonly digest: string; readonly nodeCount: number; readonly artifactCount: number }> {
+  previousInstallationSpec: DeploymentJsonObject | undefined,
+  acknowledgements: readonly string[],
+): Promise<{
+  readonly path: string;
+  readonly digest: string;
+  readonly nodeCount: number;
+  readonly artifactCount: number;
+  readonly profileTransition: ApplicationProfileTransitionPlan;
+}> {
   const bundle = JSON.parse(await readFile(bundlePath, 'utf8')) as {
     readonly spec?: { readonly applicationGraph?: { readonly digest?: string } };
   };
@@ -253,6 +287,18 @@ async function emitDeploymentGraph(
   const source = await readGeneratedApplicationGraph(bundlePath, projectRoot);
   const graph = resolveApplicationInstallationValues(source, instance.spec, {
     preserveUnknownReferences: true,
+  });
+  const profileTransition = planApplicationProfileTransitions({
+    graph,
+    installation: {
+      namespace: instance.namespace,
+      name: instance.name,
+    },
+    ...(previousInstallationSpec ? { previousInstallationSpec } : {}),
+    // typecast-boundary: staged Application YAML was parsed to JSON and its
+    // spec root was validated before this deployment boundary.
+    desiredInstallationSpec: instance.spec as unknown as DeploymentJsonObject,
+    acknowledgements,
   });
   // static-import-exception: compiler workers are loaded only for an active Node deployment command.
   const { applicationDeploymentCompilerVersion, emitApplicationDeploymentGraph } = await import('@applik8s/compiler');
@@ -270,12 +316,14 @@ async function emitDeploymentGraph(
       : 'default',
     strategy,
     installationSpec: instance.spec,
+    profileTransition: profileTransition.identityInput,
   });
   return {
     path: emitted.path,
     digest: emitted.digest,
     nodeCount: emitted.graph.nodes.length,
     artifactCount: emitted.artifactCount,
+    profileTransition,
   };
 }
 

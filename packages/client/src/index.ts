@@ -16,6 +16,7 @@ export {
   applicationOperationContract,
   attachApplicationOperations,
   configureDefaultApplicationBrowserRuntime,
+  completeApplicationBoundOperationInput,
   createApplicationMutationOperation,
   createApplicationQueryOperation,
   createApplicationRuntimeOperation,
@@ -25,4 +26,8 @@ export {
   installApplicationOperationRuntime,
   installApplicationOperationRuntimeResolver,
   installApplicationQueryHook,
+  isApplicationBoundOperation,
+  isApplicationScopedOperation,
+  observeApplicationOperationAuthority,
+  ApplicationBoundFieldOverrideError,
 } from './operations.js';

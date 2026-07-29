@@ -1,7 +1,7 @@
 // typecast-file-boundary: PostgreSQL rows and schema-normalized command payloads are validated before restoring declaration-time model generics.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
-import type { ApplicationRetryPolicy, JsonObject, JsonValue } from '@applik8s/core';
+import type { ApplicationAuthorizationReceipt, ApplicationRetryPolicy, JsonObject, JsonValue } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import type { ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationRuntimeModelContract } from './application-models.js';
 import { applicationCommandPrincipal, applicationCommandTrustedContext } from './command-principal.js';
@@ -27,6 +27,8 @@ export interface PostgresModelCommandMessage<TInput extends object> {
   readonly attempt?: number;
   readonly recordedAt?: string;
   readonly expectedRevision?: string;
+  /** Canonical admission receipt persisted with the durable inbox record. */
+  readonly authorizationReceipt?: ApplicationAuthorizationReceipt;
   /** Trusted values admitted by the server boundary; never populated from public input fields. */
   readonly context?: {
     readonly values: Readonly<Record<string, JsonValue>>;
@@ -65,6 +67,22 @@ export interface PostgresModelCommandExecution<
   readonly missingRoute?: string;
   readonly initialize?: (input: TInput, targetKey: string) => TSpec;
   readonly handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput>;
+  /**
+   * Canonical durable-authority check performed inside the model transaction
+   * after the handler has produced its staged result and immediately before
+   * model, outbox, and result writes are committed.
+   */
+  readonly revalidateAuthorization?: (
+    receipt: ApplicationAuthorizationReceipt,
+    boundary: 'pre-commit',
+    context: {
+      readonly transaction: ApplicationPostgresTransactionSql;
+      readonly trustedContextDigest: string;
+    },
+  ) => Promise<
+    | { readonly allowed: true }
+    | { readonly allowed: false; readonly code: string; readonly message: string }
+  >;
   readonly databaseUrl?: string;
 }
 
@@ -79,6 +97,7 @@ export interface PostgresModelCommandResult<TSpec extends object, TStatus extend
 
 export interface PostgresModelCommandTerminalFailureExecution<TInput extends object = object> {
   readonly bindingId: string;
+  readonly command: { readonly name: string; readonly version: string };
   readonly model: ApplicationRuntimeModelContract;
   readonly message: PostgresModelCommandMessage<TInput>;
   readonly databaseUrl?: string;
@@ -87,7 +106,7 @@ export interface PostgresModelCommandTerminalFailureExecution<TInput extends obj
 }
 
 export interface ApplicationCommandTerminalFailure {
-  readonly code: 'processing_failed';
+  readonly code: 'processing_failed' | 'authorization_denied';
   readonly attempts: number;
 }
 
@@ -175,9 +194,10 @@ export async function recordPostgresModelCommandTerminalFailure<TInput extends o
     await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [scope]);
     const existing = await transaction.unsafe('SELECT scope FROM applik8s_command_results WHERE scope = $1 LIMIT 1', [scope]);
     if (existing.length > 0) return;
+    await persistCommandAuthorizationAdmission(transaction, execution.bindingId, execution.command, execution.message, scope);
     await transaction.unsafe(
-      'INSERT INTO applik8s_command_inbox (scope, binding_id, model, target_key, idempotency_key, message_id, input) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb) ON CONFLICT (scope) DO NOTHING',
-      [scope, execution.bindingId, execution.model.name, execution.message.targetKey, execution.message.idempotencyKey, execution.message.id, postgresJson(transaction, execution.message.input)],
+      'INSERT INTO applik8s_command_inbox (scope, binding_id, model, target_key, idempotency_key, message_id, input, authorization_receipt) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb) ON CONFLICT (scope) DO NOTHING',
+      [scope, execution.bindingId, execution.model.name, execution.message.targetKey, execution.message.idempotencyKey, execution.message.id, postgresJson(transaction, execution.message.input), execution.message.authorizationReceipt ? postgresJson(transaction, execution.message.authorizationReceipt) : null],
     );
     await transaction.unsafe(
       'INSERT INTO applik8s_command_results (scope, output, error, model_revision) VALUES ($1, NULL, $2::jsonb, $3) ON CONFLICT (scope) DO NOTHING',
@@ -203,6 +223,7 @@ export async function executePostgresModelCommand<
       await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [applicationModelChangeCommitScope(execution.message.context.digest)]);
     }
     await installCommandTrustedContext(transaction, execution.model, execution.message.context);
+    await persistCommandAuthorizationAdmission(transaction, execution.bindingId, execution.command, execution.message, scope);
     const completedRows = await transaction.unsafe('SELECT result.output, result.error, result.model_revision, result.model_snapshot, result.model_deleted, inbox.target_key FROM applik8s_command_results result JOIN applik8s_command_inbox inbox ON inbox.scope = result.scope WHERE result.scope = $1 LIMIT 1', [scope]);
     // typecast: the fixed projection comes from an Applik8s-owned command-results migration.
     const completed = completedRows[0] as CommandResultRow | undefined;
@@ -284,8 +305,8 @@ export async function executePostgresModelCommand<
     let stagedStatus = before.status;
     let deleteTarget = false;
     await transaction.unsafe(
-      'INSERT INTO applik8s_command_inbox (scope, binding_id, model, target_key, idempotency_key, message_id, input) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)',
-      [scope, execution.bindingId, execution.model.name, effectiveTargetKey, execution.message.idempotencyKey, execution.message.id, postgresJson(transaction, execution.message.input)],
+      'INSERT INTO applik8s_command_inbox (scope, binding_id, model, target_key, idempotency_key, message_id, input, authorization_receipt) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)',
+      [scope, execution.bindingId, execution.model.name, effectiveTargetKey, execution.message.idempotencyKey, execution.message.id, postgresJson(transaction, execution.message.input), execution.message.authorizationReceipt ? postgresJson(transaction, execution.message.authorizationReceipt) : null],
     );
     const emitted: EmittedEvent[] = [];
     const allowedEvents = new Set((execution.outbox ?? []).map((definition) => definition.id));
@@ -366,6 +387,42 @@ export async function executePostgresModelCommand<
         targetKey: effectiveTargetKey,
         ...(before.revision ? { stateRevision: modelStateRevision(execution.model.name, effectiveTargetKey, before.revision) } : {}),
       };
+    }
+    if (execution.message.authorizationReceipt) {
+      if (!execution.revalidateAuthorization) {
+        throw new Error(`applik8s-authorization-revalidator-missing: Binding ${execution.bindingId} received a protected durable command without a pre-commit revalidator.`);
+      }
+      const authorization = await execution.revalidateAuthorization(
+        execution.message.authorizationReceipt,
+        'pre-commit',
+        {
+          transaction,
+          trustedContextDigest: execution.message.context?.digest
+            ?? execution.message.authorizationReceipt.trustedContextDigest,
+        },
+      );
+      if (!authorization.allowed) {
+        await transaction.unsafe('ROLLBACK TO SAVEPOINT applik8s_command_handler');
+        await transaction.unsafe('RELEASE SAVEPOINT applik8s_command_handler');
+        const revision = before.revision ?? commandDeterministicId(scope, 'authorization-denied');
+        const rejection = {
+          name: 'internalFailure',
+          payload: {
+            code: 'authorization_denied',
+            attempts: execution.message.attempt ?? 1,
+            authorizationCode: authorization.code,
+          },
+        };
+        await recordCommandRejection(transaction, effectiveExecution, scope, rejection, revision);
+        return {
+          rejected: true,
+          rejection,
+          replayed: false,
+          revision,
+          targetKey: effectiveTargetKey,
+          ...(before.revision ? { stateRevision: modelStateRevision(execution.model.name, effectiveTargetKey, before.revision) } : {}),
+        };
+      }
     }
     await transaction.unsafe('RELEASE SAVEPOINT applik8s_command_handler');
     const revision = commandDeterministicId(scope, `revision:${JSON.stringify(stagedSpec)}:${JSON.stringify(stagedStatus ?? null)}`);
@@ -687,8 +744,8 @@ async function recordCommandRejection<TInput extends object>(
 ): Promise<void> {
   if (!inboxRecorded) {
     await transaction.unsafe(
-      'INSERT INTO applik8s_command_inbox (scope, binding_id, model, target_key, idempotency_key, message_id, input) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)',
-      [scope, execution.bindingId, execution.model.name, execution.message.targetKey, execution.message.idempotencyKey, execution.message.id, postgresJson(transaction, execution.message.input)],
+      'INSERT INTO applik8s_command_inbox (scope, binding_id, model, target_key, idempotency_key, message_id, input, authorization_receipt) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)',
+      [scope, execution.bindingId, execution.model.name, execution.message.targetKey, execution.message.idempotencyKey, execution.message.id, postgresJson(transaction, execution.message.input), execution.message.authorizationReceipt ? postgresJson(transaction, execution.message.authorizationReceipt) : null],
     );
   }
   await transaction.unsafe(
@@ -703,6 +760,37 @@ function durableRejection(value: unknown): { readonly name: string; readonly pay
   }
   // typecast: the durable error shape was checked field-by-field at the Postgres boundary.
   return value as { readonly name: string; readonly payload: object };
+}
+
+async function persistCommandAuthorizationAdmission<TInput extends object>(
+  transaction: ApplicationPostgresTransactionSql,
+  bindingId: string,
+  command: { readonly name: string; readonly version: string },
+  message: PostgresModelCommandMessage<TInput>,
+  scope: string,
+): Promise<void> {
+  if (!message.authorizationReceipt) return;
+  const rows = await transaction.unsafe(
+    `INSERT INTO applik8s_command_admissions (scope, command, binding_id, command_id, authorization_receipt)
+VALUES ($1, $2, $3, $4, $5::jsonb)
+ON CONFLICT (scope) DO UPDATE
+SET command = EXCLUDED.command
+WHERE applik8s_command_admissions.command = EXCLUDED.command
+  AND applik8s_command_admissions.binding_id = EXCLUDED.binding_id
+  AND applik8s_command_admissions.command_id = EXCLUDED.command_id
+  AND applik8s_command_admissions.authorization_receipt = EXCLUDED.authorization_receipt
+RETURNING scope`,
+    [
+      scope,
+      `${command.name}.${command.version}`,
+      bindingId,
+      message.id,
+      postgresJson(transaction, message.authorizationReceipt),
+    ],
+  );
+  if (rows.length === 0) {
+    throw new Error(`applik8s-command-admission-conflict: Durable command ${scope} has different authorization evidence.`);
+  }
 }
 
 function validateJsonMessageSchema(schema: JsonObject | undefined, value: unknown, name: string): void {

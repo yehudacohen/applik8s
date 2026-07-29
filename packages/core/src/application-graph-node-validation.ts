@@ -46,8 +46,8 @@ export function validateApplicationRouteDiagnosticsContract(owner: string, contr
 
 export function applicationModelNodeStructureDiagnostics(node: ApplicationModelNode, graph: ApplicationGraph): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
-  if (node.store.interface !== node.materialization.provider.interface || node.store.nodeId !== node.materialization.provider.nodeId) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application model node ${node.id} has inconsistent ModelStore refs between store and materialization.provider.`));
+  if (node.database.interface !== node.materialization.provider.interface || node.database.nodeId !== node.materialization.provider.nodeId) {
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application model node ${node.id} has inconsistent TransactionalDatabase refs between database and materialization.provider.`));
   }
   if (node.schema.migrations.strategy === 'generatedJob') {
     const hasMigrationJob = graph.edges.some((edge) => edge.relationship === 'dependsOn' && edge.to.nodeId === node.id && graph.nodes.some((candidate) => candidate.id === edge.from.nodeId && candidate.kind === 'job' && candidate.task.taskKind === 'migration'));
@@ -121,7 +121,7 @@ export function applicationProviderRefDiagnostics(owner: string, ref: Applicatio
 export function applicationProviderRefsForNode(node: ApplicationGraphNode): readonly ApplicationProviderRef[] {
   switch (node.kind) {
     case 'model':
-      return [node.store, node.materialization.provider];
+      return [node.database, node.materialization.provider];
     case 'server':
       return node.exposure ? [node.exposure] : [];
     case 'index':

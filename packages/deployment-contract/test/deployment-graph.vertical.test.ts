@@ -51,6 +51,55 @@ describe("ApplicationDeploymentGraph", () => {
     ).toEqual(normalizeApplicationDeploymentGraph(graph));
   });
 
+  it("retains profile transition acknowledgements in the deployment plan identity", () => {
+    const graph = validGraph();
+    const withTransition: ApplicationDeploymentGraph = {
+      ...graph,
+      metadata: {
+        ...graph.metadata,
+        profileTransition: {
+          apiVersion: "applik8s.profileTransitionPlan/v1alpha1",
+          installation: { namespace: "control", name: "notes" },
+          mode: "transition",
+          entries: [
+            {
+              qualification: "TransactionalDatabase@v1alpha1:primary",
+              from: "starter",
+              to: "dedicated",
+              kind: "replace",
+            },
+          ],
+          acknowledgements: [
+            "profile-transition/control/notes/profile:notes:profile/TransactionalDatabase@v1alpha1:primary/starter->dedicated/delete-local-data",
+          ],
+        },
+      },
+    };
+    expect(
+      decodeApplicationDeploymentGraph(
+        serializeApplicationDeploymentGraph(withTransition),
+      ).metadata.profileTransition,
+    ).toEqual(
+      normalizeApplicationDeploymentGraph(withTransition).metadata
+        .profileTransition,
+    );
+    expect(digestApplicationDeploymentGraph(withTransition)).not.toBe(
+      digestApplicationDeploymentGraph(graph),
+    );
+    expect(() =>
+      decodeApplicationDeploymentGraph({
+        ...withTransition,
+        metadata: {
+          ...withTransition.metadata,
+          profileTransition: {
+            ...withTransition.metadata.profileTransition,
+            mode: "unsafe",
+          },
+        },
+      }),
+    ).toThrow(ApplicationDeploymentGraphDecodeError);
+  });
+
   it("rejects unknown envelope fields, invalid enums, and malformed inputs", () => {
     const graph = validGraph();
     const composition = graph.nodes[1];

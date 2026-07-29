@@ -58,6 +58,7 @@ describe('Postgres ModelStore script runtime', () => {
     const sql = { async begin(handler: (value: typeof transaction) => Promise<void>) { return handler(transaction); } } as unknown as postgres.Sql;
     await recordPostgresModelCommandTerminalFailure({
       bindingId: 'Account-create',
+      command: { name: 'accounts.create', version: 'v1' },
       model: scriptNoteModel('accounts'),
       message: { id: 'command-1', input: { displayName: 'Ada' }, targetKey: 'account-1', idempotencyKey: 'once', context: { values: {}, digest: 'a'.repeat(64) } },
       sql,
@@ -364,7 +365,94 @@ describe.runIf(liveDatabaseUrl)('Postgres ModelStore script runtime live databas
       },
     };
     await expect(executePostgresModelCommand(invalidRejectionExecution)).rejects.toThrow(/applik8s-message-schema-invalid.*errors\.nameReserved/);
-    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId])).resolves.toMatchObject([{ count: 3 }]);
+    const authorizationReceipt = {
+      apiVersion: 'applik8s.authorizationReceipt/v1alpha1' as const,
+      application: 'test',
+      id: 'receipt-pre-commit-denied',
+      operationId: 'applik8s://models/ScriptCommandNote/operations/rename' as const,
+      operationVersion: 'v1',
+      catalogRevision: 'catalog-pre-commit',
+      authorityRevision: 'authority-pre-commit',
+      principal: {
+        id: 'principal:user-1',
+        identity: { id: 'identity:user-1', kind: 'human' as const, issuer: 'test', subject: 'user-1' },
+        kind: 'human' as const,
+        authenticationMethod: 'test',
+        audience: ['script-command'],
+        trustedContextDigest: 'pre-commit-context',
+        catalogRevision: 'catalog-pre-commit',
+        authorityRevision: 'authority-pre-commit',
+        admittedAt: '2026-07-10T12:00:00.000Z',
+      },
+      trustedContextDigest: 'pre-commit-context',
+      matchedPermissionIds: [],
+      matchedGrantIds: [],
+      inputDigest: 'sha256:pre-commit-input',
+      target: { kind: 'target' as const, model: 'ScriptCommandNote', identity: { id: 'note-command-1' } },
+      scopeEvidence: [],
+      audience: 'script-command',
+      transport: 'http' as const,
+      admittedAt: '2026-07-10T12:00:00.000Z',
+    };
+    let preCommitTransactionObserved = false;
+    const preCommitDeniedExecution = {
+      ...execution,
+      message: {
+        ...execution.message,
+        id: 'message-pre-commit-denied',
+        idempotencyKey: 'request-pre-commit-denied',
+        authorizationReceipt,
+        context: { values: {}, digest: 'pre-commit-context' },
+      },
+      async handler(note: { readonly spec: { readonly message: string }; patch(patch: { readonly spec: { readonly message?: string } }): void }) {
+        note.patch({ spec: { message: 'must-not-commit' } });
+        return { previous: note.spec.message, current: 'must-not-commit' };
+      },
+      async revalidateAuthorization(
+        _receipt: import('@applik8s/core').ApplicationAuthorizationReceipt,
+        boundary: 'pre-commit',
+        context: {
+          readonly transaction: import('../src/postgres-runtime-contract.js').ApplicationPostgresTransactionSql;
+          readonly trustedContextDigest: string;
+        },
+      ) {
+        expect(boundary).toBe('pre-commit');
+        await context.transaction.unsafe('SELECT 1 AS pre_commit_authority_check');
+        preCommitTransactionObserved = true;
+        return { allowed: false as const, code: 'AUTHORIZATION_GRANT_REVOKED', message: 'revoked before commit' };
+      },
+    };
+    await expect(executePostgresModelCommand(preCommitDeniedExecution)).rejects.toMatchObject({
+      code: 'applik8s-command-rejected',
+      rejection: {
+        name: 'internalFailure',
+        payload: {
+          code: 'authorization_denied',
+          attempts: 1,
+          authorizationCode: 'AUTHORIZATION_GRANT_REVOKED',
+        },
+      },
+    });
+    expect(preCommitTransactionObserved).toBe(true);
+    await expect(client.get({ id: 'note-command-1' })).resolves.toMatchObject({ spec: { message: 'after' } });
+    await expect(sql.unsafe(
+      `SELECT result.error
+       FROM applik8s_command_results result
+       JOIN applik8s_command_inbox inbox ON inbox.scope = result.scope
+       WHERE inbox.message_id = 'message-pre-commit-denied'`,
+    )).resolves.toMatchObject([{
+      error: {
+        name: 'internalFailure',
+        payload: expect.objectContaining({ code: 'authorization_denied' }),
+      },
+    }]);
+    await expect(sql.unsafe(
+      `SELECT count(*)::int AS count
+       FROM applik8s_model_transitions transition
+       JOIN applik8s_command_inbox inbox ON inbox.scope = transition.scope
+       WHERE inbox.message_id = 'message-pre-commit-denied'`,
+    )).resolves.toEqual([{ count: 0 }]);
+    await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId])).resolves.toMatchObject([{ count: 4 }]);
     await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(commandModel.tableName)}`);
   });
@@ -694,7 +782,7 @@ describe.runIf(liveDatabaseUrl)('Postgres ModelStore script runtime live databas
     await insert(`${otherBindingId}-expired`, otherBindingId, '2026-05-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z');
 
     const cleanup = await cleanupPostgresCommandData({ databaseUrl: liveDatabaseUrl, bindingIds: [bindingId], auditWindowSeconds: 30 * 24 * 60 * 60, publishedOutboxWindowSeconds: 24 * 60 * 60, batchSize: 100, now: '2026-07-11T00:00:00.000Z' });
-    expect(cleanup).toEqual({ eventOutboxDeleted: 1, commandOutboxDeleted: 0, commandsDeleted: 1 });
+    expect(cleanup).toEqual({ eventOutboxDeleted: 1, commandOutboxDeleted: 0, commandsDeleted: 1, admissionsDeleted: 0 });
     const retained = await sql.unsafe('SELECT scope FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[]) ORDER BY scope', [[bindingId, otherBindingId]]);
     expect(retained).toHaveLength(3);
     expect(retained).toEqual(expect.arrayContaining([

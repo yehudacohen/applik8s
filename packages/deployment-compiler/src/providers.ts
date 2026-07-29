@@ -44,9 +44,13 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "HttpExposure", implementation: "ingress", execution: "root-composition" },
   { interface: "HttpExposure", implementation: "node-port", execution: "root-composition" },
   { interface: "IndexStore", implementation: "valkey", execution: "root-composition" },
+  { interface: "TransactionalDatabase", implementation: "postgres", execution: "root-composition" },
+  // Compatibility-only graph input. New graphs emit TransactionalDatabase.
   { interface: "ModelStore", implementation: "postgres", execution: "root-composition" },
   { interface: "ObjectStorage", implementation: "kubernetes-configmap-objects", execution: "runtime-only" },
   { interface: "ObjectStorage", implementation: "s3", execution: "root-composition" },
+  { interface: "AnalyticalDatabase", implementation: "clickhouse", execution: "root-composition" },
+  // Compatibility-only graph input. New graphs emit AnalyticalDatabase.
   { interface: "ProjectionStore", implementation: "clickhouse", execution: "root-composition" },
   { interface: "Queue", implementation: "kubernetes-configmap-queue", execution: "runtime-only" },
   { interface: "RequestIdentity", implementation: "request-identity", execution: "runtime-only" },
@@ -100,7 +104,11 @@ function providerDirectContribution(
   if (provider.interface === "IndexStore" && provider.implementation === "valkey") {
     return valkeyDirectContribution(provider, context);
   }
-  if (provider.interface === "ModelStore" && provider.implementation === "postgres") {
+  if (
+    (provider.interface === "TransactionalDatabase" ||
+      provider.interface === "ModelStore") &&
+    provider.implementation === "postgres"
+  ) {
     return postgresDirectContribution(provider, context);
   }
   if (provider.interface === "ObjectStorage" && provider.implementation === "s3") {

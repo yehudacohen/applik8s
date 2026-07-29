@@ -83,9 +83,9 @@ export const generatePost = app.task(GeneratePost, {
 const executeAutomationRunEffects = app.task(ExecuteAutomationRunEffects, {
   requires: [StructuredGeneration],
   operations: {
-    createRun: AutomationRun.create,
-    updateRun: AutomationRun.update,
-    publish: Post.create,
+    createRun: AutomationRun.create.all(),
+    updateRun: AutomationRun.update.all(),
+    publish: Post.create.all(),
   },
   queries: { automationControl: AutomationControl.current, context: Post.homeTimeline },
   principal: (input) => ({

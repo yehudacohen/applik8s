@@ -1,6 +1,7 @@
 // typecast-file-boundary: Drizzle table identity and schema-normalized graph registries preserve generics that are restored after runtime identity checks.
 
 import type { SchemaInput } from '@applik8s/sdk';
+import { observeApplicationOperationAuthority } from '@applik8s/client';
 import { type as arkType } from 'arktype';
 import type { ApplicationDatabaseBinding, ApplicationNativeDrizzleModelOptions } from './application.js';
 import type { ApplicationEventLogResourceState } from './application-event-log-resources.js';
@@ -153,7 +154,7 @@ export function applicationNativeCommandModelBinding<TTable extends AnyPgTable>(
     entity: { kind: 'applik8sEntity', name: facet.name, spec: facet.schema.select } as never,
     runtime,
     backend: {
-      interface: 'ModelStore',
+      interface: 'TransactionalDatabase',
       runtimeBoundary: { serializedCallbacks: 'generatedRuntimeClient', scriptExecution: 'scriptRuntimeClient' },
       transactions: 'required',
       queryConsistency: 'strong',
@@ -167,12 +168,14 @@ export function applicationNativeCommandModelBinding<TTable extends AnyPgTable>(
     delete: unsupported as never,
     index: unsupported as never,
     transaction: unsupported as never,
+    operation: unsupported as never,
     action: unsupported as never,
     on: {
       created: unsupported as never,
       updated: unsupported as never,
       deleted: unsupported as never,
       command: unsupported as never,
+      operation: unsupported as never,
       action: unsupported as never,
     },
   };
@@ -307,6 +310,7 @@ export function bindApplicationNativeCreateOperation<TTable extends AnyPgTable>(
     },
   );
   bindApplicationModelCommandOperation(facet.api.create, binding);
+  observeApplicationOperationAuthority(facet.api.create, (authority) => binding.classify(authority));
 }
 
 export function bindApplicationNativeUpdateOperation<TTable extends AnyPgTable>(
@@ -360,6 +364,7 @@ export function bindApplicationNativeUpdateOperation<TTable extends AnyPgTable>(
     },
   );
   bindApplicationModelCommandOperation(facet.api.update, binding);
+  observeApplicationOperationAuthority(facet.api.update, (authority) => binding.classify(authority));
 }
 
 export function bindApplicationNativeDeleteOperation<TTable extends AnyPgTable>(
@@ -411,6 +416,7 @@ export function bindApplicationNativeDeleteOperation<TTable extends AnyPgTable>(
     },
   );
   bindApplicationModelCommandOperation(facet.api.delete, binding);
+  observeApplicationOperationAuthority(facet.api.delete, (authority) => binding.classify(authority));
 }
 
 function applicationNativeMutationOptions<TInput extends object, TValue extends object>(

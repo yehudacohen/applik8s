@@ -1,9 +1,10 @@
 // typecast-file-boundary: Task-operation tests intentionally construct protocol envelopes and provider fakes around runtime validation boundaries.
 import { describe, expect, it, vi } from 'vitest';
 import type { ApplicationPostgresSql } from '../src/postgres-runtime-contract.js';
-import type { JsonValue } from '@applik8s/core';
+import type { ApplicationAuthorizationReceipt, ApplicationExecutionPrincipal, ApplicationWorkloadAuthorityEnvelope, JsonValue } from '@applik8s/core';
 import { applicationCommandPrincipal } from '../src/command-principal.js';
 import {
+  ApplicationTaskOperationAuthorityError,
   ApplicationTaskOperationFailedError,
   ApplicationTaskOperationRejectedError,
   createApplicationTaskOperationRuntime,
@@ -91,6 +92,188 @@ describe('task operation runtime', () => {
       { invocationId: 'run-1', idempotencyKey: 'run-1', signal: new AbortController().signal },
     );
     await expect(operations.publish?.({ id: 'post-1' })).rejects.toThrow(/input validation failed/);
+    await runtime.close();
+  });
+
+  it('projects exact execution-bound fields and rejects every caller override before merge', async () => {
+    let published: Record<string, unknown> | undefined;
+    const sql = {
+      unsafe: vi.fn(async () => published
+        ? [{ output: { identity: 'post-1', accepted: true }, error: null }]
+        : []),
+    } as unknown as ApplicationPostgresSql;
+    const runtime = createApplicationTaskOperationRuntime({
+      commands: [{
+        id: 'Post.create.v1',
+        bindingId: 'Post.create',
+        model: 'Post',
+        inputSchema,
+        databaseUrl: 'postgres://unused',
+        sql,
+        key: (input) => Reflect.get(input, 'id'),
+      }],
+      cursorSecret: 'a-stable-secret-containing-at-least-thirty-two-characters',
+      eventLogPublisher: {
+        async publish(envelope) {
+          published = envelope as unknown as Record<string, unknown>;
+          return { stream: 'events', sequence: 1, duplicate: false, subject: 'commands', messageId: envelope.id };
+        },
+        async drain() {},
+      },
+    });
+    const operations = runtime.bind(
+      {
+        publish: {
+          commandId: 'Post.create.v1',
+          operationId: 'applik8s://models/Post/operations/create',
+          boundKeys: ['id'],
+          project: (task) => ({ id: String(Reflect.get(task, 'postId')) }),
+        },
+      },
+      { id: 'bot-1', authorizationVersion: 'policy-v1' },
+      { invocationId: 'run-1', idempotencyKey: 'run-1', signal: new AbortController().signal },
+      { postId: 'post-1' },
+    );
+
+    await expect(operations.publish?.({ id: 'attacker', body: 'hello' })).rejects.toMatchObject({
+      code: 'AUTHORITY_BOUND_FIELD_OVERRIDE',
+      operationId: 'applik8s://models/Post/operations/create',
+    } satisfies Partial<ApplicationTaskOperationAuthorityError>);
+    await expect(operations.publish?.({ body: 'hello' })).resolves.toEqual({
+      identity: 'post-1',
+      accepted: true,
+    });
+    expect(Reflect.get(published ?? {}, 'payload')).toEqual({ id: 'post-1', body: 'hello' });
+    await runtime.close();
+  });
+
+  it('admits one execution principal and embeds its envelope-bound receipt in the durable command', async () => {
+    let published: Record<string, unknown> | undefined;
+    const sql = {
+      unsafe: vi.fn(async () => published
+        ? [{ output: { identity: 'post-1', accepted: true }, error: null }]
+        : []),
+    } as unknown as ApplicationPostgresSql;
+    const workloadIdentity = {
+      id: 'identity:chirp:workload:task-handler.publish',
+      kind: 'workload' as const,
+      issuer: 'applik8s://chirp',
+      subject: 'task-handler.publish',
+    };
+    const envelope: ApplicationWorkloadAuthorityEnvelope = {
+      apiVersion: 'applik8s.workloadAuthority/v1alpha1',
+      id: 'workload-authority:publish',
+      workloadIdentity,
+      operationId: 'applik8s://models/Post/operations/create',
+      catalogRevision: 'catalog-1',
+      restrictions: { target: { kind: 'all' }, predicates: [] },
+      inputSchemaDigest: 'sha256:input',
+      audiences: [workloadIdentity.id],
+      transports: ['event'],
+      delegation: 'forbidden',
+      impersonation: 'forbidden',
+    };
+    const executionPrincipal: ApplicationExecutionPrincipal = {
+      id: 'principal:chirp:execution:task:run-1:1',
+      identity: workloadIdentity,
+      kind: 'execution',
+      executionKind: 'task',
+      executionId: 'run-1',
+      attempt: 1,
+      workloadIdentity,
+      causalGrantIds: [],
+      authenticationMethod: 'workload-identity',
+      audience: [workloadIdentity.id],
+      trustedContextDigest: 'sha256:context',
+      catalogRevision: 'catalog-1',
+      authorityRevision: 'authority-1',
+      admittedAt: '2026-07-29T00:00:00.000Z',
+      deadline: '2099-07-29T00:00:00.000Z',
+      expiresAt: '2099-07-29T00:00:00.000Z',
+      cancellationRevision: 'active:run-1',
+      bindings: [],
+      effectiveAuthority: [],
+    };
+    const admitExecution = vi.fn(async () => executionPrincipal);
+    const authorizeExecution = vi.fn(async (request): Promise<{ readonly allowed: true; readonly receipt: ApplicationAuthorizationReceipt }> => ({
+      allowed: true,
+      receipt: {
+        apiVersion: 'applik8s.authorizationReceipt/v1alpha1',
+        id: 'receipt-1',
+        application: 'chirp',
+        operationId: envelope.operationId,
+        operationVersion: 'v1',
+        catalogRevision: 'catalog-1',
+        authorityRevision: 'authority-1',
+        principal: request.principal,
+        trustedContextDigest: request.trustedContextDigest,
+        matchedPermissionIds: [],
+        matchedGrantIds: [],
+        workloadEnvelopeId: envelope.id,
+        executionPrincipalId: request.principal.id,
+        inputDigest: request.inputDigest,
+        target: request.target,
+        scopeEvidence: [],
+        audience: workloadIdentity.id,
+        transport: 'event',
+        admittedAt: '2026-07-29T00:00:00.000Z',
+      },
+    }));
+    const runtime = createApplicationTaskOperationRuntime({
+      commands: [{
+        id: 'Post.create.v1',
+        bindingId: 'Post.create',
+        model: 'Post',
+        inputSchema,
+        databaseUrl: 'postgres://unused',
+        sql,
+        key: (input) => Reflect.get(input, 'id'),
+      }],
+      cursorSecret: 'a-stable-secret-containing-at-least-thirty-two-characters',
+      eventLogPublisher: {
+        async publish(command) {
+          published = command as unknown as Record<string, unknown>;
+          return { stream: 'events', sequence: 1, duplicate: false, subject: 'commands', messageId: command.id };
+        },
+        async drain() {},
+      },
+      admitExecution,
+      authorizeExecution,
+    });
+    const operations = runtime.bind(
+      {
+        publish: {
+          commandId: 'Post.create.v1',
+          operationId: envelope.operationId,
+          boundKeys: [],
+          envelope,
+        },
+      },
+      { id: 'bot-1', authorizationVersion: 'policy-v1' },
+      {
+        invocationId: 'run-1',
+        idempotencyKey: 'run-1',
+        signal: new AbortController().signal,
+        deadline: executionPrincipal.deadline,
+        cancellationRevision: executionPrincipal.cancellationRevision,
+      },
+    );
+
+    await expect(operations.publish?.({ id: 'post-1', body: 'hello' })).resolves.toEqual({
+      identity: 'post-1',
+      accepted: true,
+    });
+    expect(admitExecution).toHaveBeenCalledOnce();
+    expect(authorizeExecution).toHaveBeenCalledWith(expect.objectContaining({
+      principal: executionPrincipal,
+      envelope,
+      cancellationRevision: 'active:run-1',
+    }));
+    expect(Reflect.get(published ?? {}, 'authorizationReceipt')).toMatchObject({
+      id: 'receipt-1',
+      workloadEnvelopeId: envelope.id,
+      executionPrincipalId: executionPrincipal.id,
+    });
     await runtime.close();
   });
 

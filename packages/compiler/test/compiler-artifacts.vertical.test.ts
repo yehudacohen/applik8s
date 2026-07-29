@@ -871,19 +871,39 @@ export const imagePipeline = sdk.operator({
       expect(graph.providerBindings).toEqual([]);
       expect(graph.compatibility).toMatchObject({
         documentedInternalContracts: expect.arrayContaining(['ApplicationGraph']),
-        stablePublicApis: expect.arrayContaining(['Resource.increment', 'app.aggregate', 'app.crd', 'app.defaults', 'app.http', 'app.job', 'app.model', 'app.provide', 'app.reconcile', 'app.resource', 'app.schedule', 'app.server', 'app.storage.postgres', 'provider.ModelStore', 'sdk.kubernetesComposition']),
+        stablePublicApis: expect.arrayContaining(['Resource.increment', 'app.aggregate', 'app.crd', 'app.database.postgres', 'app.defaults', 'app.http', 'app.job', 'app.model', 'app.provide', 'app.reconcile', 'app.resource', 'app.schedule', 'app.server', 'provider.TransactionalDatabase', 'sdk.kubernetesComposition']),
         experimentalSurfaces: expect.arrayContaining(['app.graph']),
         postV3Surfaces: expect.arrayContaining(['workload-movement-operator']),
         labels: expect.arrayContaining([
           expect.objectContaining({ name: 'ApplicationGraph', surface: 'documentedInternalContract' }),
           expect.objectContaining({ name: 'app.model', surface: 'stablePublicApi' }),
-          expect.objectContaining({ name: 'provider.ModelStore', surface: 'stablePublicApi' }),
+          expect.objectContaining({ name: 'provider.TransactionalDatabase', surface: 'stablePublicApi' }),
           expect.objectContaining({ name: 'workload-movement-operator', surface: 'postV3Surface' }),
         ]),
       });
       expect(result.value.artifacts.manifest.spec.applicationGraph).toMatchObject({
         apiVersion: 'applik8s.appGraph/v1alpha1',
         path: result.value.artifacts.applicationGraphJsonPath,
+        digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      });
+      expect(result.value.artifacts.operationCatalogJsonPath).toBe(join(dir, 'dist', 'typekro', 'operation-catalog.json'));
+      const operationCatalog = JSON.parse(await readFile(result.value.artifacts.operationCatalogJsonPath ?? '', 'utf8'));
+      expect(operationCatalog).toMatchObject({
+        apiVersion: 'applik8s.operationCatalog/v1alpha1',
+        application: 'guestbook-stack',
+        state: 'proposed',
+      });
+      expect(operationCatalog.operations).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: 'applik8s://http/web/operations/get-root-0',
+          kind: 'http.raw',
+          authority: expect.objectContaining({ classification: 'unclassified' }),
+        }),
+      ]));
+      expect(result.value.artifacts.manifest.spec.operationCatalog).toMatchObject({
+        apiVersion: 'applik8s.operationCatalog/v1alpha1',
+        revision: operationCatalog.revision,
+        path: result.value.artifacts.operationCatalogJsonPath,
         digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
       });
     } finally {
@@ -1047,11 +1067,11 @@ Object.defineProperty(composition, '__applik8sApplicationGraph', {
         name: 'Entry',
         stability: 'experimental',
         entity: { name: 'Entry' },
-        store: { interface: 'ModelStore', nodeId: 'provider.model.missing' },
+        database: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.missing' },
         schema: { identity: ['id'], constraints: [], indexes: [], migrations: { strategy: 'none', compatibility: 'schemaCompatibleOnly' }, transactions: 'supported' },
         materialization: {
           mode: 'providerBacked',
-          provider: { interface: 'ModelStore', nodeId: 'provider.model.missing' },
+          provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database.missing' },
           backingResources: [],
           connection: {},
           reconciliation: { ownership: 'application', schemaDrift: 'failClosed', deletionPolicy: 'retain' },
@@ -1091,7 +1111,7 @@ export const badProviderGraph = composition;
           message: expect.stringContaining('Application graph is invalid'),
         });
         expect(result.error.message).toContain('server.missing:dependsOn:model.entry');
-        expect(result.error.message).toContain('provider.model.missing');
+        expect(result.error.message).toContain('provider.transactional-database.missing');
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -1179,6 +1199,9 @@ export const commandStack = platform.composition;
       expect(logicalSource).toContain('applik8s-command-outbox-relayed');
       expect(logicalSource).toContain('applik8s-command-processor-observation');
       expect(logicalSource).toContain('recordTerminalFailure');
+      expect(logicalSource).toContain('applik8s://models/Account/operations/rename');
+      expect(logicalSource).toContain('pre-commit');
+      expect(logicalSource).toContain('applik8s_operation_catalogs');
       expect(logicalSource).toContain('applik8s-command-terminal-recorder-missing');
       expect(logicalSource).toContain('applik8s-command-processor-startup-wait');
       expect(logicalSource).toContain('applik8s-processor-startup-timeout');
@@ -1207,7 +1230,7 @@ export const commandStack = platform.composition;
       expect(manifest).toMatchObject({
         kind: 'GeneratedCommandProcessor',
         spec: {
-          guarantees: { delivery: 'atLeastOnce', authority: 'postgresInboxAndDeclaredOrdering', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
+          guarantees: { delivery: 'atLeastOnce', authority: 'catalogReceiptAndPostgresPreCommit', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
           capacity: { replicas: 2, concurrencyPerReplica: 4, maximumInFlight: 8, maxAckPending: 12, requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } },
           runtime: { packageManagerAtStartup: false, distribution: 'ociImage', image: artifact?.container.image, baseImage: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2' },
           container: expect.objectContaining({ image: artifact?.container.image, contextPath: artifact?.container.contextPath }),
@@ -1364,10 +1387,19 @@ export const notesModelApp = sdk.kubernetesComposition({
         expect(graphResourceKeys.has(expected)).toBe(true);
       }
       expect(graph.providerRequirements).toEqual(expect.arrayContaining([
-        expect.objectContaining({ id: 'requirement.model.note.store', consumer: { nodeId: 'model.note' } }),
+        expect.objectContaining({
+          id: 'requirement.model.note.database',
+          interface: 'TransactionalDatabase',
+          consumer: { nodeId: 'model.note' },
+        }),
       ]));
       expect(graph.providerBindings).toEqual(expect.arrayContaining([
-        expect.objectContaining({ requirement: 'requirement.model.note.store', generatedResources: expect.arrayContaining([expect.objectContaining({ kind: 'Cluster', name: 'notes-db', namespace: 'notes' })]) }),
+        expect.objectContaining({
+          requirement: 'requirement.model.note.database',
+          generatedResources: expect.arrayContaining([
+            expect.objectContaining({ kind: 'Cluster', name: 'notes-db', namespace: 'notes' }),
+          ]),
+        }),
       ]));
       expect(graph.nodes).toEqual(expect.arrayContaining([
         expect.objectContaining({

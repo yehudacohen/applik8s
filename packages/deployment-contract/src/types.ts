@@ -26,6 +26,7 @@ export interface ApplicationDeploymentGraphMetadata {
   readonly strategy: ApplicationDeploymentStrategy;
   readonly sourceGraphDigest: string;
   readonly compilerVersion: string;
+  readonly profileTransition?: DeploymentJsonObject;
 }
 
 export interface ApplicationDeploymentIdentity {

@@ -1,4 +1,4 @@
-import { ContainerRegistry, ObjectStorage, ProjectionStore, WorkflowEngine } from '@applik8s/applik8s';
+import { AnalyticalDatabase, ContainerRegistry, ObjectStorage, WorkflowEngine } from '@applik8s/applik8s';
 
 interface LocalCapacity {
   readonly workflowDatabaseInstances: number;
@@ -121,13 +121,13 @@ export function localWorkflowEngine(namespace: string, capacity: LocalCapacity, 
   });
 }
 
-export function localProjectionStore(namespace: string, capacity: LocalCapacity, enabled: boolean, connection: {
+export function localAnalyticalDatabase(namespace: string, capacity: LocalCapacity, enabled: boolean, connection: {
   readonly provision?: boolean;
   readonly endpoint?: string;
   readonly database?: string;
   readonly credentialsSecretName?: string;
 } = {}) {
-  return ProjectionStore.clickhouse({
+  return AnalyticalDatabase.clickhouse({
     enabled,
     name: 'chirp-analytics',
     namespace,

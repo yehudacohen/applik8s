@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@applik8s/applik8s": "0.6.0",
+    "@applik8s/core": "0.6.0",
     "@nats-io/jetstream": "3.4.0",
     "@nats-io/nats-core": "3.4.0",
     "@nats-io/transport-node": "3.4.0",

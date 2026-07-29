@@ -8,10 +8,11 @@ import type { ApplicationDatabaseBinding } from './application.js';
 import { serializeApplicationCallback } from './application-callback.js';
 import type { ApplicationGraphState } from './application-graph-state.js';
 import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
+import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationModelCommandBinding } from './application-models.js';
 import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions } from './application-processor-policy.js';
-import type { ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationProjectionStoreProvider, ApplicationProviderState } from './application-providers.js';
-import { applicationIndexBackend, applicationProviderImplementationName, defaultApplicationIndexProvider, IndexStore, isClickHouseProjectionStoreProvider } from './application-providers.js';
+import type { ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationProjectionStoreProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState } from './application-providers.js';
+import { applicationIndexBackend, applicationProjectionStoreImplementation, applicationProviderImplementationName, applicationProviderQualificationFor, defaultApplicationIndexProvider, IndexStore, isClickHouseProjectionStoreProvider } from './application-providers.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
 import { applicationTypeKroSerializedValue, applicationTypeKroString } from './application-typekro-values.js';
@@ -152,7 +153,7 @@ export interface ApplicationSubscriptionBinding<TPrincipal extends ApplicationQu
 export interface ApplicationAnalyticalProjectionOptions<TPayload extends object, TRow extends object> {
   readonly source: ApplicationStreamBinding<TPayload>;
   readonly output: SchemaInput<TRow>;
-  readonly provider?: ApplicationProjectionStoreProvider;
+  readonly provider?: ApplicationProjectionStoreProvider | ApplicationProviderBinding<ApplicationProjectionStoreProvider>;
   readonly checkpoint?: 'idempotent';
   readonly rebuildable?: boolean;
   readonly project: (payload: TPayload, event: { readonly id: string; readonly recordedAt: string; readonly partitionKey: string }) => TRow | readonly TRow[] | Promise<TRow | readonly TRow[]>;
@@ -252,6 +253,8 @@ export interface ApplicationGatewayOptions {
 
 export interface ApplicationGatewayAdmission {
   readonly principal: ApplicationQueryPrincipal;
+  /** Canonical provider-neutral principal admitted by the identity boundary. */
+  readonly principalContract?: import('@applik8s/core').ApplicationPrincipal;
   readonly trustedContext: Readonly<Record<string, JsonValue>>;
   readonly authorizationVersion: string;
 }
@@ -460,8 +463,10 @@ export function registerApplicationProjection<TPayload extends object, TRow exte
 export function registerApplicationProjection<TPayload extends object, TRow extends object, TValue extends object, TSnapshot extends object>(state: ApplicationReactiveState, name: string, options: ApplicationOnlineProjectionOptions<TPayload, TRow, TValue, TSnapshot>): ApplicationOnlineProjectionBinding<TPayload, TRow, TValue>;
 export function registerApplicationProjection<TPayload extends object, TRow extends object, TValue extends object, TSnapshot extends object>(state: ApplicationReactiveState, name: string, options: ApplicationProjectionOptions<TPayload, TRow, TValue, TSnapshot>): ApplicationProjectionBinding<TPayload, TRow, TValue> {
   if ('store' in options) return registerOnlineApplicationProjection(state, name, options);
-  const provider = options.provider ?? projectionProvider(state);
-  const providerNode = recordProjectionProvider(state, provider);
+  const provider = applicationProjectionStoreImplementation(options.provider)
+    ?? projectionProvider(state);
+  const qualification = applicationProviderQualificationFor(options.provider);
+  const providerNode = recordProjectionProvider(state, provider, qualification);
   const nodeId = reactiveNodeId('projection', name);
   const source = sourceNodeRef(options.source);
   if (options.checkpoint && options.checkpoint !== 'idempotent') throw new Error(`Application projection ${name} supports only idempotent ClickHouse checkpoints in v0.6.`);
@@ -488,8 +493,8 @@ export function registerApplicationProjection<TPayload extends object, TRow exte
   });
   addApplicationGraphEdge(state, { from: { nodeId }, to: source, relationship: 'reads' });
   addApplicationGraphEdge(state, { from: providerNode, to: { nodeId }, relationship: 'provides' });
-  const requirement = `projection-store.${reactiveName(name)}`;
-  addApplicationProviderRequirement(state, { id: requirement, interface: 'ProjectionStore', consumer: { nodeId }, provider: providerNode, required: true, purpose: 'projectionStore', diagnostics: { missing: `Projection ${name} requires a ProjectionStore provider.`, ambiguous: `Projection ${name} has multiple ProjectionStore providers.` } });
+  const requirement = `analytical-database.${reactiveName(name)}`;
+  addApplicationProviderRequirement(state, { id: requirement, interface: 'AnalyticalDatabase', consumer: { nodeId }, provider: providerNode, required: true, purpose: 'analyticalDatabase', diagnostics: { missing: `Projection ${name} requires an AnalyticalDatabase provider.`, ambiguous: `Projection ${name} has multiple AnalyticalDatabase providers.` } });
   addApplicationProviderBinding(state, { requirement, provider: providerNode, generatedResources: [], runtime: {}, metadataLinks: [] });
   return { kind: 'applicationProjection', storage: 'analytical', name, source: options.source, provider, output: options.output, project: options.project };
 }
@@ -714,27 +719,50 @@ function reactiveDatabaseRuntime(binding: ApplicationDatabaseBinding): { readonl
 }
 
 function projectionProvider(state: ApplicationReactiveState): ApplicationProjectionStoreProvider {
-  const provider = state.providers.projections ?? state.defaults.projections;
-  if (!isClickHouseProjectionStoreProvider(provider)) throw new Error('app.projection(...) requires a ClickHouse ProjectionStore provider. Bind ProjectionStore.clickhouse(...) with app.provide or app.defaults.');
+  const provider = applicationProjectionStoreImplementation(
+    state.providers.projections ?? state.defaults.projections,
+  );
+  if (!provider) throw new Error('app.projection(...) requires a ClickHouse AnalyticalDatabase provider. Bind AnalyticalDatabase.clickhouse(...) with app.provide or app.defaults.');
   return provider;
 }
 
-function recordProjectionProvider(state: ApplicationReactiveState, provider: ApplicationProjectionStoreProvider): ApplicationProviderRef<'ProjectionStore'> {
-  if (!isClickHouseProjectionStoreProvider(provider)) throw new Error('The v0.6 ProjectionStore implementation must be ClickHouse.');
-  if (provider.credentialsSecret && !provider.credentialsSecret.name) throw new Error('ClickHouse ProjectionStore credentialsSecret must declare a Secret name.');
-  const nodeId = 'provider.projection-store';
-  const node: ApplicationProviderNode<'ProjectionStore'> = {
+function recordProjectionProvider(
+  state: ApplicationReactiveState,
+  provider: ApplicationProjectionStoreProvider,
+  qualification?: ApplicationProviderQualification,
+): ApplicationProviderRef<'AnalyticalDatabase'> {
+  if (!isClickHouseProjectionStoreProvider(provider)) throw new Error('The AnalyticalDatabase implementation must be ClickHouse.');
+  if (provider.credentialsSecret && !provider.credentialsSecret.name) throw new Error('ClickHouse AnalyticalDatabase credentialsSecret must declare a Secret name.');
+  const nodeId = applicationProviderGraphNodeId(
+    'AnalyticalDatabase',
+    qualification,
+  );
+  const existing = state.graphNodes.find(
+    (candidate) => candidate.id === nodeId,
+  );
+  if (existing) {
+    if (
+      existing.kind !== 'provider'
+      || existing.interface !== 'AnalyticalDatabase'
+    ) {
+      throw new Error(
+        `AnalyticalDatabase provider identity ${nodeId} collides with ${existing.kind} ${existing.name}.`,
+      );
+    }
+    return { interface: 'AnalyticalDatabase', nodeId };
+  }
+  const node: ApplicationProviderNode<'AnalyticalDatabase'> = {
     id: nodeId,
     kind: 'provider',
-    name: 'ProjectionStore',
+    name: 'AnalyticalDatabase',
     stability: 'stable',
-    interface: 'ProjectionStore',
+    interface: 'AnalyticalDatabase',
     implementation: applicationProviderImplementationName(provider),
-    contract: { apiVersion: 'applik8s.provider/v1alpha1', interface: 'ProjectionStore', version: 'v1alpha1', requirements: ['replayableSource'], guarantees: ['idempotentInsert', 'checkpoint', 'fullRebuild'], implementation: { name: 'clickhouse' }, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
-    config: { provider: 'clickhouse', enabled: provider.enabled ?? true, name: provider.name ?? 'applik8s-analytics', namespace: provider.namespace ?? 'applik8s-analytics', provision: provider.provision ?? true, endpoint: provider.endpoint ?? applicationTypeKroString('http://clickhouse-', provider.name ?? 'applik8s-analytics', '.', provider.namespace ?? 'applik8s-analytics', '.svc.cluster.local:8123'), database: provider.database ?? 'default', ...(provider.credentialsSecret?.name ? { credentialsSecret: { apiVersion: provider.credentialsSecret.apiVersion, kind: provider.credentialsSecret.kind, name: provider.credentialsSecret.name, ...(provider.credentialsSecret.namespace ? { namespace: provider.credentialsSecret.namespace } : {}) }, usernameKey: provider.usernameKey ?? 'username', passwordKey: provider.passwordKey ?? 'password' } : {}) },
+    contract: { apiVersion: 'applik8s.provider/v1alpha1', interface: 'AnalyticalDatabase', version: 'v1alpha1', requirements: ['replayableSource'], guarantees: ['idempotentInsert', 'checkpoint', 'fullRebuild'], implementation: { name: 'clickhouse' }, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    config: { provider: 'clickhouse', ...(qualification ? { qualification: qualification as unknown as JsonValue } : {}), enabled: provider.enabled ?? true, name: provider.name ?? 'applik8s-analytics', namespace: provider.namespace ?? 'applik8s-analytics', provision: provider.provision ?? true, endpoint: provider.endpoint ?? applicationTypeKroString('http://clickhouse-', provider.name ?? 'applik8s-analytics', '.', provider.namespace ?? 'applik8s-analytics', '.svc.cluster.local:8123'), database: provider.database ?? 'default', ...(provider.credentialsSecret?.name ? { credentialsSecret: { apiVersion: provider.credentialsSecret.apiVersion, kind: provider.credentialsSecret.kind, name: provider.credentialsSecret.name, ...(provider.credentialsSecret.namespace ? { namespace: provider.credentialsSecret.namespace } : {}) }, usernameKey: provider.usernameKey ?? 'username', passwordKey: provider.passwordKey ?? 'password' } : {}) },
   };
   addApplicationGraphNode(state, node);
-  return { interface: 'ProjectionStore', nodeId };
+  return { interface: 'AnalyticalDatabase', nodeId };
 }
 
 function sourceNodeRef(source: ApplicationReactiveSourceBinding): { readonly nodeId: string } {

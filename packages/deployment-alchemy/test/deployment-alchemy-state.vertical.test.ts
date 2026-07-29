@@ -30,6 +30,24 @@ describe("Alchemy backend identity and state", () => {
     await claimApplicationAlchemyStackIdentity(root, first);
   });
 
+  it("keeps one stable Alchemy stack identity across installation profile transitions", async () => {
+    const root = await temporaryRoot();
+    const starter = applicationAlchemyStackIdentity(
+      identity("notes", "starter"),
+      "kro",
+    );
+    const dedicated = applicationAlchemyStackIdentity(
+      identity("notes", "dedicated"),
+      "kro",
+    );
+
+    expect(dedicated.key).toBe(starter.key);
+    expect(dedicated.digest).toBe(starter.digest);
+    expect(dedicated.canonical).toBe(starter.canonical);
+    await claimApplicationAlchemyStackIdentity(root, starter);
+    await claimApplicationAlchemyStackIdentity(root, dedicated);
+  });
+
   it("prevents an in-place direct/KRO strategy collision for one installation identity", async () => {
     const root = await temporaryRoot();
     const deploymentIdentity = identity("notes", "local");

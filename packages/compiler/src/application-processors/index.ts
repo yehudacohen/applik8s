@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationEventNode, ApplicationGraph, ApplicationModelNode, ApplicationProcessorNode, ApplicationProviderNode } from '@applik8s/core';
+import type { ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationEventNode, ApplicationGraph, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProcessorNode, ApplicationProviderNode, ApplicationStaticAuthorityManifest } from '@applik8s/core';
 import { build } from 'esbuild';
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { applicationGraphStringValue } from '../application-installation-values.js';
+import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import { generatedProcessorCapacity, generatedProcessorDisruptionResource, generatedProcessorPodScheduling } from './capacity.js';
 
@@ -33,9 +34,11 @@ export interface GeneratedApplicationProcessorResource {
 
 export async function emitGeneratedApplicationProcessors(options: {
   readonly graph: ApplicationGraph;
+  readonly operationCatalog?: ApplicationOperationCatalog;
   readonly outDir: string;
   readonly entrypoint: string;
 }): Promise<readonly GeneratedApplicationProcessorArtifact[]> {
+  const operationCatalog = options.operationCatalog ?? compileApplicationOperationCatalog(options.graph);
   const processors = options.graph.nodes.filter((node): node is ApplicationProcessorNode => node.kind === 'processor');
   if (processors.length === 0) return [];
   await mkdir(options.outDir, { recursive: true });
@@ -45,12 +48,12 @@ export async function emitGeneratedApplicationProcessors(options: {
     const eventLogId = processor.eventLog?.nodeId ?? '';
     const ownsStream = !emittedEventLogStreams.has(eventLogId);
     if (eventLogId) emittedEventLogStreams.add(eventLogId);
-    artifacts.push(await emitProcessor(options.graph, processor, options.outDir, ownsStream));
+    artifacts.push(await emitProcessor(options.graph, processor, operationCatalog, options.outDir, ownsStream));
   }
   return artifacts;
 }
 
-async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProcessorNode, outDir: string, ownsStream: boolean): Promise<GeneratedApplicationProcessorArtifact> {
+async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProcessorNode, operationCatalog: ApplicationOperationCatalog, outDir: string, ownsStream: boolean): Promise<GeneratedApplicationProcessorArtifact> {
   const name = kubernetesName(processor.name);
   const processorDir = join(outDir, name);
   const generatedEntrypoint = join(processorDir, 'processor.generated.ts');
@@ -59,7 +62,7 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
   const manifestPath = join(processorDir, 'processor.manifest.json');
   const metafilePath = join(processorDir, 'processor.esbuild-meta.json');
   await mkdir(processorDir, { recursive: true });
-  const contract = processorContract(graph, processor, ownsStream);
+  const contract = processorContract(graph, processor, operationCatalog, ownsStream);
   await writeFile(generatedEntrypoint, generatedProcessorSource(contract));
   const result = await build({
     entryPoints: [generatedEntrypoint],
@@ -104,7 +107,7 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
       runtime: { entrypoint: sourcePath, sourceMap: sourceMapPath, digest, sizeBytes, distribution: 'ociImage', packageManagerAtStartup: false, image: container.image, baseImage: container.baseImage },
       container,
       resources: resources.map((resource) => ({ apiVersion: resource.apiVersion, kind: resource.kind, metadata: resource.metadata })),
-      guarantees: { delivery: 'atLeastOnce', authority: 'postgresInboxAndDeclaredOrdering', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
+      guarantees: { delivery: 'atLeastOnce', authority: 'catalogReceiptAndPostgresPreCommit', acknowledgement: 'afterTransactionCommit', externalEffectsWhileLocked: 'forbidden' },
       capacity: generatedProcessorCapacity(processor),
     },
   };
@@ -114,6 +117,9 @@ async function emitProcessor(graph: ApplicationGraph, processor: ApplicationProc
 }
 
 interface ProcessorContract {
+  readonly graphName: string;
+  readonly operationCatalog: ApplicationOperationCatalog;
+  readonly authorityManifest?: ApplicationStaticAuthorityManifest;
   readonly processor: ApplicationProcessorNode;
   readonly provider: ApplicationProviderNode;
   readonly namespace?: string;
@@ -137,12 +143,13 @@ interface ProcessorContract {
     readonly model: ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> };
     readonly models: readonly (ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> })[];
     readonly command: ApplicationCommandNode['contract'];
+    readonly operation: ApplicationOperationCatalog['operations'][number];
     readonly events: readonly { readonly identifier: string; readonly definition: { readonly kind: 'applik8sEvent'; readonly id: string; readonly name: string; readonly version: string }; readonly schema: ApplicationEventNode['contract']['payload']['jsonSchema'] }[];
     readonly commands: readonly { readonly identifier: string; readonly definition: { readonly kind: 'applik8sCommand'; readonly id: string; readonly name: string; readonly version: string; readonly input: object; readonly output: object; readonly errors: object }; readonly schema: ApplicationCommandNode['contract']['input']['jsonSchema'] }[];
   }[];
 }
 
-function processorContract(graph: ApplicationGraph, processor: ApplicationProcessorNode, ownsStream: boolean): ProcessorContract {
+function processorContract(graph: ApplicationGraph, processor: ApplicationProcessorNode, operationCatalog: ApplicationOperationCatalog, ownsStream: boolean): ProcessorContract {
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const provider = nodes.get(processor.eventLog?.nodeId ?? '');
   if (provider?.kind !== 'provider' || provider.interface !== 'EventLog') throw new Error(`Generated processor ${processor.id} requires one resolved EventLog provider node.`);
@@ -153,6 +160,10 @@ function processorContract(graph: ApplicationGraph, processor: ApplicationProces
     if (model?.kind !== 'model' || !model.runtime) throw new Error(`Generated processor ${processor.id} handler ${node.id} requires a model runtime contract.`);
     const commandNode = nodes.get(node.command.nodeId);
     if (commandNode?.kind !== 'command') throw new Error(`Generated processor ${processor.id} handler ${node.id} requires a command contract.`);
+    const transportId = `${commandNode.contract.name}.${commandNode.contract.version}`;
+    const operation = operationCatalog.operations.find((candidate) =>
+      candidate.transports.some((transport) => transport.id === transportId));
+    if (!operation) throw new Error(`Generated processor ${processor.id} command ${transportId} has no canonical operation-catalog entry.`);
     const events = (node.eventBindings ?? []).map((binding) => {
       const event = nodes.get(binding.event.nodeId);
       if (event?.kind !== 'event') throw new Error(`Generated processor ${processor.id} handler ${node.id} has an invalid event binding ${binding.identifier}.`);
@@ -170,8 +181,12 @@ function processorContract(graph: ApplicationGraph, processor: ApplicationProces
       return participant as ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> };
     });
     // typecast: the preceding runtime guard narrows the graph model more precisely than TypeScript preserves through the collection callback.
-    return { node, model: model as ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> }, models, command: commandNode.contract, events, commands };
+    return { node, model: model as ApplicationModelNode & { readonly runtime: NonNullable<ApplicationModelNode['runtime']> }, models, command: commandNode.contract, operation, events, commands };
   });
+  const authorityDatabases = new Set(handlers.map(({ model }) => model.runtime.connectionEnvName));
+  if (authorityDatabases.size > 1) {
+    throw new Error(`Generated processor ${processor.id} spans multiple transactional authority databases. Bind one explicit AuthorizationAuthority database before combining these handlers.`);
+  }
   const config = provider.config ?? {};
   const namespace = applicationGraphStringValue(handlers[0]?.model.runtime.secretNamespace) || applicationGraphStringValue(config.namespace) || undefined;
   const serviceName = stringConfig(config.name) || 'applik8s-events';
@@ -188,7 +203,11 @@ function processorContract(graph: ApplicationGraph, processor: ApplicationProces
     throw new Error(`Generated processor ${processor.id} EventLog authMode must be token or userPassword.`);
   }
   const authMode: 'token' | 'userPassword' = configuredAuthMode === 'userPassword' ? 'userPassword' : 'token';
+  const authorityManifest = applicationStaticAuthorityManifest(graph);
   return {
+    graphName: graph.metadata.name,
+    operationCatalog,
+    ...(authorityManifest ? { authorityManifest } : {}),
     processor,
     provider,
     ...(namespace ? { namespace } : {}),
@@ -215,7 +234,9 @@ function generatedProcessorSource(contract: ProcessorContract): string {
   const bindingSources = contract.handlers.map((handler) => generatedBindingSource(handler)).join(',\n');
   return `
 import { rm, writeFile } from 'node:fs/promises';
+import postgres from 'postgres';
 import { canonicalApplicationCommandKey, cleanupPostgresCommandData, executePostgresModelCommand, observePostgresOutboxLag, recordPostgresModelCommandTerminalFailure, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '@applik8s/applik8s/processor-runtime';
+import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';
 import { startJetStreamCommandProcessor } from '@applik8s/runtime-nats/command-processor';
 
@@ -224,6 +245,14 @@ function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requi
 const eventLogServers = JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS'));
 if (!Array.isArray(eventLogServers) || eventLogServers.some((server) => typeof server !== 'string' || server.length === 0)) throw new Error('APPLIK8S_NATS_SERVERS must be a JSON array of non-empty URLs.');
 const processorConcurrency = requiredIntegerEnv('APPLIK8S_PROCESSOR_CONCURRENCY', 1, 64);
+const operationAuthoritySql = postgres(requiredEnv('DATABASE_URL'), { max: Math.max(4, processorConcurrency + 2), idle_timeout: 20, connect_timeout: 10, prepare: false });
+const operationAuthority = createApplicationOperationAuthorityRuntime({
+  sql: operationAuthoritySql,
+  application: ${JSON.stringify(contract.graphName)},
+  catalog: ${JSON.stringify(contract.operationCatalog)},
+  ${contract.authorityManifest ? `authorityManifest: ${JSON.stringify(contract.authorityManifest)},` : ''}
+});
+await operationAuthority.prepare();
 
 const bindings = [
 ${bindingSources}
@@ -317,6 +346,7 @@ const drain = async (signal) => {
   await processor.drain();
   await relayClosed;
   await eventLog.drain();
+  await operationAuthoritySql.end({ timeout: 5 });
 };
 const terminate = (signal) => {
   void drain(signal).then(
@@ -343,6 +373,13 @@ function generatedBindingSource(handler: ProcessorContract['handlers'][number]):
   return `  {
     bindingId: ${JSON.stringify(handler.node.name)},
     contract: ${JSON.stringify(handler.command)},
+    async revalidateAuthorization(receipt, boundary, delivery) {
+      return operationAuthority.revalidate(
+        receipt,
+        boundary,
+        delivery.context?.digest ?? receipt.trustedContextDigest,
+      );
+    },
     async execute(input, delivery) {
       ${eventDeclarations}
       ${commandDeclarations}
@@ -366,6 +403,8 @@ function generatedBindingSource(handler: ProcessorContract['handlers'][number]):
         ${handler.node.missingRoute ? `missingRoute: ${JSON.stringify(handler.node.missingRoute)},` : ''}
         ${handler.node.initializeSource ? `initialize: (${handler.node.initializeSource}),` : ''}
         handler: (${handler.node.handlerSource}),
+        revalidateAuthorization: (receipt, boundary, context) =>
+          operationAuthority.revalidate(receipt, boundary, context.trustedContextDigest, context.transaction),
         databaseUrl: delivery.databaseUrl,
       });
     },
@@ -374,6 +413,7 @@ function generatedBindingSource(handler: ProcessorContract['handlers'][number]):
       const idempotencyKey = delivery.idempotencyKey ?? ${idempotencySource ? `(${idempotencySource})(input)` : 'delivery.id'};
       return recordPostgresModelCommandTerminalFailure({
         bindingId: ${JSON.stringify(handler.node.name)},
+        command: ${JSON.stringify(handler.command)},
         model: ${JSON.stringify(handler.model.runtime)},
         message: { ...delivery, input, targetKey, idempotencyKey },
         databaseUrl: delivery.databaseUrl,

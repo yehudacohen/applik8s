@@ -12,6 +12,26 @@ export function graphResourceId(name: string, suffix: string): string {
   return `${first.slice(0, 1).toLowerCase()}${first.slice(1)}${rest.map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`).join('')}`;
 }
 
+export interface ApplicationProviderGraphQualification {
+  readonly name: string;
+  readonly compatibilityRevision: string;
+}
+
+/**
+ * A provider interface is a capability, not an implementation identity. Keep
+ * the historical one-node-per-interface spelling only for an unqualified
+ * default; semantic qualifications receive stable, disjoint graph identities.
+ */
+export function applicationProviderGraphNodeId(
+  providerInterface: string,
+  qualification?: ApplicationProviderGraphQualification,
+): string {
+  const identity = qualification
+    ? `${providerInterface}.${qualification.compatibilityRevision}.${qualification.name}`
+    : providerInterface;
+  return `provider.${kubernetesNameSegment(identity)}`;
+}
+
 export function kubernetesNameSegment(value: string): string {
   return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '') || 'app';
 }

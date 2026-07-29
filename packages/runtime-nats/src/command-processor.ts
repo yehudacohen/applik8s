@@ -1,6 +1,8 @@
 import { connect, type ConsumerMessages, type JsMsg, type NatsConnection, type JetStreamClient, StringCodec } from 'nats';
 import type { ApplicationMessageEnvelope } from '@applik8s/applik8s/dsl';
 import type { ApplicationModelCommandDeliveryOptions } from '@applik8s/applik8s';
+import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
+import { validateApplicationAuthorizationReceipt } from '@applik8s/core';
 import { isDurableCommandRejectedError } from '@applik8s/applik8s/processor-runtime';
 import { consumeWithBoundedConcurrency } from './bounded-concurrency.js';
 
@@ -8,8 +10,13 @@ export interface ApplicationCommandProcessorBinding {
   readonly bindingId: string;
   readonly contract: { readonly name: string; readonly version: string };
   execute(input: object, delivery: ApplicationModelCommandDeliveryOptions): Promise<unknown>;
+  revalidateAuthorization?(
+    receipt: ApplicationAuthorizationReceipt,
+    boundary: 'execution',
+    delivery: ApplicationModelCommandDeliveryOptions,
+  ): Promise<{ readonly allowed: true } | { readonly allowed: false; readonly code: string; readonly message: string }>;
   /** Compiler-generated durable terminal-result recorder. */
-  recordTerminalFailure?(input: object, delivery: ApplicationModelCommandDeliveryOptions, failure: { readonly code: 'processing_failed'; readonly attempts: number }): Promise<void>;
+  recordTerminalFailure?(input: object, delivery: ApplicationModelCommandDeliveryOptions, failure: { readonly code: 'processing_failed' | 'authorization_denied'; readonly attempts: number }): Promise<void>;
 }
 
 export interface JetStreamCommandProcessorOptions {
@@ -103,11 +110,35 @@ export async function handleJetStreamCommandMessage(
     recordedAt: envelope.recordedAt,
     ...(envelope.expectedRevision ? { expectedRevision: envelope.expectedRevision } : {}),
     ...(envelope.trustedContext ? { context: envelope.trustedContext } : {}),
+    ...(envelope.authorizationReceipt ? { authorizationReceipt: envelope.authorizationReceipt } : {}),
     ...(envelope.routing?.targetKey ? { targetKey: envelope.routing.targetKey } : {}),
     ...(envelope.routing?.idempotencyKey ? { idempotencyKey: envelope.routing.idempotencyKey } : {}),
     ...(options.databaseUrl ? { databaseUrl: options.databaseUrl } : {}),
   };
   try {
+    if (envelope.authorizationReceipt) {
+      if (!binding.revalidateAuthorization) {
+        throw new Error(`applik8s-authorization-revalidator-missing: Binding ${binding.bindingId} received a protected durable command without an execution revalidator.`);
+      }
+      const authorization = await binding.revalidateAuthorization(envelope.authorizationReceipt, 'execution', delivery);
+      if (!authorization.allowed) {
+        if (!binding.recordTerminalFailure) {
+          throw new Error(`applik8s-authorization-denied: ${authorization.code}: ${authorization.message}`);
+        }
+        await binding.recordTerminalFailure(envelope.payload, delivery, {
+          code: 'authorization_denied',
+          attempts: deliveryCount,
+        });
+        message.ack();
+        processorLog(options, 'applik8s-command-authorization-denied', {
+          messageId: envelope.id,
+          binding: binding.bindingId,
+          attempt: deliveryCount,
+          code: authorization.code,
+        });
+        return 'acked';
+      }
+    }
     const result = await binding.execute(envelope.payload, delivery);
     message.ack();
     processorLog(options, 'applik8s-command-processed', {
@@ -171,6 +202,15 @@ function commandEnvelope(data: Uint8Array): ApplicationMessageEnvelope<object> {
   const recordedAt = Reflect.get(value, 'recordedAt');
   if (typeof id !== 'string' || !contract || typeof contract !== 'object' || typeof Reflect.get(contract, 'name') !== 'string' || typeof Reflect.get(contract, 'version') !== 'string' || !payload || typeof payload !== 'object' || typeof recordedAt !== 'string') {
     throw new Error('Envelope requires id, contract.name, contract.version, object payload, and recordedAt.');
+  }
+  const receipt = Reflect.get(value, 'authorizationReceipt');
+  if (receipt !== undefined) {
+    if (!receipt || typeof receipt !== 'object') throw new Error('Envelope authorizationReceipt must be an object.');
+    // typecast: the validator proves the complete serialized receipt contract.
+    const diagnostics = validateApplicationAuthorizationReceipt(receipt as ApplicationAuthorizationReceipt);
+    if (diagnostics.length > 0) {
+      throw new Error(`Envelope authorizationReceipt is invalid: ${diagnostics.map((diagnostic) => diagnostic.message).join(' ')}`);
+    }
   }
   // typecast: every required envelope field has been checked at this untrusted JetStream boundary.
   return value as ApplicationMessageEnvelope<object>;

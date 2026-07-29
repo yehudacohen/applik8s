@@ -1,5 +1,7 @@
 // typecast-file-boundary: Workflow authoring preserves generic schema inference while normalizing validated graph metadata at the registration boundary.
-import type { ApplicationProviderRuntimeContract, ApplicationResourceRef } from '@applik8s/core';
+import { createHash } from 'node:crypto';
+import { applicationOperationId, type ApplicationOperationInvocationDependency, type ApplicationProviderRuntimeContract, type ApplicationResourceRef } from '@applik8s/core';
+import { isApplicationBoundOperation, isApplicationScopedOperation } from '@applik8s/client';
 import { serializeApplicationCallback } from './application-callback.js';
 import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
 import { type ApplicationProviderSelectionValue, type ApplicationProviderToken, type ApplicationWorkflowEngineProvider, applicationProviderImplementationName, applicationWorkflowEngineImplementation, isApplicationProviderSelection } from './application-providers.js';
@@ -35,6 +37,7 @@ export type {
   ApplicationTaskHandler,
   ApplicationTaskObjectFunctions,
   ApplicationTaskObjectStores,
+  ApplicationTaskOperationDependency,
   ApplicationTaskOperationFunctions,
   ApplicationTaskOperations,
   ApplicationTaskOptions,
@@ -86,8 +89,15 @@ export function registerApplicationTask<
   const queries = recordTaskQueries(handlerNodeId, options.queries ?? {});
   const projections = recordTaskProjections(handlerNodeId, options.projections ?? {});
 	const objects = recordTaskObjects(handlerNodeId, options.objects ?? {});
-  if (operations.length + queries.length > 0 && !options.principal) throw new Error(`Task ${definition.id} declares authenticated operations or queries and must derive an Applik8s service principal with options.principal.`);
-  if (operations.length + queries.length === 0 && options.principal) throw new Error(`Task ${definition.id} declares options.principal without any authenticated operations or queries.`);
+  if (options.identity && options.principal) {
+    throw new Error(`Task ${definition.id} must use canonical options.identity or deprecated options.principal, not both.`);
+  }
+  if (operations.length + queries.length > 0 && !options.identity && !options.principal) {
+    throw new Error(`Task ${definition.id} declares authenticated operations or queries and requires options.identity.`);
+  }
+  if (operations.length + queries.length === 0 && (options.identity || options.principal)) {
+    throw new Error(`Task ${definition.id} declares an execution identity without any authenticated operations or queries.`);
+  }
   const operationPrincipal = options.principal ? serializeApplicationCallback({
     registrar: 'task', argumentIndex: 1, property: 'principal', label: `Task ${definition.id} operation principal`,
     callback: options.principal as (...args: never[]) => unknown, allowDeferredResolution: true,
@@ -106,6 +116,7 @@ export function registerApplicationTask<
     stability: 'stable',
     task: { nodeId: taskNodeId },
     workflowEngine: workflowEngineRef(),
+    ...(options.identity ? { serviceIdentity: options.identity.identity } : {}),
     ...(capabilities.length > 0 ? { capabilities: capabilities.map(({ reference }) => reference) } : {}),
     ...(operations.length > 0 ? { operations } : {}),
     ...(queries.length > 0 ? { queries } : {}),
@@ -226,15 +237,69 @@ function recordTaskOperations(
   state: ApplicationWorkflowState,
   consumerNodeId: string,
   operations: ApplicationTaskOperations,
-): readonly { readonly alias: string; readonly command: { readonly nodeId: string }; readonly handler: { readonly nodeId: string } }[] {
-  return Object.entries(operations).sort(([left], [right]) => left.localeCompare(right)).map(([alias, operation]) => {
+): readonly {
+  readonly alias: string;
+  readonly command: { readonly nodeId: string };
+  readonly handler: { readonly nodeId: string };
+  readonly authority: ApplicationOperationInvocationDependency;
+}[] {
+  return Object.entries(operations).sort(([left], [right]) => left.localeCompare(right)).map(([alias, dependency]) => {
     if (!alias.trim()) throw new Error(`Task ${consumerNodeId} durable operation aliases must not be empty.`);
+    if (!isApplicationBoundOperation(dependency) && !isApplicationScopedOperation(dependency)) {
+      throw new Error(`Task ${consumerNodeId} operation ${alias} is unbounded. Use .on(...), .where(...), .all(), or terminal .onInput(...); a bare dependency never implies broad workload authority.`);
+    }
+    if (isApplicationBoundOperation(dependency) && dependency.source !== 'input') {
+      throw new Error(`Task ${consumerNodeId} operation ${alias} must use onInput(...); ${dependency.source} bindings belong to their corresponding processor or reconciler.`);
+    }
+    const operation = isApplicationBoundOperation(dependency) || isApplicationScopedOperation(dependency)
+      ? dependency.operation
+      : dependency;
     const binding = applicationModelCommandBindingForOperation(operation);
     if (!binding) throw new Error(`Task ${consumerNodeId} operation ${alias} is not a registered durable model mutation.`);
     const command = { nodeId: graphNodeId('command', binding.command) };
     const handler = state.graphNodes.find((candidate) => candidate.kind === 'commandHandler' && candidate.command.nodeId === command.nodeId && candidate.name === binding.name);
     if (handler?.kind !== 'commandHandler') throw new Error(`Task ${consumerNodeId} operation ${alias} cannot resolve command handler ${binding.name}. Declare the model operation before the task.`);
-    return { alias, command, handler: { nodeId: handler.id } };
+    const operationId = applicationOperationId({
+      domain: 'models',
+      owner: operation.operation.model,
+      operation: operation.operation.name,
+    });
+    const executionBinding = isApplicationBoundOperation(dependency)
+      ? {
+          apiVersion: 'applik8s.executionBinding/v1alpha1' as const,
+          id: `${consumerNodeId}.${alias}`,
+          revision: createHash('sha256').update(JSON.stringify({
+            source: dependency.source,
+            sourceCode: dependency.projectionSource,
+            boundKeys: [...dependency.boundKeys].sort(),
+          })).digest('hex'),
+          operationId,
+          source: dependency.source,
+          projectionDigest: createHash('sha256').update(dependency.projectionSource).digest('hex'),
+          projectionSource: dependency.projectionSource,
+          boundKeys: [...dependency.boundKeys].sort(),
+          inferred: false,
+          provenance: { nodeId: consumerNodeId },
+        }
+      : undefined;
+    return {
+      alias,
+      command,
+      handler: { nodeId: handler.id },
+      authority: {
+        apiVersion: 'applik8s.operationDependency/v1alpha1',
+        alias,
+        operationId,
+        invocation: 'context.invoke',
+        authorization: 'reauthorize',
+        restrictions: {
+          target: dependency.target,
+          predicates: dependency.predicates,
+        },
+        ...(executionBinding ? { binding: executionBinding } : {}),
+        terminal: true,
+      },
+    };
   });
 }
 

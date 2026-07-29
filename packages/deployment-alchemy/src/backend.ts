@@ -1,5 +1,8 @@
 // typecast-file-boundary: Alchemy Output values are converted only at this backend adapter boundary.
-import type { ApplicationDeploymentGraph } from "@applik8s/deployment-contract";
+import {
+  digestApplicationDeploymentGraph,
+  type ApplicationDeploymentGraph,
+} from "@applik8s/deployment-contract";
 import {
   ApplicationHarborProject,
   type ApplicationHarborProjectAttributes,
@@ -92,6 +95,7 @@ export interface ApplicationAlchemyPlanResult {
   readonly changes: readonly ApplicationAlchemyPlanChange[];
   readonly declarationCount: number;
   readonly deploymentEvidenceDigest: string;
+  readonly planIdentityDigest: string;
 }
 
 export interface ApplicationAlchemyApplyResult {
@@ -99,6 +103,7 @@ export interface ApplicationAlchemyApplyResult {
   readonly stage: string;
   readonly declarationCount: number;
   readonly deploymentEvidenceDigest: string;
+  readonly planIdentityDigest: string;
   readonly artifacts: readonly ApplicationContainerArtifactAttributes[];
   /**
    * Alchemy transaction completion is intentionally distinct from live
@@ -137,7 +142,8 @@ export function createApplicationAlchemyDeployment(
     options.graph.metadata.identity,
     options.graph.metadata.strategy,
   );
-  const stage = safeStage(options.stage ?? options.graph.metadata.identity.profile);
+  const stage = safeStage(options.stage ?? "installation");
+  const planIdentityDigest = digestApplicationDeploymentGraph(options.graph);
   const state = applicationAlchemyState({ root: options.stateRoot });
   const runtime = {
     state,
@@ -392,6 +398,7 @@ export function createApplicationAlchemyDeployment(
           changes: summarizePlan(plan),
           declarationCount: options.adapted.declarationCount,
           deploymentEvidenceDigest: options.adapted.evidenceDigest,
+          planIdentityDigest,
         };
       }),
     apply: () =>
@@ -412,6 +419,7 @@ export function createApplicationAlchemyDeployment(
           stage,
           declarationCount: options.adapted.declarationCount,
           deploymentEvidenceDigest: options.adapted.evidenceDigest,
+          planIdentityDigest,
           artifacts: output.artifacts,
           transaction: "applied",
         };

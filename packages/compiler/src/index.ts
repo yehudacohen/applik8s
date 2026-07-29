@@ -14,3 +14,4 @@ export * from './wasm-component/index.js';
 export * from './application-facade/index.js';
 export * from './application-fetch-gateway/index.js';
 export * from './application-deployment-graph.js';
+export * from './application-operations/index.js';

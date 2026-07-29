@@ -1,6 +1,14 @@
-import type { ApplicationOperationLike, ApplicationQueryOperation } from '@applik8s/client';
+import type {
+  ApplicationBoundOperation,
+  ApplicationBoundOperationInput,
+  ApplicationBoundOperationOutput,
+  ApplicationOperationLike,
+  ApplicationQueryOperation,
+  ApplicationScopedOperation,
+} from '@applik8s/client';
 import type { JsonObject } from '@applik8s/core';
 import type { ApplicationGraphState } from './application-graph-state.js';
+import type { ApplicationServiceIdentityBinding } from './application-authority.js';
 import type { ApplicationObjectReference, ApplicationObjectStoreBinding } from './application-object-storage.js';
 import type { ApplicationProviderState, ApplicationProviderToken } from './application-providers.js';
 import type { ApplicationOnlineProjectionBinding } from './application-reactive.js';
@@ -15,7 +23,11 @@ export interface ApplicationWorkflowState extends ApplicationGraphState, Applica
   readonly workflowHandlerGroups: Map<string, string>;
 }
 
-export type ApplicationTaskOperations = Readonly<Record<string, ApplicationOperationLike>>;
+export type ApplicationTaskOperationDependency =
+  | ApplicationOperationLike
+  | ApplicationScopedOperation<ApplicationOperationLike, unknown>
+  | ApplicationBoundOperation<ApplicationOperationLike, string, 'input' | 'event' | 'resource'>;
+export type ApplicationTaskOperations = Readonly<Record<string, ApplicationTaskOperationDependency>>;
 export type ApplicationTaskQueries = Readonly<Record<string, ApplicationOperationLike>>;
 export type ApplicationTaskProjections = Readonly<Record<string, ApplicationTaskProjectionTarget>>;
 export type ApplicationTaskObjectStores = Readonly<Record<string, ApplicationObjectStoreBinding>>;
@@ -40,9 +52,11 @@ export interface ApplicationTaskServicePrincipal {
 }
 
 export type ApplicationTaskOperationFunctions<TOperations extends ApplicationTaskOperations> = {
-  readonly [TAlias in keyof TOperations]: TOperations[TAlias] extends (input: infer TInput) => Promise<infer TOutput>
-    ? (input: TInput, options?: { readonly idempotencyKey?: string; readonly expectedRevision?: string }) => Promise<TOutput>
-    : never;
+  readonly [TAlias in keyof TOperations]:
+    (input: ApplicationBoundOperationInput<TOperations[TAlias]>, options?: {
+      readonly idempotencyKey?: string;
+      readonly expectedRevision?: string;
+    }) => Promise<ApplicationBoundOperationOutput<TOperations[TAlias]>>;
 };
 
 export type ApplicationTaskQueryFunctions<TQueries extends ApplicationTaskQueries> = {
@@ -152,7 +166,9 @@ export interface ApplicationTaskOptions<
   /** Online projections this task may rebuild, with immutable evidence storage. */
   readonly projections?: TProjections;
 	/** Bounded object stores made available as context.objects.<alias>. */
-	readonly objects?: TObjects;
+  readonly objects?: TObjects;
+  /** Canonical logical identity for this task's declared operation/query dependencies. */
+  readonly identity?: ApplicationServiceIdentityBinding;
   /**
    * Compiler-captured service identity used for declared operations. Required
    * whenever operations are present and unavailable to the task handler for

@@ -259,8 +259,11 @@ function resolveApplicationRouteSourceDependencies(file: string, unsupported: re
 const applicationRouteSourceModulePath = fileURLToPath(import.meta.url);
 const applicationDslModulePath = applicationRouteSourceModulePath.replace(/application-route-source(\.[cm]?[jt]sx?)$/, 'application$1');
 
-export function extractApplicationRouteHandlerSource(method: ApplicationRouteSourceRoute['method']): { readonly source: string; readonly location: ApplicationRouteSourceLocation } | undefined {
-  return extractApplicationCallArgumentSource(method.toLowerCase(), 1, true);
+export function extractApplicationRouteHandlerSource(
+  method: ApplicationRouteSourceRoute['method'],
+  handlerArgumentIndex: 1 | 2 = 1,
+): { readonly source: string; readonly location: ApplicationRouteSourceLocation } | undefined {
+  return extractApplicationCallArgumentSource(method.toLowerCase(), handlerArgumentIndex, true);
 }
 
 export function extractApplicationCallArgumentSource(methodName: string, argumentIndex: number, requireLiteralFirstArgument = false): { readonly source: string; readonly location: ApplicationRouteSourceLocation } | undefined {
