@@ -233,6 +233,7 @@ jobs:
   verify-published:
     name: Verify published npm and host artifacts
     needs: publish-npm
+    if: ${{ always() && needs.publish-npm.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout released source

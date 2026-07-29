@@ -31,7 +31,10 @@ try {
     contextValidated = true;
   }
 
-  const dependencies = candidate ? await packCandidatePackages() : { '@applik8s/applik8s': version };
+  const dependencies = candidate ? await packCandidatePackages() : {
+    '@applik8s/applik8s': version,
+    '@applik8s/cli': version,
+  };
   await writeFile(join(workDir, 'package.json'), `${JSON.stringify({
     name: 'applik8s-published-release-smoke',
     private: true,
