@@ -142,7 +142,7 @@ export function createPostgresModelClient(model, databaseOverride) {
             throw new Error('Model index ' + model.name + '.' + indexName + ' requires partitionBy before it can be queried.');
           }
           if (hasUnsupportedIndexFilter(indexOptions.filter) || hasUnsupportedIndexFilter(query.where)) {
-            throw new Error('Model index ' + model.name + '.' + indexName + ' filter is not supported by the Postgres ModelStore runtime yet; unsupported index filters fail closed until filtered index semantics are implemented.');
+            throw new Error('Model index ' + model.name + '.' + indexName + ' filter is not supported by the Postgres TransactionalDatabase runtime yet; unsupported index filters fail closed until filtered index semantics are implemented.');
           }
           const declaredOrderBy = indexOptions.orderBy || declared?.fields?.slice(1) || [];
           return queryPostgresModel(model, { ...query, where: { ...(query.where || {}), [partitionBy]: partition } }, { allowedOrderBy: declaredOrderBy, defaultOrderBy: declaredOrderBy }, databaseOverride);
@@ -159,7 +159,7 @@ export function createPostgresModelClient(model, databaseOverride) {
 function queryPostgresModel(model, query = {}, options = {}, databaseOverride) {
   const requestedOrderBy = query.orderBy || options.defaultOrderBy || [];
   if ((query.orderBy?.length ?? 0) > 0 && !options.allowedOrderBy) {
-    throw new Error('Model ' + model.name + ' query orderBy is not supported by the Postgres ModelStore runtime yet; unsupported ordering fails closed until index/order semantics are implemented.');
+    throw new Error('Model ' + model.name + ' query orderBy is not supported by the Postgres TransactionalDatabase runtime yet; unsupported ordering fails closed until index/order semantics are implemented.');
   }
   validateModelOrderBy(model, requestedOrderBy, options.allowedOrderBy || []);
   validateModelWhere(model, query.where || {});
@@ -200,7 +200,7 @@ function modelDatabase(model) {
   const url = process.env[key] || process.env.DATABASE_URL;
   if (!url) {
     throw modelStoreDiagnosticError({
-      message: 'applik8s-modelstore-missing-credentials: ModelStore ' + model.name + ' requires database URL env ' + key + ' or DATABASE_URL.',
+      message: 'applik8s-modelstore-missing-credentials: TransactionalDatabase ' + model.name + ' requires database URL env ' + key + ' or DATABASE_URL.',
       statusCode: 500,
       diagnostic: { event: 'applik8s-modelstore-missing-credentials', model: model.name, env: key },
     });
@@ -244,7 +244,7 @@ function modelRetentionClauses(model) {
 function validateModelWhere(model, where) {
   for (const [field, value] of Object.entries(where || {})) {
     if (!/^[A-Za-z0-9_]+$/.test(field) || value === null || typeof value === 'object') {
-      throw new Error('Model ' + model.name + ' query filter ' + field + ' is not supported by the Postgres ModelStore runtime yet; unsupported filters fail closed until query semantics are implemented.');
+      throw new Error('Model ' + model.name + ' query filter ' + field + ' is not supported by the Postgres TransactionalDatabase runtime yet; unsupported filters fail closed until query semantics are implemented.');
     }
   }
 }
@@ -288,7 +288,7 @@ function modelStoreError(model, error) {
   }
   if (postgresError?.code === '42P01') {
     return modelStoreDiagnosticError({
-      message: 'applik8s-model-migration-missing: ModelStore table ' + model.tableName + ' is missing. Run generated migrations before serving model traffic.',
+      message: 'applik8s-model-migration-missing: TransactionalDatabase table ' + model.tableName + ' is missing. Run generated migrations before serving model traffic.',
       statusCode: 500,
       diagnostic: { event: 'applik8s-model-migration-missing', model: model.name, table: model.tableName, postgresCode: '42P01' },
       cause: error,

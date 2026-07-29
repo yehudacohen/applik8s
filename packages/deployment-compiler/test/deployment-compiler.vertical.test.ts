@@ -72,7 +72,7 @@ describe("Application deployment compiler", () => {
   it("uses one exact contributor registration without executing effects", () => {
     let invocations = 0;
     const contributor: ApplicationDeploymentContributor = {
-      interface: "ModelStore",
+      interface: "TransactionalDatabase",
       implementation: "postgres",
       version: 1,
       contribute(provider, context) {
@@ -97,7 +97,7 @@ describe("Application deployment compiler", () => {
       contributors: [contributor],
     });
     expect(invocations).toBe(1);
-    expect(result.contributorKeys).toEqual(["ModelStore\u0000postgres@1"]);
+    expect(result.contributorKeys).toEqual(["TransactionalDatabase\u0000postgres@1"]);
     expect(
       result.graph.nodes.find(({ id }) => id === "kubernetes.application")?.spec,
     ).toMatchObject({
@@ -155,7 +155,7 @@ describe("Application deployment compiler", () => {
 
   it("rejects duplicate contributor identities", () => {
     const contributor: ApplicationDeploymentContributor = {
-      interface: "ModelStore",
+      interface: "TransactionalDatabase",
       implementation: "postgres",
       version: 1,
       contribute: () => ({
@@ -192,7 +192,7 @@ describe("Application deployment compiler", () => {
         },
       }),
     ).toThrow(
-      /no deployment contributor for ModelStore\/unregistered-postgres/,
+      /no deployment contributor for TransactionalDatabase\/unregistered-postgres/,
     );
   });
 
@@ -377,9 +377,9 @@ describe("Application deployment compiler", () => {
           {
             id: "provider.models",
             kind: "provider",
-            name: "ModelStore",
+            name: "TransactionalDatabase",
             stability: "stable",
-            interface: "ModelStore",
+            interface: "TransactionalDatabase",
             implementation: "postgres",
             config: {
               modelStore: {
@@ -498,9 +498,9 @@ function applicationGraph(): ApplicationGraph {
       {
         id: "provider.model-store",
         kind: "provider",
-        name: "ModelStore",
+        name: "TransactionalDatabase",
         stability: "stable",
-        interface: "ModelStore",
+        interface: "TransactionalDatabase",
         implementation: "postgres",
         config: {},
       },

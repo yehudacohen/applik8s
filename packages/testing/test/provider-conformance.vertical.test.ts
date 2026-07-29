@@ -3,12 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { inspectApplicationProviderPackageConformance } from '../src/provider-conformance.js';
 
 describe('external provider package conformance', () => {
-  it('accepts a deterministic ProjectionStore registration without extending the built-in registry', () => {
+  it('accepts a deterministic AnalyticalDatabase registration without extending the built-in registry', () => {
     // typecast: preserve the provider kind discriminant for the structural acceptance predicate.
     const implementation = { kind: 'clickhouse', endpoint: 'http://clickhouse.test' } as const;
     const register = (): ApplicationProviderInterfaceContract => ({
       apiVersion: 'applik8s.provider/v1alpha1',
-      interface: 'ProjectionStore',
+      interface: 'AnalyticalDatabase',
       version: 'v1alpha1',
       requirements: ['atomicProjectionCheckpoint'],
       guarantees: ['replaySafeProjectionWrites'],
@@ -18,7 +18,7 @@ describe('external provider package conformance', () => {
       diagnostics: [],
     });
     const report = inspectApplicationProviderPackageConformance({
-      interface: 'ProjectionStore', version: 'v1alpha1', implementation,
+      interface: 'AnalyticalDatabase', version: 'v1alpha1', implementation,
       accepts: (value): value is typeof implementation => Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'clickhouse'),
       register,
       requiredRequirements: ['atomicProjectionCheckpoint'],

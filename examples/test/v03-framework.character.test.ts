@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { serializeApplicationGraph, validateApplicationV03PressureTestContract, type ApplicationDurableStatusOwnershipContract, type ApplicationProviderInterfaceContract } from '@applik8s/core';
-import { applicationGraphFor, ModelStore, sdk, type ApplicationModelBinding, type ApplicationV03PressureTestContract } from '@applik8s/applik8s';
+import { applicationGraphFor, TransactionalDatabase, sdk, type ApplicationModelBinding, type ApplicationV03PressureTestContract } from '@applik8s/applik8s';
 import { entity, type } from '@applik8s/applik8s/dsl';
 import { describe, expect, it } from 'vitest';
 import { createTenantPlatformExample, createTenantPlatformPressureTestContract } from '../tenant-platform.js';
@@ -13,7 +13,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     const pressureTest = createTenantPlatformPressureTestContract(example);
 
     expect(graph?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore' }),
+      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'TransactionalDatabase' }),
       expect.objectContaining({ id: 'model.account', kind: 'model', schema: expect.objectContaining({ transactions: 'required' }) }),
       expect.objectContaining({ id: 'model.audit-record', kind: 'model', schema: expect.objectContaining({ retention: expect.objectContaining({ mode: 'ttl', ttlSeconds: 7776000 }) }) }),
       expect.objectContaining({ id: 'model.invitation', kind: 'model' }),
@@ -62,7 +62,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
       ]),
     });
     expect(pressureTest.name).toBe('tenant-platform-control-plane-pressure-test');
-    expect(pressureTest.requiredProviders).toEqual(expect.arrayContaining(['ModelStore', 'Secret', 'CredentialStore', 'HttpExposure', 'Queue', 'ObjectStorage', 'EventSource']));
+    expect(pressureTest.requiredProviders).toEqual(expect.arrayContaining(['TransactionalDatabase', 'Secret', 'CredentialStore', 'HttpExposure', 'Queue', 'ObjectStorage', 'EventSource']));
     expect(pressureTest.requiredNodes).toEqual(expect.arrayContaining(['model', 'server', 'job', 'provider']));
     expect(pressureTest.requiredStatusEvidence).toMatchObject({ authoritativeStore: 'applicationStatus', liveGate: 'requiredBeforeAnnouncement' });
     expect(pressureTest.requiredModelStoreEvidence).toMatchObject({ scriptRuntimeParity: 'localAndOptInLiveGate', migrationDriftCoverage: 'required' });
@@ -85,7 +85,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     expect(tenantPlatformSource).toContain('tenantPlatform.resource');
     expect(tenantPlatformSource).toContain('tenantPlatform.storage.postgres');
     expect(tenantPlatformSource).toContain("migrations: 'generated-job'");
-    expect(tenantPlatformSource).not.toContain('ModelStore.postgres');
+    expect(tenantPlatformSource).not.toContain('TransactionalDatabase.postgres');
     expect(tenantPlatformSource).not.toContain('tenantPlatform.model(AccountEntity, {\n    store:');
     expect(tenantPlatformSource).toContain('tenantPlatform.http');
     expect(tenantPlatformSource).toContain('tenantPlatform.reconcile');
@@ -110,7 +110,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const store = app.provide(ModelStore, { kind: 'postgres', name: 'accounts-db', database: 'accounts' });
+      const store = app.provide(TransactionalDatabase, { kind: 'postgres', name: 'accounts-db', database: 'accounts' });
       const accounts = app.model(Account, { store });
 
       expect(accounts.backend.runtimeBoundary).toEqual({
@@ -121,13 +121,13 @@ describe('v0.3 infrastructure-from-code product story', () => {
     });
 
     const graph = applicationGraphFor(composition);
-    expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['app.model', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'provider.ModelStore']));
+    expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['app.model', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'provider.TransactionalDatabase']));
     expect(graph?.compatibility.documentedInternalContracts).toEqual(expect.arrayContaining(['ApplicationGraph']));
     expect(graph?.compatibility.experimentalSurfaces).toEqual(expect.arrayContaining(['app.graph']));
     expect(graph?.compatibility.postV3Surfaces).toEqual(expect.arrayContaining(['workload-movement-operator', 'additional-provider-adapters']));
     expect(graph?.compatibility.labels).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'app.model', surface: 'stablePublicApi' }),
-      expect.objectContaining({ name: 'provider.ModelStore', surface: 'stablePublicApi' }),
+      expect.objectContaining({ name: 'provider.TransactionalDatabase', surface: 'stablePublicApi' }),
       expect.objectContaining({ name: 'ApplicationGraph', surface: 'documentedInternalContract' }),
       expect.objectContaining({ name: 'workload-movement-operator', surface: 'postV3Surface' }),
     ]));
@@ -321,14 +321,14 @@ describe('v0.3 infrastructure-from-code product story', () => {
       name: 'accounts-platform-pressure-test',
       graph: { apiVersion: graph.apiVersion, path: 'application-graph.json', digest: graphDigest },
       requiredNodes: [...new Set(graph.nodes.map((node) => node.kind))],
-      requiredProviders: ['ModelStore', 'IndexStore', 'CounterStore', 'EventSource', 'Secret', 'Queue', 'ObjectStorage', 'HttpExposure', 'CredentialStore'],
+      requiredProviders: ['TransactionalDatabase', 'IndexStore', 'CounterStore', 'EventSource', 'Secret', 'Queue', 'ObjectStorage', 'HttpExposure', 'CredentialStore'],
       requiredRuntimeModules: ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'],
       requiredOperationTargets: [{ id: 'operation-target.accounts-stack', target: { nodeId: 'typeKroResource.accounts-stack' }, operations: ['apply', 'delete'], execution: { contexts: ['handler', 'generatedServer', 'generatedJob', 'typeKro'], ordering: 'dependencyAware', runtimeValidation: 'beforeEffects', failurePolicy: 'failClosed' }, lowering: { mode: 'typeKroResource', artifact: { kind: 'typeKroResource', path: 'plans/accounts-stack.apply.json' }, failurePolicy: 'failClosed' }, dryRun: { supported: true, artifact: { kind: 'typeKroResource', path: 'plans/accounts-stack.dry-run.json' }, failurePolicy: 'failClosed' }, ownership: { ownerReferences: 'required', orphanPolicy: 'retain' }, finalizers: { required: true, finalizer: 'platform.applik8s.dev/accounts-stack', cleanupOperation: 'deleteTarget' }, permissions: [{ apiGroups: ['platform.applik8s.dev'], resources: ['accountsstacks'], verbs: ['create', 'patch', 'delete'] }], diagnostics: [] }],
       requiredWatchScopes: [
         { scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', namespace: 'platform', labels: { 'tenant.applik8s.dev/name': 'tenant-a' } }, lowering: 'labelSelector', runtime: { mode: 'sharedInformer', resyncPolicy: 'bounded', cancellation: 'onScopeRemoved' }, permissions: [{ apiGroups: ['apps'], resources: ['deployments'], verbs: ['list', 'watch'] }], failurePolicy: 'failClosed', diagnostics: [] },
         { scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', namespace: 'platform', labels: {} }, lowering: 'labelSelector', permissions: [], failurePolicy: 'failClosed', diagnostics: [{ event: 'applik8s-watch-scope-unlowerable', severity: 'error', subject: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'platform' }, reason: 'UnsupportedLabelSelectorExpression', message: 'Unsupported watch predicate fails closed instead of broadening account platform watches.', retryable: false }] },
       ],
-      requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'ModelStore', nodeId: 'provider.model-store' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'accounts-db', namespace: 'platform' }, expectedRevision: 'sha256:accounts-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['missingHistoryTable', 'incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Schema drift must fail closed before applying migrations.', retryable: false }] }],
+      requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'TransactionalDatabase', nodeId: 'provider.model-store' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'accounts-db', namespace: 'platform' }, expectedRevision: 'sha256:accounts-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['missingHistoryTable', 'incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Schema drift must fail closed before applying migrations.', retryable: false }] }],
       requiredModelStoreSemantics: [modelStoreSemantics()],
       requiredRuntimeModuleInterfaces: [runtimeModuleInterface([{ kind: 'modelRuntime', name: 'postgres-models' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createServerRuntime', kind: 'function', stability: 'stable' }], 'required')],
       requiredProviderInterfaces: providerInterfaces(),
@@ -345,7 +345,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     expect(pressureTest.graph.digest).toBe(graphDigest);
     expect(pressureTest.requiredNodes).toEqual(expect.arrayContaining(['model', 'server', 'job', 'provider']));
     expect(graph.nodes.map((node) => node.kind)).toEqual(expect.arrayContaining(pressureTest.requiredNodes));
-    expect(graph.providerRequirements.map((requirement) => requirement.interface)).toEqual(expect.arrayContaining(['ModelStore']));
+    expect(graph.providerRequirements.map((requirement) => requirement.interface)).toEqual(expect.arrayContaining(['TransactionalDatabase']));
     expect(graph.providerBindings.flatMap((binding) => binding.generatedResources.map((resource) => resource.kind))).toEqual(expect.arrayContaining(['Cluster']));
     expect(composition.resources).toEqual(expect.arrayContaining([
       expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'accounts-db', namespace: 'platform' }) }),
@@ -359,7 +359,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     expect(pressureTest.requiredMigrationDriftChecks[0]?.policy.driftPolicy).toBe('failClosed');
     expect(pressureTest.requiredStatusOwnership?.[0]?.fallbackStore?.objectOwnership).toBe('runtimeCreatedResource');
     expect(pressureTest.requiredStatusOwnership?.[0]?.applicationStatusProjection).toBe('requiredAuthoritative');
-    expect(pressureTest.requiredProviderInterfaces?.map((providerInterface) => providerInterface.interface)).toEqual(expect.arrayContaining(['ModelStore', 'CredentialStore', 'HttpExposure']));
+    expect(pressureTest.requiredProviderInterfaces?.map((providerInterface) => providerInterface.interface)).toEqual(expect.arrayContaining(['TransactionalDatabase', 'CredentialStore', 'HttpExposure']));
     expect(pressureTest.liveValidation?.additionalAssertions).toEqual(expect.arrayContaining(['job status is durable in generated status ConfigMap']));
     expect(pressureTest.liveValidation?.requiredAssertions).toEqual(expect.arrayContaining(['unsupported watch predicates fail closed']));
     expect(validateApplicationV03PressureTestContract(pressureTest)).toEqual([]);
@@ -380,7 +380,7 @@ function accountsModelApp() {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const store = app.provide(ModelStore, {
+      const store = app.provide(TransactionalDatabase, {
         kind: 'postgres',
         name: 'accounts-db',
         namespace: 'platform',
@@ -408,7 +408,7 @@ function accountsModelApp() {
 
 function providerInterfaces(): readonly ApplicationProviderInterfaceContract[] {
   return [
-    { interface: 'ModelStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'TransactionalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'IndexStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'CounterStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'EventSource', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
@@ -422,7 +422,7 @@ function providerInterfaces(): readonly ApplicationProviderInterfaceContract[] {
     { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'StructuredGeneration', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
-    { interface: 'ProjectionStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+    { interface: 'AnalyticalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'ContainerRegistry', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     { interface: 'RequestIdentity', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
@@ -431,7 +431,7 @@ function providerInterfaces(): readonly ApplicationProviderInterfaceContract[] {
 }
 
 function providerCompatibilityMatrix(): ApplicationV03PressureTestContract['providerCompatibility'] {
-  return { apiVersion: 'applik8s.providerCompatibility/v1alpha1', providers: providerInterfaces(), requiredForV03: ['ModelStore', 'IndexStore', 'CounterStore', 'EventSource', 'Secret', 'Queue', 'ObjectStorage', 'HttpExposure', 'CredentialStore'] };
+  return { apiVersion: 'applik8s.providerCompatibility/v1alpha1', providers: providerInterfaces(), requiredForV03: ['TransactionalDatabase', 'IndexStore', 'CounterStore', 'EventSource', 'Secret', 'Queue', 'ObjectStorage', 'HttpExposure', 'CredentialStore'] };
 }
 
 function modelStoreSemantics(): NonNullable<ApplicationV03PressureTestContract['requiredModelStoreSemantics']>[number] {

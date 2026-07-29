@@ -1,7 +1,7 @@
 // typecast-file-boundary: schema-normalized model contracts cross erased runtime registries here; casts restore their declaration-time generics after identity checks.
 import { createHash } from 'node:crypto';
 import { type ApplicationMutationOperation, type ApplicationOperationAuthorizationContract, type ApplicationOperationLike, createApplicationMutationOperation, observeApplicationOperationAuthority } from '@applik8s/client';
-import type { ApplicationAuthorizationReceipt, ApplicationCommandHandlerNode, ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelNode, ApplicationModelOperationGraphContract, ApplicationModelStoreGuaranteesContract, ApplicationModelStoreSemanticsContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, JsonValue } from '@applik8s/core';
+import type { ApplicationAuthorizationReceipt, ApplicationCommandHandlerNode, ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelNode, ApplicationModelOperationGraphContract, ApplicationTransactionalDatabaseGuaranteesContract, ApplicationTransactionalDatabaseSemanticsContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, JsonValue } from '@applik8s/core';
 import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
 import { applicationAuthorityPostgresSchemaStatements } from '@applik8s/operations';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
@@ -9,8 +9,8 @@ import { type ApplicationEventLogResourceState, emitApplicationEventLogResources
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
 import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions, sameApplicationProcessorDeployment } from './application-processor-policy.js';
-import type { ApplicationEventLogProvider, ApplicationModelStoreProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState, ApplicationTransactionalDatabaseProvider } from './application-providers.js';
-import { applicationEventLogImplementation, applicationModelStoreImplementation, applicationProviderImplementationName, applicationProviderInterface, applicationProviderQualificationFor, applicationProviderSelectionFor } from './application-providers.js';
+import type { ApplicationEventLogProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState, ApplicationTransactionalDatabaseProvider } from './application-providers.js';
+import { applicationEventLogImplementation, applicationTransactionalDatabaseImplementation, applicationProviderImplementationName, applicationProviderInterface, applicationProviderQualificationFor, applicationProviderSelectionFor } from './application-providers.js';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import { analyzeApplicationServerRouteSource, applicationCommandSourceViolations, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
 import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString, applicationTypeKroValueIdentity } from './application-typekro-values.js';
@@ -27,8 +27,6 @@ const applicationModelCommandAuthorities = new WeakMap<object, Map<string, Appli
 export interface ApplicationModelOptions<TSpec extends object = object, TStatus extends object = Record<string, never>> {
   readonly name?: string;
   readonly database?: ApplicationTransactionalDatabaseProvider | ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
-  /** @deprecated Use database. Removed at 1.0. */
-  readonly store?: ApplicationModelStoreProvider | ApplicationProviderBinding<ApplicationModelStoreProvider>;
   readonly schema?: ApplicationModelSchemaOptions<TSpec, TStatus>;
 }
 
@@ -272,7 +270,7 @@ export interface ApplicationRuntimeModelContract {
 
 export interface ApplicationModelBackendContract {
   readonly interface: 'TransactionalDatabase';
-  readonly provider?: ApplicationProviderBinding<ApplicationModelStoreProvider>;
+  readonly provider?: ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
   readonly runtimeBoundary: {
     readonly serializedCallbacks: 'generatedRuntimeClient';
     readonly scriptExecution: 'scriptRuntimeClient';
@@ -362,19 +360,19 @@ interface ApplicationModelGraphState extends ApplicationGraphState, ApplicationP
   readonly appResource?: { readonly kind: string };
 }
 
-export function resolveApplicationModelStore(state: ApplicationModelGraphState, entityName: string, database: ApplicationModelOptions['database'] | ApplicationModelOptions['store']): ApplicationModelStoreProvider {
-  const implementation = applicationModelStoreImplementation(database) ?? applicationModelStoreImplementation(state.providers.models) ?? applicationModelStoreImplementation(state.defaults.models);
+export function resolveApplicationTransactionalDatabase(state: ApplicationModelGraphState, entityName: string, database: ApplicationModelOptions['database']): ApplicationTransactionalDatabaseProvider {
+  const implementation = applicationTransactionalDatabaseImplementation(database) ?? applicationTransactionalDatabaseImplementation(state.providers.database) ?? applicationTransactionalDatabaseImplementation(state.defaults.database);
   if (!implementation) {
     throw new Error(`app.model(${JSON.stringify(entityName)}) requires a typed TransactionalDatabase provider. Bind the golden path with app.database.postgres("name"), use app.provide(TransactionalDatabase, TransactionalDatabase.postgres(...)), app.defaults({ database: provider }), or pass { database: provider }.`);
   }
   return implementation;
 }
 
-export function recordApplicationModelGraph<TSpec extends object, TStatus extends object>(state: ApplicationModelGraphState, entity: EntityDefinition<TSpec, TStatus>, provider: ApplicationModelStoreProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined, runtime: ApplicationRuntimeModelContract): void {
+export function recordApplicationModelGraph<TSpec extends object, TStatus extends object>(state: ApplicationModelGraphState, entity: EntityDefinition<TSpec, TStatus>, provider: ApplicationTransactionalDatabaseProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined, runtime: ApplicationRuntimeModelContract): void {
   const modelName = options?.name ?? entity.name;
   const nodeId = applicationGraphNodeId('model', modelName);
   const qualification = applicationProviderQualificationFor(
-    options?.database ?? options?.store,
+    options?.database,
   );
   const providerNodeId = applicationProviderNodeId(
     'TransactionalDatabase',
@@ -404,7 +402,7 @@ export function recordApplicationModelGraph<TSpec extends object, TStatus extend
       migrations: { strategy: migration.strategy, compatibility: migration.compatibility },
       transactions: schema?.transactions ?? 'supported',
       retention: schema?.retention ?? { mode: 'retain' },
-      guarantees: applicationModelStoreGuarantees(schema, migration),
+      guarantees: applicationTransactionalDatabaseGuarantees(schema, migration),
     },
     materialization: {
       mode: 'providerBacked',
@@ -466,7 +464,7 @@ export function recordApplicationModelGraph<TSpec extends object, TStatus extend
 export function recordApplicationNativeModelGraph<TTable extends AnyPgTable>(
   state: ApplicationModelGraphState,
   model: DrizzleApplicationModelFacet<TTable>,
-  provider: ApplicationModelStoreProvider,
+  provider: ApplicationTransactionalDatabaseProvider,
   runtime: ApplicationRuntimeModelContract,
   migrations: { readonly artifact?: string; readonly digest?: string } = {},
 ): void {
@@ -1198,7 +1196,7 @@ function validateApplicationCommandTransactionDomain(modelName: string, commandI
   }
 }
 
-function applicationModelStoreGuarantees<TSpec extends object, TStatus extends object>(schema: ApplicationModelSchemaOptions<TSpec, TStatus> | undefined, migration: ApplicationMigrationContract): ApplicationModelStoreGuaranteesContract {
+function applicationTransactionalDatabaseGuarantees<TSpec extends object, TStatus extends object>(schema: ApplicationModelSchemaOptions<TSpec, TStatus> | undefined, migration: ApplicationMigrationContract): ApplicationTransactionalDatabaseGuaranteesContract {
   return {
     identity: 'stableId',
     uniqueness: 'databaseConstraint',
@@ -1206,11 +1204,11 @@ function applicationModelStoreGuarantees<TSpec extends object, TStatus extends o
     transactions: schema?.transactions ?? 'supported',
     retention: schema?.retention?.mode === 'ttl' ? 'ttl' : schema?.retention?.mode === 'deleteWithOwner' ? 'deleteWithApplication' : 'retain',
     migrationOwnership: migration.strategy === 'generatedJob' ? 'generatedJob' : migration.strategy === 'external' ? 'external' : 'none',
-    semantics: applicationModelStoreSemantics(schema),
+    semantics: applicationTransactionalDatabaseSemantics(schema),
   };
 }
 
-function applicationModelStoreSemantics<TSpec extends object, TStatus extends object>(schema: ApplicationModelSchemaOptions<TSpec, TStatus> | undefined): ApplicationModelStoreSemanticsContract {
+function applicationTransactionalDatabaseSemantics<TSpec extends object, TStatus extends object>(schema: ApplicationModelSchemaOptions<TSpec, TStatus> | undefined): ApplicationTransactionalDatabaseSemanticsContract {
   const retentionMode = schema?.retention?.mode === 'ttl' ? 'ttl' : schema?.retention?.mode === 'deleteWithOwner' ? 'deleteWithApplication' : 'retain';
   return {
     generatedRuntimeParity: 'required',
@@ -1282,7 +1280,7 @@ function installApplicationModelOperation<
   return model as ApplicationModelBinding<TSpec, TStatus> & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>>;
 }
 
-export function applicationModelBinding<TSpec extends object, TStatus extends object>(entity: EntityDefinition<TSpec, TStatus>, _provider: ApplicationModelStoreProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined, runtime: ApplicationRuntimeModelContract, commandRegistrar?: ApplicationModelCommandRegistrar<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus> {
+export function applicationModelBinding<TSpec extends object, TStatus extends object>(entity: EntityDefinition<TSpec, TStatus>, _provider: ApplicationTransactionalDatabaseProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined, runtime: ApplicationRuntimeModelContract, commandRegistrar?: ApplicationModelCommandRegistrar<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus> {
   const name = options?.name ?? entity.name;
   const transactionSemantics = options?.schema?.transactions ?? 'supported';
   const scriptClient = () => createPostgresModelClient<TSpec, TStatus>(runtime);
@@ -1297,7 +1295,7 @@ export function applicationModelBinding<TSpec extends object, TStatus extends ob
       transactions: transactionSemantics,
       queryConsistency: 'providerDefined',
       eventSemantics: 'unsupported',
-      limitations: ['model CRUD/query calls inside serialized generated callbacks lower to generated runtime clients; ordinary script execution uses the same Postgres ModelStore runtime and requires database credentials plus generated migrations'],
+      limitations: ['model CRUD/query calls inside serialized generated callbacks lower to generated runtime clients; ordinary script execution uses the same Postgres TransactionalDatabase runtime and requires database credentials plus generated migrations'],
     },
     async create(input) {
       return scriptClient().create(input);
@@ -1357,10 +1355,10 @@ export function applicationModelBinding<TSpec extends object, TStatus extends ob
 }
 
 function applicationModelUnsupportedEvent(modelName: string, event: 'created' | 'updated' | 'deleted'): ApplicationModelEventBinding {
-  throw new Error(`Model ${modelName}.on.${event}(...) requires transactional model event delivery, which is not implemented for the Postgres ModelStore slice yet. Model event semantics fail closed until outbox/watch behavior is implemented.`);
+  throw new Error(`Model ${modelName}.on.${event}(...) requires transactional model event delivery, which is not implemented for the Postgres TransactionalDatabase slice yet. Model event semantics fail closed until outbox/watch behavior is implemented.`);
 }
 
-export function applicationRuntimeModelContract<TSpec extends object, TStatus extends object>(entity: EntityDefinition<TSpec, TStatus>, provider: ApplicationModelStoreProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined): ApplicationRuntimeModelContract {
+export function applicationRuntimeModelContract<TSpec extends object, TStatus extends object>(entity: EntityDefinition<TSpec, TStatus>, provider: ApplicationTransactionalDatabaseProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined): ApplicationRuntimeModelContract {
   const name = options?.name ?? entity.name;
   const modelSegment = kubernetesNameSegment(name);
   const resources = applicationModelStoreProviderResources(provider, name);
@@ -1631,7 +1629,7 @@ function applicationTransactionalDatabaseRequirementId(modelName: string): strin
   return `requirement.${applicationGraphNodeId('model', modelName)}.database`;
 }
 
-function applicationModelStoreReconciliation(provider: ApplicationModelStoreProvider): {
+function applicationModelStoreReconciliation(provider: ApplicationTransactionalDatabaseProvider): {
   readonly ownership: 'application' | 'external';
   readonly deletionPolicy: 'retain' | 'deleteWithApplication';
 } {
@@ -1645,7 +1643,7 @@ function applicationModelStoreReconciliation(provider: ApplicationModelStoreProv
   return { ownership, deletionPolicy };
 }
 
-function applicationModelStoreProviderResources(provider: ApplicationModelStoreProvider, modelName: string): readonly ApplicationResourceRef[] {
+function applicationModelStoreProviderResources(provider: ApplicationTransactionalDatabaseProvider, modelName: string): readonly ApplicationResourceRef[] {
   if (provider.cluster) {
     return [provider.cluster];
   }
@@ -1653,7 +1651,7 @@ function applicationModelStoreProviderResources(provider: ApplicationModelStoreP
   return [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: clusterName, ...(provider.namespace ? { namespace: provider.namespace } : {}) }];
 }
 
-function applicationModelStoreRuntime(provider: ApplicationModelStoreProvider, modelName: string, resources: readonly ApplicationResourceRef[]): ApplicationProviderRuntimeContract {
+function applicationModelStoreRuntime(provider: ApplicationTransactionalDatabaseProvider, modelName: string, resources: readonly ApplicationResourceRef[]): ApplicationProviderRuntimeContract {
   const cluster = resources[0];
   const secret = provider.connectionSecret ?? { apiVersion: 'v1', kind: 'Secret', name: `${cluster?.name ?? kubernetesNameSegment(modelName)}-app`, ...(provider.namespace ? { namespace: provider.namespace } : {}) };
   return {
@@ -1695,7 +1693,7 @@ function applicationModelIndexFields<TSpec extends object, TStatus extends objec
   ];
 }
 
-function recordApplicationModelMigrationJobGraph(state: ApplicationModelGraphState, modelName: string, modelNodeId: string, provider: ApplicationModelStoreProvider, resources: readonly ApplicationResourceRef[]): void {
+function recordApplicationModelMigrationJobGraph(state: ApplicationModelGraphState, modelName: string, modelNodeId: string, provider: ApplicationTransactionalDatabaseProvider, resources: readonly ApplicationResourceRef[]): void {
   const jobName = provider.migrations?.jobName ?? `${kubernetesNameSegment(modelName)}-migration`;
   const nodeId = applicationGraphNodeId('job', jobName);
   const jobResource = { apiVersion: 'batch/v1', kind: 'Job', name: jobName, ...(provider.namespace ? { namespace: provider.namespace } : {}) };

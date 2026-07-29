@@ -30,7 +30,7 @@ const accountModelTableName = 'applik8s_account';
 let tempDir: string | undefined;
 let outDir: string | undefined;
 
-describeLive('live TypeKro Postgres ModelStore runtime', () => {
+describeLive('live TypeKro Postgres TransactionalDatabase runtime', () => {
   beforeAll(async () => {
     await assertExpectedKubectlContext();
     await ensureKroRuntime();
@@ -99,7 +99,7 @@ describeLive('live TypeKro Postgres ModelStore runtime', () => {
   }, 420_000);
 });
 
-describeLive('live TypeKro Postgres ModelStore migration drift preflight', () => {
+describeLive('live TypeKro Postgres TransactionalDatabase migration drift preflight', () => {
   let driftTempDir: string | undefined;
   let driftOutDir: string | undefined;
 
@@ -843,7 +843,7 @@ function liveEntrypointSource(options: EntrypointSourceOptions = { namespace, st
   const generatedServerName = options.serverName ?? serverName;
   const generatedServiceName = options.serviceName ?? serviceName;
   return `
-import { ModelStore, sdk } from '@applik8s/applik8s';
+import { TransactionalDatabase, sdk } from '@applik8s/applik8s';
 import { entity, type } from '@applik8s/applik8s/dsl';
 
 const AccountEntity = entity('Account', {
@@ -858,7 +858,7 @@ export const accountsStack = sdk.kubernetesComposition({
   spec: type({}),
   status: type({ ready: 'boolean', applik8s: 'object?' }),
 }, (_spec, app) => {
-  const store = app.provide(ModelStore, {
+  const store = app.provide(TransactionalDatabase, {
     kind: 'postgres',
     name: ${JSON.stringify(options.databaseName)},
     namespace: ${JSON.stringify(options.namespace)},

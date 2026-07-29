@@ -1,5 +1,5 @@
 // typecast-file-boundary: reactive vertical fixtures inspect erased graph metadata after checking node identities and discriminators.
-import { ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IndexStore, ProjectionStore, stream, task, WorkflowEngine } from '@applik8s/applik8s';
+import { ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IndexStore, AnalyticalDatabase, stream, task, WorkflowEngine } from '@applik8s/applik8s';
 import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
@@ -120,7 +120,7 @@ describe('v0.6 streams, subscriptions, and projections', () => {
   it('records explicit replay, delivery, ClickHouse, and rebuild semantics', () => {
     const catalog = app('reactive-catalog', { namespace: 'catalog' });
     const database = catalog.database.postgres('catalog', { schema: {} });
-    catalog.defaults({ projections: ProjectionStore.clickhouse({ name: 'catalog-analytics', provision: false, endpoint: 'http://clickhouse.catalog.svc:8123' }) });
+    catalog.defaults({ analytics: AnalyticalDatabase.clickhouse({ name: 'catalog-analytics', provision: false, endpoint: 'http://clickhouse.catalog.svc:8123' }) });
     const changes = catalog.stream(AccountChanged, {
       database,
       retention: { maxAgeSeconds: 604_800, maxMessages: 1_000_000 },
@@ -156,7 +156,7 @@ describe('v0.6 streams, subscriptions, and projections', () => {
   it('omits unconditional ClickHouse includeWhen literals that KRO cannot parse', () => {
     const catalog = app('clickhouse-conditional-contract', { namespace: 'catalog' });
     const database = catalog.database.postgres('catalog', { schema: {} });
-    catalog.defaults({ projections: ProjectionStore.clickhouse({ name: 'catalog-analytics' }) });
+    catalog.defaults({ analytics: AnalyticalDatabase.clickhouse({ name: 'catalog-analytics' }) });
     const changes = catalog.stream(AccountChanged, {
       database,
       retention: { maxAgeSeconds: 604_800 },

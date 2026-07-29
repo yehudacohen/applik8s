@@ -187,7 +187,7 @@ describe('Tenant Platform generated artifact pressure test', () => {
     // typecast: compiler emits the application graph as JSON; the test narrows only the node fields asserted below.
     const graph = JSON.parse(await readFile(compiled.value.artifacts.applicationGraphJsonPath ?? '', 'utf8')) as { readonly nodes?: readonly { readonly id?: string; readonly kind?: string; readonly name?: string }[] };
     expect(graph.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'ModelStore' }),
+      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'TransactionalDatabase' }),
       expect.objectContaining({ id: 'server.tenant-admin', kind: 'server' }),
       expect.objectContaining({ id: 'job.account-migration', kind: 'job' }),
       expect.objectContaining({ id: 'job.audit-record-migration', kind: 'job' }),

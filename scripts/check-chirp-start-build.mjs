@@ -122,7 +122,7 @@ assert(installationProfileValue(indexStore?.config?.indexStore?.provision) && in
 const objectStoreProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'ObjectStorage');
 assert(installationProfileValue(objectStoreProvider?.config?.objectStorage?.ownership) && objectStoreProvider.config.objectStorage.ownership.includes('"external"') && objectStoreProvider.config.objectStorage.ownership.includes('"direct-provisioned"') && objectStoreProvider.config.objectStorage.provisioning?.storageClassName === 'typekro-harbor-bucket-retain', 'Managed profiles must declare automatic direct Rook bucket provisioning while the external profile retains external ownership.');
 assert(objectStoreProvider?.config?.objectStorage?.enabled === true, 'Chirp must retain ObjectStorage as a core projection-recovery dependency.');
-const modelStoreProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'ModelStore')?.config?.modelStore;
+const modelStoreProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'TransactionalDatabase')?.config?.modelStore;
 assert(installationProfileValue(modelStoreProvider?.ownership) && modelStoreProvider.ownership.includes('"external"') && modelStoreProvider.ownership.includes('"direct-provisioned"') && modelStoreProvider.lifecycle?.deletionPolicy === '${schema.spec.lifecycle.databaseDeletion}', 'Chirp PostgreSQL must select external or explicit direct ownership from typed profile and lifecycle desired state.');
 assert(installationProfileValue(modelStoreProvider?.connectionSecret?.name) && modelStoreProvider.connectionSecret.name.includes('schema.spec.providers.database.connectionSecretName'), 'The external profile must select its PostgreSQL connection Secret from typed provider coordinates.');
 assert(modelStoreProvider?.backup?.enabled === installationManagedBackupValue && modelStoreProvider.backup?.destination?.kind === 's3', 'Chirp backup desired state must lower only to the managed PostgreSQL provider without embedding credentials.');
@@ -159,8 +159,8 @@ assert(
     && automationScheduleProcessor.workflowEngine?.nodeId === 'provider.workflow-engine',
   'Committed automation desired state must converge its one typed recurring workflow through the provider-neutral WorkflowEngine boundary.',
 );
-const analyticalProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'ProjectionStore');
-assert(analyticalProvider?.config?.enabled === installationFeatureValue('analytics'), 'ChirpInstallation.spec.features.analytics must drive the analytical ProjectionStore provider.');
+const analyticalProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'AnalyticalDatabase');
+assert(analyticalProvider?.config?.enabled === installationFeatureValue('analytics'), 'ChirpInstallation.spec.features.analytics must drive the analytical AnalyticalDatabase provider.');
 
 const resources = await json(join(output, 'typekro/resources.json'));
 const chirpRgd = resources.find((resource) => resource.apiVersion === 'kro.run/v1alpha1' && resource.kind === 'ResourceGraphDefinition' && resource.metadata?.name === 'chirp');

@@ -1311,7 +1311,7 @@ export const commandStack = platform.composition;
     try {
       const entrypoint = join(dir, 'entrypoint.ts');
       await writeFile(entrypoint, `
-import { ModelStore, sdk } from '@applik8s/applik8s';
+import { TransactionalDatabase, sdk } from '@applik8s/applik8s';
 import { entity, type } from '@applik8s/applik8s/dsl';
 
 const Note = entity('Note', {
@@ -1326,7 +1326,7 @@ export const notesModelApp = sdk.kubernetesComposition({
   spec: type({}),
   status: type({ ready: 'boolean' }),
 }, (_spec, app) => {
-  const store = app.provide(ModelStore, {
+  const store = app.provide(TransactionalDatabase, {
     kind: 'postgres',
     name: 'notes-db',
     namespace: 'notes',

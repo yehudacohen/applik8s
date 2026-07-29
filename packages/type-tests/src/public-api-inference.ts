@@ -4,8 +4,8 @@ import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/d
 import type {
   ApplicationDurableStatusOwnershipContract,
   ApplicationMigrationDriftCheckContract,
-  ApplicationModelStoreGuaranteesContract,
-  ApplicationModelStoreSemanticsContract,
+  ApplicationTransactionalDatabaseGuaranteesContract,
+  ApplicationTransactionalDatabaseSemanticsContract,
   ApplicationOperationTargetContract,
   ApplicationRuntimeModuleContract,
   ApplicationRuntimeModuleInterfaceContract,
@@ -202,7 +202,7 @@ const modelStoreGuarantees = {
   transactions: 'required',
   retention: 'retain',
   migrationOwnership: 'generatedJob',
-} satisfies ApplicationModelStoreGuaranteesContract;
+} satisfies ApplicationTransactionalDatabaseGuaranteesContract;
 
 const generatedJobContract = {
   id: 'job.accounts-model-migration',
@@ -312,7 +312,7 @@ const modelStoreSemanticsContract = {
   migrationHistory: { tableName: 'applik8s_model_migrations', revisionColumn: 'revision', appliedAtColumn: 'applied_at' },
   transactions: { declaration: 'supported', singleOperationAtomicity: 'databaseStatement', multiOperationApi: 'implemented', multiOperationBehavior: 'runtimeTransaction' },
   retention: { mode: 'retain', deletionPolicy: 'explicitOnly', enforcement: 'runtimeEnforced' },
-} satisfies ApplicationModelStoreSemanticsContract;
+} satisfies ApplicationTransactionalDatabaseSemanticsContract;
 
 const runtimeModuleInterfaceContract = {
   apiVersion: 'applik8s.runtime/v1alpha1',
@@ -339,7 +339,7 @@ const durableStatusOwnershipContract = {
 } satisfies ApplicationDurableStatusOwnershipContract;
 
 const v03ProviderInterfaces = [
-  { interface: 'ModelStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'TransactionalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'IndexStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'CounterStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'EventSource', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
@@ -352,7 +352,7 @@ const v03ProviderInterfaces = [
   { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
-  { interface: 'ProjectionStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'AnalyticalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'ContainerRegistry', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'RequestIdentity', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
@@ -362,7 +362,7 @@ const v03ProviderInterfaces = [
 const v03ProviderCompatibility = {
   apiVersion: 'applik8s.providerCompatibility/v1alpha1',
   providers: v03ProviderInterfaces,
-  requiredForV03: ['ModelStore', 'IndexStore', 'CounterStore', 'EventSource', 'Secret', 'Queue', 'ObjectStorage', 'HttpExposure', 'CredentialStore'],
+  requiredForV03: ['TransactionalDatabase', 'IndexStore', 'CounterStore', 'EventSource', 'Secret', 'Queue', 'ObjectStorage', 'HttpExposure', 'CredentialStore'],
 } satisfies ApplicationV03PressureTestContract['providerCompatibility'];
 
 const v03StatusEvidence = {
@@ -417,7 +417,7 @@ const v03PressureTestContract = {
   name: 'accounts-platform-pressure-test',
   graph: { apiVersion: 'applik8s.appGraph/v1alpha1', path: 'application-graph.json', digest: 'sha256:accounts' },
   requiredNodes: ['crd', 'model', 'server', 'job', 'provider', 'permission', 'typeKroResource'],
-  requiredProviders: ['ModelStore', 'IndexStore', 'Secret', 'HttpExposure', 'CredentialStore'],
+  requiredProviders: ['TransactionalDatabase', 'IndexStore', 'Secret', 'HttpExposure', 'CredentialStore'],
   requiredRuntimeModules: ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'],
   requiredOperationTargets: [operationTargetContract],
   requiredWatchScopes: [watchScopeLoweringContract, unlowerableWatchScopeContract],
@@ -440,7 +440,7 @@ const _invalidPartialV03PressureTestContract: ApplicationV03PressureTestContract
   name: 'partial-accounts-platform-pressure-test',
   graph: { apiVersion: 'applik8s.appGraph/v1alpha1', path: 'application-graph.json', digest: 'sha256:accounts' },
   requiredNodes: ['model', 'server', 'job', 'provider'],
-  requiredProviders: ['ModelStore', 'CredentialStore', 'HttpExposure'],
+  requiredProviders: ['TransactionalDatabase', 'CredentialStore', 'HttpExposure'],
   requiredRuntimeModules: ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'],
   requiredOperationTargets: [operationTargetContract],
   requiredWatchScopes: [watchScopeLoweringContract, unlowerableWatchScopeContract],
@@ -477,7 +477,7 @@ appSdk.kubernetesComposition({
   const maintenanceJobDryRun = maintenanceJob.plan(handlerOperationTarget, { dryRun: true });
   const maintenanceSchedulePlan = maintenanceSchedule.plan(handlerOperationTarget);
   const Account = app.model(AccountEntity, {
-    store,
+    database: store,
     schema: {
       identity: ['id'],
       constraints: [{ name: 'account-email-unique', kind: 'unique', fields: ['email'] }],
@@ -569,16 +569,16 @@ appSdk.kubernetesComposition({
   spec: appSchemaType({}),
   status: appSchemaType({ ready: 'boolean' }),
 }, (_spec, app) => {
-  // @ts-expect-error ModelStore does not accept string provider aliases.
+  // @ts-expect-error TransactionalDatabase does not accept string provider aliases.
   app.provide(TransactionalDatabase, 'postgres');
   // @ts-expect-error app.defaults({ database }) must receive a typed TransactionalDatabase provider or provider binding.
   app.defaults({ database: 'postgres' });
-  // @ts-expect-error app.model store must be a typed ModelStore provider or ModelStore provider binding.
+  // @ts-expect-error app.model store must be a typed TransactionalDatabase provider or TransactionalDatabase provider binding.
   app.model(AccountEntity, { database: { kind: 'mysql' } });
   const indexStoreBinding = app.provide(IndexStore, 'valkey');
   // @ts-expect-error Model defaults cannot receive a provider binding for a different provider token.
   app.defaults({ database: indexStoreBinding });
-  // @ts-expect-error Model defaults must receive the typed Postgres ModelStore provider declaration.
+  // @ts-expect-error Model defaults must receive the typed Postgres TransactionalDatabase provider declaration.
   app.defaults({ database: { kind: 'mysql' } });
 
   return { ready: true };

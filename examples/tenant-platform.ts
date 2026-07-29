@@ -563,14 +563,14 @@ export function createTenantPlatformPressureTestContract(example = createTenantP
     name: 'tenant-platform-control-plane-pressure-test',
     graph: { apiVersion: graph.apiVersion, path: 'application-graph.json', digest },
     requiredNodes: [...new Set(graph.nodes.map((node) => node.kind))],
-    requiredProviders: ['ModelStore', 'IndexStore', 'CounterStore', 'Secret', 'HttpExposure', 'CredentialStore', 'Queue', 'ObjectStorage', 'EventSource'],
+    requiredProviders: ['TransactionalDatabase', 'IndexStore', 'CounterStore', 'Secret', 'HttpExposure', 'CredentialStore', 'Queue', 'ObjectStorage', 'EventSource'],
     requiredRuntimeModules: ['serverRuntime', 'modelRuntime', 'jobRunnerRuntime', 'kubernetesClient', 'diagnostics', 'providerAdapter'],
     requiredOperationTargets: [{ id: 'operation-target.tenant-stack', target: { nodeId: 'typeKroResource.tenant-stack' }, operations: ['apply', 'delete'], execution: { contexts: ['handler', 'generatedServer', 'generatedJob', 'typeKro'], ordering: 'dependencyAware', runtimeValidation: 'beforeEffects', failurePolicy: 'failClosed' }, lowering: { mode: 'typeKroResource', artifact: { kind: 'typeKroResource', path: 'plans/tenant-stack.apply.json' }, failurePolicy: 'failClosed' }, dryRun: { supported: true, artifact: { kind: 'typeKroResource', path: 'plans/tenant-stack.dry-run.json' }, failurePolicy: 'failClosed' }, ownership: { ownerReferences: 'required', orphanPolicy: 'retain' }, finalizers: { required: true, finalizer: 'platform.applik8s.dev/tenant-stack', cleanupOperation: 'deleteTarget' }, permissions: [{ apiGroups: ['platform.applik8s.dev'], resources: ['tenantstacks'], verbs: ['create', 'patch', 'delete'] }], diagnostics: [] }],
     requiredWatchScopes: [
       { scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', namespace: defaultOptions.namespace, labels: { 'platform.applik8s.dev/tenant': 'tenant-a' } }, lowering: 'labelSelector', runtime: { mode: 'sharedInformer', resyncPolicy: 'bounded', cancellation: 'onScopeRemoved' }, permissions: [{ apiGroups: ['apps'], resources: ['deployments'], verbs: ['list', 'watch'] }], failurePolicy: 'failClosed', diagnostics: [] },
       { scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', namespace: defaultOptions.namespace, labels: {} }, lowering: 'labelSelector', permissions: [], failurePolicy: 'failClosed', diagnostics: [{ event: 'applik8s-watch-scope-unlowerable', severity: 'error', subject: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: defaultOptions.namespace }, reason: 'UnsupportedLabelSelectorExpression', message: 'Unsupported watch predicate fails closed instead of broadening tenant platform watches.', retryable: false }] },
     ],
-    requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'ModelStore', nodeId: 'provider.model-store' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: defaultOptions.databaseClusterName, namespace: defaultOptions.namespace }, expectedRevision: 'sha256:tenant-platform-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['missingHistoryTable', 'incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Tenant platform schema drift must fail closed before applying migrations.', retryable: false }] }],
+    requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'TransactionalDatabase', nodeId: 'provider.model-store' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: defaultOptions.databaseClusterName, namespace: defaultOptions.namespace }, expectedRevision: 'sha256:tenant-platform-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['missingHistoryTable', 'incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Tenant platform schema drift must fail closed before applying migrations.', retryable: false }] }],
     requiredModelStoreSemantics: [tenantPlatformModelStoreSemantics()],
     requiredRuntimeModuleInterfaces: [tenantPlatformRuntimeModuleInterface([{ kind: 'modelRuntime', name: 'tenant-platform-models' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createServerRuntime', kind: 'function', stability: 'stable' }], 'required')],
     requiredProviderInterfaces: tenantPlatformProviderInterfaces(),
@@ -587,7 +587,7 @@ export function createTenantPlatformPressureTestContract(example = createTenantP
 
 function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfaceContract[] {
   return [
-      { interface: 'ModelStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'TransactionalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'HttpExposure', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'IndexStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'CounterStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
@@ -601,7 +601,7 @@ function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfa
       { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'StructuredGeneration', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
-      { interface: 'ProjectionStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'AnalyticalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'ContainerRegistry', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'RequestIdentity', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
@@ -610,7 +610,7 @@ function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfa
 }
 
 function tenantPlatformProviderCompatibilityMatrix(): ApplicationProviderCompatibilityMatrixContract {
-  return { apiVersion: 'applik8s.providerCompatibility/v1alpha1', providers: tenantPlatformProviderInterfaces(), requiredForV03: ['ModelStore', 'IndexStore', 'CounterStore', 'EventSource', 'Secret', 'Queue', 'ObjectStorage', 'HttpExposure', 'CredentialStore'] };
+  return { apiVersion: 'applik8s.providerCompatibility/v1alpha1', providers: tenantPlatformProviderInterfaces(), requiredForV03: ['TransactionalDatabase', 'IndexStore', 'CounterStore', 'EventSource', 'Secret', 'Queue', 'ObjectStorage', 'HttpExposure', 'CredentialStore'] };
 }
 
 function tenantPlatformModelStoreSemantics(): NonNullable<ApplicationV03PressureTestContract['requiredModelStoreSemantics']>[number] {

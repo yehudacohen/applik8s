@@ -130,8 +130,6 @@ export const applicationGraphNodeKinds = [
 export type ApplicationBuiltInProviderInterfaceKind =
   | 'TransactionalDatabase'
   | 'AnalyticalDatabase'
-  /** @deprecated Use TransactionalDatabase. Removed at 1.0. */
-  | 'ModelStore'
   | 'IndexStore'
   | 'CounterStore'
   | 'EventSource'
@@ -144,8 +142,6 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'DnsPublication'
   | 'CredentialStore'
   | 'WorkflowEngine'
-  /** @deprecated Use AnalyticalDatabase. Removed at 1.0. */
-  | 'ProjectionStore'
   | 'ApplicationHost'
   | 'ContainerRegistry'
   | 'RequestIdentity'
@@ -180,7 +176,7 @@ export const applicationProviderInterfaceKinds = [
 
 // typecast: v0.3 predates the experimental EventLog surface introduced for v0.4 durable behavior.
 export const applicationV03ProviderInterfaceKinds = [
-  'ModelStore',
+  'TransactionalDatabase',
   'IndexStore',
   'CounterStore',
   'EventSource',
@@ -1186,20 +1182,20 @@ export interface ApplicationModelSchemaContract {
   readonly migrations: ApplicationMigrationContract;
   readonly transactions: 'required' | 'supported' | 'unsupported';
   readonly retention?: ApplicationRetentionPolicy;
-  readonly guarantees?: ApplicationModelStoreGuaranteesContract;
+  readonly guarantees?: ApplicationTransactionalDatabaseGuaranteesContract;
 }
 
-export interface ApplicationModelStoreGuaranteesContract {
+export interface ApplicationTransactionalDatabaseGuaranteesContract {
   readonly identity: 'stableId';
   readonly uniqueness: 'databaseConstraint';
   readonly indexes: 'declaredSecondaryIndexes';
   readonly transactions: 'required' | 'supported' | 'unsupported';
   readonly retention: 'retain' | 'deleteWithApplication' | 'ttl';
   readonly migrationOwnership: 'generatedJob' | 'external' | 'none';
-  readonly semantics?: ApplicationModelStoreSemanticsContract;
+  readonly semantics?: ApplicationTransactionalDatabaseSemanticsContract;
 }
 
-export interface ApplicationModelStoreSemanticsContract {
+export interface ApplicationTransactionalDatabaseSemanticsContract {
   readonly generatedRuntimeParity: 'required';
   readonly scriptRuntimeParity: 'required' | 'notSupported';
   readonly query: ApplicationModelQuerySemanticsContract;
@@ -1618,7 +1614,7 @@ export interface ApplicationV03PressureTestContract {
   readonly requiredOperationTargets: readonly ApplicationOperationTargetContract[];
   readonly requiredWatchScopes: readonly ApplicationWatchScopeLoweringContract[];
   readonly requiredMigrationDriftChecks: readonly ApplicationMigrationDriftCheckContract[];
-  readonly requiredModelStoreSemantics: readonly ApplicationModelStoreSemanticsContract[];
+  readonly requiredModelStoreSemantics: readonly ApplicationTransactionalDatabaseSemanticsContract[];
   readonly requiredRuntimeModuleInterfaces: readonly ApplicationRuntimeModuleInterfaceContract[];
   readonly requiredProviderInterfaces: readonly ApplicationProviderInterfaceContract[];
   readonly providerCompatibility: ApplicationProviderCompatibilityMatrixContract;
@@ -2162,46 +2158,46 @@ function validateApplicationGeneratedStatusConfigMapContract(contract: Applicati
   return diagnostics;
 }
 
-export function validateApplicationModelStoreSemanticsContract(contract: ApplicationModelStoreSemanticsContract): readonly Diagnostic[] {
+export function validateApplicationTransactionalDatabaseSemanticsContract(contract: ApplicationTransactionalDatabaseSemanticsContract): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   if (contract.generatedRuntimeParity !== 'required') {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore semantics must require generated runtime parity.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase semantics must require generated runtime parity.'));
   }
   if (contract.scriptRuntimeParity !== 'required' && contract.scriptRuntimeParity !== 'notSupported') {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore semantics must declare script runtime parity.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase semantics must declare script runtime parity.'));
   }
   if (contract.query.defaultLimit < 1 || contract.query.maxLimit < contract.query.defaultLimit) {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore query semantics require maxLimit >= defaultLimit >= 1.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase query semantics require maxLimit >= defaultLimit >= 1.'));
   }
   if (!contract.indexes.partitionRequired) {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore index semantics must require explicit partitions for v0.3.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase index semantics must require explicit partitions for v0.3.'));
   }
   if (contract.indexes.orderBy !== 'declaredIndexFieldsOnly') {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore index ordering must be limited to declared index fields.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase index ordering must be limited to declared index fields.'));
   }
   if (contract.constraints.duplicateKeyDiagnostic !== 'applik8s-model-duplicate-key') {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore duplicate constraint semantics must use applik8s-model-duplicate-key diagnostics.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase duplicate constraint semantics must use applik8s-model-duplicate-key diagnostics.'));
   }
   if (contract.transactions.singleOperationAtomicity !== 'databaseStatement') {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore transaction semantics must declare database statement atomicity for single operations.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase transaction semantics must declare database statement atomicity for single operations.'));
   }
   if (contract.transactions.multiOperationApi !== 'absentFromPublicApi' && contract.transactions.multiOperationApi !== 'implemented') {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore transaction semantics must declare whether a multi-operation API is public.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase transaction semantics must declare whether a multi-operation API is public.'));
   }
   if (contract.transactions.multiOperationApi === 'absentFromPublicApi' && contract.transactions.multiOperationBehavior !== 'methodAbsent') {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore absent transaction API must leave multi-operation transaction methods absent.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase absent transaction API must leave multi-operation transaction methods absent.'));
   }
   if (contract.transactions.declaration === 'unsupported' && contract.transactions.multiOperationApi === 'implemented' && contract.transactions.multiOperationBehavior !== 'failClosed') {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore unsupported transaction declarations must fail closed when the public transaction API is present.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase unsupported transaction declarations must fail closed when the public transaction API is present.'));
   }
   if (contract.transactions.declaration !== 'unsupported' && contract.transactions.multiOperationApi === 'implemented' && contract.transactions.multiOperationBehavior !== 'runtimeTransaction') {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore implemented transaction API must declare runtime transaction behavior.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase implemented transaction API must declare runtime transaction behavior.'));
   }
   if (!contract.migrationHistory.tableName || !contract.migrationHistory.revisionColumn || !contract.migrationHistory.appliedAtColumn) {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore migration history semantics must declare table, revision, and applied-at columns.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase migration history semantics must declare table, revision, and applied-at columns.'));
   }
   if (contract.retention.mode === 'ttl' && contract.retention.ttlSeconds === undefined) {
-    diagnostics.push(applicationGraphStructureDiagnostic('Application ModelStore ttl retention semantics require ttlSeconds.'));
+    diagnostics.push(applicationGraphStructureDiagnostic('Application TransactionalDatabase ttl retention semantics require ttlSeconds.'));
   }
   return diagnostics;
 }
@@ -2411,16 +2407,16 @@ export function validateApplicationV03PressureTestContract(contract: Application
     diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} must require migration drift checks.`));
   }
   if ((contract.requiredModelStoreSemantics?.length ?? 0) === 0) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} must require ModelStore semantic conformance.`));
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} must require TransactionalDatabase semantic conformance.`));
   }
   for (const semantics of contract.requiredModelStoreSemantics ?? []) {
-    diagnostics.push(...validateApplicationModelStoreSemanticsContract(semantics));
+    diagnostics.push(...validateApplicationTransactionalDatabaseSemanticsContract(semantics));
   }
   if (contract.requiredModelStoreEvidence.scriptRuntimeParity === 'localAndOptInLiveGate' && !(contract.requiredModelStoreSemantics ?? []).some((semantics) => semantics.scriptRuntimeParity === 'required')) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} ModelStore evidence requires script-runtime parity but no ModelStore semantics require it.`));
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} TransactionalDatabase evidence requires script-runtime parity but no TransactionalDatabase semantics require it.`));
   }
   if (contract.requiredModelStoreEvidence.transactionCoverage === 'required' && !(contract.requiredModelStoreSemantics ?? []).some((semantics) => semantics.transactions.multiOperationApi === 'implemented' && semantics.transactions.multiOperationBehavior === 'runtimeTransaction')) {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} ModelStore evidence requires transaction coverage but no ModelStore semantics declare runtime transactions.`));
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} TransactionalDatabase evidence requires transaction coverage but no TransactionalDatabase semantics declare runtime transactions.`));
   }
   if ((contract.requiredRuntimeModuleInterfaces?.length ?? 0) === 0) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} must require runtime module interface contracts.`));
@@ -2524,25 +2520,25 @@ function validateApplicationV03StatusEvidenceContract(name: string, evidence: Ap
 function validateApplicationV03ModelStoreEvidenceContract(name: string, evidence: ApplicationV03ModelStoreEvidenceContract): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   if (evidence.generatedRuntimeParity !== 'localGeneratedArtifactGate') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} ModelStore evidence must require local generated-artifact parity.`));
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} TransactionalDatabase evidence must require local generated-artifact parity.`));
   }
   if (evidence.scriptRuntimeParity !== 'localAndOptInLiveGate') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} ModelStore evidence must require local and opt-in live script-runtime parity.`));
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} TransactionalDatabase evidence must require local and opt-in live script-runtime parity.`));
   }
   if (evidence.liveGate !== 'requiredBeforeAnnouncement') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} ModelStore evidence must require a live gate before announcement.`));
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} TransactionalDatabase evidence must require a live gate before announcement.`));
   }
   if (evidence.queryIndexConstraintCoverage !== 'required') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} ModelStore evidence must require query, index, and constraint coverage.`));
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} TransactionalDatabase evidence must require query, index, and constraint coverage.`));
   }
   if (evidence.transactionCoverage !== 'required') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} ModelStore evidence must require transaction coverage.`));
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} TransactionalDatabase evidence must require transaction coverage.`));
   }
   if (evidence.migrationDriftCoverage !== 'required') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} ModelStore evidence must require migration drift coverage.`));
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} TransactionalDatabase evidence must require migration drift coverage.`));
   }
   if (evidence.unsupportedSemantics !== 'failClosed') {
-    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} ModelStore evidence must fail closed for unsupported semantics.`));
+    diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} TransactionalDatabase evidence must fail closed for unsupported semantics.`));
   }
   return diagnostics;
 }

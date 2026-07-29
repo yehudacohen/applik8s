@@ -4,7 +4,7 @@ import {
 	app,
 	applicationGraphFor,
 	event,
-	ProjectionStore,
+	AnalyticalDatabase,
 	postgres,
 	trustedContext,
 } from "@applik8s/applik8s";
@@ -96,7 +96,7 @@ const query = application.query("accounts.list.v1", {
 	run: async ({ context }) => context.database(database).select().from(Account),
 });
 application.defaults({
-	projections: ProjectionStore.clickhouse({
+	analytics: AnalyticalDatabase.clickhouse({
 		provision: false,
 		endpoint: "http://clickhouse.invalid:8123",
 	}),

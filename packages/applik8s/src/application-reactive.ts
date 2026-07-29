@@ -11,8 +11,8 @@ import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProvide
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationModelCommandBinding } from './application-models.js';
 import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions } from './application-processor-policy.js';
-import type { ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationProjectionStoreProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState } from './application-providers.js';
-import { applicationIndexBackend, applicationProjectionStoreImplementation, applicationProviderImplementationName, applicationProviderQualificationFor, defaultApplicationIndexProvider, IndexStore, isClickHouseProjectionStoreProvider } from './application-providers.js';
+import type { ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationAnalyticalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState } from './application-providers.js';
+import { applicationIndexBackend, applicationAnalyticalDatabaseImplementation, applicationProviderImplementationName, applicationProviderQualificationFor, defaultApplicationIndexProvider, IndexStore, isClickHouseAnalyticalDatabaseProvider } from './application-providers.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
 import { applicationTypeKroSerializedValue, applicationTypeKroString } from './application-typekro-values.js';
@@ -153,7 +153,7 @@ export interface ApplicationSubscriptionBinding<TPrincipal extends ApplicationQu
 export interface ApplicationAnalyticalProjectionOptions<TPayload extends object, TRow extends object> {
   readonly source: ApplicationStreamBinding<TPayload>;
   readonly output: SchemaInput<TRow>;
-  readonly provider?: ApplicationProjectionStoreProvider | ApplicationProviderBinding<ApplicationProjectionStoreProvider>;
+  readonly provider?: ApplicationAnalyticalDatabaseProvider | ApplicationProviderBinding<ApplicationAnalyticalDatabaseProvider>;
   readonly checkpoint?: 'idempotent';
   readonly rebuildable?: boolean;
   readonly project: (payload: TPayload, event: { readonly id: string; readonly recordedAt: string; readonly partitionKey: string }) => TRow | readonly TRow[] | Promise<TRow | readonly TRow[]>;
@@ -202,7 +202,7 @@ export interface ApplicationAnalyticalProjectionBinding<TPayload extends object 
   readonly storage: 'analytical';
   readonly name: string;
   readonly source: ApplicationStreamBinding<TPayload>;
-  readonly provider: ApplicationProjectionStoreProvider;
+  readonly provider: ApplicationAnalyticalDatabaseProvider;
   readonly output: SchemaInput<TRow>;
   readonly project: ApplicationAnalyticalProjectionOptions<TPayload, TRow>['project'];
 }
@@ -463,7 +463,7 @@ export function registerApplicationProjection<TPayload extends object, TRow exte
 export function registerApplicationProjection<TPayload extends object, TRow extends object, TValue extends object, TSnapshot extends object>(state: ApplicationReactiveState, name: string, options: ApplicationOnlineProjectionOptions<TPayload, TRow, TValue, TSnapshot>): ApplicationOnlineProjectionBinding<TPayload, TRow, TValue>;
 export function registerApplicationProjection<TPayload extends object, TRow extends object, TValue extends object, TSnapshot extends object>(state: ApplicationReactiveState, name: string, options: ApplicationProjectionOptions<TPayload, TRow, TValue, TSnapshot>): ApplicationProjectionBinding<TPayload, TRow, TValue> {
   if ('store' in options) return registerOnlineApplicationProjection(state, name, options);
-  const provider = applicationProjectionStoreImplementation(options.provider)
+  const provider = applicationAnalyticalDatabaseImplementation(options.provider)
     ?? projectionProvider(state);
   const qualification = applicationProviderQualificationFor(options.provider);
   const providerNode = recordProjectionProvider(state, provider, qualification);
@@ -718,9 +718,9 @@ function reactiveDatabaseRuntime(binding: ApplicationDatabaseBinding): { readonl
   return { name: binding.name, connectionEnvName: `APPLIK8S_DATABASE_${reactiveName(binding.name).replace(/[^A-Z0-9_a-z]+/g, '_').toUpperCase()}_URL`, secretName: applicationTypeKroSerializedValue(secret.name ?? `${clusterName}-app`), secretKey: applicationTypeKroSerializedValue(provider.connectionSecretKey ?? 'uri'), ...(secret.namespace ?? provider.namespace ? { secretNamespace: applicationTypeKroSerializedValue(secret.namespace ?? provider.namespace) } : {}), ...(binding.access ? { access: { context: binding.access.context.name, contextSchema: binding.access.context.contract.jsonSchema, setting: binding.access.setting, column: binding.access.column } } : {}) };
 }
 
-function projectionProvider(state: ApplicationReactiveState): ApplicationProjectionStoreProvider {
-  const provider = applicationProjectionStoreImplementation(
-    state.providers.projections ?? state.defaults.projections,
+function projectionProvider(state: ApplicationReactiveState): ApplicationAnalyticalDatabaseProvider {
+  const provider = applicationAnalyticalDatabaseImplementation(
+    state.providers.analytics ?? state.defaults.analytics,
   );
   if (!provider) throw new Error('app.projection(...) requires a ClickHouse AnalyticalDatabase provider. Bind AnalyticalDatabase.clickhouse(...) with app.provide or app.defaults.');
   return provider;
@@ -728,10 +728,10 @@ function projectionProvider(state: ApplicationReactiveState): ApplicationProject
 
 function recordProjectionProvider(
   state: ApplicationReactiveState,
-  provider: ApplicationProjectionStoreProvider,
+  provider: ApplicationAnalyticalDatabaseProvider,
   qualification?: ApplicationProviderQualification,
 ): ApplicationProviderRef<'AnalyticalDatabase'> {
-  if (!isClickHouseProjectionStoreProvider(provider)) throw new Error('The AnalyticalDatabase implementation must be ClickHouse.');
+  if (!isClickHouseAnalyticalDatabaseProvider(provider)) throw new Error('The AnalyticalDatabase implementation must be ClickHouse.');
   if (provider.credentialsSecret && !provider.credentialsSecret.name) throw new Error('ClickHouse AnalyticalDatabase credentialsSecret must declare a Secret name.');
   const nodeId = applicationProviderGraphNodeId(
     'AnalyticalDatabase',

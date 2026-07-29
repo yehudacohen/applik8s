@@ -36,7 +36,7 @@ import {
 } from './application-infrastructure-resources.js';
 import { type ApplicationInstallationClient, type ApplicationInstallationConnectOptions, createApplicationInstallationClient } from './application-installation-client.js';
 import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationRuntimeModelContract } from './application-models.js';
-import { applicationModelBinding, applicationRuntimeModelContract, prepareApplicationModelCommandReplacement, recordApplicationModelCommandGraph, recordApplicationModelGraph, recordApplicationNativeModelGraph, resolveApplicationModelStore } from './application-models.js';
+import { applicationModelBinding, applicationRuntimeModelContract, prepareApplicationModelCommandReplacement, recordApplicationModelCommandGraph, recordApplicationModelGraph, recordApplicationNativeModelGraph, resolveApplicationTransactionalDatabase } from './application-models.js';
 import {
   applicationNativeCommandModelBinding,
   applicationNativeCreateContracts,
@@ -57,8 +57,8 @@ import { type ApplicationObjectStoreBinding, type ApplicationObjectStoreOptions,
 import { applicationOperatorWatchScopeContracts } from './application-operator-watches.js';
 import type { ApplicationProcessorOptions } from './application-processor-policy.js';
 import { emitApplicationProjectionStoreResources } from './application-projection-store-resources.js';
-import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationModelStoreProvider, ApplicationPostgresModelStoreOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
-import { ApplicationHost, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationModelStoreImplementation, applicationPostgresClusterSpec, applicationProjectionStoreImplementation, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
+import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationTransactionalDatabaseProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
+import { ApplicationHost, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationTransactionalDatabaseImplementation, applicationPostgresClusterSpec, applicationAnalyticalDatabaseImplementation, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
 import { type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
 import { type ApplicationAnalyticalProjectionBinding, type ApplicationAnalyticalProjectionOptions, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationOnlineProjectionBinding, type ApplicationOnlineProjectionOptions, type ApplicationProjectionOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions, registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationStreamProcessor, registerApplicationSubscription } from './application-reactive.js';
 import {
@@ -91,8 +91,8 @@ export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationC
 export type { ApplicationObjectMetadata, ApplicationObjectPutRequest, ApplicationObjectReference, ApplicationObjectStorageRuntime, ApplicationObjectStoreBinding, ApplicationObjectStoreOptions, ApplicationSignedObjectIntent } from './application-object-storage.js';
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
 export type { ApplicationProfile, ApplicationProfileBranchOptions, ApplicationProfileVariant, ApplicationProfileVariantOverride, ApplicationQualifiedProviderBinding } from './application-profiles.js';
-export type { ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalDnsPublicationProvider, ApplicationGeneratedModelStoreMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationModelStoreMigrationPolicy, ApplicationModelStoreProvider, ApplicationModelStoreProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationObjectStorageProvider, ApplicationOciContainerRegistryProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresModelStoreOptions, ApplicationPostgresModelStoreProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationQualifiableProviderToken, ApplicationQueueProvider, ApplicationRequestAdmission, ApplicationRequestIdentityProvider, ApplicationRequestIdentityProviderToken, ApplicationSecretProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
-export { AnalyticalDatabase, ApplicationHost, Authorization, Certificate, ContainerRegistry, CounterStore, CredentialStore, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ModelStore, ObjectStorage, ProjectionStore, providers, Queue, RequestIdentity, Secret, StructuredGeneration, TransactionalDatabase, WorkflowEngine } from './application-providers.js';
+export type { ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalDnsPublicationProvider, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationObjectStorageProvider, ApplicationOciContainerRegistryProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationQualifiableProviderToken, ApplicationQueueProvider, ApplicationRequestAdmission, ApplicationRequestIdentityProvider, ApplicationRequestIdentityProviderToken, ApplicationSecretProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
+export { AnalyticalDatabase, ApplicationHost, Authorization, Certificate, ContainerRegistry, CounterStore, CredentialStore, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ObjectStorage, providers, Queue, RequestIdentity, Secret, StructuredGeneration, TransactionalDatabase, WorkflowEngine } from './application-providers.js';
 export type { ApplicationKubernetesModelViewOptions, ApplicationModelViewOptions, ApplicationOnlineProjectionQueryBinding, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryAuthorizationRequest, ApplicationQuerySourceBinding } from './application-queries.js';
 export type { ApplicationAnalyticalProjectionBinding, ApplicationAnalyticalProjectionOptions, ApplicationGatewayAdmission, ApplicationGatewayBinding, ApplicationGatewayOptions, ApplicationOnlineProjectionBinding, ApplicationOnlineProjectionOptions, ApplicationProjectionBinding, ApplicationProjectionOptions, ApplicationStreamBinding, ApplicationStreamOptions, ApplicationStreamProcessContext, ApplicationStreamProcessHandler, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding, ApplicationStreamScheduleFunctions, ApplicationStreamScheduleTargets, ApplicationStreamTaskFunctions, ApplicationStreamTaskTargets, ApplicationSubscriptionBinding, ApplicationSubscriptionOptions } from './application-reactive.js';
 export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskObjectFunctions, ApplicationTaskObjectStores, ApplicationTaskOperationFunctions, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjectionFunctions, ApplicationTaskProjections, ApplicationTaskProjectionTarget, ApplicationTaskQueries, ApplicationTaskQueryFunctions, ApplicationTaskReference, ApplicationTaskServicePrincipal, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference, ApplicationWorkflowResultOptions, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
@@ -220,7 +220,7 @@ export interface ApplicationDatabasePostgresOptions<TSchema extends Readonly<Rec
 export interface ApplicationDatabaseBinding<TSchema extends Readonly<Record<string, unknown>> = Readonly<Record<string, unknown>>> {
   readonly kind: 'applicationDatabase';
   readonly name: string;
-  readonly provider: ApplicationModelStoreProvider;
+  readonly provider: ApplicationTransactionalDatabaseProvider;
   readonly schema: TSchema;
   readonly migrations?: { readonly path: string; readonly digest?: string };
   readonly access?: ApplicationPostgresRlsPolicy;
@@ -233,8 +233,8 @@ export interface ApplicationNativeDrizzleModelOptions<TTable extends AnyPgTable>
   readonly processor?: ApplicationProcessorOptions;
 }
 
-export type ApplicationStoragePostgresOptions = Omit<ApplicationPostgresModelStoreOptions, 'name' | 'migrations'> & {
-  readonly migrations?: ApplicationPostgresModelStoreOptions['migrations'] | 'generated-job' | 'generatedJob';
+export type ApplicationStoragePostgresOptions = Omit<ApplicationPostgresTransactionalDatabaseOptions, 'name' | 'migrations'> & {
+  readonly migrations?: ApplicationPostgresTransactionalDatabaseOptions['migrations'] | 'generated-job' | 'generatedJob';
 };
 
 export type ApplicationResourceOptions<TSpec extends object, TStatus extends object> = Omit<CrdOptions<TSpec, TStatus>, 'apiVersion' | 'kind'> & {
@@ -1689,7 +1689,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     resources: {}, indexes: {}, models: {}, databases: new Map(), emittedModelStores: new Set(), emittedProjectionStores: new Set(), emittedEventLogs: new Set(), emittedIndexStores: new Set(), modelLifecycleStreams: new Map(), appResource: applicationCompositionResourceTarget(definition), generatedJobStatusTargets: [],
     defaults: {
       indexes: defaultApplicationProviders.IndexStore,
-      models: defaultApplicationProviders.TransactionalDatabase,
+      database: defaultApplicationProviders.TransactionalDatabase,
       counters: defaultApplicationProviders.CounterStore,
       events: defaultApplicationProviders.EventSource,
       eventLogs: defaultApplicationEventLogProvider,
@@ -1723,16 +1723,13 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     return binding;
   };
   const defaults = (defaults: ApplicationDefaults): ApplicationDefaultsBinding => {
-    if ('database' in defaults && 'models' in defaults) {
-      throw new Error('app.defaults(...) must not declare both database and deprecated models.');
-    }
-    if ('database' in defaults || 'models' in defaults) {
-      const configuredDatabase = defaults.database ?? defaults.models;
-      const modelStore = applicationModelStoreImplementation(configuredDatabase);
+    if ('database' in defaults) {
+      const configuredDatabase = defaults.database;
+      const modelStore = applicationTransactionalDatabaseImplementation(configuredDatabase);
       if (!modelStore) {
         throw new Error('app.defaults({ database: ... }) currently supports TransactionalDatabase.postgres(...).');
       }
-      state.defaults.models = configuredDatabase;
+      state.defaults.database = configuredDatabase;
       recordApplicationProviderGraph(state, 'TransactionalDatabase', 'default', modelStore);
     }
     if ('counters' in defaults) {
@@ -1791,16 +1788,13 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       state.defaults.indexes = defaults.indexes;
       recordApplicationProviderGraph(state, 'IndexStore', 'default', defaults.indexes);
     }
-    if ('analytics' in defaults && 'projections' in defaults) {
-      throw new Error('app.defaults(...) must not declare both analytics and deprecated projections.');
-    }
-    if ('analytics' in defaults || 'projections' in defaults) {
-      const configuredAnalytics = defaults.analytics ?? defaults.projections;
-      const projectionStore = applicationProjectionStoreImplementation(configuredAnalytics);
+    if ('analytics' in defaults) {
+      const configuredAnalytics = defaults.analytics;
+      const projectionStore = applicationAnalyticalDatabaseImplementation(configuredAnalytics);
       if (!projectionStore) {
         throw new Error('app.defaults({ analytics: ... }) requires AnalyticalDatabase.clickhouse(...).');
       }
-      state.defaults.projections = projectionStore;
+      state.defaults.analytics = projectionStore;
       recordApplicationProviderGraph(state, 'AnalyticalDatabase', 'default', projectionStore);
     }
     return { kind: 'applicationDefaults', defaults };
@@ -1844,7 +1838,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
   const storage: ApplicationStorageRegistrar = {
     postgres(name, options = {}) {
       const provider = TransactionalDatabase.postgres(applicationStoragePostgresOptions(name, options));
-      return defaults({ models: provider });
+      return defaults({ database: provider });
     },
   };
   const database: ApplicationDatabaseRegistrar = {
@@ -1860,7 +1854,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
         database: providerOptions.database ?? name,
         migrations: { strategy: migrations ? 'external' : 'none', compatibility: 'requiresExplicitMigration', apply: 'manual' },
       });
-      defaults({ models: provider });
+      defaults({ database: provider });
       const migrationArtifact = typeof migrations === 'string' ? { path: migrations } : migrations;
       const binding: ApplicationDatabaseBinding<typeof schema> = {
         kind: 'applicationDatabase',
@@ -2029,7 +2023,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       );
       // typecast: the native Drizzle overload returned above, so this branch contains only named/entity model options.
       const configuredModel = modelOptions as ApplicationModelOptions<object, object> | ApplicationNamedModelOptions<object, object> | undefined;
-      const modelStore = resolveApplicationModelStore(state, entity.name, configuredModel?.database ?? configuredModel?.store);
+      const modelStore = resolveApplicationTransactionalDatabase(state, entity.name, configuredModel?.database);
       const runtimeModel = applicationRuntimeModelContract(entity, modelStore, modelOptions);
       emitApplicationModelStoreResources(state, runtimeModel, modelStore);
       recordApplicationModelGraph(state, entity, modelStore, modelOptions, runtimeModel);
@@ -2043,7 +2037,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       let binding: ApplicationStreamBinding<typeof definition extends StreamDefinition<infer TPayload> | EventDefinition<infer TPayload> ? TPayload : never>;
       binding = registerApplicationStream(state, definition, options, {
         project: ((name: string, projectionOptions: Omit<ApplicationAnalyticalProjectionOptions<object, object>, 'source'> | Omit<ApplicationOnlineProjectionOptions<object, object, object>, 'source'>) => {
-          if (!('store' in projectionOptions)) emitApplicationProjectionStoreResources(state, projectionOptions.provider ?? state.providers.projections ?? state.defaults.projections);
+          if (!('store' in projectionOptions)) emitApplicationProjectionStoreResources(state, projectionOptions.provider ?? state.providers.analytics ?? state.defaults.analytics);
           // typecast: the overload discriminant is preserved by spreading the stream source into the selected analytical/online option branch.
           return registerApplicationProjection(state, name, { ...projectionOptions, source: binding } as never);
         }) as unknown as ApplicationStreamBinding<typeof definition extends StreamDefinition<infer TPayload> | EventDefinition<infer TPayload> ? TPayload : never>['project'],
@@ -2060,7 +2054,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       return registerApplicationSubscription(state, name, options);
     },
     projection: ((name: string, options: ApplicationProjectionOptions<object, object, object>) => {
-      if (!('store' in options)) emitApplicationProjectionStoreResources(state, options.provider ?? state.providers.projections ?? state.defaults.projections);
+      if (!('store' in options)) emitApplicationProjectionStoreResources(state, options.provider ?? state.providers.analytics ?? state.defaults.analytics);
       // typecast: the public projection overload has already selected the discriminated option branch.
       return registerApplicationProjection(state, name, options as never);
     }) as KubernetesApplicationScope['projection'],
@@ -2325,7 +2319,7 @@ function recordApplicationNestedInstallGraph<TSpec extends KroCompatibleType, TS
 function applicationModelBindingWithCommandGraph<TSpec extends object, TStatus extends object>(
   state: ApplicationScopeState,
   entity: EntityDefinition<TSpec, TStatus>,
-  modelStore: ApplicationModelStoreProvider,
+  modelStore: ApplicationTransactionalDatabaseProvider,
   modelOptions: ApplicationModelOptions<TSpec, TStatus> | undefined,
   runtimeModel: ApplicationRuntimeModelContract,
 ): ApplicationModelBinding<TSpec, TStatus> {
@@ -2340,7 +2334,7 @@ function applicationModelBindingWithCommandGraph<TSpec extends object, TStatus e
   return binding;
 }
 
-function applicationStoragePostgresOptions(name: string, options: ApplicationStoragePostgresOptions): ApplicationPostgresModelStoreOptions {
+function applicationStoragePostgresOptions(name: string, options: ApplicationStoragePostgresOptions): ApplicationPostgresTransactionalDatabaseOptions {
   const { migrations, ...rest } = options;
   const normalizedMigrations = applicationStoragePostgresMigrations(migrations);
   return {
@@ -2357,7 +2351,7 @@ function applicationDefinitionApiVersion(definition: { readonly apiVersion?: str
   return definition.apiVersion;
 }
 
-function applicationStoragePostgresMigrations(migrations: ApplicationStoragePostgresOptions['migrations']): ApplicationPostgresModelStoreOptions['migrations'] | undefined {
+function applicationStoragePostgresMigrations(migrations: ApplicationStoragePostgresOptions['migrations']): ApplicationPostgresTransactionalDatabaseOptions['migrations'] | undefined {
   if (migrations === undefined) {
     return undefined;
   }
@@ -2817,8 +2811,8 @@ function applicationAggregateBinding<TStats extends object, TEvent extends objec
   };
 }
 
-function emitApplicationModelStoreResources(state: ApplicationScopeState, model: ApplicationRuntimeModelContract, provider: ApplicationModelStoreProvider): void {
-  const selection = applicationProviderSelectionFor<ApplicationModelStoreProvider>(
+function emitApplicationModelStoreResources(state: ApplicationScopeState, model: ApplicationRuntimeModelContract, provider: ApplicationTransactionalDatabaseProvider): void {
+  const selection = applicationProviderSelectionFor<ApplicationTransactionalDatabaseProvider>(
     provider,
   );
   if (selection) {
@@ -2852,7 +2846,7 @@ function emitApplicationModelStoreResources(state: ApplicationScopeState, model:
 function emitApplicationModelStoreBranchResources(
   state: ApplicationScopeState,
   model: ApplicationRuntimeModelContract,
-  provider: ApplicationModelStoreProvider,
+  provider: ApplicationTransactionalDatabaseProvider,
   branch = '',
   includeWhen: boolean = true,
 ): void {

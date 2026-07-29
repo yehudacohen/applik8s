@@ -99,7 +99,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
             throw new Error(`Model index ${model.name}.${indexName} requires partitionBy before it can be queried.`);
           }
           if (hasUnsupportedIndexFilter(indexOptions.filter) || hasUnsupportedIndexFilter(Reflect.get(query, 'where'))) {
-            throw new Error(`Model index ${model.name}.${indexName} filter is not supported by the Postgres ModelStore runtime yet; unsupported index filters fail closed until filtered index semantics are implemented.`);
+            throw new Error(`Model index ${model.name}.${indexName} filter is not supported by the Postgres TransactionalDatabase runtime yet; unsupported index filters fail closed until filtered index semantics are implemented.`);
           }
           const declaredOrderBy = indexOptions.orderBy ?? declared?.fields.slice(1) ?? [];
           // typecast: partitionBy is provided by typed index options or generated model index metadata for this model spec.
@@ -110,7 +110,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
     },
     async transaction<TResult>(handler: (model: ApplicationModelTransactionClient<TSpec, TStatus>) => TResult | Promise<TResult>): Promise<TResult> {
       return (await modelDatabase(model)).transaction(async (transaction) => {
-        // typecast: Drizzle transaction clients expose the same query-builder surface used by the generated ModelStore client.
+        // typecast: Drizzle transaction clients expose the same query-builder surface used by the generated TransactionalDatabase client.
         const transactionalClient = createPostgresModelClient<TSpec, TStatus>(model, transaction as unknown as PostgresJsDatabase);
         return handler(transactionalClient);
       });
@@ -122,7 +122,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
 async function queryPostgresModel<TSpec extends object, TStatus extends object>(model: ApplicationRuntimeModelContract, query: ApplicationModelQueryOptions<TSpec> = {}, options: { readonly allowedOrderBy?: readonly string[]; readonly defaultOrderBy?: readonly string[] } = {}, databaseOverride?: PostgresJsDatabase): Promise<ApplicationModelQueryPage<TSpec, TStatus>> {
   const requestedOrderBy = query.orderBy ?? options.defaultOrderBy ?? [];
   if ((query.orderBy?.length ?? 0) > 0 && !options.allowedOrderBy) {
-    throw new Error(`Model ${model.name} query orderBy is not supported by the Postgres ModelStore runtime yet; unsupported ordering fails closed until index/order semantics are implemented.`);
+    throw new Error(`Model ${model.name} query orderBy is not supported by the Postgres TransactionalDatabase runtime yet; unsupported ordering fails closed until index/order semantics are implemented.`);
   }
   validateModelOrderBy(model, requestedOrderBy, options.allowedOrderBy ?? []);
   validateModelWhere(model, query.where ?? {});
@@ -163,7 +163,7 @@ function modelDatabase(model: ApplicationRuntimeModelContract): Promise<Postgres
   const url = process.env[key] || process.env.DATABASE_URL;
   if (!url) {
     throw modelStoreDiagnosticError({
-      message: `applik8s-modelstore-missing-credentials: ModelStore ${model.name} requires database URL env ${key} or DATABASE_URL.`,
+      message: `applik8s-modelstore-missing-credentials: TransactionalDatabase ${model.name} requires database URL env ${key} or DATABASE_URL.`,
       statusCode: 500,
       diagnostic: { event: 'applik8s-modelstore-missing-credentials', model: model.name, env: key },
     });
@@ -210,7 +210,7 @@ function modelRetentionClauses(model: ApplicationRuntimeModelContract) {
 function validateModelWhere(model: ApplicationRuntimeModelContract, where: object): void {
   for (const [field, value] of Object.entries(where)) {
     if (!/^[A-Za-z0-9_]+$/.test(field) || value === null || typeof value === 'object') {
-      throw new Error(`Model ${model.name} query filter ${field} is not supported by the Postgres ModelStore runtime yet; unsupported filters fail closed until query semantics are implemented.`);
+      throw new Error(`Model ${model.name} query filter ${field} is not supported by the Postgres TransactionalDatabase runtime yet; unsupported filters fail closed until query semantics are implemented.`);
     }
   }
 }
@@ -254,7 +254,7 @@ function modelStoreError(model: ApplicationRuntimeModelContract, error: unknown)
   }
   if (postgresError?.code === '42P01') {
     return modelStoreDiagnosticError({
-      message: `applik8s-model-migration-missing: ModelStore table ${model.tableName} is missing. Run generated migrations before serving model traffic.`,
+      message: `applik8s-model-migration-missing: TransactionalDatabase table ${model.tableName} is missing. Run generated migrations before serving model traffic.`,
       statusCode: 500,
       diagnostic: { event: 'applik8s-model-migration-missing', model: model.name, table: model.tableName, postgresCode: '42P01' },
       cause: error,

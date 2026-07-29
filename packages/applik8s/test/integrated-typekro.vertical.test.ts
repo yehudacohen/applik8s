@@ -3,7 +3,7 @@ import { runInNewContext } from 'node:vm';
 import type { ApplicationModelBinding, ApplicationProviderToken, ApplicationTransactionalDatabaseProvider } from '@applik8s/applik8s';
 import { app, applicationGraphFor, Certificate, ContainerRegistry, CounterStore, CredentialStore, cel, DnsPublication, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, Secret, sdk, TransactionalDatabase, typeKro } from '@applik8s/applik8s';
 import type { ApplicationRuntimeModuleInterfaceContract, ApplicationRuntimeModuleManifestContract, OperationTarget, Result } from '@applik8s/core';
-import { serializeApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationJobStatusLifecycleContract, validateApplicationModelStoreSemanticsContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract } from '@applik8s/core';
+import { serializeApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationJobStatusLifecycleContract, validateApplicationTransactionalDatabaseSemanticsContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract } from '@applik8s/core';
 import { transformSync } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { mergeGeneratedJobStatusConfigMapData, patchGeneratedJobStatusConfigMapData, persistGeneratedJobStatusWithDurableFallback, summarizeGeneratedJobStatusConfigMapMerge } from '../src/application-generated-job-status.js';
@@ -220,7 +220,7 @@ describe('integrated TypeKro package surface', () => {
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
       const store = app.provide(TransactionalDatabase, { kind: 'postgres', name: 'notes-db', database: 'notes' });
-      const Note = app.model(NoteEntity, { store });
+      const Note = app.model(NoteEntity, { database: store });
       Note.on.created(async () => undefined);
       return { ready: true };
     })).toThrow(/requires transactional model event delivery/);
@@ -869,7 +869,7 @@ describe('integrated TypeKro package surface', () => {
     ]));
   });
 
-  it('emits Postgres ModelStore backing resources as concrete TypeKro/Kubernetes resources', () => {
+  it('emits Postgres TransactionalDatabase backing resources as concrete TypeKro/Kubernetes resources', () => {
     const NoteEntity = entity('Note', {
       spec: type({ message: 'string' }),
       status: type({ phase: 'string?' }),
@@ -949,7 +949,7 @@ describe('integrated TypeKro package surface', () => {
     }, (_spec, app) => {
       app.model(NoteEntity, {
         name: 'Entry',
-        store: {
+        database: {
           kind: 'postgres',
           provision: false,
           cluster: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'shared-db', namespace: 'data' },
@@ -1000,7 +1000,7 @@ describe('integrated TypeKro package surface', () => {
     ]));
     const graph = applicationGraphFor(composition);
     const modelNode = graph?.nodes.find((node) => node.kind === 'model' && node.id === 'model.entry');
-    expect(modelNode?.kind === 'model' && modelNode.schema.guarantees?.semantics ? validateApplicationModelStoreSemanticsContract(modelNode.schema.guarantees.semantics) : []).toEqual([]);
+    expect(modelNode?.kind === 'model' && modelNode.schema.guarantees?.semantics ? validateApplicationTransactionalDatabaseSemanticsContract(modelNode.schema.guarantees.semantics) : []).toEqual([]);
     const providerNode = graph?.nodes.find((node) => node.kind === 'provider' && node.id === 'provider.model-store');
     expect(providerNode?.kind === 'provider' && providerNode.contract ? validateApplicationProviderInterfaceContract(providerNode.contract) : []).toEqual([]);
   });
@@ -1019,7 +1019,7 @@ describe('integrated TypeKro package surface', () => {
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
       notes = app.model(NoteEntity, {
-        store: { kind: 'postgres', name: 'notes-db', database: 'notes' },
+        database: { kind: 'postgres', name: 'notes-db', database: 'notes' },
         schema: { transactions: 'unsupported' },
       });
       return { ready: true };
@@ -1037,11 +1037,11 @@ describe('integrated TypeKro package surface', () => {
       multiOperationApi: 'implemented',
       multiOperationBehavior: 'failClosed',
     });
-    expect(modelNode?.kind === 'model' && modelNode.schema.guarantees?.semantics ? validateApplicationModelStoreSemanticsContract(modelNode.schema.guarantees.semantics) : []).toEqual([]);
+    expect(modelNode?.kind === 'model' && modelNode.schema.guarantees?.semantics ? validateApplicationTransactionalDatabaseSemanticsContract(modelNode.schema.guarantees.semantics) : []).toEqual([]);
     await expect(notes.transaction(async (transaction) => transaction.create({ spec: { message: 'hello' } }))).rejects.toThrow(/transaction\(\.\.\.\) is unsupported/);
   });
 
-  it('generates server runtime ModelStore clients backed by a singleton app-scoped CNPG provider', () => {
+  it('generates server runtime TransactionalDatabase clients backed by a singleton app-scoped CNPG provider', () => {
     const AccountEntity = entity('Account', {
       spec: type({ email: 'string', displayName: 'string' }),
       status: type({ phase: 'string?' }),
@@ -1066,7 +1066,7 @@ describe('integrated TypeKro package surface', () => {
           indexes: [{ name: 'accounts-by-email', partitionBy: 'email', unique: true }],
         },
       });
-      app.model(ProfileEntity, { store });
+      app.model(ProfileEntity, { database: store });
       app.server('web', { namespace: 'platform' }, (server) => {
         server.post('/accounts', async () => Account.create({ spec: { email: 'ada@example.com', displayName: 'Ada' } }));
         server.get('/accounts', async () => Account.query({ where: { email: 'ada@example.com' }, limit: 10 }));
@@ -1102,7 +1102,7 @@ describe('integrated TypeKro package surface', () => {
     expect(modelRuntimeSource).toContain('modelDefaultUniqueConstraint(model)');
   });
 
-  it('generates ModelStore migrations, constraint diagnostics, index queries, and credential diagnostics', () => {
+  it('generates TransactionalDatabase migrations, constraint diagnostics, index queries, and credential diagnostics', () => {
     const AccountEntity = entity('Account', {
       spec: type({ email: 'string', displayName: 'string' }),
       status: type({ phase: 'string?' }),

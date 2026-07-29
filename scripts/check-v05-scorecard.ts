@@ -52,7 +52,7 @@ const dimensions: readonly Dimension[] = [
   dimension('Provider implementation',
     check('hatchet-postgres', engine?.kind === 'provider' && engine.implementation === 'hatchet' && engine.config?.serverVersion === 'v0.90.13', 'Pinned Hatchet implementation is represented in the graph.'),
     check('provider-resources', graph.providerBindings.some((binding) => binding.provider.nodeId === engine?.id && ['HelmRepository', 'HelmRelease', 'Cluster'].every((kind) => binding.generatedResources.some((resource) => resource.kind === kind))), 'WorkflowEngine binding declares Hatchet, Flux, and CNPG resources.'),
-    check('external-provider-registration', await contains('packages/core/test/application-graph.vertical.test.ts', 'ProjectionStore') && await contains('packages/core/src/application-graph.ts', 'without a core release'), 'Versioned provider packages can add interfaces without changing the built-in core registry.'),
+    check('external-provider-registration', await contains('packages/core/test/application-graph.vertical.test.ts', 'AnalyticalDatabase') && await contains('packages/core/src/application-graph.ts', 'without a core release'), 'Versioned provider packages can add interfaces without changing the built-in core registry.'),
   ),
   dimension('Worker operations',
     check('bounded-workers', workers.length >= 2 && workers.every((node) => node.deployment.taskSlots > 0 && node.deployment.durableSlots > 0 && node.deployment.gracefulShutdownSeconds > 0), `${workers.length} inferred workers have bounded slots and graceful drain.`),

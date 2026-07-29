@@ -17,7 +17,7 @@ import { applicationRequestContextValues } from '../src/command-principal.js';
 
 const liveDatabaseUrl = process.env.APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL;
 
-describe('Postgres ModelStore script runtime', () => {
+describe('Postgres TransactionalDatabase script runtime', () => {
   afterEach(async () => {
     delete process.env.APPLIK8S_MODEL_STORE_SCRIPT_NOTE_DATABASE_URL;
     delete process.env.APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL;
@@ -100,7 +100,7 @@ describe('Postgres ModelStore script runtime', () => {
     }
   });
 
-  it('keeps generated and script runtime semantics aligned for the Postgres ModelStore contract', () => {
+  it('keeps generated and script runtime semantics aligned for the Postgres TransactionalDatabase contract', () => {
     const generated = generatedApplicationRuntimeModuleSource('modelRuntime');
 
     expect(generated).toContain('createPostgresModelClient');
@@ -144,7 +144,7 @@ describe('Postgres ModelStore script runtime', () => {
   });
 });
 
-describe.runIf(liveDatabaseUrl)('Postgres ModelStore script runtime live database behavior', () => {
+describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime live database behavior', () => {
   const tableName = `applik8s_script_live_note_${process.pid}`;
   const model = scriptNoteModel(tableName, 'APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL');
   const indexName = `script_live_note_message_${process.pid}`;

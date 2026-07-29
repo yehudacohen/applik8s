@@ -1,4 +1,4 @@
-import { app, ContainerRegistry, defaultApplicationEventLogProvider, event, ProjectionStore, postgres, trustedContext } from '@applik8s/applik8s';
+import { app, ContainerRegistry, defaultApplicationEventLogProvider, event, AnalyticalDatabase, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { eq } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
@@ -53,7 +53,7 @@ v06GeneratedApp.defaults({
     storageSize: '1Gi',
     storageClassName: 'local-path',
   },
-  projections: ProjectionStore.clickhouse({ name: 'v06-analytics', namespace, storageSize: '1Gi', storageClassName: 'local-path' }),
+  analytics: AnalyticalDatabase.clickhouse({ name: 'v06-analytics', namespace, storageSize: '1Gi', storageClassName: 'local-path' }),
 });
 const Database = v06GeneratedApp.database.postgres('catalog', {
   schema,

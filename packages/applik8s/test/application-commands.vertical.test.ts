@@ -1,5 +1,5 @@
 // typecast-file-boundary: vertical fixtures intentionally inspect erased command metadata after asserting its discriminators.
-import { app, applicationGraphFor, command, defineApplicationProvider, EventLog, event, ModelStore } from '@applik8s/applik8s';
+import { app, applicationGraphFor, command, defineApplicationProvider, EventLog, event, TransactionalDatabase } from '@applik8s/applik8s';
 import { entity, type } from '@applik8s/applik8s/dsl';
 import { canonicalApplicationCommandKey } from '@applik8s/applik8s/processor-runtime';
 import { validateApplicationGraphStructure } from '@applik8s/core';
@@ -270,11 +270,11 @@ describe('v0.4 application behavior contracts', () => {
 
     const platform = app('invalid-command-platform');
     const Account = platform.model(AccountEntity, {
-      store: ModelStore.postgres({ name: 'accounts', database: 'accounts' }),
+      database: TransactionalDatabase.postgres({ name: 'accounts', database: 'accounts' }),
       schema: { transactions: 'required' },
     });
     const Audit = platform.model(AuditEntity, {
-      store: ModelStore.postgres({ name: 'audit', database: 'audit' }),
+      database: TransactionalDatabase.postgres({ name: 'audit', database: 'audit' }),
       schema: { transactions: 'required' },
     });
     const handler = async (_account: { readonly spec: { readonly displayName: string } }, input: { readonly displayName: string }) => ({ changed: true, displayName: input.displayName });

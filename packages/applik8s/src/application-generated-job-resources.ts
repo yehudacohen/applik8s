@@ -12,7 +12,7 @@ import {
   applicationGeneratedJobStatusUpdater,
 } from './application-jobs.js';
 import { applicationModelMigrationPlan, applicationModelMigrationPreflightSql, applicationModelMigrationSql, type ApplicationRuntimeModelContract } from './application-models.js';
-import type { ApplicationModelStoreProvider } from './application-providers.js';
+import type { ApplicationTransactionalDatabaseProvider } from './application-providers.js';
 import { generatedJobStatusRuntimeBundle } from './application-runtime-modules.js';
 import type { ApplicationGeneratedJobStatusTarget, ApplicationStatusReconcilerAppResourceTarget } from './application-status-reconciler.js';
 import { applicationStatusReconcilerName } from './application-status-reconciler.js';
@@ -251,7 +251,7 @@ function kubernetesCronJobConcurrencyPolicy(policy: 'allow' | 'forbid' | 'replac
   return 'Allow';
 }
 
-export function emitApplicationModelMigrationResources(state: ApplicationGeneratedJobResourceState, model: ApplicationRuntimeModelContract, provider: ApplicationModelStoreProvider, clusterName: string, secretName: string, secretKey: string, database: string, namespace: string | undefined, labels: Readonly<Record<string, string>>): void {
+export function emitApplicationModelMigrationResources(state: ApplicationGeneratedJobResourceState, model: ApplicationRuntimeModelContract, provider: ApplicationTransactionalDatabaseProvider, clusterName: string, secretName: string, secretKey: string, database: string, namespace: string | undefined, labels: Readonly<Record<string, string>>): void {
   const resourceName = kubernetesNameSegment(model.name);
   const jobName = provider.migrations?.jobName ?? `${resourceName}-migration`;
   const statusPath = `status.applik8s.jobs.${jobName}`;
