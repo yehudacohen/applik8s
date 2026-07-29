@@ -18,6 +18,7 @@
     "baseUrl": ".",
     "paths": {
       "@applik8s/ai": ["packages/ai/src/index.ts"],
+      "@applik8s/ai-tanstack": ["packages/ai-tanstack/src/index.ts"],
       "@applik8s/core": ["packages/core/src/index.ts"],
       "@applik8s/deployment-contract": ["packages/deployment-contract/src/index.ts"],
       "@applik8s/deployment-compiler": ["packages/deployment-compiler/src/index.ts"],

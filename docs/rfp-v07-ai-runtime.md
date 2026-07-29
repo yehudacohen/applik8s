@@ -88,6 +88,9 @@ const SourceResearcher = application.agent(
       runId: context.runId,
       ...(request.resume ? { resume: request.resume } : {}),
       tools: context.tanstack.tools,
+      // Required by native TanStack server tools so provider call identity and
+      // the admitted ExecutionPrincipal reach canonical context.invoke(...).
+      context: context.tanstack.execution,
       middleware: [
         withPersistence(context.tanstack.persistence),
       ],
@@ -175,6 +178,17 @@ TanStack AI's server `ChatPersistence` stores and is activated through the upstr
 `withPersistence(...)` middleware; it is not the best-effort browser `ChatClientPersistence` adapter.
 This keeps provider DI explicit in the graph without making application closures repeat provider
 selection or use a second chat API.
+
+`context.tanstack.execution` is TanStack AI's native runtime `context` value. It carries the
+request-local admitted `ExecutionPrincipal`, logical invocation ID, physical attempt ID, and canonical
+`context.invoke(...)` bridge. Operation-derived tools require it at the type level and fail closed when
+the upstream tool-call ID is absent.
+
+At the pinned `@tanstack/ai@0.42.0` baseline, `@tanstack/ai-persistence` has not yet published its server
+package. `@applik8s/ai-tanstack` records that state as `unreleased` and exposes a fail-closed compatibility
+gate; it does not substitute the browser-only `ChatClientPersistence` contract. The middleware line
+above remains the release target and becomes executable only after the upstream server contract is
+published, pinned, and passes its conformance suite.
 
 ## Owned contracts
 

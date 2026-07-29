@@ -271,6 +271,7 @@ export const SourceResearcher = application.agent(
       runId: context.runId,
       ...(request.resume ? { resume: request.resume } : {}),
       tools: context.tanstack.tools,
+      context: context.tanstack.execution,
       middleware: [
         withPersistence(context.tanstack.persistence),
       ],
@@ -1493,6 +1494,7 @@ const SourceResearcher = application.agent(
       runId: context.runId,
       ...(request.resume ? { resume: request.resume } : {}),
       tools: context.tanstack.tools,
+      context: context.tanstack.execution,
       middleware: [
         withPersistence(context.tanstack.persistence),
       ],

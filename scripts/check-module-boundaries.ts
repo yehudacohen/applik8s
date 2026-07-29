@@ -15,6 +15,11 @@ const rules: readonly BoundaryRule[] = [
     rationale: 'Provider-neutral AI contracts and durable attempt semantics may depend only on portable core authority, never infrastructure or framework adapters.',
   },
   {
+    roots: ['packages/ai-tanstack/src'],
+    forbidden: [/^node:/, /^@applik8s\/(?!ai(?:\/|$)|client(?:\/|$)|core(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The TanStack AI adapter may bridge portable AI, operation, and authority contracts to released upstream TanStack APIs, but may not own infrastructure or application runtime semantics.',
+  },
+  {
     roots: ['packages/deployment-contract/src'],
     forbidden: [/^node:/, /^@applik8s\//, /^@kubernetes\//, /^alchemy(?:\/|$)/, /^typekro(?:\/|$)/],
     rationale: 'Deployment contracts must remain portable data with no runtime, provider, Kubernetes, TypeKro, or Alchemy dependency.',

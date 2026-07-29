@@ -32,6 +32,7 @@ const publicEntrypoints = [
   '@applik8s/tanstack-start/vite',
   '@applik8s/core',
   '@applik8s/ai',
+  '@applik8s/ai-tanstack',
   '@applik8s/deployment-contract',
   '@applik8s/deployment-compiler',
   '@applik8s/deployment-typekro',
