@@ -51,6 +51,8 @@ export type { PostgresApplicationStream, PostgresApplicationStreamOptions, Postg
 export { ApplicationStreamAuthorizationError, createPostgresApplicationStream, enforcePostgresApplicationStreamRetention } from './stream-runtime-postgres.js';
 export type { ApplicationStreamSubscriptionGatewayOptions, ApplicationStreamSubscriptionIdentity, ApplicationStreamSubscriptionRuntimeBinding } from './stream-subscription-gateway.js';
 export { createApplicationStreamSubscriptionGateway } from './stream-subscription-gateway.js';
+export type { ApplicationSearchAdmissionScope, ApplicationSearchAffectedRoots, ApplicationSearchChangePage, ApplicationSearchChangeSource, ApplicationSearchCommittedChange, ApplicationSearchHydratedDocument, ApplicationSearchHydration, ApplicationSearchProjectionState, ApplicationSearchRebuildResult, ApplicationSearchRebuildValidation, ApplicationSearchRuntime, ApplicationSearchSnapshotPage, ApplicationSearchSnapshotSource, DeterministicApplicationSearchRuntimeOptions } from './search-runtime.js';
+export { ApplicationSearchCursorError, ApplicationSearchFanOutError, ApplicationSearchHistoryLossError, createDeterministicApplicationSearchRuntime } from './search-runtime.js';
 export type { ApplicationPostgresRlsOptions, ApplicationPostgresRlsPolicy, ApplicationTrustedContext, ApplicationTrustedContextOptions } from './trusted-context.js';
 export { postgres, trustedContext, validateTrustedContextValue } from './trusted-context.js';
 export * from './typekro.js';
