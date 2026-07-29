@@ -1,19 +1,19 @@
 import type { ApplicationProviderNode } from "@applik8s/core";
-import type {
-  ApplicationDeploymentContribution,
-  ApplicationDeploymentContributor,
-  ApplicationDeploymentPlanningContext,
-  ApplicationTypeKroFragmentDescriptor,
-} from "./types.js";
 import {
-  digestApplicationDeploymentValue,
   type ApplicationDeploymentEdge,
   type ApplicationDeploymentNode,
   type ApplicationExternalProviderDeploymentNode,
   type ApplicationKubernetesDirectDeploymentNode,
   type DeploymentJsonObject,
   type DeploymentJsonValue,
+  digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
+import type {
+  ApplicationDeploymentContribution,
+  ApplicationDeploymentContributor,
+  ApplicationDeploymentPlanningContext,
+  ApplicationTypeKroFragmentDescriptor,
+} from "./types.js";
 
 export type ApplicationProviderExecution =
   | "root-composition"
@@ -50,6 +50,8 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "AnalyticalDatabase", implementation: "clickhouse", execution: "root-composition" },
   { interface: "Queue", implementation: "kubernetes-configmap-queue", execution: "runtime-only" },
   { interface: "RequestIdentity", implementation: "request-identity", execution: "runtime-only" },
+  { interface: "Search", implementation: "opensearch", execution: "external-controller" },
+  { interface: "Search", implementation: "postgres-search", execution: "runtime-only" },
   { interface: "Secret", implementation: "kubernetes-secret", execution: "runtime-only" },
   { interface: "StructuredGeneration", implementation: "application-provider-selection", execution: "runtime-only" },
   { interface: "StructuredGeneration", implementation: "structured-generation-deterministic", execution: "runtime-only" },
@@ -121,7 +123,237 @@ function providerDirectContribution(
   ) {
     return workflowDirectContribution(provider, context);
   }
+  if (
+    provider.interface === "Search" &&
+    provider.implementation === "opensearch"
+  ) {
+    return openSearchDirectContribution(provider, context);
+  }
   return { nodes: [], edges: [] };
+}
+
+function openSearchDirectContribution(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ProviderDirectContribution {
+  const value = nestedObject(provider.config, "search");
+  if (
+    value?.kind !== "opensearch"
+    || value.provision === false
+  ) {
+    return { nodes: [], edges: [] };
+  }
+  const namespace =
+    optionalString(value.namespace) ?? applicationNamespace(context);
+  const name =
+    optionalString(value.name) ?? `${context.graph.metadata.name}-search`;
+  const operator = optionalObject(value.operator);
+  const operatorNamespace =
+    optionalString(operator?.namespace) ?? "opensearch-operator-system";
+  const profile =
+    value.profile === "production"
+      ? "production"
+      : value.profile === "development"
+        ? "development"
+        : context.profile === "starter" || context.profile === "local"
+          ? "development"
+          : "production";
+  const topology = optionalObject(value.topology);
+  const nodes = optionalInteger(topology?.nodes) ?? 3;
+  if (nodes < 3) {
+    throw new Error(
+      "Managed OpenSearch requires at least three cluster-manager-capable nodes.",
+    );
+  }
+  const roles = Array.isArray(topology?.roles)
+    ? topology.roles.map((role) => {
+        if (role === "clusterManager") return "cluster_manager";
+        if (role === "data" || role === "ingest") return role;
+        throw new Error(`Unsupported OpenSearch topology role ${String(role)}.`);
+      })
+    : ["cluster_manager", "data", "ingest"];
+  const storage = optionalObject(value.storage);
+  const deletionPolicy =
+    storage?.deletionPolicy === "delete" ? "delete" : "retain";
+  const networkPolicy = optionalObject(value.networkPolicy);
+  const snapshots = optionalObject(value.snapshots);
+  const tls = optionalObject(value.tls) ?? { source: "generated" };
+  const build = compactJson({
+    profile,
+    nodes,
+    roles,
+    tls: requiredString(tls.source, "OpenSearch TLS source"),
+    snapshots: Boolean(snapshots),
+    ...(snapshots
+      ? {
+          snapshotCredentialKeys: {
+            accessKey:
+              optionalString(snapshots.accessKeyKey) ?? "accessKey",
+            secretKey:
+              optionalString(snapshots.secretKeyKey) ?? "secretKey",
+          },
+        }
+      : {}),
+    ...(profile === "production" || networkPolicy?.enabled === true
+      ? {
+          networkPolicy: {
+            enabled: networkPolicy?.enabled !== false,
+            operatorNamespace:
+              optionalString(networkPolicy?.operatorNamespace)
+              ?? operatorNamespace,
+            ingressNamespaceLabels:
+              optionalObject(networkPolicy?.ingressNamespaceLabels)
+              ?? { "kubernetes.io/metadata.name": namespace },
+            ...(Array.isArray(networkPolicy?.egressNamespaceLabels)
+              ? {
+                  egressNamespaceLabels:
+                    networkPolicy.egressNamespaceLabels,
+                }
+              : {}),
+            ...(Array.isArray(networkPolicy?.egressCidrs)
+              ? { egressCidrs: networkPolicy.egressCidrs }
+              : {}),
+          },
+        }
+      : {}),
+  });
+  const adminCredentials = optionalObject(value.adminCredentialsSecret);
+  const dashboardCredentials = optionalObject(
+    value.dashboardCredentialsSecret,
+  );
+  const snapshotCredentials = optionalObject(
+    snapshots?.credentialsSecret,
+  );
+  const instance = compactJson({
+    name,
+    namespace,
+    ...(optionalString(value.version)
+      ? { version: optionalString(value.version) }
+      : {}),
+    lifecycle:
+      deletionPolicy === "delete"
+        ? "external-delete"
+        : "external-retain",
+    storage: {
+      size: optionalString(storage?.size) ?? "20Gi",
+      ...(optionalString(storage?.storageClassName)
+        ? {
+            storageClassName: optionalString(
+              storage?.storageClassName,
+            ),
+          }
+        : {}),
+    },
+    ...(optionalObject(value.resources)
+      ? { resources: optionalObject(value.resources) }
+      : {}),
+    ...(adminCredentials
+      ? {
+          adminCredentialsSecret: {
+            name: requiredString(
+              adminCredentials.name,
+              "OpenSearch admin credentials Secret",
+            ),
+          },
+        }
+      : {}),
+    ...(dashboardCredentials
+      ? {
+          dashboardCredentialsSecret: {
+            name: requiredString(
+              dashboardCredentials.name,
+              "OpenSearch dashboard credentials Secret",
+            ),
+          },
+        }
+      : {}),
+    tls,
+    ...(snapshots && snapshotCredentials
+      ? {
+          snapshots: {
+            repository: requiredString(
+              snapshots.repository,
+              "OpenSearch snapshot repository",
+            ),
+            bucket: requiredString(
+              snapshots.bucket,
+              "OpenSearch snapshot bucket",
+            ),
+            credentialsSecret: {
+              name: requiredString(
+                snapshotCredentials.name,
+                "OpenSearch snapshot credentials Secret",
+              ),
+              ...(optionalString(snapshots.accessKeyKey)
+                ? { accessKeyKey: optionalString(snapshots.accessKeyKey) }
+                : {}),
+              ...(optionalString(snapshots.secretKeyKey)
+                ? { secretKeyKey: optionalString(snapshots.secretKeyKey) }
+                : {}),
+            },
+            ...(optionalString(snapshots.endpoint)
+              ? { endpoint: optionalString(snapshots.endpoint) }
+              : {}),
+            ...(optionalString(snapshots.region)
+              ? { region: optionalString(snapshots.region) }
+              : {}),
+            ...(optionalString(snapshots.basePath)
+              ? { basePath: optionalString(snapshots.basePath) }
+              : {}),
+          },
+        }
+      : {}),
+    monitoring: value.monitoring === true,
+  });
+  const nodesToDeploy: ApplicationKubernetesDirectDeploymentNode[] = [];
+  const edges: ApplicationDeploymentEdge[] = [];
+  const operatorNodeId = `direct.${provider.id}.operator`;
+  if (operator?.provision !== false) {
+    nodesToDeploy.push(
+      directNode({
+        id: operatorNodeId,
+        provider,
+        context,
+        compositionId: "opensearch-operator-bootstrap",
+        reason:
+          "Install the shared OpenSearch operator before application search clusters.",
+        namespace: operatorNamespace,
+        configuration: compactJson({
+          name: optionalString(operator?.name) ?? "opensearch-operator",
+          namespace: operatorNamespace,
+          shared: true,
+          ...(optionalString(operator?.version)
+            ? { version: optionalString(operator?.version) }
+            : {}),
+        }),
+        ownership: "shared",
+        deletion: "retain",
+      }),
+    );
+  }
+  const clusterNodeId = `direct.${provider.id}.cluster`;
+  nodesToDeploy.push(
+    directNode({
+      id: clusterNodeId,
+      provider,
+      context,
+      compositionId: "opensearch-cluster",
+      reason:
+        "Keep operator-managed OpenSearch data and explicit retention outside the root KRO ApplySet.",
+      namespace,
+      configuration: compactJson({ name, namespace, build, instance }),
+      ownership: "application",
+      deletion: deletionPolicy,
+    }),
+  );
+  if (nodesToDeploy.some((node) => node.id === operatorNodeId)) {
+    edges.push({
+      from: operatorNodeId,
+      to: clusterNodeId,
+      relationship: "installsApi",
+    });
+  }
+  return { nodes: nodesToDeploy, edges };
 }
 
 function workflowDirectContribution(

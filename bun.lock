@@ -17,6 +17,7 @@
         "@applik8s/deployment-provider-oci": "0.6.0",
         "@applik8s/deployment-typekro": "0.6.0",
         "@applik8s/react": "0.6.0",
+        "@applik8s/runtime-opensearch": "0.6.0",
         "@applik8s/sdk": "0.6.0",
         "@applik8s/server": "0.6.0",
         "@applik8s/tanstack-start": "0.6.0",
@@ -125,12 +126,14 @@
         "@applik8s/runtime-hatchet": "0.6.0",
         "@applik8s/runtime-kubernetes": "0.6.0",
         "@applik8s/runtime-nats": "0.6.0",
+        "@applik8s/runtime-opensearch": "0.6.0",
         "@applik8s/runtime-postgres": "0.6.0",
       },
       "optionalPeers": [
         "@applik8s/runtime-hatchet",
         "@applik8s/runtime-kubernetes",
         "@applik8s/runtime-nats",
+        "@applik8s/runtime-opensearch",
         "@applik8s/runtime-postgres",
       ],
     },
@@ -319,6 +322,13 @@
         "nats": "^2.29.3",
       },
     },
+    "packages/runtime-opensearch": {
+      "name": "@applik8s/runtime-opensearch",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/applik8s": "0.6.0",
+      },
+    },
     "packages/runtime-postgres": {
       "name": "@applik8s/runtime-postgres",
       "version": "0.6.0",
@@ -456,6 +466,8 @@
     "@applik8s/runtime-kubernetes": ["@applik8s/runtime-kubernetes@workspace:packages/runtime-kubernetes"],
 
     "@applik8s/runtime-nats": ["@applik8s/runtime-nats@workspace:packages/runtime-nats"],
+
+    "@applik8s/runtime-opensearch": ["@applik8s/runtime-opensearch@workspace:packages/runtime-opensearch"],
 
     "@applik8s/runtime-postgres": ["@applik8s/runtime-postgres@workspace:packages/runtime-postgres"],
 

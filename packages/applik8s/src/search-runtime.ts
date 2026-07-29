@@ -156,6 +156,32 @@ export interface ApplicationSearchRuntime<TDocument extends object> {
   ): Promise<ApplicationSearchResult<TDocument>>;
 }
 
+export interface ApplicationSearchRuntimeField {
+  readonly kind:
+    | 'text'
+    | 'facet'
+    | 'filter'
+    | 'sort'
+    | 'values'
+    | 'minimum'
+    | 'maximum'
+    | 'count';
+  readonly valueType?:
+    | 'string'
+    | 'number'
+    | 'boolean'
+    | 'date'
+    | 'json'
+    | 'unknown';
+  readonly nullable?: boolean;
+  readonly boost?: number;
+}
+
+export type ApplicationSearchRuntimeFields<TDocument extends object> =
+  Readonly<
+    Record<keyof TDocument & string, ApplicationSearchRuntimeField>
+  >;
+
 export interface DeterministicApplicationSearchRuntimeOptions<
   TDocument extends object,
 > {
@@ -165,10 +191,7 @@ export interface DeterministicApplicationSearchRuntimeOptions<
   readonly initialCheckpoint?: number;
   readonly sourceProjectionRevision?: string;
   readonly cursorSecret: string;
-  readonly fields: Readonly<Record<keyof TDocument & string, {
-    readonly kind: 'text' | 'facet' | 'filter' | 'sort' | 'values' | 'minimum' | 'maximum' | 'count';
-    readonly boost?: number;
-  }>>;
+  readonly fields: ApplicationSearchRuntimeFields<TDocument>;
   readonly hydration: ApplicationSearchHydration<TDocument>;
   readonly changes: ApplicationSearchChangeSource;
   readonly snapshot: ApplicationSearchSnapshotSource<TDocument>;

@@ -229,6 +229,7 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/runtime-nats', resolve(workspaceRoot, 'packages/runtime-nats/src/index.ts')],
     ['@applik8s/runtime-kubernetes', resolve(workspaceRoot, 'packages/runtime-kubernetes/src/index.ts')],
     ['@applik8s/runtime-postgres', resolve(workspaceRoot, 'packages/runtime-postgres/src/index.ts')],
+    ['@applik8s/runtime-opensearch', resolve(workspaceRoot, 'packages/runtime-opensearch/src/index.ts')],
     ['@applik8s/operations', resolve(workspaceRoot, 'packages/operations/src/index.ts')],
     ['@applik8s/core', resolve(workspaceRoot, 'packages/core/src/index.ts')],
     ['@applik8s/sdk', resolve(workspaceRoot, 'packages/sdk/src/index.ts')],

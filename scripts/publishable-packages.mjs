@@ -24,6 +24,7 @@ export const publishablePackageNames = Object.freeze([
   'runtime-nats',
   'runtime-kubernetes',
   'runtime-postgres',
+  'runtime-opensearch',
   'testing',
   'typekro-adapter',
   'typetainer',
@@ -64,6 +65,7 @@ const publishOrder = [
   'runtime-nats',
   'runtime-kubernetes',
   'runtime-postgres',
+  'runtime-opensearch',
   'compiler',
   'cli',
 ];

@@ -3,10 +3,10 @@ import type { ApplicationMigrationContract, ApplicationProviderInterfaceKind, Ap
 import { Cel } from 'typekro';
 import type { OryIdentityStackConfig, OryPlatformStackConfig } from 'typekro/ory';
 import { applicationTypeKroExpressionValue, applicationTypeKroString } from './application-typekro-values.js';
-import { StructuredGeneration, isApplicationStructuredGenerationProvider } from './structured-generation.js';
+import { isApplicationStructuredGenerationProvider, StructuredGeneration } from './structured-generation.js';
 
-export { StructuredGeneration, isApplicationStructuredGenerationProvider } from './structured-generation.js';
 export type { ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken } from './structured-generation.js';
+export { isApplicationStructuredGenerationProvider, StructuredGeneration } from './structured-generation.js';
 
 export interface ApplicationIndexBackendSelectionOptions {
   readonly cache?: readonly unknown[];
@@ -544,14 +544,38 @@ export interface ApplicationOpenSearchProvider {
   readonly provision?: boolean;
   readonly version?: string;
   readonly endpoint?: string;
-  readonly credentialsSecret?: ApplicationResourceRef;
-  readonly usernameKey?: string;
-  readonly passwordKey?: string;
-  readonly tls?: {
-    readonly source: 'generated' | 'cert-manager' | 'secret';
-    readonly secretName?: string;
-    readonly issuerName?: string;
-    readonly issuerKind?: 'Issuer' | 'ClusterIssuer';
+  readonly profile?: 'development' | 'production';
+  readonly operator?: {
+    readonly provision?: boolean;
+    readonly name?: string;
+    readonly namespace?: string;
+    readonly version?: string;
+  };
+  readonly adminCredentialsSecret?: ApplicationResourceRef;
+  readonly dashboardCredentialsSecret?: ApplicationResourceRef;
+  readonly tls?:
+    | { readonly source: 'generated' }
+    | {
+        readonly source: 'secret';
+        readonly secretName: string;
+        readonly adminSecretName: string;
+        readonly adminDn: readonly string[];
+      }
+    | {
+        readonly source: 'cert-manager';
+        readonly secretName: string;
+        readonly adminSecretName: string;
+        readonly adminDn: readonly string[];
+        readonly issuerName: string;
+        readonly issuerKind?: 'Issuer' | 'ClusterIssuer';
+        readonly dnsNames: readonly string[];
+      };
+  readonly networkPolicy?: {
+    readonly enabled: boolean;
+    readonly operatorNamespace?: string;
+    readonly ingressNamespaceLabels?: Readonly<Record<string, string>>;
+    readonly egressNamespaceLabels?: readonly Readonly<Record<string, string>>[];
+    readonly egressCidrs?: readonly string[];
   };
   readonly topology?: {
     readonly nodes: number;
@@ -562,11 +586,19 @@ export interface ApplicationOpenSearchProvider {
     readonly storageClassName?: string;
     readonly deletionPolicy?: 'retain' | 'delete';
   };
+  readonly resources?: {
+    readonly requests?: { readonly cpu?: string; readonly memory?: string };
+    readonly limits?: { readonly cpu?: string; readonly memory?: string };
+  };
   readonly snapshots?: {
     readonly repository: string;
     readonly bucket: string;
     readonly endpoint?: string;
     readonly credentialsSecret: ApplicationResourceRef;
+    readonly accessKeyKey?: string;
+    readonly secretKeyKey?: string;
+    readonly region?: string;
+    readonly basePath?: string;
     readonly retention?: string;
   };
   readonly monitoring?: boolean;
@@ -1458,10 +1490,12 @@ function assertApplicationOpenSearchProvider(
   if (value.topology) {
     if (
       !Number.isInteger(value.topology.nodes)
-      || value.topology.nodes < 1
+      || value.topology.nodes < (value.provision === false ? 1 : 3)
     ) {
       throw new Error(
-        'Search OpenSearch topology.nodes must be a positive integer.',
+        value.provision === false
+          ? 'Search external OpenSearch topology.nodes must be a positive integer.'
+          : 'Search managed OpenSearch topology.nodes must be at least three.',
       );
     }
     if (
@@ -1486,10 +1520,17 @@ function assertApplicationOpenSearchProvider(
       );
     }
   }
-  if (value.credentialsSecret && !value.credentialsSecret.name?.trim()) {
-    throw new Error(
-      'Search OpenSearch credentialsSecret must reference a named Secret.',
-    );
+  for (
+    const [label, secret] of [
+      ['adminCredentialsSecret', value.adminCredentialsSecret],
+      ['dashboardCredentialsSecret', value.dashboardCredentialsSecret],
+    ] as const
+  ) {
+    if (secret && !secret.name?.trim()) {
+      throw new Error(
+        `Search OpenSearch ${label} must reference a named Secret.`,
+      );
+    }
   }
   if (value.snapshots) {
     if (
@@ -1504,18 +1545,31 @@ function assertApplicationOpenSearchProvider(
   }
   if (
     value.tls?.source === 'secret'
-    && !value.tls.secretName?.trim()
+    && (
+      !value.tls.secretName.trim()
+      || !value.tls.adminSecretName.trim()
+      || value.tls.adminDn.length === 0
+      || value.tls.adminDn.some((dn) => !dn.trim())
+    )
   ) {
     throw new Error(
-      'Search OpenSearch TLS source secret requires secretName.',
+      'Search OpenSearch TLS source secret requires non-empty server/admin Secret names and admin DNs.',
     );
   }
   if (
     value.tls?.source === 'cert-manager'
-    && !value.tls.issuerName?.trim()
+    && (
+      !value.tls.secretName.trim()
+      || !value.tls.adminSecretName.trim()
+      || !value.tls.issuerName.trim()
+      || value.tls.adminDn.length === 0
+      || value.tls.adminDn.some((dn) => !dn.trim())
+      || value.tls.dnsNames.length === 0
+      || value.tls.dnsNames.some((name) => !name.trim())
+    )
   ) {
     throw new Error(
-      'Search OpenSearch TLS source cert-manager requires issuerName.',
+      'Search OpenSearch TLS source cert-manager requires non-empty server/admin Secret names, issuer, DNS names, and admin DNs.',
     );
   }
 }

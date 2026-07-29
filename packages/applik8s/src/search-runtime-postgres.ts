@@ -23,12 +23,12 @@ import {
   type ApplicationSearchRebuildResult,
   type ApplicationSearchRebuildValidation,
   type ApplicationSearchRuntime,
+  type ApplicationSearchRuntimeFields,
   type ApplicationSearchSnapshotSource,
-  type DeterministicApplicationSearchRuntimeOptions,
 } from './search-runtime.js';
 
 type SearchFieldMap<TDocument extends object> =
-  DeterministicApplicationSearchRuntimeOptions<TDocument>['fields'];
+  ApplicationSearchRuntimeFields<TDocument>;
 
 export interface PostgresApplicationSearchRuntimeOptions<
   TDocument extends object,

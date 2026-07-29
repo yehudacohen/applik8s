@@ -75,6 +75,11 @@ const rules: readonly BoundaryRule[] = [
     rationale: 'The PostgreSQL runtime may implement the provider-neutral SQL contract but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
   },
   {
+    roots: ['packages/runtime-opensearch/src'],
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The OpenSearch runtime may implement provider-neutral search contracts but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
+  },
+  {
     roots: ['packages/applik8s/src/operator.ts', 'packages/applik8s/src/dns.ts'],
     forbidden: [/^node:/, /^@applik8s\/(?:applik8s|compiler|runtime|typekro-adapter)$/, /^typekro(?:\/|$)/],
     rationale: 'Operator closure entrypoints must stay WASM-safe and free of Node, compiler, and TypeKro dependencies.',

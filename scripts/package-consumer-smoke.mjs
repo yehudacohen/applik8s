@@ -51,6 +51,7 @@ const publicEntrypoints = [
   '@applik8s/runtime-nats/command-processor',
   '@applik8s/runtime-kubernetes',
   '@applik8s/runtime-postgres',
+  '@applik8s/runtime-opensearch',
   '@applik8s/testing',
   '@applik8s/typekro-adapter',
   '@applik8s/typekro-adapter/targets',

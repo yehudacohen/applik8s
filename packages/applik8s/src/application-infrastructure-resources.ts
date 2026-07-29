@@ -440,6 +440,9 @@ export function recordApplicationProviderGraph(
       ...(providerInterface === 'AnalyticalDatabase' && implementation && typeof implementation === 'object'
         ? { analyticalDatabase: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
+      ...(providerInterface === 'Search' && implementation && typeof implementation === 'object'
+        ? { search: applicationTypeKroGraphValue(implementation) as JsonValue }
+        : {}),
     },
   });
 }

@@ -8,8 +8,8 @@ import { describe, expect, it } from "vitest";
 // typecast-file-boundary: Test fixtures preserve literal discriminants while
 // exercising the public portable compiler contract.
 import {
-  compileApplicationDeploymentGraph,
   type ApplicationDeploymentContributor,
+  compileApplicationDeploymentGraph,
 } from "../src/index.js";
 
 const sourceGraphDigest = `sha256:${"a".repeat(64)}`;
@@ -422,6 +422,38 @@ describe("Application deployment compiler", () => {
               },
             },
           },
+          {
+            id: "provider.search",
+            kind: "provider",
+            name: "Search",
+            stability: "stable",
+            interface: "Search",
+            implementation: "opensearch",
+            config: {
+              search: {
+                kind: "opensearch",
+                provision: true,
+                profile: "production",
+                name: "guestbook-search",
+                namespace: "guestbook",
+                operator: {
+                  namespace: "opensearch-operator-system",
+                },
+                topology: {
+                  nodes: 3,
+                  roles: ["clusterManager", "data", "ingest"],
+                },
+                networkPolicy: {
+                  enabled: true,
+                },
+                storage: {
+                  size: "4Gi",
+                  deletionPolicy: "retain",
+                },
+                tls: { source: "generated" },
+              },
+            },
+          },
         ],
       },
     });
@@ -433,6 +465,8 @@ describe("Application deployment compiler", () => {
       "applik8s-valkey-cluster-provider",
       "applik8s-postgres-cluster-provider",
       "rook-object-storage-claim",
+      "opensearch-operator-bootstrap",
+      "opensearch-cluster",
       "applik8s-namespace",
       "applik8s-namespace",
     ]);
@@ -447,6 +481,32 @@ describe("Application deployment compiler", () => {
       from: "direct.provider.index.operator",
       to: "direct.provider.index.cluster",
       relationship: "installsApi",
+    });
+    expect(result.graph.edges).toContainEqual({
+      from: "direct.provider.search.operator",
+      to: "direct.provider.search.cluster",
+      relationship: "installsApi",
+    });
+    expect(
+      direct.find(
+        (node) => node.id === "direct.provider.search.cluster",
+      )?.spec.configuration,
+    ).toMatchObject({
+      build: {
+        profile: "production",
+        nodes: 3,
+        roles: ["cluster_manager", "data", "ingest"],
+        networkPolicy: {
+          operatorNamespace: "opensearch-operator-system",
+          ingressNamespaceLabels: {
+            "kubernetes.io/metadata.name": "guestbook",
+          },
+        },
+      },
+      instance: {
+        lifecycle: "external-retain",
+        storage: { size: "4Gi" },
+      },
     });
     for (const node of direct) {
       expect(result.graph.edges).toContainEqual({
