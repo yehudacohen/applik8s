@@ -9,7 +9,7 @@ import { type ApplicationEventLogResourceState, emitApplicationEventLogResources
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
 import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions, sameApplicationProcessorDeployment } from './application-processor-policy.js';
-import type { ApplicationEventLogProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState, ApplicationTransactionalDatabaseProvider } from './application-providers.js';
+import type { ApplicationAnalyticalDatabaseProvider, ApplicationEventLogProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState, ApplicationTransactionalDatabaseProvider } from './application-providers.js';
 import { applicationEventLogImplementation, applicationTransactionalDatabaseImplementation, applicationProviderImplementationName, applicationProviderInterface, applicationProviderQualificationFor, applicationProviderSelectionFor } from './application-providers.js';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import { analyzeApplicationServerRouteSource, applicationCommandSourceViolations, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
@@ -20,7 +20,7 @@ import type { ApplicationEventLogPublisher, EventLogPublishAcknowledgement } fro
 import type { PostgresModelCommandResult } from './model-command-postgres-runtime.js';
 import { canonicalApplicationCommandKey, executePostgresModelCommand } from './model-command-postgres-runtime.js';
 import { createPostgresModelClient } from './transactional-database-postgres-runtime.js';
-import { applicationModelCommandBindingForOperation, applicationModelFacet, bindApplicationModelCommandOperation, type DrizzleApplicationModelFacet, getApplicationModelFacet, nativeApplicationModelBindingFor } from './native-models.js';
+import { applicationModelCommandBindingForOperation, applicationModelFacet, bindApplicationModelCommandOperation, type DrizzleAnalyticalApplicationModelFacet, type DrizzleApplicationModelFacet, getApplicationModelFacet, nativeApplicationModelBindingFor } from './native-models.js';
 
 const applicationModelCommandAuthorities = new WeakMap<object, Map<string, ApplicationOperationAuthorizationContract>>();
 
@@ -554,6 +554,126 @@ export function recordApplicationNativeModelGraph<TTable extends AnyPgTable>(
     generatedResources: providerResources,
     runtime: applicationTransactionalDatabaseRuntime(provider, model.name, providerResources),
     metadataLinks: [{ graphNode: { nodeId: providerNodeId }, artifact: { kind: 'providerContract', name: `${model.name}-native-relational-transactional-database` }, purpose: 'providerDependency' }],
+  });
+}
+
+export function recordApplicationAnalyticalNativeModelGraph<
+  TTable extends AnyPgTable,
+>(
+  state: ApplicationModelGraphState,
+  model: DrizzleAnalyticalApplicationModelFacet<TTable>,
+  providerInput:
+    | ApplicationAnalyticalDatabaseProvider
+    | ApplicationProviderBinding<ApplicationAnalyticalDatabaseProvider>,
+): void {
+  const nodeId = applicationGraphNodeId('model', model.name);
+  const qualification = applicationProviderQualificationFor(providerInput);
+  const providerNodeId = applicationProviderGraphNodeId(
+    'AnalyticalDatabase',
+    qualification,
+  );
+  const implementation =
+    providerInput
+    && typeof providerInput === 'object'
+    && Reflect.get(providerInput, 'kind') === 'applicationProvider'
+      ? Reflect.get(providerInput, 'implementation')
+      : providerInput;
+  if (
+    !state.graphNodes.some(
+      (node) => node.kind === 'provider' && node.id === providerNodeId,
+    )
+  ) {
+    recordApplicationProviderGraph(
+      state,
+      'AnalyticalDatabase',
+      'nativeAnalyticalModel',
+      implementation,
+      qualification,
+    );
+  }
+  const providerRef = {
+    interface: 'AnalyticalDatabase' as const,
+    nodeId: providerNodeId,
+  };
+  addApplicationGraphNode(state, {
+    id: nodeId,
+    kind: 'model',
+    name: model.name,
+    stability: 'stable',
+    entity: { name: model.name },
+    database: providerRef,
+    schema: {
+      identity: model.identity.fields,
+      constraints: [],
+      indexes: [],
+      migrations: {
+        strategy: 'none',
+        compatibility: 'requiresExplicitMigration',
+      },
+      transactions: 'unsupported',
+      retention: { mode: 'retain' },
+    },
+    materialization: {
+      mode: 'providerBacked',
+      provider: providerRef,
+      backingResources: [],
+      connection: {},
+      runtimeBoundary: applicationModelRuntimeBoundary(),
+      reconciliation: {
+        ownership: 'external',
+        schemaDrift: 'failClosed',
+        deletionPolicy: 'retain',
+      },
+    },
+    native: {
+      kind: 'drizzle-table',
+      authority: 'analytical-database',
+      artifact: {
+        name: model.table.name,
+        ...(model.table.schema ? { schema: model.table.schema } : {}),
+      },
+      schemaAuthority: 'drizzle',
+      runtimeSchema: 'derived-arktype',
+      nativeApi: 'preserved',
+    },
+    common: {
+      identity: model.identity,
+      snapshot: {
+        shape: 'identity-value-revision',
+        revisionOptional: true,
+      },
+      changes: {
+        authority: 'analytical-checkpoint',
+        rawWrites: 'explicit-invalidation-required',
+      },
+      relationships: model.relationships,
+      operations: [],
+    },
+  });
+  addApplicationGraphEdge(state, {
+    from: { nodeId: providerNodeId },
+    to: { nodeId },
+    relationship: 'provides',
+  });
+  const requirementId = `analytical-database.${model.name}`;
+  addApplicationProviderRequirement(state, {
+    id: requirementId,
+    interface: 'AnalyticalDatabase',
+    consumer: { nodeId },
+    provider: providerRef,
+    required: true,
+    purpose: 'analyticalDatabase',
+    diagnostics: {
+      missing: `Analytical model ${model.name} requires its declared AnalyticalDatabase provider.`,
+      ambiguous: `Analytical model ${model.name} is associated with more than one AnalyticalDatabase provider.`,
+    },
+  });
+  addApplicationProviderBinding(state, {
+    requirement: requirementId,
+    provider: providerRef,
+    generatedResources: [],
+    runtime: {},
+    metadataLinks: [],
   });
 }
 

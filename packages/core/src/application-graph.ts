@@ -275,7 +275,9 @@ export interface ApplicationCrdNode extends ApplicationGraphNodeBase<'crd'> {
 
 export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> {
   readonly entity: ApplicationEntityContract;
-  readonly database: ApplicationProviderRef<'TransactionalDatabase'>;
+  readonly database: ApplicationProviderRef<
+    'TransactionalDatabase' | 'AnalyticalDatabase'
+  >;
   readonly schema: ApplicationModelSchemaContract;
   readonly materialization: ApplicationModelMaterializationContract;
   /** Present for explicitly promoted native tables/resources; absent for legacy JSONB models. */
@@ -288,7 +290,11 @@ export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> 
 
 export interface ApplicationNativeModelContract {
   readonly kind: 'drizzle-table' | 'kubernetes-resource' | 'jsonb-model';
-  readonly authority: 'postgres' | 'kubernetes' | 'transactional-database';
+  readonly authority:
+    | 'postgres'
+    | 'kubernetes'
+    | 'transactional-database'
+    | 'analytical-database';
   readonly artifact: {
     readonly name: string;
     readonly schema?: string;
@@ -314,7 +320,11 @@ export interface ApplicationCommonModelContract {
     readonly revisionOptional: true;
   };
   readonly changes: {
-    readonly authority: 'postgres-change-log' | 'kubernetes-watch' | 'transactional-database-outbox';
+    readonly authority:
+      | 'postgres-change-log'
+      | 'kubernetes-watch'
+      | 'transactional-database-outbox'
+      | 'analytical-checkpoint';
     readonly rawWrites: 'explicit-invalidation-required' | 'observed';
   };
   readonly relationships: readonly ApplicationModelRelationshipGraphContract[];
@@ -1251,7 +1261,9 @@ export interface ApplicationModelRetentionSemanticsContract {
 
 export interface ApplicationModelMaterializationContract {
   readonly mode: 'providerBacked';
-  readonly provider: ApplicationProviderRef<'TransactionalDatabase'>;
+  readonly provider: ApplicationProviderRef<
+    'TransactionalDatabase' | 'AnalyticalDatabase'
+  >;
   readonly backingResources: readonly ApplicationResourceRef[];
   readonly connection: ApplicationProviderRuntimeContract;
   readonly runtimeBoundary: ApplicationModelRuntimeBoundaryContract;

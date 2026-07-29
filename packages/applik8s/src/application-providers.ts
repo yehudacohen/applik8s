@@ -1278,6 +1278,55 @@ export function applicationAnalyticalDatabaseImplementation(value: unknown): App
   return undefined;
 }
 
+/**
+ * Resolves the ClickHouse-capable portion of an analytical selection.
+ *
+ * A profile may use PostgreSQL for the starter analytical role and ClickHouse
+ * for larger profiles. The TypeKro data-plane emitter still needs one
+ * graph-safe ClickHouse declaration whose resources disappear in PostgreSQL
+ * branches. Mapping those branches to an explicitly disabled ClickHouse value
+ * preserves inactive-branch isolation without exposing profile conditionals to
+ * every integration.
+ */
+export function applicationClickHouseAnalyticalDatabaseImplementation(
+  value: unknown,
+): ApplicationClickHouseAnalyticalDatabaseProvider | undefined {
+  const concrete = applicationAnalyticalDatabaseImplementation(value);
+  if (concrete && isClickHouseAnalyticalDatabaseProvider(concrete)) {
+    return concrete;
+  }
+  const selection = applicationProviderSelectionFor<ApplicationAnalyticalDatabaseProvider>(
+    value,
+  );
+  if (!selection) return undefined;
+  const candidates = [
+    ...Object.values(selection.cases),
+    selection.default,
+  ];
+  const clickHouse = candidates.find(isClickHouseAnalyticalDatabaseProvider);
+  if (!clickHouse) return undefined;
+  const disabled: ApplicationClickHouseAnalyticalDatabaseProvider = {
+    ...clickHouse,
+    kind: 'clickhouse',
+    enabled: false,
+    provision: false,
+  };
+  return applicationSelectedClickHouseProvider({
+    ...selection,
+    cases: Object.fromEntries(
+      Object.entries(selection.cases).map(([variant, candidate]) => [
+        variant,
+        isClickHouseAnalyticalDatabaseProvider(candidate)
+          ? candidate
+          : disabled,
+      ]),
+    ),
+    default: isClickHouseAnalyticalDatabaseProvider(selection.default)
+      ? selection.default
+      : disabled,
+  });
+}
+
 export function applicationWorkflowEngineImplementation(state: ApplicationProviderState): ApplicationWorkflowEngineProvider {
   const selected = state.providers.extensions?.['WorkflowEngine@v1alpha1'];
   if (isHatchetWorkflowEngineProvider(selected)) {
@@ -1486,6 +1535,17 @@ export function applicationProviderSelectionFor<TImplementation>(
   value: unknown,
 ): ApplicationProviderSelectionValue<TImplementation> | undefined {
   if (!value || typeof value !== 'object') return undefined;
+  if (isApplicationProviderSelection(value)) {
+    return value as ApplicationProviderSelectionValue<TImplementation>;
+  }
+  if (
+    Reflect.get(value, 'kind') === 'applicationProvider'
+    && Reflect.get(value, 'implementation')
+  ) {
+    return applicationProviderSelectionFor<TImplementation>(
+      Reflect.get(value, 'implementation'),
+    );
+  }
   const selection = Reflect.get(value, applicationProviderSelectionMetadata);
   return isApplicationProviderSelection(selection)
     ? selection as ApplicationProviderSelectionValue<TImplementation>

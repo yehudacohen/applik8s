@@ -3,7 +3,7 @@ import { Cel, singleton } from 'typekro';
 import { clickHouseInstallation, clickhouseHelmRepositoryBootstrap, clickhouseOperatorBootstrap, DEFAULT_CLICKHOUSE_REPO_NAME, DEFAULT_CLICKHOUSE_REPO_URL } from 'typekro/clickhouse';
 import { networkPolicy } from 'typekro/kubernetes';
 import { graphResourceId, kubernetesNameSegment } from './application-identifiers.js';
-import { applicationAnalyticalDatabaseImplementation, isClickHouseAnalyticalDatabaseProvider } from './application-providers.js';
+import { applicationClickHouseAnalyticalDatabaseImplementation } from './application-providers.js';
 import { applicationTypeKroExpressionValue, applicationTypeKroString, applicationTypeKroValueIdentity, applyApplicationTypeKroIncludeWhen } from './application-typekro-values.js';
 
 export interface ApplicationAnalyticalDatabaseResourceState {
@@ -12,8 +12,8 @@ export interface ApplicationAnalyticalDatabaseResourceState {
 
 /** Materializes the default shared ClickHouse control plane and app-owned data plane. */
 export function emitApplicationAnalyticalDatabaseResources(state: ApplicationAnalyticalDatabaseResourceState, provider: unknown): void {
-  const projection = applicationAnalyticalDatabaseImplementation(provider);
-  if (!projection || !isClickHouseAnalyticalDatabaseProvider(projection) || projection.provision === false) return;
+  const projection = applicationClickHouseAnalyticalDatabaseImplementation(provider);
+  if (!projection || projection.provision === false) return;
   const name = projection.name ?? 'applik8s-analytics';
   const namespace = applicationTypeKroString(projection.namespace ?? 'applik8s-analytics');
   const provisioned = applicationProviderCondition(projection.enabled, projection.provision);

@@ -9,6 +9,7 @@ import {
 } from '@applik8s/applik8s';
 import { validateApplicationGraph } from '@applik8s/core';
 import { type } from 'arktype';
+import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
 const Installation = type({
@@ -411,27 +412,30 @@ describe('application deployment profiles', () => {
       'profile',
     );
     const AnalyticsDatabase = AnalyticalDatabase.named('analytics');
+    const starterDatabase = Database.externalPostgres({
+      database: 'application',
+      connection: { secretName: 'starter-postgres-app' },
+    });
     deployment
       .provide(AnalyticsDatabase)
       .starter(() =>
-        AnalyticalDatabase.clickhouse({
-          name: 'starter-analytics',
-          provision: false,
-          endpoint: 'http://starter.example.test:8123',
+        Analytics.postgres({
+          database: starterDatabase,
+          schema: 'analytics',
         }),
       )
       .dedicated(() =>
-        AnalyticalDatabase.clickhouse({
-          name: 'dedicated-analytics',
-          provision: false,
-          endpoint: 'http://dedicated.example.test:8123',
+        Analytics.clickHouse({
+          name: 'profile-analytics',
+          provision: true,
         }),
       )
       .external(() =>
-        AnalyticalDatabase.clickhouse({
-          name: 'external-analytics',
-          provision: false,
-          endpoint: 'http://external.example.test:8123',
+        Analytics.externalClickHouse({
+          name: 'profile-analytics',
+          connection: {
+            endpoint: 'http://external.example.test:8123',
+          },
         }),
       )
       .exhaustive();
@@ -450,6 +454,25 @@ describe('application deployment profiles', () => {
       output: type({ accountId: 'string', amount: 'number' }),
       project: (payload) => payload,
     });
+    const usageFacts = pgTable('profile_usage_facts', {
+      id: text('id').primaryKey(),
+      accountId: text('account_id').notNull(),
+    });
+    const UsageFact = application.model(usageFacts, {
+      database: application.inject(AnalyticsDatabase),
+    });
+    expect(UsageFact.$model).toMatchObject({
+      provider: 'analytical-database',
+      capabilities: {
+        reads: 'declaredQueries',
+        ingestion: 'projectionOwned',
+        checkpoint: 'idempotent',
+        rebuild: 'fullReplay',
+      },
+    });
+    expect('create' in UsageFact).toBe(false);
+    expect('update' in UsageFact).toBe(false);
+    expect('delete' in UsageFact).toBe(false);
 
     const graph = applicationGraphFor(application.composition);
     expect(
@@ -475,7 +498,7 @@ describe('application deployment profiles', () => {
           cases: {
             dedicated: { kind: 'clickhouse' },
             external: { kind: 'clickhouse' },
-            starter: { kind: 'clickhouse' },
+            starter: { kind: 'postgres-analytics' },
           },
         },
       },
@@ -490,6 +513,29 @@ describe('application deployment profiles', () => {
         nodeId: 'provider.analytical-database.v1alpha1.analytics',
       },
     });
+    expect(
+      graph?.nodes.find(
+        (node) => node.kind === 'model' && node.name === UsageFact.$model.name,
+      ),
+    ).toMatchObject({
+      database: {
+        interface: 'AnalyticalDatabase',
+        nodeId: 'provider.analytical-database.v1alpha1.analytics',
+      },
+      native: {
+        authority: 'analytical-database',
+        schemaAuthority: 'drizzle',
+      },
+      common: {
+        changes: {
+          authority: 'analytical-checkpoint',
+        },
+        operations: [],
+      },
+      schema: {
+        transactions: 'unsupported',
+      },
+    });
     expect(graph?.providerRequirements).toContainEqual(
       expect.objectContaining({
         id: 'analytical-database.usage',
@@ -499,6 +545,9 @@ describe('application deployment profiles', () => {
         },
       }),
     );
+    const kroYaml = application.composition.factory('kro').toYaml();
+    expect(kroYaml).toContain('ClickHouseInstallation');
+    expect(kroYaml).toContain('schema.spec.profile == "dedicated"');
     if (!graph) throw new Error('Expected qualified analytical graph.');
     expect(validateApplicationGraph(graph)).toEqual([]);
   });

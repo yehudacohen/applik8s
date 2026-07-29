@@ -201,7 +201,7 @@ export interface CommonApplicationModelFacet<TValue, TIdentity = string, TInsert
   readonly apiVersion: 'applik8s.model/v1alpha1';
   readonly kind: 'applicationModelFacet';
   readonly name: string;
-  readonly provider: 'postgres' | 'kubernetes' | 'transactional-database';
+  readonly provider: 'postgres' | 'kubernetes' | 'transactional-database' | 'analytical-database';
   readonly native: 'drizzle-table' | 'kubernetes-resource' | 'jsonb-model';
   readonly identity: ApplicationModelIdentityContract;
   readonly revision?: ApplicationModelRevisionContract;
@@ -308,6 +308,73 @@ export type PromotedDrizzleTable<TTable extends AnyPgTable, TIdentity = Conventi
   readonly [applicationModelFacet]: DrizzleApplicationModelFacet<TTable, TIdentity>;
 } & Omit<DrizzleApplicationModelDirectMembers<TTable, TIdentity>, keyof TTable>;
 
+export interface DrizzleAnalyticalApplicationModelFacet<
+  TTable extends AnyPgTable,
+  TIdentity = ConventionalTableIdentity<TTable>,
+> extends Omit<
+    CommonApplicationModelFacet<InferSelectModel<TTable>, TIdentity>,
+    'provider' | 'native' | 'schema' | 'revision'
+  > {
+  readonly provider: 'analytical-database';
+  readonly native: 'drizzle-table';
+  readonly schema: {
+    readonly select: Type<InferSelectModel<TTable>>;
+  };
+  readonly table: {
+    readonly name: string;
+    readonly schema?: string;
+  };
+  readonly directMemberCollisions: readonly string[];
+  readonly capabilities: {
+    readonly reads: 'declaredQueries';
+    readonly aggregates: 'providerRefinement';
+    readonly ingestion: 'projectionOwned';
+    readonly checkpoint: 'idempotent';
+    readonly rebuild: 'fullReplay';
+  };
+  readonly api: {
+    view<
+      const TName extends string,
+      TInput,
+      TOutput,
+      TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
+      TSource extends ApplicationQuerySourceBinding | undefined = undefined,
+    >(
+      name: TName,
+      options: ApplicationModelViewOptions<TInput, TOutput, TPrincipal, TSource>,
+    ): PromotedAnalyticalDrizzleTable<TTable, TIdentity>
+      & Readonly<Record<TName, ApplicationQueryOperation<TInput, TOutput>>>;
+  };
+}
+
+type DrizzleAnalyticalModelDirectMembers<
+  TTable extends AnyPgTable,
+  TIdentity,
+> = {
+  readonly $model: DrizzleAnalyticalApplicationModelFacet<TTable, TIdentity>;
+  readonly schema: DrizzleAnalyticalApplicationModelFacet<TTable, TIdentity>['schema'];
+  readonly relations: DrizzleAnalyticalApplicationModelFacet<TTable, TIdentity>['relations'];
+  ref(): ApplicationModelReferenceSchema<TIdentity>;
+  view<
+    const TName extends string,
+    TInput,
+    TOutput,
+    TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
+    TSource extends ApplicationQuerySourceBinding | undefined = undefined,
+  >(
+    name: TName,
+    options: ApplicationModelViewOptions<TInput, TOutput, TPrincipal, TSource>,
+  ): PromotedAnalyticalDrizzleTable<TTable, TIdentity>
+    & Readonly<Record<TName, ApplicationQueryOperation<TInput, TOutput>>>;
+};
+
+export type PromotedAnalyticalDrizzleTable<
+  TTable extends AnyPgTable,
+  TIdentity = ConventionalTableIdentity<TTable>,
+> = TTable & {
+  readonly [applicationModelFacet]: DrizzleAnalyticalApplicationModelFacet<TTable, TIdentity>;
+} & Omit<DrizzleAnalyticalModelDirectMembers<TTable, TIdentity>, keyof TTable>;
+
 export interface PromoteDrizzleTableOptions<TTable extends AnyPgTable> {
   readonly name?: string;
   readonly database?: string;
@@ -315,6 +382,9 @@ export interface PromoteDrizzleTableOptions<TTable extends AnyPgTable> {
   readonly identity?: readonly (keyof InferSelectModel<TTable> & string)[];
   readonly revision?: keyof InferSelectModel<TTable> & string | false;
 }
+
+export type PromoteAnalyticalDrizzleTableOptions<TTable extends AnyPgTable> =
+  Omit<PromoteDrizzleTableOptions<TTable>, 'database' | 'revision'>;
 
 type NativeModelCommandRegistrar = (command: CommandDefinition<object, object, Readonly<Record<string, object>>>, options: ApplicationModelCommandOptions<object, object>, handler: ApplicationModelCommandHandler<object, Record<string, never>, object, object, Readonly<Record<string, object>>>) => ApplicationModelCommandBinding<object, object, object, Record<string, never>>;
 type NativeModelBeforeCommitRegistrar = (
@@ -453,6 +523,163 @@ export type PromotedKubernetesResource<TSpec extends object, TStatus extends obj
  * name. The private symbol facet always exposes the complete API, so valid
  * Drizzle column names such as `create`, `on`, or `$model` remain usable.
  */
+export function promoteAnalyticalDrizzleTable<TTable extends AnyPgTable>(
+  table: TTable,
+  options: PromoteAnalyticalDrizzleTableOptions<TTable> = {},
+): PromotedAnalyticalDrizzleTable<TTable> {
+  if (!isTable(table)) {
+    throw new Error(
+      'Applik8s analytical model promotion requires a Drizzle table.',
+    );
+  }
+  const existing = Reflect.get(table, applicationModelFacet) as
+    | CommonApplicationModelFacet<unknown, unknown, unknown, unknown>
+    | undefined;
+  if (existing) {
+    if (existing.provider !== 'analytical-database') {
+      throw new Error(
+        `Drizzle table ${getTableName(table)} is already promoted as ${existing.provider} and cannot change authority kind.`,
+      );
+    }
+    if (
+      options.name !== undefined
+      && existing.name
+        !== publicApplicationModelName(
+          options.name,
+          `Drizzle table ${getTableName(table)}`,
+        )
+    ) {
+      throw new Error(
+        `Drizzle table ${getTableName(table)} is already promoted as ${existing.name}.`,
+      );
+    }
+    return table as PromotedAnalyticalDrizzleTable<TTable>;
+  }
+
+  const directMemberNames = [
+    '$model',
+    'schema',
+    'relations',
+    'ref',
+    'view',
+  ] as const;
+  const directMemberCollisions = Object.freeze(
+    directMemberNames.filter((member) => member in table),
+  );
+  const tableConfig = getTableConfig(table);
+  const identityFields = resolveIdentityFields(table, options.identity);
+  if (identityFields.length !== 1) {
+    throw new Error(
+      `Drizzle table ${getTableName(table)} has composite identity [${identityFields.join(', ')}]. Analytical model promotion requires one canonical identity field.`,
+    );
+  }
+  const selectSchema = createSelectSchema(table) as Type<
+    InferSelectModel<TTable>
+  >;
+  const name = publicApplicationModelName(
+    options.name ?? getTableName(table),
+    `Drizzle table ${getTableName(table)}`,
+  );
+  const identity: ApplicationModelIdentityContract = {
+    fields: identityFields,
+    encoding: 'scalar',
+  };
+  const relationships = Object.freeze(
+    normalizeDrizzleModelRelationships(table, options.schema, name),
+  );
+  const view = <
+    const TName extends string,
+    TInput,
+    TOutput,
+    TPrincipal extends ApplicationQueryPrincipal,
+    TSource extends ApplicationQuerySourceBinding | undefined,
+  >(
+    viewName: TName,
+    viewOptions: ApplicationModelViewOptions<
+      TInput,
+      TOutput,
+      TPrincipal,
+      TSource
+    >,
+  ) =>
+    installApplicationModelView(
+      table,
+      viewName,
+      viewOptions,
+    ) as PromotedAnalyticalDrizzleTable<TTable>
+      & Readonly<Record<TName, ApplicationQueryOperation<TInput, TOutput>>>;
+  const facet: DrizzleAnalyticalApplicationModelFacet<TTable> = Object.freeze({
+    apiVersion: 'applik8s.model/v1alpha1',
+    kind: 'applicationModelFacet',
+    name,
+    provider: 'analytical-database',
+    native: 'drizzle-table',
+    table: {
+      name: tableConfig.name,
+      ...(tableConfig.schema ? { schema: tableConfig.schema } : {}),
+    },
+    directMemberCollisions,
+    identity,
+    schema: Object.freeze({ select: selectSchema }),
+    relationships,
+    relations: Object.freeze(
+      Object.fromEntries(
+        relationships.map((relationship) => [
+          relationship.name,
+          relationship,
+        ]),
+      ),
+    ),
+    capabilities: Object.freeze({
+      reads: 'declaredQueries',
+      aggregates: 'providerRefinement',
+      ingestion: 'projectionOwned',
+      checkpoint: 'idempotent',
+      rebuild: 'fullReplay',
+    }),
+    api: Object.freeze({ view }),
+    ref() {
+      const identitySchema = arktypePropertySchema(
+        selectSchema,
+        identityFields[0] as string,
+      );
+      return decorateModelReference(identitySchema, {
+        target: name,
+        identity,
+        integrity: 'soft',
+      }) as ApplicationModelReferenceSchema<
+        ConventionalTableIdentity<TTable>
+      >;
+    },
+  });
+
+  Object.defineProperty(table, applicationModelFacet, {
+    value: facet,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  const directMembers: Readonly<Record<string, unknown>> = {
+    $model: facet,
+    schema: facet.schema,
+    relations: facet.relations,
+    ref: () => facet.ref(),
+    view,
+  };
+  for (const [member, value] of Object.entries(directMembers)) {
+    if (directMemberCollisions.some((collision) => collision === member)) {
+      continue;
+    }
+    Object.defineProperty(table, member, {
+      value,
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
+  return table as PromotedAnalyticalDrizzleTable<TTable>;
+}
+
 // typecast-boundary: Drizzle symbol metadata and drizzle-arktype output are validated before installing the promoted model facet.
 export function promoteDrizzleTable<TTable extends AnyPgTable>(table: TTable, options: PromoteDrizzleTableOptions<TTable> = {}): PromotedDrizzleTable<TTable> {
   if (!isTable(table)) {

@@ -7,7 +7,7 @@ import { sdk as baseSdk, normalizeSchema, setOperatorDeploymentInterceptor } fro
 import type { TypeKroListenerComposition, TypeKroListenerCompositionDefinition } from '@applik8s/typekro-adapter';
 import { typeKro } from '@applik8s/typekro-adapter';
 import { type as arkType, type Type } from 'arktype';
-import { isTable } from 'drizzle-orm';
+import { getTableName, isTable } from 'drizzle-orm';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import type { Composable, Enhanced, KroCompatibleType, KubernetesResource, MagicAssignableShape, SerializationOptions } from 'typekro';
 import { Cel, externalRef } from 'typekro';
@@ -36,7 +36,7 @@ import {
 } from './application-infrastructure-resources.js';
 import { type ApplicationInstallationClient, type ApplicationInstallationConnectOptions, createApplicationInstallationClient } from './application-installation-client.js';
 import type { ApplicationModelBinding, ApplicationModelOptions, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationRuntimeModelContract } from './application-models.js';
-import { applicationModelBinding, applicationRuntimeModelContract, prepareApplicationModelCommandReplacement, recordApplicationModelCommandGraph, recordApplicationModelGraph, recordApplicationNativeModelGraph, resolveApplicationTransactionalDatabase } from './application-models.js';
+import { applicationModelBinding, applicationRuntimeModelContract, prepareApplicationModelCommandReplacement, recordApplicationAnalyticalNativeModelGraph, recordApplicationModelCommandGraph, recordApplicationModelGraph, recordApplicationNativeModelGraph, resolveApplicationTransactionalDatabase } from './application-models.js';
 import {
   applicationNativeCommandModelBinding,
   applicationNativeCreateContracts,
@@ -57,7 +57,7 @@ import { type ApplicationObjectStoreBinding, type ApplicationObjectStoreOptions,
 import { applicationOperatorWatchScopeContracts } from './application-operator-watches.js';
 import type { ApplicationProcessorOptions } from './application-processor-policy.js';
 import { emitApplicationAnalyticalDatabaseResources } from './application-analytical-database-resources.js';
-import type { ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationTransactionalDatabaseProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
+import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationTransactionalDatabaseProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
 import { ApplicationHost, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationTransactionalDatabaseImplementation, applicationPostgresClusterSpec, applicationAnalyticalDatabaseImplementation, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
 import { type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
 import { type ApplicationAnalyticalProjectionBinding, type ApplicationAnalyticalProjectionOptions, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationOnlineProjectionBinding, type ApplicationOnlineProjectionOptions, type ApplicationProjectionOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions, registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationStreamProcessor, registerApplicationSubscription } from './application-reactive.js';
@@ -80,7 +80,7 @@ import { applicationTypeKroExpressionValue, applicationTypeKroString, applicatio
 import type { ApplicationTaskBinding, ApplicationTaskHandler, ApplicationTaskObjectStores, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjections, ApplicationTaskQueries, ApplicationTaskReference, ApplicationWorkflowBinding, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference } from './application-workflows.js';
 import { type ApplicationWorkflowState, registerApplicationTask, registerApplicationWorkflow } from './application-workflows.js';
 import type { EntityDefinition, EventDefinition, StreamDefinition, TaskDefinition, WorkflowDefinition } from './dsl.js';
-import { type ApplicationKubernetesCreatePolicy, applicationModelViewRegistrar, bindApplicationModelViews, bindNativeApplicationModelActionEvents, bindNativeApplicationModelBeforeCommit, bindNativeApplicationModelBinding, bindNativeApplicationModelCommands, bindNativeApplicationModelLifecycle, bindNativeKubernetesLifecycle, getRequiredDrizzleApplicationModelFacet, nativeApplicationModelActionEventRegistrar, nativeApplicationModelBeforeCommitRegistrar, nativeApplicationModelCommandRegistrar, nativeApplicationModelLifecycleRegistrar, nativeKubernetesLifecycleRegistrar, type PromoteDrizzleTableOptions, type PromotedDrizzleTable, type PromotedKubernetesResource, promoteDrizzleTable, promoteKubernetesResource } from './native-models.js';
+import { type ApplicationKubernetesCreatePolicy, applicationModelViewRegistrar, bindApplicationModelViews, bindNativeApplicationModelActionEvents, bindNativeApplicationModelBeforeCommit, bindNativeApplicationModelBinding, bindNativeApplicationModelCommands, bindNativeApplicationModelLifecycle, bindNativeKubernetesLifecycle, type DrizzleAnalyticalApplicationModelFacet, getApplicationModelFacet, getRequiredDrizzleApplicationModelFacet, nativeApplicationModelActionEventRegistrar, nativeApplicationModelBeforeCommitRegistrar, nativeApplicationModelCommandRegistrar, nativeApplicationModelLifecycleRegistrar, nativeKubernetesLifecycleRegistrar, type PromoteAnalyticalDrizzleTableOptions, type PromoteDrizzleTableOptions, type PromotedAnalyticalDrizzleTable, type PromotedDrizzleTable, type PromotedKubernetesResource, promoteAnalyticalDrizzleTable, promoteDrizzleTable, promoteKubernetesResource } from './native-models.js';
 import type { ApplicationPostgresRlsPolicy } from './trusted-context.js';
 
 export type { ApplicationFinalizeEventHandler, ApplicationReconcileHandler, ApplicationReconcileOptions, ApplicationResourceControllerBinding, ApplicationResourceEventHandlers, ApplicationResourceObject } from './application-events.js';
@@ -97,7 +97,7 @@ export type { ApplicationKubernetesModelViewOptions, ApplicationModelViewOptions
 export type { ApplicationAnalyticalProjectionBinding, ApplicationAnalyticalProjectionOptions, ApplicationGatewayAdmission, ApplicationGatewayBinding, ApplicationGatewayOptions, ApplicationOnlineProjectionBinding, ApplicationOnlineProjectionOptions, ApplicationProjectionBinding, ApplicationProjectionOptions, ApplicationStreamBinding, ApplicationStreamOptions, ApplicationStreamProcessContext, ApplicationStreamProcessHandler, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding, ApplicationStreamScheduleFunctions, ApplicationStreamScheduleTargets, ApplicationStreamTaskFunctions, ApplicationStreamTaskTargets, ApplicationSubscriptionBinding, ApplicationSubscriptionOptions } from './application-reactive.js';
 export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskObjectFunctions, ApplicationTaskObjectStores, ApplicationTaskOperationFunctions, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjectionFunctions, ApplicationTaskProjections, ApplicationTaskProjectionTarget, ApplicationTaskQueries, ApplicationTaskQueryFunctions, ApplicationTaskReference, ApplicationTaskServicePrincipal, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference, ApplicationWorkflowResultOptions, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
 export { ApplicationDurableError, isApplicationDurableError } from './application-workflows.js';
-export type { ApplicationKubernetesCreatePlacement, ApplicationKubernetesCreatePolicy, ApplicationKubernetesCreateRequest, ApplicationModelActionCompletedEvent, ApplicationModelActionCompletedRegistrar, ApplicationModelBeforeCommitHandler, ApplicationModelBeforeCommitOptions, ApplicationModelCreateEvent, ApplicationModelCreateEventHandler, ApplicationModelDeleteEvent, ApplicationModelDeleteEventHandler, ApplicationModelDeleteInput, ApplicationModelLifecycleRegistrar, ApplicationModelMutationOperation, ApplicationModelUpdateEvent, ApplicationModelUpdateEventHandler, ApplicationModelUpdateInput } from './native-models.js';
+export type { ApplicationKubernetesCreatePlacement, ApplicationKubernetesCreatePolicy, ApplicationKubernetesCreateRequest, ApplicationModelActionCompletedEvent, ApplicationModelActionCompletedRegistrar, ApplicationModelBeforeCommitHandler, ApplicationModelBeforeCommitOptions, ApplicationModelCreateEvent, ApplicationModelCreateEventHandler, ApplicationModelDeleteEvent, ApplicationModelDeleteEventHandler, ApplicationModelDeleteInput, ApplicationModelLifecycleRegistrar, ApplicationModelMutationOperation, ApplicationModelUpdateEvent, ApplicationModelUpdateEventHandler, ApplicationModelUpdateInput, DrizzleAnalyticalApplicationModelFacet, PromotedAnalyticalDrizzleTable } from './native-models.js';
 
 export interface ApplicationInfrastructureOptions {
   /** Stable graph identity for a nested composition instance. */
@@ -115,6 +115,7 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   crd<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options: ApplicationCrdOptions<TSpec, TStatus>): PromotedKubernetesResource<TSpec, TStatus>;
   model<TSpec extends object, TStatus extends object = Record<string, never>>(name: string, options: ApplicationNamedModelOptions<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus>;
   model<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options?: ApplicationModelOptions<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus>;
+  model<TTable extends AnyPgTable>(table: TTable, options: ApplicationNativeAnalyticalDrizzleModelOptions<TTable>): PromotedAnalyticalDrizzleTable<TTable>;
   model<TTable extends AnyPgTable>(table: TTable, options?: ApplicationNativeDrizzleModelOptions<TTable>): PromotedDrizzleTable<TTable>;
   query<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined>(id: string, options: ApplicationQueryOptions<TInput, TOutput, TPrincipal, TSource>): ApplicationQueryBinding<TInput, TOutput, TPrincipal, TSource>;
   stream<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(definition: StreamDefinition<TPayload> | EventDefinition<TPayload>, options: ApplicationStreamOptions<TPayload, TPrincipal>): ApplicationStreamBinding<TPayload, TPrincipal>;
@@ -231,6 +232,31 @@ export interface ApplicationNativeDrizzleModelOptions<TTable extends AnyPgTable>
   readonly access?: 'required' | 'global';
   /** Default generated command-processor placement for this model. */
   readonly processor?: ApplicationProcessorOptions;
+}
+
+export interface ApplicationNativeAnalyticalDrizzleModelOptions<
+  TTable extends AnyPgTable,
+> extends PromoteAnalyticalDrizzleTableOptions<TTable> {
+  readonly database:
+    | ApplicationAnalyticalDatabaseProvider
+    | ApplicationProviderBinding<ApplicationAnalyticalDatabaseProvider>;
+}
+
+function isApplicationNativeAnalyticalModelOptions<
+  TTable extends AnyPgTable,
+>(
+  options:
+    | ApplicationNativeDrizzleModelOptions<TTable>
+    | ApplicationNativeAnalyticalDrizzleModelOptions<TTable>
+    | undefined,
+): options is ApplicationNativeAnalyticalDrizzleModelOptions<TTable> {
+  if (!options?.database) return false;
+  return Boolean(
+    applicationAnalyticalDatabaseImplementation(options.database)
+    || applicationProviderSelectionFor<ApplicationAnalyticalDatabaseProvider>(
+      options.database,
+    ),
+  );
 }
 
 export type ApplicationStoragePostgresOptions = Omit<ApplicationPostgresTransactionalDatabaseOptions, 'name' | 'migrations'> & {
@@ -1146,10 +1172,67 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       invalidate();
       return resource;
     },
-    model<TSpec extends object, TStatus extends object = Record<string, never>, TTable extends AnyPgTable = AnyPgTable>(entityOrName: EntityDefinition<TSpec, TStatus> | TTable | string, modelOptions?: ApplicationModelOptions<TSpec, TStatus> | ApplicationNamedModelOptions<TSpec, TStatus> | ApplicationNativeDrizzleModelOptions<TTable>): ApplicationModelBinding<TSpec, TStatus> | PromotedDrizzleTable<TTable> {
+    model<TSpec extends object, TStatus extends object = Record<string, never>, TTable extends AnyPgTable = AnyPgTable>(entityOrName: EntityDefinition<TSpec, TStatus> | TTable | string, modelOptions?: ApplicationModelOptions<TSpec, TStatus> | ApplicationNamedModelOptions<TSpec, TStatus> | ApplicationNativeDrizzleModelOptions<TTable> | ApplicationNativeAnalyticalDrizzleModelOptions<TTable>): ApplicationModelBinding<TSpec, TStatus> | PromotedDrizzleTable<TTable> | PromotedAnalyticalDrizzleTable<TTable> {
       if (isTable(entityOrName)) {
-        const nativeOptions = modelOptions as ApplicationNativeDrizzleModelOptions<TTable> | undefined;
-        const previewModel = preview.model(entityOrName as TTable, nativeOptions);
+        const nativeOptions = modelOptions as
+          | ApplicationNativeDrizzleModelOptions<TTable>
+          | ApplicationNativeAnalyticalDrizzleModelOptions<TTable>
+          | undefined;
+        if (isApplicationNativeAnalyticalModelOptions(nativeOptions)) {
+          const previewModel = preview.model(
+            entityOrName as TTable,
+            nativeOptions,
+          );
+          const previewFacet = getApplicationModelFacet(previewModel);
+          if (!previewFacet || previewFacet.provider !== 'analytical-database') {
+            throw new Error(
+              `Analytical model ${getTableName(entityOrName)} did not install its analytical facet.`,
+            );
+          }
+          const previewViewRegistrar = applicationModelViewRegistrar(
+            previewModel,
+          );
+          if (!previewViewRegistrar) {
+            throw new Error(
+              `Analytical model ${previewFacet.name} did not install its view registrar.`,
+            );
+          }
+          const viewReplays: Parameters<typeof previewViewRegistrar>[] = [];
+          bindApplicationModelViews(previewModel, (viewName, viewOptions) => {
+            const operation = previewViewRegistrar(viewName, viewOptions);
+            viewReplays.push([viewName, viewOptions] as never);
+            invalidate();
+            return operation;
+          });
+          let replayed:
+            | PromotedAnalyticalDrizzleTable<TTable>
+            | undefined;
+          replays.push((scope) => {
+            replayed = scope.model(entityOrName as TTable, nativeOptions);
+          });
+          behaviorReplays.push(() => {
+            if (!replayed) {
+              throw new Error(
+                `Analytical model ${previewFacet.name} replay declaration did not run before its views.`,
+              );
+            }
+            const registrar = applicationModelViewRegistrar(replayed);
+            if (!registrar) {
+              throw new Error(
+                `Analytical model ${previewFacet.name} did not install its replay view registrar.`,
+              );
+            }
+            for (const declaration of viewReplays) registrar(...declaration);
+          });
+          invalidate();
+          return previewModel;
+        }
+        const transactionalOptions =
+          nativeOptions as ApplicationNativeDrizzleModelOptions<TTable> | undefined;
+        const previewModel = preview.model(
+          entityOrName as TTable,
+          transactionalOptions,
+        );
         const previewFacet = getRequiredDrizzleApplicationModelFacet(previewModel);
         const previewApi = previewFacet.api;
         const previewRegistrar = nativeApplicationModelCommandRegistrar(previewModel);
@@ -1245,7 +1328,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
         });
         let replayed: PromotedDrizzleTable<TTable> | undefined;
         replays.push((scope) => {
-          replayed = scope.model(entityOrName as TTable, nativeOptions);
+          replayed = scope.model(entityOrName as TTable, transactionalOptions);
         });
         behaviorReplays.push(() => {
           if (!replayed) throw new Error(`Native model ${previewFacet.name} replay declaration did not run before its behaviors.`);
@@ -1925,13 +2008,50 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     },
     resource,
     crd,
-    model: ((entityOrName: string | EntityDefinition<object, object> | AnyPgTable, options?: ApplicationModelOptions<object, object> | ApplicationNamedModelOptions<object, object> | ApplicationNativeDrizzleModelOptions<AnyPgTable>) => {
+    model: ((entityOrName: string | EntityDefinition<object, object> | AnyPgTable, options?: ApplicationModelOptions<object, object> | ApplicationNamedModelOptions<object, object> | ApplicationNativeDrizzleModelOptions<AnyPgTable> | ApplicationNativeAnalyticalDrizzleModelOptions<AnyPgTable>) => {
       if (isTable(entityOrName)) {
-        const nativeOptions = options as ApplicationNativeDrizzleModelOptions<AnyPgTable> | undefined;
-        const databaseBinding = resolveApplicationDatabase(state, nativeOptions?.database);
-        validateNativeModelAccess(entityOrName, databaseBinding, nativeOptions?.access);
+        const nativeOptions = options as
+          | ApplicationNativeDrizzleModelOptions<AnyPgTable>
+          | ApplicationNativeAnalyticalDrizzleModelOptions<AnyPgTable>
+          | undefined;
+        if (isApplicationNativeAnalyticalModelOptions(nativeOptions)) {
+          const promoted = promoteAnalyticalDrizzleTable(entityOrName, {
+            ...(nativeOptions.name ? { name: nativeOptions.name } : {}),
+            ...(nativeOptions.identity
+              ? { identity: nativeOptions.identity }
+              : {}),
+            ...(nativeOptions.schema ? { schema: nativeOptions.schema } : {}),
+          });
+          const facet = getApplicationModelFacet(promoted);
+          if (!facet || facet.provider !== 'analytical-database') {
+            throw new Error(
+              `Analytical model ${getTableName(entityOrName)} did not install its analytical facet.`,
+            );
+          }
+          recordApplicationAnalyticalNativeModelGraph(
+            state,
+            facet as DrizzleAnalyticalApplicationModelFacet<AnyPgTable>,
+            nativeOptions.database,
+          );
+          emitApplicationAnalyticalDatabaseResources(
+            state,
+            nativeOptions.database,
+          );
+          bindApplicationModelViews(promoted, (viewName, viewOptions) =>
+            registerApplicationModelView(
+              state,
+              promoted,
+              viewName,
+              viewOptions,
+            ));
+          return promoted;
+        }
+        const transactionalOptions =
+          nativeOptions as ApplicationNativeDrizzleModelOptions<AnyPgTable> | undefined;
+        const databaseBinding = resolveApplicationDatabase(state, transactionalOptions?.database);
+        validateNativeModelAccess(entityOrName, databaseBinding, transactionalOptions?.access);
         const promoted = promoteDrizzleTable(entityOrName, {
-          ...nativeOptions,
+          ...transactionalOptions,
           database: databaseBinding.name,
           schema: databaseBinding.schema,
         });
@@ -1951,9 +2071,9 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
           commandOptions,
           handler,
         ));
-        bindApplicationNativeCreateOperation(state, promoted, commandModel, nativeOptions?.processor);
-        bindApplicationNativeUpdateOperation(state, promoted, commandModel, nativeOptions?.processor);
-        bindApplicationNativeDeleteOperation(state, promoted, commandModel, nativeOptions?.processor);
+        bindApplicationNativeCreateOperation(state, promoted, commandModel, transactionalOptions?.processor);
+        bindApplicationNativeUpdateOperation(state, promoted, commandModel, transactionalOptions?.processor);
+        bindApplicationNativeDeleteOperation(state, promoted, commandModel, transactionalOptions?.processor);
         let createPolicyInstalled = false;
         let updatePolicyInstalled = false;
         let deletePolicyInstalled = false;
@@ -1962,21 +2082,21 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
           createPolicyInstalled = true;
           const commandId = applicationNativeCreateContracts(promoted).command.id;
           prepareApplicationModelCommandReplacement(state, promotedFacet.name, commandId);
-          bindApplicationNativeCreateOperation(state, promoted, commandModel, nativeOptions?.processor, { options: policyOptions, handler: policyHandler });
+          bindApplicationNativeCreateOperation(state, promoted, commandModel, transactionalOptions?.processor, { options: policyOptions, handler: policyHandler });
         });
         bindNativeApplicationModelBeforeCommit(promotedApi.update, (policyOptions, policyHandler) => {
           if (updatePolicyInstalled) throw new Error(`Model ${promotedFacet.name}.update.beforeCommit(...) may be declared only once.`);
           updatePolicyInstalled = true;
           const commandId = applicationNativeUpdateContracts(promoted).command.id;
           prepareApplicationModelCommandReplacement(state, promotedFacet.name, commandId);
-          bindApplicationNativeUpdateOperation(state, promoted, commandModel, nativeOptions?.processor, { options: policyOptions, handler: policyHandler });
+          bindApplicationNativeUpdateOperation(state, promoted, commandModel, transactionalOptions?.processor, { options: policyOptions, handler: policyHandler });
         });
         bindNativeApplicationModelBeforeCommit(promotedApi.delete, (policyOptions, policyHandler) => {
           if (deletePolicyInstalled) throw new Error(`Model ${promotedFacet.name}.delete.beforeCommit(...) may be declared only once.`);
           deletePolicyInstalled = true;
           const commandId = applicationNativeDeleteContracts(promoted).command.id;
           prepareApplicationModelCommandReplacement(state, promotedFacet.name, commandId);
-          bindApplicationNativeDeleteOperation(state, promoted, commandModel, nativeOptions?.processor, { options: policyOptions, handler: policyHandler });
+          bindApplicationNativeDeleteOperation(state, promoted, commandModel, transactionalOptions?.processor, { options: policyOptions, handler: policyHandler });
         });
         bindNativeApplicationModelLifecycle(promoted, {
           create: (lifecycleName, lifecycleOptions, lifecycleHandler) => registerApplicationNativeCreateProcessor(

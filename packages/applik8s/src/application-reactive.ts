@@ -12,10 +12,10 @@ import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationModelCommandBinding } from './application-models.js';
 import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions } from './application-processor-policy.js';
 import type { ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationAnalyticalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState } from './application-providers.js';
-import { applicationIndexBackend, applicationAnalyticalDatabaseImplementation, applicationProviderImplementationName, applicationProviderQualificationFor, defaultApplicationIndexProvider, IndexStore, isClickHouseAnalyticalDatabaseProvider } from './application-providers.js';
+import { applicationIndexBackend, applicationAnalyticalDatabaseImplementation, applicationProviderImplementationName, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationTransactionalDatabaseImplementation, defaultApplicationIndexProvider, IndexStore, isApplicationAnalyticalDatabaseProvider, isClickHouseAnalyticalDatabaseProvider, isPostgresAnalyticalDatabaseProvider } from './application-providers.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
-import { applicationTypeKroSerializedValue, applicationTypeKroString } from './application-typekro-values.js';
+import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString } from './application-typekro-values.js';
 import { type ApplicationTaskBinding, type ApplicationWorkflowBinding, type ApplicationWorkflowState, recordApplicationWorkflowEngine } from './application-workflows.js';
 import type { EventDefinition, StreamDefinition } from './dsl.js';
 import { applicationModelCommandBindingForOperation, applicationModelFacet, type CommonApplicationModelFacet, getApplicationModelFacet } from './native-models.js';
@@ -202,7 +202,9 @@ export interface ApplicationAnalyticalProjectionBinding<TPayload extends object 
   readonly storage: 'analytical';
   readonly name: string;
   readonly source: ApplicationStreamBinding<TPayload>;
-  readonly provider: ApplicationAnalyticalDatabaseProvider;
+  readonly provider:
+    | ApplicationAnalyticalDatabaseProvider
+    | ApplicationProviderBinding<ApplicationAnalyticalDatabaseProvider>;
   readonly output: SchemaInput<TRow>;
   readonly project: ApplicationAnalyticalProjectionOptions<TPayload, TRow>['project'];
 }
@@ -463,13 +465,28 @@ export function registerApplicationProjection<TPayload extends object, TRow exte
 export function registerApplicationProjection<TPayload extends object, TRow extends object, TValue extends object, TSnapshot extends object>(state: ApplicationReactiveState, name: string, options: ApplicationOnlineProjectionOptions<TPayload, TRow, TValue, TSnapshot>): ApplicationOnlineProjectionBinding<TPayload, TRow, TValue>;
 export function registerApplicationProjection<TPayload extends object, TRow extends object, TValue extends object, TSnapshot extends object>(state: ApplicationReactiveState, name: string, options: ApplicationProjectionOptions<TPayload, TRow, TValue, TSnapshot>): ApplicationProjectionBinding<TPayload, TRow, TValue> {
   if ('store' in options) return registerOnlineApplicationProjection(state, name, options);
-  const provider = applicationAnalyticalDatabaseImplementation(options.provider)
-    ?? projectionProvider(state);
+  const providerInput =
+    options.provider
+    ?? state.providers.analytics
+    ?? state.defaults.analytics;
+  const provider = applicationAnalyticalDatabaseImplementation(providerInput);
+  const selection = applicationProviderSelectionFor<ApplicationAnalyticalDatabaseProvider>(
+    providerInput,
+  );
+  if (!provider && !selection) {
+    throw new Error(
+      `Application projection ${name} requires an AnalyticalDatabase provider.`,
+    );
+  }
   const qualification = applicationProviderQualificationFor(options.provider);
-  const providerNode = recordProjectionProvider(state, provider, qualification);
+  const providerNode = recordProjectionProvider(
+    state,
+    provider ?? selection!,
+    qualification,
+  );
   const nodeId = reactiveNodeId('projection', name);
   const source = sourceNodeRef(options.source);
-  if (options.checkpoint && options.checkpoint !== 'idempotent') throw new Error(`Application projection ${name} supports only idempotent ClickHouse checkpoints in v0.6.`);
+  if (options.checkpoint && options.checkpoint !== 'idempotent') throw new Error(`Application projection ${name} supports only idempotent analytical checkpoints.`);
   // typecast: projection output is validated against the declared schema before provider writes.
   const handler = serializeApplicationCallback({ registrar: 'projection', argumentIndex: 1, property: 'project', label: `Application projection ${name}`, callback: options.project as (...args: never[]) => unknown, allowDeferredResolution: true });
   addApplicationGraphNode(state, {
@@ -496,7 +513,17 @@ export function registerApplicationProjection<TPayload extends object, TRow exte
   const requirement = `analytical-database.${reactiveName(name)}`;
   addApplicationProviderRequirement(state, { id: requirement, interface: 'AnalyticalDatabase', consumer: { nodeId }, provider: providerNode, required: true, purpose: 'analyticalDatabase', diagnostics: { missing: `Projection ${name} requires an AnalyticalDatabase provider.`, ambiguous: `Projection ${name} has multiple AnalyticalDatabase providers.` } });
   addApplicationProviderBinding(state, { requirement, provider: providerNode, generatedResources: [], runtime: {}, metadataLinks: [] });
-  return { kind: 'applicationProjection', storage: 'analytical', name, source: options.source, provider, output: options.output, project: options.project };
+  return {
+    kind: 'applicationProjection',
+    storage: 'analytical',
+    name,
+    source: options.source,
+    provider: (options.provider ?? provider) as
+      | ApplicationAnalyticalDatabaseProvider
+      | ApplicationProviderBinding<ApplicationAnalyticalDatabaseProvider>,
+    output: options.output,
+    project: options.project,
+  };
 }
 
 function registerOnlineApplicationProjection<TPayload extends object, TRow extends object, TValue extends object, TSnapshot extends object>(
@@ -718,21 +745,13 @@ function reactiveDatabaseRuntime(binding: ApplicationDatabaseBinding): { readonl
   return { name: binding.name, connectionEnvName: `APPLIK8S_DATABASE_${reactiveName(binding.name).replace(/[^A-Z0-9_a-z]+/g, '_').toUpperCase()}_URL`, secretName: applicationTypeKroSerializedValue(secret.name ?? `${clusterName}-app`), secretKey: applicationTypeKroSerializedValue(provider.connectionSecretKey ?? 'uri'), ...(secret.namespace ?? provider.namespace ? { secretNamespace: applicationTypeKroSerializedValue(secret.namespace ?? provider.namespace) } : {}), ...(binding.access ? { access: { context: binding.access.context.name, contextSchema: binding.access.context.contract.jsonSchema, setting: binding.access.setting, column: binding.access.column } } : {}) };
 }
 
-function projectionProvider(state: ApplicationReactiveState): ApplicationAnalyticalDatabaseProvider {
-  const provider = applicationAnalyticalDatabaseImplementation(
-    state.providers.analytics ?? state.defaults.analytics,
-  );
-  if (!provider) throw new Error('app.projection(...) requires a ClickHouse AnalyticalDatabase provider. Bind AnalyticalDatabase.clickhouse(...) with app.provide or app.defaults.');
-  return provider;
-}
-
 function recordProjectionProvider(
   state: ApplicationReactiveState,
-  provider: ApplicationAnalyticalDatabaseProvider,
+  provider:
+    | ApplicationAnalyticalDatabaseProvider
+    | import('./application-providers.js').ApplicationProviderSelectionValue<ApplicationAnalyticalDatabaseProvider>,
   qualification?: ApplicationProviderQualification,
 ): ApplicationProviderRef<'AnalyticalDatabase'> {
-  if (!isClickHouseAnalyticalDatabaseProvider(provider)) throw new Error('The AnalyticalDatabase implementation must be ClickHouse.');
-  if (provider.credentialsSecret && !provider.credentialsSecret.name) throw new Error('ClickHouse AnalyticalDatabase credentialsSecret must declare a Secret name.');
   const nodeId = applicationProviderGraphNodeId(
     'AnalyticalDatabase',
     qualification,
@@ -750,6 +769,71 @@ function recordProjectionProvider(
       );
     }
     return { interface: 'AnalyticalDatabase', nodeId };
+  }
+  if ('cases' in provider) {
+    const candidates = [
+      ...Object.values(provider.cases),
+      provider.default,
+    ];
+    if (!candidates.every(isApplicationAnalyticalDatabaseProvider)) {
+      throw new Error(
+        'Every profile-selected AnalyticalDatabase branch must satisfy the analytical capability.',
+      );
+    }
+    throw new Error(
+      `Profile-selected AnalyticalDatabase ${nodeId} must be registered before a projection consumes it.`,
+    );
+  }
+  if (
+    isClickHouseAnalyticalDatabaseProvider(provider)
+    && provider.credentialsSecret
+    && !provider.credentialsSecret.name
+  ) {
+    throw new Error(
+      'ClickHouse AnalyticalDatabase credentialsSecret must declare a Secret name.',
+    );
+  }
+  if (isPostgresAnalyticalDatabaseProvider(provider)) {
+    const database = applicationTransactionalDatabaseImplementation(
+      provider.database,
+    );
+    if (!database) {
+      throw new Error(
+        'Analytics.postgres(...) must reference a resolvable TransactionalDatabase binding.',
+      );
+    }
+    const node: ApplicationProviderNode<'AnalyticalDatabase'> = {
+      id: nodeId,
+      kind: 'provider',
+      name: 'AnalyticalDatabase',
+      stability: 'stable',
+      interface: 'AnalyticalDatabase',
+      implementation: 'postgres-analytics',
+      contract: {
+        apiVersion: 'applik8s.provider/v1alpha1',
+        interface: 'AnalyticalDatabase',
+        version: 'v1alpha1',
+        requirements: ['replayableSource'],
+        guarantees: ['idempotentInsert', 'checkpoint', 'fullRebuild'],
+        implementation: { name: 'postgres-analytics' },
+        surface: 'stablePublicApi',
+        support: 'implemented',
+        diagnostics: [],
+      },
+      config: {
+        provider: 'postgres-analytics',
+        ...(qualification
+          ? { qualification: qualification as unknown as JsonValue }
+          : {}),
+        schema: provider.schema,
+        database: applicationTypeKroGraphValue(database) as JsonValue,
+      },
+    };
+    addApplicationGraphNode(state, node);
+    return { interface: 'AnalyticalDatabase', nodeId };
+  }
+  if (!isClickHouseAnalyticalDatabaseProvider(provider)) {
+    throw new Error('Unsupported AnalyticalDatabase implementation.');
   }
   const node: ApplicationProviderNode<'AnalyticalDatabase'> = {
     id: nodeId,

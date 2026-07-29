@@ -186,6 +186,21 @@ profileDeployment
   }))
   .exhaustive();
 const injectedProfileAnalytics = profileApplication.inject(ProfileAnalytics);
+const profileUsageFacts = pgTable('profile_usage_facts', {
+  id: uuid('id').primaryKey(),
+  accountId: text('account_id').notNull(),
+});
+const ProfileUsageFact = profileApplication.model(profileUsageFacts, {
+  database: injectedProfileAnalytics,
+});
+const analyticalProviderKind: 'analytical-database' =
+  ProfileUsageFact.$model.provider;
+// @ts-expect-error Analytical models are projection-owned and do not expose authoritative create operations.
+ProfileUsageFact.create;
+// @ts-expect-error Analytical models cannot expose transactional update operations.
+ProfileUsageFact.update;
+// @ts-expect-error Analytical models cannot expose transactional delete operations.
+ProfileUsageFact.delete;
 const analyticalProjectionProvider: NonNullable<
   ApplicationAnalyticalProjectionOptions<object, object>['provider']
 > = injectedProfileAnalytics;
@@ -194,7 +209,7 @@ profileApplication.model('InvalidAnalyticalAuthority', {
   spec: appSchemaType({ id: 'string' }),
   database: injectedProfileAnalytics,
 });
-expectTypeUsage(analyticalProjectionProvider);
+expectTypeUsage(analyticalProjectionProvider, analyticalProviderKind);
 
 const transactionalDatabaseGuarantees = {
   identity: 'stableId',
