@@ -35,7 +35,7 @@ export function generatedApplicationServerRuntimeSource(
 import { readFile } from 'node:fs/promises';
 import { request as httpsRequest } from 'node:https';
 import { createConnection } from 'node:net';
-${Object.keys(models).length > 0 ? `import { createPostgresModelClient } from './runtime/model-store-postgres.mjs';` : ''}
+${Object.keys(models).length > 0 ? `import { createPostgresModelClient } from './runtime/transactional-database-postgres.mjs';` : ''}
 
 const runtimeResources = ${resourceTable};
 const runtimeIndexes = ${indexTable};

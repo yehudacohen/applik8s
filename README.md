@@ -165,7 +165,7 @@ Run the live GuestBook proof against an explicit local Kubernetes context:
 APPLIK8S_E2E_LIVE=1 APPLIK8S_E2E_CONTEXT=orbstack bunx vitest run --config vitest.e2e.config.ts packages/e2e/test/typekro-guestbook.e2e.test.ts
 ```
 
-The important v0.2 boundary is honesty: GuestBook is Kubernetes-native application state, not a claim that CRDs are a general-purpose database. High-volume product data belongs in explicit storage-backed models such as the v0.3 Postgres `ModelStore` slice.
+The important v0.2 boundary is honesty: GuestBook is Kubernetes-native application state, not a claim that CRDs are a general-purpose database. High-volume product data belongs in explicit storage-backed models such as the v0.3 Postgres `TransactionalDatabase` slice.
 
 For v0.6 generated query gateways, the same exposure API accepts the gateway binding directly:
 `app.expose("public", { service: gateway, ... })`. Applik8s derives the generated Service identity,

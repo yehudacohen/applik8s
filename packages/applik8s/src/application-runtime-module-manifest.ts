@@ -72,7 +72,7 @@ export function runtimeModulePath(kind: ApplicationRuntimeModuleKind): string {
     return 'runtime/server.mjs';
   }
   if (kind === 'modelRuntime') {
-    return 'runtime/model-store-postgres.mjs';
+    return 'runtime/transactional-database-postgres.mjs';
   }
   if (kind === 'jobRunnerRuntime') {
     return 'runtime/job-runner.mjs';

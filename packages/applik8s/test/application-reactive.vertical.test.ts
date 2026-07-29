@@ -211,7 +211,7 @@ describe('v0.6 streams, subscriptions, and projections', () => {
         rebuild: { checkpoint: 'durable' },
       },
     });
-    expect(graph?.providerRequirements).toEqual(expect.arrayContaining([expect.objectContaining({ interface: 'IndexStore', purpose: 'onlineProjectionStore' })]));
+    expect(graph?.providerRequirements).toEqual(expect.arrayContaining([expect.objectContaining({ interface: 'IndexStore', purpose: 'onlineIndex' })]));
     expect(graph ? validateApplicationGraph(graph) : ['missing']).toEqual([]);
   });
 

@@ -2,7 +2,7 @@
 import type { JsonValue } from "@applik8s/core";
 import type { SchemaInput } from "@applik8s/sdk";
 import { normalizeSchema } from "@applik8s/sdk/schema-runtime";
-import type { ApplicationProjectionStore } from "./projection-runtime-clickhouse.js";
+import type { ApplicationProjectionWriter } from "./projection-runtime-clickhouse.js";
 import {
 	createApplicationValkeyCommand,
 	type ApplicationValkeyCommand,
@@ -34,7 +34,7 @@ export type ApplicationOnlineProjectionPageOptions =
 			readonly cursor?: string;
 	  };
 
-export interface ValkeyOnlineProjectionStoreOptions<
+export interface ValkeyOnlineProjectionWriterOptions<
 	TRow extends object,
 	TValue extends object,
 > {
@@ -63,10 +63,10 @@ export interface ValkeyOnlineProjectionStoreOptions<
 	};
 }
 
-export interface ApplicationValkeyOnlineProjectionStore<
+export interface ApplicationValkeyOnlineProjectionWriter<
 	TRow extends object,
 	TValue extends object,
-> extends ApplicationProjectionStore<TRow> {
+> extends ApplicationProjectionWriter<TRow> {
 	page(
 		options: ApplicationOnlineProjectionPageOptions,
 	): Promise<ApplicationOnlineProjectionPage<TValue>>;
@@ -256,12 +256,12 @@ redis.call('DEL', KEYS[4], KEYS[5])
 return 1
 `;
 
-export function createValkeyOnlineProjectionStore<
+export function createValkeyOnlineProjectionWriter<
 	TRow extends object,
 	TValue extends object,
 >(
-	options: ValkeyOnlineProjectionStoreOptions<TRow, TValue>,
-): ApplicationValkeyOnlineProjectionStore<TRow, TValue> {
+	options: ValkeyOnlineProjectionWriterOptions<TRow, TValue>,
+): ApplicationValkeyOnlineProjectionWriter<TRow, TValue> {
 	validateIdentifier(options.prefix, "prefix");
 	validateIdentifier(options.projection, "projection");
 	validateIdentifier(options.stream, "stream");
@@ -339,7 +339,7 @@ export function createValkeyOnlineProjectionStore<
 		snapshotAttempts: 3,
 	});
 
-	const store: ApplicationValkeyOnlineProjectionStore<TRow, TValue> = {
+	const store: ApplicationValkeyOnlineProjectionWriter<TRow, TValue> = {
 		async prepare() {
 			await command(["SETNX", activeKey, initialGeneration]);
 			await command(["SETNX", checkpointKey, 0]);

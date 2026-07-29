@@ -146,7 +146,58 @@ export interface ApplicationClickHouseAnalyticalDatabaseProvider {
   readonly passwordKey?: string;
 }
 
-export type ApplicationAnalyticalDatabaseProvider = ApplicationClickHouseAnalyticalDatabaseProvider;
+export interface ApplicationPostgresAnalyticalDatabaseProvider {
+  readonly kind: 'postgres-analytics';
+  /**
+   * Reuses a declared transactional PostgreSQL authority through a distinct
+   * analytical adapter. The adapter does not broaden the source database's
+   * mutation or transaction authority.
+   */
+  readonly database:
+    | ApplicationTransactionalDatabaseProvider
+    | ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
+  readonly schema: string;
+}
+
+export type ApplicationAnalyticalDatabaseProvider =
+  | ApplicationClickHouseAnalyticalDatabaseProvider
+  | ApplicationPostgresAnalyticalDatabaseProvider;
+
+export interface ApplicationExternalPostgresDatabaseOptions
+  extends Omit<
+    ApplicationPostgresTransactionalDatabaseOptions,
+    'ownership' | 'provision' | 'connectionSecret' | 'connectionSecretKey'
+  > {
+  readonly connection?: {
+    readonly secretName: string;
+    readonly key?: string;
+    readonly namespace?: string;
+  };
+}
+
+export interface ApplicationExternalClickHouseConnection {
+  readonly endpoint: string;
+  readonly database?: string;
+  readonly credentialsSecretName?: string;
+  readonly credentialsSecretNamespace?: string;
+  readonly usernameKey?: string;
+  readonly passwordKey?: string;
+}
+
+export type ApplicationExternalClickHouseOptions =
+  | {
+      readonly name?: string;
+      readonly namespace?: string;
+      readonly connection: ApplicationExternalClickHouseConnection;
+    }
+  | (Omit<
+      ApplicationClickHouseAnalyticalDatabaseProvider,
+      'kind' | 'provision' | 'credentialsSecret' | 'endpoint'
+    > & {
+      readonly endpoint: string;
+      readonly credentialsSecretName?: string;
+      readonly credentialsSecretNamespace?: string;
+    });
 
 export type ApplicationContainerRegistryEndpoint =
   | { readonly kind: 'origin'; readonly origin: string }
@@ -626,10 +677,17 @@ export function defineApplicationProvider<TImplementation>(options: {
 }
 
 export interface ApplicationTransactionalDatabaseProviderToken extends ApplicationQualifiableProviderToken<ApplicationTransactionalDatabaseProvider> {
+  /** @deprecated Use Database.postgres(...). Removed at 1.0. */
   postgres(options?: ApplicationPostgresTransactionalDatabaseOptions): ApplicationPostgresTransactionalDatabaseProvider;
   readonly migrations: {
     generatedJob(options?: ApplicationGeneratedTransactionalDatabaseMigrationJobOptions): ApplicationTransactionalDatabaseMigrationPolicy;
   };
+}
+
+export interface ApplicationDatabaseConstructors {
+  postgres(options?: ApplicationPostgresTransactionalDatabaseOptions): ApplicationPostgresTransactionalDatabaseProvider;
+  externalPostgres(options: ApplicationExternalPostgresDatabaseOptions): ApplicationPostgresTransactionalDatabaseProvider;
+  readonly migrations: ApplicationTransactionalDatabaseProviderToken['migrations'];
 }
 
 export interface ApplicationCertificateProviderToken extends ApplicationProviderToken<ApplicationCertificateProvider> {
@@ -650,7 +708,14 @@ export interface ApplicationWorkflowEngineProviderToken extends ApplicationProvi
 }
 
 export interface ApplicationAnalyticalDatabaseProviderToken extends ApplicationQualifiableProviderToken<ApplicationAnalyticalDatabaseProvider> {
+  /** @deprecated Use Analytics.clickHouse(...). Removed at 1.0. */
   clickhouse(options?: Omit<ApplicationClickHouseAnalyticalDatabaseProvider, 'kind'>): ApplicationClickHouseAnalyticalDatabaseProvider;
+}
+
+export interface ApplicationAnalyticsConstructors {
+  postgres(options: Omit<ApplicationPostgresAnalyticalDatabaseProvider, 'kind'>): ApplicationPostgresAnalyticalDatabaseProvider;
+  clickHouse(options?: Omit<ApplicationClickHouseAnalyticalDatabaseProvider, 'kind'>): ApplicationClickHouseAnalyticalDatabaseProvider;
+  externalClickHouse(options: ApplicationExternalClickHouseOptions): ApplicationClickHouseAnalyticalDatabaseProvider;
 }
 
 export interface ApplicationContainerRegistryProviderToken extends ApplicationProviderToken<ApplicationContainerRegistryProvider> {
@@ -697,7 +762,7 @@ export interface ApplicationHostBinding extends Omit<ApplicationProviderBindingB
 }
 
 export type ApplicationProviderBinding<TImplementation = unknown> =
-  TImplementation extends ApplicationHostProvider
+  [TImplementation] extends [ApplicationHostProvider]
     ? ApplicationHostBinding
     : ApplicationProviderBindingBase<TImplementation>;
 
@@ -739,6 +804,48 @@ export const TransactionalDatabase: ApplicationTransactionalDatabaseProviderToke
     },
   },
 });
+
+export const Database: ApplicationDatabaseConstructors = Object.freeze({
+  postgres(options = {}) {
+    return TransactionalDatabase.postgres(options);
+  },
+  externalPostgres(options: ApplicationExternalPostgresDatabaseOptions) {
+    const {
+      connection,
+      ...providerOptions
+    } = options;
+    if (!connection && !providerOptions.cluster) {
+      throw new Error(
+        'Database.externalPostgres(...) requires connection or an external CNPG cluster reference.',
+      );
+    }
+    if (connection && !connection.secretName.trim()) {
+      throw new Error(
+        'Database.externalPostgres(...) connection.secretName must not be empty.',
+      );
+    }
+    return TransactionalDatabase.postgres({
+      ...providerOptions,
+      ownership: 'external',
+      provision: false,
+      ...(connection
+        ? {
+            connectionSecret: {
+              apiVersion: 'v1',
+              kind: 'Secret',
+              name: connection.secretName,
+              ...(connection.namespace
+                ? { namespace: connection.namespace }
+                : {}),
+            },
+          }
+        : {}),
+      ...(connection?.key ? { connectionSecretKey: connection.key } : {}),
+    });
+  },
+  migrations: TransactionalDatabase.migrations,
+});
+
 export const CounterStore: ApplicationProviderToken<ApplicationCounterStoreProvider> = {
   name: 'CounterStore',
   description: 'Default app-scoped counter backend provider.',
@@ -854,11 +961,80 @@ export const AnalyticalDatabase: ApplicationAnalyticalDatabaseProviderToken = ap
   name: 'AnalyticalDatabase',
   description: 'Rebuildable analytical database; durable replay remains owned by the source stream.',
   contract: builtInProviderContract('AnalyticalDatabase', ['idempotentInsert', 'checkpoint', 'fullRebuild']),
-  accepts: isClickHouseAnalyticalDatabaseProvider,
+  accepts: isApplicationAnalyticalDatabaseProvider,
   clickhouse(options = {}) {
     return { kind: 'clickhouse', ...options };
   },
 });
+
+export const Analytics: ApplicationAnalyticsConstructors = Object.freeze({
+  postgres(options: Omit<ApplicationPostgresAnalyticalDatabaseProvider, 'kind'>) {
+    if (!options.schema.trim()) {
+      throw new Error('Analytics.postgres(...) requires a non-empty analytical schema.');
+    }
+    if (!applicationTransactionalDatabaseImplementation(options.database)) {
+      throw new Error(
+        'Analytics.postgres(...) requires a TransactionalDatabase provider or qualified binding.',
+      );
+    }
+    return { kind: 'postgres-analytics' as const, ...options };
+  },
+  clickHouse(options = {}) {
+    return AnalyticalDatabase.clickhouse(options);
+  },
+  externalClickHouse(options: ApplicationExternalClickHouseOptions) {
+    const connection =
+      'connection' in options ? options.connection : options;
+    if (typeof connection.endpoint !== 'string' || !connection.endpoint.trim()) {
+      throw new Error(
+        'Analytics.externalClickHouse(...) requires a non-empty endpoint.',
+      );
+    }
+    const credentialsSecretName =
+      'connection' in options
+        ? connection.credentialsSecretName
+        : options.credentialsSecretName;
+    const credentialsSecretNamespace =
+      'connection' in options
+        ? connection.credentialsSecretNamespace
+        : options.credentialsSecretNamespace;
+    if (
+      credentialsSecretName !== undefined
+      && !credentialsSecretName.trim()
+    ) {
+      throw new Error(
+        'Analytics.externalClickHouse(...) credentialsSecretName must not be empty.',
+      );
+    }
+    return {
+      kind: 'clickhouse' as const,
+      ...(options.name ? { name: options.name } : {}),
+      ...(options.namespace ? { namespace: options.namespace } : {}),
+      provision: false,
+      endpoint: connection.endpoint,
+      ...(connection.database ? { database: connection.database } : {}),
+      ...(credentialsSecretName
+        ? {
+            credentialsSecret: {
+              apiVersion: 'v1',
+              kind: 'Secret',
+              name: credentialsSecretName,
+              ...(credentialsSecretNamespace
+                ? { namespace: credentialsSecretNamespace }
+                : {}),
+            },
+          }
+        : {}),
+      ...(connection.usernameKey
+        ? { usernameKey: connection.usernameKey }
+        : {}),
+      ...(connection.passwordKey
+        ? { passwordKey: connection.passwordKey }
+        : {}),
+    };
+  },
+});
+
 export const ContainerRegistry: ApplicationContainerRegistryProviderToken = {
   name: 'ContainerRegistry',
   description: 'Provider-neutral publication and immutable resolution of generated OCI workloads.',
@@ -1055,13 +1231,28 @@ export function isClickHouseAnalyticalDatabaseProvider(value: unknown): value is
   return Boolean(value && typeof value === 'object' && Reflect.get(value, 'kind') === 'clickhouse');
 }
 
+export function isPostgresAnalyticalDatabaseProvider(value: unknown): value is ApplicationPostgresAnalyticalDatabaseProvider {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'postgres-analytics'
+    && typeof Reflect.get(value, 'schema') === 'string'
+    && Reflect.get(value, 'schema').trim(),
+  );
+}
+
+export function isApplicationAnalyticalDatabaseProvider(value: unknown): value is ApplicationAnalyticalDatabaseProvider {
+  return isClickHouseAnalyticalDatabaseProvider(value)
+    || isPostgresAnalyticalDatabaseProvider(value);
+}
+
 export function applicationAnalyticalDatabaseImplementation(value: unknown): ApplicationAnalyticalDatabaseProvider | undefined {
-  if (isClickHouseAnalyticalDatabaseProvider(value)) return value;
+  if (isApplicationAnalyticalDatabaseProvider(value)) return value;
   const implementation = isApplicationProviderBinding(value)
     && applicationProviderBaseToken(value.token) === AnalyticalDatabase
     ? value.implementation
     : value;
-  if (isClickHouseAnalyticalDatabaseProvider(implementation)) return implementation;
+  if (isApplicationAnalyticalDatabaseProvider(implementation)) return implementation;
   if (
     isApplicationProviderSelection(implementation)
     && [
@@ -1071,6 +1262,17 @@ export function applicationAnalyticalDatabaseImplementation(value: unknown): App
   ) {
     return applicationSelectedClickHouseProvider(
       implementation as ApplicationProviderSelectionValue<ApplicationClickHouseAnalyticalDatabaseProvider>,
+    );
+  }
+  if (
+    isApplicationProviderSelection(implementation)
+    && [
+      ...Object.values(implementation.cases),
+      implementation.default,
+    ].every(isPostgresAnalyticalDatabaseProvider)
+  ) {
+    return applicationSelectedPostgresAnalyticsProvider(
+      implementation as ApplicationProviderSelectionValue<ApplicationPostgresAnalyticalDatabaseProvider>,
     );
   }
   return undefined;
@@ -1133,7 +1335,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
       return;
     }
     if (applicationProviderTokenName(token) === 'AnalyticalDatabase') {
-      if (candidates.some((candidate) => !isClickHouseAnalyticalDatabaseProvider(candidate))) {
+      if (candidates.some((candidate) => !isApplicationAnalyticalDatabaseProvider(candidate))) {
         throw new Error('Application profile AnalyticalDatabase branches must each satisfy the analytical database provider contract.');
       }
       state.providers.analytics = implementation;
@@ -1193,8 +1395,8 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     return;
   }
   if (applicationProviderTokenName(token) === 'AnalyticalDatabase') {
-    if (!isClickHouseAnalyticalDatabaseProvider(implementation)) {
-      throw new Error('app.provide(AnalyticalDatabase, ...) currently supports the ClickHouse analytical provider. Use AnalyticalDatabase.clickhouse(...).');
+    if (!isApplicationAnalyticalDatabaseProvider(implementation)) {
+      throw new Error('app.provide(AnalyticalDatabase, ...) requires Analytics.postgres(...), Analytics.clickHouse(...), or Analytics.externalClickHouse(...).');
     }
     state.providers.analytics = implementation;
     return;
@@ -1553,6 +1755,42 @@ function applicationSelectedClickHouseProvider(
     ...(enabled === undefined ? {} : { enabled }),
     ...(provision === undefined ? {} : { provision }),
     ...(credentialsSecret ? { credentialsSecret } : {}),
+  };
+  Object.defineProperty(provider, applicationProviderSelectionMetadata, {
+    value: selection,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return provider;
+}
+
+function applicationSelectedPostgresAnalyticsProvider(
+  selection: ApplicationProviderSelectionValue<ApplicationPostgresAnalyticalDatabaseProvider>,
+): ApplicationPostgresAnalyticalDatabaseProvider {
+  const fallback = selection.default;
+  const providers = [
+    ...Object.values(selection.cases),
+    fallback,
+  ];
+  if (providers.some((provider) => provider.database !== fallback.database)) {
+    throw new Error(
+      'Profile-selected Analytics.postgres(...) branches must reuse one qualified TransactionalDatabase binding.',
+    );
+  }
+  const schema = applicationSelectedProviderValue(
+    selection,
+    (provider) => provider.schema,
+  );
+  if (!schema) {
+    throw new Error(
+      'Profile-selected Analytics.postgres(...) requires one analytical schema in every branch.',
+    );
+  }
+  const provider: ApplicationPostgresAnalyticalDatabaseProvider = {
+    kind: 'postgres-analytics',
+    database: fallback.database,
+    schema,
   };
   Object.defineProperty(provider, applicationProviderSelectionMetadata, {
     value: selection,

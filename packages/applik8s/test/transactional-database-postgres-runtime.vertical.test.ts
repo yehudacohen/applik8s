@@ -7,7 +7,7 @@ import { app } from '../src/application.js';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
 import { applicationModelMigrationPreflightSql, applicationModelMigrationSql, type ApplicationRuntimeModelContract } from '../src/application-models.js';
 import { closePostgresModelCommandRuntime, executePostgresModelCommand, isRetryablePostgresTransactionError, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
-import { closePostgresModelClients, createPostgresModelClient } from '../src/model-store-postgres-runtime.js';
+import { closePostgresModelClients, createPostgresModelClient } from '../src/transactional-database-postgres-runtime.js';
 import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor } from '../src/native-models.js';
 import { applicationRelationalFrameworkMigrationSql } from '../src/relational-runtime.js';
 import { command, event } from '../src/dsl.js';
@@ -15,12 +15,12 @@ import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresComm
 import { type } from 'arktype';
 import { applicationRequestContextValues } from '../src/command-principal.js';
 
-const liveDatabaseUrl = process.env.APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL;
+const liveDatabaseUrl = process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL;
 
 describe('Postgres TransactionalDatabase script runtime', () => {
   afterEach(async () => {
-    delete process.env.APPLIK8S_MODEL_STORE_SCRIPT_NOTE_DATABASE_URL;
-    delete process.env.APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL;
+    delete process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_NOTE_DATABASE_URL;
+    delete process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL;
     await closePostgresModelClients();
     await closePostgresModelCommandRuntime();
   });
@@ -84,11 +84,11 @@ describe('Postgres TransactionalDatabase script runtime', () => {
 
       await expect(client.create({ spec: { message: 'hello' } })).rejects.toMatchObject({
         statusCode: 500,
-        message: expect.stringContaining('applik8s-modelstore-missing-credentials'),
+        message: expect.stringContaining('applik8s-transactional-database-missing-credentials'),
         diagnostic: expect.objectContaining({
-          event: 'applik8s-modelstore-missing-credentials',
+          event: 'applik8s-transactional-database-missing-credentials',
           model: 'ScriptNote',
-          env: 'APPLIK8S_MODEL_STORE_SCRIPT_NOTE_DATABASE_URL',
+          env: 'APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_NOTE_DATABASE_URL',
         }),
       });
     } finally {
@@ -107,7 +107,7 @@ describe('Postgres TransactionalDatabase script runtime', () => {
     expect(generated).toContain("model.connectionEnvName + ':' + model.tableName");
     expect(generated).toContain('modelStatusPatch(existing.status, patch.status)');
     expect(generated).toContain('status: next.status ?? null');
-    expect(generated).toContain('applik8s-modelstore-missing-credentials');
+    expect(generated).toContain('applik8s-transactional-database-missing-credentials');
     expect(generated).toContain('applik8s-model-migration-missing');
     expect(generated).toContain('applik8s-model-duplicate-key');
     expect(generated).toContain('postgresCode: \'42P01\'');
@@ -146,12 +146,12 @@ describe('Postgres TransactionalDatabase script runtime', () => {
 
 describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime live database behavior', () => {
   const tableName = `applik8s_script_live_note_${process.pid}`;
-  const model = scriptNoteModel(tableName, 'APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL');
+  const model = scriptNoteModel(tableName, 'APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL');
   const indexName = `script_live_note_message_${process.pid}`;
   let sql: postgres.Sql;
 
   beforeEach(async () => {
-    process.env.APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL = liveDatabaseUrl;
+    process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL = liveDatabaseUrl;
     sql = postgres(liveDatabaseUrl ?? '', { max: 1 });
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(tableName)}`);
     await sql.unsafe(`CREATE TABLE ${quoteIdentifier(tableName)} (id text PRIMARY KEY, spec jsonb NOT NULL, status jsonb, revision text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
@@ -163,7 +163,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     await closePostgresModelCommandRuntime();
     await sql?.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(tableName)}`);
     await sql?.end({ timeout: 1 });
-    delete process.env.APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL;
+    delete process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL;
     delete process.env.DATABASE_URL;
   });
 
@@ -232,7 +232,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
 
   it('prefers the model-specific connection env over DATABASE_URL', async () => {
     process.env.DATABASE_URL = 'postgres://invalid:invalid@127.0.0.1:1/invalid';
-    process.env.APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL = liveDatabaseUrl;
+    process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL = liveDatabaseUrl;
     const client = createPostgresModelClient<{ readonly message: string }>(model);
 
     await expect(client.create({ id: 'note-env', spec: { message: 'env-specific' } })).resolves.toMatchObject({ id: 'note-env' });
@@ -262,9 +262,9 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
 
   it('commits model state, history, transitions, results, and event outbox atomically and replays duplicate results', async () => {
     if (!liveDatabaseUrl) {
-      throw new Error('Live command transaction test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+      throw new Error('Live command transaction test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
     }
-    const commandModel = { ...scriptNoteModel(`${tableName}_commands`, 'APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL'), name: 'ScriptCommandNote' };
+    const commandModel = { ...scriptNoteModel(`${tableName}_commands`, 'APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL'), name: 'ScriptCommandNote' };
     const bindingId = `script-note-command-${process.pid}`;
     const NoteChanged = event('note.changed.v1', { payload: type({ message: 'string' }) });
     await sql.unsafe(applicationModelMigrationSql(commandModel));
@@ -459,7 +459,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
 
   it('executes direct native create, update, and delete operations with committed lifecycle events and replay', async () => {
     if (!liveDatabaseUrl) {
-      throw new Error('Live direct native CRUD test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+      throw new Error('Live direct native CRUD test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
     }
     const directTableName = `applik8s_direct_card_${process.pid}`;
     const cards = pgTable(directTableName, {
@@ -646,7 +646,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
 
   it('serializes concurrent same-key commands and rolls back state plus outbox before commit', async () => {
     if (!liveDatabaseUrl) {
-      throw new Error('Live command concurrency test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+      throw new Error('Live command concurrency test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
     }
     const counterModel = commandCounterModel(`applik8s_script_command_counter_${process.pid}`);
     const bindingId = `script-counter-command-${process.pid}`;
@@ -698,7 +698,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
   });
 
   it('executes concurrent optimistic commands, alternate-key routing, transactional command outbox, and runtime effect denial', async () => {
-    if (!liveDatabaseUrl) throw new Error('Live complete command semantics test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    if (!liveDatabaseUrl) throw new Error('Live complete command semantics test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
     const model = commandCounterModel(`applik8s_script_complete_command_${process.pid}`);
     const bindingId = `script-complete-command-${process.pid}`;
     const Followup = command('counter.followup.v1', { input: type({ counterId: 'string', count: 'number' }), output: type({ accepted: 'boolean' }) });
@@ -765,7 +765,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
   });
 
   it('cleans only completed binding-scoped command data after audit and published-outbox windows', async () => {
-    if (!liveDatabaseUrl) throw new Error('Live command cleanup test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    if (!liveDatabaseUrl) throw new Error('Live command cleanup test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
     const cleanupModel = commandCounterModel(`applik8s_script_cleanup_${process.pid}`);
     const bindingId = `script-cleanup-command-${process.pid}`;
     const otherBindingId = `${bindingId}-other`;
@@ -798,7 +798,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
   });
 
   it('recovers from broker outage and crash-after-publish using the stable outbox message id', async () => {
-    if (!liveDatabaseUrl) throw new Error('Live outbox recovery test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    if (!liveDatabaseUrl) throw new Error('Live outbox recovery test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
     const relayModel = commandCounterModel(`applik8s_script_relay_${process.pid}`);
     const bindingId = `script-relay-command-${process.pid}`;
     const RelayChanged = event('relay.changed.v1', { payload: type({ count: 'number' }) });
@@ -839,7 +839,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
   });
 
   it('commits declared same-database participant model changes in the command transaction', async () => {
-    if (!liveDatabaseUrl) throw new Error('Live participant transaction test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    if (!liveDatabaseUrl) throw new Error('Live participant transaction test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
     const accountModel = commandCounterModel(`applik8s_script_account_${process.pid}`);
     const auditModel = { ...commandCounterModel(`applik8s_script_audit_${process.pid}`), name: 'Audit' };
     const bindingId = `script-participant-command-${process.pid}`;
@@ -904,7 +904,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
   });
 
   it('retries an intentionally deadlocked multi-model transaction from a clean boundary', async () => {
-    if (!liveDatabaseUrl) throw new Error('Live command deadlock test requires APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL.');
+    if (!liveDatabaseUrl) throw new Error('Live command deadlock test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
     const accountModel = commandCounterModel(`applik8s_script_deadlock_account_${process.pid}`);
     const auditModel = { ...commandCounterModel(`applik8s_script_deadlock_audit_${process.pid}`), name: 'DeadlockAudit' };
     const bindingId = `script-deadlock-command-${process.pid}`;
@@ -962,7 +962,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
 
   it('fails migration preflight closed against existing schema drift before migration SQL runs', async () => {
     const driftTableName = `${tableName}_drift`;
-    const driftModel = scriptNoteModel(driftTableName, 'APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL');
+    const driftModel = scriptNoteModel(driftTableName, 'APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL');
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(driftTableName)}`);
     await sql.unsafe('DELETE FROM applik8s_model_migrations WHERE model = $1', [driftModel.name]);
     await sql.unsafe('CREATE TABLE IF NOT EXISTS "applik8s_model_migrations" (id text PRIMARY KEY, model text NOT NULL, revision text NOT NULL, plan jsonb NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())');
@@ -983,7 +983,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
   });
 });
 
-function scriptNoteModel(tableName: string, connectionEnvName = 'APPLIK8S_MODEL_STORE_SCRIPT_NOTE_DATABASE_URL'): ApplicationRuntimeModelContract {
+function scriptNoteModel(tableName: string, connectionEnvName = 'APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_NOTE_DATABASE_URL'): ApplicationRuntimeModelContract {
   return {
     name: 'ScriptNote',
     tableName,
@@ -1008,7 +1008,7 @@ function commandCounterModel(tableName: string): ApplicationRuntimeModelContract
     clusterName: 'script-runtime-db',
     secretName: 'script-runtime-db-app',
     secretKey: 'uri',
-    connectionEnvName: 'APPLIK8S_MODEL_STORE_SCRIPT_LIVE_NOTE_DATABASE_URL',
+    connectionEnvName: 'APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL',
     constraints: [],
     indexes: [],
     retention: { mode: 'retain' },

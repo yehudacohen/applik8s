@@ -1,5 +1,5 @@
 // typecast-file-boundary: ClickHouse JSONEachRow responses are locally parsed and asserted only after protocol-level field checks.
-import { createClickHouseProjectionStore, runApplicationProjection, type ApplicationStreamEnvelope } from '@applik8s/applik8s';
+import { createClickHouseAnalyticalProjectionWriter, runApplicationProjection, type ApplicationStreamEnvelope } from '@applik8s/applik8s';
 import { type } from 'arktype';
 import { describe, expect, test } from 'vitest';
 
@@ -10,7 +10,7 @@ describe.runIf(endpoint)('v0.6 real ClickHouse projection authority', () => {
   const streamName = 'accounts.changed.v1';
   const table = 'account_balances_v06_live';
   const schema = type({ eventId: 'string', accountId: 'string', balance: 'number', active: 'boolean' });
-  const store = createClickHouseProjectionStore({ endpoint: endpoint ?? '', table, projection, stream: streamName, schema });
+  const store = createClickHouseAnalyticalProjectionWriter({ endpoint: endpoint ?? '', table, projection, stream: streamName, schema });
   const events: readonly ApplicationStreamEnvelope<{ readonly accountId: string; readonly balance: number }>[] = [
     { id: 'event-1', stream: { name: 'accounts.changed', version: 'v1' }, sequence: 1, partitionKey: 'account-1', recordedAt: '2026-07-15T00:00:00.000Z', payload: { accountId: 'account-1', balance: 42 } },
     { id: 'event-2', stream: { name: 'accounts.changed', version: 'v1' }, sequence: 2, partitionKey: 'account-2', recordedAt: '2026-07-15T00:00:01.000Z', payload: { accountId: 'account-2', balance: 84 } },

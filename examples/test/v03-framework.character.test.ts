@@ -13,7 +13,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     const pressureTest = createTenantPlatformPressureTestContract(example);
 
     expect(graph?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.model-store', kind: 'provider', name: 'TransactionalDatabase' }),
+      expect.objectContaining({ id: 'provider.transactional-database', kind: 'provider', name: 'TransactionalDatabase' }),
       expect.objectContaining({ id: 'model.account', kind: 'model', schema: expect.objectContaining({ transactions: 'required' }) }),
       expect.objectContaining({ id: 'model.audit-record', kind: 'model', schema: expect.objectContaining({ retention: expect.objectContaining({ mode: 'ttl', ttlSeconds: 7776000 }) }) }),
       expect.objectContaining({ id: 'model.invitation', kind: 'model' }),
@@ -65,7 +65,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     expect(pressureTest.requiredProviders).toEqual(expect.arrayContaining(['TransactionalDatabase', 'Secret', 'CredentialStore', 'HttpExposure', 'Queue', 'ObjectStorage', 'EventSource']));
     expect(pressureTest.requiredNodes).toEqual(expect.arrayContaining(['model', 'server', 'job', 'provider']));
     expect(pressureTest.requiredStatusEvidence).toMatchObject({ authoritativeStore: 'applicationStatus', liveGate: 'requiredBeforeAnnouncement' });
-    expect(pressureTest.requiredModelStoreEvidence).toMatchObject({ scriptRuntimeParity: 'localAndOptInLiveGate', migrationDriftCoverage: 'required' });
+    expect(pressureTest.requiredTransactionalDatabaseEvidence).toMatchObject({ scriptRuntimeParity: 'localAndOptInLiveGate', migrationDriftCoverage: 'required' });
     expect(pressureTest.requiredOperationTargetEvidence.contexts).toEqual(expect.arrayContaining(['generatedServer', 'generatedJob']));
     expect(pressureTest.requiredWatchScopeEvidence).toMatchObject({ unsupportedPredicateDiagnostics: 'generatedArtifactAndLiveGateRequired', broadWatchFallback: 'forbidden' });
     expect(pressureTest.runtimeReleasePolicy).toMatchObject({ startupPackageManager: false, dependencyInstallation: 'buildTimeOnly', failurePolicy: 'failClosed' });
@@ -171,13 +171,13 @@ describe('v0.3 infrastructure-from-code product story', () => {
     }
 
     const previousDatabaseUrl = process.env.DATABASE_URL;
-    const previousModelUrl = process.env.APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL;
+    const previousModelUrl = process.env.APPLIK8S_TRANSACTIONAL_DATABASE_ACCOUNT_DATABASE_URL;
     delete process.env.DATABASE_URL;
-    delete process.env.APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL;
+    delete process.env.APPLIK8S_TRANSACTIONAL_DATABASE_ACCOUNT_DATABASE_URL;
     try {
       await expect(accounts.create({ spec: { email: 'ada@example.com', displayName: 'Ada' } })).rejects.toMatchObject({
-        message: expect.stringContaining('applik8s-modelstore-missing-credentials'),
-        diagnostic: expect.objectContaining({ event: 'applik8s-modelstore-missing-credentials', model: 'Account', env: 'APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL' }),
+        message: expect.stringContaining('applik8s-transactional-database-missing-credentials'),
+        diagnostic: expect.objectContaining({ event: 'applik8s-transactional-database-missing-credentials', model: 'Account', env: 'APPLIK8S_TRANSACTIONAL_DATABASE_ACCOUNT_DATABASE_URL' }),
       });
     } finally {
       if (previousDatabaseUrl === undefined) {
@@ -186,9 +186,9 @@ describe('v0.3 infrastructure-from-code product story', () => {
         process.env.DATABASE_URL = previousDatabaseUrl;
       }
       if (previousModelUrl === undefined) {
-        delete process.env.APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL;
+        delete process.env.APPLIK8S_TRANSACTIONAL_DATABASE_ACCOUNT_DATABASE_URL;
       } else {
-        process.env.APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL = previousModelUrl;
+        process.env.APPLIK8S_TRANSACTIONAL_DATABASE_ACCOUNT_DATABASE_URL = previousModelUrl;
       }
     }
   });
@@ -232,7 +232,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     });
     expect(Object.keys(sourceConfigMap?.data ?? {})).toEqual(expect.arrayContaining([
       'runtime__server.mjs',
-      'runtime__model-store-postgres.mjs',
+      'runtime__transactional-database-postgres.mjs',
       'runtime__job-runner.mjs',
       'runtime__kubernetes-client.mjs',
       'runtime__diagnostics.mjs',
@@ -247,7 +247,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     expect(deployment).toMatchObject({ spec: { template: { spec: { volumes: expect.arrayContaining([
       expect.objectContaining({ configMap: { name: 'accounts-web-source', items: expect.arrayContaining([
         expect.objectContaining({ key: 'runtime__server.mjs', path: 'runtime/server.mjs' }),
-        expect.objectContaining({ key: 'runtime__model-store-postgres.mjs', path: 'runtime/model-store-postgres.mjs' }),
+        expect.objectContaining({ key: 'runtime__transactional-database-postgres.mjs', path: 'runtime/transactional-database-postgres.mjs' }),
         expect.objectContaining({ key: 'runtime__job-runner.mjs', path: 'runtime/job-runner.mjs' }),
         expect.objectContaining({ key: 'runtime__kubernetes-client.mjs', path: 'runtime/kubernetes-client.mjs' }),
         expect.objectContaining({ key: 'runtime__diagnostics.mjs', path: 'runtime/diagnostics.mjs' }),
@@ -328,14 +328,14 @@ describe('v0.3 infrastructure-from-code product story', () => {
         { scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', namespace: 'platform', labels: { 'tenant.applik8s.dev/name': 'tenant-a' } }, lowering: 'labelSelector', runtime: { mode: 'sharedInformer', resyncPolicy: 'bounded', cancellation: 'onScopeRemoved' }, permissions: [{ apiGroups: ['apps'], resources: ['deployments'], verbs: ['list', 'watch'] }], failurePolicy: 'failClosed', diagnostics: [] },
         { scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', namespace: 'platform', labels: {} }, lowering: 'labelSelector', permissions: [], failurePolicy: 'failClosed', diagnostics: [{ event: 'applik8s-watch-scope-unlowerable', severity: 'error', subject: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: 'platform' }, reason: 'UnsupportedLabelSelectorExpression', message: 'Unsupported watch predicate fails closed instead of broadening account platform watches.', retryable: false }] },
       ],
-      requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'TransactionalDatabase', nodeId: 'provider.model-store' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'accounts-db', namespace: 'platform' }, expectedRevision: 'sha256:accounts-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['missingHistoryTable', 'incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Schema drift must fail closed before applying migrations.', retryable: false }] }],
-      requiredModelStoreSemantics: [modelStoreSemantics()],
+      requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'accounts-db', namespace: 'platform' }, expectedRevision: 'sha256:accounts-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['missingHistoryTable', 'incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Schema drift must fail closed before applying migrations.', retryable: false }] }],
+      requiredTransactionalDatabaseSemantics: [transactionalDatabaseSemantics()],
       requiredRuntimeModuleInterfaces: [runtimeModuleInterface([{ kind: 'modelRuntime', name: 'postgres-models' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createServerRuntime', kind: 'function', stability: 'stable' }], 'required')],
       requiredProviderInterfaces: providerInterfaces(),
       providerCompatibility: providerCompatibilityMatrix(),
       requiredStatusOwnership: [{ primary: 'applicationStatus', durableAuthority: 'generatedStatusConfigMap', releasePolicy: 'kroStatusProjectionRequired', applicationStatusProjection: 'requiredAuthoritative', appStatusSchema: 'required', appStatusSchemaContract: appStatusSchemaContract(), durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'accounts-platform-status-reconciler-status', namespace: 'platform' }, fallbackStore: generatedStatusConfigMapContract(), concurrency: generatedStatusConcurrencyContract(), observability: generatedStatusObservabilityContract(), conflictPolicy: 'mergePatch', diagnostics: [{ event: 'applik8s-status-projection-unavailable', severity: 'error', subject: { nodeId: 'job.accounts-model-migration' }, reason: 'KroStatusProjectionRequired', message: 'KRO-owned status.applik8s.jobs hydration is required.', retryable: false }] }],
       requiredStatusEvidence: statusEvidence(),
-      requiredModelStoreEvidence: modelStoreEvidenceContract(),
+      requiredTransactionalDatabaseEvidence: transactionalDatabaseEvidenceContract(),
       requiredOperationTargetEvidence: operationTargetEvidence(),
       requiredWatchScopeEvidence: watchScopeEvidence(),
       runtimeReleasePolicy: runtimeReleasePolicy(),
@@ -353,7 +353,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
       expect.objectContaining({ apiVersion: 'apps/v1', kind: 'Deployment', metadata: expect.objectContaining({ name: 'accounts-web', namespace: 'platform' }) }),
     ]));
     const sourceConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'accounts-web-source');
-    expect(Object.keys(sourceConfigMap?.data ?? {})).toEqual(expect.arrayContaining(['runtime__server.mjs', 'runtime__model-store-postgres.mjs', 'runtime__job-runner.mjs', 'runtime__kubernetes-client.mjs', 'runtime__diagnostics.mjs']));
+    expect(Object.keys(sourceConfigMap?.data ?? {})).toEqual(expect.arrayContaining(['runtime__server.mjs', 'runtime__transactional-database-postgres.mjs', 'runtime__job-runner.mjs', 'runtime__kubernetes-client.mjs', 'runtime__diagnostics.mjs']));
     expect(pressureTest.requiredOperationTargets[0]?.dryRun.failurePolicy).toBe('failClosed');
     expect(pressureTest.requiredWatchScopes[0]?.failurePolicy).toBe('failClosed');
     expect(pressureTest.requiredMigrationDriftChecks[0]?.policy.driftPolicy).toBe('failClosed');
@@ -434,7 +434,7 @@ function providerCompatibilityMatrix(): ApplicationV03PressureTestContract['prov
   return { apiVersion: 'applik8s.providerCompatibility/v1alpha1', providers: providerInterfaces(), requiredForV03: ['TransactionalDatabase', 'IndexStore', 'CounterStore', 'EventSource', 'Secret', 'Queue', 'ObjectStorage', 'HttpExposure', 'CredentialStore'] };
 }
 
-function modelStoreSemantics(): NonNullable<ApplicationV03PressureTestContract['requiredModelStoreSemantics']>[number] {
+function transactionalDatabaseSemantics(): NonNullable<ApplicationV03PressureTestContract['requiredTransactionalDatabaseSemantics']>[number] {
   return {
     generatedRuntimeParity: 'required',
     scriptRuntimeParity: 'required',
@@ -455,7 +455,7 @@ function statusEvidence(): ApplicationV03PressureTestContract['requiredStatusEvi
   return { authoritativeStore: 'applicationStatus', appStatusProjection: 'requiredAuthoritative', history: 'boundedRetained', conflictBehavior: 'resourceVersionRetryAndExhaustionDiagnostics', restartSafety: 'required', multiJobCronJobCoverage: 'required', metrics: ['acceptedUpdates', 'rejectedUpdates', 'conflictUpdates', 'observedJobs', 'retainedJobs'], liveGate: 'requiredBeforeAnnouncement', failurePolicy: 'failClosed' };
 }
 
-function modelStoreEvidenceContract(): ApplicationV03PressureTestContract['requiredModelStoreEvidence'] {
+function transactionalDatabaseEvidenceContract(): ApplicationV03PressureTestContract['requiredTransactionalDatabaseEvidence'] {
   return { generatedRuntimeParity: 'localGeneratedArtifactGate', scriptRuntimeParity: 'localAndOptInLiveGate', liveGate: 'requiredBeforeAnnouncement', queryIndexConstraintCoverage: 'required', transactionCoverage: 'required', migrationDriftCoverage: 'required', unsupportedSemantics: 'failClosed' };
 }
 

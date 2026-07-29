@@ -122,10 +122,10 @@ assert(installationProfileValue(indexStore?.config?.indexStore?.provision) && in
 const objectStoreProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'ObjectStorage');
 assert(installationProfileValue(objectStoreProvider?.config?.objectStorage?.ownership) && objectStoreProvider.config.objectStorage.ownership.includes('"external"') && objectStoreProvider.config.objectStorage.ownership.includes('"direct-provisioned"') && objectStoreProvider.config.objectStorage.provisioning?.storageClassName === 'typekro-harbor-bucket-retain', 'Managed profiles must declare automatic direct Rook bucket provisioning while the external profile retains external ownership.');
 assert(objectStoreProvider?.config?.objectStorage?.enabled === true, 'Chirp must retain ObjectStorage as a core projection-recovery dependency.');
-const modelStoreProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'TransactionalDatabase')?.config?.modelStore;
-assert(installationProfileValue(modelStoreProvider?.ownership) && modelStoreProvider.ownership.includes('"external"') && modelStoreProvider.ownership.includes('"direct-provisioned"') && modelStoreProvider.lifecycle?.deletionPolicy === '${schema.spec.lifecycle.databaseDeletion}', 'Chirp PostgreSQL must select external or explicit direct ownership from typed profile and lifecycle desired state.');
-assert(installationProfileValue(modelStoreProvider?.connectionSecret?.name) && modelStoreProvider.connectionSecret.name.includes('schema.spec.providers.database.connectionSecretName'), 'The external profile must select its PostgreSQL connection Secret from typed provider coordinates.');
-assert(modelStoreProvider?.backup?.enabled === installationManagedBackupValue && modelStoreProvider.backup?.destination?.kind === 's3', 'Chirp backup desired state must lower only to the managed PostgreSQL provider without embedding credentials.');
+const transactionalDatabaseProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'TransactionalDatabase')?.config?.transactionalDatabase;
+assert(installationProfileValue(transactionalDatabaseProvider?.ownership) && transactionalDatabaseProvider.ownership.includes('"external"') && transactionalDatabaseProvider.ownership.includes('"direct-provisioned"') && transactionalDatabaseProvider.lifecycle?.deletionPolicy === '${schema.spec.lifecycle.databaseDeletion}', 'Chirp PostgreSQL must select external or explicit direct ownership from typed profile and lifecycle desired state.');
+assert(installationProfileValue(transactionalDatabaseProvider?.connectionSecret?.name) && transactionalDatabaseProvider.connectionSecret.name.includes('schema.spec.providers.database.connectionSecretName'), 'The external profile must select its PostgreSQL connection Secret from typed provider coordinates.');
+assert(transactionalDatabaseProvider?.backup?.enabled === installationManagedBackupValue && transactionalDatabaseProvider.backup?.destination?.kind === 's3', 'Chirp backup desired state must lower only to the managed PostgreSQL provider without embedding credentials.');
 const workflowProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'WorkflowEngine');
 assert(workflowProvider?.config?.enabled === true, 'Chirp must retain its WorkflowEngine as a core projection-recovery dependency.');
 const generationProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'StructuredGeneration');
@@ -184,7 +184,7 @@ assert(chirpRgd.spec.schema.status.migrationStatus.includes('applik8sGeneratedJo
 assert(
   typeof chirpRgd.spec.schema.status.backupStatus === 'string'
     && chirpRgd.spec.schema.status.backupStatus.startsWith('${')
-    && chirpRgd.spec.schema.status.backupStatus.includes('ModelStoreScheduledBackup')
+    && chirpRgd.spec.schema.status.backupStatus.includes('TransactionalDatabaseScheduledBackup')
     && chirpRgd.spec.schema.status.backupStatus.includes('NotConfigured'),
   'Chirp backup status must observe the conditional ScheduledBackup and remain NotConfigured when desired state disables it.',
 );
@@ -207,7 +207,7 @@ assert(chirpRgd.spec.schema.status.ready.includes('applik8sGeneratedDeploymentCh
 assert(/applik8sGeneratedDeploymentChirpWeb\d+/.test(chirpRgd.spec.schema.status.providerStatus.identity), 'Chirp identity status must be backed by the authored workloads that host request admission.');
 assert(/applik8sGeneratedDeploymentChirpWeb\d+/.test(chirpRgd.spec.schema.status.providerStatus.authorization), 'Chirp authorization status must be backed by the authored workloads that enforce policy.');
 assert(chirpRgd.spec.schema.status.providerStatus.exposure.includes('active.webPublicIngressApplicationExposure') && chirpRgd.spec.schema.status.providerStatus.exposure.includes('active.webLocalNodePortApplicationExposure'), 'Chirp exposure status must observe both conditionally selected public transports.');
-assert(chirpRgd.spec.schema.status.ready.includes('ModelStoreCluster'), 'Chirp readiness must observe the authoritative PostgreSQL cluster without depending on model registration order.');
+assert(chirpRgd.spec.schema.status.ready.includes('TransactionalDatabaseCluster'), 'Chirp readiness must observe the authoritative PostgreSQL cluster without depending on model registration order.');
 assert(chirpRgd.spec.schema.status.ready.includes('applik8sObjectStorageCredentials'), 'Chirp readiness must observe the direct/external object-storage credentials boundary.');
 assert(chirpRgd.spec.schema.status.ready.includes('chirpProvidedValkeyIndex'), 'Chirp readiness must observe the operator-backed Valkey cluster.');
 assert(chirpRgd.spec.schema.status.ready.includes('applik8sEventsNatsHelmRelease') && chirpRgd.spec.schema.status.ready.includes('applik8sEventsNackHelmRelease'), 'Chirp readiness must observe both NATS and NACK controller prerequisites.');
@@ -219,7 +219,7 @@ const applicationClusters = chirpRgd.spec.resources
 assert(applicationClusters.length === 1, `Chirp must observe exactly one direct-lifecycle authoritative application database cluster, found ${applicationClusters.length}.`);
 assert(applicationClusters[0]?.externalRef?.metadata?.namespace === installationNamespace, 'ChirpInstallation.spec.name must scope the authoritative application database.');
 assert(!chirpRgd.spec.resources.some((resource) => resource.template?.apiVersion === 'postgresql.cnpg.io/v1' && resource.template?.kind === 'Cluster' && resource.template.metadata?.name === 'chirp-models'), 'The retained Chirp database must never be a KRO-owned graph child.');
-assert(installationProfileValue(modelStoreProvider?.instances) && installationProfileValue(modelStoreProvider?.storage?.size), 'ChirpInstallation.spec.profile must drive the direct PostgreSQL provisioning contract.');
+assert(installationProfileValue(transactionalDatabaseProvider?.instances) && installationProfileValue(transactionalDatabaseProvider?.storage?.size), 'ChirpInstallation.spec.profile must drive the direct PostgreSQL provisioning contract.');
 const natsRelease = chirpRgd.spec.resources.map((resource) => resource.template).find((resource) => resource?.kind === 'HelmRelease' && resource.metadata?.name === 'applik8s-events');
 assert(installationProfileValue(natsRelease?.spec?.values?.config?.cluster?.replicas) && installationProfileValue(natsRelease?.spec?.values?.config?.jetstream?.fileStore?.pvc?.size), 'ChirpInstallation.spec.profile must drive JetStream replicas and durable storage.');
 const workflowDatabase = chirpRgd.spec.resources.map((resource) => resource.template).find((resource) => resource?.apiVersion === 'postgresql.cnpg.io/v1' && resource?.kind === 'Cluster' && resource.metadata?.name === 'chirp-workflows-db');
@@ -254,7 +254,7 @@ assert(
 );
 const workflowSource = await readFile(join(output, 'typekro/workflows/chirp-workflows/workflow-worker.generated.ts'), 'utf8');
 for (const marker of [
-  'createPostgresApplicationProjectionSnapshotSource', 'createPostgresApplicationStream', 'createValkeyOnlineProjectionStore',
+  'createPostgresApplicationProjectionSnapshotSource', 'createPostgresApplicationStream', 'createValkeyOnlineProjectionWriter',
   'createS3ApplicationObjectStorageRuntime', 'runApplicationOnlineProjectionRebuild', 'snapshotPartition',
   'projections: Object.freeze', 'APPLIK8S_REBUILD_VALKEY_HOST', 'APPLIK8S_REBUILD_OBJECT_BUCKET',
 ]) {

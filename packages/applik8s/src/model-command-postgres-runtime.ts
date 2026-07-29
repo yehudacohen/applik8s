@@ -834,7 +834,7 @@ function concurrentCommandModification(): Error & { readonly code: string } {
 function postgresCommandDatabase(model: ApplicationRuntimeModelContract, databaseUrl: string | undefined): Promise<ApplicationPostgresSql> {
   const url = databaseUrl ?? process.env[model.connectionEnvName] ?? process.env.DATABASE_URL;
   if (!url) {
-    throw new Error(`applik8s-modelstore-missing-credentials: Command processor for ${model.name} requires ${model.connectionEnvName} or DATABASE_URL.`);
+    throw new Error(`applik8s-transactional-database-missing-credentials: Command processor for ${model.name} requires ${model.connectionEnvName} or DATABASE_URL.`);
   }
   const key = `${model.connectionEnvName}:${url}`;
   const current = commandConnections.get(key);

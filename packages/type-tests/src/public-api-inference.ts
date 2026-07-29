@@ -1,5 +1,5 @@
 import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
-import { AnalyticalDatabase, app as defineApplication, applicationModelFacet, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationSecretBinding, type ApplicationTaskBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, DnsPublication, EventSource, event, HttpExposure, IndexStore, ObjectStorage, Queue, Secret, task, TransactionalDatabase, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { AnalyticalDatabase, Analytics, app as defineApplication, applicationModelFacet, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationSecretBinding, type ApplicationTaskBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, Database, DnsPublication, EventSource, event, HttpExposure, IndexStore, ObjectStorage, Queue, Secret, task, TransactionalDatabase, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import type {
   ApplicationDurableStatusOwnershipContract,
@@ -131,15 +131,15 @@ const OnboardAccount = workflow('account.onboard.v1', {
   signals: { approval: appSchemaType({ approved: 'boolean' }) },
 });
 
-const accountModelStore = TransactionalDatabase.postgres({
+const accountTransactionalDatabase = Database.postgres({
   name: 'accounts-db',
   namespace: 'accounts',
   database: 'accounts',
-  migrations: TransactionalDatabase.migrations.generatedJob({ jobName: 'accounts-model-migration' }),
+  migrations: Database.migrations.generatedJob({ jobName: 'accounts-model-migration' }),
 });
 
-const accountModelStoreProvider: ApplicationTransactionalDatabaseProvider = accountModelStore;
-const analyticalDatabase = AnalyticalDatabase.clickhouse({ name: 'accounts-analytics' });
+const accountTransactionalDatabaseProvider: ApplicationTransactionalDatabaseProvider = accountTransactionalDatabase;
+const analyticalDatabase = Analytics.clickHouse({ name: 'accounts-analytics' });
 
 const ProfileInstallation = appSchemaType({
   name: 'string',
@@ -156,21 +156,16 @@ const profileDeployment = profileApplication.profile(
 );
 const incompleteProfileDatabase = profileDeployment
   .provide(PrimaryDatabase)
-  .starter(() => TransactionalDatabase.postgres({ database: 'starter' }))
-  .dedicated(() => TransactionalDatabase.postgres({ database: 'dedicated' }));
+  .starter(() => Database.postgres({ database: 'starter' }))
+  .dedicated(() => Database.postgres({ database: 'dedicated' }));
 // @ts-expect-error exhaustive bindings name the still-unhandled external variant.
 incompleteProfileDatabase.exhaustive();
 incompleteProfileDatabase.external((spec) => {
   const externalProfile: 'external' = spec.profile;
   expectTypeUsage(externalProfile);
-  return TransactionalDatabase.postgres({
+  return Database.externalPostgres({
     database: 'external',
-    provision: false,
-    cluster: {
-      apiVersion: 'postgresql.cnpg.io/v1',
-      kind: 'Cluster',
-      name: 'shared',
-    },
+    connection: { secretName: 'shared-app' },
   });
 }).exhaustive();
 const injectedPrimaryDatabase = profileApplication.inject(PrimaryDatabase);
@@ -180,9 +175,15 @@ expectTypeUsage(injectedPrimaryDatabase);
 const ProfileAnalytics = AnalyticalDatabase.named('analytics');
 profileDeployment
   .provide(ProfileAnalytics)
-  .starter(() => AnalyticalDatabase.clickhouse({ name: 'starter' }))
-  .dedicated(() => AnalyticalDatabase.clickhouse({ name: 'dedicated' }))
-  .external(() => AnalyticalDatabase.clickhouse({ name: 'external' }))
+  .starter(() => Analytics.postgres({
+    database: injectedPrimaryDatabase,
+    schema: 'analytics',
+  }))
+  .dedicated(() => Analytics.clickHouse({ name: 'dedicated' }))
+  .external(() => Analytics.externalClickHouse({
+    name: 'external',
+    connection: { endpoint: 'https://clickhouse.example.test' },
+  }))
   .exhaustive();
 const injectedProfileAnalytics = profileApplication.inject(ProfileAnalytics);
 const analyticalProjectionProvider: NonNullable<
@@ -195,7 +196,7 @@ profileApplication.model('InvalidAnalyticalAuthority', {
 });
 expectTypeUsage(analyticalProjectionProvider);
 
-const modelStoreGuarantees = {
+const transactionalDatabaseGuarantees = {
   identity: 'stableId',
   uniqueness: 'databaseConstraint',
   indexes: 'declaredSecondaryIndexes',
@@ -303,7 +304,7 @@ const migrationDriftCheckContract = {
   diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Schema drift detected.', retryable: false }],
 } satisfies ApplicationMigrationDriftCheckContract;
 
-const modelStoreSemanticsContract = {
+const transactionalDatabaseSemanticsContract = {
   generatedRuntimeParity: 'required',
   scriptRuntimeParity: 'required',
   query: { defaultLimit: 50, maxLimit: 500, cursor: 'offset', unsupportedFilters: 'failClosed' },
@@ -377,7 +378,7 @@ const v03StatusEvidence = {
   failurePolicy: 'failClosed',
 } satisfies ApplicationV03PressureTestContract['requiredStatusEvidence'];
 
-const v03ModelStoreEvidence = {
+const v03TransactionalDatabaseEvidence = {
   generatedRuntimeParity: 'localGeneratedArtifactGate',
   scriptRuntimeParity: 'localAndOptInLiveGate',
   liveGate: 'requiredBeforeAnnouncement',
@@ -385,7 +386,7 @@ const v03ModelStoreEvidence = {
   transactionCoverage: 'required',
   migrationDriftCoverage: 'required',
   unsupportedSemantics: 'failClosed',
-} satisfies ApplicationV03PressureTestContract['requiredModelStoreEvidence'];
+} satisfies ApplicationV03PressureTestContract['requiredTransactionalDatabaseEvidence'];
 
 const v03OperationTargetEvidence = {
   contexts: ['handler', 'generatedServer', 'generatedJob', 'typeKro'],
@@ -422,13 +423,13 @@ const v03PressureTestContract = {
   requiredOperationTargets: [operationTargetContract],
   requiredWatchScopes: [watchScopeLoweringContract, unlowerableWatchScopeContract],
   requiredMigrationDriftChecks: [migrationDriftCheckContract],
-  requiredModelStoreSemantics: [modelStoreSemanticsContract],
+  requiredTransactionalDatabaseSemantics: [transactionalDatabaseSemanticsContract],
   requiredRuntimeModuleInterfaces: [runtimeModuleInterfaceContract],
   requiredProviderInterfaces: v03ProviderInterfaces,
   providerCompatibility: v03ProviderCompatibility,
   requiredStatusOwnership: [durableStatusOwnershipContract],
   requiredStatusEvidence: v03StatusEvidence,
-  requiredModelStoreEvidence: v03ModelStoreEvidence,
+  requiredTransactionalDatabaseEvidence: v03TransactionalDatabaseEvidence,
   requiredOperationTargetEvidence: v03OperationTargetEvidence,
   requiredWatchScopeEvidence: v03WatchScopeEvidence,
   runtimeReleasePolicy: v03RuntimeReleasePolicy,
@@ -447,16 +448,16 @@ const _invalidPartialV03PressureTestContract: ApplicationV03PressureTestContract
   requiredMigrationDriftChecks: [migrationDriftCheckContract],
 };
 
-expectTypeUsage(accountModelStoreProvider, analyticalDatabase, modelStoreGuarantees, generatedJobContract, generatedJobPhaseStatusContract, generatedJobStatusUpdaterContract, generatedRuntimeModuleContract, operationTargetContract, operationTargetLoweringArtifacts, watchScopeLoweringContract, unlowerableWatchScopeContract, migrationDriftCheckContract, v03PressureTestContract);
+expectTypeUsage(accountTransactionalDatabaseProvider, analyticalDatabase, transactionalDatabaseGuarantees, generatedJobContract, generatedJobPhaseStatusContract, generatedJobStatusUpdaterContract, generatedRuntimeModuleContract, operationTargetContract, operationTargetLoweringArtifacts, watchScopeLoweringContract, unlowerableWatchScopeContract, migrationDriftCheckContract, v03PressureTestContract);
 
 // @ts-expect-error TransactionalDatabase providers must use the typed provider object, not a string alias.
-const _invalidStringModelStoreProvider: ApplicationTransactionalDatabaseProvider = 'postgres';
+const _invalidStringTransactionalDatabaseProvider: ApplicationTransactionalDatabaseProvider = 'postgres';
 
 // @ts-expect-error TransactionalDatabase providers must declare the supported provider kind.
-const _invalidMissingKindModelStoreProvider: ApplicationTransactionalDatabaseProvider = { name: 'accounts-db' };
+const _invalidMissingKindTransactionalDatabaseProvider: ApplicationTransactionalDatabaseProvider = { name: 'accounts-db' };
 
 // @ts-expect-error only the typed PostgreSQL TransactionalDatabase provider is supported.
-const _invalidProviderKindModelStoreProvider: ApplicationTransactionalDatabaseProvider = { kind: 'mysql', name: 'accounts-db' };
+const _invalidProviderKindTransactionalDatabaseProvider: ApplicationTransactionalDatabaseProvider = { kind: 'mysql', name: 'accounts-db' };
 
 let accountModelForScriptExecution: ApplicationModelBinding<AccountSpec, AccountStatus> | undefined;
 
@@ -467,9 +468,9 @@ appSdk.kubernetesComposition({
   spec: appSchemaType({ namespace: 'string' }),
   status: appSchemaType({ ready: 'boolean' }),
 }, (spec, app) => {
-  const store = app.provide(TransactionalDatabase, accountModelStore);
+  const store = app.provide(TransactionalDatabase, accountTransactionalDatabase);
   app.provide(WorkflowEngine, WorkflowEngine.hatchet({ namespace: spec.namespace, provision: false, workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'hatchet-worker', namespace: spec.namespace } }));
-  const modelDefaults = app.defaults({ database: accountModelStore });
+  const modelDefaults = app.defaults({ database: accountTransactionalDatabase });
   const maintenanceJob: ApplicationJobBinding = app.job('compact-accounts', { taskKind: 'maintenance', image: 'busybox:1.36', command: ['sh', '-c'], args: ['echo compact'] });
   const maintenanceSchedule: ApplicationJobBinding = app.schedule('compact-accounts-hourly', { taskKind: 'maintenance', cron: '0 * * * *', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
   const maintenanceJobStatusPath: string = maintenanceJob.statusPath;

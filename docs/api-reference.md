@@ -81,7 +81,7 @@ The primary authoring sequence is:
 
 - `const myApp = app('name', { namespace, apiVersion, kind })`
 - `myApp.resource('Kind', { spec, status })` for schema-first CRDs
-- `myApp.storage.postgres('db', { database, migrations: 'generated-job' })` for the concrete Postgres `ModelStore` slice
+- `myApp.storage.postgres('db', { database, migrations: 'generated-job' })` for the concrete Postgres `TransactionalDatabase` slice
 - `myApp.model('Name', { spec, indexes })` for storage-backed app data
 - `myApp.http('server', (http) => { ... })` for generated HTTP workloads with inferred resources/models
 - `myApp.on(Resource, { created, updated, finalize })` for explicit app-native lifecycle controllers
@@ -89,12 +89,12 @@ The primary authoring sequence is:
 - `myApp.install(childApp, { spec })` to statically nest another installable Application into the generated TypeKro graph
 - `myApp.composition` when a TypeKro composition is needed
 
-Provider APIs such as `app.provide(ModelStore, ...)`, `app.defaults(...)`, and explicit `app.server(...)` options remain supported for advanced composition. They should be treated as progressive disclosure: use them when you need a non-default binding, explicit provider ownership, or lower-level compatibility inspection.
+Provider APIs such as `app.provide(TransactionalDatabase, ...)`, `app.defaults(...)`, and explicit `app.server(...)` options remain supported for advanced composition. They should be treated as progressive disclosure: use them when you need a non-default binding, explicit provider ownership, or lower-level compatibility inspection.
 
 PostgreSQL ownership is explicit when data must outlive the Application graph. The compact default,
-`ModelStore.postgres()`, makes the CNPG `Cluster` a KRO child and therefore deletes it with the Application
+`TransactionalDatabase.postgres()`, makes the CNPG `Cluster` a KRO child and therefore deletes it with the Application
 instance. A retained application-owned database uses
-`ModelStore.postgres({ ownership: 'direct-provisioned', lifecycle: { deletionPolicy: 'retain' } })`; deployment
+`TransactionalDatabase.postgres({ ownership: 'direct-provisioned', lifecycle: { deletionPolicy: 'retain' } })`; deployment
 prepares it through a recorded TypeKro direct factory and the KRO graph observes it with `externalRef` without
 adopting it. Use `deletionPolicy: 'delete'` for a disposable direct-managed database, or
 `ownership: 'external'` with `provision: false` or an explicit `cluster` reference for infrastructure owned
@@ -237,11 +237,11 @@ Server RBAC is inferred from direct helper calls. `Resource.increment(...)` requ
 
 `@applik8s/applik8s/dsl` exports `entity(name, { spec, status })` as the schema-first definition shape for v0.3. Entities can be materialized honestly as Kubernetes control-plane resources with `app.crd(entity, { apiVersion, ... })`; the returned resource supports the same CRD actions, indexes, listeners, and permission inference as `sdk.crd(...)`.
 
-`app.model(entity)` materializes application data through an explicit `ModelStore` provider. The v0.3 concrete storage-backed slice is Postgres/CNPG: generated artifacts include the database dependency, migration SQL, migration Job, generated runtime client, and diagnostics. Unsupported query/index/transaction/storage assumptions fail closed; applik8s does not silently treat CRDs as a hidden database.
+`app.model(entity)` materializes application data through an explicit `TransactionalDatabase` provider. The v0.3 concrete storage-backed slice is Postgres/CNPG: generated artifacts include the database dependency, migration SQL, migration Job, generated runtime client, and diagnostics. Unsupported query/index/transaction/storage assumptions fail closed; applik8s does not silently treat CRDs as a hidden database.
 
 ## v0.3 Provider Boundary
 
-`app.defaults(...)` and `app.provide(...)` bind capability interfaces such as `ModelStore`, `IndexStore`, `CounterStore`, `EventSource`, `Secret`, `Queue`, `ObjectStorage`, `HttpExposure`, and credential material. v0.3 supplies defaults for all of them, so native actors do not require custom provider wiring.
+`app.defaults(...)` and `app.provide(...)` bind capability interfaces such as `TransactionalDatabase`, `IndexStore`, `CounterStore`, `EventSource`, `Secret`, `Queue`, `ObjectStorage`, `HttpExposure`, and credential material. v0.3 supplies defaults for all of them, so native actors do not require custom provider wiring.
 
 The defaults are deliberately bounded: Postgres/CNPG for models; Valkey for indexes; declared Kubernetes resources for buffered counters; Kubernetes watches for events; Secrets for secret material and credentials; a resourceVersion-safe ConfigMap queue capped at 1,000 messages and 64 KiB per message; ConfigMap-backed objects capped at 512 KiB each; and Ingress for HTTP exposure.
 

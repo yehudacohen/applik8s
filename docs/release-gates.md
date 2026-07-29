@@ -114,7 +114,7 @@ Run only local v0.3 contract coverage:
 bun run test:v03:contracts
 ```
 
-This exercises app graph stability, provider support contracts, ModelStore semantics, generated job durable status ownership, TypeKro CRD/status parity, generated server/runtime module boundaries, and public v0.3 pressure-test contracts. The pressure-test contract now requires explicit evidence declarations for durable status concurrency/restart/multi-job behavior, ModelStore generated/script parity, generated server/job operation-target execution, unsupported watch-predicate diagnostics, runtime image/supply-chain posture, and the canonical live assertion checklist.
+This exercises app graph stability, provider support contracts, TransactionalDatabase semantics, generated job durable status ownership, TypeKro CRD/status parity, generated server/runtime module boundaries, and public v0.3 pressure-test contracts. The pressure-test contract now requires explicit evidence declarations for durable status concurrency/restart/multi-job behavior, TransactionalDatabase generated/script parity, generated server/job operation-target execution, unsupported watch-predicate diagnostics, runtime image/supply-chain posture, and the canonical live assertion checklist.
 
 Run the CI-safe non-live v0.3 substrate gate:
 
@@ -144,7 +144,7 @@ For a non-OrbStack local context, set `APPLIK8S_E2E_CONTEXT` and run:
 bun run check:v03:prerelease
 ```
 
-The live v0.3 gate covers Tenant Platform, durable generated-status history, TypeKro Postgres ModelStore, migration drift preflight, TypeKro operation targets, scoped TypeKro listeners, unsupported watch-predicate fail-closed diagnostics, and the live evidence required by the pressure-test contract. It mutates the selected context and may install or reuse TypeKro/CNPG prerequisites.
+The live v0.3 gate covers Tenant Platform, durable generated-status history, TypeKro Postgres TransactionalDatabase, migration drift preflight, TypeKro operation targets, scoped TypeKro listeners, unsupported watch-predicate fail-closed diagnostics, and the live evidence required by the pressure-test contract. It mutates the selected context and may install or reuse TypeKro/CNPG prerequisites.
 
 ## Skipping Live E2E
 

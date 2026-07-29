@@ -362,7 +362,7 @@ function postgresDirectContribution(
   provider: ApplicationProviderNode,
   context: ApplicationDeploymentPlanningContext,
 ): ProviderDirectContribution {
-  const value = nestedObject(provider.config, "modelStore");
+  const value = nestedObject(provider.config, "transactionalDatabase");
   if (
     value?.kind !== "postgres" ||
     value.ownership !== "direct-provisioned"

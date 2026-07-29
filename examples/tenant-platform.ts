@@ -570,14 +570,14 @@ export function createTenantPlatformPressureTestContract(example = createTenantP
       { scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', namespace: defaultOptions.namespace, labels: { 'platform.applik8s.dev/tenant': 'tenant-a' } }, lowering: 'labelSelector', runtime: { mode: 'sharedInformer', resyncPolicy: 'bounded', cancellation: 'onScopeRemoved' }, permissions: [{ apiGroups: ['apps'], resources: ['deployments'], verbs: ['list', 'watch'] }], failurePolicy: 'failClosed', diagnostics: [] },
       { scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', namespace: defaultOptions.namespace, labels: {} }, lowering: 'labelSelector', permissions: [], failurePolicy: 'failClosed', diagnostics: [{ event: 'applik8s-watch-scope-unlowerable', severity: 'error', subject: { apiVersion: 'apps/v1', kind: 'Deployment', namespace: defaultOptions.namespace }, reason: 'UnsupportedLabelSelectorExpression', message: 'Unsupported watch predicate fails closed instead of broadening tenant platform watches.', retryable: false }] },
     ],
-    requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'TransactionalDatabase', nodeId: 'provider.model-store' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: defaultOptions.databaseClusterName, namespace: defaultOptions.namespace }, expectedRevision: 'sha256:tenant-platform-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['missingHistoryTable', 'incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Tenant platform schema drift must fail closed before applying migrations.', retryable: false }] }],
-    requiredModelStoreSemantics: [tenantPlatformModelStoreSemantics()],
+    requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: defaultOptions.databaseClusterName, namespace: defaultOptions.namespace }, expectedRevision: 'sha256:tenant-platform-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed', dataBackfillPolicy: 'generatedJob' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['missingHistoryTable', 'incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Tenant platform schema drift must fail closed before applying migrations.', retryable: false }] }],
+    requiredTransactionalDatabaseSemantics: [tenantPlatformTransactionalDatabaseSemantics()],
     requiredRuntimeModuleInterfaces: [tenantPlatformRuntimeModuleInterface([{ kind: 'modelRuntime', name: 'tenant-platform-models' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createServerRuntime', kind: 'function', stability: 'stable' }], 'required')],
     requiredProviderInterfaces: tenantPlatformProviderInterfaces(),
     providerCompatibility: tenantPlatformProviderCompatibilityMatrix(),
     requiredStatusOwnership: [{ primary: 'applicationStatus', durableAuthority: 'generatedStatusConfigMap', releasePolicy: 'kroStatusProjectionRequired', applicationStatusProjection: 'requiredAuthoritative', appStatusSchema: 'required', appStatusSchemaContract: tenantPlatformAppStatusSchemaContract(), durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: `${defaultOptions.stackName}-status-reconciler-status`, namespace: defaultOptions.namespace }, fallbackStore: tenantPlatformGeneratedStatusConfigMapContract(), concurrency: tenantPlatformGeneratedStatusConcurrencyContract(), observability: tenantPlatformGeneratedStatusObservabilityContract(), conflictPolicy: 'mergePatch', diagnostics: [{ event: 'applik8s-status-projection-unavailable', severity: 'error', subject: { nodeId: 'job.tenant-platform-model-migration' }, reason: 'KroStatusProjectionRequired', message: 'KRO-owned status.applik8s.jobs hydration is required for the Tenant Platform app resource.', retryable: false }] }],
     requiredStatusEvidence: tenantPlatformStatusEvidence(),
-    requiredModelStoreEvidence: tenantPlatformModelStoreEvidence(),
+    requiredTransactionalDatabaseEvidence: tenantPlatformTransactionalDatabaseEvidence(),
     requiredOperationTargetEvidence: tenantPlatformOperationTargetEvidence(),
     requiredWatchScopeEvidence: tenantPlatformWatchScopeEvidence(),
     runtimeReleasePolicy: tenantPlatformRuntimeReleasePolicy(),
@@ -613,7 +613,7 @@ function tenantPlatformProviderCompatibilityMatrix(): ApplicationProviderCompati
   return { apiVersion: 'applik8s.providerCompatibility/v1alpha1', providers: tenantPlatformProviderInterfaces(), requiredForV03: ['TransactionalDatabase', 'IndexStore', 'CounterStore', 'EventSource', 'Secret', 'Queue', 'ObjectStorage', 'HttpExposure', 'CredentialStore'] };
 }
 
-function tenantPlatformModelStoreSemantics(): NonNullable<ApplicationV03PressureTestContract['requiredModelStoreSemantics']>[number] {
+function tenantPlatformTransactionalDatabaseSemantics(): NonNullable<ApplicationV03PressureTestContract['requiredTransactionalDatabaseSemantics']>[number] {
   return {
     generatedRuntimeParity: 'required',
     scriptRuntimeParity: 'required',
@@ -634,7 +634,7 @@ function tenantPlatformStatusEvidence(): ApplicationV03PressureTestContract['req
   return { authoritativeStore: 'applicationStatus', appStatusProjection: 'requiredAuthoritative', history: 'boundedRetained', conflictBehavior: 'resourceVersionRetryAndExhaustionDiagnostics', restartSafety: 'required', multiJobCronJobCoverage: 'required', metrics: ['acceptedUpdates', 'rejectedUpdates', 'conflictUpdates', 'observedJobs', 'retainedJobs'], liveGate: 'requiredBeforeAnnouncement', failurePolicy: 'failClosed' };
 }
 
-function tenantPlatformModelStoreEvidence(): ApplicationV03PressureTestContract['requiredModelStoreEvidence'] {
+function tenantPlatformTransactionalDatabaseEvidence(): ApplicationV03PressureTestContract['requiredTransactionalDatabaseEvidence'] {
   return { generatedRuntimeParity: 'localGeneratedArtifactGate', scriptRuntimeParity: 'localAndOptInLiveGate', liveGate: 'requiredBeforeAnnouncement', queryIndexConstraintCoverage: 'required', transactionCoverage: 'required', migrationDriftCoverage: 'required', unsupportedSemantics: 'failClosed' };
 }
 

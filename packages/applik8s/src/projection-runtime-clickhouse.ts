@@ -1,4 +1,4 @@
-// typecast-file-boundary: ClickHouse JSON wire values are validated and normalized at this projection-store adapter boundary.
+// typecast-file-boundary: ClickHouse JSON wire values are validated and normalized at this analytical-database adapter boundary.
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import type { JsonValue } from '@applik8s/core';
@@ -46,7 +46,7 @@ export interface ApplicationProjectionCheckpoint {
   readonly sequence: number;
 }
 
-export interface ApplicationProjectionStore<TRow extends object> {
+export interface ApplicationProjectionWriter<TRow extends object> {
   prepare(): Promise<void>;
   checkpoint(projection: string, stream: string): Promise<ApplicationProjectionCheckpoint>;
   write(events: readonly { readonly envelope: ApplicationStreamEnvelope; readonly rows: readonly TRow[] }[]): Promise<void>;
@@ -54,7 +54,7 @@ export interface ApplicationProjectionStore<TRow extends object> {
   reset(projection: string, stream: string): Promise<void>;
 }
 
-export interface ClickHouseProjectionStoreOptions<TRow extends object> {
+export interface ClickHouseAnalyticalProjectionWriterOptions<TRow extends object> {
   readonly endpoint: string;
   readonly database?: string;
   readonly table: string;
@@ -173,7 +173,7 @@ export class ApplicationAnalyticalProjectionNotConfiguredError extends Error {
  * and checkpoint remain authoritative; this adapter intentionally does not claim
  * a cross-system exactly-once transaction.
  */
-export function createClickHouseProjectionStore<TRow extends object>(options: ClickHouseProjectionStoreOptions<TRow>): ApplicationProjectionStore<TRow> {
+export function createClickHouseAnalyticalProjectionWriter<TRow extends object>(options: ClickHouseAnalyticalProjectionWriterOptions<TRow>): ApplicationProjectionWriter<TRow> {
   const database = clickHouseIdentifier(options.database ?? 'default', 'database');
   const table = clickHouseIdentifier(options.table, 'table');
   const checkpointTable = 'applik8s_projection_checkpoints';
@@ -240,7 +240,7 @@ export interface RunApplicationProjectionOptions<TPayload extends object, TRow e
   readonly projection: string;
   readonly streamName: string;
   readonly source: ApplicationReplayableStream<TPayload>;
-  readonly store: ApplicationProjectionStore<TRow>;
+  readonly store: ApplicationProjectionWriter<TRow>;
   readonly project: (payload: TPayload, event: { readonly id: string; readonly recordedAt: string; readonly partitionKey: string }) => TRow | readonly TRow[] | Promise<TRow | readonly TRow[]>;
   readonly batchSize?: number;
   readonly maxBatches?: number;

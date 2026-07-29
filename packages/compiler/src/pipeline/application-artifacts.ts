@@ -238,10 +238,10 @@ function applicationInstallationRuntimeContainer(container: unknown, application
 
 function applicationProviderConditionalGraphEntry(resource: unknown, graph: ApplicationGraph): unknown {
   if (!isJsonObject(resource)) return resource;
-  const projectionStore = graph.nodes.find((node): node is ApplicationProviderNode<'AnalyticalDatabase'> =>
+  const analyticalDatabase = graph.nodes.find((node): node is ApplicationProviderNode<'AnalyticalDatabase'> =>
     node.kind === 'provider' && node.interface === 'AnalyticalDatabase' && node.implementation === 'clickhouse');
-  const condition = applicationKroIncludeWhen(projectionStore && isJsonObject(projectionStore.config)
-    ? applicationGraphAllConditions(projectionStore.config.enabled, projectionStore.config.provision)
+  const condition = applicationKroIncludeWhen(analyticalDatabase && isJsonObject(analyticalDatabase.config)
+    ? applicationGraphAllConditions(analyticalDatabase.config.enabled, analyticalDatabase.config.provision)
     : undefined);
   if (!condition) return resource;
   const target = isJsonObject(resource.template) ? resource.template : isJsonObject(resource.externalRef) ? resource.externalRef : undefined;

@@ -168,7 +168,7 @@ export interface ApplicationModelIdentityContract {
 
 export interface ApplicationModelRevisionContract {
   readonly field: string;
-  readonly authority: 'postgres-row' | 'kubernetes-resource-version' | 'model-store';
+  readonly authority: 'postgres-row' | 'kubernetes-resource-version' | 'transactional-database';
 }
 
 export interface ApplicationModelRelationshipContract {
@@ -201,7 +201,7 @@ export interface CommonApplicationModelFacet<TValue, TIdentity = string, TInsert
   readonly apiVersion: 'applik8s.model/v1alpha1';
   readonly kind: 'applicationModelFacet';
   readonly name: string;
-  readonly provider: 'postgres' | 'kubernetes' | 'model-store';
+  readonly provider: 'postgres' | 'kubernetes' | 'transactional-database';
   readonly native: 'drizzle-table' | 'kubernetes-resource' | 'jsonb-model';
   readonly identity: ApplicationModelIdentityContract;
   readonly revision?: ApplicationModelRevisionContract;

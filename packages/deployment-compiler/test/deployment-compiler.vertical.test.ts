@@ -82,7 +82,7 @@ describe("Application deployment compiler", () => {
           edges: [],
           compositionFragments: [
             {
-              id: "provider:model-store",
+              id: "provider:transactional-database",
               sourceNodeId: provider.id,
               providerInterface: provider.interface,
               providerImplementation: provider.implementation,
@@ -103,8 +103,8 @@ describe("Application deployment compiler", () => {
     ).toMatchObject({
       fragments: [
         {
-          id: "provider:model-store",
-          sourceNodeId: "provider.model-store",
+          id: "provider:transactional-database",
+          sourceNodeId: "provider.transactional-database",
           profile: "local",
         },
       ],
@@ -382,7 +382,7 @@ describe("Application deployment compiler", () => {
             interface: "TransactionalDatabase",
             implementation: "postgres",
             config: {
-              modelStore: {
+              transactionalDatabase: {
                 kind: "postgres",
                 ownership: "direct-provisioned",
                 name: "guestbook",
@@ -496,7 +496,7 @@ function applicationGraph(): ApplicationGraph {
     metadata: { name: "guestbook" },
     nodes: [
       {
-        id: "provider.model-store",
+        id: "provider.transactional-database",
         kind: "provider",
         name: "TransactionalDatabase",
         stability: "stable",

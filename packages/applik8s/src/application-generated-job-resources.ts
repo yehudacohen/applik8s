@@ -315,13 +315,13 @@ export function emitApplicationModelMigrationResources(state: ApplicationGenerat
           containers: [{
             name: 'migration',
             image: 'postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777',
-            command: ['sh', '-c', 'echo "applik8s-model-migration preflight $APPLIK8S_MODEL_STORE_MODEL"; for attempt in $(seq 1 60); do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/preflight.sql && break; echo "applik8s-model-migration preflight retry $attempt"; sleep 5; if [ "$attempt" = "60" ]; then exit 1; fi; done; echo "applik8s-model-migration applying $APPLIK8S_MODEL_STORE_MODEL"; for attempt in $(seq 1 60); do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/migration.sql && exit 0; echo "applik8s-model-migration retry $attempt"; sleep 5; done; exit 1'],
+            command: ['sh', '-c', 'echo "applik8s-model-migration preflight $APPLIK8S_TRANSACTIONAL_DATABASE_MODEL"; for attempt in $(seq 1 60); do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/preflight.sql && break; echo "applik8s-model-migration preflight retry $attempt"; sleep 5; if [ "$attempt" = "60" ]; then exit 1; fi; done; echo "applik8s-model-migration applying $APPLIK8S_TRANSACTIONAL_DATABASE_MODEL"; for attempt in $(seq 1 60); do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f /migrations/migration.sql && exit 0; echo "applik8s-model-migration retry $attempt"; sleep 5; done; exit 1'],
             env: [
               { name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: secretName, key: secretKey } } },
               { name: 'DATABASE_URL_SECRET_KEY', value: secretKey },
-              { name: 'APPLIK8S_MODEL_STORE_CLUSTER', value: clusterName },
-              { name: 'APPLIK8S_MODEL_STORE_DATABASE', value: database },
-              { name: 'APPLIK8S_MODEL_STORE_MODEL', value: model.name },
+              { name: 'APPLIK8S_TRANSACTIONAL_DATABASE_CLUSTER', value: clusterName },
+              { name: 'APPLIK8S_TRANSACTIONAL_DATABASE_DATABASE', value: database },
+              { name: 'APPLIK8S_TRANSACTIONAL_DATABASE_MODEL', value: model.name },
               { name: 'APPLIK8S_MIGRATION_STATUS_PATH', value: statusPath },
             ],
             volumeMounts: [{ name: 'applik8s-model-migration', mountPath: '/migrations', readOnly: true }],

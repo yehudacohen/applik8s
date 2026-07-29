@@ -426,7 +426,7 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     })).toThrow(/requires a Certificate provider/);
 
-    const postgresModelStore: ApplicationTransactionalDatabaseProvider = {
+    const postgresTransactionalDatabase: ApplicationTransactionalDatabaseProvider = {
       kind: 'postgres',
       name: 'notes-db',
       database: 'notes',
@@ -445,7 +445,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.defaults({ database: postgresModelStore });
+      app.defaults({ database: postgresTransactionalDatabase });
       app.model(NoteEntity, {
         schema: {
           identity: ['id'],
@@ -482,8 +482,8 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const provider = app.provide(TransactionalDatabase, postgresModelStore);
-      expect(provider).toEqual({ kind: 'applicationProvider', token: TransactionalDatabase, implementation: postgresModelStore });
+      const provider = app.provide(TransactionalDatabase, postgresTransactionalDatabase);
+      expect(provider).toEqual({ kind: 'applicationProvider', token: TransactionalDatabase, implementation: postgresTransactionalDatabase });
       return { ready: true };
     });
     const modelProviderGraph = applicationGraphFor(modelProviderComposition);
@@ -503,7 +503,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      directModel = app.model(NoteEntity, { database: postgresModelStore });
+      directModel = app.model(NoteEntity, { database: postgresTransactionalDatabase });
       expect(directModel.kind).toBe('applicationModel');
       return { ready: true };
     });
@@ -570,8 +570,8 @@ describe('integrated TypeKro package surface', () => {
       throw new Error('expected app.model to return a model binding for explicit Postgres provider');
     }
     await expect(directModel.create({ spec: { message: 'hi' } })).rejects.toMatchObject({
-      message: expect.stringMatching(/applik8s-modelstore-missing-credentials/),
-      diagnostic: expect.objectContaining({ event: 'applik8s-modelstore-missing-credentials', model: 'Note', env: 'APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL' }),
+      message: expect.stringMatching(/applik8s-transactional-database-missing-credentials/),
+      diagnostic: expect.objectContaining({ event: 'applik8s-transactional-database-missing-credentials', model: 'Note', env: 'APPLIK8S_TRANSACTIONAL_DATABASE_NOTE_DATABASE_URL' }),
     });
 
     const providedModelComposition = sdk.kubernetesComposition({
@@ -581,7 +581,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      const provider = app.provide(TransactionalDatabase, postgresModelStore);
+      const provider = app.provide(TransactionalDatabase, postgresTransactionalDatabase);
       const model = app.model(NoteEntity, { database: provider });
       expect(model.backend).toMatchObject({
         interface: 'TransactionalDatabase',
@@ -595,7 +595,7 @@ describe('integrated TypeKro package surface', () => {
       expect.objectContaining({ id: 'model.note', kind: 'model', materialization: expect.objectContaining({ mode: 'providerBacked' }) }),
     ]));
 
-    const untypedModelStoreToken: ApplicationProviderToken<unknown> = { name: 'TransactionalDatabase' };
+    const untypedTransactionalDatabaseToken: ApplicationProviderToken<unknown> = { name: 'TransactionalDatabase' };
     expect(() => sdk.kubernetesComposition({
       name: 'notes-postgres-model-provider-app',
       apiVersion: 'notes.applik8s.dev/v1alpha1',
@@ -603,7 +603,7 @@ describe('integrated TypeKro package surface', () => {
       spec: type({}),
       status: type({ ready: 'boolean' }),
     }, (_spec, app) => {
-      app.provide(untypedModelStoreToken, 'postgres');
+      app.provide(untypedTransactionalDatabaseToken, 'postgres');
       return { ready: true };
     })).toThrow(/app\.provide\(TransactionalDatabase, \.\.\.\) currently supports only the typed PostgreSQL database provider declaration/);
 
@@ -887,7 +887,7 @@ describe('integrated TypeKro package surface', () => {
 
     expect(plainValue(composition.resources)).toEqual(expect.arrayContaining([
       expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'notes-db', namespace: 'notes' }) }),
-      expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'note-model-store', namespace: 'notes' }) }),
+      expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'note-transactional-database', namespace: 'notes' }) }),
     ]));
     expect(composition.resources).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ apiVersion: 'v1', kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }),
@@ -1001,7 +1001,7 @@ describe('integrated TypeKro package surface', () => {
     const graph = applicationGraphFor(composition);
     const modelNode = graph?.nodes.find((node) => node.kind === 'model' && node.id === 'model.entry');
     expect(modelNode?.kind === 'model' && modelNode.schema.guarantees?.semantics ? validateApplicationTransactionalDatabaseSemanticsContract(modelNode.schema.guarantees.semantics) : []).toEqual([]);
-    const providerNode = graph?.nodes.find((node) => node.kind === 'provider' && node.id === 'provider.model-store');
+    const providerNode = graph?.nodes.find((node) => node.kind === 'provider' && node.id === 'provider.transactional-database');
     expect(providerNode?.kind === 'provider' && providerNode.contract ? validateApplicationProviderInterfaceContract(providerNode.contract) : []).toEqual([]);
   });
 
@@ -1081,7 +1081,7 @@ describe('integrated TypeKro package surface', () => {
     expect(deployment).toMatchObject({
       spec: { template: { spec: { containers: [expect.objectContaining({
         env: expect.arrayContaining([
-          expect.objectContaining({ name: 'APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL', valueFrom: { secretKeyRef: { name: 'app-db-app', key: 'uri' } } }),
+          expect.objectContaining({ name: 'APPLIK8S_TRANSACTIONAL_DATABASE_ACCOUNT_DATABASE_URL', valueFrom: { secretKeyRef: { name: 'app-db-app', key: 'uri' } } }),
         ]),
       })] } } },
     });
@@ -1089,14 +1089,14 @@ describe('integrated TypeKro package surface', () => {
     const serverSource = String(sourceConfigMap?.data?.['server.mjs'] ?? '');
     expect(sourceConfigMap).toMatchObject({ data: { 'bindings.mjs': expect.stringContaining('const Account = modelClients["Account"];') } });
     expect(() => transformSync(String(sourceConfigMap?.data?.['server.mjs'] ?? ''), { loader: 'js', format: 'esm' })).not.toThrow();
-    expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain("from './runtime/model-store-postgres.mjs'");
-    expect(String(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs'] ?? '')).toContain('createPostgresModelClient');
-    expect(String(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs'] ?? '')).toContain('drizzle-orm/postgres-js');
+    expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain("from './runtime/transactional-database-postgres.mjs'");
+    expect(String(sourceConfigMap?.data?.['runtime__transactional-database-postgres.mjs'] ?? '')).toContain('createPostgresModelClient');
+    expect(String(sourceConfigMap?.data?.['runtime__transactional-database-postgres.mjs'] ?? '')).toContain('drizzle-orm/postgres-js');
     expect(serverSource).not.toContain('ensureModelTable');
-    expect(serverSource).not.toContain('modelStoreTableReady');
+    expect(serverSource).not.toContain('transactionalDatabaseTableReady');
     expect(JSON.stringify(sourceConfigMap)).toContain('Account.create');
     expect(JSON.stringify(sourceConfigMap)).toContain('Account.query');
-    const modelRuntimeSource = String(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs'] ?? '');
+    const modelRuntimeSource = String(sourceConfigMap?.data?.['runtime__transactional-database-postgres.mjs'] ?? '');
     expect(modelRuntimeSource).toContain('modelPostgresError(error)');
     expect(modelRuntimeSource).toContain('current = current.cause');
     expect(modelRuntimeSource).toContain('modelDefaultUniqueConstraint(model)');
@@ -1145,11 +1145,11 @@ describe('integrated TypeKro package surface', () => {
     expect(source).toContain('23505');
     expect(source).toContain('applik8s-model-duplicate-key');
     expect(JSON.stringify(composition.resources)).toContain('applik8s-model-migration applying');
-    expect(source).toContain('APPLIK8S_MODEL_STORE_ACCOUNT_DATABASE_URL');
-    expect(source).toContain('applik8s-modelstore-missing-credentials');
+    expect(source).toContain('APPLIK8S_TRANSACTIONAL_DATABASE_ACCOUNT_DATABASE_URL');
+    expect(source).toContain('applik8s-transactional-database-missing-credentials');
     expect(source).toContain('applik8s-model-migration-missing');
     expect(serverSource).not.toContain('ensureModelTable');
-    expect(serverSource).not.toContain('modelStoreTableReady');
+    expect(serverSource).not.toContain('transactionalDatabaseTableReady');
   });
 
   it('emits generated server, model, job, diagnostics, and provider runtime modules as focused artifacts', () => {
@@ -1187,16 +1187,16 @@ describe('integrated TypeKro package surface', () => {
     expect(generatedRuntimeModuleSource('jobRunnerRuntime', { modelRuntime: () => 'model-source', jobRunnerRuntime: () => 'job-source' })).toBe('job-source');
     expect(sourceConfigMap?.data).toMatchObject({
       'runtime__server.mjs': expect.stringContaining('serverRuntime'),
-      'runtime__model-store-postgres.mjs': expect.stringContaining('modelRuntime'),
+      'runtime__transactional-database-postgres.mjs': expect.stringContaining('modelRuntime'),
       'runtime__kubernetes-client.mjs': expect.stringContaining('kubernetesClient'),
       'runtime__diagnostics.mjs': expect.stringContaining('diagnostics'),
       'runtime__providers__postgres.mjs': expect.stringContaining('providerAdapter'),
       'runtime.modules.json': expect.stringContaining('GeneratedRuntimeModuleManifest'),
     });
     expect(sourceConfigMap?.data?.['runtime__server.mjs']).toContain('export const runtimeModule');
-    expect(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs']).toContain('"kind":"modelRuntime"');
-    expect(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs']).toContain('"interface"');
-    expect(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs']).toContain('"failurePolicy":"failClosed"');
+    expect(sourceConfigMap?.data?.['runtime__transactional-database-postgres.mjs']).toContain('"kind":"modelRuntime"');
+    expect(sourceConfigMap?.data?.['runtime__transactional-database-postgres.mjs']).toContain('"interface"');
+    expect(sourceConfigMap?.data?.['runtime__transactional-database-postgres.mjs']).toContain('"failurePolicy":"failClosed"');
     expect(sourceConfigMap?.data?.['runtime__job-runner.mjs']).toContain('"kind":"jobRunnerRuntime"');
     expect(sourceConfigMap?.data?.['runtime__job-runner.mjs']).toContain('"kubernetesClient"');
     expect(sourceConfigMap?.data?.['runtime__job-runner.mjs']).toContain('createJobStatusUpdater');
@@ -1205,7 +1205,7 @@ describe('integrated TypeKro package surface', () => {
     expect(sourceConfigMap?.data?.['runtime__providers__postgres.mjs']).toContain('"kind":"providerAdapter"');
     expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain('createRuntimeBindings');
     expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain('modelClients');
-    expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain("from './runtime/model-store-postgres.mjs'");
+    expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).toContain("from './runtime/transactional-database-postgres.mjs'");
     expect(String(sourceConfigMap?.data?.['bindings.mjs'] ?? '')).toContain("import { createRuntimeBindings } from './runtime.mjs'");
     expect(String(sourceConfigMap?.data?.['routes.mjs'] ?? '')).toContain("from './route-");
     expect(String(sourceConfigMap?.data?.['server.mjs'] ?? '')).toContain('applik8sServerRuntime');
@@ -1223,7 +1223,7 @@ describe('integrated TypeKro package surface', () => {
     expect(runtimeModules.modules.map((module) => module.kind)).toEqual([...generatedApplicationRuntimeModuleKinds]);
     expect(runtimeModules.modules).toEqual(expect.arrayContaining([
       expect.objectContaining({ apiVersion: 'applik8s.runtime/v1alpha1', kind: 'serverRuntime', name: 'server', artifact: { kind: 'runtimeModule', path: 'runtime/server.mjs', name: 'server' }, path: 'runtime/server.mjs', imports: expect.arrayContaining([expect.objectContaining({ kind: 'modelRuntime' })]) }),
-      expect.objectContaining({ apiVersion: 'applik8s.runtime/v1alpha1', kind: 'modelRuntime', name: 'postgres-models', artifact: { kind: 'runtimeModule', path: 'runtime/model-store-postgres.mjs', name: 'postgres-models' }, path: 'runtime/model-store-postgres.mjs', exports: expect.arrayContaining([expect.objectContaining({ name: 'createPostgresModelClient' })]) }),
+      expect.objectContaining({ apiVersion: 'applik8s.runtime/v1alpha1', kind: 'modelRuntime', name: 'postgres-models', artifact: { kind: 'runtimeModule', path: 'runtime/transactional-database-postgres.mjs', name: 'postgres-models' }, path: 'runtime/transactional-database-postgres.mjs', exports: expect.arrayContaining([expect.objectContaining({ name: 'createPostgresModelClient' })]) }),
       expect.objectContaining({ apiVersion: 'applik8s.runtime/v1alpha1', kind: 'jobRunnerRuntime', name: 'generated-job-status', artifact: { kind: 'runtimeModule', path: 'runtime/job-runner.mjs', name: 'generated-job-status' }, path: 'runtime/job-runner.mjs', entrypoint: 'createJobStatusUpdater', imports: expect.arrayContaining([expect.objectContaining({ kind: 'kubernetesClient' })]) }),
       expect.objectContaining({ apiVersion: 'applik8s.runtime/v1alpha1', kind: 'diagnostics', name: 'diagnostics', artifact: { kind: 'runtimeModule', path: 'runtime/diagnostics.mjs', name: 'diagnostics' }, path: 'runtime/diagnostics.mjs' }),
       expect.objectContaining({ apiVersion: 'applik8s.runtime/v1alpha1', kind: 'providerAdapter', name: 'postgres', artifact: { kind: 'runtimeModule', path: 'runtime/providers/postgres.mjs', name: 'postgres' }, path: 'runtime/providers/postgres.mjs' }),
@@ -1253,7 +1253,7 @@ describe('integrated TypeKro package surface', () => {
     const deploymentJson = JSON.stringify(deployment);
     expect(deploymentJson).toContain('"path":"runtime.modules.json"');
     expect(deploymentJson).toContain('"path":"runtime/server.mjs"');
-    expect(deploymentJson).toContain('"path":"runtime/model-store-postgres.mjs"');
+    expect(deploymentJson).toContain('"path":"runtime/transactional-database-postgres.mjs"');
     expect(deploymentJson).toContain('"path":"runtime/job-runner.mjs"');
     expect(deploymentJson).toContain('"path":"runtime/kubernetes-client.mjs"');
     expect(deploymentJson).toContain('"path":"runtime/diagnostics.mjs"');
@@ -1261,7 +1261,7 @@ describe('integrated TypeKro package surface', () => {
     expect(deploymentJson).toContain('"readinessProbe":{"httpGet":{"path":"/-/healthz","port":"http"}');
     expect(deploymentJson).toContain('"livenessProbe":{"httpGet":{"path":"/-/healthz","port":"http"}');
     expect(String(sourceConfigMap?.data?.['runtime.mjs'] ?? '')).not.toContain('function createPostgresModelClient');
-    const runtimeModule = JSON.parse(String(sourceConfigMap?.data?.['runtime__model-store-postgres.mjs'] ?? '').match(/export const runtimeModule = (\{.*\});/)?.[1] ?? '{}');
+    const runtimeModule = JSON.parse(String(sourceConfigMap?.data?.['runtime__transactional-database-postgres.mjs'] ?? '').match(/export const runtimeModule = (\{.*\});/)?.[1] ?? '{}');
     expect(validateApplicationRuntimeModuleInterfaceContract(runtimeModule.interface)).toEqual([]);
   });
 
@@ -1363,13 +1363,13 @@ describe('integrated TypeKro package surface', () => {
     }
 
     const previousDatabaseUrl = process.env.DATABASE_URL;
-    const previousModelUrl = process.env.APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL;
+    const previousModelUrl = process.env.APPLIK8S_TRANSACTIONAL_DATABASE_NOTE_DATABASE_URL;
     delete process.env.DATABASE_URL;
-    delete process.env.APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL;
+    delete process.env.APPLIK8S_TRANSACTIONAL_DATABASE_NOTE_DATABASE_URL;
     try {
       await expect(model.create({ spec: { message: 'hello' } })).rejects.toMatchObject({
-        message: expect.stringContaining('applik8s-modelstore-missing-credentials'),
-        diagnostic: expect.objectContaining({ event: 'applik8s-modelstore-missing-credentials', model: 'Note', env: 'APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL' }),
+        message: expect.stringContaining('applik8s-transactional-database-missing-credentials'),
+        diagnostic: expect.objectContaining({ event: 'applik8s-transactional-database-missing-credentials', model: 'Note', env: 'APPLIK8S_TRANSACTIONAL_DATABASE_NOTE_DATABASE_URL' }),
       });
     } finally {
       if (previousDatabaseUrl === undefined) {
@@ -1378,9 +1378,9 @@ describe('integrated TypeKro package surface', () => {
         process.env.DATABASE_URL = previousDatabaseUrl;
       }
       if (previousModelUrl === undefined) {
-        delete process.env.APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL;
+        delete process.env.APPLIK8S_TRANSACTIONAL_DATABASE_NOTE_DATABASE_URL;
       } else {
-        process.env.APPLIK8S_MODEL_STORE_NOTE_DATABASE_URL = previousModelUrl;
+        process.env.APPLIK8S_TRANSACTIONAL_DATABASE_NOTE_DATABASE_URL = previousModelUrl;
       }
     }
   });
@@ -1416,7 +1416,7 @@ describe('integrated TypeKro package surface', () => {
                   command: expect.arrayContaining(['sh', '-c', expect.stringContaining('/migrations/preflight.sql')]),
                   env: expect.arrayContaining([
                     expect.objectContaining({ name: 'DATABASE_URL', valueFrom: { secretKeyRef: { name: 'notes-db-app', key: 'uri' } } }),
-                    expect.objectContaining({ name: 'APPLIK8S_MODEL_STORE_MODEL', value: 'Note' }),
+                    expect.objectContaining({ name: 'APPLIK8S_TRANSACTIONAL_DATABASE_MODEL', value: 'Note' }),
                   ]),
                   volumeMounts: expect.arrayContaining([expect.objectContaining({ name: 'applik8s-model-migration', mountPath: '/migrations', readOnly: true })]),
                 }),
@@ -1444,7 +1444,7 @@ describe('integrated TypeKro package surface', () => {
     expect(generatedJobRunnerRuntime).not.toContain('{ ...previous, observedAt }');
     const migrationStatusConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'notes-model-migration-artifacts-app-status-reconciler-status');
     expect(Reflect.get(migrationStatusConfigMap ?? {}, '__externalRef')).toBe(true);
-    expect(JSON.stringify(composition.resources)).not.toContain('$' + '{APPLIK8S_MODEL_STORE_MODEL}');
+    expect(JSON.stringify(composition.resources)).not.toContain('$' + '{APPLIK8S_TRANSACTIONAL_DATABASE_MODEL}');
     expect(JSON.stringify(composition.resources)).not.toContain('$' + '{attempt}');
   });
 

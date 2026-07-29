@@ -9,7 +9,7 @@ import { gzipSync } from 'node:zlib';
 import { queryCacheKey } from '../packages/client/src/store.js';
 import {
   runApplicationProjection,
-  type ApplicationProjectionStore,
+  type ApplicationProjectionWriter,
   type ApplicationStreamEnvelope,
 } from '../packages/applik8s/src/projection-runtime-clickhouse.js';
 import {
@@ -133,7 +133,7 @@ async function benchmarkProjectionReplay(count: number) {
 async function replayProjection(envelopes: readonly ApplicationStreamEnvelope<{ accountId: string }>[], batchSize: number) {
   let offset = 0;
   let checkpoint = 0;
-  const store: ApplicationProjectionStore<{ accountId: string }> = {
+  const store: ApplicationProjectionWriter<{ accountId: string }> = {
     async prepare() {},
     async checkpoint(projection, stream) { return { projection, stream, sequence: checkpoint }; },
     async write() {},

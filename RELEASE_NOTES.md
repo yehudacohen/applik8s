@@ -121,7 +121,7 @@ v0.3.0 is the infrastructure-from-code substrate-freeze release. It turns the v0
 
 - Define reusable schema-first entities and materialize them inside `app(...)` as CRDs or Postgres-backed models with explicit backend semantics.
 - Use bounded Kubernetes-native defaults for every app-scoped provider interface, with `app.defaults(...)` and `app.provide(...)` available for overrides.
-- Use the Postgres `ModelStore` slice with CNPG-generated infrastructure, migration Jobs, generated runtime clients, duplicate-key behavior, and migration drift preflight diagnostics.
+- Use the Postgres `TransactionalDatabase` slice with CNPG-generated infrastructure, migration Jobs, generated runtime clients, duplicate-key behavior, and migration drift preflight diagnostics.
 - Define generated `app.job(...)` and `app.schedule(...)` tasks with a durable runtime-created status ConfigMap, bounded history, conflict diagnostics, and authoritative KRO-owned app-status projection.
 - Use stable operation-target contracts for TypeKro apply/delete and artifact-backed dry-run planning.
 - Use stable TypeKro watch-scope contracts for exact objects, finite sets, label selectors, field selectors, and mixed resource groups; unsupported predicates fail closed.

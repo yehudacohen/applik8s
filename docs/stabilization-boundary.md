@@ -24,7 +24,7 @@ This document records the compatibility boundaries for released framework genera
 - NATS JetStream `EventLog` transport with stable IDs, explicit acknowledgement, retry, dead-letter, replay, retention, and lag-observation contracts.
 - Generated command processor graph nodes, runtime bundles, Deployments, Stream/Consumer resources, NetworkPolicies, security posture, health checks, and graceful lifecycle.
 - Tree-shakeable `@kubernetes/client-node` execution through the credential-safe Kubernetes WASM host boundary.
-- Versioned typed provider contracts that permit later `WorkflowEngine` and `ProjectionStore` interfaces without extending a closed built-in union.
+- Versioned typed provider contracts that permit later `WorkflowEngine` and `AnalyticalDatabase` interfaces without extending a closed built-in union.
 - Managed `Certificate` and `DnsPublication` intent, with issuer lifecycle and DNS propagation authority kept explicit.
 - A closed structural transaction-callback contract plus an independent runtime ambient-I/O membrane; external effects are admitted only through declared outboxes or later durable tasks.
 
@@ -41,7 +41,7 @@ This document records the compatibility boundaries for released framework genera
 
 - The `app(...)` golden path: schema-first resources, Postgres-backed models, HTTP servers, reconciliation, generated jobs/schedules, config, secrets, exposure, and TypeKro composition.
 - Provider contracts plus one bounded Kubernetes-native default for every provider family. Additional adapters do not change the default contract.
-- The Postgres/CNPG `ModelStore` slice, generated migration jobs, deterministic server/runtime-module bundles, generated-job status lifecycle, operation targets, and bounded watch scopes described in the API reference.
+- The Postgres/CNPG `TransactionalDatabase` slice, generated migration jobs, deterministic server/runtime-module bundles, generated-job status lifecycle, operation targets, and bounded watch scopes described in the API reference.
 - Application graph schema and validation contracts used by v0.3 generated artifacts and pressure tests.
 - Explicit generated/external Secret ownership and runtime-owned Secret data semantics.
 - applik8s-owned CRD status schemas and validated Rust-host status operations.

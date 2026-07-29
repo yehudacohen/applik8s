@@ -119,7 +119,7 @@ describe('application graph substrate contract', () => {
     expect(isApplicationGraphNodeKind('workflow')).toBe(true);
     expect(isApplicationProviderInterfaceKind('TransactionalDatabase')).toBe(true);
     expect(isApplicationProviderInterfaceKind('AnalyticalDatabase')).toBe(true);
-    expect(isApplicationProviderInterfaceKind('projection-store')).toBe(false);
+    expect(isApplicationProviderInterfaceKind('analytical-database')).toBe(false);
   });
 
   it('represents an app as graph nodes before Kubernetes or TypeKro emission', () => {
@@ -221,7 +221,7 @@ describe('application graph substrate contract', () => {
       transactions: 'supported',
       retention: 'retain',
       migrationOwnership: 'generatedJob',
-      semantics: modelStoreSemantics(),
+      semantics: transactionalDatabaseSemantics(),
     });
   });
 
@@ -460,7 +460,7 @@ describe('application graph substrate contract', () => {
   });
 
   it('freezes TransactionalDatabase semantic contracts for generated and script runtimes before broad implementation', () => {
-    const semantics = modelStoreSemantics();
+    const semantics = transactionalDatabaseSemantics();
 
     expect(semantics).toMatchObject({ generatedRuntimeParity: 'required', scriptRuntimeParity: 'required' });
     expect(semantics.query).toEqual({ defaultLimit: 50, maxLimit: 500, cursor: 'offset', unsupportedFilters: 'failClosed' });
@@ -547,7 +547,7 @@ describe('application graph substrate contract', () => {
 
   it('accepts versioned provider-package interfaces without extending the core built-in registry', () => {
     const matrix = providerCompatibilityMatrix();
-    const projectionStore: ApplicationProviderInterfaceContract = {
+    const analyticalDatabase: ApplicationProviderInterfaceContract = {
       apiVersion: 'applik8s.provider/v1alpha1',
       interface: 'VectorStore',
       version: 'v1alpha1',
@@ -559,13 +559,13 @@ describe('application graph substrate contract', () => {
       diagnostics: [],
     };
     expect(applicationProviderInterfaceKinds).not.toContain('VectorStore');
-    expect(validateApplicationProviderCompatibilityMatrixContract({ ...matrix, providers: [...matrix.providers, projectionStore] })).toEqual([]);
+    expect(validateApplicationProviderCompatibilityMatrixContract({ ...matrix, providers: [...matrix.providers, analyticalDatabase] })).toEqual([]);
   });
 
   it('defines provider requirement contracts for every v0.3 capability interface', () => {
     const purposes: Record<ApplicationProviderInterfaceKind, ApplicationProviderRequirement['purpose']> = {
-      TransactionalDatabase: 'modelStore',
-      AnalyticalDatabase: 'projectionStore',
+      TransactionalDatabase: 'transactionalDatabase',
+      AnalyticalDatabase: 'analyticalDatabase',
       IndexStore: 'indexStore',
       CounterStore: 'counterStore',
       EventSource: 'eventSource',
@@ -596,7 +596,7 @@ describe('application graph substrate contract', () => {
       },
     }) satisfies ApplicationProviderRequirement);
 
-    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['modelStore', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'projectionStore', 'applicationHost', 'containerRegistry', 'requestIdentity', 'authorization', 'taskCapability']);
+    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['transactionalDatabase', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'analyticalDatabase', 'applicationHost', 'containerRegistry', 'requestIdentity', 'authorization', 'taskCapability']);
     for (const requirement of requirements) {
       expect(requirement.diagnostics.missing).toContain(requirement.interface);
     }
@@ -1051,13 +1051,13 @@ describe('application graph substrate contract', () => {
         { scope: { kind: 'labelSelector', apiVersion: 'apps/v1', resourceKind: 'Deployment', labels: {} }, lowering: 'labelSelector', permissions: [], failurePolicy: 'failClosed', diagnostics: [{ event: 'applik8s-watch-scope-unlowerable', severity: 'error', subject: { apiVersion: 'apps/v1', kind: 'Deployment' }, reason: 'UnsupportedLabelSelectorExpression', message: 'Unsupported watch predicate fails closed instead of broadening runtime watches.', retryable: false }] },
       ],
       requiredMigrationDriftChecks: [{ model: { nodeId: 'model.account' }, provider: { interface: 'TransactionalDatabase', nodeId: 'provider.transactional-database' }, observedSchemaSource: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'accounts-db' }, expectedRevision: 'sha256:accounts-schema-v1', policy: { mode: 'explicitPlanRequired', destructiveChangePolicy: 'reject', driftPolicy: 'failClosed' }, enforcement: { stage: 'preMigration', historyTable: 'applik8s_model_migrations', lock: 'providerNative', failurePolicy: 'failClosed' }, failureModes: ['incompatibleIndex', 'destructiveChange'], diagnostics: [{ event: 'applik8s-model-migration-drift-detected', severity: 'error', subject: { nodeId: 'model.account' }, reason: 'SchemaDriftDetected', message: 'Schema drift blocks migration.', retryable: false }] }],
-      requiredModelStoreSemantics: [modelStoreSemantics()],
+      requiredTransactionalDatabaseSemantics: [transactionalDatabaseSemantics()],
       requiredRuntimeModuleInterfaces: [runtimeModuleInterface([{ kind: 'modelRuntime', name: 'postgres-models' }, { kind: 'diagnostics', name: 'diagnostics' }], [{ name: 'createServerRuntime', kind: 'function', stability: 'stable' }], 'required')],
       requiredProviderInterfaces: [...new Set([...applicationProviderInterfaceKinds, ...applicationV03ProviderInterfaceKinds])].map((provider) => ({ interface: provider, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] })),
       providerCompatibility: providerCompatibilityMatrix(),
       requiredStatusOwnership: [{ primary: 'applicationStatus', durableAuthority: 'generatedStatusConfigMap', releasePolicy: 'kroStatusProjectionRequired', applicationStatusProjection: 'requiredAuthoritative', appStatusSchema: 'required', appStatusSchemaContract: { statusRoot: 'status.applik8s', jobsPath: 'status.applik8s.jobs', schema: 'generatedJobStatusMap', ownership: 'kroStatusProjection', pruningBehavior: 'failClosed' }, durableStore: { apiVersion: 'v1', kind: 'ConfigMap', name: 'tenant-platform-pressure-test-status-reconciler-status' }, fallbackStore: { ...generatedStatusConfigMapContract(), objectOwnership: 'runtimeCreatedResource' }, concurrency: generatedStatusConcurrencyContract(), observability: generatedStatusObservabilityContract(), conflictPolicy: 'mergePatch', diagnostics: [{ event: 'applik8s-status-projection-unavailable', severity: 'error', subject: { nodeId: 'job.accounts-model-migration' }, reason: 'KroStatusProjectionRequired', message: 'KRO-owned status hydration is required.', retryable: false }] }],
       requiredStatusEvidence: statusEvidence(),
-      requiredModelStoreEvidence: modelStoreEvidence(),
+      requiredTransactionalDatabaseEvidence: transactionalDatabaseEvidence(),
       requiredOperationTargetEvidence: operationTargetEvidence(),
       requiredWatchScopeEvidence: watchScopeEvidence(),
       runtimeReleasePolicy: runtimeReleasePolicy(),
@@ -1070,7 +1070,7 @@ describe('application graph substrate contract', () => {
     expect(pressureTest.liveValidation?.requiredAssertions).toContain('durable job status is persisted');
     expect(validateApplicationV03PressureTestContract(pressureTest)).toEqual([]);
     // typecast: deliberately bypass literal evidence contracts to prove malformed v0.3 release evidence is rejected at runtime.
-    expect(validateApplicationV03PressureTestContract({ ...pressureTest, graph: { ...pressureTest.graph, digest: '' }, requiredRuntimeModules: ['serverRuntime'], requiredProviders: ['TransactionalDatabase'], requiredModelStoreSemantics: [], requiredRuntimeModuleInterfaces: [], requiredStatusOwnership: [], requiredStatusEvidence: { ...pressureTest.requiredStatusEvidence, multiJobCronJobCoverage: 'missing' as never }, requiredModelStoreEvidence: { ...pressureTest.requiredModelStoreEvidence, migrationDriftCoverage: 'missing' as never }, requiredOperationTargetEvidence: { ...pressureTest.requiredOperationTargetEvidence, contexts: ['handler'] }, requiredWatchScopeEvidence: { ...pressureTest.requiredWatchScopeEvidence, broadWatchFallback: 'allowed' as never }, runtimeReleasePolicy: { ...pressureTest.runtimeReleasePolicy, startupPackageManager: true as never }, liveValidation: { contextEnv: '', requiredResources: [], requiredAssertions: ['migration job completes'] } })).toEqual(expect.arrayContaining([
+    expect(validateApplicationV03PressureTestContract({ ...pressureTest, graph: { ...pressureTest.graph, digest: '' }, requiredRuntimeModules: ['serverRuntime'], requiredProviders: ['TransactionalDatabase'], requiredTransactionalDatabaseSemantics: [], requiredRuntimeModuleInterfaces: [], requiredStatusOwnership: [], requiredStatusEvidence: { ...pressureTest.requiredStatusEvidence, multiJobCronJobCoverage: 'missing' as never }, requiredTransactionalDatabaseEvidence: { ...pressureTest.requiredTransactionalDatabaseEvidence, migrationDriftCoverage: 'missing' as never }, requiredOperationTargetEvidence: { ...pressureTest.requiredOperationTargetEvidence, contexts: ['handler'] }, requiredWatchScopeEvidence: { ...pressureTest.requiredWatchScopeEvidence, broadWatchFallback: 'allowed' as never }, runtimeReleasePolicy: { ...pressureTest.runtimeReleasePolicy, startupPackageManager: true as never }, liveValidation: { contextEnv: '', requiredResources: [], requiredAssertions: ['migration job completes'] } })).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: 'Application v0.3 pressure test tenant-platform-pressure-test must reference an emitted application graph artifact path and digest.' }),
       expect.objectContaining({ message: 'Application v0.3 pressure test tenant-platform-pressure-test must require CredentialStore.' }),
       expect.objectContaining({ message: 'Application v0.3 pressure test tenant-platform-pressure-test must require modelRuntime.' }),
@@ -1093,10 +1093,10 @@ describe('application graph substrate contract', () => {
     expect(validateApplicationV03PressureTestContract({ ...pressureTest, requiredStatusEvidence: { ...pressureTest.requiredStatusEvidence, authoritativeStore: 'generatedStatusConfigMap' } })).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: 'Application v0.3 pressure test tenant-platform-pressure-test authoritative status evidence must match the primary status read surface.' }),
     ]));
-    expect(validateApplicationV03PressureTestContract({ ...pressureTest, requiredModelStoreSemantics: [{ ...modelStoreSemantics(), scriptRuntimeParity: 'notSupported' }] })).toEqual(expect.arrayContaining([
+    expect(validateApplicationV03PressureTestContract({ ...pressureTest, requiredTransactionalDatabaseSemantics: [{ ...transactionalDatabaseSemantics(), scriptRuntimeParity: 'notSupported' }] })).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: 'Application v0.3 pressure test tenant-platform-pressure-test TransactionalDatabase evidence requires script-runtime parity but no TransactionalDatabase semantics require it.' }),
     ]));
-    expect(validateApplicationV03PressureTestContract({ ...pressureTest, requiredModelStoreSemantics: [{ ...modelStoreSemantics(), transactions: { ...modelStoreSemantics().transactions, multiOperationApi: 'absentFromPublicApi', multiOperationBehavior: 'methodAbsent' } }] })).toEqual(expect.arrayContaining([
+    expect(validateApplicationV03PressureTestContract({ ...pressureTest, requiredTransactionalDatabaseSemantics: [{ ...transactionalDatabaseSemantics(), transactions: { ...transactionalDatabaseSemantics().transactions, multiOperationApi: 'absentFromPublicApi', multiOperationBehavior: 'methodAbsent' } }] })).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: 'Application v0.3 pressure test tenant-platform-pressure-test TransactionalDatabase evidence requires transaction coverage but no TransactionalDatabase semantics declare runtime transactions.' }),
     ]));
     expect(validateApplicationV03PressureTestContract({ ...pressureTest, requiredOperationTargets: pressureTest.requiredOperationTargets.map(({ execution: _execution, ...target }) => target) })).toEqual(expect.arrayContaining([
@@ -1437,7 +1437,7 @@ describe('application graph substrate contract', () => {
 
   it('resolves provider requirements explicitly and by interface before adapters exist', () => {
     const graph = guestBookSubstrateGraph();
-    const requirement = modelStoreRequirement();
+    const requirement = transactionalDatabaseRequirement();
 
     expect(resolveApplicationGraphProviderRequirement(graph, requirement)).toMatchObject({
       status: 'resolved',
@@ -1456,7 +1456,7 @@ describe('application graph substrate contract', () => {
 
   it('fails provider resolution closed for missing, ambiguous, invalid consumer, and invalid explicit provider cases', () => {
     const graph = guestBookSubstrateGraph();
-    const requirement = modelStoreRequirement();
+    const requirement = transactionalDatabaseRequirement();
     const replicaProvider: ApplicationProviderNode<'TransactionalDatabase'> = {
       id: 'provider.transactional-database.postgres-replica',
       kind: 'provider',
@@ -1525,7 +1525,7 @@ describe('application graph substrate contract', () => {
   });
 });
 
-function modelStoreRequirement(): ApplicationProviderRequirement<'TransactionalDatabase'> {
+function transactionalDatabaseRequirement(): ApplicationProviderRequirement<'TransactionalDatabase'> {
   return {
     id: 'requirement.model.entry.database',
     interface: 'TransactionalDatabase',
@@ -1559,7 +1559,7 @@ function providerCompatibilityMatrix(): ApplicationProviderCompatibilityMatrixCo
   };
 }
 
-function modelStoreSemantics(): ApplicationTransactionalDatabaseSemanticsContract {
+function transactionalDatabaseSemantics(): ApplicationTransactionalDatabaseSemanticsContract {
   return {
     generatedRuntimeParity: 'required',
     scriptRuntimeParity: 'required',
@@ -1597,7 +1597,7 @@ function statusEvidence(): ApplicationV03PressureTestContract['requiredStatusEvi
   };
 }
 
-function modelStoreEvidence(): ApplicationV03PressureTestContract['requiredModelStoreEvidence'] {
+function transactionalDatabaseEvidence(): ApplicationV03PressureTestContract['requiredTransactionalDatabaseEvidence'] {
   return {
     generatedRuntimeParity: 'localGeneratedArtifactGate',
     scriptRuntimeParity: 'localAndOptInLiveGate',
@@ -1790,7 +1790,7 @@ function guestBookSubstrateGraph(): ApplicationGraph {
             transactions: 'supported',
             retention: 'retain',
             migrationOwnership: 'generatedJob',
-            semantics: modelStoreSemantics(),
+            semantics: transactionalDatabaseSemantics(),
           },
         },
         materialization: {
@@ -1862,7 +1862,7 @@ function guestBookSubstrateGraph(): ApplicationGraph {
       { from: { nodeId: 'server.web' }, to: { nodeId: 'model.entry' }, relationship: 'dependsOn' },
       { from: { nodeId: 'permission.web' }, to: { nodeId: 'server.web' }, relationship: 'writes' },
     ],
-    providerRequirements: [modelStoreRequirement()],
+    providerRequirements: [transactionalDatabaseRequirement()],
     providerBindings: [
       {
         requirement: 'requirement.model.entry.database',

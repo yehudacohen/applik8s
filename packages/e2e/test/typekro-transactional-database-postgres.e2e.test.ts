@@ -8,21 +8,21 @@ import { afterAll, beforeAll, expect, it } from 'vitest';
 
 import { assertExpectedKubectlContext, describeLive, exec, formatSettledOutput, kubectl, sleep } from './live-e2e-helpers';
 
-const namespace = process.env.APPLIK8S_E2E_NAMESPACE ?? `applik8s-modelstore-${process.pid}`;
+const namespace = process.env.APPLIK8S_E2E_NAMESPACE ?? `applik8s-transactional-database-${process.pid}`;
 const runtimeNamespace = process.env.APPLIK8S_E2E_TYPEKRO_RUNTIME_NAMESPACE ?? 'applik8s-typekro-runtime';
-const stackName = `accounts-modelstore-${process.pid}`;
-const stackKind = `AccountsModelStore${process.pid}`;
+const stackName = `accounts-transactional-database-${process.pid}`;
+const stackKind = `AccountsTransactionalDatabase${process.pid}`;
 const serverName = 'accounts-web';
 const serviceName = `${serverName}-svc`;
 const databaseName = 'accounts-db';
-const migrationJobName = 'accounts-model-migration';
+const migrationJobName = 'accounts-database-migration';
 const appPlural = pluralizeKubernetesKind(stackKind);
 const statusReconcilerName = `${kubernetesNameSegment(stackKind)}-status-reconciler`;
 const statusConfigMapName = `${statusReconcilerName}-status`;
 const cnpgInstallUrl = process.env.APPLIK8S_E2E_CNPG_INSTALL_URL ?? 'https://raw.githubusercontent.com/cloudnative-pg/cloudnative-pg/release-1.26/releases/cnpg-1.26.0.yaml';
-const driftNamespace = process.env.APPLIK8S_E2E_DRIFT_NAMESPACE ?? `applik8s-modelstore-drift-${process.pid}`;
-const driftStackName = `accounts-modelstore-drift-${process.pid}`;
-const driftStackKind = `AccountsModelStoreDrift${process.pid}`;
+const driftNamespace = process.env.APPLIK8S_E2E_DRIFT_NAMESPACE ?? `applik8s-transactional-database-drift-${process.pid}`;
+const driftStackName = `accounts-transactional-database-drift-${process.pid}`;
+const driftStackKind = `AccountsTransactionalDatabaseDrift${process.pid}`;
 const driftDatabaseName = 'accounts-drift-db';
 const driftMigrationJobName = 'accounts-drift-model-migration';
 const accountModelTableName = 'applik8s_account';
@@ -37,9 +37,9 @@ describeLive('live TypeKro Postgres TransactionalDatabase runtime', () => {
     await ensureCnpgOperator();
     await ensureNamespace(namespace);
 
-    tempDir = await mkdtemp(join(tmpdir(), 'applik8s-modelstore-'));
+    tempDir = await mkdtemp(join(tmpdir(), 'applik8s-transactional-database-'));
     outDir = join(tempDir, 'dist');
-    const entrypoint = join(tempDir, 'modelstore-live.ts');
+    const entrypoint = join(tempDir, 'transactional-database-live.ts');
     await writeFile(entrypoint, liveEntrypointSource());
     await exec('bun', ['run', 'applik8s', 'build', entrypoint, '--typekro', '--composition-name', 'accountsStack', '--out-dir', outDir], process.cwd());
   }, 720_000);
@@ -108,9 +108,9 @@ describeLive('live TypeKro Postgres TransactionalDatabase migration drift prefli
     await ensureCnpgOperator();
     await ensureNamespace(driftNamespace);
 
-    driftTempDir = await mkdtemp(join(tmpdir(), 'applik8s-modelstore-drift-'));
+    driftTempDir = await mkdtemp(join(tmpdir(), 'applik8s-transactional-database-drift-'));
     driftOutDir = join(driftTempDir, 'dist');
-    const entrypoint = join(driftTempDir, 'modelstore-drift-live.ts');
+    const entrypoint = join(driftTempDir, 'transactional-database-drift-live.ts');
     await writeFile(entrypoint, liveEntrypointSource({ namespace: driftNamespace, stackName: driftStackName, stackKind: driftStackKind, databaseName: driftDatabaseName, migrationJobName: driftMigrationJobName }));
     await exec('bun', ['run', 'applik8s', 'build', entrypoint, '--typekro', '--composition-name', 'accountsStack', '--out-dir', driftOutDir], process.cwd());
     await applyCnpgCluster(driftNamespace, driftDatabaseName);
@@ -303,7 +303,7 @@ async function ensureCnpgOperator(): Promise<void> {
     await kubectl(['get', 'crd/clusters.postgresql.cnpg.io']);
     return;
   } catch {
-    await kubectl(['apply', '--server-side', '--field-manager=applik8s-modelstore-e2e', '--filename', cnpgInstallUrl]);
+    await kubectl(['apply', '--server-side', '--field-manager=applik8s-transactional-database-e2e', '--filename', cnpgInstallUrl]);
     await kubectl(['wait', 'crd/clusters.postgresql.cnpg.io', '--for=condition=Established', '--timeout=180s']);
     await kubectl(['rollout', 'status', 'deployment/cnpg-controller-manager', '--namespace', 'cnpg-system', '--timeout=300s']);
   }
@@ -336,7 +336,7 @@ spec:
   storage:
     size: 1Gi
 `.trimStart());
-    await kubectl(['apply', '--server-side', '--field-manager=applik8s-modelstore-drift-e2e', '--filename', manifestPath]);
+    await kubectl(['apply', '--server-side', '--field-manager=applik8s-transactional-database-drift-e2e', '--filename', manifestPath]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -447,7 +447,7 @@ spec:
 `.trimStart());
     await kubectl(['delete', 'job', options.name, '--namespace', options.namespace, '--ignore-not-found=true', '--wait=false']);
     await kubectl(['delete', 'configmap', configMapName, '--namespace', options.namespace, '--ignore-not-found=true', '--wait=false']);
-    await kubectl(['apply', '--server-side', '--field-manager=applik8s-modelstore-drift-e2e', '--filename', manifestPath]);
+    await kubectl(['apply', '--server-side', '--field-manager=applik8s-transactional-database-drift-e2e', '--filename', manifestPath]);
     await waitForSqlJobCondition(options.namespace, options.name, options.expectFailure ? 'Failed' : 'Complete');
     return await sqlJobLogs(options.namespace, options.name);
   } catch (cause) {
@@ -606,7 +606,7 @@ async function waitForGeneratedMigrationStatusComplete(): Promise<void> {
   let lastStatus = '';
   while (Date.now() - started < 180_000) {
     try {
-      const output = (await kubectl(['get', `${appPlural}.modelstore.applik8s.dev/${appInstance.name}`, '--namespace', appInstance.namespace, '--output=json'])).stdout;
+      const output = (await kubectl(['get', `${appPlural}.transactional-database.applik8s.dev/${appInstance.name}`, '--namespace', appInstance.namespace, '--output=json'])).stdout;
       const resource = JSON.parse(output);
       const phase = resource?.status?.applik8s?.jobs?.[migrationJobName]?.phase;
       lastStatus = JSON.stringify(resource?.status?.applik8s?.jobs?.[migrationJobName] ?? resource?.status ?? {});
@@ -626,7 +626,7 @@ async function waitForGeneratedMigrationStatusComplete(): Promise<void> {
     await sleep(2_000);
   }
   const diagnostics = await Promise.allSettled([
-    kubectl(['get', `${appPlural}.modelstore.applik8s.dev/${appInstance.name}`, '--namespace', appInstance.namespace, '--output=yaml']),
+    kubectl(['get', `${appPlural}.transactional-database.applik8s.dev/${appInstance.name}`, '--namespace', appInstance.namespace, '--output=yaml']),
     kubectl(['get', `configmap/${statusConfigMapName}`, '--namespace', namespace, '--output=yaml']),
     kubectl(['describe', `deployment/${statusReconcilerName}`, '--namespace', namespace]),
     kubectl(['logs', '--namespace', namespace, '--selector', `app.kubernetes.io/name=${statusReconcilerName}`, '--all-containers=true', '--tail=300']),
@@ -853,7 +853,7 @@ const AccountEntity = entity('Account', {
 
 export const accountsStack = sdk.kubernetesComposition({
   name: ${JSON.stringify(options.stackName)},
-  apiVersion: 'modelstore.applik8s.dev/v1alpha1',
+  apiVersion: 'transactional-database.applik8s.dev/v1alpha1',
   kind: ${JSON.stringify(options.stackKind)},
   spec: type({}),
   status: type({ ready: 'boolean', applik8s: 'object?' }),

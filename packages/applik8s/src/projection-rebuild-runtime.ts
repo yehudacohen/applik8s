@@ -11,7 +11,7 @@ import type {
 import { ApplicationProjectionRetentionGapError } from "./projection-runtime-clickhouse.js";
 import type {
 	ApplicationOnlineProjectionWrite,
-	ApplicationValkeyOnlineProjectionStore,
+	ApplicationValkeyOnlineProjectionWriter,
 } from "./projection-runtime-valkey.js";
 import type { ApplicationProjectionSnapshotSource } from "./projection-snapshot-postgres-runtime.js";
 
@@ -32,7 +32,7 @@ export interface ApplicationOnlineProjectionRebuildOptions<
 	/** Optional canonical snapshot authority used before retained stream catch-up. */
 	readonly snapshot?: ApplicationProjectionSnapshotSource<TPayload>;
 	readonly snapshotPartition?: (payload: TPayload) => string;
-	readonly store: ApplicationValkeyOnlineProjectionStore<TRow, TValue>;
+	readonly store: ApplicationValkeyOnlineProjectionWriter<TRow, TValue>;
 	readonly artifacts: ApplicationObjectStorageRuntime;
 	readonly artifactPrefix?: string;
 	readonly project: (
@@ -529,7 +529,7 @@ function startGenerationAttemptHeartbeat<
 	TRow extends object,
 	TValue extends object,
 >(
-	store: ApplicationValkeyOnlineProjectionStore<TRow, TValue>,
+	store: ApplicationValkeyOnlineProjectionWriter<TRow, TValue>,
 	generation: string,
 	attemptId: string,
 	leaseMs: number,
@@ -928,7 +928,7 @@ export async function retireApplicationOnlineProjectionGeneration<
 >(options: {
 	readonly projection: string;
 	readonly generation: string;
-	readonly store: ApplicationValkeyOnlineProjectionStore<TRow, TValue>;
+	readonly store: ApplicationValkeyOnlineProjectionWriter<TRow, TValue>;
 	readonly artifacts: ApplicationObjectStorageRuntime;
 	readonly references: readonly ApplicationObjectReference[];
 	readonly artifactPrefix?: string;

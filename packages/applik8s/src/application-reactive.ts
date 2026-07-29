@@ -600,7 +600,7 @@ function registerOnlineApplicationProjection<TPayload extends object, TRow exten
   addApplicationGraphEdge(state, { from: providerNode, to: { nodeId }, relationship: 'provides' });
   if (rebuildSource) addApplicationGraphEdge(state, { from: { nodeId }, to: rebuildSource, relationship: 'reads' });
   const requirement = `index-store.${reactiveName(name)}`;
-  addApplicationProviderRequirement(state, { id: requirement, interface: 'IndexStore', consumer: { nodeId }, provider: providerNode, required: true, purpose: 'onlineProjectionStore', diagnostics: { missing: `Online projection ${name} requires an IndexStore provider.`, ambiguous: `Online projection ${name} has multiple IndexStore providers.` } });
+  addApplicationProviderRequirement(state, { id: requirement, interface: 'IndexStore', consumer: { nodeId }, provider: providerNode, required: true, purpose: 'onlineIndex', diagnostics: { missing: `Online projection ${name} requires an IndexStore provider.`, ambiguous: `Online projection ${name} has multiple IndexStore providers.` } });
   addApplicationProviderBinding(state, { requirement, provider: providerNode, generatedResources: [], runtime: {}, metadataLinks: [] });
   return {
     kind: 'applicationProjection', storage: 'online', name, source: options.source, provider, output: options.output,

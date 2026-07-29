@@ -28,7 +28,7 @@ export interface ApplicationStatusReconcilerEmitUtilities {
   readonly apiGroupForApiVersion: (apiVersion: string) => string;
 }
 
-export interface ApplicationGeneratedJobStatusProjectionStore {
+export interface ApplicationGeneratedJobStatusProjectionState {
   readonly namespace?: string;
   readonly data?: Readonly<Record<string, string>>;
 }
@@ -37,7 +37,7 @@ export function applicationStatusReconcilerName(appResource: ApplicationStatusRe
   return `${kubernetesNameSegment(appResource.kind)}-status-reconciler`;
 }
 
-export function emitApplicationGeneratedJobStatusReconcilers(state: ApplicationGeneratedJobStatusReconcilerState, utilities: ApplicationStatusReconcilerEmitUtilities): readonly ApplicationGeneratedJobStatusProjectionStore[] {
+export function emitApplicationGeneratedJobStatusReconcilers(state: ApplicationGeneratedJobStatusReconcilerState, utilities: ApplicationStatusReconcilerEmitUtilities): readonly ApplicationGeneratedJobStatusProjectionState[] {
   const groups = new Map<string, ApplicationGeneratedJobStatusTarget[]>();
   for (const target of state.generatedJobStatusTargets) {
     const key = target.namespace ?? '';
@@ -46,7 +46,7 @@ export function emitApplicationGeneratedJobStatusReconcilers(state: ApplicationG
   return [...groups].map(([namespaceKey, targets]) => emitGeneratedJobStatusReconcilerResources(state, utilities, namespaceKey || undefined, targets));
 }
 
-function emitGeneratedJobStatusReconcilerResources(state: ApplicationGeneratedJobStatusReconcilerState, utilities: ApplicationStatusReconcilerEmitUtilities, namespace: string | undefined, targets: readonly ApplicationGeneratedJobStatusTarget[]): ApplicationGeneratedJobStatusProjectionStore {
+function emitGeneratedJobStatusReconcilerResources(state: ApplicationGeneratedJobStatusReconcilerState, utilities: ApplicationStatusReconcilerEmitUtilities, namespace: string | undefined, targets: readonly ApplicationGeneratedJobStatusTarget[]): ApplicationGeneratedJobStatusProjectionState {
   const reconcilerName = applicationStatusReconcilerName(state.appResource, utilities.kubernetesNameSegment);
   if (targets.length === 0) {
     return { ...(namespace ? { namespace } : {}) };
@@ -158,7 +158,7 @@ function emitGeneratedJobStatusReconcilerResources(state: ApplicationGeneratedJo
   // this projection intentionally narrows it to the map surface needed by the
   // application status CEL expression.
   // typecast: bridge TypeKro's enhanced ConfigMap to the internal projection-only view.
-  return durableStatus as unknown as ApplicationGeneratedJobStatusProjectionStore;
+  return durableStatus as unknown as ApplicationGeneratedJobStatusProjectionState;
 }
 
 function unique<T>(values: readonly T[]): T[] {

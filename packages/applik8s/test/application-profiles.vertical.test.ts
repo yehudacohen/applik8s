@@ -1,5 +1,7 @@
 import {
   AnalyticalDatabase,
+  Analytics,
+  Database,
   TransactionalDatabase,
   app,
   applicationGraphFor,
@@ -15,6 +17,97 @@ const Installation = type({
 });
 
 describe('application deployment profiles', () => {
+  it('constructs provider-neutral database and analytics capabilities without leaking infrastructure ownership', () => {
+    const primary = Database.postgres({
+      name: 'primary',
+      database: 'application',
+      instances: 1,
+      migrations: Database.migrations.generatedJob({
+        jobName: 'application-migration',
+      }),
+    });
+    const externalPrimary = Database.externalPostgres({
+      name: 'external-primary',
+      database: 'application',
+      connection: {
+        secretName: 'external-primary-app',
+        key: 'uri',
+        namespace: 'data',
+      },
+    });
+    const starterAnalytics = Analytics.postgres({
+      database: primary,
+      schema: 'analytics',
+    });
+    const dedicatedAnalytics = Analytics.clickHouse({
+      name: 'dedicated-analytics',
+      provision: true,
+    });
+    const externalAnalytics = Analytics.externalClickHouse({
+      name: 'external-analytics',
+      connection: {
+        endpoint: 'https://clickhouse.example.test',
+        database: 'application',
+        credentialsSecretName: 'clickhouse-client',
+        credentialsSecretNamespace: 'data',
+      },
+    });
+
+    expect(primary).toMatchObject({
+      kind: 'postgres',
+      database: 'application',
+      migrations: {
+        strategy: 'generatedJob',
+        apply: 'generatedJob',
+      },
+    });
+    expect(externalPrimary).toEqual({
+      kind: 'postgres',
+      name: 'external-primary',
+      database: 'application',
+      ownership: 'external',
+      provision: false,
+      connectionSecret: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        name: 'external-primary-app',
+        namespace: 'data',
+      },
+      connectionSecretKey: 'uri',
+    });
+    expect(starterAnalytics).toEqual({
+      kind: 'postgres-analytics',
+      database: primary,
+      schema: 'analytics',
+    });
+    expect(dedicatedAnalytics).toEqual({
+      kind: 'clickhouse',
+      name: 'dedicated-analytics',
+      provision: true,
+    });
+    expect(externalAnalytics).toEqual({
+      kind: 'clickhouse',
+      name: 'external-analytics',
+      provision: false,
+      endpoint: 'https://clickhouse.example.test',
+      database: 'application',
+      credentialsSecret: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        name: 'clickhouse-client',
+        namespace: 'data',
+      },
+    });
+    expect(() => Database.externalPostgres({ database: 'application' })).toThrow(
+      /connection or an external CNPG cluster reference/,
+    );
+    expect(() =>
+      Analytics.externalClickHouse({
+        endpoint: ' ',
+      }),
+    ).toThrow(/non-empty endpoint/);
+  });
+
   it('derives literal variants and records one exhaustive qualified provider selection', () => {
     const application = app('profile-contract', {
       namespace: 'profile-contract',

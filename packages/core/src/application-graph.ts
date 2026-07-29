@@ -288,7 +288,7 @@ export interface ApplicationModelNode extends ApplicationGraphNodeBase<'model'> 
 
 export interface ApplicationNativeModelContract {
   readonly kind: 'drizzle-table' | 'kubernetes-resource' | 'jsonb-model';
-  readonly authority: 'postgres' | 'kubernetes' | 'model-store';
+  readonly authority: 'postgres' | 'kubernetes' | 'transactional-database';
   readonly artifact: {
     readonly name: string;
     readonly schema?: string;
@@ -307,14 +307,14 @@ export interface ApplicationCommonModelContract {
   };
   readonly revision?: {
     readonly field: string;
-    readonly authority: 'postgres-row' | 'kubernetes-resource-version' | 'model-store';
+    readonly authority: 'postgres-row' | 'kubernetes-resource-version' | 'transactional-database';
   };
   readonly snapshot: {
     readonly shape: 'identity-value-revision';
     readonly revisionOptional: true;
   };
   readonly changes: {
-    readonly authority: 'postgres-change-log' | 'kubernetes-watch' | 'model-store-outbox';
+    readonly authority: 'postgres-change-log' | 'kubernetes-watch' | 'transactional-database-outbox';
     readonly rawWrites: 'explicit-invalidation-required' | 'observed';
   };
   readonly relationships: readonly ApplicationModelRelationshipGraphContract[];
@@ -938,11 +938,21 @@ export interface ApplicationProviderRequirement<TInterface extends ApplicationPr
   readonly consumer: ApplicationGraphNodeRef;
   readonly provider?: ApplicationProviderRef<TInterface>;
   readonly required: true;
-  readonly purpose: 'transactionalDatabase' | 'analyticalDatabase' | 'indexStore' | 'counterStore' | 'eventSource' | 'eventLog' | 'secret' | 'queue' | 'objectStorage' | 'httpExposure' | 'certificate' | 'dnsPublication' | 'credentialStore' | 'containerRegistry'
-    /** @deprecated Historical v0.3 graph value. */
-    | 'modelStore'
-    /** @deprecated Historical v0.6 graph value. */
-    | 'projectionStore'
+  readonly purpose:
+    | 'transactionalDatabase'
+    | 'analyticalDatabase'
+    | 'indexStore'
+    | 'counterStore'
+    | 'eventSource'
+    | 'eventLog'
+    | 'secret'
+    | 'queue'
+    | 'objectStorage'
+    | 'httpExposure'
+    | 'certificate'
+    | 'dnsPublication'
+    | 'credentialStore'
+    | 'containerRegistry'
     | (string & {});
   readonly diagnostics: ApplicationProviderRequirementDiagnostics;
 }
@@ -1614,13 +1624,13 @@ export interface ApplicationV03PressureTestContract {
   readonly requiredOperationTargets: readonly ApplicationOperationTargetContract[];
   readonly requiredWatchScopes: readonly ApplicationWatchScopeLoweringContract[];
   readonly requiredMigrationDriftChecks: readonly ApplicationMigrationDriftCheckContract[];
-  readonly requiredModelStoreSemantics: readonly ApplicationTransactionalDatabaseSemanticsContract[];
+  readonly requiredTransactionalDatabaseSemantics: readonly ApplicationTransactionalDatabaseSemanticsContract[];
   readonly requiredRuntimeModuleInterfaces: readonly ApplicationRuntimeModuleInterfaceContract[];
   readonly requiredProviderInterfaces: readonly ApplicationProviderInterfaceContract[];
   readonly providerCompatibility: ApplicationProviderCompatibilityMatrixContract;
   readonly requiredStatusOwnership: readonly ApplicationDurableStatusOwnershipContract[];
   readonly requiredStatusEvidence: ApplicationV03StatusEvidenceContract;
-  readonly requiredModelStoreEvidence: ApplicationV03ModelStoreEvidenceContract;
+  readonly requiredTransactionalDatabaseEvidence: ApplicationV03TransactionalDatabaseEvidenceContract;
   readonly requiredOperationTargetEvidence: ApplicationV03OperationTargetEvidenceContract;
   readonly requiredWatchScopeEvidence: ApplicationV03WatchScopeEvidenceContract;
   readonly runtimeReleasePolicy: ApplicationV03RuntimeReleasePolicyContract;
@@ -1639,7 +1649,7 @@ export interface ApplicationV03StatusEvidenceContract {
   readonly failurePolicy: 'failClosed';
 }
 
-export interface ApplicationV03ModelStoreEvidenceContract {
+export interface ApplicationV03TransactionalDatabaseEvidenceContract {
   readonly generatedRuntimeParity: 'localGeneratedArtifactGate';
   readonly scriptRuntimeParity: 'localAndOptInLiveGate';
   readonly liveGate: 'requiredBeforeAnnouncement';
@@ -1683,7 +1693,7 @@ export interface ApplicationV03LiveValidationContract {
 }
 
 export type ApplicationDiagnosticEvent =
-  | 'applik8s-modelstore-missing-credentials'
+  | 'applik8s-transactional-database-missing-credentials'
   | 'applik8s-model-duplicate-key'
   | 'applik8s-model-migration-missing'
   | 'applik8s-model-migration-failed'
@@ -2406,16 +2416,16 @@ export function validateApplicationV03PressureTestContract(contract: Application
   if ((contract.requiredMigrationDriftChecks.length ?? 0) === 0) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} must require migration drift checks.`));
   }
-  if ((contract.requiredModelStoreSemantics?.length ?? 0) === 0) {
+  if ((contract.requiredTransactionalDatabaseSemantics?.length ?? 0) === 0) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} must require TransactionalDatabase semantic conformance.`));
   }
-  for (const semantics of contract.requiredModelStoreSemantics ?? []) {
+  for (const semantics of contract.requiredTransactionalDatabaseSemantics ?? []) {
     diagnostics.push(...validateApplicationTransactionalDatabaseSemanticsContract(semantics));
   }
-  if (contract.requiredModelStoreEvidence.scriptRuntimeParity === 'localAndOptInLiveGate' && !(contract.requiredModelStoreSemantics ?? []).some((semantics) => semantics.scriptRuntimeParity === 'required')) {
+  if (contract.requiredTransactionalDatabaseEvidence.scriptRuntimeParity === 'localAndOptInLiveGate' && !(contract.requiredTransactionalDatabaseSemantics ?? []).some((semantics) => semantics.scriptRuntimeParity === 'required')) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} TransactionalDatabase evidence requires script-runtime parity but no TransactionalDatabase semantics require it.`));
   }
-  if (contract.requiredModelStoreEvidence.transactionCoverage === 'required' && !(contract.requiredModelStoreSemantics ?? []).some((semantics) => semantics.transactions.multiOperationApi === 'implemented' && semantics.transactions.multiOperationBehavior === 'runtimeTransaction')) {
+  if (contract.requiredTransactionalDatabaseEvidence.transactionCoverage === 'required' && !(contract.requiredTransactionalDatabaseSemantics ?? []).some((semantics) => semantics.transactions.multiOperationApi === 'implemented' && semantics.transactions.multiOperationBehavior === 'runtimeTransaction')) {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${contract.name} TransactionalDatabase evidence requires transaction coverage but no TransactionalDatabase semantics declare runtime transactions.`));
   }
   if ((contract.requiredRuntimeModuleInterfaces?.length ?? 0) === 0) {
@@ -2464,7 +2474,7 @@ export function validateApplicationV03PressureTestContract(contract: Application
     }
   }
   diagnostics.push(...validateApplicationV03StatusEvidenceContract(contract.name, contract.requiredStatusEvidence));
-  diagnostics.push(...validateApplicationV03ModelStoreEvidenceContract(contract.name, contract.requiredModelStoreEvidence));
+  diagnostics.push(...validateApplicationV03TransactionalDatabaseEvidenceContract(contract.name, contract.requiredTransactionalDatabaseEvidence));
   diagnostics.push(...validateApplicationV03OperationTargetEvidenceContract(contract.name, contract.requiredOperationTargetEvidence));
   diagnostics.push(...validateApplicationV03WatchScopeEvidenceContract(contract.name, contract.requiredWatchScopeEvidence));
   diagnostics.push(...validateApplicationV03RuntimeReleasePolicyContract(contract.name, contract.runtimeReleasePolicy));
@@ -2517,7 +2527,7 @@ function validateApplicationV03StatusEvidenceContract(name: string, evidence: Ap
   return diagnostics;
 }
 
-function validateApplicationV03ModelStoreEvidenceContract(name: string, evidence: ApplicationV03ModelStoreEvidenceContract): readonly Diagnostic[] {
+function validateApplicationV03TransactionalDatabaseEvidenceContract(name: string, evidence: ApplicationV03TransactionalDatabaseEvidenceContract): readonly Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   if (evidence.generatedRuntimeParity !== 'localGeneratedArtifactGate') {
     diagnostics.push(applicationGraphStructureDiagnostic(`Application v0.3 pressure test ${name} TransactionalDatabase evidence must require local generated-artifact parity.`));

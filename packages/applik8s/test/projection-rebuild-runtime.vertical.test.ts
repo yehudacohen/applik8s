@@ -16,7 +16,7 @@ import type {
 } from "../src/projection-runtime-clickhouse.js";
 import type {
 	ApplicationOnlineProjectionWrite,
-	ApplicationValkeyOnlineProjectionStore,
+	ApplicationValkeyOnlineProjectionWriter,
 } from "../src/projection-runtime-valkey.js";
 import type { ApplicationProjectionSnapshotSource } from "../src/projection-snapshot-postgres-runtime.js";
 
@@ -32,7 +32,7 @@ describe("online projection rebuild runtime", () => {
 	test("writes immutable evidence, catches a moving watermark, publishes atomically, and retires explicitly", async () => {
 		const events = [envelope(1), envelope(2)];
 		const source = replaySource(events);
-		const projection = projectionStore(events, source);
+		const projection = analyticalDatabase(events, source);
 		const objects = memoryObjects();
 
 		const result = await runApplicationOnlineProjectionRebuild({
@@ -124,7 +124,7 @@ describe("online projection rebuild runtime", () => {
 	test("fails closed when retry evidence exists with different content or replay has a retention gap", async () => {
 		const events = [envelope(1)];
 		const source = replaySource(events);
-		const projection = projectionStore(events, source);
+		const projection = analyticalDatabase(events, source);
 		const objects = memoryObjects();
 		objects.seed(
 			"projection-rebuilds/home-timeline/rebuild-1/attempts/attempt-conflict/segment-00000000.json",
@@ -151,7 +151,7 @@ describe("online projection rebuild runtime", () => {
 				retentionFloor: 9,
 			}),
 		};
-		const retainedProjection = projectionStore([], retainedSource);
+		const retainedProjection = analyticalDatabase([], retainedSource);
 		await expect(
 			runApplicationOnlineProjectionRebuild({
 				projection: "home-timeline",
@@ -218,7 +218,7 @@ describe("online projection rebuild runtime", () => {
 			},
 			async close() {},
 		};
-		const projection = projectionStore(events, source);
+		const projection = analyticalDatabase(events, source);
 		const objects = memoryObjects();
 		const result = await runApplicationOnlineProjectionRebuild({
 			projection: "home-timeline",
@@ -264,7 +264,7 @@ describe("online projection rebuild runtime", () => {
 	test("resumes from a validated immutable manifest after interruption without rescanning authority", async () => {
 		const events = [envelope(1), envelope(2)];
 		const source = replaySource(events);
-		const projection = projectionStore(events, source);
+		const projection = analyticalDatabase(events, source);
 		const objects = memoryObjects();
 		let scans = 0;
 		const snapshot: ApplicationProjectionSnapshotSource<Payload> = {
@@ -329,7 +329,7 @@ describe("online projection rebuild runtime", () => {
 	test("resets a crashed partial generation before rescanning authority and rejects overlapping workers", async () => {
 		const events: ApplicationStreamEnvelope<Payload>[] = [];
 		const source = replaySource(events);
-		const projection = projectionStore(events, source, {
+		const projection = analyticalDatabase(events, source, {
 			failAfterFirstWrite: true,
 			raceOnFirstPublish: false,
 		});
@@ -387,7 +387,7 @@ describe("online projection rebuild runtime", () => {
 		});
 		expect(projection.rowIds()).toEqual(["survives-retry"]);
 
-		const overlappingProjection = projectionStore([], replaySource([]), {
+		const overlappingProjection = analyticalDatabase([], replaySource([]), {
 			raceOnFirstPublish: false,
 		});
 		blockScan = true;
@@ -440,7 +440,7 @@ describe("online projection rebuild runtime", () => {
 	test("renews the exclusive attempt throughout a snapshot scan longer than its lease", async () => {
 		vi.useFakeTimers();
 		try {
-			const projection = projectionStore([], replaySource([]), {
+			const projection = analyticalDatabase([], replaySource([]), {
 				raceOnFirstPublish: false,
 			});
 			let releaseScan!: () => void;
@@ -537,7 +537,7 @@ function replaySource(
 	};
 }
 
-function projectionStore(
+function analyticalDatabase(
 	events: ApplicationStreamEnvelope<Payload>[],
 	source: ApplicationReplayableStream<Payload>,
 	options: {
@@ -556,7 +556,7 @@ function projectionStore(
 	let failAfterFirstWrite = options.failAfterFirstWrite ?? false;
 	const retired: string[] = [];
 	let renewals = 0;
-	const store: ApplicationValkeyOnlineProjectionStore<Row, Row> = {
+	const store: ApplicationValkeyOnlineProjectionWriter<Row, Row> = {
 		async prepare() {},
 		async checkpoint(projection, stream) {
 			return { projection, stream, sequence: watermark };

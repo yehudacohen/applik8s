@@ -5,7 +5,7 @@ import type { ApplicationModelCreateInput, ApplicationModelIndexOptions, Applica
 import { createApplicationPostgresDrizzle } from './postgres-runtime-loader.js';
 import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
 
-interface ModelStoreConnection {
+interface TransactionalDatabaseConnection {
   readonly client: ApplicationPostgresSql;
   readonly db: PostgresJsDatabase;
 }
@@ -17,7 +17,7 @@ interface PostgresErrorLike {
   readonly cause?: unknown;
 }
 
-interface ModelStoreDiagnosticError extends Error {
+interface TransactionalDatabaseDiagnosticError extends Error {
   statusCode?: number;
   diagnostic?: Readonly<Record<string, unknown>>;
   cause?: unknown;
@@ -27,13 +27,13 @@ type PostgresModelClient<TSpec extends object, TStatus extends object> = Applica
   transaction<TResult>(handler: (model: ApplicationModelTransactionClient<TSpec, TStatus>) => TResult | Promise<TResult>): Promise<TResult>;
 };
 
-const modelStoreConnections = new Map<string, Promise<ModelStoreConnection>>();
-const modelStoreTables = new Map<string, ReturnType<typeof modelTable>>();
+const transactionalDatabaseConnections = new Map<string, Promise<TransactionalDatabaseConnection>>();
+const transactionalDatabaseTables = new Map<string, ReturnType<typeof modelTable>>();
 
 export async function closePostgresModelClients(): Promise<void> {
-  const connections = [...modelStoreConnections.values()];
-  modelStoreConnections.clear();
-  modelStoreTables.clear();
+  const connections = [...transactionalDatabaseConnections.values()];
+  transactionalDatabaseConnections.clear();
+  transactionalDatabaseTables.clear();
   await Promise.all(connections.map(async (connection) => (await connection).client.end({ timeout: 1 })));
 }
 
@@ -45,7 +45,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
       try {
         await (await modelDatabaseForClient(model, databaseOverride)).insert(table).values(modelRowFromObject(object));
       } catch (error) {
-        throw modelStoreError(model, error);
+        throw transactionalDatabaseError(model, error);
       }
       return object;
     },
@@ -56,7 +56,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
         const rows = await (await modelDatabaseForClient(model, databaseOverride)).select().from(table).where(and(...clauses)).limit(1);
         return rows[0] ? modelObjectFromRow<TSpec, TStatus>(rows[0]) : undefined;
       } catch (error) {
-        throw modelStoreError(model, error);
+        throw transactionalDatabaseError(model, error);
       }
     },
     async query(query: ApplicationModelQueryOptions<TSpec> = {}): Promise<ApplicationModelQueryPage<TSpec, TStatus>> {
@@ -77,7 +77,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
       try {
         await (await modelDatabaseForClient(model, databaseOverride)).update(table).set({ spec: next.spec, status: next.status ?? null, revision: next.revision ?? nextModelRevision(), updatedAt: new Date() }).where(eq(table.id, ref.id));
       } catch (error) {
-        throw modelStoreError(model, error);
+        throw transactionalDatabaseError(model, error);
       }
       return next;
     },
@@ -86,7 +86,7 @@ export function createPostgresModelClient<TSpec extends object, TStatus extends 
       try {
         await (await modelDatabaseForClient(model, databaseOverride)).delete(table).where(eq(table.id, ref.id));
       } catch (error) {
-        throw modelStoreError(model, error);
+        throw transactionalDatabaseError(model, error);
       }
     },
     index(indexName: string, indexOptions: ApplicationModelIndexOptions<TSpec, TStatus> = {}) {
@@ -146,7 +146,7 @@ async function queryPostgresModel<TSpec extends object, TStatus extends object>(
       return { items, ...(nextCursor ? { nextCursor } : {}) };
     })
     .catch((error: unknown) => {
-      throw modelStoreError(model, error);
+      throw transactionalDatabaseError(model, error);
     });
 }
 
@@ -156,31 +156,31 @@ function modelDatabaseForClient(model: ApplicationRuntimeModelContract, database
 
 function modelDatabase(model: ApplicationRuntimeModelContract): Promise<PostgresJsDatabase> {
   const key = model.connectionEnvName;
-  const existing = modelStoreConnections.get(key);
+  const existing = transactionalDatabaseConnections.get(key);
   if (existing) {
     return existing.then((connection) => connection.db);
   }
   const url = process.env[key] || process.env.DATABASE_URL;
   if (!url) {
-    throw modelStoreDiagnosticError({
-      message: `applik8s-modelstore-missing-credentials: TransactionalDatabase ${model.name} requires database URL env ${key} or DATABASE_URL.`,
+    throw transactionalDatabaseDiagnosticError({
+      message: `applik8s-transactional-database-missing-credentials: TransactionalDatabase ${model.name} requires database URL env ${key} or DATABASE_URL.`,
       statusCode: 500,
-      diagnostic: { event: 'applik8s-modelstore-missing-credentials', model: model.name, env: key },
+      diagnostic: { event: 'applik8s-transactional-database-missing-credentials', model: model.name, env: key },
     });
   }
   const connection = createApplicationPostgresDrizzle(url, { max: 5 }).then(({ client, database }) => ({ client, db: database }));
-  modelStoreConnections.set(key, connection);
+  transactionalDatabaseConnections.set(key, connection);
   return connection.then((value) => value.db);
 }
 
 function modelTableFor(model: ApplicationRuntimeModelContract): ReturnType<typeof modelTable> {
   const key = `${model.connectionEnvName}:${model.tableName}`;
-  const existing = modelStoreTables.get(key);
+  const existing = transactionalDatabaseTables.get(key);
   if (existing) {
     return existing;
   }
   const table = modelTable(model.tableName);
-  modelStoreTables.set(key, table);
+  transactionalDatabaseTables.set(key, table);
   return table;
 }
 
@@ -241,11 +241,11 @@ function modelOrderFieldSql(field: string): string {
   return `(${quoteIdentifier('spec')}->>${quoteLiteral(field)})`;
 }
 
-function modelStoreError(model: ApplicationRuntimeModelContract, error: unknown): unknown {
+function transactionalDatabaseError(model: ApplicationRuntimeModelContract, error: unknown): unknown {
   const postgresError = modelPostgresError(error);
   if (postgresError?.code === '23505') {
     const constraint = postgresError.constraint || modelConstraintNameFromDetail(postgresError.detail) || modelDefaultUniqueConstraint(model);
-    return modelStoreDiagnosticError({
+    return transactionalDatabaseDiagnosticError({
       message: `applik8s-model-duplicate-key: Model ${model.name} violates unique constraint ${constraint}.`,
       statusCode: 409,
       diagnostic: { event: 'applik8s-model-duplicate-key', model: model.name, constraint, postgresCode: '23505' },
@@ -253,7 +253,7 @@ function modelStoreError(model: ApplicationRuntimeModelContract, error: unknown)
     });
   }
   if (postgresError?.code === '42P01') {
-    return modelStoreDiagnosticError({
+    return transactionalDatabaseDiagnosticError({
       message: `applik8s-model-migration-missing: TransactionalDatabase table ${model.tableName} is missing. Run generated migrations before serving model traffic.`,
       statusCode: 500,
       diagnostic: { event: 'applik8s-model-migration-missing', model: model.name, table: model.tableName, postgresCode: '42P01' },
@@ -295,8 +295,8 @@ function modelConstraintNameFromDetail(detail: string | undefined): string | und
   return match?.[1];
 }
 
-function modelStoreDiagnosticError(options: { readonly message: string; readonly statusCode: number; readonly diagnostic: Readonly<Record<string, unknown>>; readonly cause?: unknown }): ModelStoreDiagnosticError {
-  const error: ModelStoreDiagnosticError = new Error(options.message);
+function transactionalDatabaseDiagnosticError(options: { readonly message: string; readonly statusCode: number; readonly diagnostic: Readonly<Record<string, unknown>>; readonly cause?: unknown }): TransactionalDatabaseDiagnosticError {
+  const error: TransactionalDatabaseDiagnosticError = new Error(options.message);
   error.statusCode = options.statusCode;
   error.diagnostic = options.diagnostic;
   if (options.cause) {

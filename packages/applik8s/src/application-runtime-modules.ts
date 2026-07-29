@@ -77,8 +77,8 @@ export function createModelRuntime(options = {}) {
   return { runtimeModule, options, createPostgresModelClient };
 }
 
-const modelStoreConnections = new Map();
-const modelStoreTables = new Map();
+const transactionalDatabaseConnections = new Map();
+const transactionalDatabaseTables = new Map();
 
 export function createPostgresModelClient(model, databaseOverride) {
   const client = {
@@ -88,7 +88,7 @@ export function createPostgresModelClient(model, databaseOverride) {
       try {
         await modelDatabaseForClient(model, databaseOverride).insert(table).values(modelRowFromObject(object));
       } catch (error) {
-        throw modelStoreError(model, error);
+        throw transactionalDatabaseError(model, error);
       }
       return object;
     },
@@ -98,7 +98,7 @@ export function createPostgresModelClient(model, databaseOverride) {
       try {
         rows = await modelDatabaseForClient(model, databaseOverride).select().from(table).where(and(eq(table.id, ref.id), ...modelRetentionClauses(model))).limit(1);
       } catch (error) {
-        throw modelStoreError(model, error);
+        throw transactionalDatabaseError(model, error);
       }
       return rows[0] ? modelObjectFromRow(rows[0]) : undefined;
     },
@@ -120,7 +120,7 @@ export function createPostgresModelClient(model, databaseOverride) {
       try {
         await modelDatabaseForClient(model, databaseOverride).update(table).set({ spec: next.spec, status: next.status ?? null, revision: next.revision ?? nextModelRevision(), updatedAt: new Date() }).where(eq(table.id, ref.id));
       } catch (error) {
-        throw modelStoreError(model, error);
+        throw transactionalDatabaseError(model, error);
       }
       return next;
     },
@@ -129,7 +129,7 @@ export function createPostgresModelClient(model, databaseOverride) {
       try {
         await modelDatabaseForClient(model, databaseOverride).delete(table).where(eq(table.id, ref.id));
       } catch (error) {
-        throw modelStoreError(model, error);
+        throw transactionalDatabaseError(model, error);
       }
     },
     index(indexName, indexOptions = {}) {
@@ -183,7 +183,7 @@ function queryPostgresModel(model, query = {}, options = {}, databaseOverride) {
       return { items, ...(nextCursor ? { nextCursor } : {}) };
     })
     .catch((error) => {
-      throw modelStoreError(model, error);
+      throw transactionalDatabaseError(model, error);
     });
 }
 
@@ -193,27 +193,27 @@ function modelDatabaseForClient(model, databaseOverride) {
 
 function modelDatabase(model) {
   const key = model.connectionEnvName;
-  const existing = modelStoreConnections.get(key);
+  const existing = transactionalDatabaseConnections.get(key);
   if (existing) {
     return existing.db;
   }
   const url = process.env[key] || process.env.DATABASE_URL;
   if (!url) {
-    throw modelStoreDiagnosticError({
-      message: 'applik8s-modelstore-missing-credentials: TransactionalDatabase ' + model.name + ' requires database URL env ' + key + ' or DATABASE_URL.',
+    throw transactionalDatabaseDiagnosticError({
+      message: 'applik8s-transactional-database-missing-credentials: TransactionalDatabase ' + model.name + ' requires database URL env ' + key + ' or DATABASE_URL.',
       statusCode: 500,
-      diagnostic: { event: 'applik8s-modelstore-missing-credentials', model: model.name, env: key },
+      diagnostic: { event: 'applik8s-transactional-database-missing-credentials', model: model.name, env: key },
     });
   }
   const client = postgres(url, { max: 5 });
   const db = drizzle(client);
-  modelStoreConnections.set(key, { client, db });
+  transactionalDatabaseConnections.set(key, { client, db });
   return db;
 }
 
 function modelTableFor(model) {
   const key = model.connectionEnvName + ':' + model.tableName;
-  const existing = modelStoreTables.get(key);
+  const existing = transactionalDatabaseTables.get(key);
   if (existing) {
     return existing;
   }
@@ -225,7 +225,7 @@ function modelTableFor(model) {
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   });
-  modelStoreTables.set(key, table);
+  transactionalDatabaseTables.set(key, table);
   return table;
 }
 
@@ -275,11 +275,11 @@ function modelOrderFieldSql(field) {
   return '(' + quoteIdentifier('spec') + '->>' + quoteLiteral(field) + ')';
 }
 
-function modelStoreError(model, error) {
+function transactionalDatabaseError(model, error) {
   const postgresError = modelPostgresError(error);
   if (postgresError?.code === '23505') {
     const constraint = postgresError.constraint || modelConstraintNameFromDetail(postgresError.detail) || modelDefaultUniqueConstraint(model);
-    return modelStoreDiagnosticError({
+    return transactionalDatabaseDiagnosticError({
       message: 'applik8s-model-duplicate-key: Model ' + model.name + ' violates unique constraint ' + constraint + '.',
       statusCode: 409,
       diagnostic: { event: 'applik8s-model-duplicate-key', model: model.name, constraint, postgresCode: '23505' },
@@ -287,7 +287,7 @@ function modelStoreError(model, error) {
     });
   }
   if (postgresError?.code === '42P01') {
-    return modelStoreDiagnosticError({
+    return transactionalDatabaseDiagnosticError({
       message: 'applik8s-model-migration-missing: TransactionalDatabase table ' + model.tableName + ' is missing. Run generated migrations before serving model traffic.',
       statusCode: 500,
       diagnostic: { event: 'applik8s-model-migration-missing', model: model.name, table: model.tableName, postgresCode: '42P01' },
@@ -331,7 +331,7 @@ function modelConstraintNameFromDetail(detail) {
   return match?.[1];
 }
 
-function modelStoreDiagnosticError(options) {
+function transactionalDatabaseDiagnosticError(options) {
   const error = new Error(options.message);
   error.statusCode = options.statusCode;
   error.diagnostic = options.diagnostic;

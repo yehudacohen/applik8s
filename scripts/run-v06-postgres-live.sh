@@ -23,8 +23,8 @@ cd "$ROOT"
 APPLIK8S_V06_POSTGRES_DATABASE_URL="postgres://applik8s_v06@127.0.0.1:$PORT/v06_native" \
 TYPEKRO_LOG_LEVEL=fatal \
   bunx vitest run packages/applik8s/test/relational-postgres-live.vertical.test.ts
-APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL="postgres://applik8s_v06@127.0.0.1:$PORT/v06_native" \
+APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL="postgres://applik8s_v06@127.0.0.1:$PORT/v06_native" \
 TYPEKRO_LOG_LEVEL=fatal \
-  bunx vitest run packages/applik8s/test/model-store-postgres-runtime.vertical.test.ts
+  bunx vitest run packages/applik8s/test/transactional-database-postgres-runtime.vertical.test.ts
 
 bun run scripts/write-v06-datastore-evidence.ts postgres

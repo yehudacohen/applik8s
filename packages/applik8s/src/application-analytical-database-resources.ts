@@ -3,23 +3,23 @@ import { Cel, singleton } from 'typekro';
 import { clickHouseInstallation, clickhouseHelmRepositoryBootstrap, clickhouseOperatorBootstrap, DEFAULT_CLICKHOUSE_REPO_NAME, DEFAULT_CLICKHOUSE_REPO_URL } from 'typekro/clickhouse';
 import { networkPolicy } from 'typekro/kubernetes';
 import { graphResourceId, kubernetesNameSegment } from './application-identifiers.js';
-import { applicationAnalyticalDatabaseImplementation } from './application-providers.js';
+import { applicationAnalyticalDatabaseImplementation, isClickHouseAnalyticalDatabaseProvider } from './application-providers.js';
 import { applicationTypeKroExpressionValue, applicationTypeKroString, applicationTypeKroValueIdentity, applyApplicationTypeKroIncludeWhen } from './application-typekro-values.js';
 
-export interface ApplicationProjectionStoreResourceState {
-  readonly emittedProjectionStores: Set<string>;
+export interface ApplicationAnalyticalDatabaseResourceState {
+  readonly emittedAnalyticalDatabases: Set<string>;
 }
 
 /** Materializes the default shared ClickHouse control plane and app-owned data plane. */
-export function emitApplicationProjectionStoreResources(state: ApplicationProjectionStoreResourceState, provider: unknown): void {
+export function emitApplicationAnalyticalDatabaseResources(state: ApplicationAnalyticalDatabaseResourceState, provider: unknown): void {
   const projection = applicationAnalyticalDatabaseImplementation(provider);
-  if (!projection || projection.provision === false) return;
+  if (!projection || !isClickHouseAnalyticalDatabaseProvider(projection) || projection.provision === false) return;
   const name = projection.name ?? 'applik8s-analytics';
   const namespace = applicationTypeKroString(projection.namespace ?? 'applik8s-analytics');
   const provisioned = applicationProviderCondition(projection.enabled, projection.provision);
   const key = `${applicationTypeKroValueIdentity(namespace)}:${name}`;
-  if (state.emittedProjectionStores.has(key)) return;
-  state.emittedProjectionStores.add(key);
+  if (state.emittedAnalyticalDatabases.has(key)) return;
+  state.emittedAnalyticalDatabases.add(key);
   // Materialize the nested repository singleton explicitly. Wrapping the
   // complete operator composition as a singleton intentionally does not
   // execute its body while the parent graph is built, so its nested singleton

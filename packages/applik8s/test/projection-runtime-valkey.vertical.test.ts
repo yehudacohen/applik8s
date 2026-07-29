@@ -1,6 +1,6 @@
 import { type } from 'arktype';
 import { describe, expect, test } from 'vitest';
-import { ApplicationOnlineProjectionUnavailableError, createValkeyOnlineProjectionReader, createValkeyOnlineProjectionStore } from '../src/projection-runtime-valkey.js';
+import { ApplicationOnlineProjectionUnavailableError, createValkeyOnlineProjectionReader, createValkeyOnlineProjectionWriter } from '../src/projection-runtime-valkey.js';
 import type { ApplicationValkeyCommand, ValkeyArgument, ValkeyResponse } from '../src/valkey-protocol.js';
 
 interface Row { readonly partition: string; readonly id: string; readonly score: number; readonly body: string; readonly removed: boolean }
@@ -8,7 +8,7 @@ interface Row { readonly partition: string; readonly id: string; readonly score:
 describe('Valkey online projection runtime', () => {
   test('applies ordered idempotent rows, bounds partitions, pages values, and switches generations atomically', async () => {
     const memory = inMemoryValkey();
-    const store = createValkeyOnlineProjectionStore<Row, { readonly id: string; readonly body: string }>({
+    const store = createValkeyOnlineProjectionWriter<Row, { readonly id: string; readonly body: string }>({
       command: memory.command,
       prefix: 'chirp',
       projection: 'home-timeline',
@@ -86,14 +86,14 @@ describe('Valkey online projection runtime', () => {
   });
 
   test('fails closed on invalid bounds, cursors, values, and scope', async () => {
-    expect(() => createValkeyOnlineProjectionStore({
+    expect(() => createValkeyOnlineProjectionWriter({
       command: async () => null,
       prefix: 'chirp', projection: 'timeline', stream: 'posts',
       schema: type({ id: 'string' }), valueSchema: type({ id: 'string' }),
       partitionBy: () => 'p', key: (row) => row.id, score: () => 1, value: (row) => row,
       retention: { maxItemsPerPartition: 0 },
     })).toThrow(/maxItemsPerPartition/);
-    const store = createValkeyOnlineProjectionStore({
+    const store = createValkeyOnlineProjectionWriter({
       command: inMemoryValkey().command,
       prefix: 'chirp', projection: 'timeline', stream: 'posts',
       schema: type({ id: 'string' }), valueSchema: type({ id: 'string' }),
@@ -106,7 +106,7 @@ describe('Valkey online projection runtime', () => {
     // typecast: deliberately crosses the static row contract to prove the runtime schema fails closed.
     await expect(store.write([event(1, [{ id: 42 }]) as never])).rejects.toThrow(/validation/);
 
-    const bounded = createValkeyOnlineProjectionStore<{ readonly partition: string; readonly id: string }, { readonly id: string }>({
+    const bounded = createValkeyOnlineProjectionWriter<{ readonly partition: string; readonly id: string }, { readonly id: string }>({
       command: inMemoryValkey().command,
       prefix: 'chirp', projection: 'bounded', stream: 'posts',
       schema: type({ partition: 'string', id: 'string' }), valueSchema: type({ id: 'string' }),

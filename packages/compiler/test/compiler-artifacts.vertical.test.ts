@@ -1361,7 +1361,7 @@ export const notesModelApp = sdk.kubernetesComposition({
       expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
         expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'notes-db', namespace: 'notes' }) }),
         expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', metadata: expect.objectContaining({ name: 'notes-model-migration', namespace: 'notes' }) }),
-        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'note-model-store', namespace: 'notes' }) }),
+        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'note-transactional-database', namespace: 'notes' }) }),
       ]));
       expect(result.value.artifacts.resources).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ apiVersion: 'v1', kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }),

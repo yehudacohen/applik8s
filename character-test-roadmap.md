@@ -68,7 +68,7 @@ The required v0.2 TypeKro story is one package for infrastructure composition an
 - verify `Resource.index(...)` request paths are bounded by safe partition/filter semantics before Kubernetes access
 - verify `app.aggregate(...)` commits object-store state only after reducer success and projects derived GuestBook status
 - verify schema-first `entity(...)` can materialize as CRDs through `app.crd(entity, { apiVersion, ... })`
-- verify `app.model(entity)` and `ModelStore` fail closed until real storage-backed model semantics are implemented
+- verify `app.model(entity)` and `TransactionalDatabase` fail closed until real storage-backed model semantics are implemented
 
 ## applik8s v0.3 Substrate-Freeze Product Stories
 
@@ -77,7 +77,7 @@ The required v0.3 framework story is stable enough that a future workload-moveme
 - treat v0.3-required app/provider APIs as stable public APIs for the pre-v1 line, while keeping unimplemented behavior fail-closed until it is real
 - execute model operations in serialized generated callbacks through generated runtime clients, and execute the same typed model operations in ordinary script callbacks/functions through an explicit script-execution runtime path
 - define schema-first entities and materialize them as either CRDs or storage-backed models with explicit backend semantics
-- bind app-scoped providers through `app.defaults(...)` and `app.provide(...)` using stable capability interfaces such as `ModelStore`, `IndexStore`, `CounterStore`, `EventSource`, `Secret`, `Queue`, `ObjectStorage`, `HttpExposure`, and credential material
+- bind app-scoped providers through `app.defaults(...)` and `app.provide(...)` using stable capability interfaces such as `TransactionalDatabase`, `IndexStore`, `CounterStore`, `EventSource`, `Secret`, `Queue`, `ObjectStorage`, `HttpExposure`, and credential material
 - compile an app into an explicit app graph IR before emitting Kubernetes, TypeKro, generated runtime, RBAC, and diagnostics artifacts
 - inspect generated artifacts and see the same app graph relationships represented in manifests, runtime metadata, route/job diagnostics, and provider dependencies
 - define generated jobs for preflight, migration, cleanup, repair, and maintenance-style tasks without hand-authoring Deployments or one-off scripts
@@ -164,9 +164,9 @@ The v0.3 character, vertical, generated-artifact, and live suites should add the
 
 Current prep status:
 
-- Added core interface fixtures for migration plans, compatibility checks, migration history metadata, runtime module boundaries, diagnostic taxonomy, every v0.3 provider requirement interface, generated job contracts, generated phase/status contracts, and ModelStore guarantees.
-- Promoted the first Postgres `ModelStore` character/integration path to real generated resources and runtime behavior: CNPG Cluster, migration Job, SQL ConfigMap, diagnostics ConfigMap, generated server runtime client, and live E2E coverage.
-- Added typed `app.defaults({ models })`, `app.provide(ModelStore, ...)`, explicit model store binding, invalid alias, and reserved provider-token coverage.
+- Added core interface fixtures for migration plans, compatibility checks, migration history metadata, runtime module boundaries, diagnostic taxonomy, every v0.3 provider requirement interface, generated job contracts, generated phase/status contracts, and TransactionalDatabase guarantees.
+- Promoted the first Postgres `TransactionalDatabase` character/integration path to real generated resources and runtime behavior: CNPG Cluster, migration Job, SQL ConfigMap, diagnostics ConfigMap, generated server runtime client, and live E2E coverage.
+- Added typed `app.defaults({ models })`, `app.provide(TransactionalDatabase, ...)`, explicit model store binding, invalid alias, and reserved provider-token coverage.
 - Added character and integration coverage for public `app.job(...)` and `app.schedule(...)` authoring as generated Kubernetes Job/CronJob resources with diagnostics, durable status metadata, terminal-failure templates, and partial-effect diagnostics.
 - Added shared generated-job status/idempotency diagnostics for generated model migration jobs without changing the live migration execution path.
 - Added v0.3 runtime module ABI and generated durable status-updater contracts, with status-runtime ConfigMap artifacts for generated jobs and migrations.
@@ -174,10 +174,10 @@ Current prep status:
 - Added v0.3 freeze-interface coverage for operation-target lowering, watch-scope lowering, migration drift checks, and the integrated pressure-test readiness gate.
 - Added integration contracts for runtime module content/mount boundaries and migration failure/drift diagnostics.
 - Added cleanup coverage for concrete pressure-test graph/artifact anchoring, compatibility-policy labels, CRD schema compatibility fixtures, artifact-only operation-target lowering, Kubernetes-client runtime module separation, and fail-closed rejection of broad watch selectors.
-- Added the opt-in `test:modelstore:script-runtime:live` command for live Postgres script-execution ModelStore validation when `APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL` is set.
+- Added the opt-in `test:transactional-database:script-runtime:live` command for live Postgres script-execution TransactionalDatabase validation when `APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL` is set.
 - Added the Tenant Platform control-plane pressure test as the v0.3 pressure-test app, including generated-artifact assertions and a live TypeKro/CNPG/Postgres/admin-server gate in the pinned local context.
 - Added route path-param lowering coverage for generated Hono servers so user-facing handlers can read `request.query` from path params without test-only query-string workarounds.
-- Added stronger Postgres `ModelStore` generated/script runtime parity guards and kept the opt-in live script-runtime suite ready for environments that provide `APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL`.
+- Added stronger Postgres `TransactionalDatabase` generated/script runtime parity guards and kept the opt-in live script-runtime suite ready for environments that provide `APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL`.
 - Added live operation-target ownerReference coverage on top of existing apply/delete/finalizer/RBAC live assertions.
 - Added public operation-target dry-run planning through `plan(target, { dryRun: true })`, with artifact-only dispatcher/proxy coverage, fail-closed missing-artifact behavior, public type inference coverage, and live TypeKro operation-target assertions.
 - Added durable generated-job status ConfigMap ownership coverage so the runtime owns both the object and its `data` fields while KRO observes it through `externalRef` and remains the sole application-status writer.
@@ -187,7 +187,7 @@ Current prep status:
 - Added explicit v0.3 durable-status projection semantics: app status is best-effort and non-authoritative while the generated status ConfigMap is the durable authority until required app-status schema ownership is available.
 - Added provider-interface freeze tests covering implemented and fail-closed-reserved v0.3 provider surfaces.
 - Added generated server action-failure diagnostics coverage for the declared route/action failure event, partial-effects marker, route metadata, and failure policy.
-- Remaining product promises: capture Postgres script-execution ModelStore live parity when `APPLIK8S_MODELSTORE_SCRIPT_RUNTIME_DATABASE_URL` is available, continue post-v0.3 runtime modularization, and eventually replace the v0.3 metadata-only supply-chain posture with signed/SBOM/provenance artifacts when verification is real. v0.3 intentionally ships durable generated-job status with the runtime-owned ConfigMap as the authoritative store and best-effort non-authoritative app-status projection until app CRD status schema ownership is available.
+- Remaining product promises: capture Postgres script-execution TransactionalDatabase live parity when `APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL` is available, continue post-v0.3 runtime modularization, and eventually replace the v0.3 metadata-only supply-chain posture with signed/SBOM/provenance artifacts when verification is real. v0.3 intentionally ships durable generated-job status with the runtime-owned ConfigMap as the authoritative store and best-effort non-authoritative app-status projection until app CRD status schema ownership is available.
 
 ## Post-v0.3 Workload Movement Safety Tests
 
