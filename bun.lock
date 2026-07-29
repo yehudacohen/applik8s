@@ -5,6 +5,7 @@
     "": {
       "name": "@applik8s/workspace",
       "dependencies": {
+        "@applik8s/ai": "0.6.0",
         "@applik8s/applik8s": "0.6.0",
         "@applik8s/client": "0.6.0",
         "@applik8s/compiler": "0.6.0",
@@ -103,6 +104,13 @@
         "@tanstack/router-cli": "^1.167.19",
         "@vitejs/plugin-react": "^6.0.3",
         "vite": "^8.1.5",
+      },
+    },
+    "packages/ai": {
+      "name": "@applik8s/ai",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/core": "0.6.0",
       },
     },
     "packages/applik8s": {
@@ -422,6 +430,8 @@
     "@alcalzone/ansi-tokenize": ["@alcalzone/ansi-tokenize@0.2.5", "", { "dependencies": { "ansi-styles": "^6.2.1", "is-fullwidth-code-point": "^5.0.0" } }, "sha512-3NX/MpTdroi0aKz134A6RC2Gb2iXVECN4QaAXnvCIxxIm3C3AVB1mkUe8NaaiyvOpDfsrqWhYtj+Q6a62RrTsw=="],
 
     "@alchemy.run/node-utils": ["@alchemy.run/node-utils@0.0.5", "", {}, "sha512-5agdhQxWBodxa5hDRyjnpx91RTU3g+qd5fxYB7uNDCaOzB0XC47UU/KHR6zf6jhz/NXf61gJS+vhYwn8NHeRoQ=="],
+
+    "@applik8s/ai": ["@applik8s/ai@workspace:packages/ai"],
 
     "@applik8s/applik8s": ["@applik8s/applik8s@workspace:packages/applik8s"],
 

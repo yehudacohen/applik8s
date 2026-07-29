@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -31,6 +31,7 @@ const publicEntrypoints = [
   '@applik8s/tanstack-start/server',
   '@applik8s/tanstack-start/vite',
   '@applik8s/core',
+  '@applik8s/ai',
   '@applik8s/deployment-contract',
   '@applik8s/deployment-compiler',
   '@applik8s/deployment-typekro',

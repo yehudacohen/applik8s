@@ -1,0 +1,23 @@
+{
+  "name": "@applik8s/ai",
+  "version": "0.6.0",
+  "description": "Provider-neutral logical AI models, agents, durable attempts, usage, and product records for Applik8s.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/ai"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/core": "0.6.0"
+  }
+}

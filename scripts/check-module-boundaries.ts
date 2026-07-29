@@ -10,6 +10,11 @@ const rules: readonly BoundaryRule[] = [
     rationale: 'Core contracts must remain portable and independent from authoring, compiler, runtime, and infrastructure packages.',
   },
   {
+    roots: ['packages/ai/src'],
+    forbidden: [/^node:/, /^@applik8s\/(?!core(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'Provider-neutral AI contracts and durable attempt semantics may depend only on portable core authority, never infrastructure or framework adapters.',
+  },
+  {
     roots: ['packages/deployment-contract/src'],
     forbidden: [/^node:/, /^@applik8s\//, /^@kubernetes\//, /^alchemy(?:\/|$)/, /^typekro(?:\/|$)/],
     rationale: 'Deployment contracts must remain portable data with no runtime, provider, Kubernetes, TypeKro, or Alchemy dependency.',

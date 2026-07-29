@@ -6,6 +6,7 @@ export const publishablePackageNames = Object.freeze([
   'server',
   'vite',
   'tanstack-start',
+  'ai',
   'core',
   'operations',
   'deployment-contract',
@@ -40,6 +41,7 @@ export const publishablePackageManifestPaths = Object.freeze(
 
 const publishOrder = [
   'core',
+  'ai',
   'operations',
   'deployment-contract',
   'deployment-compiler',

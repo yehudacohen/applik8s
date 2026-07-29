@@ -32,6 +32,7 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/vite': fileURLToPath(new URL('./packages/vite/src/index.ts', import.meta.url)),
     '@applik8s/tanstack-start/server': fileURLToPath(new URL('./packages/tanstack-start/src/server.ts', import.meta.url)),
     '@applik8s/tanstack-start/vite': fileURLToPath(new URL('./packages/tanstack-start/src/vite.ts', import.meta.url)),
+    '@applik8s/ai': fileURLToPath(new URL('./packages/ai/src/index.ts', import.meta.url)),
     '@applik8s/core': fileURLToPath(new URL('./packages/core/src/index.ts', import.meta.url)),
     '@applik8s/deployment-contract': fileURLToPath(new URL('./packages/deployment-contract/src/index.ts', import.meta.url)),
     '@applik8s/deployment-compiler': fileURLToPath(new URL('./packages/deployment-compiler/src/index.ts', import.meta.url)),
