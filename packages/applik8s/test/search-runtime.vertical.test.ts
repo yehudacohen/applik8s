@@ -1,3 +1,4 @@
+// typecast-file-boundary: provider-neutral search fixtures intentionally cross erased projection and cursor payload boundaries under validation.
 import { describe, expect, test } from 'vitest';
 import type { ApplicationSearchFieldHandle } from '../src/application-search.js';
 import type {

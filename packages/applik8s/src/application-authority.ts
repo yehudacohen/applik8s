@@ -1,3 +1,4 @@
+// typecast-file-boundary: the authority DSL preserves operation and predicate generics while serializing validated immutable graph contracts.
 import { createHash } from 'node:crypto';
 import {
   getApplicationOperationContract,

@@ -1,3 +1,4 @@
+// typecast-file-boundary: catalog fixtures deliberately assemble erased operation artifacts to test activation and compatibility validation.
 import { describe, expect, it } from 'vitest';
 import type {
   ApplicationOperationCatalog,

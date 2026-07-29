@@ -1,3 +1,4 @@
+// typecast-file-boundary: PostgreSQL search test doubles return deliberately erased rows to exercise runtime validation and typed reconstruction.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ApplicationPostgresSql } from '../src/postgres-runtime-contract.js';
 import { createApplicationPostgresSql } from '../src/postgres-runtime-loader.js';

@@ -1,3 +1,4 @@
+// typecast-file-boundary: authority normalization validates canonical identities, scopes, and JSON records before restoring branded operation contracts.
 import type { JsonObject, JsonValue, SourceLocation } from './common.js';
 
 export type ApplicationOperationId = `applik8s://${string}`;

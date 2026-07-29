@@ -1,3 +1,4 @@
+// typecast-file-boundary: PostgreSQL authority rows are structurally decoded before being restored to repository state and receipt contracts.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   ApplicationApprovalRecord,

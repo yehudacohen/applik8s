@@ -1,3 +1,4 @@
+// typecast-file-boundary: PostgreSQL search rows and cursor payloads are validated against compiled index contracts before typed document reconstruction.
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type {
   ApplicationSearchComparison,

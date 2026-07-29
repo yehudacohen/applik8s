@@ -1,3 +1,4 @@
+// typecast-file-boundary: authority conformance fixtures intentionally construct erased grants and scopes to exercise validation and precedence.
 import { describe, expect, it } from 'vitest';
 import type {
   ApplicationGrantRecord,

@@ -1,3 +1,4 @@
+// typecast-file-boundary: durable authority state is validated and normalized before PostgreSQL/JSON records are restored to canonical grant contracts.
 import { createHash, randomUUID } from 'node:crypto';
 import type {
   ApplicationApprovalRecord,

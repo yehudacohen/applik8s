@@ -1,3 +1,4 @@
+// typecast-file-boundary: OpenSearch transport fixtures deliberately return erased response documents to exercise runtime validation and recovery.
 import type {
   ApplicationSearchCommittedChange,
   ApplicationSearchHydratedDocument,

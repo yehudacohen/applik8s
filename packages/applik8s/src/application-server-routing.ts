@@ -1,3 +1,4 @@
+// typecast-file-boundary: generated server capture analysis validates route bindings and runtime module shapes before restoring their authoring generics.
 import type { AnyResourceDefinition, JsonValue, ResourceIndex } from '@applik8s/core';
 import {
   createApplicationRuntimeOperation,

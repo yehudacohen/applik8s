@@ -1,3 +1,4 @@
+// typecast-file-boundary: profile fixtures deliberately cross schema-derived JSON and typed provider selection boundaries under validation.
 import {
   type ApplicationGraph,
   type ApplicationProfileDescriptor,

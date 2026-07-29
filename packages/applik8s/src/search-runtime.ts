@@ -1,3 +1,4 @@
+// typecast-file-boundary: provider-neutral search projections validate schemas, frontier identities, and document shapes before restoring model generics.
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type {
   ApplicationSearchComparison,

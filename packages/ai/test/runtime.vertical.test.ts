@@ -1,3 +1,4 @@
+// typecast-file-boundary: adversarial AI runtime fixtures intentionally construct erased protocol values to exercise validation and recovery boundaries.
 import {
   AI,
   AIBackend,

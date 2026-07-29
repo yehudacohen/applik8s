@@ -1,3 +1,4 @@
+// typecast-file-boundary: PostgreSQL driver rows are structurally checked before being restored to durable outbox protocol records.
 import type { ApplicationMessageEnvelope } from './dsl.js';
 import type { ApplicationEventLogPublisher, ApplicationMessageChannel, EventLogPublishAcknowledgement } from './event-log-runtime.js';
 import { createApplicationPostgresSql } from './postgres-runtime-loader.js';

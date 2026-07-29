@@ -1,3 +1,4 @@
+// typecast-file-boundary: PostgreSQL repository doubles expose erased rows so durable authority decoding and transaction behavior can be verified.
 import { describe, expect, it } from 'vitest';
 import type {
   ApplicationOperationCatalog,

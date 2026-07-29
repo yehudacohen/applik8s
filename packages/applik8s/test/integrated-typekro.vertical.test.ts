@@ -1,3 +1,4 @@
+// typecast-file-boundary: integration fixtures inspect TypeKro proxy and serialized manifest boundaries after graph validation.
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import type { ApplicationModelBinding, ApplicationProviderToken, ApplicationTransactionalDatabaseProvider } from '@applik8s/applik8s';

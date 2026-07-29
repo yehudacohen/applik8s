@@ -1,3 +1,4 @@
+// typecast-file-boundary: search authoring fixtures inspect promoted model facets whose runtime validation supplies the asserted generic shape.
 import { relations } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { describe, expect, test } from 'vitest';

@@ -1,3 +1,4 @@
+// typecast-file-boundary: exhaustive profile derivation validates schema branches and provider qualifications before restoring typed selection maps.
 import type {
   ApplicationProfileDescriptor,
   ApplicationProfileProviderSelectionContract,

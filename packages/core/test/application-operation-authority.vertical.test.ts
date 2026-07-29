@@ -1,3 +1,4 @@
+// typecast-file-boundary: authority fixtures intentionally assemble erased JSON and branded identities to exercise canonical validation.
 import { describe, expect, it } from 'vitest';
 import {
   type ApplicationOperationCatalog,

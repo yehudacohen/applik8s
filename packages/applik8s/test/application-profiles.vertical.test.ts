@@ -1,3 +1,4 @@
+// typecast-file-boundary: profile conformance fixtures intentionally materialize schema-derived and invalid provider selections across erased branches.
 import {
   AnalyticalDatabase,
   Analytics,

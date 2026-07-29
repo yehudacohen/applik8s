@@ -1,3 +1,4 @@
+// typecast-file-boundary: durable AI records are checked against invocation and attempt invariants before JSON payloads are restored to protocol record types.
 import type {
   ApplicationExecutionPrincipal,
   ApplicationOperationId,

@@ -1,3 +1,4 @@
+// typecast-file-boundary: operation catalog activation validates revisions, schema identities, and stored JSON before restoring catalog contracts.
 import type {
   ApplicationCatalogRevisionId,
   ApplicationOperationCatalog,

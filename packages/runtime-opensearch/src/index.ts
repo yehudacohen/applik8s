@@ -1,3 +1,4 @@
+// typecast-file-boundary: OpenSearch responses and projection payloads are validated against compiled index contracts before typed reconstruction.
 import {
   createHash,
   createHmac,

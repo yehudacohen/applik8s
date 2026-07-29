@@ -1,3 +1,4 @@
+// typecast-file-boundary: the authority runtime validates catalog, principal, envelope, and receipt identities before restoring execution contracts.
 import type {
   ApplicationAuthorizationBoundary,
   ApplicationAuthorizationReceipt,
