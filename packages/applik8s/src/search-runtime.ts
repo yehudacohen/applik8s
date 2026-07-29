@@ -190,6 +190,8 @@ interface SearchCursor {
   readonly logicalIndex: string;
   readonly indexRevision: string;
   readonly physicalGeneration: string;
+  /** Exact committed projection frontier used to construct this page. */
+  readonly checkpoint: number;
   readonly principalId: string;
   readonly contextDigest: string;
   readonly authorizationVersion: string;
@@ -597,6 +599,7 @@ export function createDeterministicApplicationSearchRuntime<
           logicalIndex: options.logicalIndex,
           indexRevision: options.indexRevision,
           physicalGeneration: activeGeneration,
+          checkpoint: generation.checkpoint,
           principalId: admission.principalId,
           contextDigest: admission.contextDigest,
           authorizationVersion: admission.authorizationVersion,
@@ -643,6 +646,7 @@ export function createDeterministicApplicationSearchRuntime<
                 logicalIndex: options.logicalIndex,
                 indexRevision: options.indexRevision,
                 physicalGeneration: activeGeneration,
+                checkpoint: generation.checkpoint,
                 principalId: admission.principalId,
                 contextDigest: admission.contextDigest,
                 authorizationVersion: admission.authorizationVersion,

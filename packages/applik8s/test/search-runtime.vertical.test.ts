@@ -380,4 +380,30 @@ describe('search projection runtime', () => {
       ),
     ).rejects.toThrow(/physicalGeneration/);
   });
+
+  test('rejects a cursor after its active generation advances to a new committed checkpoint', async () => {
+    const state = fixture();
+    state.setSnapshotFrontier(0);
+    await state.runtime.rebuild({ generation: 'generation-2' });
+    const admission = { ...orgA, where: {} };
+    const first = await state.runtime.search(
+      { orderBy: { field: 'marketValue', direction: 'desc' }, limit: 1 },
+      admission,
+    );
+    expect(first.cursor).toBeDefined();
+
+    state.affected.set('change-1', ['product-1']);
+    await state.runtime.apply(change(1));
+
+    await expect(
+      state.runtime.search(
+        {
+          orderBy: { field: 'marketValue', direction: 'desc' },
+          limit: 1,
+          cursor: first.cursor!,
+        },
+        admission,
+      ),
+    ).rejects.toThrow(/checkpoint/);
+  });
 });
