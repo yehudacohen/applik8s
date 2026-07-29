@@ -514,6 +514,69 @@ export interface ApplicationValkeyIndexBackend {
   readonly spec?: Readonly<Record<string, unknown>>;
 }
 
+export type ApplicationSearchCapability =
+  | 'text'
+  | 'filters'
+  | 'sort'
+  | 'facets'
+  | 'highlights'
+  | 'fuzzy'
+  | 'vector'
+  | 'openSearchQuery';
+
+export interface ApplicationPostgresSearchProvider {
+  readonly kind: 'postgres-search';
+  readonly database:
+    | ApplicationTransactionalDatabaseProvider
+    | ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
+  readonly schema?: string;
+  readonly maximumCandidateRows?: number;
+  readonly capabilities?: readonly Extract<
+    ApplicationSearchCapability,
+    'text' | 'filters' | 'sort' | 'facets'
+  >[];
+}
+
+export interface ApplicationOpenSearchProvider {
+  readonly kind: 'opensearch';
+  readonly name?: string;
+  readonly namespace?: string;
+  readonly provision?: boolean;
+  readonly version?: string;
+  readonly endpoint?: string;
+  readonly credentialsSecret?: ApplicationResourceRef;
+  readonly usernameKey?: string;
+  readonly passwordKey?: string;
+  readonly tls?: {
+    readonly source: 'generated' | 'cert-manager' | 'secret';
+    readonly secretName?: string;
+    readonly issuerName?: string;
+    readonly issuerKind?: 'Issuer' | 'ClusterIssuer';
+  };
+  readonly topology?: {
+    readonly nodes: number;
+    readonly roles?: readonly ('clusterManager' | 'data' | 'ingest')[];
+  };
+  readonly storage?: {
+    readonly size: string;
+    readonly storageClassName?: string;
+    readonly deletionPolicy?: 'retain' | 'delete';
+  };
+  readonly snapshots?: {
+    readonly repository: string;
+    readonly bucket: string;
+    readonly endpoint?: string;
+    readonly credentialsSecret: ApplicationResourceRef;
+    readonly retention?: string;
+  };
+  readonly monitoring?: boolean;
+  readonly capabilities?: readonly ApplicationSearchCapability[];
+}
+
+export type ApplicationSearchProvider =
+  | ApplicationPostgresSearchProvider
+  | ApplicationOpenSearchProvider;
+
 export interface ApplicationIngressHttpExposureProvider {
   readonly kind: 'ingress';
   readonly ingressClassName?: string;
@@ -548,6 +611,7 @@ export interface ApplicationExternalDnsPublicationProvider {
 export interface ApplicationDefaults {
   readonly database?: ApplicationTransactionalDatabaseProvider | ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
   readonly indexes?: unknown;
+  readonly search?: ApplicationSearchProvider | ApplicationProviderBinding<ApplicationSearchProvider>;
   readonly counters?: ApplicationCounterStoreProvider;
   readonly events?: ApplicationEventSourceProvider;
   readonly eventLog?: ApplicationEventLogProvider | ApplicationProviderBinding<ApplicationEventLogProvider>;
@@ -767,12 +831,27 @@ export type ApplicationProviderBinding<TImplementation = unknown> =
     : ApplicationProviderBindingBase<TImplementation>;
 
 export interface ApplicationProviderState {
-  readonly defaults: { indexes?: unknown; database?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown; analytics?: unknown };
-  readonly providers: { indexes?: unknown; database?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown; analytics?: unknown; extensions?: Record<string, unknown> };
+  readonly defaults: { indexes?: unknown; search?: unknown; database?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown; analytics?: unknown };
+  readonly providers: { indexes?: unknown; search?: unknown; database?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown; analytics?: unknown; extensions?: Record<string, unknown> };
 }
 
 export interface ApplicationIndexStoreProviderToken extends ApplicationProviderToken<ApplicationIndexBackend | 'valkey'> {
   valkey(options?: Omit<ApplicationValkeyIndexBackend, 'kind'>): ApplicationValkeyIndexBackend;
+}
+
+export interface ApplicationSearchProviderToken
+  extends ApplicationQualifiableProviderToken<ApplicationSearchProvider> {
+  postgres(
+    options: Omit<ApplicationPostgresSearchProvider, 'kind'>,
+  ): ApplicationPostgresSearchProvider;
+  openSearch(
+    options?: Omit<ApplicationOpenSearchProvider, 'kind'>,
+  ): ApplicationOpenSearchProvider;
+  externalOpenSearch(
+    options: Omit<ApplicationOpenSearchProvider, 'kind' | 'provision'> & {
+      readonly endpoint: string;
+    },
+  ): ApplicationOpenSearchProvider;
 }
 
 export const IndexStore: ApplicationIndexStoreProviderToken = {
@@ -783,6 +862,86 @@ export const IndexStore: ApplicationIndexStoreProviderToken = {
     return { kind: 'valkey', ...options };
   },
 };
+
+export const Search: ApplicationSearchProviderToken =
+  applicationQualifiableProviderToken({
+    name: 'Search',
+    description:
+      'Rebuildable relationship-aware search projections over canonical application models.',
+    contract: builtInProviderContract('Search', [
+      'committedChangeSynchronization',
+      'typedFilters',
+      'generationCutover',
+      'authorizationFilters',
+    ]),
+    accepts: isApplicationSearchProvider,
+    postgres(options) {
+      if (!applicationTransactionalDatabaseImplementation(options.database)) {
+        throw new Error(
+          'Search.postgres(...) requires a TransactionalDatabase provider or qualified binding.',
+        );
+      }
+      const maximumCandidateRows = options.maximumCandidateRows ?? 10_000;
+      if (
+        !Number.isInteger(maximumCandidateRows)
+        || maximumCandidateRows < 1
+      ) {
+        throw new Error(
+          'Search.postgres(...) maximumCandidateRows must be a positive integer.',
+        );
+      }
+      return {
+        kind: 'postgres-search',
+        ...options,
+        maximumCandidateRows,
+        capabilities: options.capabilities ?? [
+          'text',
+          'filters',
+          'sort',
+          'facets',
+        ],
+      };
+    },
+    openSearch(options = {}) {
+      assertApplicationOpenSearchProvider(options);
+      return {
+        kind: 'opensearch',
+        provision: true,
+        ...options,
+        capabilities: options.capabilities ?? [
+          'text',
+          'filters',
+          'sort',
+          'facets',
+          'highlights',
+          'fuzzy',
+          'openSearchQuery',
+        ],
+      };
+    },
+    externalOpenSearch(options) {
+      if (!options.endpoint.trim()) {
+        throw new Error(
+          'Search.externalOpenSearch(...) requires a non-empty endpoint.',
+        );
+      }
+      assertApplicationOpenSearchProvider(options);
+      return {
+        kind: 'opensearch',
+        ...options,
+        provision: false,
+        capabilities: options.capabilities ?? [
+          'text',
+          'filters',
+          'sort',
+          'facets',
+          'highlights',
+          'fuzzy',
+          'openSearchQuery',
+        ],
+      };
+    },
+  });
 
 export const TransactionalDatabase: ApplicationTransactionalDatabaseProviderToken = applicationQualifiableProviderToken({
   name: 'TransactionalDatabase',
@@ -1165,7 +1324,7 @@ function builtInProviderContract(providerInterface: string, guarantees: readonly
 }
 
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ApplicationHost, ContainerRegistry, RequestIdentity, Authorization, StructuredGeneration } as const;
+export const providers = { IndexStore, Search, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ApplicationHost, ContainerRegistry, RequestIdentity, Authorization, StructuredGeneration } as const;
 
 export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
   if (!name) return undefined;
@@ -1197,6 +1356,7 @@ export const defaultApplicationWorkflowEngineProvider: ApplicationWorkflowEngine
 
 export const defaultApplicationProviders: {
   readonly IndexStore: ApplicationValkeyIndexBackend;
+  readonly Search: ApplicationPostgresSearchProvider;
   readonly TransactionalDatabase: ApplicationPostgresTransactionalDatabaseProvider;
   readonly CounterStore: ApplicationCounterStoreProvider;
   readonly EventSource: ApplicationEventSourceProvider;
@@ -1210,6 +1370,12 @@ export const defaultApplicationProviders: {
   readonly WorkflowEngine: ApplicationWorkflowEngineProvider;
 } = {
   IndexStore: { kind: 'valkey' },
+  Search: {
+    kind: 'postgres-search',
+    database: { kind: 'postgres' },
+    maximumCandidateRows: 10_000,
+    capabilities: ['text', 'filters', 'sort', 'facets'],
+  },
   TransactionalDatabase: { kind: 'postgres' },
   CounterStore: { kind: 'kubernetes-resource-counter', flushMs: 1000 },
   EventSource: { kind: 'kubernetes-watch', resyncSeconds: 300 },
@@ -1239,6 +1405,119 @@ export function isPostgresAnalyticalDatabaseProvider(value: unknown): value is A
     && typeof Reflect.get(value, 'schema') === 'string'
     && Reflect.get(value, 'schema').trim(),
   );
+}
+
+export function isApplicationSearchProvider(
+  value: unknown,
+): value is ApplicationSearchProvider {
+  if (!value || typeof value !== 'object') return false;
+  const kind = Reflect.get(value, 'kind');
+  if (kind === 'postgres-search') {
+    return Boolean(
+      applicationTransactionalDatabaseImplementation(
+        Reflect.get(value, 'database'),
+      ),
+    );
+  }
+  if (kind !== 'opensearch') return false;
+  try {
+    assertApplicationOpenSearchProvider(
+      value as Omit<ApplicationOpenSearchProvider, 'kind'>,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function applicationSearchProviderImplementation(
+  value: unknown,
+): ApplicationSearchProvider | undefined {
+  if (isApplicationSearchProvider(value)) return value;
+  if (isApplicationProviderBinding(value)) {
+    if (isApplicationSearchProvider(value.implementation)) {
+      return value.implementation;
+    }
+    const selected = applicationProviderSelectionFor<ApplicationSearchProvider>(
+      value.implementation,
+    );
+    if (selected) return selected.default;
+  }
+  const selected = applicationProviderSelectionFor<ApplicationSearchProvider>(
+    value,
+  );
+  return selected?.default;
+}
+
+function assertApplicationOpenSearchProvider(
+  value: Omit<ApplicationOpenSearchProvider, 'kind'>,
+): void {
+  if (value.endpoint !== undefined && !value.endpoint.trim()) {
+    throw new Error('Search OpenSearch endpoint must not be empty.');
+  }
+  if (value.topology) {
+    if (
+      !Number.isInteger(value.topology.nodes)
+      || value.topology.nodes < 1
+    ) {
+      throw new Error(
+        'Search OpenSearch topology.nodes must be a positive integer.',
+      );
+    }
+    if (
+      value.topology.roles !== undefined
+      && value.topology.roles.length === 0
+    ) {
+      throw new Error(
+        'Search OpenSearch topology.roles must not be empty when supplied.',
+      );
+    }
+  }
+  if (value.storage) {
+    if (!value.storage.size.trim()) {
+      throw new Error('Search OpenSearch storage.size must not be empty.');
+    }
+    if (
+      value.storage.storageClassName !== undefined
+      && !value.storage.storageClassName.trim()
+    ) {
+      throw new Error(
+        'Search OpenSearch storage.storageClassName must not be empty when supplied.',
+      );
+    }
+  }
+  if (value.credentialsSecret && !value.credentialsSecret.name?.trim()) {
+    throw new Error(
+      'Search OpenSearch credentialsSecret must reference a named Secret.',
+    );
+  }
+  if (value.snapshots) {
+    if (
+      !value.snapshots.repository.trim()
+      || !value.snapshots.bucket.trim()
+      || !value.snapshots.credentialsSecret.name?.trim()
+    ) {
+      throw new Error(
+        'Search OpenSearch snapshots require repository, bucket, and a named credentials Secret.',
+      );
+    }
+  }
+  if (
+    value.tls?.source === 'secret'
+    && !value.tls.secretName?.trim()
+  ) {
+    throw new Error(
+      'Search OpenSearch TLS source secret requires secretName.',
+    );
+  }
+  if (
+    value.tls?.source === 'cert-manager'
+    && !value.tls.issuerName?.trim()
+  ) {
+    throw new Error(
+      'Search OpenSearch TLS source cert-manager requires issuerName.',
+    );
+  }
 }
 
 export function isApplicationAnalyticalDatabaseProvider(value: unknown): value is ApplicationAnalyticalDatabaseProvider {
@@ -1376,6 +1655,15 @@ export function isValkeyIndexDefault(value: unknown): boolean {
 export function applyApplicationProvider<TImplementation>(state: ApplicationProviderState, token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): void {
   if (isApplicationProviderSelection(implementation)) {
     const candidates = [...Object.values(implementation.cases), implementation.default];
+    if (applicationProviderTokenName(token) === 'Search') {
+      if (candidates.some((candidate) => !isApplicationSearchProvider(candidate))) {
+        throw new Error(
+          'Application profile Search branches must each satisfy the search provider contract.',
+        );
+      }
+      state.providers.search = implementation;
+      return;
+    }
     if (applicationProviderTokenName(token) === 'TransactionalDatabase') {
       if (candidates.some((candidate) => !isPostgresTransactionalDatabaseProvider(candidate))) {
         throw new Error('Application profile TransactionalDatabase branches must each satisfy the transactional PostgreSQL provider contract.');
@@ -1413,6 +1701,15 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
       throw new Error('app.provide(IndexStore, ...) currently supports only the Valkey index backend provider slice. Use "valkey" or { kind: "valkey", ... } for v0.2.');
     }
     state.providers.indexes = implementation;
+    return;
+  }
+  if (applicationProviderTokenName(token) === 'Search') {
+    if (!isApplicationSearchProvider(implementation)) {
+      throw new Error(
+        'app.provide(Search, ...) requires Search.postgres(...), Search.openSearch(...), or Search.externalOpenSearch(...).',
+      );
+    }
+    state.providers.search = implementation;
     return;
   }
   if (applicationProviderTokenName(token) === 'TransactionalDatabase') {
@@ -2079,7 +2376,7 @@ export function applicationProviderTokenName(token: ApplicationProviderToken<unk
 }
 
 export function applicationProviderInterface(tokenName: string | undefined): ApplicationProviderInterfaceKind | undefined {
-  if (tokenName === 'IndexStore' || tokenName === 'TransactionalDatabase' || tokenName === 'AnalyticalDatabase' || tokenName === 'TransactionalDatabase' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'AnalyticalDatabase' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'RequestIdentity' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
+  if (tokenName === 'IndexStore' || tokenName === 'Search' || tokenName === 'TransactionalDatabase' || tokenName === 'AnalyticalDatabase' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'RequestIdentity' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
     return tokenName;
   }
   return undefined;

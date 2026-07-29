@@ -97,6 +97,7 @@ describe('application graph substrate contract', () => {
     expect(applicationProviderInterfaceKinds).toEqual([
       'TransactionalDatabase',
       'IndexStore',
+      'Search',
       'CounterStore',
       'EventSource',
       'EventLog',
@@ -499,6 +500,7 @@ describe('application graph substrate contract', () => {
     expect(contracts.map((contract) => `${contract.interface}:${contract.support}`)).toEqual([
       'TransactionalDatabase:implemented',
       'IndexStore:failClosedReserved',
+      'Search:failClosedReserved',
       'CounterStore:failClosedReserved',
       'EventSource:failClosedReserved',
       'EventLog:failClosedReserved',
@@ -565,8 +567,8 @@ describe('application graph substrate contract', () => {
   it('defines provider requirement contracts for every v0.3 capability interface', () => {
     const purposes: Record<ApplicationProviderInterfaceKind, ApplicationProviderRequirement['purpose']> = {
       TransactionalDatabase: 'transactionalDatabase',
-      AnalyticalDatabase: 'analyticalDatabase',
       IndexStore: 'indexStore',
+      Search: 'search',
       CounterStore: 'counterStore',
       EventSource: 'eventSource',
       EventLog: 'eventLog',
@@ -578,6 +580,7 @@ describe('application graph substrate contract', () => {
       DnsPublication: 'dnsPublication',
       CredentialStore: 'credentialStore',
       WorkflowEngine: 'workflowEngine',
+      AnalyticalDatabase: 'analyticalDatabase',
       ApplicationHost: 'applicationHost',
       ContainerRegistry: 'containerRegistry',
       RequestIdentity: 'requestIdentity',
@@ -596,7 +599,7 @@ describe('application graph substrate contract', () => {
       },
     }) satisfies ApplicationProviderRequirement);
 
-    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['transactionalDatabase', 'indexStore', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'analyticalDatabase', 'applicationHost', 'containerRegistry', 'requestIdentity', 'authorization', 'taskCapability']);
+    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['transactionalDatabase', 'indexStore', 'search', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'analyticalDatabase', 'applicationHost', 'containerRegistry', 'requestIdentity', 'authorization', 'taskCapability']);
     for (const requirement of requirements) {
       expect(requirement.diagnostics.missing).toContain(requirement.interface);
     }

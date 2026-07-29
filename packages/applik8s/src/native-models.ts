@@ -7,6 +7,11 @@ import { createInsertSchema, createSelectSchema, createUpdateSchema } from 'driz
 import { createTableRelationsHelpers, extractTablesRelationalConfig, getTableColumns, getTableName, isTable, Many, normalizeRelation, One, type InferInsertModel, type InferSelectModel, type Relation, type Relations, type Table } from 'drizzle-orm';
 import { getTableConfig, type AnyPgTable } from 'drizzle-orm/pg-core';
 import type { ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandHandler, ApplicationModelCommandOptions } from './application-models.js';
+import type {
+  ApplicationSearchDocument,
+  ApplicationSearchField,
+  ApplicationSearchIndexBinding,
+} from './application-search.js';
 import type { ApplicationKubernetesModelViewOptions, ApplicationModelViewOptions, ApplicationQueryPrincipal, ApplicationQuerySourceBinding } from './application-queries.js';
 import type { ApplicationStreamProcessContext, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding } from './application-reactive.js';
 import type { ApplicationReconcileHandler, ApplicationReconcileOptions, ApplicationResourceControllerBinding } from './application-events.js';
@@ -302,6 +307,10 @@ type DrizzleApplicationModelDirectMembers<TTable extends AnyPgTable, TIdentity> 
   readonly schema: DrizzleApplicationModelFacet<TTable, TIdentity>['schema'];
   readonly relations: DrizzleApplicationModelFacet<TTable, TIdentity>['relations'];
   ref(): ApplicationModelReferenceSchema<TIdentity>;
+  index<const TFields extends readonly ApplicationSearchField[]>(
+    name: string,
+    ...fields: TFields
+  ): ApplicationSearchIndexBinding<ApplicationSearchDocument<TFields>>;
 } & DrizzleApplicationModelApi<TTable, TIdentity>;
 
 export type PromotedDrizzleTable<TTable extends AnyPgTable, TIdentity = ConventionalTableIdentity<TTable>> = TTable & {
@@ -355,6 +364,10 @@ type DrizzleAnalyticalModelDirectMembers<
   readonly schema: DrizzleAnalyticalApplicationModelFacet<TTable, TIdentity>['schema'];
   readonly relations: DrizzleAnalyticalApplicationModelFacet<TTable, TIdentity>['relations'];
   ref(): ApplicationModelReferenceSchema<TIdentity>;
+  index<const TFields extends readonly ApplicationSearchField[]>(
+    name: string,
+    ...fields: TFields
+  ): ApplicationSearchIndexBinding<ApplicationSearchDocument<TFields>>;
   view<
     const TName extends string,
     TInput,
@@ -506,6 +519,10 @@ export type PromotedKubernetesResource<TSpec extends object, TStatus extends obj
   readonly [applicationModelFacet]: KubernetesApplicationModelFacet<TSpec, TStatus>;
   readonly relations: KubernetesApplicationModelFacet<TSpec, TStatus>['relations'];
   ref(): ApplicationModelReferenceSchema<string>;
+  index<const TFields extends readonly ApplicationSearchField[]>(
+    name: string,
+    ...fields: TFields
+  ): ApplicationSearchIndexBinding<ApplicationSearchDocument<TFields>>;
   readonly create: ApplicationMutationOperation<TSpec | ResourceInstanceInput<TSpec> | ResourceObject<TSpec, TStatus>, ResourceObject<TSpec, TStatus>>;
   readonly on: ResourceDefinition<TSpec, TStatus>['on'] & ApplicationKubernetesLifecycleRegistrar<TSpec, TStatus>;
   view<const TName extends string, TInput, TOutput, TSelf extends PromotedKubernetesResource<TSpec, TStatus> = PromotedKubernetesResource<TSpec, TStatus>, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(

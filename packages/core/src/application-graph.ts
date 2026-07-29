@@ -129,8 +129,8 @@ export const applicationGraphNodeKinds = [
 
 export type ApplicationBuiltInProviderInterfaceKind =
   | 'TransactionalDatabase'
-  | 'AnalyticalDatabase'
   | 'IndexStore'
+  | 'Search'
   | 'CounterStore'
   | 'EventSource'
   | 'EventLog'
@@ -142,6 +142,7 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'DnsPublication'
   | 'CredentialStore'
   | 'WorkflowEngine'
+  | 'AnalyticalDatabase'
   | 'ApplicationHost'
   | 'ContainerRegistry'
   | 'RequestIdentity'
@@ -155,6 +156,7 @@ export type ApplicationProviderInterfaceKind = ApplicationBuiltInProviderInterfa
 export const applicationProviderInterfaceKinds = [
   'TransactionalDatabase',
   'IndexStore',
+  'Search',
   'CounterStore',
   'EventSource',
   'EventLog',
@@ -389,11 +391,136 @@ export interface ApplicationOperatorNode extends ApplicationGraphNodeBase<'opera
 
 export interface ApplicationIndexNode extends ApplicationGraphNodeBase<'index'> {
   readonly source: ApplicationResourceRef | ApplicationGraphNodeRef;
-  readonly provider: ApplicationProviderRef<'IndexStore'>;
+  readonly provider: ApplicationProviderRef<'IndexStore' | 'Search'>;
+  /**
+   * Resource indexes retain their bounded partition/order lookup semantics.
+   * Search indexes carry a complete provider-neutral projection plan.
+   */
+  readonly purpose?: 'resourceLookup' | 'searchProjection';
   readonly partitionBy?: ApplicationExpressionContract;
   readonly filter?: ApplicationExpressionContract;
   readonly orderBy?: ApplicationExpressionContract;
+  readonly search?: ApplicationSearchIndexPlan;
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
+}
+
+export type ApplicationSearchFieldKind =
+  | 'text'
+  | 'facet'
+  | 'filter'
+  | 'values'
+  | 'minimum'
+  | 'maximum'
+  | 'count';
+
+export interface ApplicationSearchFieldPathSegment {
+  readonly model: string;
+  readonly field: string;
+  readonly relationship?: string;
+  readonly target?: string;
+  readonly cardinality: 'one' | 'many';
+  readonly integrity?:
+    | 'foreign-key'
+    | 'relation-only'
+    | 'soft'
+    | 'reconcile-checked';
+}
+
+export interface ApplicationSearchFieldPlan {
+  readonly alias: string;
+  readonly kind: ApplicationSearchFieldKind;
+  readonly valueType:
+    | 'string'
+    | 'number'
+    | 'boolean'
+    | 'date'
+    | 'json'
+    | 'unknown';
+  readonly nullable: boolean;
+  readonly path: readonly ApplicationSearchFieldPathSegment[];
+  readonly boost?: number;
+  readonly authorizationRelevant: boolean;
+}
+
+export interface ApplicationSearchInverseInvalidationPlan {
+  readonly sourceModel: string;
+  readonly affectedRoot: string;
+  readonly relationships: readonly string[];
+  readonly lookup: 'rootIdentity' | 'foreignKey' | 'declaredInverse';
+  readonly fanOutCeiling: number;
+  readonly overflow: 'partitionedRepair' | 'rebuildRequired';
+}
+
+export interface ApplicationSearchSourceFrontier {
+  readonly model: string;
+  readonly authority:
+    | 'postgres-change-log'
+    | 'kubernetes-watch'
+    | 'transactional-database-outbox'
+    | 'analytical-checkpoint';
+  readonly consistency:
+    | 'transactionalSnapshot'
+    | 'observedResourceVersion'
+    | 'checkpoint'
+    | 'frontierValidated';
+}
+
+export interface ApplicationSearchIndexRevision {
+  readonly digest: string;
+  readonly rootModelRevision: string;
+  readonly documentSchemaRevision: string;
+  readonly fieldPlanRevision: string;
+  readonly invalidationPlanRevision: string;
+  readonly authorizationPlanRevision: string;
+}
+
+export interface ApplicationSearchIndexPlan {
+  readonly apiVersion: 'applik8s.searchIndex/v1alpha1';
+  readonly logicalIdentity: {
+    readonly application: string;
+    readonly name: string;
+  };
+  readonly root: {
+    readonly model: ApplicationGraphNodeRef;
+    readonly identity: readonly string[];
+    readonly encoding: 'scalar';
+  };
+  readonly revision: ApplicationSearchIndexRevision;
+  readonly fields: readonly ApplicationSearchFieldPlan[];
+  readonly sourceFrontiers: readonly ApplicationSearchSourceFrontier[];
+  readonly inverseInvalidation: readonly ApplicationSearchInverseInvalidationPlan[];
+  readonly synchronization: {
+    readonly source: 'committedChanges';
+    readonly writes: 'wholeDocumentReplaceDelete';
+    readonly idempotency: 'committedChangeIdentity';
+    readonly historyLoss: 'rebuildRequired';
+    readonly checkpoint: 'contiguousCommittedFrontier';
+  };
+  readonly rebuild: {
+    readonly snapshot: 'boundedAuthoritativeScan';
+    readonly catchup: 'retainedCommittedChanges';
+    readonly validation: readonly [
+      'count',
+      'schema',
+      'sample',
+      'checksum',
+      'authorization',
+    ];
+    readonly cutover: 'atomicAlias';
+  };
+  readonly authorization: {
+    readonly mandatoryFilters: 'trustedAdmissionScope';
+    readonly composition: 'monotonicIntersection';
+    readonly pagePostFiltering: 'forbidden';
+  };
+  readonly physicalGeneration: {
+    readonly naming: 'logical-name-revision-generation';
+    readonly cutover: 'atomicAlias';
+    readonly cursorBinding: 'exactGeneration';
+    readonly retirement: 'observedReadersThenExplicitDelete';
+  };
+  readonly requiredCapabilities: readonly string[];
+  readonly searchOperation: ApplicationGraphNodeRef;
 }
 
 export interface ApplicationAggregateNode extends ApplicationGraphNodeBase<'aggregate'> {
@@ -1743,6 +1870,9 @@ export type ApplicationGraphEdgeRelationship =
   | 'dependsOn'
   | 'provides'
   | 'reads'
+  | 'projects'
+  | 'hydrates'
+  | 'queries'
   | 'writes'
   | 'watches'
   | 'emits'

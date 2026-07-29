@@ -57,9 +57,20 @@ import { type ApplicationObjectStoreBinding, type ApplicationObjectStoreOptions,
 import { applicationOperatorWatchScopeContracts } from './application-operator-watches.js';
 import type { ApplicationProcessorOptions } from './application-processor-policy.js';
 import { emitApplicationAnalyticalDatabaseResources } from './application-analytical-database-resources.js';
-import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationTransactionalDatabaseProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationValkeyIndexBackend } from './application-providers.js';
-import { ApplicationHost, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationTransactionalDatabaseImplementation, applicationPostgresClusterSpec, applicationAnalyticalDatabaseImplementation, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
+import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationTransactionalDatabaseProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationSearchProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
+import { ApplicationHost, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationTransactionalDatabaseImplementation, applicationPostgresClusterSpec, applicationAnalyticalDatabaseImplementation, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isApplicationSearchProvider, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
 import { type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
+import {
+  applicationSearchIndexRegistrar,
+  bindApplicationSearchModel,
+  createApplicationSearchRegistrar,
+  type ApplicationSearchDocument,
+  type ApplicationSearchField,
+  type ApplicationSearchIndexBinding,
+  type ApplicationSearchIndexOptions,
+  type ApplicationSearchIndexRegistrar,
+  type ApplicationSearchRootOptions,
+} from './application-search.js';
 import { type ApplicationAnalyticalProjectionBinding, type ApplicationAnalyticalProjectionOptions, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationOnlineProjectionBinding, type ApplicationOnlineProjectionOptions, type ApplicationProjectionOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions, registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationStreamProcessor, registerApplicationSubscription } from './application-reactive.js';
 import {
   type ApplicationProfile,
@@ -92,7 +103,10 @@ export type { ApplicationObjectMetadata, ApplicationObjectPutRequest, Applicatio
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
 export type { ApplicationProfile, ApplicationProfileBranchOptions, ApplicationProfileVariant, ApplicationProfileVariantOverride, ApplicationQualifiedProviderBinding } from './application-profiles.js';
 export type { ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalPostgresDatabaseOptions, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationObjectStorageProvider, ApplicationOciContainerRegistryProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationPostgresReadinessPolicy, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationQualifiableProviderToken, ApplicationQueueProvider, ApplicationRequestAdmission, ApplicationRequestIdentityProvider, ApplicationRequestIdentityProviderToken, ApplicationSecretProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
-export { AnalyticalDatabase, Analytics, ApplicationHost, Authorization, Certificate, ContainerRegistry, CounterStore, CredentialStore, Database, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ObjectStorage, providers, Queue, RequestIdentity, Secret, StructuredGeneration, TransactionalDatabase, WorkflowEngine } from './application-providers.js';
+export { AnalyticalDatabase, Analytics, ApplicationHost, Authorization, Certificate, ContainerRegistry, CounterStore, CredentialStore, Database, DnsPublication, defaultApplicationEventLogProvider, defaultApplicationProviders, defaultApplicationWorkflowEngineProvider, defineApplicationProvider, EventLog, EventSource, HttpExposure, IndexStore, ObjectStorage, providers, Queue, RequestIdentity, Search, Secret, StructuredGeneration, TransactionalDatabase, WorkflowEngine } from './application-providers.js';
+export type { ApplicationOpenSearchProvider, ApplicationPostgresSearchProvider, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken } from './application-providers.js';
+export type { ApplicationSearchComparison, ApplicationSearchDocument, ApplicationSearchFacetBucket, ApplicationSearchField, ApplicationSearchFieldHandle, ApplicationSearchHit, ApplicationSearchIndexBinding, ApplicationSearchIndexOptions, ApplicationSearchPath, ApplicationSearchRequest, ApplicationSearchResult, ApplicationSearchRootOptions, ApplicationSearchSort, ApplicationSearchSource, ApplicationUnaliasedSearchField } from './application-search.js';
+export { search } from './application-search.js';
 export type { ApplicationKubernetesModelViewOptions, ApplicationModelViewOptions, ApplicationOnlineProjectionQueryBinding, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryAuthorizationRequest, ApplicationQuerySourceBinding } from './application-queries.js';
 export type { ApplicationAnalyticalProjectionBinding, ApplicationAnalyticalProjectionOptions, ApplicationGatewayAdmission, ApplicationGatewayBinding, ApplicationGatewayOptions, ApplicationOnlineProjectionBinding, ApplicationOnlineProjectionOptions, ApplicationProjectionBinding, ApplicationProjectionOptions, ApplicationStreamBinding, ApplicationStreamOptions, ApplicationStreamProcessContext, ApplicationStreamProcessHandler, ApplicationStreamProcessOptions, ApplicationStreamProcessorBinding, ApplicationStreamScheduleFunctions, ApplicationStreamScheduleTargets, ApplicationStreamTaskFunctions, ApplicationStreamTaskTargets, ApplicationSubscriptionBinding, ApplicationSubscriptionOptions } from './application-reactive.js';
 export type { ApplicationDurableErrorDescriptor, ApplicationDurableErrorUnion, ApplicationTaskBinding, ApplicationTaskContext, ApplicationTaskHandler, ApplicationTaskObjectFunctions, ApplicationTaskObjectStores, ApplicationTaskOperationFunctions, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjectionFunctions, ApplicationTaskProjections, ApplicationTaskProjectionTarget, ApplicationTaskQueries, ApplicationTaskQueryFunctions, ApplicationTaskReference, ApplicationTaskServicePrincipal, ApplicationWorkflowBinding, ApplicationWorkflowContext, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference, ApplicationWorkflowResultOptions, ApplicationWorkflowWorkerOptions } from './application-workflows.js';
@@ -117,6 +131,11 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   model<TSpec extends object, TStatus extends object = Record<string, never>>(entity: EntityDefinition<TSpec, TStatus>, options?: ApplicationModelOptions<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus>;
   model<TTable extends AnyPgTable>(table: TTable, options: ApplicationNativeAnalyticalDrizzleModelOptions<TTable>): PromotedAnalyticalDrizzleTable<TTable>;
   model<TTable extends AnyPgTable>(table: TTable, options?: ApplicationNativeDrizzleModelOptions<TTable>): PromotedDrizzleTable<TTable>;
+  index<const TFields extends readonly ApplicationSearchField[]>(
+    name: string,
+    options: ApplicationSearchRootOptions,
+    ...fields: TFields
+  ): ApplicationSearchIndexBinding<ApplicationSearchDocument<TFields>>;
   query<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined>(id: string, options: ApplicationQueryOptions<TInput, TOutput, TPrincipal, TSource>): ApplicationQueryBinding<TInput, TOutput, TPrincipal, TSource>;
   stream<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(definition: StreamDefinition<TPayload> | EventDefinition<TPayload>, options: ApplicationStreamOptions<TPayload, TPrincipal>): ApplicationStreamBinding<TPayload, TPrincipal>;
   subscription<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal>(name: string, options: ApplicationSubscriptionOptions<TPrincipal>): ApplicationSubscriptionBinding<TPrincipal>;
@@ -727,6 +746,65 @@ export const sdk = Object.assign({}, baseSdk, { app, kubernetesComposition });
 
 type ApplicationBuilderReplay = (scope: KubernetesApplicationScope) => void;
 
+interface ApplicationSearchDeclarationReplay {
+  readonly name: string;
+  readonly fields: readonly ApplicationSearchField[];
+  readonly options?: ApplicationSearchIndexOptions;
+}
+
+function captureApplicationSearchDeclarations(
+  model: object,
+  onChange: () => void,
+): ApplicationSearchDeclarationReplay[] {
+  const registrar = applicationSearchIndexRegistrar(model);
+  if (!registrar) {
+    throw new Error(
+      'Application model did not install its search-index registrar before builder replay capture.',
+    );
+  }
+  const declarations: ApplicationSearchDeclarationReplay[] = [];
+  const capturingRegistrar: ApplicationSearchIndexRegistrar = (
+    root,
+    name,
+    fields,
+    options,
+  ) => {
+    const binding = registrar(root, name, fields, options);
+    declarations.push({
+      name,
+      fields: [...fields],
+      ...(options ? { options } : {}),
+    });
+    onChange();
+    return binding;
+  };
+  bindApplicationSearchModel(model, capturingRegistrar);
+  return declarations;
+}
+
+function replayApplicationSearchDeclarations(
+  model: object,
+  declarations: readonly ApplicationSearchDeclarationReplay[],
+): void {
+  if (declarations.length === 0) return;
+  const registrar = applicationSearchIndexRegistrar(model);
+  if (!registrar) {
+    throw new Error(
+      'Application model did not install its search-index registrar before builder replay.',
+    );
+  }
+  for (const declaration of declarations) {
+    // typecast-boundary: replay preserves each declaration's opaque field tuple
+    // and returns no value, so its erased document generic cannot escape.
+    registrar(
+      model,
+      declaration.name,
+      declaration.fields,
+      declaration.options,
+    );
+  }
+}
+
 // typecast-boundary: the replayable builder erases heterogeneous generics only inside its private registration and replay registry.
 function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Record<string, never>, TStatus extends KroCompatibleType = { readonly ready: boolean }>(name: string, options: KubernetesApplicationBuilderOptions<TSpec, TStatus> = {}): KubernetesApplicationBuilder<TSpec, TStatus> {
   const definition = applicationBuilderDefinition(name, options);
@@ -1125,6 +1203,10 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       const createLifecycleReplays: Parameters<typeof previewLifecycleRegistrar.create>[] = [];
       const updateLifecycleReplays: Parameters<typeof previewLifecycleRegistrar.update>[] = [];
       const deleteLifecycleReplays: Parameters<typeof previewLifecycleRegistrar.delete>[] = [];
+      const searchReplays = captureApplicationSearchDeclarations(
+        resource,
+        invalidate,
+      );
       bindApplicationModelViews(resource, (viewName, viewOptions) => {
         const operation = previewViewRegistrar(viewName, viewOptions);
         // typecast: the replay queue intentionally erases per-view generics while preserving each opaque option object unchanged.
@@ -1168,6 +1250,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
         for (const declaration of createLifecycleReplays) lifecycleRegistrar.create(...declaration);
         for (const declaration of updateLifecycleReplays) lifecycleRegistrar.update(...declaration);
         for (const declaration of deleteLifecycleReplays) lifecycleRegistrar.delete(...declaration);
+        replayApplicationSearchDeclarations(replayed, searchReplays);
       });
       invalidate();
       return resource;
@@ -1198,6 +1281,10 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
             );
           }
           const viewReplays: Parameters<typeof previewViewRegistrar>[] = [];
+          const searchReplays = captureApplicationSearchDeclarations(
+            previewModel,
+            invalidate,
+          );
           bindApplicationModelViews(previewModel, (viewName, viewOptions) => {
             const operation = previewViewRegistrar(viewName, viewOptions);
             viewReplays.push([viewName, viewOptions] as never);
@@ -1223,6 +1310,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
               );
             }
             for (const declaration of viewReplays) registrar(...declaration);
+            replayApplicationSearchDeclarations(replayed, searchReplays);
           });
           invalidate();
           return previewModel;
@@ -1261,6 +1349,10 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
         const updatePolicyReplays: Parameters<typeof previewUpdatePolicyRegistrar>[] = [];
         const deletePolicyReplays: Parameters<typeof previewDeletePolicyRegistrar>[] = [];
         const viewReplays: Parameters<typeof previewViewRegistrar>[] = [];
+        const searchReplays = captureApplicationSearchDeclarations(
+          previewModel,
+          invalidate,
+        );
         bindNativeApplicationModelCommands(previewModel, ((command: Parameters<typeof previewRegistrar>[0], commandOptions: Parameters<typeof previewRegistrar>[1], handler: Parameters<typeof previewRegistrar>[2]) => {
           const binding = previewRegistrar(command, commandOptions, handler);
           const replay: {
@@ -1360,6 +1452,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
           const viewRegistrar = applicationModelViewRegistrar(replayed);
           if (!viewRegistrar) throw new Error(`Native model ${replayedFacet.name} did not install its replay view registrar.`);
           for (const declaration of viewReplays) viewRegistrar(...declaration);
+          replayApplicationSearchDeclarations(replayed, searchReplays);
         });
         invalidate();
         return previewModel;
@@ -1418,6 +1511,17 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       });
       invalidate();
       return model;
+    },
+    index<const TFields extends readonly ApplicationSearchField[]>(
+      indexName: string,
+      indexOptions: ApplicationSearchRootOptions,
+      ...fields: TFields
+    ): ApplicationSearchIndexBinding<ApplicationSearchDocument<TFields>> {
+      const binding = preview.index(indexName, indexOptions, ...fields);
+      // The root model's capture registrar records and replays this declaration.
+      // Registering a second scope-level replay would produce a duplicate index.
+      invalidate();
+      return binding;
     },
     query<TInput, TOutput, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal, TSource extends ApplicationQuerySourceBinding | undefined = undefined>(id: string, queryOptions: ApplicationQueryOptions<TInput, TOutput, TPrincipal, TSource>): ApplicationQueryBinding<TInput, TOutput, TPrincipal, TSource> {
       const binding = preview.query(id, queryOptions);
@@ -1769,6 +1873,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     resources: {}, indexes: {}, models: {}, databases: new Map(), emittedTransactionalDatabases: new Set(), emittedAnalyticalDatabases: new Set(), emittedEventLogs: new Set(), emittedIndexStores: new Set(), modelLifecycleStreams: new Map(), appResource: applicationCompositionResourceTarget(definition), generatedJobStatusTargets: [],
     defaults: {
       indexes: defaultApplicationProviders.IndexStore,
+      search: defaultApplicationProviders.Search,
       database: defaultApplicationProviders.TransactionalDatabase,
       counters: defaultApplicationProviders.CounterStore,
       events: defaultApplicationProviders.EventSource,
@@ -1785,6 +1890,24 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
   for (const [providerInterface, implementation] of Object.entries(defaultApplicationProviders)) {
     recordApplicationProviderGraph(state, providerInterface, 'frameworkDefault', implementation);
   }
+  const bindSearch = (model: object) => {
+    const provider = applicationSearchProviderImplementation(
+      state.providers.search ?? state.defaults.search,
+    );
+    if (!provider) {
+      throw new Error(
+        'Application search model registration requires a Search provider.',
+      );
+    }
+    bindApplicationSearchModel(
+      model,
+      createApplicationSearchRegistrar({
+        application: state.authorityApplicationName,
+        state,
+        provider,
+      }),
+    );
+  };
   const server = (name: string, optionsOrConfigure: ApplicationServerOptions | ((server: ApplicationServer) => void), maybeConfigure?: (server: ApplicationServer) => void) => {
     const options = typeof optionsOrConfigure === 'function' ? {} : optionsOrConfigure;
     const configure = typeof optionsOrConfigure === 'function' ? optionsOrConfigure : maybeConfigure;
@@ -1867,6 +1990,15 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     if ('indexes' in defaults) {
       state.defaults.indexes = defaults.indexes;
       recordApplicationProviderGraph(state, 'IndexStore', 'default', defaults.indexes);
+    }
+    if ('search' in defaults) {
+      if (!isApplicationSearchProvider(defaults.search)) {
+        throw new Error(
+          'app.defaults({ search: ... }) requires Search.postgres(...), Search.openSearch(...), or Search.externalOpenSearch(...).',
+        );
+      }
+      state.defaults.search = defaults.search;
+      recordApplicationProviderGraph(state, 'Search', 'default', defaults.search);
     }
     if ('analytics' in defaults) {
       const configuredAnalytics = defaults.analytics;
@@ -1975,6 +2107,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     });
     collectApplicationResources(state, { [entity.name]: modelResource });
     recordApplicationCrdGraph(state, entity.name, modelResource);
+    bindSearch(modelResource);
     bindApplicationModelViews(modelResource, (viewName, viewOptions) => registerApplicationModelView(state, modelResource, viewName, viewOptions));
     bindNativeKubernetesLifecycle(modelResource, {
       create: (name, lifecycleOptions, handler) => on(modelResource, { created: handler }, { ...lifecycleOptions, name }),
@@ -2033,6 +2166,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
             facet as DrizzleAnalyticalApplicationModelFacet<AnyPgTable>,
             nativeOptions.database,
           );
+          bindSearch(promoted);
           emitApplicationAnalyticalDatabaseResources(
             state,
             nativeOptions.database,
@@ -2060,6 +2194,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
         const runtimeModel = applicationNativeRuntimeModelContract(promoted, databaseBinding);
         emitApplicationTransactionalDatabaseResources(state, runtimeModel, databaseBinding.provider);
         recordApplicationNativeModelGraph(state, promotedFacet, databaseBinding.provider, runtimeModel, databaseBinding.migrations ? { artifact: databaseBinding.migrations.path, ...(databaseBinding.migrations.digest ? { digest: databaseBinding.migrations.digest } : {}) } : {});
+        bindSearch(promoted);
         state.models[runtimeModel.name] = runtimeModel;
         const commandModel = applicationNativeCommandModelBinding(promoted, runtimeModel);
         bindNativeApplicationModelBinding(promoted, commandModel as ApplicationModelBinding<object, object>);
@@ -2144,9 +2279,57 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       const runtimeModel = applicationRuntimeModelContract(entity, transactionalDatabase, modelOptions);
       emitApplicationTransactionalDatabaseResources(state, runtimeModel, transactionalDatabase);
       recordApplicationModelGraph(state, entity, transactionalDatabase, modelOptions, runtimeModel);
+      const model = applicationModelBindingWithCommandGraph(
+        state,
+        entity,
+        transactionalDatabase,
+        modelOptions,
+        runtimeModel,
+      );
       state.models[runtimeModel.name] = runtimeModel;
-      return applicationModelBindingWithCommandGraph(state, entity, transactionalDatabase, modelOptions, runtimeModel);
+      return model;
     }) as KubernetesApplicationScope['model'],
+    index(name, options, ...fields) {
+      const facet = getApplicationModelFacet(options.root);
+      if (!facet) {
+        throw new Error(
+          'application.index(...) root must be a promoted model registered through app.model(...) or app.crd(...).',
+        );
+      }
+      if (options.identity !== undefined) {
+        const identityField = facet.identity.fields[0];
+        const canonicalIdentity = identityField
+          ? Reflect.get(options.root, identityField)
+          : undefined;
+        if (options.identity !== canonicalIdentity) {
+          throw new Error(
+            `application.index(${JSON.stringify(name)}, ...) identity must be the root model's canonical ${identityField ?? 'identity'} field until an explicit composite/custom identity codec is declared.`,
+          );
+        }
+      }
+      let registrar = applicationSearchIndexRegistrar(options.root);
+      if (!registrar) {
+        bindSearch(options.root);
+        registrar = applicationSearchIndexRegistrar(options.root);
+      }
+      if (!registrar) {
+        throw new Error(
+          `application.index(${JSON.stringify(name)}, ...) could not register its root model.`,
+        );
+      }
+      return registrar(options.root, name, fields, {
+        ...(options.provider ? { provider: options.provider } : {}),
+        ...(options.fanOutCeiling
+          ? { fanOutCeiling: options.fanOutCeiling }
+          : {}),
+        ...(options.authorizationFields
+          ? { authorizationFields: options.authorizationFields }
+          : {}),
+        ...(options.requiredCapabilities
+          ? { requiredCapabilities: options.requiredCapabilities }
+          : {}),
+      });
+    },
     query(id, options) {
       return registerApplicationQuery(state, id, options);
     },
