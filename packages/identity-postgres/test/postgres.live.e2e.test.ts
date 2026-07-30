@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type {
   ApplicationIdentityAdmissionReceipt,
+  ApplicationIdentityProjectionFrontier,
   ApplicationOAuthAuthorizationFlowRecord,
   ApplicationOrphanedProviderSession,
   ApplicationPreAuthenticationFlowRecord,
@@ -14,6 +15,7 @@ const live = databaseUrl ? describe : describe.skip;
 
 live('PostgreSQL identity stores', () => {
   const schema = `applik8s_identity_test_${randomBytes(6).toString('hex')}`;
+  // typecast: the enclosing live-suite selection proves the optional environment value is present before PostgreSQL construction.
   const sql = postgres(databaseUrl as string, { max: 6, prepare: false });
   const stores = createPostgresApplicationIdentityStores({ sql, schema });
 
@@ -142,6 +144,26 @@ live('PostgreSQL identity stores', () => {
       /identity\/version is inconsistent/u,
     );
   });
+
+  it('persists authorization projection frontiers with compare-and-swap ordering', async () => {
+    const initial = projectionFrontier(1, 'authority-1');
+    await expect(stores.frontiers.commit(initial, undefined)).resolves.toEqual(initial);
+    const candidates = [
+      projectionFrontier(2, 'authority-2'),
+      projectionFrontier(3, 'authority-3'),
+    ];
+    const results = await Promise.allSettled(
+      candidates.map((candidate) => stores.frontiers.commit(candidate, 1)),
+    );
+
+    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+    await expect(stores.frontiers.read('application-authority')).resolves.toMatchObject({
+      projection: 'application-authority',
+      state: 'current',
+      sourceSequence: expect.any(Number),
+    });
+  });
 });
 
 function identityFlow(id: string): ApplicationPreAuthenticationFlowRecord {
@@ -243,5 +265,18 @@ function oauthFlow(id: string): ApplicationOAuthAuthorizationFlowRecord {
     issuedAt: '2026-07-29T00:00:00.000Z',
     expiresAt: '2026-07-29T00:10:00.000Z',
     version: 1,
+  };
+}
+
+function projectionFrontier(
+  sourceSequence: number,
+  sourceAuthorityRevision: string,
+): ApplicationIdentityProjectionFrontier {
+  return {
+    projection: 'application-authority',
+    sourceAuthorityRevision,
+    sourceSequence,
+    projectedAt: `2026-07-29T00:00:0${sourceSequence}.000Z`,
+    state: 'current',
   };
 }

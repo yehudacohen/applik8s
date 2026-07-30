@@ -43,6 +43,29 @@ export interface OryKratosSessionEvidence {
   readonly expiresAt?: string;
 }
 
+export type OryKratosFlowKind =
+  | 'register'
+  | 'login'
+  | 'verify'
+  | 'recover'
+  | 'settings';
+
+export interface OryKratosBrowserFlowStart {
+  readonly kind: OryKratosFlowKind;
+  readonly providerFlowId: string;
+  readonly redirectUri: string;
+  readonly setCookie: readonly string[];
+}
+
+export interface OryKratosFlowResult {
+  readonly kind: OryKratosFlowKind;
+  readonly providerFlowId: string;
+  readonly state: 'active' | 'complete' | 'expired';
+  readonly flow?: Readonly<Record<string, unknown>>;
+  readonly redirectUri?: string;
+  readonly setCookie: readonly string[];
+}
+
 export class OryKratosIdentityAdapter
   implements ApplicationIdentityProviderAdapter
 {
@@ -128,6 +151,126 @@ export class OryKratosIdentityAdapter
       );
     }
     return normalizedKratosSession(json, this.#issuer);
+  }
+
+  /**
+   * Starts a browser flow while keeping provider cookies and native flow
+   * payloads inside the adapter boundary.
+   */
+  async beginBrowserFlow(
+    kind: OryKratosFlowKind,
+    options: {
+      readonly returnTo?: string;
+      readonly cookie?: string;
+      readonly refresh?: boolean;
+      readonly aal?: 'aal1' | 'aal2';
+      readonly signal?: AbortSignal;
+    } = {},
+  ): Promise<OryKratosBrowserFlowStart> {
+    const url = new URL(`self-service/${kratosFlowPath(kind)}/browser`, this.#publicUrl);
+    if (options.returnTo) url.searchParams.set('return_to', safeReturnTo(options.returnTo));
+    if (options.refresh) url.searchParams.set('refresh', 'true');
+    if (options.aal) url.searchParams.set('aal', options.aal);
+    const { response, json } = await this.#transport.request(
+      url,
+      {
+        headers: {
+          accept: 'application/json',
+          ...(options.cookie ? { cookie: options.cookie } : {}),
+        },
+        ...(options.signal ? { signal: options.signal } : {}),
+      },
+      [200, 303],
+    );
+    const location = response.headers.get('location');
+    const redirectUri = location ?? optionalOryString(json?.request_url, 'flow.request_url');
+    const providerFlowId = optionalOryString(json?.id, 'flow.id')
+      ?? flowIdFromRedirect(redirectUri);
+    if (!redirectUri) {
+      throw new OryAdapterError('ORY_RESPONSE_INVALID', 'Ory browser flow has no redirect URI.');
+    }
+    return {
+      kind,
+      providerFlowId,
+      redirectUri,
+      setCookie: responseCookies(response.headers),
+    };
+  }
+
+  async flow(
+    kind: OryKratosFlowKind,
+    providerFlowId: string,
+    options: { readonly cookie?: string; readonly signal?: AbortSignal } = {},
+  ): Promise<OryKratosFlowResult> {
+    const flowId = requiredPathSegment(providerFlowId, 'flow ID');
+    const url = new URL(`self-service/${kratosFlowPath(kind)}/flows`, this.#publicUrl);
+    url.searchParams.set('id', flowId);
+    const { response, json } = await this.#transport.request(url, {
+      headers: {
+        accept: 'application/json',
+        ...(options.cookie ? { cookie: options.cookie } : {}),
+      },
+      ...(options.signal ? { signal: options.signal } : {}),
+    }, [200, 410]);
+    return {
+      kind,
+      providerFlowId: flowId,
+      state: response.status === 410 ? 'expired' : 'active',
+      ...(json ? { flow: json } : {}),
+      setCookie: responseCookies(response.headers),
+    };
+  }
+
+  async submitFlow(
+    kind: OryKratosFlowKind,
+    providerFlowId: string,
+    input: Readonly<Record<string, JsonValue>>,
+    options: { readonly cookie?: string; readonly signal?: AbortSignal } = {},
+  ): Promise<OryKratosFlowResult> {
+    const flowId = requiredPathSegment(providerFlowId, 'flow ID');
+    const url = new URL(`self-service/${kratosFlowPath(kind)}`, this.#publicUrl);
+    url.searchParams.set('flow', flowId);
+    const { response, json } = await this.#transport.request(url, {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/json',
+        ...(options.cookie ? { cookie: options.cookie } : {}),
+      },
+      body: JSON.stringify(input),
+      ...(options.signal ? { signal: options.signal } : {}),
+    }, [200, 303, 400, 410, 422]);
+    const redirectUri = response.headers.get('location') ?? undefined;
+    return {
+      kind,
+      providerFlowId: flowId,
+      state: response.status === 303 || (kind === 'settings' && response.status === 200 && Boolean(json?.identity))
+        ? 'complete'
+        : response.status === 410
+          ? 'expired'
+          : 'active',
+      ...(json ? { flow: json } : {}),
+      ...(redirectUri ? { redirectUri } : {}),
+      setCookie: responseCookies(response.headers),
+    };
+  }
+
+  async browserLogout(
+    request: Request,
+    options: { readonly returnTo?: string; readonly signal?: AbortSignal } = {},
+  ): Promise<{ readonly redirectUri: string; readonly setCookie: readonly string[] }> {
+    const cookie = request.headers.get('cookie');
+    if (!cookie) throw new OryAdapterError('ORY_UNAUTHORIZED', 'Ory session credential is missing.', 401);
+    const url = new URL('self-service/logout/browser', this.#publicUrl);
+    if (options.returnTo) url.searchParams.set('return_to', safeReturnTo(options.returnTo));
+    const { response, json } = await this.#transport.request(url, {
+      headers: { accept: 'application/json', cookie },
+      ...(options.signal ? { signal: options.signal } : {}),
+    }, [200, 303]);
+    const redirectUri = response.headers.get('location')
+      ?? optionalOryString(json?.logout_url, 'logout.logout_url');
+    if (!redirectUri) throw new OryAdapterError('ORY_RESPONSE_INVALID', 'Ory logout response has no redirect URI.');
+    return { redirectUri, setCookie: responseCookies(response.headers) };
   }
 
   providerCompletion(
@@ -236,6 +379,7 @@ function normalizedKratosSession(
       'Ory session has no identity.',
     );
   }
+  // typecast: the provider payload boundary above proves identity is a non-array record.
   const identity = identityValue as Readonly<Record<string, unknown>>;
   const subject = requiredOryString(identity.id, 'session.identity.id');
   const methodsValue = value.authentication_methods;
@@ -288,4 +432,39 @@ function requiredPathSegment(value: string, field: string): string {
     throw new Error(`Ory ${field} must be one URL-safe path segment.`);
   }
   return value;
+}
+
+function kratosFlowPath(kind: OryKratosFlowKind): string {
+  switch (kind) {
+    case 'register': return 'registration';
+    case 'verify': return 'verification';
+    case 'recover': return 'recovery';
+    case 'login':
+    case 'settings': return kind;
+  }
+}
+
+function safeReturnTo(value: string): string {
+  const url = new URL(value);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1'))) {
+    throw new Error('Ory returnTo must use HTTPS outside loopback.');
+  }
+  if (url.username || url.password) throw new Error('Ory returnTo must not contain credentials.');
+  return url.toString();
+}
+
+function flowIdFromRedirect(value: string | undefined): string {
+  if (!value) throw new OryAdapterError('ORY_RESPONSE_INVALID', 'Ory browser flow has no identity.');
+  const flowId = new URL(value).searchParams.get('flow');
+  if (!flowId) throw new OryAdapterError('ORY_RESPONSE_INVALID', 'Ory browser flow redirect has no flow identity.');
+  return requiredPathSegment(flowId, 'flow ID');
+}
+
+function responseCookies(headers: Headers): readonly string[] {
+  // typecast: Bun/Undici expose getSetCookie beyond the standard Headers surface; the fallback preserves portability.
+  const bunHeaders = headers as Headers & { readonly getSetCookie?: () => string[] };
+  const cookies = bunHeaders.getSetCookie?.();
+  if (cookies && cookies.length > 0) return cookies;
+  const single = headers.get('set-cookie');
+  return single ? [single] : [];
 }

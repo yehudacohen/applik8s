@@ -105,6 +105,81 @@ export interface ApplicationOAuthAuthorizationProviderAdapter {
   }): Promise<ApplicationOAuthProviderDecision>;
 }
 
+export interface ApplicationOAuthClientProvisioning {
+  readonly client: ApplicationOAuthClient;
+  readonly name: string;
+  /** Required for confidential/service clients; never returned after provisioning. */
+  readonly secret?: string;
+}
+
+export interface ApplicationOAuthTokenClientAuthentication {
+  readonly clientId: string;
+  readonly clientSecret?: string;
+}
+
+export type ApplicationOAuthTokenRequest =
+  | {
+      readonly grantType: 'authorization_code';
+      readonly client: ApplicationOAuthTokenClientAuthentication;
+      readonly code: string;
+      readonly redirectUri: string;
+      readonly codeVerifier: string;
+      readonly resources?: readonly string[];
+      readonly audience?: readonly string[];
+    }
+  | {
+      readonly grantType: 'refresh_token';
+      readonly client: ApplicationOAuthTokenClientAuthentication;
+      readonly refreshToken: string;
+      readonly scopes?: readonly string[];
+      readonly resources?: readonly string[];
+      readonly audience?: readonly string[];
+    }
+  | {
+      readonly grantType: 'client_credentials';
+      readonly client: ApplicationOAuthTokenClientAuthentication & { readonly clientSecret: string };
+      readonly scopes: readonly string[];
+      readonly resources?: readonly string[];
+      readonly audience?: readonly string[];
+    };
+
+export interface ApplicationOAuthTokenSet {
+  readonly accessToken: string;
+  readonly tokenType: string;
+  readonly expiresIn: number;
+  readonly scope: readonly string[];
+  readonly refreshToken?: string;
+  readonly idToken?: string;
+}
+
+export interface ApplicationOAuthTokenIntrospection {
+  readonly active: boolean;
+  readonly clientId?: string;
+  readonly subject?: string;
+  readonly scope: readonly string[];
+  readonly audience: readonly string[];
+  readonly issuer?: string;
+  readonly tokenType?: string;
+  readonly issuedAt?: number;
+  readonly expiresAt?: number;
+}
+
+/** Complete provider-neutral OAuth protocol seam used by server modules and MCP clients. */
+export interface ApplicationOAuthProtocolProviderAdapter
+  extends ApplicationOAuthAuthorizationProviderAdapter {
+  provisionClient(input: ApplicationOAuthClientProvisioning): Promise<ApplicationOAuthClient>;
+  client(clientId: string): Promise<ApplicationOAuthClient | undefined>;
+  rotateClient(input: ApplicationOAuthClientProvisioning & { readonly secret: string }): Promise<ApplicationOAuthClient>;
+  revokeClient(clientId: string): Promise<void>;
+  issueToken(request: ApplicationOAuthTokenRequest): Promise<ApplicationOAuthTokenSet>;
+  introspectToken(token: string): Promise<ApplicationOAuthTokenIntrospection>;
+  revokeToken(
+    token: string,
+    client: ApplicationOAuthTokenClientAuthentication,
+    hint?: 'access_token' | 'refresh_token',
+  ): Promise<void>;
+}
+
 export interface ApplicationOAuthAuthorizationFlowStore {
   create(
     flow: ApplicationOAuthAuthorizationFlowRecord,

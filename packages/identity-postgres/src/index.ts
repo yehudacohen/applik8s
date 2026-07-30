@@ -4,6 +4,8 @@
 import type {
   ApplicationIdentityAdmissionReceipt,
   ApplicationIdentityFlowStore,
+  ApplicationIdentityProjectionFrontier,
+  ApplicationIdentityProjectionFrontierStore,
   ApplicationOAuthAuthorizationFlowRecord,
   ApplicationOAuthAuthorizationFlowStore,
   ApplicationOrphanedProviderSession,
@@ -19,6 +21,7 @@ export interface PostgresApplicationIdentityStoresOptions {
 export interface PostgresApplicationIdentityStores {
   readonly flows: ApplicationIdentityFlowStore;
   readonly oauth: ApplicationOAuthAuthorizationFlowStore;
+  readonly frontiers: ApplicationIdentityProjectionFrontierStore;
   readonly prepare: () => Promise<void>;
 }
 
@@ -27,6 +30,7 @@ interface IdentityTableNames {
   readonly receipts: string;
   readonly orphans: string;
   readonly oauthFlows: string;
+  readonly frontiers: string;
 }
 
 export function createPostgresApplicationIdentityStores(
@@ -43,7 +47,8 @@ export function createPostgresApplicationIdentityStores(
   };
   const flows = applicationIdentityFlowStore(options.sql, names, prepare);
   const oauth = applicationOAuthFlowStore(options.sql, names, prepare);
-  return Object.freeze({ flows, oauth, prepare });
+  const frontiers = applicationIdentityProjectionFrontierStore(options.sql, names, prepare);
+  return Object.freeze({ flows, oauth, frontiers, prepare });
 }
 
 function applicationIdentityFlowStore(
@@ -324,6 +329,55 @@ function applicationOAuthFlowStore(
   };
 }
 
+function applicationIdentityProjectionFrontierStore(
+  sql: Sql,
+  names: IdentityTableNames,
+  prepare: () => Promise<void>,
+): ApplicationIdentityProjectionFrontierStore {
+  return {
+    async read(projection) {
+      await prepare();
+      return projectionFrontierRecord((await sql.unsafe(
+        `SELECT projection, source_sequence, record
+         FROM ${names.frontiers}
+         WHERE projection = $1`,
+        [projection],
+      ))[0]);
+    },
+    async commit(frontier, expectedSourceSequence) {
+      await prepare();
+      if (!Number.isSafeInteger(frontier.sourceSequence) || frontier.sourceSequence < 0) {
+        throw new Error('Identity projection frontier sequence is invalid.');
+      }
+      const rows = expectedSourceSequence === undefined
+        ? await sql.unsafe(
+            `INSERT INTO ${names.frontiers} (projection, source_sequence, record)
+             VALUES ($1, $2, $3::jsonb)
+             ON CONFLICT (projection) DO NOTHING
+             RETURNING projection, source_sequence, record`,
+            [frontier.projection, frontier.sourceSequence, postgresJson(frontier)],
+          )
+        : await sql.unsafe(
+            `UPDATE ${names.frontiers}
+             SET source_sequence = $2, record = $3::jsonb, updated_at = now()
+             WHERE projection = $1
+               AND source_sequence = $4
+               AND $2 >= source_sequence
+             RETURNING projection, source_sequence, record`,
+            [
+              frontier.projection,
+              frontier.sourceSequence,
+              postgresJson(frontier),
+              expectedSourceSequence,
+            ],
+          );
+      const committed = projectionFrontierRecord(rows[0]);
+      if (!committed) throw concurrencyError('Identity projection', frontier.projection);
+      return committed;
+    },
+  };
+}
+
 async function prepareStores(
   sql: Sql,
   names: IdentityTableNames,
@@ -361,6 +415,13 @@ async function prepareStores(
     CREATE TABLE IF NOT EXISTS ${names.oauthFlows} (
       id text PRIMARY KEY,
       version integer NOT NULL CHECK (version > 0),
+      record jsonb NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS ${names.frontiers} (
+      projection text PRIMARY KEY,
+      source_sequence bigint NOT NULL CHECK (source_sequence >= 0),
       record jsonb NOT NULL,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
@@ -408,6 +469,22 @@ function orphanRecord(
     'identity orphan',
     'applik8s.identityOrphan/v1alpha1',
   );
+}
+
+function projectionFrontierRecord(
+  row: Record<string, unknown> | undefined,
+): ApplicationIdentityProjectionFrontier | undefined {
+  if (!row) return undefined;
+  const record = jsonObject(row.record, 'identity projection frontier');
+  if (
+    record.projection !== row.projection
+    || Number(record.sourceSequence) !== Number(row.source_sequence)
+    || typeof record.sourceAuthorityRevision !== 'string'
+    || (record.state !== 'current' && record.state !== 'failed')
+  ) {
+    throw new Error('PostgreSQL identity projection frontier is inconsistent.');
+  }
+  return structuredClone(record) as unknown as ApplicationIdentityProjectionFrontier;
 }
 
 function versionedRecord<T extends { id: string; version: number; apiVersion: string }>(
@@ -486,6 +563,7 @@ function tableNames(schema: string): IdentityTableNames {
     receipts: `${safeSchema}.applik8s_identity_admission_receipts`,
     orphans: `${safeSchema}.applik8s_identity_orphans`,
     oauthFlows: `${safeSchema}.applik8s_oauth_authorization_flows`,
+    frontiers: `${safeSchema}.applik8s_identity_projection_frontiers`,
   };
 }
 

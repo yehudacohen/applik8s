@@ -4,6 +4,10 @@ import type {
   ApplicationOrphanedProviderSession,
   ApplicationPreAuthenticationFlowRecord,
 } from './contracts.js';
+import type {
+  ApplicationIdentityProjectionFrontier,
+  ApplicationIdentityProjectionFrontierStore,
+} from './projection-contracts.js';
 
 export class MemoryApplicationIdentityFlowStore
   implements ApplicationIdentityFlowStore
@@ -151,5 +155,35 @@ export class MemoryApplicationIdentityFlowStore
     };
     this.#orphans.set(orphanId, next);
     return structuredClone(next);
+  }
+}
+
+/** Explicit starter/test frontier store. Dedicated profiles use a durable implementation. */
+export class MemoryApplicationIdentityProjectionFrontierStore
+  implements ApplicationIdentityProjectionFrontierStore
+{
+  readonly #frontiers = new Map<string, ApplicationIdentityProjectionFrontier>();
+
+  async read(projection: string): Promise<ApplicationIdentityProjectionFrontier | undefined> {
+    const frontier = this.#frontiers.get(projection);
+    return frontier ? structuredClone(frontier) : undefined;
+  }
+
+  async commit(
+    frontier: ApplicationIdentityProjectionFrontier,
+    expectedSourceSequence: number | undefined,
+  ): Promise<ApplicationIdentityProjectionFrontier> {
+    const current = this.#frontiers.get(frontier.projection);
+    if (current?.sourceSequence !== expectedSourceSequence) {
+      throw new Error(
+        `Identity projection ${frontier.projection} expected frontier ${expectedSourceSequence ?? 'missing'}, observed ${current?.sourceSequence ?? 'missing'}.`,
+      );
+    }
+    if (current && frontier.sourceSequence < current.sourceSequence) {
+      throw new Error(`Identity projection ${frontier.projection} cannot move backward.`);
+    }
+    const stored = structuredClone(frontier);
+    this.#frontiers.set(frontier.projection, stored);
+    return structuredClone(stored);
   }
 }

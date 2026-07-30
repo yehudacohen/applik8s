@@ -124,6 +124,86 @@ describe('Ory Kratos identity adapter', () => {
       ),
     ).rejects.toBeInstanceOf(OryAdapterError);
   });
+
+  it('starts, reads, and completes a bound browser flow', async () => {
+    const requests: Request[] = [];
+    const adapter = new OryKratosIdentityAdapter({
+      publicUrl: 'http://kratos-public.identity.svc/',
+      adminUrl: 'http://kratos-admin.identity.svc/',
+      issuer: 'https://identity.example.test',
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        if (request.url.includes('/browser')) {
+          return new Response(null, {
+            status: 303,
+            headers: {
+              location: 'https://accounts.example.test/recovery?flow=flow-1',
+              'set-cookie': 'ory_csrf=private; HttpOnly; SameSite=Lax',
+            },
+          });
+        }
+        if (request.method === 'GET') {
+          return Response.json({
+            id: 'flow-1',
+            type: 'browser',
+            expires_at: '2026-07-29T00:10:00.000Z',
+            ui: { action: 'provider-private' },
+          });
+        }
+        return new Response(null, {
+          status: 303,
+          headers: { location: 'https://application.example.test/account' },
+        });
+      },
+    });
+
+    await expect(adapter.beginBrowserFlow('recover', {
+      returnTo: 'https://application.example.test/account',
+    })).resolves.toMatchObject({
+      kind: 'recover',
+      providerFlowId: 'flow-1',
+      redirectUri: 'https://accounts.example.test/recovery?flow=flow-1',
+      setCookie: [expect.stringContaining('ory_csrf=private')],
+    });
+    await expect(adapter.flow('recover', 'flow-1', { cookie: 'ory_csrf=private' }))
+      .resolves.toMatchObject({ state: 'active', flow: { id: 'flow-1' } });
+    await expect(adapter.submitFlow('recover', 'flow-1', {
+      method: 'code',
+      code: '123456',
+      csrf_token: 'private',
+    }, { cookie: 'ory_csrf=private' })).resolves.toMatchObject({
+      state: 'complete',
+      redirectUri: 'https://application.example.test/account',
+    });
+    expect(requests.map(({ method, url }) => `${method} ${url}`)).toEqual([
+      'GET http://kratos-public.identity.svc/self-service/recovery/browser?return_to=https%3A%2F%2Fapplication.example.test%2Faccount',
+      'GET http://kratos-public.identity.svc/self-service/recovery/flows?id=flow-1',
+      'POST http://kratos-public.identity.svc/self-service/recovery?flow=flow-1',
+    ]);
+  });
+
+  it('creates a CSRF-bound browser logout continuation', async () => {
+    const adapter = new OryKratosIdentityAdapter({
+      publicUrl: 'http://kratos-public.identity.svc/',
+      adminUrl: 'http://kratos-admin.identity.svc/',
+      issuer: 'https://identity.example.test',
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        expect(request.headers.get('cookie')).toBe('ory_session=private');
+        return Response.json({
+          logout_url: 'https://identity.example.test/self-service/logout?token=opaque',
+        });
+      },
+    });
+
+    await expect(adapter.browserLogout(new Request('https://application.example.test', {
+      headers: { cookie: 'ory_session=private' },
+    }))).resolves.toEqual({
+      redirectUri: 'https://identity.example.test/self-service/logout?token=opaque',
+      setCookie: [],
+    });
+  });
 });
 
 function sessionFixture() {

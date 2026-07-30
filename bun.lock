@@ -331,6 +331,7 @@
       "version": "0.6.0",
       "dependencies": {
         "@applik8s/client": "0.6.0",
+        "@applik8s/identity": "0.6.0",
       },
       "peerDependencies": {
         "react": ">=18.3.0 <20",

@@ -12,12 +12,14 @@
     "directory": "packages/react"
   },
   "dependencies": {
-    "@applik8s/client": "0.6.0"
+    "@applik8s/client": "0.6.0",
+    "@applik8s/identity": "0.6.0"
   },
   "peerDependencies": {
     "react": ">=18.3.0 <20"
   },
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./identity": { "types": "./dist/identity.d.ts", "import": "./dist/identity.js" }
   }
 }
