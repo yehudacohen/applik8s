@@ -3,6 +3,7 @@ export * from './application-deployment-graph.js';
 export * from './application-facade/index.js';
 export * from './application-fetch-gateway/index.js';
 export * from './application-operations/index.js';
+export * from './application-mcp/index.js';
 export * from './artifacts/index.js';
 export * from './bundling/index.js';
 export * from './container-image/index.js';
