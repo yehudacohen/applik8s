@@ -4,6 +4,7 @@ import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy }
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
+import { testApplicationAdmission } from '../../../test-support/application-principal.js';
 
 const AccountChanged = stream('accounts.changed.v1', {
   payload: type({ accountId: 'string', balance: 'number', revision: 'string' }),
@@ -86,7 +87,7 @@ describe('v0.6 streams, subscriptions, and projections', () => {
         namespace: 'guestbook',
         port: 8443,
         cursorSecret: { name: 'guestbook-cursor', key: 'secret' },
-        authenticate: async () => ({ principal: { id: 'guest' }, trustedContext: {}, authorizationVersion: 'v1' }),
+        authenticate: async () => testApplicationAdmission('guest', { authorityRevision: 'v1' }),
       },
     });
     guestbook.provide(Certificate, Certificate.certManager({ issuerRef: { name: 'letsencrypt-prod', kind: 'ClusterIssuer' } }));
@@ -260,7 +261,7 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     expect(() => catalog.stream(AccountChanged, { database, retention: { maxAgeSeconds: 0 }, partitionBy: (payload) => payload.accountId, authorize: () => true })).toThrow(/maxAgeSeconds/);
     const changes = catalog.stream(AccountChanged, { database, retention: { maxAgeSeconds: 60 }, partitionBy: () => '', authorize: () => true });
     expect(() => changes.partition({ accountId: 'account-1', balance: 1, revision: 'r1' })).toThrow(/must not be empty/);
-    await expect(changes.authorize({ id: 'principal-1' }, 'replay')).resolves.toBe(true);
+    await expect(changes.authorize(testApplicationAdmission('principal-1').principal, 'replay')).resolves.toBe(true);
   });
 
   it('injects provider-neutral recurring schedule targets into bounded stream processors', () => {

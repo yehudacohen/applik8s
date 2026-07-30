@@ -3,6 +3,7 @@ import { createApplicationCommandGateway } from '@applik8s/applik8s';
 import { describe, expect, it, vi } from 'vitest';
 import { applicationCommandPrincipal, applicationCommandTrustedContext } from '../src/command-principal.js';
 import { applicationCommandScope } from '../src/command-runtime-contract.js';
+import { testApplicationAdmission, testApplicationPrincipal } from '../../../test-support/application-principal.js';
 
 describe('authenticated command gateway', () => {
   it('includes admitted context in durable idempotency scope', () => {
@@ -16,7 +17,7 @@ describe('authenticated command gateway', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const gateway = createApplicationCommandGateway({
       commands: [{ id: 'cards.rename.v1', bindingId: 'Card-cards.rename.v1', model: 'Card', inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] }, databaseUrl: 'postgres://unused', key: (input) => String(Reflect.get(input, 'id')) }],
-      authenticate: async () => ({ principal: { id: 'principal-1' }, trustedContext: { tenant: 'tenant-1' }, authorizationVersion: 'policy-v1' }),
+      authenticate: async () => testApplicationAdmission('principal-1', { authorityRevision: 'policy-v1', trustedContext: { tenant: 'tenant-1' } }),
       authorize: async () => true,
       cursorSecret: '01234567890123456789012345678901',
       eventLogPublisher: {
@@ -52,7 +53,7 @@ describe('authenticated command gateway', () => {
         expect(context).toMatchObject({ principal: { id: 'user-1' }, authorizationVersion: 'membership-2', trustedContext: { organizationId: 'organization-1' } });
         return Reflect.get(input, 'cardId');
       } }],
-      authenticate: async () => ({ principal: { id: 'user-1', claims: { role: 'author' } }, trustedContext: { organizationId: 'organization-1' }, authorizationVersion: 'membership-2' }),
+      authenticate: async () => testApplicationAdmission('user-1', { authorityRevision: 'membership-2', trustedContext: { organizationId: 'organization-1' } }),
       authorize: async ({ principal }) => principal.id === 'user-1',
       cursorSecret: 'a-secure-test-secret-with-at-least-32-characters',
       eventLogPublisher: { publish, async drain() {} },
@@ -90,7 +91,12 @@ describe('authenticated command gateway', () => {
         readonly changeScopes?: Readonly<Record<string, string>>;
       };
     };
-    expect(applicationCommandPrincipal(published.trustedContext)).toEqual({ id: 'user-1', claims: { role: 'author' }, authorizationVersion: 'membership-2' });
+    expect(applicationCommandPrincipal(published.trustedContext)).toEqual(
+      testApplicationPrincipal('user-1', {
+        authorityRevision: 'membership-2',
+        trustedContext: { organizationId: 'organization-1' },
+      }),
+    );
     expect(applicationCommandTrustedContext(published.trustedContext)).toEqual({ organizationId: 'organization-1' });
     expect(JSON.stringify(published.trustedContext?.changeScopes)).not.toContain('organization-1');
     expect(JSON.stringify(published.trustedContext?.changeScopes)).not.toContain('user-1');
@@ -109,7 +115,7 @@ describe('authenticated command gateway', () => {
     }]);
     const gateway = createApplicationCommandGateway({
       commands: [{ id: 'cards.rename.v1', bindingId: 'Card-cards.rename.v1', model: 'Card', inputSchema: { type: 'object' }, databaseUrl: 'postgres://unused', sql: { unsafe } as never, key: () => 'card-1' }],
-      authenticate: async () => ({ principal: { id: 'user-1' }, trustedContext: {}, authorizationVersion: 'membership-1' }),
+      authenticate: async () => testApplicationAdmission('user-1', { authorityRevision: 'membership-1' }),
       authorize: async () => true,
       cursorSecret: 'a-secure-test-secret-with-at-least-32-characters',
       eventLogPublisher: { async publish() { return { stream: 'events', sequence: 1, duplicate: false, subject: 'command', messageId: 'terminal-1' }; }, async drain() {} },
@@ -178,10 +184,8 @@ describe('authenticated command gateway', () => {
         key: (input) => String(Reflect.get(input, 'cardId')),
       }],
       authenticate: async () => ({
-        principal: { id: 'user-1' },
-        principalContract,
+        principal: principalContract,
         trustedContext: { organizationId: 'organization-1' },
-        authorizationVersion: 'authority-1',
       }),
       authorizeOperation: async (request) => ({
         allowed: true,

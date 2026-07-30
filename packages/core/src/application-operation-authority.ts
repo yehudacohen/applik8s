@@ -192,6 +192,12 @@ export interface ApplicationPrincipal {
   readonly flowId?: string;
 }
 
+/** Authentication result admitted into the single operation-authority principal contract. */
+export interface ApplicationRequestAdmission {
+  readonly principal: ApplicationPrincipal;
+  readonly trustedContext: Readonly<Record<string, JsonValue>>;
+}
+
 export interface ApplicationExecutionPrincipal extends ApplicationPrincipal {
   readonly kind: 'execution';
   readonly executionKind: ApplicationExecutionKind;

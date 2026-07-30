@@ -5,6 +5,7 @@ import { type } from '@applik8s/applik8s/dsl';
 import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { describe, expect, test } from 'vitest';
+import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
 
 function queryFixture() {
   const cards = pgTable('cards', {
@@ -87,7 +88,7 @@ describe('v0.6 authenticated query gateway', () => {
   test('binds the app declaration directly to an authenticated Request/Response runtime', async () => {
     const { catalog, query } = queryFixture();
     const handler = catalog.gateway('public', { queries: [query] }).httpHandler({
-      authenticate: async () => ({ principal: { id: 'allowed' }, admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' }, authorizationVersion: 'permissions-1' }),
+      authenticate: async () => ({ principal: testApplicationPrincipal('allowed', { authorityRevision: 'permissions-1' }), admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' } }),
       context: () => fakeContext(),
       cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
     });
@@ -101,7 +102,7 @@ describe('v0.6 authenticated query gateway', () => {
     const context = fakeContext([{ items: [{ sequence: 6, model: 'Card', operation: 'invalidate', contextDigest: 'digest', recordedAt: '2026-07-15T12:00:01.000Z' }], retentionFloor: 1 }]);
     const gateway = createApplicationQueryGateway({
       queries: [query as ApplicationQueryBinding<unknown, unknown>],
-      authenticate: async () => ({ principal: { id: 'allowed' }, admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' }, authorizationVersion: 'permissions-1' }),
+      authenticate: async () => ({ principal: testApplicationPrincipal('allowed', { authorityRevision: 'permissions-1' }), admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' } }),
       context: () => context,
       cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
       now: () => new Date('2026-07-15T12:00:00.000Z'),
@@ -127,12 +128,11 @@ describe('v0.6 authenticated query gateway', () => {
     const gateway = createApplicationQueryGateway({
       queries: [query as ApplicationQueryBinding<unknown, unknown>],
       authenticate: async () => ({
-        principal: { id: 'allowed' },
+        principal: testApplicationPrincipal('allowed', { authorityRevision }),
         admittedContext: {
           values: { organizationId: 'organization-1' },
           digestSecret: 'context-digest-secret-context-digest-secret',
         },
-        authorizationVersion: 'permissions-1',
       }),
       authorizeOperation: async ({ boundary, identity, inputDigest, trustedContextDigest }) => queryReceipt(
         identity.principal.id,
@@ -183,14 +183,14 @@ describe('v0.6 authenticated query gateway', () => {
     const projected = {
       ...query,
       sourceRuntime,
-      async run(_context: ApplicationRelationalContext, _principal: { readonly id: string }, _input: { readonly limit: number }, source: ApplicationOnlineQuerySource<object> = sourceRuntime) {
+      async run(_context: ApplicationRelationalContext, _principal, _input: { readonly limit: number }, source: ApplicationOnlineQuerySource<object> = sourceRuntime) {
         // typecast: the concrete runtime reader schema is erased by the heterogeneous gateway binding list.
         return (await source.page({ partition: 'viewer-1', limit: 5 })).items as readonly { readonly id: string; readonly name: string }[];
       },
     } satisfies ApplicationQueryBinding<{ readonly limit: number }, readonly { readonly id: string; readonly name: string }[]>;
     const gateway = createApplicationQueryGateway({
       queries: [projected as ApplicationQueryBinding<unknown, unknown>],
-      authenticate: async () => ({ principal: { id: 'allowed' }, admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' }, authorizationVersion: 'permissions-1' }),
+      authenticate: async () => ({ principal: testApplicationPrincipal('allowed', { authorityRevision: 'permissions-1' }), admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' } }),
       context: () => fakeContext(),
       cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
       now: () => new Date('2026-07-15T12:00:00.000Z'),
@@ -211,7 +211,7 @@ describe('v0.6 authenticated query gateway', () => {
     let current = new Date('2026-07-15T12:00:00.000Z');
     const gateway = createApplicationQueryGateway({
       queries: [query as ApplicationQueryBinding<unknown, unknown>],
-      authenticate: async () => ({ principal: { id: 'allowed' }, admittedContext: { values: { organizationId }, digestSecret: 'context-digest-secret-context-digest-secret' }, authorizationVersion }),
+      authenticate: async () => ({ principal: testApplicationPrincipal('allowed', { authorityRevision: authorizationVersion }), admittedContext: { values: { organizationId }, digestSecret: 'context-digest-secret-context-digest-secret' } }),
       context: () => fakeContext(),
       cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
       cursorTtlSeconds: 30,
@@ -235,7 +235,7 @@ describe('v0.6 authenticated query gateway', () => {
     const { query } = queryFixture();
     const denied = createApplicationQueryGateway({
       queries: [query as ApplicationQueryBinding<unknown, unknown>],
-      authenticate: async () => ({ principal: { id: 'denied' }, admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' }, authorizationVersion: 'permissions-1' }),
+      authenticate: async () => ({ principal: testApplicationPrincipal('denied', { authorityRevision: 'permissions-1' }), admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' } }),
       context: () => fakeContext(),
       cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
     });
@@ -244,7 +244,7 @@ describe('v0.6 authenticated query gateway', () => {
     const oversized = { ...query, async run() { return Array.from({ length: 6 }, (_, index) => ({ id: `card-${index}`, name: 'Card' })); } } satisfies ApplicationQueryBinding<{ limit: number }, { id: string; name: string }[]>;
     const gateway = createApplicationQueryGateway({
       queries: [oversized as ApplicationQueryBinding<unknown, unknown>],
-      authenticate: async () => ({ principal: { id: 'allowed' }, admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' }, authorizationVersion: 'permissions-1' }),
+      authenticate: async () => ({ principal: testApplicationPrincipal('allowed', { authorityRevision: 'permissions-1' }), admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' } }),
       context: () => fakeContext(),
       cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
     });
@@ -318,7 +318,7 @@ describe('v0.6 authenticated query gateway', () => {
     let admitted: (() => void) | undefined;
     const admittedPromise = new Promise<void>((resolve) => { admitted = resolve; });
     const abort = new AbortController();
-    const identity = { principal: { id: 'allowed' }, admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' }, authorizationVersion: 'permissions-1' } as const;
+    const identity = { principal: testApplicationPrincipal('allowed', { authorityRevision: 'permissions-1' }), admittedContext: { values: { organizationId: 'organization-1' }, digestSecret: 'context-digest-secret-context-digest-secret' } } as const;
     const queryGateway = createApplicationQueryGateway({
       queries: [query as ApplicationQueryBinding<unknown, unknown>],
       authenticate: async () => identity,
@@ -360,7 +360,7 @@ describe('v0.6 authenticated query gateway', () => {
         authorize: async () => true,
         open: () => ({ async read() { return { items: [], nextSequence: 0, exhausted: true, retentionFloor: 0 }; } }),
       }],
-      authenticate: async () => ({ principal: identity.principal, authorizationVersion: identity.authorizationVersion, contextDigest: 'opaque-context-digest' }),
+      authenticate: async () => ({ principal: identity.principal, contextDigest: 'opaque-context-digest' }),
       cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
       subscriptionLimiter: limiter,
     });

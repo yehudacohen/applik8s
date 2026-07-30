@@ -10,6 +10,7 @@ import {
   ApplicationTaskOperationRejectedError,
   createApplicationTaskOperationRuntime,
 } from '../src/task-operation-runtime.js';
+import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
 
 const inputSchema = {
   type: 'object',
@@ -28,7 +29,7 @@ describe('task operation runtime', () => {
 
     expect(runtime.bind(
       {},
-      { id: '', authorizationVersion: '' },
+      taskPrincipal('unused'),
       { invocationId: '', idempotencyKey: '', signal: new AbortController().signal },
     )).toEqual({});
     await runtime.close();
@@ -57,7 +58,7 @@ describe('task operation runtime', () => {
     });
     const operations = runtime.bind(
       { publish: 'Post.create.v1' },
-      { id: 'bot-1', claims: { role: 'automation-worker' }, authorizationVersion: 'policy-v1', trustedContext: { automationId: 'a-1' } },
+      taskPrincipal('bot-1', 'policy-v1', { automationId: 'a-1' }),
       { invocationId: 'run-1', idempotencyKey: 'run-1', signal: new AbortController().signal },
     );
 
@@ -66,7 +67,7 @@ describe('task operation runtime', () => {
     const principal = applicationCommandPrincipal(Reflect.get(published ?? {}, 'trustedContext') as {
       readonly values: Readonly<Record<string, JsonValue>>;
     });
-    expect(principal).toMatchObject({ id: 'bot-1', claims: { role: 'automation-worker' }, authorizationVersion: 'policy-v1' });
+    expect(principal).toMatchObject({ id: 'bot-1', authorityRevision: 'policy-v1' });
     expect(Reflect.get(Reflect.get(published ?? {}, 'trustedContext') as object, 'changeScopes')).toMatchObject({
       global: expect.stringMatching(/^[a-f0-9]{64}$/),
       'context:automationId': expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -84,12 +85,12 @@ describe('task operation runtime', () => {
     });
     expect(() => runtime.bind(
       { remove: 'Post.delete.v1' },
-      { id: 'bot-1', authorizationVersion: 'policy-v1' },
+      taskPrincipal('bot-1'),
       { invocationId: 'run-1', idempotencyKey: 'run-1', signal: new AbortController().signal },
     )).toThrow(/undeclared command/);
     const operations = runtime.bind(
       { publish: 'Post.create.v1' },
-      { id: 'bot-1', authorizationVersion: 'policy-v1' },
+      taskPrincipal('bot-1'),
       { invocationId: 'run-1', idempotencyKey: 'run-1', signal: new AbortController().signal },
     );
     await expect(operations.publish?.({ id: 'post-1' })).rejects.toThrow(/input validation failed/);
@@ -131,7 +132,7 @@ describe('task operation runtime', () => {
           project: (task) => ({ id: String(Reflect.get(task, 'postId')) }),
         },
       },
-      { id: 'bot-1', authorizationVersion: 'policy-v1' },
+      taskPrincipal('bot-1'),
       { invocationId: 'run-1', idempotencyKey: 'run-1', signal: new AbortController().signal },
       { postId: 'post-1' },
     );
@@ -250,7 +251,7 @@ describe('task operation runtime', () => {
           envelope,
         },
       },
-      { id: 'bot-1', authorizationVersion: 'policy-v1' },
+      taskPrincipal('bot-1'),
       {
         invocationId: 'run-1',
         idempotencyKey: 'run-1',
@@ -287,7 +288,7 @@ describe('task operation runtime', () => {
     });
     const operations = runtime.bind(
       { publish: 'Post.create.v1' },
-      { id: 'bot-1', authorizationVersion: 'policy-v1' },
+      taskPrincipal('bot-1'),
       { invocationId: 'run-1', idempotencyKey: 'run-1', signal: new AbortController().signal },
     );
     const rejection = operations.publish?.({ id: 'post-1', body: 'hello' });
@@ -308,7 +309,7 @@ describe('task operation runtime', () => {
     });
     const operations = runtime.bind(
       { publish: 'Post.create.v1' },
-      { id: 'bot-1', authorizationVersion: 'policy-v1' },
+      taskPrincipal('bot-1'),
       { invocationId: 'run-1', idempotencyKey: 'run-1', signal: new AbortController().signal },
     );
     const failure = operations.publish?.({ id: 'post-1', body: 'hello' });
@@ -318,3 +319,14 @@ describe('task operation runtime', () => {
     await runtime.close();
   });
 });
+
+function taskPrincipal(
+  id: string,
+  authorityRevision = 'policy-v1',
+  trustedContext: Record<string, JsonValue> = {},
+) {
+  return {
+    ...testApplicationPrincipal(id, { authorityRevision, trustedContext }),
+    trustedContext,
+  };
+}

@@ -6,6 +6,10 @@ import {
 	ObjectStorage,
 } from "@applik8s/applik8s";
 import { entity, type } from "@applik8s/applik8s/dsl";
+import {
+	createDeterministicApplicationAdmission,
+	type ApplicationDeterministicIdentityOptions,
+} from "@applik8s/identity";
 import { pgTable, text } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
 import { generatedApplicationFetchGatewayModules } from "../src/application-fetch-gateway/index.js";
@@ -21,11 +25,7 @@ describe("application host Fetch gateway", () => {
 		});
 		chirp.provide(
 			IdentityProvider,
-			IdentityProvider.from(async () => ({
-				principal: { id: "viewer" },
-				trustedContext: {},
-				authorizationVersion: "v1",
-			})),
+			IdentityProvider.deterministic(identityOptions("viewer")),
 		);
 		chirp.provide(
 			ObjectStorage,
@@ -103,11 +103,7 @@ describe("application host Fetch gateway", () => {
 				namespace: "chirp",
 				port: 8080,
 				cursorSecret: { name: "chirp-cursor", key: "key" },
-				authenticate: async () => ({
-					principal: { id: "viewer" },
-					trustedContext: {},
-					authorizationVersion: "v1",
-				}),
+				authenticate: async () => createDeterministicApplicationAdmission(identityOptions("viewer")),
 			},
 		});
 		const graph = applicationGraphFor(chirp.composition);
@@ -152,11 +148,7 @@ describe("application host Fetch gateway", () => {
 		const chirp = app("chirp", { namespace: "chirp" });
 		chirp.provide(
 			IdentityProvider,
-			IdentityProvider.from(async () => ({
-				principal: { id: "moderator", claims: { role: "moderator" } },
-				trustedContext: {},
-				authorizationVersion: "v1",
-			})),
+			IdentityProvider.deterministic(identityOptions("moderator")),
 		);
 		const PolicyResource = chirp.crd(
 			entity("ModerationPolicy", {
@@ -168,7 +160,7 @@ describe("application host Fetch gateway", () => {
 		const Policy = PolicyResource.view("current", {
 			input: type({}),
 			output: type({ name: "string", maxRisk: "number" }).array(),
-			authorize: ({ principal }) => principal.claims?.role === "moderator",
+			authorize: ({ principal }) => principal.identity.subject === "moderator",
 			kubernetes: {
 				namespace: "chirp",
 				project: ({ value }) => ({
@@ -188,11 +180,7 @@ describe("application host Fetch gateway", () => {
 				namespace: "chirp",
 				port: 8080,
 				cursorSecret: { name: "chirp-cursor", key: "key" },
-				authenticate: async () => ({
-					principal: { id: "moderator", claims: { role: "moderator" } },
-					trustedContext: {},
-					authorizationVersion: "v1",
-				}),
+				authenticate: async () => createDeterministicApplicationAdmission(identityOptions("moderator")),
 			},
 		});
 		const graph = applicationGraphFor(chirp.composition);
@@ -213,11 +201,7 @@ describe("application host Fetch gateway", () => {
 		const guestbook = app("guestbook", { namespace: "guestbook" });
 		guestbook.provide(
 			IdentityProvider,
-			IdentityProvider.from(async () => ({
-				principal: { id: "author" },
-				trustedContext: { namespace: "guestbook" },
-				authorizationVersion: "v1",
-			})),
+			IdentityProvider.deterministic(identityOptions("author", { namespace: "guestbook" })),
 		);
 		const Entries = guestbook.crd(
 			entity("GuestBookEntry", {
@@ -293,11 +277,7 @@ describe("application host Fetch gateway", () => {
 				namespace: chirp.installation.spec.name,
 				port: 8080,
 				cursorSecret: { name: "chirp-cursor", key: "key" },
-				authenticate: async () => ({
-					principal: { id: "viewer" },
-					trustedContext: {},
-					authorizationVersion: "v1",
-				}),
+				authenticate: async () => createDeterministicApplicationAdmission(identityOptions("viewer")),
 			},
 		});
 		const graph = applicationGraphFor(chirp.composition);
@@ -374,11 +354,7 @@ describe("application host Fetch gateway", () => {
 				namespace: "chirp",
 				port: 8080,
 				cursorSecret: { name: "chirp-cursor", key: "key" },
-				authenticate: async () => ({
-					principal: { id: "viewer" },
-					trustedContext: {},
-					authorizationVersion: "v1",
-				}),
+				authenticate: async () => createDeterministicApplicationAdmission(identityOptions("viewer")),
 			},
 		});
 		const graph = applicationGraphFor(chirp.composition);
@@ -389,3 +365,18 @@ describe("application host Fetch gateway", () => {
 		);
 	});
 });
+
+function identityOptions(
+	subject: string,
+	trustedContext: Record<string, string> = {},
+): ApplicationDeterministicIdentityOptions {
+	return {
+		mode: "starter",
+		application: "test",
+		subject,
+		catalogRevision: "catalog-test-v1",
+		authorityRevision: "authority-test-v1",
+		trustedContext,
+		admittedAt: "2026-01-01T00:00:00.000Z",
+	};
+}

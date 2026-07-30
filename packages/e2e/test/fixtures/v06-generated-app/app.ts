@@ -2,6 +2,7 @@ import { app, ContainerRegistry, defaultApplicationEventLogProvider, event, Anal
 import { type } from '@applik8s/applik8s/dsl';
 import { eq } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
+import { createDeterministicApplicationAdmission } from '@applik8s/identity';
 
 const namespace = process.env.APPLIK8S_E2E_NAMESPACE ?? 'applik8s-v06-generated';
 const stackName = process.env.APPLIK8S_E2E_STACK_NAME ?? 'v06-generated-proof';
@@ -125,10 +126,14 @@ v06GeneratedApp.gateway('public', {
     namespace,
     replicas: 1,
     cursorSecret: { apiVersion: 'v1', kind: 'Secret', name: 'v06-gateway-cursor', namespace, key: 'secret' },
-    authenticate: async (request) => ({
-      principal: { id: request.headers.get('x-principal') ?? 'anonymous' },
+    authenticate: async (request) => createDeterministicApplicationAdmission({
+      mode: 'starter',
+      application: 'v06-generated-app',
+      subject: request.headers.get('x-principal') ?? 'anonymous',
+      catalogRevision: 'fixture-catalog-v1',
+      authorityRevision: request.headers.get('x-authorization-version') ?? 'v1',
       trustedContext: { organizationId: request.headers.get('x-organization') ?? 'missing' },
-      authorizationVersion: request.headers.get('x-authorization-version') ?? 'v1',
+      admittedAt: '2026-01-01T00:00:00.000Z',
     }),
   },
 });

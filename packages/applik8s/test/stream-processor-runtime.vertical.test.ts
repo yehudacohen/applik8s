@@ -1,5 +1,6 @@
 import { type ApplicationReplayPage, ApplicationStreamProcessorPausedError, ApplicationStreamProcessorRetentionGapError, type ApplicationStreamProcessorStore, runApplicationStreamProcessor } from '@applik8s/applik8s';
 import { describe, expect, it } from 'vitest';
+import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
 
 function envelope(sequence: number) {
   return {
@@ -9,7 +10,7 @@ function envelope(sequence: number) {
     partitionKey: 'author-1',
     recordedAt: '2026-01-01T00:00:00.000Z',
     contextDigest: 'a'.repeat(64),
-    principal: { id: 'author-1', authorizationVersion: 'authz-v1' },
+    principal: testApplicationPrincipal('author-1', { authorityRevision: 'authz-v1' }),
     trustedContext: { tenantId: 'tenant-1' },
     payload: { postId: `post-${sequence}` },
   };

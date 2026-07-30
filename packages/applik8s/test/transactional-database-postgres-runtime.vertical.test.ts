@@ -5,6 +5,7 @@ import { sql as drizzleSql } from 'drizzle-orm';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import postgres from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
 import { app } from '../src/application.js';
 import { type ApplicationRuntimeModelContract, applicationModelMigrationPreflightSql, applicationModelMigrationSql } from '../src/application-models.js';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
@@ -490,7 +491,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     const archive = applicationModelCommandBindingForOperation(Card.archive);
     const admittedContext = {
       values: applicationRequestContextValues(
-        { id: 'author-1', claims: { role: 'author' } },
+        testApplicationPrincipal('author-1', { authorityRevision: 'chirp-authz-v1', trustedContext: { tenantId: 'direct-native-live' } }),
         'chirp-authz-v1',
         { tenantId: 'direct-native-live' },
       ),

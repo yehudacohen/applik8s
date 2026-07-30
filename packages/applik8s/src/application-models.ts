@@ -81,7 +81,7 @@ export interface ApplicationModelBinding<TSpec extends object, TStatus extends o
 export type ApplicationCommandKey = string | number | boolean | Readonly<Record<string, string | number | boolean>>;
 
 export interface ApplicationCommandRoutingContext {
-  readonly principal?: { readonly id: string; readonly claims?: Readonly<Record<string, unknown>> };
+  readonly principal?: import('@applik8s/core').ApplicationPrincipal;
   readonly authorizationVersion?: string;
   readonly trustedContext?: Readonly<Record<string, JsonValue>>;
 }

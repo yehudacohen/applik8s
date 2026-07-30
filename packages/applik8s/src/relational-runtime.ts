@@ -332,7 +332,10 @@ type RelationalModelRuntimeTable = AnyPgTable & {
 };
 
 function contextDigest(admitted: ApplicationAdmittedContext): string {
-  return createHmac('sha256', admitted.digestSecret).update(stableJson(admitted.values)).digest('hex');
+  const providerContext = Object.fromEntries(
+    Object.entries(admitted.values).filter(([name]) => !name.startsWith('applik8s.dev/')),
+  );
+  return createHmac('sha256', admitted.digestSecret).update(stableJson(providerContext)).digest('hex');
 }
 
 /**

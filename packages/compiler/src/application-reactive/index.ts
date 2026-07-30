@@ -513,6 +513,19 @@ ${databaseDeclarations}
 ${onlineSourceDeclarations}
 ${analyticalSourceDeclarations}
 ${operationAuthority}
+${operationCatalog && authorityDatabaseEnvironment ? `async function admitGatewayPrincipal(admission, trustedContextDigest) {
+  return operationAuthority.admitPrincipal({
+    id: admission.principal.id,
+    identity: admission.principal.identity,
+    kind: admission.principal.kind,
+    authenticationMethod: admission.principal.authenticationMethod,
+    audience: [${JSON.stringify(gateway.id)}],
+    ...(admission.principal.expiresAt ? { expiresAt: admission.principal.expiresAt } : {}),
+    ...(admission.principal.sessionId ? { sessionId: admission.principal.sessionId } : {}),
+    ...(admission.principal.clientId ? { clientId: admission.principal.clientId } : {}),
+    ...(admission.principal.flowId ? { flowId: admission.principal.flowId } : {}),
+  }, trustedContextDigest);
+}` : ''}
 const queries = [${queryDeclarations}];
 const cursorSecret = requiredEnv('APPLIK8S_CURSOR_SECRET');
 const subscriptionLimiter = createApplicationSubscriptionLimiter(${JSON.stringify(gateway.subscriptionLimits)});
@@ -523,7 +536,19 @@ const gateway = queries.length > 0 ? createApplicationQueryGateway({
   cursorSecret,
   subscriptionLimits: ${JSON.stringify(gateway.subscriptionLimits)},
   subscriptionLimiter,
-  authenticate: async (request, query, input) => { const admitted = await admitQuery(request, query, input); return { principal: admitted.principal, admittedContext: { values: applicationRequestContextValues(admitted.principal, admitted.authorizationVersion, admitted.trustedContext ?? {}), digestSecret: cursorSecret }, authorizationVersion: admitted.authorizationVersion }; },
+  authenticate: async (request, query, input) => {
+    const admitted = await admitQuery(request, query, input);
+    const trustedContext = admitted.trustedContext ?? {};
+    const trustedContextDigest = applicationAdmittedContextDigest({ values: trustedContext, digestSecret: cursorSecret });
+    const principal = ${operationCatalog && authorityDatabaseEnvironment ? 'await admitGatewayPrincipal(admitted, trustedContextDigest)' : 'admitted.principal'};
+    return {
+      principal,
+      admittedContext: {
+        values: applicationRequestContextValues(principal, principal.authorityRevision, trustedContext),
+        digestSecret: cursorSecret,
+      },
+    };
+  },
   ${operationCatalog && authorityDatabaseEnvironment ? generatedQueryAuthority(graph, gateway, relationalQueries, operationCatalog) : ''}
   context: (identity) => createApplicationRelationalContext({ databases: [${databases.map((database) => `{ binding: ${databaseVariable(database.name)}Binding, db: ${databaseVariable(database.name)}Db }`).join(', ')}], admittedContext: identity.admittedContext }),
 }) : undefined;
@@ -720,18 +745,11 @@ function generatedCommandGateway(
   return `const commandGateway = createApplicationCommandGateway({
   commands: [${commandContracts}],
   authenticate: admitRequest,
-  admitPrincipal: ({ admission, trustedContextDigest }) => operationAuthority.admitPrincipal({
-    id: admission.principal.id,
-    ...(admission.principal.identity ? { identity: admission.principal.identity } : {}),
-    ...(admission.principal.kind ? { kind: admission.principal.kind } : {}),
-    ...(admission.principal.authenticationMethod ? { authenticationMethod: admission.principal.authenticationMethod } : {}),
-    audience: [${JSON.stringify(gateway.id)}],
-    ...(admission.principal.expiresAt ? { expiresAt: admission.principal.expiresAt } : {}),
-    ...(admission.principal.sessionId ? { sessionId: admission.principal.sessionId } : {}),
-  }, trustedContextDigest),
+  admitPrincipal: ({ admission, trustedContextDigest }) =>
+    admitGatewayPrincipal(admission, trustedContextDigest),
   authorizeOperation: async ({ principal, authorizationVersion, trustedContext, command, input, commandId, idempotencyKey, targetKey, targetDigest, trustedContextDigest, inputDigest }) => {
     const applicationPolicyAllowed = await authorizeCommand({
-      principal: { id: principal.id },
+      principal,
       authorizationVersion,
       trustedContext,
       command: command.id,
@@ -807,17 +825,8 @@ function generatedQueryAuthority(
   return `authorizeOperation: async ({ query, identity, inputDigest, trustedContextDigest }) => {
     const contract = ({ ${contracts} })[query.id];
     if (!contract) return false;
-    const principal = await operationAuthority.admitPrincipal({
-      id: identity.principal.id,
-      ...(identity.principal.identity ? { identity: identity.principal.identity } : {}),
-      ...(identity.principal.kind ? { kind: identity.principal.kind } : {}),
-      ...(identity.principal.authenticationMethod ? { authenticationMethod: identity.principal.authenticationMethod } : {}),
-      audience: [${JSON.stringify(gateway.id)}],
-      ...(identity.principal.expiresAt ? { expiresAt: identity.principal.expiresAt } : {}),
-      ...(identity.principal.sessionId ? { sessionId: identity.principal.sessionId } : {}),
-    }, trustedContextDigest);
     const result = await operationAuthority.authorize({
-      principal,
+      principal: identity.principal,
       operationId: contract.operationId,
       target: contract.target,
       audience: ${JSON.stringify(gateway.id)},
@@ -859,21 +868,18 @@ const streamGateway = createApplicationStreamSubscriptionGateway({
   subscriptions: streamSubscriptionBindings,
   cursorSecret,
   subscriptionLimiter,
-  authenticate: async (request) => { const admitted = await admitRequest(request); return { principal: admitted.principal, authorizationVersion: admitted.authorizationVersion, contextDigest: applicationAdmittedContextDigest({ values: applicationRequestContextValues(admitted.principal, admitted.authorizationVersion, admitted.trustedContext ?? {}), digestSecret: cursorSecret }) }; },
+  authenticate: async (request) => {
+    const admitted = await admitRequest(request);
+    const trustedContext = admitted.trustedContext ?? {};
+    const contextDigest = applicationAdmittedContextDigest({ values: trustedContext, digestSecret: cursorSecret });
+    const principal = ${operationCatalog && hasOperationAuthority ? 'await admitGatewayPrincipal(admitted, contextDigest)' : 'admitted.principal'};
+    return { principal, contextDigest };
+  },
   ${operationCatalog && hasOperationAuthority ? `authorizeOperation: async ({ subscription, identity, inputDigest, trustedContextDigest }) => {
     const contract = ({ ${operationContracts} })[subscription.name];
     if (!contract) return false;
-    const principal = await operationAuthority.admitPrincipal({
-      id: identity.principal.id,
-      ...(identity.principal.identity ? { identity: identity.principal.identity } : {}),
-      ...(identity.principal.kind ? { kind: identity.principal.kind } : {}),
-      ...(identity.principal.authenticationMethod ? { authenticationMethod: identity.principal.authenticationMethod } : {}),
-      audience: [${JSON.stringify(gateway.id)}],
-      ...(identity.principal.expiresAt ? { expiresAt: identity.principal.expiresAt } : {}),
-      ...(identity.principal.sessionId ? { sessionId: identity.principal.sessionId } : {}),
-    }, trustedContextDigest);
     const result = await operationAuthority.authorize({
-      principal,
+      principal: identity.principal,
       operationId: contract.operationId,
       target: contract.target,
       audience: ${JSON.stringify(gateway.id)},

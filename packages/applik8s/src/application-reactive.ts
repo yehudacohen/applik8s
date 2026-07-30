@@ -255,10 +255,7 @@ export interface ApplicationGatewayOptions {
 
 export interface ApplicationGatewayAdmission {
   readonly principal: ApplicationQueryPrincipal;
-  /** Canonical provider-neutral principal admitted by the identity boundary. */
-  readonly principalContract?: import('@applik8s/core').ApplicationPrincipal;
   readonly trustedContext: Readonly<Record<string, JsonValue>>;
-  readonly authorizationVersion: string;
 }
 
 export interface ApplicationGatewayBinding {

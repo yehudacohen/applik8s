@@ -10,8 +10,6 @@ import { validateTrustedContextValue } from './trusted-context.js';
 export interface ApplicationGatewayIdentity<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly principal: TPrincipal;
   readonly admittedContext: ApplicationAdmittedContext;
-  /** Changes whenever permissions or membership relevant to public queries change. */
-  readonly authorizationVersion: string;
 }
 
 export interface ApplicationQueryGatewayOptions<TRequest, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
@@ -154,7 +152,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
         query: query.id,
         inputKey,
         contextBinding: cursorBinding(options.cursorSecret, 'context', applicationAdmittedContextDigest(identity.admittedContext)),
-        authorizationBinding: cursorBinding(options.cursorSecret, 'authorization', identity.authorizationVersion),
+        authorizationBinding: cursorBinding(options.cursorSecret, 'authorization', identity.principal.authorityRevision),
         ...(receipt ? receiptCursorFields(options.cursorSecret, receipt) : {}),
         sequence: result.sequence,
         ...(providerSnapshot ? { providerRevision: providerSnapshot.revision } : {}),
@@ -198,7 +196,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
           query: query.id,
           inputKey: queryInputKey(input),
           contextDigest: applicationAdmittedContextDigest(identity.admittedContext),
-          authorizationVersion: identity.authorizationVersion,
+          authorizationVersion: identity.principal.authorityRevision,
           ...(receipt ? { receipt } : {}),
           now: now().getTime(),
         });
@@ -213,7 +211,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       while (!subscribeOptions.signal?.aborted && now().getTime() - started < maxSessionMs) {
         const currentIdentity = await admittedIdentity(options, request, query, input);
         const currentReceipt = await authorizeQueryOperation(options, 'subscription-resume', query, input, currentIdentity);
-        if (currentIdentity.authorizationVersion !== identity.authorizationVersion
+        if (currentIdentity.principal.authorityRevision !== identity.principal.authorityRevision
           || applicationAdmittedContextDigest(currentIdentity.admittedContext) !== applicationAdmittedContextDigest(identity.admittedContext)
           || !sameReceiptRevision(receipt, currentReceipt)
           || !await query.authorize(currentIdentity.principal, input, currentIdentity.admittedContext.values)) {
@@ -457,7 +455,7 @@ function isProjectionUnavailableError(error: unknown): boolean {
 
 async function admittedIdentity<TRequest, TPrincipal extends ApplicationQueryPrincipal>(options: ApplicationQueryGatewayOptions<TRequest, TPrincipal>, request: TRequest, query: ApplicationQueryBinding<unknown, unknown, TPrincipal>, input: unknown): Promise<ApplicationGatewayIdentity<TPrincipal>> {
   const identity = await options.authenticate(request, query, input);
-  if (!identity.principal.id || !identity.authorizationVersion) throw new Error('Application query gateway identity provider returned an incomplete principal or authorization version.');
+  if (!identity.principal.id || !identity.principal.authorityRevision) throw new Error('Application query gateway identity provider returned an incomplete canonical principal.');
   for (const context of query.trustedContext) {
     const value = identity.admittedContext.values[context.name];
     if (value === undefined) throw new Error(`Application query ${query.id} requires trusted context ${context.name}, but the identity/application provider did not establish it.`);

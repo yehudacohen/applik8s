@@ -2,6 +2,7 @@ import { app } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { eq } from 'drizzle-orm';
 import { pgTable, text } from 'drizzle-orm/pg-core';
+import { createDeterministicApplicationAdmission } from '@applik8s/identity';
 
 const cards = pgTable('cards', {
   id: text('id').primaryKey(),
@@ -39,10 +40,13 @@ modularViewApplication.gateway('public', {
   deployment: {
     namespace: 'catalog',
     cursorSecret: { name: 'gateway-cursor', namespace: 'catalog', key: 'secret' },
-    authenticate: async (request) => ({
-      principal: { id: request.headers.get('x-principal') ?? 'anonymous' },
-      trustedContext: {},
-      authorizationVersion: 'v1',
+    authenticate: async (request) => createDeterministicApplicationAdmission({
+      mode: 'starter',
+      application: 'modular-view-fixture',
+      subject: request.headers.get('x-principal') ?? 'anonymous',
+      catalogRevision: 'fixture-catalog-v1',
+      authorityRevision: 'v1',
+      admittedAt: '2026-01-01T00:00:00.000Z',
     }),
   },
 });

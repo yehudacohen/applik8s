@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { type ApplicationObjectMetadata, type ApplicationObjectStorageRuntime, createApplicationFetchGateway, verifyApplicationObjectCompletionReceipt } from '@applik8s/applik8s';
 import { describe, expect, it, vi } from 'vitest';
+import { testApplicationAdmission } from '../../../test-support/application-principal.js';
 
 describe('authenticated application object-storage gateway', () => {
   it('issues principal-scoped intents and verifies the complete upload/download path', async () => {
@@ -27,7 +28,7 @@ describe('authenticated application object-storage gateway', () => {
         authenticate: (request) => {
           const id = request.headers.get('x-user');
           if (!id) throw new Error('missing identity');
-          return { principal: { id }, trustedContext: {}, authorizationVersion: 'policy-v1' };
+          return testApplicationAdmission(id, { authorityRevision: 'policy-v1' });
         },
       },
       cursorSecret: 'object-intent-secret-that-is-at-least-thirty-two-bytes',
@@ -97,7 +98,7 @@ describe('authenticated application object-storage gateway', () => {
         authenticate: (request) => {
           const id = request.headers.get('x-user');
           if (!id) throw new Error('missing identity');
-          return { principal: { id }, trustedContext: {}, authorizationVersion: 'policy-v1' };
+          return testApplicationAdmission(id, { authorityRevision: 'policy-v1' });
         },
       },
       cursorSecret: 'object-intent-secret-that-is-at-least-thirty-two-bytes',
@@ -127,7 +128,7 @@ describe('authenticated application object-storage gateway', () => {
       async signUpload() { throw new Error('unused'); }, async signDownload() { throw new Error('unused'); },
     };
     const gateway = createApplicationFetchGateway({
-      identity: { kind: 'identity-provider', authenticate: () => ({ principal: { id: 'alice' }, trustedContext: {}, authorizationVersion: 'v1' }) },
+      identity: { kind: 'identity-provider', authenticate: () => testApplicationAdmission('alice', { authorityRevision: 'v1' }) },
       cursorSecret: 'another-object-intent-secret-with-sufficient-entropy',
       objects: [{ name: 'attachments', mode: 'immutable', maxObjectBytes: 5, contentTypes: ['text/plain'], browser: { upload: 'signed', download: 'none', downloadAccess: 'owner', ttlSeconds: 60 }, runtime }],
     });

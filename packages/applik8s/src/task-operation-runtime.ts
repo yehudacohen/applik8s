@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type {
   ApplicationAuthorizationReceipt,
   ApplicationExecutionPrincipal,
+  ApplicationPrincipal,
   ApplicationScopeExpression,
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
@@ -26,10 +27,7 @@ export interface ApplicationTaskOperationRuntimeContract {
   readonly idempotencyKey?: (input: object) => string;
 }
 
-export interface ApplicationTaskOperationPrincipal {
-  readonly id: string;
-  readonly claims?: JsonObject;
-  readonly authorizationVersion: string;
+export interface ApplicationTaskOperationPrincipal extends ApplicationPrincipal {
   readonly trustedContext?: JsonObject;
 }
 
@@ -117,8 +115,8 @@ export function createApplicationTaskOperationRuntime(options: ApplicationTaskOp
       validatePrincipal(principal);
       if (!invocation.invocationId.trim() || !invocation.idempotencyKey.trim()) throw new Error('Application task operation invocation identity is incomplete.');
       const durableContext = applicationRequestContextValues(
-        { id: principal.id, ...(principal.claims ? { claims: principal.claims } : {}) },
-        principal.authorizationVersion,
+        principal,
+        principal.authorityRevision,
         principal.trustedContext ?? {},
       );
       const contextDigest = applicationAdmittedContextDigest({ values: durableContext, digestSecret: options.cursorSecret });
@@ -348,10 +346,9 @@ function validateInput(command: ApplicationTaskOperationRuntimeContract, input: 
 }
 
 function validatePrincipal(principal: ApplicationTaskOperationPrincipal): void {
-  if (!principal || typeof principal !== 'object' || !principal.id?.trim() || !principal.authorizationVersion?.trim()) {
-    throw new Error('Application task operation principal requires non-empty id and authorizationVersion values.');
+  if (!principal || typeof principal !== 'object' || !principal.id?.trim() || !principal.catalogRevision?.trim() || !principal.authorityRevision?.trim()) {
+    throw new Error('Application task operation principal requires one canonical admitted principal.');
   }
-  JSON.stringify(principal.claims ?? {});
   JSON.stringify(principal.trustedContext ?? {});
 }
 

@@ -5,17 +5,18 @@ import {
   OAuthAuthorizationServer,
 } from '@applik8s/applik8s';
 import { describe, expect, it } from 'vitest';
+import { testApplicationAdmission } from '../../../test-support/application-principal.js';
 
 describe('provider-neutral identity capabilities', () => {
   it('records authentication and OAuth authorization as distinct injectable providers', () => {
     const application = app('identity-capabilities');
     application.provide(
       IdentityProvider,
-      IdentityProvider.from(async () => ({
-        principal: { id: 'human-1' },
-        trustedContext: { tenant: 'tenant-1' },
-        authorizationVersion: 'authority-1',
-      })),
+      IdentityProvider.from(async () =>
+        testApplicationAdmission('human-1', {
+          authorityRevision: 'authority-1',
+          trustedContext: { tenant: 'tenant-1' },
+        })),
     );
     application.provide(
       OAuthAuthorizationServer,
@@ -61,6 +62,7 @@ describe('provider-neutral identity capabilities', () => {
     expect(() =>
       application.provide(
         OAuthAuthorizationServer,
+        // typecast: deliberately malformed test input exercises runtime validation past the public static contract.
         { kind: 'oauth-authorization-server', name: '', decide: async () => undefined } as never,
       )).toThrow(/OAuthAuthorizationServer/u);
   });

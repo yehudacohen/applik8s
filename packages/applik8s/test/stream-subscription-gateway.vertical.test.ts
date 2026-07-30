@@ -2,6 +2,7 @@
 import { type ApplicationReplayPage, createApplicationStreamSubscriptionGateway } from '@applik8s/applik8s';
 import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
 import { describe, expect, test, vi } from 'vitest';
+import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
 
 const cursorSecret = 'stream-subscription-test-secret-with-32-characters';
 
@@ -101,7 +102,7 @@ function fixture(source: { read(after: number, limit: number): Promise<Applicati
       authorize: async () => options.authorize ?? true,
       open: () => source,
     }],
-    authenticate: async () => ({ principal: { id: options.principalId ?? 'user-1' }, authorizationVersion: 'membership-1', contextDigest: 'context-private' }),
+    authenticate: async () => ({ principal: testApplicationPrincipal(options.principalId ?? 'user-1', { authorityRevision: 'membership-1' }), contextDigest: 'context-private' }),
     ...(options.authorityRevision ? {
       authorizeOperation: async ({ identity, inputDigest, trustedContextDigest }) => streamReceipt(
         identity.principal.id,

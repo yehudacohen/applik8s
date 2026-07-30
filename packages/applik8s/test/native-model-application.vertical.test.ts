@@ -82,7 +82,7 @@ describe('v0.6 app-scoped native model promotion', () => {
       database: Database,
       context: [OrganizationId],
       reads: [Card.relations.set as NonNullable<typeof Card.relations.set>],
-      authorize: ({ principal, input }) => principal.can?.('read', SetModel, input.setId) ?? false,
+      authorize: ({ principal, input }) => principal.identity.subject === input.setId,
       run: async ({ context, input }) => {
         const db = context.database(Database);
         return db.select({ id: Card.id, setId: Card.setId, name: Card.name }).from(Card).where(eq(Card.setId, input.setId));

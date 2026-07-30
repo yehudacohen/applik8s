@@ -243,7 +243,7 @@ export function createApplicationObjectStorageGateway(options: ApplicationObject
   async function authenticate(request: Request): Promise<ApplicationRequestAdmission | Response> {
     try {
       const admission = await options.identity.authenticate(request);
-      if (!admission?.principal?.id || !admission.authorizationVersion || !admission.trustedContext || typeof admission.trustedContext !== 'object') {
+      if (!admission?.principal?.id || !admission.principal.authorityRevision || !admission.trustedContext || typeof admission.trustedContext !== 'object') {
         return json({ error: 'unauthorized' }, 401);
       }
       return admission;
@@ -272,7 +272,7 @@ export function createApplicationObjectStorageGateway(options: ApplicationObject
   }
 
   function admittedScope(admission: ApplicationRequestAdmission): string {
-    return admittedObjectScope(options.cursorSecret, admission.principal.id, admission.authorizationVersion);
+    return admittedObjectScope(options.cursorSecret, admission.principal.id, admission.principal.authorityRevision);
   }
 
   function signToken(token: ObjectIntentToken): string {

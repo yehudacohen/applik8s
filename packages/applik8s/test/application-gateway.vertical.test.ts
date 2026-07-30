@@ -8,6 +8,7 @@ import {
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { describe, expect, it } from 'vitest';
+import { testApplicationAdmission, testApplicationPrincipal } from '../../../test-support/application-principal.js';
 
 describe('framework-neutral application gateway', () => {
   it('mounts authenticated query dispatch below a versioned Fetch boundary', async () => {
@@ -25,11 +26,11 @@ describe('framework-neutral application gateway', () => {
       async authorize(principal) { return principal.id === 'author'; },
       async run() { return ['hello']; },
     };
-    const identity = IdentityProvider.from(async () => ({
-      principal: { id: 'author' },
-      trustedContext: { guestbook: 'main' },
-      authorizationVersion: 'membership-1',
-    }));
+    const identity = IdentityProvider.from(async () =>
+      testApplicationAdmission('author', {
+        authorityRevision: 'membership-1',
+        trustedContext: { guestbook: 'main' },
+      }));
     const gateway = createApplicationFetchGateway({
       identity,
       cursorSecret: 'framework-neutral-cursor-secret-with-32-characters',
@@ -38,7 +39,10 @@ describe('framework-neutral application gateway', () => {
         queries: [query as ApplicationQueryBinding<unknown, unknown>],
         context: (requestIdentity) => {
           expect(applicationAdmittedContextDigest(requestIdentity.admittedContext)).toBe(applicationAdmittedContextDigest({
-            values: applicationRequestContextValues({ id: 'author' }, 'membership-1', { guestbook: 'main' }),
+            values: applicationRequestContextValues(testApplicationPrincipal('author', {
+              authorityRevision: 'membership-1',
+              trustedContext: { guestbook: 'main' },
+            }), 'membership-1', { guestbook: 'main' }),
             digestSecret: 'framework-neutral-cursor-secret-with-32-characters',
           }));
           return relationalContext();
@@ -61,11 +65,8 @@ describe('framework-neutral application gateway', () => {
 
   it('keeps framework routing outside the gateway', async () => {
     const gateway = createApplicationFetchGateway({
-      identity: IdentityProvider.from(async () => ({
-        principal: { id: 'author' },
-        trustedContext: {},
-        authorizationVersion: 'membership-1',
-      })),
+      identity: IdentityProvider.from(async () =>
+        testApplicationAdmission('author', { authorityRevision: 'membership-1' })),
       cursorSecret: 'framework-neutral-cursor-secret-with-32-characters',
     });
     expect((await gateway.handle(new Request('https://guestbook.test/'))).status).toBe(404);

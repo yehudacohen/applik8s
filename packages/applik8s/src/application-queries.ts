@@ -1,5 +1,6 @@
 import { type ApplicationOperationAuthorizationContract, type ApplicationQueryOperation, createApplicationQueryOperation, observeApplicationOperationAuthority } from '@applik8s/client';
 import type {
+  ApplicationPrincipal,
   ApplicationKubernetesQueryAuthorityContract,
   ApplicationMessageContractSchema,
   ApplicationSerializedCallbackContract,
@@ -16,11 +17,8 @@ import { getApplicationModelFacet } from './native-models.js';
 import type { ApplicationRelationalContext } from './relational-runtime.js';
 import type { ApplicationTrustedContext } from './trusted-context.js';
 
-export interface ApplicationQueryPrincipal {
-  readonly id: string;
-  readonly claims?: Readonly<Record<string, unknown>>;
-  can?(action: string, model: unknown, identity?: unknown): boolean | Promise<boolean>;
-}
+/** Canonical provider-neutral principal used by every query and transport. */
+export type ApplicationQueryPrincipal = ApplicationPrincipal;
 
 export type ApplicationQueryReadDependency = object | ApplicationModelRelationshipContract;
 

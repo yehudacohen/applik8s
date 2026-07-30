@@ -1,16 +1,11 @@
-// typecast-file-boundary: authenticated claim documents are structurally checked before conversion to the trusted principal contract.
-import type { JsonObject, JsonValue } from '@applik8s/core';
+// typecast-file-boundary: canonical principals are structurally checked before crossing the durable JSON boundary.
+import type { ApplicationPrincipal, JsonObject, JsonValue } from '@applik8s/core';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
 
 const principalContextKey = 'applik8s.dev/principal';
-const authorizationVersionContextKey = 'applik8s.dev/authorization-version';
 const maximumPrincipalBytes = 8_192;
 
-export interface ApplicationCommandPrincipal {
-  readonly id: string;
-  readonly claims?: JsonObject;
-  readonly authorizationVersion: string;
-}
+export type ApplicationCommandPrincipal = ApplicationPrincipal;
 
 /**
  * Adds gateway-established identity to the opaque context shared by commands,
@@ -23,14 +18,13 @@ export function applicationRequestContextValues(
   authorizationVersion: string,
   trustedContext: Readonly<Record<string, JsonValue>>,
 ): Readonly<Record<string, JsonValue>> {
-  if (principalContextKey in trustedContext || authorizationVersionContextKey in trustedContext) {
+  if (principalContextKey in trustedContext) {
     throw new Error('Application identity providers may not write reserved durable command context keys.');
   }
-  const claims = jsonClaims(principal.claims);
-  const encodedPrincipal: JsonObject = {
-    id: principal.id,
-    ...(claims ? { claims } : {}),
-  };
+  if (authorizationVersion !== principal.authorityRevision) {
+    throw new Error('Application principal and authorization revision disagree.');
+  }
+  const encodedPrincipal = jsonPrincipal(principal);
   const encoded = JSON.stringify(encodedPrincipal);
   if (Buffer.byteLength(encoded) > maximumPrincipalBytes) {
     throw new Error(`Application command principal exceeds the bounded ${maximumPrincipalBytes}-byte durable context limit.`);
@@ -38,7 +32,6 @@ export function applicationRequestContextValues(
   return Object.freeze({
     ...trustedContext,
     [principalContextKey]: encodedPrincipal,
-    [authorizationVersionContextKey]: authorizationVersion,
   });
 }
 
@@ -46,16 +39,7 @@ export function applicationCommandPrincipal(
   context: { readonly values: Readonly<Record<string, JsonValue>> } | undefined,
 ): ApplicationCommandPrincipal | undefined {
   const encoded = context?.values[principalContextKey];
-  const authorizationVersion = context?.values[authorizationVersionContextKey];
-  if (!isJsonObject(encoded) || typeof authorizationVersion !== 'string') return undefined;
-  const id = encoded.id;
-  if (typeof id !== 'string' || !id) return undefined;
-  const claims = encoded.claims;
-  return {
-    id,
-    ...(isJsonObject(claims) ? { claims } : {}),
-    authorizationVersion,
-  };
+  return isApplicationPrincipal(encoded) ? encoded : undefined;
 }
 
 export function applicationCommandTrustedContext(
@@ -64,26 +48,54 @@ export function applicationCommandTrustedContext(
   if (!context) return {};
   const values = { ...context.values };
   delete values[principalContextKey];
-  delete values[authorizationVersionContextKey];
   return Object.freeze(values);
 }
 
-function jsonClaims(input: Readonly<Record<string, unknown>> | undefined): JsonObject | undefined {
-  if (!input) return undefined;
+function jsonPrincipal(input: ApplicationPrincipal): JsonObject {
   let encoded: string;
   try {
     encoded = JSON.stringify(input);
   } catch {
-    throw new Error('Application command principal claims must be JSON-serializable.');
+    throw new Error('Application command principal must be JSON-serializable.');
   }
-  if (!encoded) throw new Error('Application command principal claims must be JSON-serializable.');
+  if (!encoded) throw new Error('Application command principal must be JSON-serializable.');
   const value = JSON.parse(encoded) as JsonValue;
-  if (!isJsonObject(value)) {
-    throw new Error('Application command principal claims must be a JSON object.');
+  if (!isApplicationPrincipal(value)) {
+    throw new Error('Application command principal does not satisfy the canonical principal contract.');
   }
   return value;
 }
 
 function isJsonObject(value: JsonValue | undefined): value is JsonObject {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function isApplicationPrincipal(value: JsonValue | undefined): value is ApplicationPrincipal & JsonObject {
+  if (!isJsonObject(value) || !isJsonObject(value.identity)) return false;
+  const identity = value.identity;
+  return nonEmpty(value.id)
+    && nonEmpty(value.kind)
+    && nonEmpty(value.authenticationMethod)
+    && stringArray(value.audience)
+    && nonEmpty(value.trustedContextDigest)
+    && nonEmpty(value.catalogRevision)
+    && nonEmpty(value.authorityRevision)
+    && validTimestamp(value.admittedAt)
+    && (value.expiresAt === undefined || validTimestamp(value.expiresAt))
+    && nonEmpty(identity.id)
+    && nonEmpty(identity.kind)
+    && nonEmpty(identity.issuer)
+    && nonEmpty(identity.subject);
+}
+
+function nonEmpty(value: JsonValue | undefined): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function stringArray(value: JsonValue | undefined): value is string[] {
+  return Array.isArray(value) && value.every(nonEmpty);
+}
+
+function validTimestamp(value: JsonValue | undefined): value is string {
+  return nonEmpty(value) && Number.isFinite(Date.parse(value));
 }

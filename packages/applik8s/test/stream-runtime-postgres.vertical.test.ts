@@ -3,6 +3,7 @@ import { app, createPostgresApplicationStream, enforcePostgresApplicationStreamR
 import { stream, type } from '@applik8s/applik8s/dsl';
 import { describe, expect, test, vi } from 'vitest';
 import { applicationRequestContextValues } from '../src/command-principal.js';
+import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
 
 describe('PostgreSQL replayable application stream', () => {
   test('reads a bounded, context-scoped, schema-validated outbox page', async () => {
@@ -13,7 +14,7 @@ describe('PostgreSQL replayable application stream', () => {
     const unsafe = vi.fn(async (query: string, ..._args: unknown[]) => query.includes('retention_floors')
       ? [{ retention_floor: 0 }]
       : [{ id: 'event-1', sequence: 7, partition_key: 'card-1', recorded_at: new Date('2026-07-15T00:00:00Z'), context_digest: 'opaque-digest', payload: { cardId: 'card-1' } }]);
-    const source = createPostgresApplicationStream({ stream: binding, sql: transactionalSql(unsafe), principal: { id: 'allowed' }, contextDigest: 'opaque-digest' });
+    const source = createPostgresApplicationStream({ stream: binding, sql: transactionalSql(unsafe), principal: testApplicationPrincipal('allowed'), contextDigest: 'opaque-digest' });
     await expect(source.read(5, 10)).resolves.toEqual({ items: [{ id: 'event-1', stream: { name: 'cards.changed', version: 'v1' }, sequence: 7, partitionKey: 'card-1', recordedAt: '2026-07-15T00:00:00.000Z', contextDigest: 'opaque-digest', payload: { cardId: 'card-1' } }], nextSequence: 7, exhausted: true, retentionFloor: 0 });
     expect(unsafe).toHaveBeenCalledWith(expect.stringContaining('context_digest = $5'), ['cards.changed', 'v1', 5, 11, 'opaque-digest']);
     expect(unsafe).toHaveBeenCalledWith(expect.stringContaining('pg_advisory_xact_lock_shared'), ['applik8s:public-stream-commit:v1:cards.changed:v1']);
@@ -26,7 +27,7 @@ describe('PostgreSQL replayable application stream', () => {
     const Changed = stream('cards.internal-changed.v1', { payload: type({ cardId: 'string' }) });
     const binding = catalog.stream(Changed, { database, retention: { maxAgeSeconds: 3600 }, partitionBy: (payload) => payload.cardId, authorize: () => true });
     const values = applicationRequestContextValues(
-      { id: 'author-1', claims: { role: 'author' } },
+      testApplicationPrincipal('author-1', { authorityRevision: 'authz-v3', trustedContext: { tenantId: 'tenant-1' } }),
       'authz-v3',
       { tenantId: 'tenant-1' },
     );
@@ -40,13 +41,13 @@ describe('PostgreSQL replayable application stream', () => {
     const source = createPostgresApplicationStream({
       stream: binding,
       sql: transactionalSql(unsafe),
-      principal: { id: 'applik8s:processor:cards' },
+      principal: testApplicationPrincipal('applik8s:processor:cards'),
       includeTrustedContext: true,
     });
 
     await expect(source.read(0, 10)).resolves.toMatchObject({
       items: [{
-        principal: { id: 'author-1', claims: { role: 'author' }, authorizationVersion: 'authz-v3' },
+        principal: expect.objectContaining({ id: 'author-1', authorityRevision: 'authz-v3' }),
         trustedContext: { tenantId: 'tenant-1' },
       }],
     });
@@ -59,7 +60,7 @@ describe('PostgreSQL replayable application stream', () => {
     const Changed = stream('cards.changed.v1', { payload: type({ cardId: 'string' }) });
     const binding = catalog.stream(Changed, { database, retention: { maxAgeSeconds: 3600 }, partitionBy: (payload) => payload.cardId, authorize: () => false });
     const unsafe = vi.fn();
-    const source = createPostgresApplicationStream({ stream: binding, sql: transactionalSql(unsafe), principal: { id: 'denied' } });
+    const source = createPostgresApplicationStream({ stream: binding, sql: transactionalSql(unsafe), principal: testApplicationPrincipal('denied') });
     await expect(source.read(0, 10)).rejects.toMatchObject({ code: 'APPLIK8S_STREAM_FORBIDDEN' });
     expect(unsafe).not.toHaveBeenCalled();
   });
@@ -73,7 +74,7 @@ describe('PostgreSQL replayable application stream', () => {
     const allowed = createPostgresApplicationStream({
       stream: binding,
       sql: transactionalSql(unsafe),
-      principal: { id: 'applik8s:processor:timeline' },
+      principal: testApplicationPrincipal('applik8s:processor:timeline'),
       internalConsumer: { kind: 'processor', name: 'timeline' },
     });
     await expect(allowed.read(0, 10)).resolves.toMatchObject({ items: [], exhausted: true });
@@ -82,7 +83,7 @@ describe('PostgreSQL replayable application stream', () => {
     const denied = createPostgresApplicationStream({
       stream: binding,
       sql: transactionalSql(deniedUnsafe),
-      principal: { id: 'applik8s:processor:other' },
+      principal: testApplicationPrincipal('applik8s:processor:other'),
       internalConsumer: { kind: 'processor', name: 'timeline' },
     });
     await expect(denied.read(0, 10)).rejects.toMatchObject({ code: 'APPLIK8S_STREAM_FORBIDDEN' });

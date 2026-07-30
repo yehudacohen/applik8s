@@ -34,11 +34,7 @@ export interface ApplicationGatewayCommandRuntimeContract {
 export interface ApplicationCommandGatewayOptions<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly commands: readonly ApplicationGatewayCommandRuntimeContract[];
   readonly authenticate: (request: Request) => ApplicationGatewayAdmission | Promise<ApplicationGatewayAdmission>;
-  /**
-   * Canonical admission seam. Identity providers authenticate the request;
-   * the operation authority pins catalog/authority revisions and trusted
-   * context for this concrete command audience.
-   */
+  /** Narrows an authenticated canonical principal to this audience and trusted context. */
   readonly admitPrincipal?: (request: {
     readonly admission: ApplicationGatewayAdmission;
     readonly command: ApplicationGatewayCommandRuntimeContract;
@@ -142,7 +138,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
           const input = validateCommandInput(command, body.value.input);
           if (options.authorize && !await options.authorize({
             principal: admission.principal as TPrincipal,
-            authorizationVersion: admission.authorizationVersion,
+            authorizationVersion: admission.principal.authorityRevision,
             trustedContext: admission.trustedContext,
             command: command.id,
             input,
@@ -152,25 +148,25 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
           // typecast: command key callbacks are registered only from the public scalar/composite command-key contract.
           const targetKey = canonicalApplicationCommandKey(command.key(input, {
             principal: admission.principal,
-            authorizationVersion: admission.authorizationVersion,
+            authorizationVersion: admission.principal.authorityRevision,
             trustedContext: admission.trustedContext,
           }) as string | number | boolean | Readonly<Record<string, string | number | boolean>>);
           const correlationId = commandId;
-          const durableContext = applicationRequestContextValues(admission.principal, admission.authorizationVersion, admission.trustedContext);
-          const contextDigest = applicationAdmittedContextDigest({ values: durableContext, digestSecret: options.cursorSecret });
+          const contextDigest = applicationAdmittedContextDigest({ values: admission.trustedContext, digestSecret: options.cursorSecret });
+          const principal = await options.admitPrincipal?.({
+            admission,
+            command,
+            trustedContextDigest: contextDigest,
+          }) ?? admission.principal;
+          const durableContext = applicationRequestContextValues(principal, principal.authorityRevision, admission.trustedContext);
           const routedIdempotencyKey = command.idempotencyKey?.(input) ?? idempotencyKey;
           const durableScope = applicationCommandScope(command.bindingId, command.model, targetKey, routedIdempotencyKey, contextDigest);
           const inputDigest = applicationOperationInputDigest(input);
           let authorizationReceipt: ApplicationAuthorizationReceipt | undefined;
           if (options.authorizeOperation) {
-            const principalContract = await options.admitPrincipal?.({ admission, command, trustedContextDigest: contextDigest })
-              ?? admission.principalContract;
-            if (!principalContract) {
-              throw new Error('Application command gateway canonical operation authority requires an admitted principalContract.');
-            }
             const authorization = await options.authorizeOperation({
-              principal: principalContract,
-              authorizationVersion: admission.authorizationVersion,
+              principal,
+              authorizationVersion: principal.authorityRevision,
               trustedContext: admission.trustedContext,
               command,
               input,
@@ -185,7 +181,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
             assertCommandAuthorizationReceipt(
               authorization.receipt,
               command,
-              principalContract,
+              principal,
               contextDigest,
               inputDigest,
             );
@@ -222,8 +218,8 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
             commandId,
             correlationId,
             durableScope,
-            principalBinding: cursorBinding(options.cursorSecret, 'principal', admission.principal.id),
-            authorizationBinding: cursorBinding(options.cursorSecret, 'authorization', admission.authorizationVersion),
+            principalBinding: cursorBinding(options.cursorSecret, 'principal', principal.id),
+            authorizationBinding: cursorBinding(options.cursorSecret, 'authorization', principal.authorityRevision),
             contextBinding: cursorBinding(options.cursorSecret, 'context', contextDigest),
             ...(authorizationReceipt ? commandReceiptCursorFields(options.cursorSecret, authorizationReceipt) : {}),
             expiresAt: now().getTime() + cursorTtlSeconds * 1000,
@@ -233,24 +229,26 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
         }
         const encoded = requiredString(body.value.cursor, 'cursor');
         const cursor = decodeCursor(options.cursorSecret, encoded, now().getTime());
+        const contextDigest = applicationAdmittedContextDigest({ values: admission.trustedContext, digestSecret: options.cursorSecret });
+        const principal = await options.admitPrincipal?.({
+          admission,
+          command,
+          trustedContextDigest: contextDigest,
+        }) ?? admission.principal;
         if (cursor.command !== command.id
-          || cursor.principalBinding !== cursorBinding(options.cursorSecret, 'principal', admission.principal.id)
-          || cursor.authorizationBinding !== cursorBinding(options.cursorSecret, 'authorization', admission.authorizationVersion)) return json({ error: 'cursor_invalid' }, 400);
-        const durableContext = applicationRequestContextValues(admission.principal, admission.authorizationVersion, admission.trustedContext);
-        const contextDigest = applicationAdmittedContextDigest({ values: durableContext, digestSecret: options.cursorSecret });
+          || cursor.principalBinding !== cursorBinding(options.cursorSecret, 'principal', principal.id)
+          || cursor.authorizationBinding !== cursorBinding(options.cursorSecret, 'authorization', principal.authorityRevision)) return json({ error: 'cursor_invalid' }, 400);
         if (cursor.contextBinding !== cursorBinding(options.cursorSecret, 'context', contextDigest)) return json({ error: 'cursor_invalid' }, 400);
         const sql = command.sql ?? await database(databases, command.databaseUrl);
         if (cursor.version === 3) {
-          const principalContract = await options.admitPrincipal?.({ admission, command, trustedContextDigest: contextDigest })
-            ?? admission.principalContract;
-          if (!options.revalidateOperation || !principalContract) {
-            throw new Error('Application command gateway cannot revalidate a protected result without canonical operation authority and an admitted principalContract.');
+          if (!options.revalidateOperation) {
+            throw new Error('Application command gateway cannot revalidate a protected result without canonical operation authority.');
           }
           const receipt = await readCommandAdmission(sql, cursor.durableScope);
           assertCommandAuthorizationReceipt(
             receipt,
             command,
-            principalContract,
+            principal,
             contextDigest,
             receipt.inputDigest,
           );
@@ -258,7 +256,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
           const authorization = await options.revalidateOperation({
             receipt,
             boundary: 'result-read',
-            principal: principalContract,
+            principal,
             command,
             trustedContextDigest: contextDigest,
           });
@@ -307,7 +305,7 @@ function commandRoute(request: Request): { readonly command: string; readonly op
 
 async function admitted<TPrincipal extends ApplicationQueryPrincipal>(options: ApplicationCommandGatewayOptions<TPrincipal>, request: Request): Promise<ApplicationGatewayAdmission> {
   const admission = await options.authenticate(request);
-  if (!admission.principal.id || !admission.authorizationVersion || !admission.trustedContext || typeof admission.trustedContext !== 'object') throw new Error('Application command gateway identity provider returned an incomplete admission.');
+  if (!admission.principal.id || !admission.principal.authorityRevision || !admission.trustedContext || typeof admission.trustedContext !== 'object') throw new Error('Application command gateway identity provider returned an incomplete admission.');
   return admission;
 }
 

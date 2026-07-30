@@ -4,6 +4,7 @@ import { StructuredGeneration } from '@applik8s/applik8s/structured-generation';
 import { validateApplicationGraphStructure } from '@applik8s/core';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
+import { testApplicationAdmission } from '../../../test-support/application-principal.js';
 
 const ProvisionTenant = task('tenant.provision.v1', {
   input: type({ tenantId: 'string', requestId: 'string' }),
@@ -194,7 +195,7 @@ describe('v0.5 durable task and workflow contracts', () => {
       deployment: {
         namespace: 'task-operation-system',
         cursorSecret: { name: 'task-context-authority', key: 'key' },
-        authenticate: async () => ({ principal: { id: 'browser' }, authorizationVersion: 'records-v1', trustedContext: {} }),
+        authenticate: async () => testApplicationAdmission('browser', { authorityRevision: 'records-v1' }),
       },
     });
     const WriteRecord = task('records.write.v1', {

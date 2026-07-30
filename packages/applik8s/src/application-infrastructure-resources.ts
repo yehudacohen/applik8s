@@ -379,7 +379,18 @@ export function recordApplicationProviderGraph(
   const resolvedContract = typedContract ?? applicationTypedProviderContract(tokenName);
   const providerInterface = applicationProviderInterface(tokenName) ?? resolvedContract?.interface;
   if (!providerInterface) return;
-  const identityProviderAuthentication = tokenName === 'IdentityProvider'
+  const deterministicIdentityAdmission = tokenName === 'IdentityProvider'
+    && implementation && typeof implementation === 'object'
+    ? Reflect.get(implementation, 'deterministicAdmission')
+    : undefined;
+  const identityProviderAuthentication = deterministicIdentityAdmission
+    ? {
+        source: `async () => (${JSON.stringify(deterministicIdentityAdmission)})`,
+        dependencies: undefined,
+        location: undefined,
+        unresolved: undefined,
+      }
+    : tokenName === 'IdentityProvider'
     && implementation && typeof implementation === 'object'
     && typeof Reflect.get(implementation, 'authenticate') === 'function'
     ? serializeApplicationCallback({

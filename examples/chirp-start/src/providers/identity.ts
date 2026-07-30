@@ -1,5 +1,7 @@
-// typecast-file-boundary: Identity-provider HTTP claims are validated and normalized at this provider adapter boundary.
+// typecast-file-boundary: Provider sessions are validated and normalized into the canonical authority-owned principal.
+import { createHash } from 'node:crypto';
 import { Authorization } from '@applik8s/applik8s';
+import type { ApplicationPrincipal, JsonValue } from '@applik8s/core';
 
 export interface ChirpRuntimeProfile {
   readonly profile: 'starter' | 'dedicated' | 'external';
@@ -90,10 +92,17 @@ export async function authenticateConfiguredChirpRequest(
   if (identity.mode === 'deterministic-local') {
     if (installation.profile !== 'starter') throw new Error('Deterministic local identity is restricted to the starter profile.');
     const userId = request.headers.get('x-chirp-user')?.trim() || 'demo-user';
+    const trustedContext = {};
     return {
-      principal: { id: userId, claims: { handle: userId, kind: 'human', ...(userId === 'demo-user' ? { role: 'moderator' } : {}) } },
-      trustedContext: { issuer: 'chirp://deterministic-local', subject: userId, identityProvider: 'deterministic-local' },
-      authorizationVersion: identity.authorizationVersion,
+      principal: admittedHumanPrincipal({
+        provider: 'deterministic-local',
+        issuer: 'chirp://deterministic-local',
+        subject: userId,
+        authenticationMethod: 'deterministic-starter',
+        authorityRevision: identity.authorizationVersion,
+        trustedContext,
+      }),
+      trustedContext,
     };
   }
 
@@ -123,7 +132,7 @@ export const chirpAuthorization = Authorization.from(async ({ principal, action,
   if (identity.mode === 'deterministic-local') {
     if (installation.profile !== 'starter') throw new Error('Deterministic local authorization is restricted to the starter profile.');
     return {
-      allowed: resource?.id === undefined || principal.id === resource.id || action.endsWith('.read') || principal.claims?.role === 'moderator',
+      allowed: resource?.id === undefined || principal.identity.subject === resource.id || action.endsWith('.read') || principal.identity.subject === 'demo-user',
       version,
       reason: 'Deterministic local policy.',
     };
@@ -149,16 +158,13 @@ export const chirpAuthorization = Authorization.from(async ({ principal, action,
     };
   }
 
-  const roles = normalizedRoles(principal.claims);
   const allowed = resource?.id === undefined
-    || principal.id === resource.id
-    || action.endsWith('.read')
-    || roles.includes('moderator')
-    || roles.includes('administrator');
+    || principal.identity.subject === resource.id
+    || action.endsWith('.read');
   return {
     allowed,
     version,
-    reason: identity.mode === 'ory' ? 'Ory identity admitted; application policy owns this unscoped decision.' : 'Zitadel role claims evaluated by application policy.',
+    reason: identity.mode === 'ory' ? 'Ory identity admitted; application policy owns this unscoped decision.' : 'Zitadel identity admitted; product roles require canonical application grants.',
   };
 }, { ready: probeChirpAuthorization });
 
@@ -176,20 +182,20 @@ async function authenticateOry(
   const identity = record(value.identity);
   const subject = string(identity.id);
   if (!response.ok || value.active === false || !subject) throw new Error('Ory Kratos did not admit an active authenticated session.');
-  const traits = record(identity.traits);
-  const metadata = record(identity.metadata_public);
   const sessionId = string(value.id);
   const sessionVersion = string(identity.updated_at) || string(value.authenticated_at) || sessionId || 'active';
-  const claims = normalizedClaims({
-    kind: string(metadata.kind) || 'human',
-    handle: string(traits.handle) || string(traits.email),
-    role: string(metadata.role),
-    roles: metadata.roles,
-  });
+  const trustedContext = {};
   return {
-    principal: { id: subject, claims },
-    trustedContext: { issuer: issuer.href.replace(/\/$/, ''), subject, identityProvider: 'ory', sessionVersion },
-    authorizationVersion: `${policyVersion}:${sessionVersion}`,
+    principal: admittedHumanPrincipal({
+      provider: 'ory',
+      issuer: issuer.href.replace(/\/$/, ''),
+      subject,
+      authenticationMethod: 'ory-kratos-session',
+      authorityRevision: `${policyVersion}:${sessionVersion}`,
+      trustedContext,
+      ...(sessionId ? { sessionId } : {}),
+    }),
+    trustedContext,
   };
 }
 
@@ -211,18 +217,18 @@ async function authenticateZitadel(
   if (!response.ok || !subject || (responseIssuer && responseIssuer.replace(/\/$/, '') !== expectedIssuer)) {
     throw new Error('Zitadel did not admit a valid subject for the configured issuer.');
   }
-  const roles = normalizedRoles(value);
   const sessionVersion = string(value.updated_at) || string(value.auth_time) || string(value.iat) || 'active';
-  const claims = normalizedClaims({
-    kind: 'human',
-    handle: string(value.preferred_username) || string(value.email),
-    role: roles.includes('administrator') ? 'administrator' : roles.includes('moderator') ? 'moderator' : undefined,
-    roles,
-  });
+  const trustedContext = {};
   return {
-    principal: { id: subject, claims },
-    trustedContext: { issuer: expectedIssuer, subject, identityProvider: 'zitadel', sessionVersion },
-    authorizationVersion: `${policyVersion}:${sessionVersion}`,
+    principal: admittedHumanPrincipal({
+      provider: 'zitadel',
+      issuer: expectedIssuer,
+      subject,
+      authenticationMethod: 'oidc-bearer',
+      authorityRevision: `${policyVersion}:${sessionVersion}`,
+      trustedContext,
+    }),
+    trustedContext,
   };
 }
 
@@ -306,15 +312,31 @@ function string(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function normalizedClaims(value: Record<string, unknown>): Readonly<Record<string, string | readonly string[]>> {
-  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string | readonly string[]] => typeof entry[1] === 'string' || (Array.isArray(entry[1]) && entry[1].every((item) => typeof item === 'string'))));
-}
-
-function normalizedRoles(value: Readonly<Record<string, unknown>> | undefined): readonly string[] {
-  if (!value) return [];
-  const direct = value.roles;
-  if (Array.isArray(direct)) return [...new Set(direct.filter((role): role is string => typeof role === 'string' && Boolean(role.trim())).map((role) => role.trim()))];
-  const zitadel = record(value['urn:zitadel:iam:org:project:roles']);
-  const roles = [...Object.keys(zitadel), ...(typeof value.role === 'string' ? [value.role] : [])];
-  return [...new Set(roles.filter(Boolean))];
+function admittedHumanPrincipal(input: {
+  readonly provider: string;
+  readonly issuer: string;
+  readonly subject: string;
+  readonly authenticationMethod: string;
+  readonly authorityRevision: string;
+  readonly trustedContext: Readonly<Record<string, JsonValue>>;
+  readonly sessionId?: string;
+}): ApplicationPrincipal {
+  const catalogRevision = process.env.APPLIK8S_OPERATION_CATALOG_REVISION?.trim() || 'chirp-catalog-v1';
+  return {
+    id: `principal:chirp:${input.provider}:${input.subject}`,
+    identity: {
+      id: `identity:${input.provider}:${input.subject}`,
+      kind: 'human',
+      issuer: input.issuer,
+      subject: input.subject,
+    },
+    kind: 'human',
+    authenticationMethod: input.authenticationMethod,
+    audience: ['chirp'],
+    trustedContextDigest: createHash('sha256').update(JSON.stringify(input.trustedContext)).digest('hex'),
+    catalogRevision,
+    authorityRevision: input.authorityRevision,
+    admittedAt: new Date().toISOString(),
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+  };
 }

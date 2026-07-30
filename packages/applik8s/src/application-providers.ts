@@ -3,7 +3,9 @@ import type { ApplicationMigrationContract, ApplicationProviderInterfaceKind, Ap
 import type {
   ApplicationOAuthAuthorizationFlowRecord,
   ApplicationOAuthProviderDecision,
+  ApplicationDeterministicIdentityOptions,
 } from '@applik8s/identity';
+import { createDeterministicApplicationAdmission } from '@applik8s/identity';
 import { Cel } from 'typekro';
 import type { OryIdentityStackConfig, OryPlatformStackConfig } from 'typekro/ory';
 import { applicationTypeKroExpressionValue, applicationTypeKroString } from './application-typekro-values.js';
@@ -311,19 +313,13 @@ export type ApplicationContainerRegistryProvider =
   | ApplicationOciContainerRegistryProvider
   | ApplicationHarborContainerRegistryProvider;
 
-export interface ApplicationRequestAdmission {
-  readonly principal: {
-    readonly id: string;
-    readonly claims?: Readonly<Record<string, unknown>>;
-    can?(action: string, model: unknown, identity?: unknown): boolean | Promise<boolean>;
-  };
-  readonly trustedContext: Readonly<Record<string, import('@applik8s/core').JsonValue>>;
-  readonly authorizationVersion: string;
-}
+export type ApplicationRequestAdmission = import('@applik8s/core').ApplicationRequestAdmission;
 
 export interface ApplicationIdentityProvider {
   readonly kind: 'identity-provider';
   readonly infrastructure?: ApplicationIdentityInfrastructure;
+  /** Compiler-readable fixed admission for the explicitly starter-only deterministic provider. */
+  readonly deterministicAdmission?: ApplicationRequestAdmission;
   authenticate(request: Request): ApplicationRequestAdmission | Promise<ApplicationRequestAdmission>;
   /** Bounded credential-free capability probe used by generated workload readiness. */
   ready?(): void | Promise<void>;
@@ -352,7 +348,7 @@ export interface ApplicationIdentityInfrastructure {
 }
 
 export interface ApplicationAuthorizationRequest {
-  readonly principal: ApplicationRequestAdmission['principal'];
+  readonly principal: import('@applik8s/core').ApplicationPrincipal;
   readonly action: string;
   readonly resource?: ApplicationResourceRef & { readonly id?: string };
   readonly context: Readonly<Record<string, unknown>>;
@@ -853,6 +849,7 @@ export interface ApplicationIdentityProviderToken extends ApplicationProviderTok
     authenticate: ApplicationIdentityProvider['authenticate'],
     options?: { readonly infrastructure?: ApplicationIdentityInfrastructure; readonly ready?: NonNullable<ApplicationIdentityProvider['ready']> },
   ): ApplicationIdentityProvider;
+  deterministic(options: ApplicationDeterministicIdentityOptions): ApplicationIdentityProvider;
 }
 
 export interface ApplicationOAuthAuthorizationServerProviderToken extends ApplicationProviderToken<ApplicationOAuthAuthorizationServerProvider> {
@@ -1361,6 +1358,15 @@ export const IdentityProvider: ApplicationIdentityProviderToken = {
     if (options?.infrastructure) assertApplicationIdentityInfrastructure(options.infrastructure);
     if (options?.ready !== undefined && typeof options.ready !== 'function') throw new Error('IdentityProvider.from({ ready }) must be a function.');
     return { kind: 'identity-provider', authenticate, ...(options?.infrastructure ? { infrastructure: options.infrastructure } : {}), ...(options?.ready ? { ready: options.ready } : {}) };
+  },
+  deterministic(options) {
+    const admission = createDeterministicApplicationAdmission(options);
+    return {
+      kind: 'identity-provider',
+      authenticate: () => admission,
+      deterministicAdmission: admission,
+      ready: () => undefined,
+    };
   },
 };
 

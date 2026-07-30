@@ -53,10 +53,9 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
           return {
             principal: admission.principal,
             admittedContext: {
-              values: applicationRequestContextValues(admission.principal, admission.authorizationVersion, admission.trustedContext),
+              values: applicationRequestContextValues(admission.principal, admission.principal.authorityRevision, admission.trustedContext),
               digestSecret: options.cursorSecret,
             },
-            authorizationVersion: admission.authorizationVersion,
           };
         },
       })
@@ -80,9 +79,8 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
           const admission = await admitted(options.identity, request);
           return {
             principal: admission.principal,
-            authorizationVersion: admission.authorizationVersion,
             contextDigest: applicationAdmittedContextDigest({
-              values: applicationRequestContextValues(admission.principal, admission.authorizationVersion, admission.trustedContext),
+              values: applicationRequestContextValues(admission.principal, admission.principal.authorityRevision, admission.trustedContext),
               digestSecret: options.cursorSecret,
             }),
           };
@@ -136,7 +134,7 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
 
 async function admitted(identity: ApplicationIdentityProvider, request: Request) {
   const admission = await identity.authenticate(request);
-  if (!admission?.principal?.id || !admission.authorizationVersion || !admission.trustedContext || typeof admission.trustedContext !== 'object') {
+    if (!admission?.principal?.id || !admission.principal.authorityRevision || !admission.trustedContext || typeof admission.trustedContext !== 'object') {
     throw new Error('Application IdentityProvider provider returned an incomplete admission.');
   }
   return admission;

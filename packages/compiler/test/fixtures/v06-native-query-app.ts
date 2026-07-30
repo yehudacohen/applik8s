@@ -2,6 +2,7 @@ import { app, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { eq } from 'drizzle-orm';
 import { pgTable, text } from 'drizzle-orm/pg-core';
+import { createDeterministicApplicationAdmission } from '@applik8s/identity';
 
 const cards = pgTable('cards', {
   id: text('id').primaryKey(),
@@ -36,6 +37,14 @@ nativeQueryApplication.gateway('public', {
   deployment: {
     namespace: 'catalog',
     cursorSecret: { name: 'gateway-cursor', namespace: 'catalog', key: 'secret' },
-    authenticate: async (request) => ({ principal: { id: request.headers.get('x-principal') ?? 'anonymous' }, trustedContext: { organizationId: request.headers.get('x-organization') ?? 'unknown' }, authorizationVersion: request.headers.get('x-authorization-version') ?? 'v1' }),
+    authenticate: async (request) => createDeterministicApplicationAdmission({
+      mode: 'starter',
+      application: 'native-query-fixture',
+      subject: request.headers.get('x-principal') ?? 'anonymous',
+      catalogRevision: 'fixture-catalog-v1',
+      authorityRevision: request.headers.get('x-authorization-version') ?? 'v1',
+      trustedContext: { organizationId: request.headers.get('x-organization') ?? 'unknown' },
+      admittedAt: '2026-01-01T00:00:00.000Z',
+    }),
   },
 });

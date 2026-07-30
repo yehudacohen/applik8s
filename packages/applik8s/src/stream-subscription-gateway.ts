@@ -12,7 +12,6 @@ import { createApplicationSubscriptionLimiter } from './query-gateway.js';
 
 export interface ApplicationStreamSubscriptionIdentity<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly principal: TPrincipal;
-  readonly authorizationVersion: string;
   /** Opaque HMAC digest of provider-admitted context; raw context never enters cursors or stream SQL. */
   readonly contextDigest: string;
 }
@@ -187,7 +186,7 @@ function streamRoute(request: Request): { readonly subscription: string; readonl
 
 async function admitted<TPrincipal extends ApplicationQueryPrincipal>(options: ApplicationStreamSubscriptionGatewayOptions<TPrincipal>, request: Request): Promise<ApplicationStreamSubscriptionIdentity<TPrincipal>> {
   const identity = await options.authenticate(request);
-  if (!identity.principal.id || !identity.authorizationVersion || !identity.contextDigest) throw new Error('Application stream subscription identity is incomplete.');
+  if (!identity.principal.id || !identity.principal.authorityRevision || !identity.contextDigest) throw new Error('Application stream subscription identity is incomplete.');
   return identity;
 }
 
@@ -210,7 +209,7 @@ function cursorForRequest<TPrincipal extends ApplicationQueryPrincipal>(
 
 function retentionGap(sequence: number, page: ApplicationReplayPage<object>): boolean { return sequence > 0 && page.retentionFloor > sequence; }
 function advanceCursor(cursor: StreamCursor, sequence: number, now: number, ttlSeconds: number): StreamCursor { return { ...cursor, sequence, expiresAt: now + ttlSeconds * 1_000 }; }
-function sameIdentity<TPrincipal extends ApplicationQueryPrincipal>(left: ApplicationStreamSubscriptionIdentity<TPrincipal>, right: ApplicationStreamSubscriptionIdentity<TPrincipal>): boolean { return left.principal.id === right.principal.id && left.authorizationVersion === right.authorizationVersion && left.contextDigest === right.contextDigest; }
+function sameIdentity<TPrincipal extends ApplicationQueryPrincipal>(left: ApplicationStreamSubscriptionIdentity<TPrincipal>, right: ApplicationStreamSubscriptionIdentity<TPrincipal>): boolean { return left.principal.id === right.principal.id && left.principal.authorityRevision === right.principal.authorityRevision && left.contextDigest === right.contextDigest; }
 function streamCursorBindings<TPrincipal extends ApplicationQueryPrincipal>(
   secret: string,
   identity: ApplicationStreamSubscriptionIdentity<TPrincipal>,
@@ -218,7 +217,7 @@ function streamCursorBindings<TPrincipal extends ApplicationQueryPrincipal>(
 ): Pick<StreamCursor, 'principalBinding' | 'authorizationBinding' | 'contextBinding' | 'applicationBinding' | 'operationId' | 'operationVersion' | 'catalogRevision' | 'authorityRevision'> {
   return {
     principalBinding: streamBinding(secret, 'principal', identity.principal.id),
-    authorizationBinding: streamBinding(secret, 'authorization', identity.authorizationVersion),
+    authorizationBinding: streamBinding(secret, 'authorization', identity.principal.authorityRevision),
     contextBinding: streamBinding(secret, 'context', identity.contextDigest),
     ...(receipt ? {
       applicationBinding: streamBinding(secret, 'application', receipt.application),
