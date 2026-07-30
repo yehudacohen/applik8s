@@ -233,6 +233,7 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/runtime-ai', resolve(workspaceRoot, 'packages/runtime-ai/src/index.ts')],
     ['@applik8s/ai', resolve(workspaceRoot, 'packages/ai/src/index.ts')],
     ['@applik8s/ai-tanstack', resolve(workspaceRoot, 'packages/ai-tanstack/src/index.ts')],
+    ['@applik8s/conversations', resolve(workspaceRoot, 'packages/conversations/src/index.ts')],
     ['@applik8s/client', resolve(workspaceRoot, 'packages/client/src/index.ts')],
     ['@applik8s/identity', resolve(workspaceRoot, 'packages/identity/src/index.ts')],
     ['@applik8s/identity/server', resolve(workspaceRoot, 'packages/identity/src/server.ts')],

@@ -10,6 +10,7 @@
         "@applik8s/applik8s": "0.6.0",
         "@applik8s/client": "0.6.0",
         "@applik8s/compiler": "0.6.0",
+        "@applik8s/conversations": "0.6.0",
         "@applik8s/core": "0.6.0",
         "@applik8s/deployment-alchemy": "0.6.0",
         "@applik8s/deployment-compiler": "0.6.0",
@@ -228,6 +229,16 @@
         "postgres": "^3.4.7",
         "typescript": "^5.3.0",
         "yaml": "^2.9.0",
+      },
+    },
+    "packages/conversations": {
+      "name": "@applik8s/conversations",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/ai": "0.6.0",
+        "@applik8s/applik8s": "0.6.0",
+        "@applik8s/core": "0.6.0",
+        "drizzle-orm": "^0.45.1",
       },
     },
     "packages/core": {
@@ -524,6 +535,8 @@
     "@applik8s/client": ["@applik8s/client@workspace:packages/client"],
 
     "@applik8s/compiler": ["@applik8s/compiler@workspace:packages/compiler"],
+
+    "@applik8s/conversations": ["@applik8s/conversations@workspace:packages/conversations"],
 
     "@applik8s/core": ["@applik8s/core@workspace:packages/core"],
 

@@ -34,6 +34,7 @@ const publicEntrypoints = [
   '@applik8s/core',
   '@applik8s/ai',
   '@applik8s/ai-tanstack',
+  '@applik8s/conversations',
   '@applik8s/identity',
   '@applik8s/identity/client',
   '@applik8s/identity/server',
