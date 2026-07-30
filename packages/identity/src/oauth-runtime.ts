@@ -448,14 +448,34 @@ function assertProviderDecision(
     || provider.providerAuthorizationRequestId
       !== flow.providerAuthorizationRequestId
     || provider.accepted !== (decision === 'approve')
-    || normalizedRedirectUri(provider.redirectUri) !== flow.redirectUri
-    || (provider.accepted && !provider.code?.trim())
+    || !normalizedProviderContinuation(provider.continuationUri)
   ) {
     throw oauthFlowError(
       'OAUTH_PROVIDER_DECISION_INVALID',
       `OAuth provider decision for flow ${flow.id} changed its bound request.`,
     );
   }
+}
+
+function normalizedProviderContinuation(value: string): string {
+  const url = new URL(requiredString(value, 'provider continuation URI'));
+  if (
+    url.protocol !== 'https:'
+    && !(url.protocol === 'http:'
+      && (url.hostname === 'localhost' || url.hostname === '127.0.0.1'))
+  ) {
+    throw oauthFlowError(
+      'OAUTH_PROVIDER_DECISION_INVALID',
+      'OAuth provider continuation must use HTTPS outside loopback.',
+    );
+  }
+  if (url.username || url.password) {
+    throw oauthFlowError(
+      'OAUTH_PROVIDER_DECISION_INVALID',
+      'OAuth provider continuation must not contain credentials.',
+    );
+  }
+  return url.toString();
 }
 
 function normalizedRedirectUri(value: string): string {

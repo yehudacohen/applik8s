@@ -87,8 +87,12 @@ export interface ApplicationOAuthProviderDecision {
   readonly id: string;
   readonly providerAuthorizationRequestId: string;
   readonly accepted: boolean;
-  readonly redirectUri: string;
-  readonly code?: string;
+  /**
+   * Provider-owned continuation URI. For authorization-code flows the
+   * authorization server follows this continuation and later redirects to the
+   * exact client URI already bound in the flow.
+   */
+  readonly continuationUri: string;
   readonly evidence: Readonly<Record<string, JsonValue>>;
 }
 

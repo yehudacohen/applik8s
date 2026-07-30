@@ -2,9 +2,9 @@ import type { ApplicationPrincipal } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import {
   ApplicationOAuthAuthorizationFlowService,
-  MemoryApplicationOAuthAuthorizationFlowStore,
   type ApplicationOAuthAuthorizationProviderAdapter,
   type ApplicationOAuthClient,
+  MemoryApplicationOAuthAuthorizationFlowStore,
 } from '../src/index.js';
 
 const binding = {
@@ -26,10 +26,8 @@ describe('OAuth authorization-flow authority', () => {
             providerAuthorizationRequestId:
               input.flow.providerAuthorizationRequestId,
             accepted: input.decision === 'approve',
-            redirectUri: input.flow.redirectUri,
-            ...(input.decision === 'approve'
-              ? { code: 'authorization-code-1' }
-              : {}),
+            continuationUri:
+              `https://oauth.example.test/continue/${input.flow.id}`,
             evidence: { deterministic: true },
           };
         },
@@ -181,8 +179,7 @@ describe('OAuth authorization-flow authority', () => {
             providerAuthorizationRequestId:
               input.flow.providerAuthorizationRequestId,
             accepted: true,
-            redirectUri: 'https://attacker.example.test/callback',
-            code: 'authorization-code-1',
+            continuationUri: 'ftp://attacker.example.test/continue',
             evidence: {},
           };
         },
@@ -217,10 +214,8 @@ describe('OAuth authorization-flow authority', () => {
             providerAuthorizationRequestId:
               input.flow.providerAuthorizationRequestId,
             accepted: input.decision === 'approve',
-            redirectUri: input.flow.redirectUri,
-            ...(input.decision === 'approve'
-              ? { code: 'authorization-code-1' }
-              : {}),
+            continuationUri:
+              `https://oauth.example.test/continue/${input.flow.id}`,
             evidence: {},
           };
         },
@@ -270,10 +265,8 @@ function oauthRuntime(options: {
             providerAuthorizationRequestId:
               input.flow.providerAuthorizationRequestId,
             accepted: input.decision === 'approve',
-            redirectUri: input.flow.redirectUri,
-            ...(input.decision === 'approve'
-              ? { code: 'authorization-code-1' }
-              : {}),
+            continuationUri:
+              `https://oauth.example.test/continue/${input.flow.id}`,
             evidence: { deterministic: true },
           };
         },

@@ -19,6 +19,7 @@
         "@applik8s/deployment-provider-oci": "0.6.0",
         "@applik8s/deployment-typekro": "0.6.0",
         "@applik8s/identity": "0.6.0",
+        "@applik8s/identity-ory": "0.6.0",
         "@applik8s/react": "0.6.0",
         "@applik8s/runtime-ai": "0.6.0",
         "@applik8s/runtime-opensearch": "0.6.0",
@@ -300,6 +301,14 @@
         "@applik8s/core": "0.6.0",
       },
     },
+    "packages/identity-ory": {
+      "name": "@applik8s/identity-ory",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/core": "0.6.0",
+        "@applik8s/identity": "0.6.0",
+      },
+    },
     "packages/operations": {
       "name": "@applik8s/operations",
       "version": "0.6.0",
@@ -511,6 +520,8 @@
     "@applik8s/example-guestbook-start": ["@applik8s/example-guestbook-start@workspace:examples/guestbook-start"],
 
     "@applik8s/identity": ["@applik8s/identity@workspace:packages/identity"],
+
+    "@applik8s/identity-ory": ["@applik8s/identity-ory@workspace:packages/identity-ory"],
 
     "@applik8s/operations": ["@applik8s/operations@workspace:packages/operations"],
 

@@ -1,0 +1,24 @@
+{
+  "name": "@applik8s/identity-ory",
+  "version": "0.6.0",
+  "description": "Ory Kratos and Hydra adapters for the provider-neutral Applik8s identity and OAuth contracts.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/identity-ory"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/core": "0.6.0",
+    "@applik8s/identity": "0.6.0"
+  }
+}
