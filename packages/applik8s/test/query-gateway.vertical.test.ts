@@ -97,6 +97,58 @@ describe('v0.6 authenticated query gateway', () => {
     expect(await response.json()).toMatchObject({ kind: 'snapshot', query: 'cards.list.v1' });
   });
 
+  test('runs signed internal queries through the existing bounded query binding', async () => {
+    const { query } = queryFixture();
+    const principal = testApplicationPrincipal('allowed', {
+      authorityRevision: 'authority-1',
+      catalogRevision: 'catalog-1',
+      trustedContext: { organizationId: 'organization-1' },
+    });
+    const receipt = queryReceipt(principal.id, principal.authorityRevision, {
+      principal,
+      trustedContextDigest: principal.trustedContextDigest,
+      transport: 'mcp',
+    });
+    const gateway = createApplicationQueryGateway({
+      queries: [query as ApplicationQueryBinding<unknown, unknown>],
+      authenticate: async () => {
+        throw new Error('Internal query invocation must not authenticate public credentials.');
+      },
+      context: (identity) => {
+        expect(identity.principal).toBe(principal);
+        expect(identity.admittedContext.values).toMatchObject({
+          organizationId: 'organization-1',
+        });
+        return fakeContext();
+      },
+      cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
+    });
+
+    await expect(gateway.invoke({
+      query: query.id,
+      input: { limit: 5 },
+      invocation: {
+        apiVersion: 'applik8s.internalOperation/v1alpha1',
+        id: 'internal-query-1',
+        operationId: receipt.operationId,
+        operationVersion: receipt.operationVersion,
+        inputDigest: receipt.inputDigest,
+        audience: receipt.audience,
+        source: {
+          transport: 'mcp',
+          workloadId: 'mcpServer.public',
+        },
+        admission: {
+          principal,
+          trustedContext: { organizationId: 'organization-1' },
+        },
+        authorizationReceipt: receipt,
+        issuedAt: '2026-07-30T12:00:00.000Z',
+        expiresAt: '2026-07-30T12:00:30.000Z',
+      },
+    })).resolves.toEqual([{ id: 'card-1', name: 'First' }]);
+  });
+
   test('returns a validated bounded snapshot and resumes an intervening relevant change', async () => {
     const { query } = queryFixture();
     const context = fakeContext([{ items: [{ sequence: 6, model: 'Card', operation: 'invalidate', contextDigest: 'digest', recordedAt: '2026-07-15T12:00:01.000Z' }], retentionFloor: 1 }]);
@@ -255,6 +307,7 @@ describe('v0.6 authenticated query gateway', () => {
     const handler = createApplicationQueryGatewayHttpHandler({
       async snapshot<TValue>(_request: Request, query: string) { return { kind: 'snapshot' as const, protocol: 'applik8s.query/v1alpha1' as const, query, inputKey: 'key', value: [] as unknown as TValue, cursor: 'cursor', capability: 'resumableInvalidation' as const, generatedAt: '2026-07-15T00:00:00.000Z' }; },
       async *subscribe(_request, query) { yield { kind: 'invalidate', protocol: 'applik8s.query/v1alpha1', id: `${query}:1`, sequence: 1, query, cursor: 'next', models: ['Card'] }; },
+      async invoke() { throw new Error('not used'); },
     });
     const snapshot = await handler(new Request('https://catalog.test/queries/cards.list.v1/snapshot', { method: 'POST', body: JSON.stringify({ input: { limit: 5 } }) }));
     expect(snapshot.status).toBe(200);
@@ -269,6 +322,7 @@ describe('v0.6 authenticated query gateway', () => {
     const handler = createApplicationQueryGatewayHttpHandler({
       async snapshot<TValue>(_request: Request, query: string) { return { kind: 'snapshot' as const, protocol: 'applik8s.query/v1alpha1' as const, query, inputKey: 'key', value: [] as unknown as TValue, cursor: 'cursor', capability: 'resumableInvalidation' as const, generatedAt: '2026-07-15T00:00:00.000Z' }; },
       async *subscribe(_request, query) { yield { kind: 'invalidate', protocol: 'applik8s.query/v1alpha1', id: `${query}:1`, sequence: 1, query, cursor: `${query}:next`, models: ['Card'] }; },
+      async invoke() { throw new Error('not used'); },
     }, { maxMultiplexSubscriptions: 2 });
     const response = await handler(new Request('https://catalog.test/queries/multiplex', {
       method: 'POST',
@@ -303,6 +357,7 @@ describe('v0.6 authenticated query gateway', () => {
         });
       },
       async *subscribe() { yield* []; },
+      async invoke() { throw new Error('not used'); },
     });
     const response = await handler(new Request('https://catalog.test/queries/timeline.v1/snapshot', {
       method: 'POST', body: JSON.stringify({ input: {} }),

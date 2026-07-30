@@ -1,9 +1,11 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { type ApplicationQueryEvent, type ApplicationQueryMultiplexErrorFrame, type ApplicationQueryMultiplexFrame, type ApplicationQueryMultiplexSubscription, type ApplicationQuerySnapshot, queryInputKey } from '@applik8s/client';
-import { type ApplicationAuthorizationReceipt, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import { type ApplicationAuthorizationReceipt, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import type { ApplicationInternalOperationInvocation } from '@applik8s/operations';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { validateQueryInput, validateQueryOutput } from './application-query-runtime.js';
+import { applicationRequestContextValues } from './command-principal.js';
 import { type ApplicationAdmittedContext, type ApplicationRelationalContext, applicationAdmittedContextDigest } from './relational-runtime.js';
 import { validateTrustedContextValue } from './trusted-context.js';
 
@@ -79,6 +81,12 @@ export interface ApplicationQueryGatewayAuditRecord {
 export interface ApplicationQueryGateway<TRequest> {
   snapshot<TValue = unknown>(request: TRequest, query: string, input: unknown): Promise<ApplicationQuerySnapshot<TValue>>;
   subscribe(request: TRequest, query: string, input: unknown, cursor: string, options?: { readonly signal?: AbortSignal }): AsyncIterable<ApplicationQueryEvent>;
+  /** Executes an admitted internal transport invocation through the existing query binding. */
+  invoke(input: {
+    readonly query: string;
+    readonly input: JsonValue;
+    readonly invocation: ApplicationInternalOperationInvocation;
+  }): Promise<JsonValue>;
 }
 
 export interface ApplicationQueryGatewayHttpOptions {
@@ -264,6 +272,63 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
         options.audit?.({ event: 'subscription-closed', query: query.id, principal: identity.principal.id });
       }
     },
+    async invoke(request) {
+      const query = requiredQuery(queries, request.query);
+      const input = validateQueryInput(query, request.input);
+      // typecast-boundary: the internal handler has already validated the
+      // canonical principal; generated query bindings use that common
+      // principal contract rather than transport-specific credential shapes.
+      const principal =
+        request.invocation.admission.principal as TPrincipal;
+      const trustedContext = request.invocation.admission.trustedContext;
+      const admittedContext: ApplicationAdmittedContext = {
+        values: applicationRequestContextValues(
+          principal,
+          principal.authorityRevision,
+          trustedContext,
+        ),
+        digestSecret: options.cursorSecret,
+      };
+      if (!await query.authorize(principal, input, admittedContext.values)) {
+        options.audit?.({
+          event: 'authorization-denied',
+          query: query.id,
+          principal: principal.id,
+        });
+        throw new ApplicationQueryAuthorizationError(query.id);
+      }
+      if (!query.database) {
+        throw new Error(
+          `Application query ${query.id} has no snapshot authority.`,
+        );
+      }
+      const identity: ApplicationGatewayIdentity<TPrincipal> = {
+        principal,
+        admittedContext,
+      };
+      const context = options.context(identity);
+      const result = await withTimeout(
+        context.snapshot(query.database, async () => {
+          if (!query.sourceRuntime) {
+            return query.run(context, principal, input);
+          }
+          return query.sourceRuntime.snapshot(async (source) =>
+            query.run(context, principal, input, source),
+          );
+        }),
+        query.budgets.timeoutMs,
+        `Application query ${query.id} exceeded its ${query.budgets.timeoutMs}ms execution budget.`,
+      );
+      const providerSnapshot = query.sourceRuntime
+        ? result.value as { readonly value: unknown }
+        : undefined;
+      const output = validateQueryOutput(
+        query,
+        providerSnapshot?.value ?? result.value,
+      );
+      enforceResultBudget(query, output);
+      return jsonValue(output);
+    },
   };
 }
 
@@ -281,6 +346,24 @@ export class ApplicationQuerySubscriptionLimitError extends Error {
     super(`Application query ${query} subscription limit was reached.`);
     this.name = 'ApplicationQuerySubscriptionLimitError';
   }
+}
+
+function jsonValue(value: unknown): JsonValue {
+  if (
+    value === null
+    || typeof value === 'string'
+    || typeof value === 'number'
+    || typeof value === 'boolean'
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(jsonValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, jsonValue(item)]),
+    );
+  }
+  throw new Error('Application query result is not JSON serializable.');
 }
 
 // typecast-boundary: bounded parsed request bodies remain unknown until the query binding validates them.
