@@ -1,0 +1,24 @@
+{
+  "name": "@applik8s/identity-postgres",
+  "version": "0.6.0",
+  "description": "Durable PostgreSQL storage for Applik8s identity admission and OAuth authorization flows.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/identity-postgres"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/identity": "0.6.0",
+    "postgres": "^3.4.7"
+  }
+}

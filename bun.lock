@@ -20,6 +20,7 @@
         "@applik8s/deployment-typekro": "0.6.0",
         "@applik8s/identity": "0.6.0",
         "@applik8s/identity-ory": "0.6.0",
+        "@applik8s/identity-postgres": "0.6.0",
         "@applik8s/react": "0.6.0",
         "@applik8s/runtime-ai": "0.6.0",
         "@applik8s/runtime-opensearch": "0.6.0",
@@ -309,6 +310,14 @@
         "@applik8s/identity": "0.6.0",
       },
     },
+    "packages/identity-postgres": {
+      "name": "@applik8s/identity-postgres",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/identity": "0.6.0",
+        "postgres": "^3.4.7",
+      },
+    },
     "packages/operations": {
       "name": "@applik8s/operations",
       "version": "0.6.0",
@@ -522,6 +531,8 @@
     "@applik8s/identity": ["@applik8s/identity@workspace:packages/identity"],
 
     "@applik8s/identity-ory": ["@applik8s/identity-ory@workspace:packages/identity-ory"],
+
+    "@applik8s/identity-postgres": ["@applik8s/identity-postgres@workspace:packages/identity-postgres"],
 
     "@applik8s/operations": ["@applik8s/operations@workspace:packages/operations"],
 
