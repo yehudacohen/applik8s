@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { ApplicationCommandProgress, ApplicationCommandSubmission } from '@applik8s/client';
-import { type ApplicationAuthorizationReceipt, type ApplicationPrincipal, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import { type ApplicationAuthorizationReceipt, type ApplicationPrincipal, type ApplicationRequestAdmission, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import type { ApplicationInternalOperationInvocation } from '@applik8s/operations';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
@@ -83,6 +84,17 @@ export interface ApplicationCommandGatewayOptions<TPrincipal extends Application
 
 export interface ApplicationCommandGateway {
   handle(request: Request): Promise<Response | undefined>;
+  /**
+   * Executes an already admitted and signed internal transport invocation.
+   * The command is still published to its existing durable processor; this
+   * method waits only until the signed invocation deadline for its typed result.
+   */
+  invoke(input: {
+    readonly operationId: string;
+    readonly input: JsonValue;
+    readonly invocation: ApplicationInternalOperationInvocation;
+    readonly signal?: AbortSignal;
+  }): Promise<JsonValue>;
   /** Verifies the EventLog and every durable-result database before readiness is advertised. */
   ready(): Promise<void>;
   close(): Promise<void>;
@@ -286,6 +298,126 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
         return /required|validation|identity|cursor/i.test(message) ? json({ error: 'invalid_request' }, 400) : json({ error: 'internal_error' }, 500);
       }
     },
+    async invoke(request) {
+      const command = [...commands.values()].find(
+        (candidate) => candidate.operationId === request.operationId,
+      );
+      if (!command) {
+        throw new Error(
+          `Application operation ${request.operationId} is unavailable at this command gateway.`,
+        );
+      }
+      const input = validateCommandInput(command, request.input);
+      const admission: ApplicationRequestAdmission = request.invocation.admission;
+      const principal = admission.principal;
+      const trustedContext = admission.trustedContext;
+      const trustedContextDigest = principal.trustedContextDigest;
+      const receipt = request.invocation.authorizationReceipt;
+      const inputDigest = applicationOperationInputDigest(input);
+      assertCommandAuthorizationReceipt(
+        receipt,
+        command,
+        principal,
+        trustedContextDigest,
+        inputDigest,
+        'mcp',
+      );
+      const idempotencyKey = requiredString(
+        request.invocation.idempotencyKey,
+        'idempotencyKey',
+      );
+      const targetKey = canonicalApplicationCommandKey(
+        command.key(input, {
+          principal,
+          authorizationVersion: principal.authorityRevision,
+          trustedContext,
+        }) as
+          | string
+          | number
+          | boolean
+          | Readonly<Record<string, string | number | boolean>>,
+      );
+      const routedIdempotencyKey =
+        command.idempotencyKey?.(input) ?? idempotencyKey;
+      const durableScope = applicationCommandScope(
+        command.bindingId,
+        command.model,
+        targetKey,
+        routedIdempotencyKey,
+        trustedContextDigest,
+      );
+      const commandId = `internal-${durableScope.slice('sha256:'.length)}`;
+      const sql =
+        command.sql
+        ?? await database(databases, command.databaseUrl);
+      await persistCommandAdmission(sql, {
+        scope: durableScope,
+        command: command.id,
+        bindingId: command.bindingId,
+        commandId,
+        receipt,
+      });
+      const durableContext = applicationRequestContextValues(
+        principal,
+        principal.authorityRevision,
+        trustedContext,
+      );
+      await publisher.publish({
+        id: commandId,
+        contract: commandContract(command.id),
+        payload: input,
+        recordedAt: now().toISOString(),
+        correlationId: commandId,
+        partitionKey: targetKey,
+        routing: {
+          binding: command.bindingId,
+          targetKey,
+          idempotencyKey: routedIdempotencyKey,
+        },
+        trustedContext: {
+          values: durableContext,
+          digest: trustedContextDigest,
+          changeScopes: applicationRelationalChangeScopes({
+            values: durableContext,
+            digestSecret: options.cursorSecret,
+          }),
+        },
+        authorizationReceipt: receipt,
+      }, 'commands');
+      const expiresAt = Date.parse(request.invocation.expiresAt);
+      while (!request.signal?.aborted && now().getTime() <= expiresAt) {
+        const rows = await sql.unsafe(
+          'SELECT output, error FROM applik8s_command_results WHERE scope = $1 LIMIT 1',
+          [durableScope],
+        );
+        const row = rows[0] as {
+          readonly output?: unknown;
+          readonly error?: unknown;
+        } | undefined;
+        if (row) {
+          if (row.error) {
+            const rejection = durableRejection(row.error);
+            const failure = durableTerminalFailure(rejection);
+            if (failure) {
+              throw new Error(
+                `Application command ${command.id} failed with ${failure.code}.`,
+              );
+            }
+            throw new Error(
+              `Application command ${command.id} was rejected with ${rejection.name}.`,
+            );
+          }
+          return jsonValue(row.output);
+        }
+        await abortableSleep(100, request.signal);
+      }
+      if (request.signal?.aborted) {
+        throw new Error(`Application command ${command.id} was cancelled.`);
+      }
+      throw new Error(
+        `Application command ${command.id} did not complete before the internal invocation deadline.`,
+      );
+    },
     async ready() {
       await publisher.verify?.();
       await Promise.all(options.commands.map(async (command) => {
@@ -380,6 +512,7 @@ function assertCommandAuthorizationReceipt(
   principal: ApplicationPrincipal,
   trustedContextDigest: string,
   inputDigest: string,
+  transport: 'http' | 'mcp' = 'http',
 ): void {
   const diagnostics = validateApplicationAuthorizationReceipt(receipt);
   const expectedVersion = command.operationVersion ?? commandContract(command.id).version;
@@ -392,13 +525,48 @@ function assertCommandAuthorizationReceipt(
     || receipt.inputDigest !== inputDigest
     || receipt.operationVersion !== expectedVersion
     || (command.operationId !== undefined && receipt.operationId !== command.operationId)
-    || receipt.transport !== 'http') {
+    || receipt.transport !== transport) {
     throw new Error(
       `Application command ${command.id} authority returned an invalid receipt: ${
         diagnostics.map((diagnostic) => diagnostic.message).join(' ') || 'operation, principal, context, input, or transport binding mismatch.'
       }`,
     );
   }
+}
+
+function jsonValue(value: unknown): JsonValue {
+  if (
+    value === null
+    || typeof value === 'string'
+    || typeof value === 'number'
+    || typeof value === 'boolean'
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(jsonValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, jsonValue(item)]),
+    );
+  }
+  throw new Error('Application command result is not JSON serializable.');
+}
+
+function abortableSleep(
+  milliseconds: number,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timeout = setTimeout(done, milliseconds);
+    const abort = () => done();
+    function done() {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
+      resolve();
+    }
+    signal?.addEventListener('abort', abort, { once: true });
+  });
 }
 
 function commandReceiptCursorFields(

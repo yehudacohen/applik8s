@@ -13,6 +13,124 @@ describe('authenticated command gateway', () => {
     expect(first).toMatch(/^sha256:/);
   });
 
+  it('executes signed MCP placement invocations through the durable command processor', async () => {
+    const publish = vi.fn(async () => ({
+      stream: 'events',
+      sequence: 1,
+      duplicate: false,
+      subject: 'command',
+      messageId: 'internal',
+    }));
+    const unsafe = vi.fn(async (statement: string, parameters: readonly unknown[]) => {
+      if (statement.includes('INSERT INTO applik8s_command_admissions')) {
+        return [{ scope: parameters[0] }];
+      }
+      if (statement.includes('applik8s_command_results')) {
+        return [{ output: { changed: true }, error: null }];
+      }
+      throw new Error(`Unexpected SQL in internal command fixture: ${statement}`);
+    });
+    const principal = testApplicationPrincipal('agent-1', {
+      authorityRevision: 'authority-1',
+      catalogRevision: 'catalog-1',
+      trustedContext: { organizationId: 'organization-1' },
+    });
+    const receipt = {
+      apiVersion: 'applik8s.authorizationReceipt/v1alpha1' as const,
+      application: 'chirp',
+      id: 'receipt-internal-1',
+      operationId: 'applik8s://models/Card/operations/rename' as const,
+      operationVersion: 'v1',
+      catalogRevision: principal.catalogRevision,
+      authorityRevision: principal.authorityRevision,
+      principal,
+      trustedContextDigest: principal.trustedContextDigest,
+      matchedPermissionIds: ['permission:card.rename'],
+      matchedGrantIds: [],
+      inputDigest: 'sha256:5d6004c889ff35626448876a306db680acceceae6ef1f887c2b121c4fea99034',
+      target: { kind: 'all' as const },
+      scopeEvidence: [],
+      audience: 'https://chirp.example.test/mcp',
+      transport: 'mcp' as const,
+      admittedAt: '2026-07-30T12:00:00.000Z',
+    };
+    const gateway = createApplicationCommandGateway({
+      commands: [{
+        id: 'cards.rename.v1',
+        application: 'chirp',
+        bindingId: 'Card-cards.rename.v1',
+        model: 'Card',
+        operationId: receipt.operationId,
+        operationVersion: 'v1',
+        inputSchema: {
+          type: 'object',
+          properties: { cardId: { type: 'string' } },
+          required: ['cardId'],
+          additionalProperties: false,
+        },
+        databaseUrl: 'postgres://unused',
+        sql: { unsafe } as never,
+        key: (input) => String(Reflect.get(input, 'cardId')),
+      }],
+      authenticate: async () => {
+        throw new Error('Internal invocation must not call public authentication.');
+      },
+      authorizeOperation: async () => {
+        throw new Error('Internal invocation must use the signed receipt.');
+      },
+      revalidateOperation: async () => ({ allowed: true }),
+      cursorSecret: 'a-secure-test-secret-with-at-least-32-characters',
+      eventLogPublisher: { publish, async drain() {} },
+      now: () => new Date('2026-07-30T12:00:00.000Z'),
+    });
+    const input = { cardId: 'card-1' };
+    const invocation = {
+      apiVersion: 'applik8s.internalOperation/v1alpha1' as const,
+      id: 'internal-1',
+      operationId: receipt.operationId,
+      operationVersion: 'v1',
+      inputDigest: receipt.inputDigest,
+      audience: receipt.audience,
+      source: {
+        transport: 'mcp' as const,
+        workloadId: 'mcpServer.public',
+      },
+      admission: {
+        principal,
+        trustedContext: { organizationId: 'organization-1' },
+      },
+      authorizationReceipt: receipt,
+      idempotencyKey: 'rename-once',
+      issuedAt: '2026-07-30T12:00:00.000Z',
+      expiresAt: '2026-07-30T12:00:30.000Z',
+    };
+
+    await expect(gateway.invoke({
+      operationId: receipt.operationId,
+      input,
+      invocation,
+    })).resolves.toEqual({ changed: true });
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      id: expect.stringMatching(/^internal-[a-f0-9]{64}$/),
+      correlationId: expect.stringMatching(/^internal-[a-f0-9]{64}$/),
+      authorizationReceipt: receipt,
+      routing: expect.objectContaining({
+        binding: 'Card-cards.rename.v1',
+        idempotencyKey: 'rename-once',
+      }),
+    }), 'commands');
+    expect(unsafe).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO applik8s_command_admissions'),
+      expect.arrayContaining([
+        expect.stringMatching(/^sha256:/),
+        'cards.rename.v1',
+        'Card-cards.rename.v1',
+        expect.stringMatching(/^internal-[a-f0-9]{64}$/),
+      ]),
+    );
+    await gateway.close();
+  });
+
   it('reports redacted internal failures while preserving the public error boundary', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const gateway = createApplicationCommandGateway({
