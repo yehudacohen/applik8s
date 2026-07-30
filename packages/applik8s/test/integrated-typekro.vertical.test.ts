@@ -2128,6 +2128,7 @@ describe('integrated TypeKro package surface', () => {
     ]));
     const providerImplementationByName = new Map(graph?.compatibility.labels.filter((label) => label.name.startsWith('provider.')).map((label) => [label.name, label.implementation]));
     expect(providerImplementationByName).toEqual(new Map([
+      ['provider.AI', 'implemented'],
       ['provider.AnalyticalDatabase', 'implemented'],
       ['provider.Authorization', 'implemented'],
       ['provider.Certificate', 'implemented'],
@@ -2196,6 +2197,7 @@ describe('integrated TypeKro package surface', () => {
       'provider.index-store',
       'provider.object-storage',
       'provider.queue',
+      'provider.search',
       'provider.secret',
       'provider.transactional-database',
       'provider.workflow-engine',
@@ -2229,6 +2231,7 @@ describe('integrated TypeKro package surface', () => {
       'Stream.process',
       'Stream.project',
       'Stream.subscribe',
+      'app.agent',
       'app.aggregate',
       'app.all',
       'app.any',
@@ -2243,6 +2246,8 @@ describe('integrated TypeKro package surface', () => {
       'app.installation',
       'app.interpolate',
       'app.job',
+      'app.mcp',
+      'app.mcp.client',
       'app.model',
       'app.objectStore',
       'app.on',
@@ -2264,6 +2269,7 @@ describe('integrated TypeKro package surface', () => {
       'app.workflow',
       'command',
       'event',
+      'provider.AI',
       'provider.AnalyticalDatabase',
       'provider.Authorization',
       'provider.Certificate',
@@ -2899,10 +2905,10 @@ describe('integrated TypeKro package surface', () => {
     const adapterPackage = JSON.parse(await readFile('packages/typekro-adapter/package.json', 'utf8'));
     const installedPackage = JSON.parse(await readFile('node_modules/typekro/package.json', 'utf8'));
 
-    expect(workspacePackage.dependencies.typekro).toBe('0.31.1');
-    expect(applik8sPackage.dependencies.typekro).toBe('0.31.1');
-    expect(adapterPackage.dependencies.typekro).toBe('0.31.1');
-    expect(installedPackage.version).toBe('0.31.1');
+    expect(workspacePackage.dependencies.typekro).toBe('0.32.0');
+    expect(applik8sPackage.dependencies.typekro).toBe('0.32.0');
+    expect(adapterPackage.dependencies.typekro).toBe('0.32.0');
+    expect(installedPackage.version).toBe('0.32.0');
   });
 
   it('builds generated app infrastructure on existing TypeKro Kubernetes factories', async () => {

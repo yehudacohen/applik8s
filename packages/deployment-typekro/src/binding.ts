@@ -143,7 +143,7 @@ export function bindTypeKroComposition<
     inspect() {
       if (!composition.inspect) {
         throw new Error(
-          `TypeKro composition ${composition.name} does not expose semantic inspection. Applik8s requires TypeKro 0.31.1.`,
+          `TypeKro composition ${composition.name} does not expose semantic inspection. Applik8s requires TypeKro 0.32.0.`,
         );
       }
       return composition.inspect();
@@ -151,7 +151,7 @@ export function bindTypeKroComposition<
     plan() {
       if (!composition.plan) {
         throw new Error(
-          `TypeKro composition ${composition.name} does not expose semantic planning. Applik8s requires TypeKro 0.31.1.`,
+          `TypeKro composition ${composition.name} does not expose semantic planning. Applik8s requires TypeKro 0.32.0.`,
         );
       }
       return composition.plan(spec, plan);

@@ -562,7 +562,7 @@ function materializedSourceComposition() {
 describe("TypeKro deployment adapter", () => {
   // typecast: preserve the two deployment strategy literals for parameterized coverage.
   for (const strategy of ["direct", "kro"] as const) {
-    it(`lowers one ${strategy} composition through the released 0.31 declarations`, async () => {
+    it(`lowers one ${strategy} composition through the released 0.32 declarations`, async () => {
       const app = composition();
       const adapted = await adaptApplicationDeploymentToTypeKro({
         graph: graph(strategy),
@@ -580,7 +580,7 @@ describe("TypeKro deployment adapter", () => {
       });
 
       expect(adapted.adapter).toEqual({
-        typekro: "0.31.1",
+        typekro: "0.32.0",
         semanticPlanVersion: 1,
         artifactPlanVersion: 1,
       });

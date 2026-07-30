@@ -1,11 +1,11 @@
 # Goal: Converge Applik8s deployment on TypeKro and Alchemy v2
 
-**Status:** TypeKro 0.31.1 is pinned, the pre-graph lifecycle engine has been removed, local qualification
+**Status:** TypeKro 0.32.0 is pinned, the pre-graph lifecycle engine has been removed, local qualification
 is green, and GuestBook, Chirp, and the generated v0.6 application have each passed their live OrbStack
 golden paths through the graph-backed Alchemy/TypeKro deployment engine. Operator-host reconciliation is
 globally bounded to the declared single-worker contract and immutable WASM components are compiled once
 while every invocation receives fresh host state, eliminating the publisher OOM exposed by the GuestBook
-restart path. TypeKro 0.31.1 supplies PR #126's status-projection fixes. Final qualification is focused on
+restart path. TypeKro 0.32.0 includes PR #126's status-projection fixes. Final qualification is focused on
 refreshing exact-worktree evidence across the complete release cohort.
 
 **Prepared:** 2026-07-27
@@ -18,14 +18,14 @@ qualification remain explicitly deferred.
 **Release rule:** do not tag, publish, or cut an Applik8s release until the refactor and live lifecycle
 results have been reviewed explicitly.
 
-**Upstream prerequisite:** TypeKro 0.31.1 contains PR #117's semantic planning, Alchemy v2,
+**Upstream prerequisite:** TypeKro 0.32.0 contains PR #117's semantic planning, Alchemy v2,
 artifact-output, singleton, scope, namespace-lifecycle, and structured-default fixes plus PR #126's secure,
 unambiguous arbitrary-resource status projection. Applik8s pins it exactly; do not use a caret range until
 the experimental planning DTOs have a qualified compatibility policy.
 
 ## Execution progress
 
-As of 2026-07-28, the published TypeKro 0.31.1 cohort is pinned exactly and the ordinary deployment path is
+As of 2026-07-29, the published TypeKro 0.32.0 cohort is pinned exactly and the ordinary deployment path is
 graph-backed end to end:
 
 - GuestBook Start passed its current-source live OrbStack lifecycle after rebuilding the Rust host:
@@ -144,7 +144,7 @@ graph-backed end to end:
 
 Earlier live OrbStack work published every Chirp image successfully, including both derived operator images,
 and proved creation of the Harbor project, expandable 20Gi CNPG database, and the first artifact level. That
-run then exposed insufficient Ceph daemon sizing under concurrent registry builds. TypeKro 0.31.1 exposes
+run then exposed insufficient Ceph daemon sizing under concurrent registry builds. TypeKro 0.32.0 exposes
 the required Rook/Ceph resource overrides and fixes the object-valued `Cel.default()` output that was rejected by live
 KRO because the schema-object branch and literal-map branch had incompatible CEL types. The local TypeKro
 repair widens both structured branches to `dyn` while preserving direct-mode JavaScript semantics; the
@@ -178,7 +178,7 @@ The remaining steady-state cleanup and qualification work is:
   workers share bounded eight-container envelopes with unique health ports. Dedicated profiles may retain
   isolation. Further footprint work should be driven by measured scheduling, memory, cold-start, and
   contention evidence rather than another unbounded consolidation heuristic;
-- TypeKro 0.31.1 contains PR #126. Its reviewed suite covered semantic and imperative alias-collision parity,
+- TypeKro 0.32.0 contains PR #126. Its reviewed suite covered semantic and imperative alias-collision parity,
   secret-taint rejection, canonical expressions, nested identities, client hydration, and live OrbStack
   status projection/cleanup; Applik8s now qualifies only against that published cohort;
 - TypeKro's Alchemy generic-resource deletion must wait for owned Namespace disappearance before returning
@@ -275,7 +275,7 @@ every exact-worktree live receipt is refreshed together.
 The scorecard correctly rejects receipts from an earlier dirty-worktree digest. The shared Ceph platform is
 healthy, Harbor's authenticated data path is proven, the isolated Alchemy transaction converges to a
 zero-change plan, and the GuestBook, generated-application, and Chirp runtime/browser paths are functionally
-green. TypeKro 0.31.1 is now pinned; refresh the exact-worktree datastore and application receipts together
+green. TypeKro 0.32.0 is now pinned; refresh the exact-worktree datastore and application receipts together
 and complete the separate-identity direct lifecycle matrix.
 
 ## Objective

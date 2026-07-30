@@ -19,11 +19,11 @@ import {
   type TypeKroSemanticPlanEvidence,
 } from "./types.js";
 
-const supportedTypeKroVersion = "0.31.1";
+const supportedTypeKroVersion = "0.32.0";
 const supportedSemanticPlanVersion = 1;
 const supportedArtifactPlanVersion = 1;
 const adapterCompatibility: AdaptedTypeKroDeployment["adapter"] = {
-  typekro: "0.31.1",
+  typekro: "0.32.0",
   semanticPlanVersion: 1,
   artifactPlanVersion: 1,
 };
