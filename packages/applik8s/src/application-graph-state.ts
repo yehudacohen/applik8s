@@ -10,14 +10,24 @@ export interface ApplicationGraphState {
 }
 
 export function applicationGraphFromState(name: string, state: ApplicationGraphState): ApplicationGraph {
+  const edges = dedupeApplicationGraphEdges(state.graphEdges);
+  const requirements = dedupeApplicationProviderRequirements(
+    state.providerRequirements,
+  );
+  const bindings = dedupeApplicationProviderBindings(state.providerBindings);
   return normalizeApplicationGraph({
     apiVersion: 'applik8s.appGraph/v1alpha1',
     kind: 'ApplicationGraph',
     metadata: { name },
-    nodes: dedupeApplicationGraphNodes(state.graphNodes),
-    edges: dedupeApplicationGraphEdges(state.graphEdges),
-    providerRequirements: dedupeApplicationProviderRequirements(state.providerRequirements),
-    providerBindings: dedupeApplicationProviderBindings(state.providerBindings),
+    nodes: pruneUnusedFrameworkDefaults(
+      dedupeApplicationGraphNodes(state.graphNodes),
+      edges,
+      requirements,
+      bindings,
+    ),
+    edges,
+    providerRequirements: requirements,
+    providerBindings: bindings,
     compatibility: {
       stablePublicApis: ['sdk.kubernetesComposition', 'app.installation', 'app.server', 'app.http', 'app.crd', 'app.resource', 'app.model', 'app.on', 'app.reconcile', 'app.database.postgres', 'app.objectStore', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'app.profile', 'app.inject', 'Provider.named', 'app.select', 'app.selectProvider', 'app.when', 'app.any', 'app.all', 'app.interpolate', 'app.aggregate', 'app.config', 'app.secret', 'app.expose', 'app.query', 'app.gateway', 'app.stream', 'app.subscription', 'app.projection', 'app.agent', 'app.mcp', 'app.mcp.client', 'Stream.process', 'Stream.project', 'Stream.subscribe', 'Resource.index', 'Resource.increment', 'command', 'event', 'stream', 'task', 'workflow', 'Model.create', 'Model.update', 'Model.delete', 'Model.on.create', 'Model.on.update', 'Model.on.delete', 'Model.operation', 'Model.on.operation', 'Model.action', 'Model.on.action', 'Model.command', 'Model.on.command', 'app.task', 'app.workflow', 'provider.TransactionalDatabase', 'provider.AnalyticalDatabase', 'provider.IndexStore', 'provider.CounterStore', 'provider.EventSource', 'provider.EventLog', 'provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.Certificate', 'provider.DnsPublication', 'provider.CredentialStore', 'provider.WorkflowEngine', 'provider.Authorization', 'provider.StructuredGeneration', 'provider.AI'],
       documentedInternalContracts: ['ApplicationGraph'],
@@ -108,6 +118,30 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
       ],
     },
   });
+}
+
+function pruneUnusedFrameworkDefaults(
+  nodes: readonly ApplicationGraphNode[],
+  edges: readonly ApplicationGraphEdge[],
+  requirements: readonly ApplicationProviderRequirement[],
+  bindings: readonly ApplicationProviderBindingContract[],
+): readonly ApplicationGraphNode[] {
+  const referenced = new Set<string>();
+  for (const edge of edges) {
+    referenced.add(edge.from.nodeId);
+    referenced.add(edge.to.nodeId);
+  }
+  for (const requirement of requirements) {
+    if (requirement.provider) referenced.add(requirement.provider.nodeId);
+    referenced.add(requirement.consumer.nodeId);
+  }
+  for (const binding of bindings) {
+    referenced.add(binding.provider.nodeId);
+  }
+  return nodes.filter((node) =>
+    node.kind !== 'provider'
+    || node.config?.bindingKind !== 'frameworkDefault'
+    || referenced.has(node.id));
 }
 
 function stableApiLabel(name: string, since: string, rationale: string): ApplicationCompatibilityLabel {

@@ -1,9 +1,13 @@
 // typecast-file-boundary: negative AI authoring fixtures deliberately erase operation types to prove construction fails closed.
 import { AI } from '@applik8s/ai';
-import { app, applicationGraphFor } from '@applik8s/applik8s';
+import {
+  app,
+  applicationGraphFor,
+  TransactionalDatabase,
+} from '@applik8s/applik8s';
 import { validateApplicationGraphStructure } from '@applik8s/core';
-import { pgTable, text } from 'drizzle-orm/pg-core';
 import { type } from 'arktype';
+import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
 describe('application AI agents', () => {
@@ -38,6 +42,82 @@ describe('application AI agents', () => {
         },
       },
     });
+  });
+
+  it('binds durable agent state to the qualified database used by its model tools', () => {
+    const application = app('profiled-agent-state', {
+      spec: type({
+        name: 'string',
+        profile: "'starter' | 'dedicated' | 'external'",
+      }),
+      status: type({ ready: 'boolean' }),
+    });
+    const PrimaryDatabase = TransactionalDatabase.named('primary');
+    application
+      .profile(application.installation.spec, 'profile')
+      .provide(PrimaryDatabase)
+      .starter(() => TransactionalDatabase.postgres({ database: 'app' }))
+      .dedicated(() => TransactionalDatabase.postgres({ database: 'app' }))
+      .external(() =>
+        TransactionalDatabase.postgres({
+          database: 'app',
+          provision: false,
+          cluster: {
+            apiVersion: 'postgresql.cnpg.io/v1',
+            kind: 'Cluster',
+            name: 'app',
+          },
+        }))
+      .exhaustive();
+    application.provide(AI, AI.deterministic());
+    const notes = pgTable('profiled_agent_notes', {
+      id: text('id').primaryKey(),
+    });
+    const runs = pgTable('profiled_agent_runs', {
+      id: text('id').primaryKey(),
+    });
+    const database = application.database.bind('app', {
+      provider: application.inject(PrimaryDatabase),
+      schema: { notes, runs },
+    });
+    const Note = application.model(notes, { name: 'Note', database });
+    application.model(runs, { name: 'ProtocolRun', database });
+    const identity = application.serviceIdentity('researcher');
+    identity.can(Note.create);
+    application.agent('researcher', {
+      identity,
+      model: AI.model('fast', {
+        capabilities: [AI.chat, AI.tools],
+      }),
+      instructions: 'Create notes.',
+      tools: [Note.create],
+    }, async (_request, context) => ({ runId: context.runId }));
+
+    const agent = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.kind === 'aiAgent',
+    );
+    expect(agent).toMatchObject({
+      state: {
+        interface: 'TransactionalDatabase',
+        nodeId: 'provider.transactional-database.v1alpha1.primary',
+      },
+    });
+    const databaseRuntimes = applicationGraphFor(
+      application.composition,
+    )?.nodes
+      .filter((node) => node.kind === 'model')
+      .map((node) => node.runtime)
+      .filter((runtime) => runtime?.authorityName === 'app');
+    expect(
+      new Set(
+        databaseRuntimes?.map((runtime) =>
+          JSON.stringify({
+            clusterName: runtime?.clusterName,
+            secretName: runtime?.secretName,
+            connectionEnvName: runtime?.connectionEnvName,
+          })),
+      ),
+    ).toHaveLength(1);
   });
 
   it('records one portable agent node over a logical model, service identity, and canonical tools', () => {

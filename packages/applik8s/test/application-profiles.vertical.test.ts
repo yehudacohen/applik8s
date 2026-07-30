@@ -297,6 +297,10 @@ describe('application deployment profiles', () => {
     expect(database).toMatchObject({
       kind: 'applicationDatabase',
       name: 'application',
+      qualification: {
+        capability: 'TransactionalDatabase',
+        name: 'primary',
+      },
       provider: {
         kind: 'postgres',
         database: 'application',
@@ -327,10 +331,9 @@ describe('application deployment profiles', () => {
       },
     });
     expect(
-      providers?.find(
-        (node) => node.config?.bindingKind === 'nativeRelationalModel',
-      ),
+      provided?.[0],
     ).toMatchObject({
+      id: 'provider.transactional-database.v1alpha1.primary',
       implementation: 'application-provider-selection',
       config: {
         transactionalDatabase: {
@@ -339,6 +342,20 @@ describe('application deployment profiles', () => {
         },
       },
     });
+    const model = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.kind === 'model' && node.name === 'Record',
+    );
+    expect(model).toMatchObject({
+      database: {
+        interface: 'TransactionalDatabase',
+        nodeId: 'provider.transactional-database.v1alpha1.primary',
+      },
+    });
+    expect(
+      providers?.some(
+        (node) => node.id === 'provider.transactional-database',
+      ),
+    ).toBe(false);
     expect(application.composition.factory('kro').toYaml()).toContain(
       'schema.spec.profile',
     );
@@ -493,18 +510,7 @@ describe('application deployment profiles', () => {
       graph?.nodes.find(
         (node) => node.id === 'provider.transactional-database',
       ),
-    ).toMatchObject({
-      implementation: 'postgres',
-      config: {
-        bindingKind: 'frameworkDefault',
-        provider: 'postgres',
-      },
-    });
-    expect(
-      graph?.nodes.find(
-        (node) => node.id === 'provider.transactional-database',
-      ),
-    ).not.toHaveProperty('config.profile');
+    ).toBeUndefined();
   });
 
   it('binds analytical projections to an injected qualified capability', () => {

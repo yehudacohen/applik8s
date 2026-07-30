@@ -79,6 +79,11 @@ export async function createApplicationAgenticStart(
     });
     await run({
       executable: 'bun',
+      arguments: ['run', 'db:generate'],
+      cwd: targetDirectory,
+    });
+    await run({
+      executable: 'bun',
       arguments: ['run', 'generate-routes'],
       cwd: targetDirectory,
     });
@@ -141,6 +146,7 @@ async function updateGeneratedPackage(
   manifest.name = projectName;
   manifest.scripts = {
     ...manifest.scripts,
+    'db:generate': 'drizzle-kit generate',
     plan: 'applik8s plan src/application.ts',
     deploy: 'applik8s deploy src/application.ts',
     status: 'applik8s status src/application.ts',
@@ -173,6 +179,7 @@ async function updateGeneratedPackage(
     '@tanstack/router-cli':
       applicationAgenticStartDefinition.compatibility.tanstackStart,
     '@applik8s/cli': version,
+    'drizzle-kit': '0.31.10',
   };
   await writeFile(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
@@ -223,6 +230,13 @@ export const researchNotes = pgTable('research_notes', {
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
 });
 `,
+    'src/database-schema.ts': `export * from '@applik8s/approvals';
+export * from '@applik8s/artifacts';
+export * from '@applik8s/conversations';
+export * from '@applik8s/evals';
+export * from '@applik8s/usage';
+export { researchNotes } from './features/research/schema';
+`,
     'src/providers.ts': `import { AI } from '@applik8s/ai';
 import { IdentityProvider, TransactionalDatabase } from '@applik8s/applik8s';
 import { applicationAgenticModuleSchema } from '@applik8s/start-agentic';
@@ -254,10 +268,10 @@ deployment
 export const database = application.database.bind('application', {
   provider: application.inject(PrimaryDatabase),
   schema: { ...applicationAgenticModuleSchema, researchNotes },
-  migrations: { path: './drizzle' },
+  migrations: { path: '../drizzle' },
 });
 export const inference = application.inject(Inference);
-export const identity = application.provide(
+application.provide(
   IdentityProvider,
   IdentityProvider.deterministic({
     mode: 'starter',
@@ -268,8 +282,6 @@ export const identity = application.provide(
     authorityRevision: 'starter-authority-v1',
   }),
 );
-export const authenticate = (request: Request) =>
-  identity.implementation.authenticate(request);
 `,
     'src/modules.ts': `import { approvals } from '@applik8s/approvals';
 import { artifacts } from '@applik8s/artifacts';
@@ -341,7 +353,6 @@ ResearcherIdentity.can(ResearchNote.create);
 import { application } from './app';
 import { ResearchNote } from './features/research/model';
 import { maintainedCommands } from './modules';
-import { authenticate } from './providers';
 
 export const gateway = application.gateway('web', {
   commands: [
@@ -354,7 +365,6 @@ export const gateway = application.gateway('web', {
   deployment: {
     namespace: ${JSON.stringify(`${projectName}-system`)},
     cursorSecret: { name: ${JSON.stringify(`${projectName}-gateway-cursor`)}, key: 'key' },
-    authenticate,
   },
 });
 
@@ -457,6 +467,14 @@ export default defineConfig({
     applik8sStart({ application: './src/application.ts' }),
     react(),
   ],
+});
+`,
+    'drizzle.config.ts': `import { defineConfig } from 'drizzle-kit';
+
+export default defineConfig({
+  dialect: 'postgresql',
+  schema: './src/database-schema.ts',
+  out: './drizzle',
 });
 `,
     '.env.example': `# Starter is credential-free and explicitly non-production.

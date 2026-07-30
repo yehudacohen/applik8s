@@ -86,7 +86,14 @@ describe('Agentic Start generator', () => {
     expect(providers).toContain(
       'provider: application.inject(PrimaryDatabase)',
     );
+    expect(providers).toContain("migrations: { path: '../drizzle' }");
+    expect(providers).not.toContain('export const authenticate');
     expect(providers).not.toContain('application.database.postgres');
+    const applicationSource = await readFile(
+      join(target, 'src/application.ts'),
+      'utf8',
+    );
+    expect(applicationSource).not.toContain('authenticate,');
     const modules = await readFile(join(target, 'src/modules.ts'), 'utf8');
     expect(modules).toContain(
       "import { conversations } from '@applik8s/conversations';",
@@ -141,6 +148,11 @@ describe('Agentic Start generator', () => {
       {
         executable: 'bun',
         arguments: ['install'],
+        cwd: target,
+      },
+      {
+        executable: 'bun',
+        arguments: ['run', 'db:generate'],
         cwd: target,
       },
       {

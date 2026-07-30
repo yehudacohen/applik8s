@@ -3,7 +3,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AI } from '@applik8s/ai';
-import { app, applicationGraphFor } from '@applik8s/applik8s';
+import { app, applicationGraphFor, IdentityProvider } from '@applik8s/applik8s';
+import { type } from '@applik8s/applik8s/dsl';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { emitGeneratedApplicationAgents } from '../src/application-agents/index.js';
@@ -25,10 +26,33 @@ describe('generated application AI agents', () => {
   it('emits one focused immutable workload with canonical tools and authority', async () => {
     const application = app('research-platform', {
       namespace: 'research-system',
+      spec: type({
+        name: 'string',
+        profile: "'starter' | 'dedicated' | 'external'",
+      }),
+      status: type({ ready: 'boolean' }),
     });
+    const inference = AI.named('inference');
+    application
+      .profile(application.installation.spec, 'profile')
+      .provide(inference)
+      .starter(() =>
+        AI.deterministic({ fixture: { response: 'starter evidence' } }))
+      .dedicated(() =>
+        AI.deterministic({ fixture: { response: 'dedicated evidence' } }))
+      .external(() =>
+        AI.deterministic({ fixture: { response: 'external evidence' } }))
+      .exhaustive();
     application.provide(
-      AI,
-      AI.deterministic({ fixture: { response: 'deterministic evidence' } }),
+      IdentityProvider,
+      IdentityProvider.deterministic({
+        mode: 'starter',
+        application: 'research-platform',
+        subject: 'test',
+        audience: ['research-platform'],
+        catalogRevision: 'catalog-test',
+        authorityRevision: 'authority-test',
+      }),
     );
     const posts = pgTable('research_posts', {
       id: text('id').primaryKey(),
@@ -46,6 +70,7 @@ describe('generated application AI agents', () => {
         identity,
         model: AI.model('fast', {
           capabilities: [AI.chat, AI.tools, AI.streaming],
+          inference: application.inject(inference),
         }),
         instructions: 'Answer only with evidence.',
         tools: [Post.create],
@@ -66,25 +91,6 @@ describe('generated application AI agents', () => {
           name: 'research-agent-gateway-cursor',
           key: 'key',
         },
-        authenticate: async () => ({
-          principal: {
-            id: 'principal:test',
-            identity: {
-              id: 'identity:test',
-              kind: 'human',
-              issuer: 'https://identity.example.test',
-              subject: 'test',
-            },
-            kind: 'human',
-            authenticationMethod: 'test',
-            audience: ['https://research.example.test'],
-            trustedContextDigest: 'sha256:test',
-            catalogRevision: 'catalog-test',
-            authorityRevision: 'authority-test',
-            admittedAt: '2026-07-30T00:00:00.000Z',
-          },
-          trustedContext: {},
-        }),
       },
     });
     const graph = applicationGraphFor(application.composition);
@@ -133,6 +139,10 @@ describe('generated application AI agents', () => {
                 containers: [
                   expect.objectContaining({
                     env: expect.arrayContaining([
+                      {
+                        name: 'APPLIK8S_PROFILE_VARIANT',
+                        value: '${schema.spec.profile}',
+                      },
                       {
                         name: 'APPLIK8S_DATABASE_APPLICATION_URL',
                         valueFrom: {
@@ -186,6 +196,10 @@ describe('generated application AI agents', () => {
     );
     expect(normalizedSource).toContain('applik8s_ai_attempts');
     expect(normalizedSource).toContain('completion-uncertain');
+    expect(normalizedSource).toContain('APPLIK8S_PROFILE_VARIANT');
+    expect(normalizedSource).toContain('starter evidence');
+    expect(normalizedSource).toContain('dedicated evidence');
+    expect(normalizedSource).toContain('external evidence');
     expect(normalizedSource).toMatch(
       /return\{action:\w+\.action,runId:\w+,invocationId:/u,
     );

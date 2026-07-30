@@ -5,7 +5,7 @@ import type { ApplicationMessageContractSchema, ApplicationProviderNode, Applica
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk';
 import type { ApplicationDatabaseBinding } from './application.js';
-import { serializeApplicationCallback } from './application-callback.js';
+import { type SerializedApplicationCallback, serializeApplicationCallback } from './application-callback.js';
 import type { ApplicationGraphState } from './application-graph-state.js';
 import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
@@ -245,7 +245,11 @@ export interface ApplicationGatewayOptions {
   readonly subscriptionLimits?: { readonly perPrincipal?: number; readonly total?: number };
   readonly deployment?: {
     readonly namespace: string;
-    readonly authenticate: (request: Request) => ApplicationGatewayAdmission | Promise<ApplicationGatewayAdmission>;
+    /**
+     * Optional gateway-specific admission override. When omitted, the generated
+     * gateway consumes the single IdentityProvider supplied to the application.
+     */
+    readonly authenticate?: (request: Request) => ApplicationGatewayAdmission | Promise<ApplicationGatewayAdmission>;
     readonly cursorSecret: { readonly apiVersion?: string; readonly kind?: string; readonly name: string; readonly key: string; readonly namespace?: string };
     readonly image?: string;
     readonly replicas?: number;
@@ -669,7 +673,11 @@ export function registerApplicationGateway(state: ApplicationReactiveState, name
   const deployment = options.deployment;
   if (deployment?.cursorSecret.namespace && deployment.cursorSecret.namespace !== deployment.namespace) throw new Error(`Application gateway ${name} cannot mount cursor Secret from another namespace.`);
   // typecast: generated authentication receives the standard Request boundary and returns the declared gateway identity contract.
-  const authentication = deployment ? serializeApplicationCallback({ registrar: 'gateway', argumentIndex: 1, property: 'authenticate', label: `Application gateway ${name} authentication`, callback: deployment.authenticate as (...args: never[]) => unknown, allowDeferredResolution: true }) : undefined;
+  const authentication = deployment
+    ? deployment.authenticate
+      ? serializeApplicationCallback({ registrar: 'gateway', argumentIndex: 1, property: 'authenticate', label: `Application gateway ${name} authentication`, callback: deployment.authenticate as (...args: never[]) => unknown, allowDeferredResolution: true })
+      : applicationIdentityAuthentication(state, name)
+    : undefined;
   const identityProvider = state.providers.extensions?.['IdentityProvider@v1alpha1'];
   const identityReadyCallback = identityProvider && typeof identityProvider === 'object' ? Reflect.get(identityProvider, 'ready') : undefined;
   const identityReadiness = deployment && typeof identityReadyCallback === 'function'
@@ -724,6 +732,66 @@ export function registerApplicationGateway(state: ApplicationReactiveState, name
       const runtime = createApplicationQueryGateway({ ...runtimeOptions, queries, subscriptionLimits: limits });
       return createApplicationQueryGatewayHttpHandler(runtime, { ...httpOptions, basePath: basePath.slice(1) });
     },
+  };
+}
+
+function applicationIdentityAuthentication(
+  state: ApplicationReactiveState,
+  gateway: string,
+): SerializedApplicationCallback {
+  const candidates = state.graphNodes
+    .filter((node): node is ApplicationProviderNode =>
+      node.kind === 'provider'
+      && node.interface === 'IdentityProvider'
+      && node.config?.identity !== undefined)
+    .map((node) => {
+      const identity = node.config?.identity;
+      return identity && typeof identity === 'object' && !Array.isArray(identity)
+        ? {
+            node,
+            identity: identity as Readonly<Record<string, JsonValue>>,
+          }
+        : undefined;
+    })
+    .filter((candidate) => candidate !== undefined);
+  if (candidates.length !== 1) {
+    throw new Error(
+      `Generated application gateway ${gateway} requires exactly one supplied IdentityProvider when deployment.authenticate is omitted; found ${candidates.length}.`,
+    );
+  }
+  const candidate = candidates[0];
+  const source = candidate?.identity.authenticationSource;
+  if (typeof source !== 'string' || !source.trim()) {
+    throw new Error(
+      `Generated application gateway ${gateway} cannot hydrate authentication from ${candidate?.node.id ?? 'IdentityProvider'} because it has no serializable authentication source.`,
+    );
+  }
+  const dependencies = candidate?.identity.authenticationDependencies;
+  const location = candidate?.identity.authenticationLocation;
+  const unresolved = candidate?.identity.authenticationUnresolved;
+  return {
+    source,
+    ...(dependencies && typeof dependencies === 'object' && !Array.isArray(dependencies)
+      ? {
+          dependencies: dependencies as unknown as NonNullable<
+            SerializedApplicationCallback['dependencies']
+          >,
+        }
+      : {}),
+    ...(location && typeof location === 'object' && !Array.isArray(location)
+      ? {
+          location: location as unknown as NonNullable<
+            SerializedApplicationCallback['location']
+          >,
+        }
+      : {}),
+    ...(Array.isArray(unresolved)
+      ? {
+          unresolved: unresolved.filter(
+            (identifier): identifier is string => typeof identifier === 'string',
+          ),
+        }
+      : {}),
   };
 }
 

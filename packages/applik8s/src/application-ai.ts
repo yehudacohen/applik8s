@@ -131,8 +131,10 @@ export function registerApplicationAgent<
         }
       : undefined,
   );
-  const stateProviderNodeId = applicationProviderGraphNodeId(
-    'TransactionalDatabase',
+  const stateProviderNodeId = applicationAgentStateProviderNodeId(
+    state.graphNodes,
+    tools,
+    normalizedName,
   );
   const nodeId = `aiAgent.${kubernetesNameSegment(normalizedName)}`;
   const deployment = options.deployment ?? {};
@@ -254,6 +256,40 @@ export function registerApplicationAgent<
     identity: options.identity,
     handler,
   });
+}
+
+function applicationAgentStateProviderNodeId(
+  nodes: readonly ApplicationGraphNode[],
+  tools: readonly ApplicationAIAgentNode['tools'][number][],
+  agent: string,
+): string {
+  const providers = nodes.filter(
+    (node) =>
+      node.kind === 'provider'
+      && node.interface === 'TransactionalDatabase',
+  );
+  if (providers.length === 1) {
+    return providers[0]?.id ?? applicationProviderGraphNodeId(
+      'TransactionalDatabase',
+    );
+  }
+  const toolModelProviders = new Set(
+    tools.flatMap((tool) => {
+      if (!tool.graphNode) return [];
+      const model = nodes.find(
+        (node) =>
+          node.id === tool.graphNode?.nodeId
+          && node.kind === 'model',
+      );
+      return model?.kind === 'model' ? [model.database.nodeId] : [];
+    }),
+  );
+  if (toolModelProviders.size === 1) {
+    return [...toolModelProviders][0] as string;
+  }
+  throw new Error(
+    `Application agent ${agent} requires exactly one TransactionalDatabase authority for durable conversation and attempt state. Bind its tools to one database or remove the ambiguous provider.`,
+  );
 }
 
 function applicationAgentTool(

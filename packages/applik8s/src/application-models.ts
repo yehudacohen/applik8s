@@ -467,11 +467,24 @@ export function recordApplicationNativeModelGraph<TTable extends AnyPgTable>(
   provider: ApplicationTransactionalDatabaseProvider,
   runtime: ApplicationRuntimeModelContract,
   migrations: { readonly artifact?: string; readonly digest?: string } = {},
+  qualification?: ApplicationProviderQualification,
 ): void {
   const nodeId = applicationGraphNodeId('model', model.name);
-  const providerNodeId = applicationProviderNodeId('TransactionalDatabase');
-  const providerResources = applicationTransactionalDatabaseProviderResources(provider, model.name);
-  recordApplicationProviderGraph(state, 'TransactionalDatabase', 'nativeRelationalModel', provider);
+  const providerNodeId = applicationProviderNodeId(
+    'TransactionalDatabase',
+    qualification,
+  );
+  const providerResources = applicationTransactionalDatabaseProviderResources(
+    provider,
+    runtime.authorityName ?? model.name,
+  );
+  recordApplicationProviderGraph(
+    state,
+    'TransactionalDatabase',
+    'nativeRelationalModel',
+    provider,
+    qualification,
+  );
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'model',
@@ -1893,7 +1906,10 @@ function recordApplicationProviderGraph(
     contract: applicationProviderInterfaceContract(providerInterface, selectedImplementation),
     config: {
       ...(existingConfig ?? {}),
-      bindingKind,
+      bindingKind:
+        typeof existingConfig?.bindingKind === 'string'
+          ? existingConfig.bindingKind
+          : bindingKind,
       provider: applicationProviderImplementationName(selectedImplementation),
       ...(qualification
         ? { qualification: qualification as unknown as JsonValue }

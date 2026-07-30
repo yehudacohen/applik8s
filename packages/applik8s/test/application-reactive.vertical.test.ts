@@ -1,5 +1,5 @@
 // typecast-file-boundary: reactive vertical fixtures inspect erased graph metadata after checking node identities and discriminators.
-import { AnalyticalDatabase, ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IndexStore, stream, task, WorkflowEngine } from '@applik8s/applik8s';
+import { AnalyticalDatabase, ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IdentityProvider, IndexStore, stream, task, WorkflowEngine } from '@applik8s/applik8s';
 import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
@@ -71,6 +71,17 @@ describe('v0.6 streams, subscriptions, and projections', () => {
       revision: text('revision').notNull(),
     });
     const guestbook = app('reactive-guestbook', { namespace: 'guestbook' });
+    guestbook.provide(
+      IdentityProvider,
+      IdentityProvider.deterministic({
+        mode: 'starter',
+        application: 'reactive-guestbook',
+        subject: 'guest',
+        audience: ['reactive-guestbook'],
+        catalogRevision: 'catalog-v1',
+        authorityRevision: 'v1',
+      }),
+    );
     const database = guestbook.database.postgres('guestbook', { schema: { entries } });
     const Entry = guestbook.model(entries, { name: 'GuestBookEntry', database });
     const published = guestbook.query('guestbook.entries.v1', {
@@ -87,7 +98,6 @@ describe('v0.6 streams, subscriptions, and projections', () => {
         namespace: 'guestbook',
         port: 8443,
         cursorSecret: { name: 'guestbook-cursor', key: 'secret' },
-        authenticate: async () => testApplicationAdmission('guest', { authorityRevision: 'v1' }),
       },
     });
     guestbook.provide(Certificate, Certificate.certManager({ issuerRef: { name: 'letsencrypt-prod', kind: 'ClusterIssuer' } }));
@@ -100,6 +110,13 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     });
 
     expect(gateway).toMatchObject({ serviceName: 'reactive-guestbook-public', namespace: 'guestbook', port: 8443 });
+    const gatewayNode = applicationGraphFor(guestbook.composition)?.nodes.find(
+      (node) => node.kind === 'gateway' && node.name === 'public',
+    );
+    expect(gatewayNode).toMatchObject({
+      authenticationSource: expect.stringContaining('"subject":"guest"'),
+    });
+    expect(gatewayNode).not.toHaveProperty('authenticationUnresolved');
     expect(exposure).toMatchObject({ publicUrl: 'https://guestbook.example.com', tlsIntent: { mode: 'managed', secretName: 'public-tls' } });
     expect(guestbook.composition.resources).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'Ingress', spec: expect.objectContaining({ rules: [expect.objectContaining({ http: { paths: [expect.objectContaining({ backend: { service: { name: 'reactive-guestbook-public', port: { number: 8443 } } } })] } })] }) }),

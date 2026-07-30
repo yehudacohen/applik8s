@@ -95,8 +95,11 @@ export function applicationNativeRuntimeModelContract<TTable extends AnyPgTable>
   const provider = database.provider;
   const facet = getRequiredDrizzleApplicationModelFacet(model);
   const name = facet.name;
-  const segment = kubernetesNameSegment(name);
-  const clusterName = applicationTypeKroSerializedValue(provider.clusterName ?? provider.name ?? `${segment}-db`);
+  const clusterName = applicationTypeKroSerializedValue(
+    provider.clusterName
+      ?? provider.name
+      ?? `${kubernetesNameSegment(database.name)}-db`,
+  );
   const secret = provider.connectionSecret ?? {
     apiVersion: 'v1', kind: 'Secret', name: `${clusterName}-app`, ...(provider.namespace ? { namespace: provider.namespace } : {}),
   };

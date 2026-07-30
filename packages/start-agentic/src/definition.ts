@@ -1,6 +1,6 @@
 import {
-  applicationStartDefinitionApiVersion,
   type ApplicationStartDefinition,
+  applicationStartDefinitionApiVersion,
   validateApplicationStartDefinition,
 } from '@applik8s/core';
 
@@ -103,12 +103,13 @@ export const applicationAgenticStartDefinition = Object.freeze({
       mode: 'start-file-router',
       blank: true,
     },
-    maximumApplicationFiles: 12,
+    maximumApplicationFiles: 14,
     maximumIntegrationLines: 600,
     files: [
       'src/app.ts',
       'src/installation.ts',
       'src/providers.ts',
+      'src/database-schema.ts',
       'src/modules.ts',
       'src/application.ts',
       'src/features/research/schema.ts',
@@ -116,6 +117,7 @@ export const applicationAgenticStartDefinition = Object.freeze({
       'src/features/research/view.tsx',
       'src/routes/index.tsx',
       'vite.config.ts',
+      'drizzle.config.ts',
       '.env.example',
     ],
   },

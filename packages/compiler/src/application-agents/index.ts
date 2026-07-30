@@ -373,6 +373,17 @@ function requiredEnv(name) {
   if (!value) throw new Error('Missing required environment variable ' + name);
   return value;
 }
+function selectedProfileValue(value) {
+  if (value?.kind !== 'application-provider-selection') return value;
+  const variant = requiredEnv('APPLIK8S_PROFILE_VARIANT');
+  const selected = value.cases?.[variant] ?? value.default;
+  if (!selected || typeof selected !== 'object') {
+    throw new Error('The active profile has no AI provider configuration.');
+  }
+  return selected;
+}
+const selectedProvider = selectedProfileValue(contract.provider);
+const selectedRoute = selectedProfileValue(contract.route);
 const sql = postgres(requiredEnv(${JSON.stringify(contract.state.connectionEnvName)}), {
   max: Math.max(4, contract.deployment.maximumConcurrency + 2),
   idle_timeout: 20,
@@ -426,11 +437,11 @@ const handle = createApplicationAIAgentRequestHandler({
   name: contract.name,
   logicalModel: contract.model.name,
   instructions: ${instructions},
-  provider: contract.provider.kind === 'ai-deterministic'
-    ? { kind: 'deterministic', response: typeof contract.provider.fixture?.response === 'string' ? contract.provider.fixture.response : undefined, latencyMs: contract.provider.latencyMs }
+  provider: selectedProvider.kind === 'ai-deterministic'
+    ? { kind: 'deterministic', response: typeof selectedProvider.fixture?.response === 'string' ? selectedProvider.fixture.response : undefined, latencyMs: selectedProvider.latencyMs }
     : {
         kind: 'openai-compatible',
-        name: contract.provider.name ?? 'envoy-ai-gateway',
+        name: selectedProvider.name ?? 'envoy-ai-gateway',
         baseUrl: process.env.APPLIK8S_AI_GATEWAY_URL ?? 'http://envoy-ai-gateway.default.svc',
         apiKey: process.env.APPLIK8S_AI_GATEWAY_API_KEY ?? 'gateway-managed',
         model: contract.model.name,
@@ -502,7 +513,7 @@ const handle = createApplicationAIAgentRequestHandler({
         runId,
         messageCount: request.messages.length,
       },
-      route: contract.route,
+      route: selectedRoute,
       retry: contract.executionPolicy.uncertainCompletion === 'retry-if-replay-safe'
         ? 'if-replay-safe'
         : 'never',
@@ -708,6 +719,14 @@ function generatedAgentResources(
                 env: [
                   { name: 'NODE_ENV', value: 'production' },
                   { name: 'NODE_OPTIONS', value: '--enable-source-maps' },
+                  ...(applicationAgentProfileSelector(contract.providerConfig)
+                    ? [{
+                        name: 'APPLIK8S_PROFILE_VARIANT',
+                        value: applicationAgentProfileSelector(
+                          contract.providerConfig,
+                        ),
+                      }]
+                    : []),
                   {
                     name: contract.state.connectionEnvName,
                     valueFrom: {
@@ -822,6 +841,39 @@ function applicationAgentRoute(
   agent: ApplicationAIAgentNode,
   provider: JsonObject,
 ): JsonObject {
+  if (provider.kind === 'application-provider-selection') {
+    const selector = stringValue(provider.selector);
+    if (!selector) {
+      throw new Error(
+        `Application agent ${agent.id} AI provider selection has no stable profile selector.`,
+      );
+    }
+    const cases = isJsonObject(provider.cases) ? provider.cases : {};
+    const routes = Object.fromEntries(
+      Object.entries(cases).map(([variant, candidate]) => {
+        if (!isJsonObject(candidate)) {
+          throw new Error(
+            `Application agent ${agent.id} profile ${variant} has no portable AI provider configuration.`,
+          );
+        }
+        return [variant, applicationAgentRoute(agent, candidate)];
+      }),
+    );
+    if (Object.keys(routes).length === 0) {
+      throw new Error(
+        `Application agent ${agent.id} AI provider selection has no profile branches.`,
+      );
+    }
+    const fallback = isJsonObject(provider.default)
+      ? applicationAgentRoute(agent, provider.default)
+      : undefined;
+    return {
+      kind: 'application-provider-selection',
+      selector,
+      cases: routes,
+      ...(fallback ? { default: fallback } : {}),
+    };
+  }
   const policyRevision = `sha256:${createHash('sha256')
     .update(JSON.stringify(provider))
     .digest('hex')}`;
@@ -874,4 +926,22 @@ function applicationAgentRoute(
       .map((backend) => backend.name)
       .filter((name): name is string => typeof name === 'string'),
   };
+}
+
+function applicationAgentProfileSelector(provider: JsonObject): string | undefined {
+  if (
+    provider.kind !== 'application-provider-selection'
+    || typeof provider.selector !== 'string'
+  ) {
+    return undefined;
+  }
+  const match = /^schema\.spec\.([A-Za-z_][A-Za-z0-9_.]*)$/u.exec(
+    provider.selector,
+  );
+  if (!match?.[1]) {
+    throw new Error(
+      `Application AI provider selector ${JSON.stringify(provider.selector)} cannot be lowered to a workload profile binding.`,
+    );
+  }
+  return `\${schema.spec.${match[1]}}`;
 }
