@@ -171,7 +171,7 @@
     "hono": "^4.10.7",
     "nats": "^2.29.3",
     "postgres": "^3.4.7",
-    "typekro": "0.31.1"
+    "typekro": "0.32.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",

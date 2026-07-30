@@ -119,7 +119,7 @@
     "drizzle-orm": "^0.45.1",
     "esbuild": "^0.28.1",
     "hono": "^4.10.7",
-    "typekro": "0.31.1"
+    "typekro": "0.32.0"
   },
   "peerDependencies": {
     "@applik8s/runtime-hatchet": "0.6.0",

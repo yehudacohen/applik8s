@@ -37,7 +37,7 @@
         "hono": "^4.10.7",
         "nats": "^2.29.3",
         "postgres": "^3.4.7",
-        "typekro": "0.31.1",
+        "typekro": "0.32.0",
       },
       "devDependencies": {
         "@biomejs/biome": "^2.5.0",
@@ -149,7 +149,7 @@
         "drizzle-orm": "^0.45.1",
         "esbuild": "^0.28.1",
         "hono": "^4.10.7",
-        "typekro": "0.31.1",
+        "typekro": "0.32.0",
       },
       "peerDependencies": {
         "@applik8s/runtime-hatchet": "0.6.0",
@@ -185,7 +185,7 @@
         "cel-js": "0.8.2",
         "commander": "^15.0.0",
         "esbuild": "^0.28.1",
-        "typekro": "0.31.1",
+        "typekro": "0.32.0",
         "yaml": "^2.9.0",
       },
     },
@@ -238,7 +238,7 @@
         "@effect/platform-node": "4.0.0-beta.84",
         "alchemy": "2.0.0-beta.58",
         "effect": "4.0.0-beta.84",
-        "typekro": "0.31.1",
+        "typekro": "0.32.0",
       },
     },
     "packages/deployment-compiler": {
@@ -259,7 +259,7 @@
       "dependencies": {
         "alchemy": "2.0.0-beta.58",
         "effect": "4.0.0-beta.84",
-        "typekro": "0.31.1",
+        "typekro": "0.32.0",
       },
     },
     "packages/deployment-provider-kubernetes": {
@@ -277,7 +277,7 @@
       "dependencies": {
         "alchemy": "2.0.0-beta.58",
         "effect": "4.0.0-beta.84",
-        "typekro": "0.31.1",
+        "typekro": "0.32.0",
       },
     },
     "packages/deployment-typekro": {
@@ -286,7 +286,7 @@
       "dependencies": {
         "@applik8s/deployment-contract": "0.6.0",
         "arktype": "^2.1.20",
-        "typekro": "0.31.1",
+        "typekro": "0.32.0",
       },
     },
     "packages/e2e": {
@@ -326,6 +326,7 @@
         "@applik8s/core": "0.6.0",
         "@tanstack/ai": "0.42.0",
         "@tanstack/ai-openai": "0.17.1",
+        "postgres": "^3.4.7",
       },
     },
     "packages/runtime-contract": {
@@ -441,7 +442,7 @@
         "@applik8s/sdk": "0.6.0",
         "@applik8s/typetainer": "0.6.0",
         "arktype": "^2.1.20",
-        "typekro": "0.31.1",
+        "typekro": "0.32.0",
       },
     },
     "packages/typetainer": {
@@ -1813,6 +1814,8 @@
 
     "ramda": ["ramda@0.30.1", "", {}, "sha512-tEF5I22zJnuclswcZMc8bDIrwRHRzf+NqVEmqg50ShAZMP7MWeR/RGDthfM/p+BlqvF2fXAzpn8i+SJcYD3alw=="],
 
+    "re2js": ["re2js@2.8.6", "", {}, "sha512-xLgQil4kIUCrAzVk9fRSkxkFNwmygLFjVxXrLc65aE1F0+Zsb8rxumFBy4XKyvgMCTL6kilDq3EZ0piE2dP/Dg=="],
+
     "react": ["react@19.2.7", "", {}, "sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ=="],
 
     "react-dom": ["react-dom@19.2.7", "", { "dependencies": { "scheduler": "^0.27.0" }, "peerDependencies": { "react": "^19.2.7" } }, "sha512-t0BRVXvbiE/o20Hfw669rLbMCDWtYZLvmJigy2f0MxsXF+71pxhR3xOkspmsO8h3ZlNzyibAmtCa3l4lYKk6gQ=="],
@@ -1977,7 +1980,7 @@
 
     "typed-array-buffer": ["typed-array-buffer@1.0.3", "", { "dependencies": { "call-bound": "^1.0.3", "es-errors": "^1.3.0", "is-typed-array": "^1.1.14" } }, "sha512-nAYYwfY3qnzX30IkA6AQZjVbtK6duGontcQm1WSG1MD94YLqK0515GNApXkoxKOWMusVssAHWLh9SeaoefYFGw=="],
 
-    "typekro": ["typekro@0.31.1", "", { "dependencies": { "@aws-sdk/client-ecr": "^3.1019.0", "@aws-sdk/client-sts": "^3.1019.0", "@aws-sdk/credential-providers": "^3.1019.0", "@kubernetes/client-node": "1.3.0", "acorn": "8.15.0", "alchemy": "2.0.0-beta.58", "angular-expressions": "1.5.1", "arktype": "^2.2.0", "cel-js": "^0.8.2", "effect": "4.0.0-beta.84", "estraverse": "^5.3.0", "ignore": "^7.0.5", "js-yaml": "4.1.0", "pino": "^9.8.0" }, "peerDependencies": { "typescript": ">=5.0.0" } }, "sha512-imjfw7pSJi1DtxxafwSsQhiSlN9VFCM1N7GcfBBQ61dX1pS3dADZ6dqkArb+/VTUbaBNbzrLGbRnjbR8IKcFNg=="],
+    "typekro": ["typekro@0.32.0", "", { "dependencies": { "@aws-sdk/client-ecr": "^3.1019.0", "@aws-sdk/client-sts": "^3.1019.0", "@aws-sdk/credential-providers": "^3.1019.0", "@kubernetes/client-node": "1.3.0", "acorn": "8.15.0", "alchemy": "2.0.0-beta.58", "angular-expressions": "1.5.1", "arktype": "^2.2.0", "cel-js": "^0.8.2", "effect": "4.0.0-beta.84", "estraverse": "^5.3.0", "ignore": "^7.0.5", "js-yaml": "4.1.0", "pino": "^9.8.0", "re2js": "2.8.6" }, "peerDependencies": { "typescript": ">=5.0.0" } }, "sha512-kt2DO4OpPzQ3s8Y4XRJrTCSaY1Csgv+q4PjK0fPk0QzS+POgluk1sl9NGCXmpFIsCpmHdnPj9RSP0ZlERLmN7g=="],
 
     "typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
@@ -2060,6 +2063,8 @@
     "@ag-ui/core/zod": ["zod@3.25.76", "", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "@alcalzone/ansi-tokenize/is-fullwidth-code-point": ["is-fullwidth-code-point@5.1.0", "", { "dependencies": { "get-east-asian-width": "^1.3.1" } }, "sha512-5XHYaSyiqADb4RnZ1Bdad6cPp8Toise4TzEjcOYDHZkTCbKgiUl7WTUCpNWHuxmDt91wnsZBc9xinNzopv3JMQ=="],
+
+    "@applik8s/example-chirp-start/typekro": ["typekro@0.31.1", "", { "dependencies": { "@aws-sdk/client-ecr": "^3.1019.0", "@aws-sdk/client-sts": "^3.1019.0", "@aws-sdk/credential-providers": "^3.1019.0", "@kubernetes/client-node": "1.3.0", "acorn": "8.15.0", "alchemy": "2.0.0-beta.58", "angular-expressions": "1.5.1", "arktype": "^2.2.0", "cel-js": "^0.8.2", "effect": "4.0.0-beta.84", "estraverse": "^5.3.0", "ignore": "^7.0.5", "js-yaml": "4.1.0", "pino": "^9.8.0" }, "peerDependencies": { "typescript": ">=5.0.0" } }, "sha512-imjfw7pSJi1DtxxafwSsQhiSlN9VFCM1N7GcfBBQ61dX1pS3dADZ6dqkArb+/VTUbaBNbzrLGbRnjbR8IKcFNg=="],
 
     "@aws-sdk/client-cognito-identity/@aws-sdk/core": ["@aws-sdk/core@3.974.22", "", { "dependencies": { "@aws-sdk/types": "^3.973.13", "@aws-sdk/xml-builder": "^3.972.30", "@aws/lambda-invoke-store": "^0.2.2", "@smithy/core": "^3.24.6", "@smithy/signature-v4": "^5.4.6", "@smithy/types": "^4.14.3", "bowser": "^2.11.0", "tslib": "^2.6.2" } }, "sha512-YofH63shc6YRdXjz80BJkpJW+Bkn0Cuu2dn4Rv7s9G2Idt58tgtzQEWxrR2xVljlVfIBeUjPuULnSVYLke3sUQ=="],
 
