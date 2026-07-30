@@ -16,6 +16,7 @@
     "packages/identity",
     "packages/identity-ory",
     "packages/identity-postgres",
+    "packages/mcp",
     "packages/core",
     "packages/sdk",
     "packages/compiler",

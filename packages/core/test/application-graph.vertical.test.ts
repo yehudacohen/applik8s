@@ -79,6 +79,8 @@ describe('application graph substrate contract', () => {
       'workflowHandler',
       'workflowWorker',
       'aiAgent',
+      'mcpServer',
+      'mcpClient',
       'query',
       'gateway',
       'stream',

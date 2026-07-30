@@ -122,7 +122,7 @@ export function compileApplicationOperationCatalog(
   graph: ApplicationGraph,
   options: CompileApplicationOperationCatalogOptions = {},
 ): ApplicationOperationCatalog {
-  const compiledOperations = [
+  const baseOperations = [
     ...graph.nodes.filter((node): node is ApplicationModelNode => node.kind === 'model')
       .flatMap((model) => modelOperations(graph, model)),
     ...graph.nodes.filter((node) => node.kind === 'query').map((query) => queryOperation(graph, query)),
@@ -143,6 +143,7 @@ export function compileApplicationOperationCatalog(
     ...graph.nodes.filter((node) => node.kind === 'server').flatMap((server) =>
       server.routes.map((route) => rawRouteOperation(server.id, server.name, route))),
   ].sort((left, right) => left.id.localeCompare(right.id));
+  const compiledOperations = applyMcpTransportBindings(graph, baseOperations);
   const authorityManifest = applicationStaticAuthorityManifest(graph);
   const operations = applyStaticAuthorityManifest(compiledOperations, authorityManifest);
   const revision = options.revision ?? digestJson(operations);
@@ -168,6 +169,56 @@ export function compileApplicationOperationCatalog(
     }
   }
   return catalog;
+}
+
+function applyMcpTransportBindings(
+  graph: ApplicationGraph,
+  operations: readonly ApplicationOperationDescriptor[],
+): readonly ApplicationOperationDescriptor[] {
+  const byId = new Map(operations.map((operation) => [operation.id, operation]));
+  for (const server of graph.nodes.filter((node) => node.kind === 'mcpServer')) {
+    for (const tool of server.tools) {
+      const operation = byId.get(tool.operationId);
+      if (!operation) {
+        throw new Error(
+          `Application MCP server ${server.name} exposes unknown operation ${tool.operationId}.`,
+        );
+      }
+      if (
+        operation.authority.transports
+        && !operation.authority.transports.includes('mcp')
+      ) {
+        throw new Error(
+          `Application MCP server ${server.name} cannot expose ${operation.id} because its authority excludes MCP transport.`,
+        );
+      }
+      const existing = operation.transports.find(
+        (transport) =>
+          transport.transport === 'mcp'
+          && transport.mcp?.server === server.name
+          && transport.mcp.tool === tool.publicName,
+      );
+      if (existing) continue;
+      const transportBinding: ApplicationOperationTransportBinding = {
+        id: `mcp.${server.name}.${tool.publicName}`,
+        transport: 'mcp',
+        server: server.name,
+        mcp: {
+          server: server.name,
+          tool: tool.publicName,
+          schemaRevision: `${operation.input.digest}:${operation.output.digest}`,
+        },
+      };
+      byId.set(operation.id, {
+        ...operation,
+        transports: [
+          ...operation.transports,
+          transportBinding,
+        ].sort((left, right) => left.id.localeCompare(right.id)),
+      });
+    }
+  }
+  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 export function applicationStaticAuthorityManifest(

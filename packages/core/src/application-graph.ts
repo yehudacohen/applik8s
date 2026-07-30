@@ -78,6 +78,8 @@ export type ApplicationGraphNodeKind =
   | 'workflowHandler'
   | 'workflowWorker'
   | 'aiAgent'
+  | 'mcpServer'
+  | 'mcpClient'
   | 'query'
   | 'gateway'
   | 'stream'
@@ -114,6 +116,8 @@ export const applicationGraphNodeKinds = [
   'workflowHandler',
   'workflowWorker',
   'aiAgent',
+  'mcpServer',
+  'mcpClient',
   'query',
   'gateway',
   'stream',
@@ -250,6 +254,8 @@ export type ApplicationGraphNode =
   | ApplicationWorkflowHandlerNode
   | ApplicationWorkflowWorkerNode
   | ApplicationAIAgentNode
+  | ApplicationMcpServerNode
+  | ApplicationMcpClientNode
   | ApplicationQueryNode
   | ApplicationGatewayNode
   | ApplicationStreamNode
@@ -860,6 +866,80 @@ export interface ApplicationAIAgentNode extends ApplicationGraphNodeBase<'aiAgen
     readonly maximumConcurrency: number;
   };
   readonly generatedResources?: readonly ApplicationGeneratedResourceContract[];
+}
+
+export interface ApplicationMcpToolExposureContract {
+  readonly publicName: string;
+  readonly operationId: ApplicationOperationId;
+  readonly schemaRevision: 'operation';
+  readonly statelessName?: string;
+}
+
+export interface ApplicationMcpServerNode
+  extends ApplicationGraphNodeBase<'mcpServer'> {
+  readonly protocol: {
+    readonly preferred: '2025-11-25';
+    readonly supported: readonly ['2025-11-25'];
+    readonly sdk: '@modelcontextprotocol/sdk@1.30.0';
+    readonly extensions: readonly [
+      'io.modelcontextprotocol/oauth-client-credentials/v1',
+    ];
+  };
+  readonly path: string;
+  readonly resource?: string;
+  readonly audience?: string;
+  readonly authorizationServers: readonly string[];
+  readonly scopes: readonly string[];
+  readonly tools: readonly ApplicationMcpToolExposureContract[];
+  readonly sessions: {
+    readonly mode: 'stateful-pinned';
+    readonly catalog: 'operation-catalog-revision';
+    readonly authorization: 'revalidate-every-call';
+    readonly compatibleBindings: 'drain';
+    readonly incompatibleBindings: 'reinitialize';
+    readonly lifetimeMs: number;
+  };
+  readonly transport: {
+    readonly kind: 'streamable-http';
+    readonly protectedResourceMetadata: true;
+    readonly tokenPassthrough: 'forbidden';
+    readonly maximumRequestBytes: number;
+    readonly maximumResponseBytes: number;
+  };
+}
+
+export interface ApplicationMcpExternalToolContract {
+  readonly name: string;
+  readonly schemaRevision?: string;
+  readonly contentClassification: 'untrusted-external';
+}
+
+export interface ApplicationMcpClientNode
+  extends ApplicationGraphNodeBase<'mcpClient'> {
+  readonly server: string;
+  readonly audience: string;
+  readonly resource: string;
+  readonly protocol: {
+    readonly preferred: '2025-11-25';
+    readonly supported: readonly ['2025-11-25'];
+    readonly clientCredentials:
+      'io.modelcontextprotocol/oauth-client-credentials/v1';
+  };
+  readonly tools: readonly ApplicationMcpExternalToolContract[];
+  readonly credentials: ApplicationGraphNodeRef;
+  readonly egress: {
+    readonly timeoutMs: number;
+    readonly concurrency: number;
+    readonly maximumRequestBytes: number;
+    readonly maximumResponseBytes: number;
+    readonly tokenPassthrough: 'forbidden';
+    readonly schemaChanges: 'quarantine';
+  };
+  readonly audit: {
+    readonly arguments: 'digest';
+    readonly result: 'digest';
+    readonly causation: 'required';
+  };
 }
 
 /** A graph number can remain installation-derived until TypeKro instance evaluation. */
@@ -2946,6 +3026,10 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
       return applicationWorkflowWorkerNodeStructureDiagnostics(node, graph);
     case 'aiAgent':
       return applicationAIAgentNodeStructureDiagnostics(node, graph);
+    case 'mcpServer':
+      return applicationMcpServerNodeStructureDiagnostics(node);
+    case 'mcpClient':
+      return applicationMcpClientNodeStructureDiagnostics(node, graph);
     case 'query':
       return applicationReactiveNodeStructureMessages(node, graph).map(applicationGraphStructureDiagnostic);
     case 'gateway':
@@ -2991,6 +3075,113 @@ function applicationGraphNodeStructureDiagnostics(node: ApplicationGraphNode, gr
     default:
       return [];
   }
+}
+
+function applicationMcpServerNodeStructureDiagnostics(
+  node: ApplicationMcpServerNode,
+): readonly Diagnostic[] {
+  const messages: string[] = [];
+  if (!/^\/(?:[A-Za-z0-9._~-]+\/)*[A-Za-z0-9._~-]+$/u.test(node.path)) {
+    messages.push(
+      `Application MCP server ${node.id} path must be an absolute URL-safe path without query or fragment.`,
+    );
+  }
+  if (node.tools.length === 0) {
+    messages.push(
+      `Application MCP server ${node.id} must expose at least one existing operation.`,
+    );
+  }
+  for (const duplicate of duplicateStrings(node.tools.map((tool) => tool.publicName))) {
+    messages.push(
+      `Application MCP server ${node.id} declares public tool name ${duplicate} more than once.`,
+    );
+  }
+  for (const duplicate of duplicateStrings(node.tools.map((tool) => tool.operationId))) {
+    messages.push(
+      `Application MCP server ${node.id} exposes operation ${duplicate} more than once.`,
+    );
+  }
+  for (const tool of node.tools) {
+    if (!/^[A-Za-z0-9_.-]{1,128}$/u.test(tool.publicName)) {
+      messages.push(
+        `Application MCP server ${node.id} tool ${tool.publicName} is not a valid MCP public name.`,
+      );
+    }
+  }
+  if (
+    !Number.isSafeInteger(node.sessions.lifetimeMs)
+    || node.sessions.lifetimeMs < 60_000
+    || node.sessions.lifetimeMs > 86_400_000
+  ) {
+    messages.push(
+      `Application MCP server ${node.id} session lifetime must be between one minute and 24 hours.`,
+    );
+  }
+  for (const [field, value] of [
+    ['maximumRequestBytes', node.transport.maximumRequestBytes],
+    ['maximumResponseBytes', node.transport.maximumResponseBytes],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1_024 || value > 100_000_000) {
+      messages.push(
+        `Application MCP server ${node.id} ${field} must be between 1 KiB and 100 MB.`,
+      );
+    }
+  }
+  if (node.resource && node.audience !== node.resource) {
+    messages.push(
+      `Application MCP server ${node.id} OAuth audience must equal its canonical resource URI.`,
+    );
+  }
+  return messages.map(applicationGraphStructureDiagnostic);
+}
+
+function applicationMcpClientNodeStructureDiagnostics(
+  node: ApplicationMcpClientNode,
+  graph: ApplicationGraph,
+): readonly Diagnostic[] {
+  const messages: string[] = [];
+  if (node.server !== node.resource || node.audience !== node.resource) {
+    messages.push(
+      `Application MCP client ${node.id} server, OAuth resource, and audience must be identical canonical URIs.`,
+    );
+  }
+  if (node.tools.length === 0) {
+    messages.push(
+      `Application MCP client ${node.id} must allowlist at least one external tool.`,
+    );
+  }
+  for (const duplicate of duplicateStrings(node.tools.map((tool) => tool.name))) {
+    messages.push(
+      `Application MCP client ${node.id} allowlists tool ${duplicate} more than once.`,
+    );
+  }
+  const credentials = graph.nodes.find(
+    (candidate) => candidate.id === node.credentials.nodeId,
+  );
+  if (credentials?.kind !== 'secret') {
+    messages.push(
+      `Application MCP client ${node.id} must reference a declared Secret credential source.`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(node.egress.timeoutMs)
+    || node.egress.timeoutMs < 100
+    || node.egress.timeoutMs > 600_000
+  ) {
+    messages.push(
+      `Application MCP client ${node.id} timeout must be between 100 ms and 10 minutes.`,
+    );
+  }
+  if (
+    !Number.isSafeInteger(node.egress.concurrency)
+    || node.egress.concurrency < 1
+    || node.egress.concurrency > 1_000
+  ) {
+    messages.push(
+      `Application MCP client ${node.id} concurrency must be between 1 and 1000.`,
+    );
+  }
+  return messages.map(applicationGraphStructureDiagnostic);
 }
 
 function applicationAIAgentNodeStructureDiagnostics(

@@ -63,6 +63,14 @@ import {
   validateNativeModelAccess,
 } from './application-native-model-wiring.js';
 import { type ApplicationObjectStoreBinding, type ApplicationObjectStoreOptions, registerApplicationObjectStore } from './application-object-storage.js';
+import {
+  type ApplicationMcpClientBinding,
+  type ApplicationMcpClientOptions,
+  type ApplicationMcpRegistrar,
+  type ApplicationMcpServerBinding,
+  type ApplicationMcpServerOptions,
+  applicationMcpRegistrar,
+} from './application-mcp.js';
 import { applicationOperatorWatchScopeContracts } from './application-operator-watches.js';
 import type { ApplicationProcessorOptions } from './application-processor-policy.js';
 import {
@@ -109,6 +117,7 @@ export type { ApplicationJobBinding, ApplicationJobOptions, ApplicationScheduleO
 export type { ApplicationInstallationClient, ApplicationInstallationConnectOptions, ApplicationInstallationReference, ApplicationInstallationTransport, ApplicationInstallationWatchOptions } from './application-installation-client.js';
 export type { ApplicationCommandDomainError, ApplicationCommandKey, ApplicationCommandSubmissionAcknowledgement, ApplicationModelBackendContract, ApplicationModelBinding, ApplicationModelCommandBinding, ApplicationModelCommandContext, ApplicationModelCommandDeliveryOptions, ApplicationModelCommandHandler, ApplicationModelCommandOptions, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelConstraintOptions, ApplicationModelCreateInput, ApplicationModelEventBinding, ApplicationModelEventHandler, ApplicationModelEventRegistrar, ApplicationModelIndexBinding, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelOptions, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelRuntimeBinding, ApplicationModelSchemaIndexOptions, ApplicationModelSchemaOptions, ApplicationRuntimeModelContract } from './application-models.js';
 export type { ApplicationObjectMetadata, ApplicationObjectPutRequest, ApplicationObjectReference, ApplicationObjectStorageRuntime, ApplicationObjectStoreBinding, ApplicationObjectStoreOptions, ApplicationSignedObjectIntent } from './application-object-storage.js';
+export type { ApplicationMcpClientBinding, ApplicationMcpClientOptions, ApplicationMcpRegistrar, ApplicationMcpServerBinding, ApplicationMcpServerOptions, ApplicationMcpToolSelection } from './application-mcp.js';
 export type { ApplicationProcessorOptions } from './application-processor-policy.js';
 export type { ApplicationProfile, ApplicationProfileBranchOptions, ApplicationProfileVariant, ApplicationProfileVariantOverride, ApplicationQualifiedProviderBinding } from './application-profiles.js';
 export type { ApplicationAnalyticalDatabaseProvider, ApplicationAnalyticalDatabaseProviderToken, ApplicationAnalyticsConstructors, ApplicationAuthorizationDecision, ApplicationAuthorizationProvider, ApplicationAuthorizationProviderToken, ApplicationAuthorizationRequest, ApplicationCertificateProvider, ApplicationCertificateProviderToken, ApplicationCertManagerCertificateProvider, ApplicationClickHouseAnalyticalDatabaseProvider, ApplicationContainerRegistryCredentialSecret, ApplicationContainerRegistryEndpoint, ApplicationContainerRegistryProvider, ApplicationContainerRegistryProviderToken, ApplicationContainerRegistrySecretRef, ApplicationContainerRegistryTls, ApplicationCounterStoreProvider, ApplicationCredentialStoreProvider, ApplicationDatabaseConstructors, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationDnsPublicationProvider, ApplicationDnsPublicationProviderToken, ApplicationEventLogProvider, ApplicationEventSourceProvider, ApplicationExternalClickHouseConnection, ApplicationExternalClickHouseOptions, ApplicationExternalDnsPublicationProvider, ApplicationExternalPostgresDatabaseOptions, ApplicationGeneratedTransactionalDatabaseMigrationJobOptions, ApplicationHarborContainerRegistryOptions, ApplicationHarborContainerRegistryProvider, ApplicationHarborProjectManagement, ApplicationHatchetWorkflowEngineProvider, ApplicationHostBinding, ApplicationHostProvider, ApplicationHostProviderToken, ApplicationHttpExposureProvider, ApplicationHttpExposureProviderToken, ApplicationIdentityInfrastructure, ApplicationIdentityProvider, ApplicationIdentityProviderToken, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationIngressHttpExposureProvider, ApplicationKubernetesConfigMapObjectStorageProvider, ApplicationKubernetesConfigMapQueueProvider, ApplicationKubernetesCredentialStoreProvider, ApplicationKubernetesHostProvider, ApplicationKubernetesResourceCounterStoreProvider, ApplicationKubernetesSecretProvider, ApplicationKubernetesWatchEventSourceProvider, ApplicationNatsJetStreamEventLogProvider, ApplicationNodePortHttpExposureProvider, ApplicationOAuthAuthorizationServerProvider, ApplicationOAuthAuthorizationServerProviderToken, ApplicationObjectStorageProvider, ApplicationOciContainerRegistryProvider, ApplicationOpenSearchProvider, ApplicationOrbstackContainerRegistryProvider, ApplicationPostgresAnalyticalDatabaseProvider, ApplicationPostgresBackupPolicy, ApplicationPostgresClusterSpec, ApplicationPostgresReadinessPolicy, ApplicationPostgresSearchProvider, ApplicationPostgresTransactionalDatabaseOptions, ApplicationPostgresTransactionalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderToken, ApplicationQualifiableProviderToken, ApplicationQualifiedProviderToken, ApplicationQueueProvider, ApplicationRequestAdmission, ApplicationSearchCapability, ApplicationSearchProvider, ApplicationSearchProviderToken, ApplicationSecretProvider, ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken, ApplicationTransactionalDatabaseMigrationPolicy, ApplicationTransactionalDatabaseProvider, ApplicationTransactionalDatabaseProviderToken, ApplicationTypedProviderContract, ApplicationValkeyIndexBackend, ApplicationWorkflowEngineProvider, ApplicationWorkflowEngineProviderToken } from './application-providers.js';
@@ -132,6 +141,7 @@ export interface KubernetesApplicationScope extends ApplicationAuthorityRegistra
   readonly server: ApplicationServerRegistrar & Record<string, ApplicationServerBinding>;
   readonly storage: ApplicationStorageRegistrar;
   readonly database: ApplicationDatabaseRegistrar;
+  readonly mcp: ApplicationMcpRegistrar;
   agent<
     const TName extends string,
     TRequest extends ApplicationTanStackAIAgentRequest,
@@ -1009,6 +1019,28 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       return binding;
     },
   };
+  const mcp = ((
+    mcpName: string,
+    mcpOptions: ApplicationMcpServerOptions,
+  ): ApplicationMcpServerBinding => {
+    const binding = preview.mcp(mcpName, mcpOptions);
+    replays.push((scope) => {
+      scope.mcp(mcpName, mcpOptions);
+    });
+    invalidate();
+    return binding;
+  }) as ApplicationMcpRegistrar;
+  mcp.client = (
+    mcpName: string,
+    mcpOptions: ApplicationMcpClientOptions,
+  ): ApplicationMcpClientBinding => {
+    const binding = preview.mcp.client(mcpName, mcpOptions);
+    replays.push((scope) => {
+      scope.mcp.client(mcpName, mcpOptions);
+    });
+    invalidate();
+    return binding;
+  };
   // typecast: the implementation records one runtime branch for both app.http(name, configure) and app.http(name, options, configure) overloads.
   const http = ((serverName: string, optionsOrConfigure: ApplicationServerOptions | ((server: ApplicationServer) => void), maybeConfigure?: (server: ApplicationServer) => void) => {
     const explicitOptions = typeof optionsOrConfigure === 'function' ? {} : optionsOrConfigure;
@@ -1182,6 +1214,7 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
     server: http,
     storage,
     database,
+    mcp,
     serviceIdentity(identityName) {
       return preview.serviceIdentity(identityName);
     },
@@ -2157,6 +2190,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
   };
   const reconcile = <TSpec extends object, TStatus extends object = Record<string, never>>(resource: ResourceDefinition<TSpec, TStatus>, handler: ApplicationReconcileHandler<TSpec, TStatus>, options: ApplicationReconcileOptions = {}): ApplicationResourceControllerBinding => on(resource, { reconcile: handler }, options);
   const authority = applicationAuthorityRegistrar(state);
+  const mcp = applicationMcpRegistrar(state);
   const scope: KubernetesApplicationScope = {
     // typecast: app.api is the application-context name for the same generated HTTP workload registrar as app.server.
     api: server as ApplicationServerRegistrar & Record<string, ApplicationServerBinding>,
@@ -2166,6 +2200,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     server: server as ApplicationServerRegistrar & Record<string, ApplicationServerBinding>,
     storage,
     database,
+    mcp,
     ...authority,
     operator(operator, options) {
       collectApplicationResources(state, applicationOperatorResources(operator));
