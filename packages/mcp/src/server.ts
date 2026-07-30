@@ -7,9 +7,8 @@ import type {
   JsonValue,
 } from '@applik8s/core';
 import {
-  ApplicationMcpError,
-  applicationMcpProtocolRevision,
   type ApplicationMcpCatalogSource,
+  ApplicationMcpError,
   type ApplicationMcpInitializeRequest,
   type ApplicationMcpInitializeResult,
   type ApplicationMcpListedTool,
@@ -20,7 +19,16 @@ import {
   type ApplicationMcpSession,
   type ApplicationMcpToolBinding,
   type ApplicationMcpToolCallResult,
+  applicationMcpProtocolRevision,
 } from './contracts.js';
+
+export type {
+  ApplicationMcpPlacementDispatch,
+  ApplicationMcpPlacementExecutorOptions,
+} from './placement.js';
+export {
+  createApplicationMcpPlacementExecutor,
+} from './placement.js';
 
 export interface ApplicationMcpCallOptions {
   readonly admission: ApplicationRequestAdmission;
@@ -866,7 +874,10 @@ function requiredProtocolString(
     typeof value !== 'string'
     || !value.trim()
     || value.length > maximumLength
-    || /[\u0000-\u001f\u007f]/u.test(value)
+    || [...value].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 0x1f || codePoint === 0x7f;
+    })
   ) {
     throw new ApplicationMcpError(
       'MCP_INPUT_INVALID',
@@ -1177,6 +1188,8 @@ export function createApplicationMcpCatalogSource(
     ): Promise<void>;
   },
 ): ApplicationMcpCatalogSource {
+  const putReference = repository.putReference?.bind(repository);
+  const removeReference = repository.removeReference?.bind(repository);
   return {
     async active(application) {
       const active = (await repository.list(application)).find(
@@ -1192,14 +1205,14 @@ export function createApplicationMcpCatalogSource(
       return active;
     },
     get: (application, revision) => repository.get(application, revision),
-    ...(repository.putReference
+    ...(putReference
       ? {
         reference: (
           application: string,
           revision: string,
           sessionId: string,
         ) =>
-          repository.putReference!(
+          putReference(
             application,
             revision,
             'session',
@@ -1207,14 +1220,14 @@ export function createApplicationMcpCatalogSource(
           ),
       }
       : {}),
-    ...(repository.removeReference
+    ...(removeReference
       ? {
         release: (
           application: string,
           revision: string,
           sessionId: string,
         ) =>
-          repository.removeReference!(
+          removeReference(
             application,
             revision,
             'session',
