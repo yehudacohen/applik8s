@@ -12,6 +12,15 @@ import type {
 import { applicationIdentityHttpProtocol } from './client.js';
 import type { ApplicationPreAuthenticationFlowKind } from './contracts.js';
 
+export type {
+  ApplicationOAuthResourceAdmissionContext,
+  ApplicationOAuthResourceAdmissionOptions,
+} from './resource-admission.js';
+export {
+  ApplicationOAuthResourceAdmissionError,
+  createApplicationOAuthResourceAdmission,
+} from './resource-admission.js';
+
 export interface ApplicationIdentityHttpContext {
   readonly request: Request;
   readonly signal: AbortSignal;

@@ -5,4 +5,5 @@ export * from './oauth-contracts.js';
 export * from './oauth-memory.js';
 export * from './oauth-runtime.js';
 export * from './projection-contracts.js';
+export * from './resource-admission.js';
 export * from './runtime.js';
