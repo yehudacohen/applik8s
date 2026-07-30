@@ -16,8 +16,18 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/ai-tanstack/src'],
-    forbidden: [/^node:/, /^@applik8s\/(?!ai(?:\/|$)|client(?:\/|$)|core(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
-    rationale: 'The TanStack AI adapter may bridge portable AI, operation, and authority contracts to released upstream TanStack APIs, but may not own infrastructure or application runtime semantics.',
+    forbidden: [/^node:/, /^@applik8s\/(?!ai(?:\/|$)|client(?:\/|$)|core(?:\/|$)|sdk\/schema-runtime$)/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The TanStack AI adapter may bridge portable AI, operation, authority, and focused schema-validation contracts to released upstream TanStack APIs, but may not own infrastructure or application runtime semantics.',
+  },
+  {
+    roots: ['packages/identity/src'],
+    forbidden: [/^@applik8s\/(?!core(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'Provider-neutral identity and OAuth flow authority may depend on portable core principals but never provider SDKs, Kubernetes, TypeKro, or deployment effects.',
+  },
+  {
+    roots: ['packages/runtime-ai/src'],
+    forbidden: [/^@applik8s\/(?!ai(?:\/|$)|ai-tanstack(?:\/|$)|client(?:\/|$)|core(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    rationale: 'The AI execution runtime may join AI, TanStack, operation, and authority contracts but must remain independent of infrastructure and deployment implementations.',
   },
   {
     roots: ['packages/deployment-contract/src'],
