@@ -31,6 +31,7 @@ import {
 import type {
   ApplicationExecutionPrincipal,
   ApplicationOperationDescriptor,
+  ApplicationRequestAdmission,
   ApplicationWorkloadAuthorityEnvelope,
 } from '@applik8s/core';
 import {
@@ -147,7 +148,15 @@ export interface ApplicationAIAgentRuntimeOptions<
   readonly admit: (
     request: Request,
     body: ApplicationAIAgentRequestBody,
-  ) => Promise<ApplicationExecutionPrincipal> | ApplicationExecutionPrincipal;
+  ) =>
+    | Promise<
+      ApplicationRequestAdmission & {
+        readonly principal: ApplicationExecutionPrincipal;
+      }
+    >
+    | (ApplicationRequestAdmission & {
+      readonly principal: ApplicationExecutionPrincipal;
+    });
   readonly reserveAttempt: (
     input: {
       readonly principal: ApplicationExecutionPrincipal;
@@ -165,6 +174,9 @@ export interface ApplicationAIAgentRuntimeOptions<
     operation: ApplicationOperationDescriptor,
     input: unknown,
     invocation: ApplicationTanStackToolInvocation,
+    admission: ApplicationRequestAdmission & {
+      readonly principal: ApplicationExecutionPrincipal;
+    },
   ) => Promise<unknown>;
 }
 
@@ -207,7 +219,8 @@ export function createApplicationAIAgentRequestHandler<TResult>(
     try {
       const body = await boundedJson(request, maximumRequestBytes);
       assertAgentRequest(body);
-      const principal = await options.admit(request, body);
+      const admission = await options.admit(request, body);
+      const principal = admission.principal;
       assertAgentPrincipal(principal, options.name);
       let reservation = await options.reserveAttempt({
         principal,
@@ -264,7 +277,12 @@ export function createApplicationAIAgentRequestHandler<TResult>(
           if (tool.workloadAuthority.operationId !== tool.operation.id) {
             throw new Error(`Agent ${options.name} tool authority does not match ${tool.operation.id}.`);
           }
-          return await options.invoke(tool.operation, input, invocation) as TOutput;
+          return await options.invoke(
+            tool.operation,
+            input,
+            invocation,
+            admission,
+          ) as TOutput;
         },
       };
       const runtime: ApplicationTanStackAgentRuntime = {

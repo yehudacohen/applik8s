@@ -152,7 +152,8 @@ async function applicationGeneratedSecretRequirements(
     });
   }
   const mcpServers = graph.nodes.filter((node) => node.kind === "mcpServer");
-  if (mcpServers.length > 0) {
+  const agents = graph.nodes.filter((node) => node.kind === "aiAgent");
+  if (mcpServers.length > 0 || agents.length > 0) {
     const namespace = stringValue(
       resolvedApplicationNamespace ?? graph.metadata.namespace ?? "default",
       "Application MCP namespace",
@@ -176,6 +177,7 @@ async function applicationGeneratedSecretRequirements(
       },
       consumers: [
         ...mcpServers.map((server) => server.id),
+        ...agents.map((agent) => agent.id),
         ...gatewayConsumers,
       ].sort(),
     });

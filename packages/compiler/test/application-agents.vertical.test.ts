@@ -57,6 +57,36 @@ describe('generated application AI agents', () => {
       }),
     );
     identity.can(Post.create);
+    application.gateway('agent-tools', {
+      commands: [Post.create],
+      authorizeCommand: async () => true,
+      deployment: {
+        namespace: 'research-system',
+        cursorSecret: {
+          name: 'research-agent-gateway-cursor',
+          key: 'key',
+        },
+        authenticate: async () => ({
+          principal: {
+            id: 'principal:test',
+            identity: {
+              id: 'identity:test',
+              kind: 'human',
+              issuer: 'https://identity.example.test',
+              subject: 'test',
+            },
+            kind: 'human',
+            authenticationMethod: 'test',
+            audience: ['https://research.example.test'],
+            trustedContextDigest: 'sha256:test',
+            catalogRevision: 'catalog-test',
+            authorityRevision: 'authority-test',
+            admittedAt: '2026-07-30T00:00:00.000Z',
+          },
+          trustedContext: {},
+        }),
+      },
+    });
     const graph = applicationGraphFor(application.composition);
     if (!graph) throw new Error('Expected an application graph.');
     const catalog = compileApplicationOperationCatalog(graph);
@@ -140,7 +170,20 @@ describe('generated application AI agents', () => {
     });
     const source = await readFile(artifact.sourcePath, 'utf8');
     const normalizedSource = source.replaceAll('\\\n', '');
-    expect(normalizedSource).toContain('canonical execution-principal admission');
+    expect(normalizedSource).toContain('x-applik8s-execution-admission');
+    expect(normalizedSource).toContain('x-applik8s-internal-invocation');
+    expect(normalizedSource).toContain(
+      'Agent execution admission is required.',
+    );
+    expect(normalizedSource).toContain(
+      'AI operation has no compiled placement route.',
+    );
+    expect(normalizedSource).not.toContain(
+      'requires canonical execution-principal admission',
+    );
+    expect(JSON.stringify(artifact.resources)).toContain(
+      'APPLIK8S_INTERNAL_OPERATION_SECRET',
+    );
     expect(normalizedSource).toContain('applik8s_ai_attempts');
     expect(normalizedSource).toContain('completion-uncertain');
     expect(normalizedSource).toMatch(

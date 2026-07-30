@@ -18,6 +18,11 @@ import {
   type GeneratedApplicationContainerArtifact,
 } from '../application-containers/index.js';
 import {
+  type ApplicationOperationPlacementReceiver,
+  compileApplicationOperationPlacementReceiver,
+} from '../application-mcp/planner.js';
+import {
+  applicationStaticAuthorityManifest,
   compileApplicationOperationCatalog,
   compileApplicationWorkloadAuthority,
 } from '../application-operations/index.js';
@@ -47,6 +52,7 @@ export interface GeneratedApplicationAgentResource {
 }
 
 interface ApplicationAgentCompilerContract {
+  readonly graph: ApplicationGraph;
   readonly application: string;
   readonly agent: ApplicationAIAgentNode;
   readonly provider: ApplicationProviderNode;
@@ -56,6 +62,7 @@ interface ApplicationAgentCompilerContract {
     readonly operation: ApplicationOperationDescriptor;
     readonly transport: ApplicationAIAgentNode['tools'][number]['transport'];
     readonly workloadAuthority: ApplicationWorkloadAuthorityEnvelope;
+    readonly receiver: ApplicationOperationPlacementReceiver;
   }[];
   readonly namespace: string;
   readonly state: NonNullable<ApplicationModelNode['runtime']>;
@@ -144,7 +151,16 @@ function applicationAgentCompilerContract(
         `Application agent ${agent.id} tool ${tool.operationId} authority input schema is stale.`,
       );
     }
-    return { operation, transport: tool.transport, workloadAuthority: authority };
+    return {
+      operation,
+      transport: tool.transport,
+      workloadAuthority: authority,
+      receiver: compileApplicationOperationPlacementReceiver(
+        graph,
+        operation,
+        `Application agent ${agent.name} tool ${operation.id}`,
+      ),
+    };
   });
   const stateModels = graph.nodes.filter(
     (
@@ -178,6 +194,7 @@ function applicationAgentCompilerContract(
   }
   const namespace = graph.metadata.namespace ?? stringValue(providerConfig.namespace) ?? 'default';
   return {
+    graph,
     application: graph.metadata.name,
     agent,
     provider,
@@ -309,11 +326,27 @@ function generatedAgentSource(contract: ApplicationAgentCompilerContract): strin
   const instructions = contract.agent.instructions.kind === 'static'
     ? JSON.stringify(contract.agent.instructions.value)
     : 'instructions';
+  const workloadIdentity = contract.tools[0]?.workloadAuthority.workloadIdentity;
+  if (!workloadIdentity) {
+    throw new Error(`Application agent ${contract.agent.id} has no workload identity.`);
+  }
+  const audiences = [
+    ...new Set(
+      contract.tools.flatMap((tool) => tool.workloadAuthority.audiences),
+    ),
+  ].sort();
+  const routeEntries = contract.tools.map((tool) =>
+    `[${JSON.stringify(tool.operation.id)}, ${JSON.stringify({
+      url: tool.receiver.url,
+      maximumResponseBytes: 10_485_760,
+    })}]`,
+  ).join(',\n');
   return `
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import postgres from 'postgres';
-import { createApplicationAIAttemptRuntime } from '@applik8s/ai';
+import { createApplicationAIAttemptRuntime, createApplicationAIOperationExecutor } from '@applik8s/ai';
+import { createApplicationOperationAuthorityRuntime, decodeApplicationExecutionAdmission } from '@applik8s/operations';
 import { createApplicationAIAgentRequestHandler, createPostgresApplicationAIAttemptStore } from '@applik8s/runtime-ai';
 import { callback as handler } from './handler.generated.js';
 ${contract.agent.instructions.kind === 'closure'
@@ -349,13 +382,46 @@ const sql = postgres(requiredEnv(${JSON.stringify(contract.state.connectionEnvNa
 const attemptStore = createPostgresApplicationAIAttemptStore({ sql });
 await attemptStore.prepare();
 const attemptRuntime = createApplicationAIAttemptRuntime({ store: attemptStore });
-
-// Principal admission and canonical operation invocation remain fail-closed
-// until their provider runtimes are attached. Neither is inferred from
-// client-supplied JSON.
-const unavailable = (capability) => async () => {
-  throw new Error('Generated agent ' + contract.name + ' requires ' + capability + '.');
-};
+const operationAuthority = createApplicationOperationAuthorityRuntime({
+  sql,
+  application: contract.application,
+  catalog: ${JSON.stringify(contract.operationCatalog)},
+  ${applicationStaticAuthorityManifest(contract.graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(contract.graph))},` : ''}
+});
+await operationAuthority.prepare();
+const placementRoutes = new Map([${routeEntries}]);
+const invokeOperation = createApplicationAIOperationExecutor({
+  authority: operationAuthority,
+  attemptRuntime,
+  envelopes: contract.tools.map((tool) => tool.workloadAuthority),
+  transportSecret: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+  dispatch: {
+    async dispatch({ operation, arguments: input, invocationToken, signal }) {
+      const route = placementRoutes.get(operation.id);
+      if (!route) throw new Error('AI operation has no compiled placement route.');
+      const response = await fetch(route.url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-applik8s-internal-invocation': invocationToken,
+        },
+        body: JSON.stringify({ operationId: operation.id, input }),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(60000)])
+          : AbortSignal.timeout(60000),
+      });
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength > route.maximumResponseBytes) {
+        throw new Error('AI placement response exceeded its configured bound.');
+      }
+      const value = JSON.parse(new TextDecoder().decode(bytes));
+      if (!response.ok || !value || typeof value !== 'object' || !('value' in value)) {
+        throw new Error('AI placement invocation failed without exposing internal details.');
+      }
+      return value.value;
+    },
+  },
+});
 const handle = createApplicationAIAgentRequestHandler({
   name: contract.name,
   logicalModel: contract.model.name,
@@ -373,7 +439,43 @@ const handle = createApplicationAIAgentRequestHandler({
   persistence: Object.freeze({ kind: 'pending-tanstack-server-persistence' }),
   timeoutMs: contract.budgets.timeoutMs,
   maximumConcurrency: contract.deployment.maximumConcurrency,
-  admit: unavailable('canonical execution-principal admission'),
+  async admit(request, body) {
+    const token = request.headers.get('x-applik8s-execution-admission');
+    if (!token) throw new Error('Agent execution admission is required.');
+    const invocation = decodeApplicationExecutionAdmission(
+      requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+      token,
+      {
+        executionKind: 'agent',
+        workloadIdentityId: ${JSON.stringify(workloadIdentity.id)},
+        serviceIdentityId: ${JSON.stringify(contract.agent.serviceIdentity.id)},
+        audience: ${JSON.stringify(audiences)},
+        binding: {
+          agentId: contract.nodeId,
+          threadId: body.threadId,
+          runId: body.runId,
+        },
+      },
+    );
+    const principal = await operationAuthority.admitExecutionPrincipal({
+      executionKind: 'agent',
+      executionId: invocation.executionId,
+      attempt: invocation.attempt,
+      workloadIdentity: ${JSON.stringify(workloadIdentity)},
+      serviceIdentity: contract.serviceIdentity,
+      causalPrincipal: invocation.admission.principal.identity,
+      causalGrantIds: invocation.causalGrantIds,
+      envelopes: contract.tools.map((tool) => tool.workloadAuthority),
+      trustedContextDigest: invocation.admission.principal.trustedContextDigest,
+      audience: invocation.audience,
+      deadline: invocation.expiresAt,
+      cancellationRevision: invocation.cancellationRevision,
+    });
+    return {
+      principal,
+      trustedContext: invocation.admission.trustedContext,
+    };
+  },
   async reserveAttempt({ principal, threadId, runId, logicalModel, request }) {
     const invocationId = 'invocation_' + createHash('sha256')
       .update(contract.application)
@@ -499,7 +601,11 @@ const handle = createApplicationAIAgentRequestHandler({
       return { ...reservation, version: attempt.version };
     },
   },
-  invoke: unavailable('canonical operation invocation'),
+  invoke: (operation, input, invocation, admission) =>
+    invokeOperation(operation, input, {
+      ...invocation,
+      admission,
+    }),
   handler,
 });
 const server = createServer(async (request, response) => {
@@ -608,6 +714,17 @@ function generatedAgentResources(
                       secretKeyRef: {
                         name: contract.state.secretName,
                         key: contract.state.secretKey,
+                        optional: false,
+                      },
+                    },
+                  },
+                  {
+                    name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
+                    valueFrom: {
+                      secretKeyRef: {
+                        name:
+                          `${kubernetesName(contract.graph.metadata.name)}-internal-operation`,
+                        key: 'key',
                         optional: false,
                       },
                     },

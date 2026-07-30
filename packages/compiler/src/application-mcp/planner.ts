@@ -16,15 +16,17 @@ export interface ApplicationMcpPlacementRoute {
   readonly operationVersion: string;
   readonly audience: string;
   readonly placement: ApplicationOperationDescriptor['placement'];
-  readonly receiver: {
-    readonly nodeId: string;
-    readonly kind: 'generatedGateway';
-    readonly serviceName: string;
-    readonly namespace: string;
-    readonly port: number;
-    readonly path: '/__applik8s/internal/v1/operations';
-    readonly url: string;
-  };
+  readonly receiver: ApplicationOperationPlacementReceiver;
+}
+
+export interface ApplicationOperationPlacementReceiver {
+  readonly nodeId: string;
+  readonly kind: 'generatedGateway';
+  readonly serviceName: string;
+  readonly namespace: string;
+  readonly port: number;
+  readonly path: '/__applik8s/internal/v1/operations';
+  readonly url: string;
 }
 
 /**
@@ -44,16 +46,6 @@ export function compileApplicationMcpPlacementRoutes(
   }
   const operations = new Map(
     catalog.operations.map((operation) => [operation.id, operation]),
-  );
-  const gateways = graph.nodes.filter(
-    (node): node is ApplicationGatewayNode =>
-      node.kind === 'gateway'
-      && node.materialization === 'generatedDeployment',
-  );
-  const queries = new Map(
-    graph.nodes
-      .filter((node): node is ApplicationQueryNode => node.kind === 'query')
-      .map((query) => [query.id, query]),
   );
   return graph.nodes
     .filter((node): node is ApplicationMcpServerNode => node.kind === 'mcpServer')
@@ -75,52 +67,11 @@ export function compileApplicationMcpPlacementRoutes(
           `Application MCP tool ${server.name}.${tool.publicName} cannot expose subscription operation ${operation.id} as a unary MCP tool.`,
         );
       }
-      if (
-        operation.placement.runtime === 'server'
-        && gatewayQueryForOperation(gateways, operation, queries)?.kubernetes
-      ) {
-        throw new Error(
-          `Application MCP tool ${server.name}.${tool.publicName} cannot yet expose Kubernetes query ${operation.id}; use a relational/projection query or add an internal Kubernetes snapshot receiver.`,
-        );
-      }
-      const candidates = gateways.filter((gateway) =>
-        gatewayReceivesOperation(gateway, operation, queries),
+      const receiver = compileApplicationOperationPlacementReceiver(
+        graph,
+        operation,
+        `Application MCP tool ${server.name}.${tool.publicName}`,
       );
-      if (candidates.length === 0) {
-        throw new Error(
-          `Application MCP tool ${server.name}.${tool.publicName} cannot route ${operation.id} at ${operation.placement.runtime} placement ${operation.placement.nodeId}. Expose the operation through one generated app.gateway(...) boundary or add a placement receiver for that runtime.`,
-        );
-      }
-      if (candidates.length > 1) {
-        throw new Error(
-          `Application MCP tool ${server.name}.${tool.publicName} has ambiguous receivers for ${operation.id}: ${candidates.map((candidate) => candidate.id).sort().join(', ')}.`,
-        );
-      }
-      const receiver = candidates.at(0);
-      if (!receiver) {
-        throw new Error(
-          `Application MCP tool ${server.name}.${tool.publicName} has no placement receiver.`,
-        );
-      }
-      if (!receiver.deployment) {
-        throw new Error(
-          `Application MCP receiver ${receiver.id} has no generated deployment.`,
-        );
-      }
-      const namespace =
-        applicationGraphStringValue(receiver.deployment.namespace) ?? 'default';
-      const port =
-        applicationGraphNumberValue(receiver.deployment.port)
-        ?? receiver.deployment.port;
-      if (typeof port !== 'number') {
-        throw new Error(
-          `Application MCP receiver ${receiver.id} has a non-concrete service port.`,
-        );
-      }
-      const serviceName = kubernetesName(
-        `${graph.metadata.name}-${receiver.name}`,
-      );
-      const path = '/__applik8s/internal/v1/operations' as const;
       return {
         serverId: server.id,
         serverName: server.name,
@@ -129,15 +80,7 @@ export function compileApplicationMcpPlacementRoutes(
         operationVersion: operation.version,
         audience,
         placement: operation.placement,
-        receiver: {
-          nodeId: receiver.id,
-          kind: 'generatedGateway' as const,
-          serviceName,
-          namespace,
-          port,
-          path,
-          url: `http://${serviceName}.${namespace}.svc:${port}${path}`,
-        },
+        receiver,
       };
     }))
     .sort((left, right) =>
@@ -145,6 +88,71 @@ export function compileApplicationMcpPlacementRoutes(
         `${right.serverName}:${right.tool}`,
       ),
     );
+}
+
+export function compileApplicationOperationPlacementReceiver(
+  graph: ApplicationGraph,
+  operation: ApplicationOperationDescriptor,
+  owner: string,
+): ApplicationOperationPlacementReceiver {
+  const gateways = graph.nodes.filter(
+    (node): node is ApplicationGatewayNode =>
+      node.kind === 'gateway'
+      && node.materialization === 'generatedDeployment',
+  );
+  const queries = new Map(
+    graph.nodes
+      .filter((node): node is ApplicationQueryNode => node.kind === 'query')
+      .map((query) => [query.id, query]),
+  );
+  if (
+    operation.placement.runtime === 'server'
+    && gatewayQueryForOperation(gateways, operation, queries)?.kubernetes
+  ) {
+    throw new Error(
+      `${owner} cannot route Kubernetes query ${operation.id}; use a relational/projection query or add an internal Kubernetes snapshot receiver.`,
+    );
+  }
+  const candidates = gateways.filter((gateway) =>
+    gatewayReceivesOperation(gateway, operation, queries),
+  );
+  if (candidates.length === 0) {
+    throw new Error(
+      `${owner} cannot route ${operation.id} at ${operation.placement.runtime} placement ${operation.placement.nodeId}. Expose the operation through one generated app.gateway(...) boundary or add a placement receiver for that runtime.`,
+    );
+  }
+  if (candidates.length > 1) {
+    throw new Error(
+      `${owner} has ambiguous receivers for ${operation.id}: ${candidates.map((candidate) => candidate.id).sort().join(', ')}.`,
+    );
+  }
+  const receiver = candidates.at(0);
+  if (!receiver?.deployment) {
+    throw new Error(`${owner} has no generated placement receiver.`);
+  }
+  const namespace =
+    applicationGraphStringValue(receiver.deployment.namespace) ?? 'default';
+  const port =
+    applicationGraphNumberValue(receiver.deployment.port)
+    ?? receiver.deployment.port;
+  if (typeof port !== 'number') {
+    throw new Error(
+      `Application operation receiver ${receiver.id} has a non-concrete service port.`,
+    );
+  }
+  const serviceName = kubernetesName(
+    `${graph.metadata.name}-${receiver.name}`,
+  );
+  const path = '/__applik8s/internal/v1/operations' as const;
+  return {
+    nodeId: receiver.id,
+    kind: 'generatedGateway',
+    serviceName,
+    namespace,
+    port,
+    path,
+    url: `http://${serviceName}.${namespace}.svc:${port}${path}`,
+  };
 }
 
 function gatewayQueryForOperation(

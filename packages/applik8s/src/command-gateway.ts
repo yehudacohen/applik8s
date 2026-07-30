@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { ApplicationCommandProgress, ApplicationCommandSubmission } from '@applik8s/client';
-import { type ApplicationAuthorizationReceipt, type ApplicationPrincipal, type ApplicationRequestAdmission, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import { type ApplicationAuthorizationReceipt, type ApplicationOperationTransport, type ApplicationPrincipal, type ApplicationRequestAdmission, type JsonObject, type JsonValue, validateApplicationAuthorizationReceipt } from '@applik8s/core';
 import type { ApplicationInternalOperationInvocation } from '@applik8s/operations';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
@@ -320,7 +320,7 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
         principal,
         trustedContextDigest,
         inputDigest,
-        'mcp',
+        request.invocation.source.transport,
       );
       const idempotencyKey = requiredString(
         request.invocation.idempotencyKey,
@@ -512,7 +512,7 @@ function assertCommandAuthorizationReceipt(
   principal: ApplicationPrincipal,
   trustedContextDigest: string,
   inputDigest: string,
-  transport: 'http' | 'mcp' = 'http',
+  transport: ApplicationOperationTransport = 'http',
 ): void {
   const diagnostics = validateApplicationAuthorizationReceipt(receipt);
   const expectedVersion = command.operationVersion ?? commandContract(command.id).version;

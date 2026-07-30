@@ -14,11 +14,11 @@ import type {
   ApplicationStaticAuthorityManifest,
   ApplicationWorkloadAuthorityEnvelope,
 } from '@applik8s/core';
+import { intersectApplicationScopes } from '@applik8s/core';
 import {
   ApplicationAuthorityService,
   type ApplicationAuthorizationResult,
 } from './authority.js';
-import { intersectApplicationScopes } from '@applik8s/core';
 import { ApplicationOperationCatalogManager } from './catalog.js';
 import {
   type ApplicationAuthorityPostgresSql,

@@ -1,10 +1,6 @@
 // typecast-file-boundary: signed internal invocation payloads are decoded only
 // after HMAC verification and full receipt/principal/identity validation.
-import {
-  createHash,
-  createHmac,
-  timingSafeEqual,
-} from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type {
   ApplicationAuthorizationReceipt,
   ApplicationOperationId,
@@ -12,6 +8,12 @@ import type {
   JsonValue,
 } from '@applik8s/core';
 import { validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import {
+  canonicalInternalJson,
+  internalTransportSecret,
+  internalTransportSignature,
+  internalTransportSignatureMatches,
+} from './internal-signing.js';
 
 export const applicationInternalOperationProtocol =
   'applik8s.internalOperation/v1alpha1' as const;
@@ -47,7 +49,7 @@ export interface ApplicationInternalOperationVerification {
 
 export function applicationInternalOperationInputDigest(value: JsonValue): string {
   return `sha256:${createHash('sha256')
-    .update(canonicalJson(value))
+    .update(canonicalInternalJson(value))
     .digest('hex')}`;
 }
 
@@ -61,7 +63,7 @@ export function encodeApplicationInternalOperationInvocation(
   secret: string,
   invocation: ApplicationInternalOperationInvocation,
 ): string {
-  const normalizedSecret = transportSecret(secret);
+  const normalizedSecret = internalTransportSecret(secret);
   validateInvocation(invocation, {
     operationId: invocation.operationId,
     operationVersion: invocation.operationVersion,
@@ -70,12 +72,14 @@ export function encodeApplicationInternalOperationInvocation(
     now: new Date(invocation.issuedAt),
     maximumLifetimeMs: 60_000,
   });
-  assertNoCredentialMaterial(invocation.admission.trustedContext);
+  assertApplicationInternalContextHasNoCredentials(
+    invocation.admission.trustedContext,
+  );
   const payload = Buffer.from(
-    canonicalJson(invocation),
+    canonicalInternalJson(invocation),
     'utf8',
   ).toString('base64url');
-  const signature = sign(normalizedSecret, payload);
+  const signature = internalTransportSignature(normalizedSecret, payload);
   return `${payload}.${signature}`;
 }
 
@@ -84,7 +88,7 @@ export function decodeApplicationInternalOperationInvocation(
   token: string,
   expected: ApplicationInternalOperationVerification,
 ): ApplicationInternalOperationInvocation {
-  const normalizedSecret = transportSecret(secret);
+  const normalizedSecret = internalTransportSecret(secret);
   const maximumBytes = expected.maximumTokenBytes ?? 256 * 1024;
   if (
     !Number.isSafeInteger(maximumBytes)
@@ -108,8 +112,8 @@ export function decodeApplicationInternalOperationInvocation(
       'The internal operation invocation is malformed.',
     );
   }
-  const calculated = sign(normalizedSecret, payload);
-  if (!safeEqual(signature, calculated)) {
+  const calculated = internalTransportSignature(normalizedSecret, payload);
+  if (!internalTransportSignatureMatches(signature, calculated)) {
     throw transportError(
       'INTERNAL_INVOCATION_INVALID',
       'The internal operation invocation signature is invalid.',
@@ -126,7 +130,9 @@ export function decodeApplicationInternalOperationInvocation(
   }
   const invocation = decoded as ApplicationInternalOperationInvocation;
   validateInvocation(invocation, expected);
-  assertNoCredentialMaterial(invocation.admission.trustedContext);
+  assertApplicationInternalContextHasNoCredentials(
+    invocation.admission.trustedContext,
+  );
   return structuredClone(invocation);
 }
 
@@ -199,7 +205,10 @@ function validateInvocation(
   }
 }
 
-function assertNoCredentialMaterial(value: unknown, path = '$'): void {
+export function assertApplicationInternalContextHasNoCredentials(
+  value: unknown,
+  path = '$',
+): void {
   if (typeof value === 'string') {
     if (/^(?:Bearer|Basic)\s+/iu.test(value)) {
       throw transportError(
@@ -212,7 +221,10 @@ function assertNoCredentialMaterial(value: unknown, path = '$'): void {
   if (!value || typeof value !== 'object') return;
   if (Array.isArray(value)) {
     value.forEach((entry, index) => {
-      assertNoCredentialMaterial(entry, `${path}[${index}]`);
+      assertApplicationInternalContextHasNoCredentials(
+        entry,
+        `${path}[${index}]`,
+      );
     });
     return;
   }
@@ -229,45 +241,14 @@ function assertNoCredentialMaterial(value: unknown, path = '$'): void {
         `Credential field ${path}.${key} is forbidden in internal operation context.`,
       );
     }
-    assertNoCredentialMaterial(entry, `${path}.${key}`);
+    assertApplicationInternalContextHasNoCredentials(entry, `${path}.${key}`);
   }
-}
-
-function transportSecret(value: string): string {
-  if (new TextEncoder().encode(value).byteLength < 32) {
-    throw new Error(
-      'Internal operation transport secret must contain at least 32 bytes.',
-    );
-  }
-  return value;
-}
-
-function sign(secret: string, payload: string): string {
-  return createHmac('sha256', secret).update(payload).digest('base64url');
-}
-
-function safeEqual(left: string, right: string): boolean {
-  const leftBytes = Buffer.from(left);
-  const rightBytes = Buffer.from(right);
-  return leftBytes.length === rightBytes.length
-    && timingSafeEqual(leftBytes, rightBytes);
 }
 
 function stable(value: unknown): value is string {
   return typeof value === 'string'
     && value.trim().length > 0
     && value.length <= 1_024;
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
-  }
-  return `{${Object.entries(value as Readonly<Record<string, unknown>>)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-    .join(',')}}`;
 }
 
 export type ApplicationInternalOperationTransportErrorCode =

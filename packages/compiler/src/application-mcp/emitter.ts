@@ -14,7 +14,10 @@ import {
   type GeneratedApplicationContainerArtifact,
 } from '../application-containers/index.js';
 import { applicationGraphStringValue } from '../application-installation-values.js';
-import { compileApplicationOperationCatalog } from '../application-operations/index.js';
+import {
+  applicationStaticAuthorityManifest,
+  compileApplicationOperationCatalog,
+} from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import {
   type ApplicationMcpPlacementRoute,
@@ -231,7 +234,12 @@ import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
 const sql = postgres(requiredEnv(${JSON.stringify(contract.database.connectionEnvName)}), { max: 12, idle_timeout: 20, connect_timeout: 10, prepare: false });
 const catalog = ${JSON.stringify(contract.catalog)};
-const authority = createApplicationOperationAuthorityRuntime({ sql, application: ${JSON.stringify(contract.graph.metadata.name)}, catalog });
+const authority = createApplicationOperationAuthorityRuntime({
+  sql,
+  application: ${JSON.stringify(contract.graph.metadata.name)},
+  catalog,
+  ${applicationStaticAuthorityManifest(contract.graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(contract.graph))},` : ''}
+});
 await authority.prepare();
 const stores = createPostgresApplicationMcpStores({ sql, application: ${JSON.stringify(contract.graph.metadata.name)} });
 await stores.prepare();

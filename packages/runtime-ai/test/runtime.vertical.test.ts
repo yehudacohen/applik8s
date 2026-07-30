@@ -24,7 +24,7 @@ describe('generated application AI runtime', () => {
       persistence: Object.freeze({ kind: 'test-persistence' }),
       timeoutMs: 5_000,
       maximumConcurrency: 2,
-      admit: () => principal(),
+      admit: () => admission(),
       reserveAttempt: ({ runId }) => ({
         action: 'dispatch',
         runId,
@@ -83,7 +83,7 @@ describe('generated application AI runtime', () => {
       persistence: {},
       timeoutMs: 5_000,
       maximumConcurrency: 1,
-      admit: () => expired,
+      admit: () => admission(expired),
       reserveAttempt: async () => {
         throw new Error('must not reserve');
       },
@@ -113,7 +113,7 @@ describe('generated application AI runtime', () => {
       persistence: {},
       timeoutMs: 5_000,
       maximumConcurrency: 1,
-      admit: () => principal(),
+      admit: () => admission(),
       reserveAttempt: ({ runId }) => ({
         action: 'dispatch',
         runId,
@@ -156,7 +156,7 @@ describe('generated application AI runtime', () => {
       persistence: {},
       timeoutMs: 5_000,
       maximumConcurrency: 1,
-      admit: () => principal(),
+      admit: () => admission(),
       reserveAttempt: ({ runId }) => ({
         action: 'join',
         runId,
@@ -204,7 +204,7 @@ describe('generated application AI runtime', () => {
       persistence: {},
       timeoutMs: 5_000,
       maximumConcurrency: 1,
-      admit: () => principal(),
+      admit: () => admission(),
       reserveAttempt: ({ runId }) => ({
         action: 'escalate',
         runId,
@@ -248,7 +248,7 @@ describe('generated application AI runtime', () => {
       persistence: {},
       timeoutMs: 5_000,
       maximumConcurrency: 1,
-      admit: () => principal(),
+      admit: () => admission(),
       reserveAttempt: ({ runId }) => ({
         action: 'dispatch',
         runId,
@@ -543,5 +543,12 @@ function principal(): ApplicationExecutionPrincipal {
     cancellationRevision: 'cancel-1',
     bindings: [],
     effectiveAuthority: [],
+  };
+}
+
+function admission(value = principal()) {
+  return {
+    principal: value,
+    trustedContext: { tenant: 'tenant-1' },
   };
 }

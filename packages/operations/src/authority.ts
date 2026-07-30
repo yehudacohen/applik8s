@@ -3,8 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import type {
   ApplicationApprovalRecord,
   ApplicationAuditEvent,
-  ApplicationAuthorizationReceipt,
   ApplicationAuthorityRevisionId,
+  ApplicationAuthorizationReceipt,
   ApplicationDelegationRecord,
   ApplicationGrantRecord,
   ApplicationGrantRequestRecord,
