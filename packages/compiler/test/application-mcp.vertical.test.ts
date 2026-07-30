@@ -167,6 +167,7 @@ describe('application MCP placement routing', () => {
       tool: 'create-post',
       operationId,
       operationVersion: 'v1',
+      audience: 'https://chirp.example.test/mcp',
       placement: {
         nodeId: 'commandHandler.post-create',
         runtime: 'command-processor',

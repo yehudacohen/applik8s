@@ -14,6 +14,7 @@ export interface ApplicationMcpPlacementRoute {
   readonly tool: string;
   readonly operationId: ApplicationOperationDescriptor['id'];
   readonly operationVersion: string;
+  readonly audience: string;
   readonly placement: ApplicationOperationDescriptor['placement'];
   readonly receiver: {
     readonly nodeId: string;
@@ -63,6 +64,25 @@ export function compileApplicationMcpPlacementRoutes(
           `Application MCP server ${server.name} exposes unavailable operation ${tool.operationId}.`,
         );
       }
+      const audience = server.audience ?? server.resource;
+      if (!audience) {
+        throw new Error(
+          `Deployable Application MCP server ${server.name} requires one canonical OAuth resource/audience URI.`,
+        );
+      }
+      if (operation.kind === 'subscription') {
+        throw new Error(
+          `Application MCP tool ${server.name}.${tool.publicName} cannot expose subscription operation ${operation.id} as a unary MCP tool.`,
+        );
+      }
+      if (
+        operation.placement.runtime === 'server'
+        && gatewayQueryForOperation(gateways, operation, queries)?.kubernetes
+      ) {
+        throw new Error(
+          `Application MCP tool ${server.name}.${tool.publicName} cannot yet expose Kubernetes query ${operation.id}; use a relational/projection query or add an internal Kubernetes snapshot receiver.`,
+        );
+      }
       const candidates = gateways.filter((gateway) =>
         gatewayReceivesOperation(gateway, operation, queries),
       );
@@ -102,6 +122,7 @@ export function compileApplicationMcpPlacementRoutes(
         tool: tool.publicName,
         operationId: operation.id,
         operationVersion: operation.version,
+        audience,
         placement: operation.placement,
         receiver: {
           nodeId: receiver.id,
@@ -119,6 +140,33 @@ export function compileApplicationMcpPlacementRoutes(
         `${right.serverName}:${right.tool}`,
       ),
     );
+}
+
+function gatewayQueryForOperation(
+  gateways: readonly ApplicationGatewayNode[],
+  operation: ApplicationOperationDescriptor,
+  queries: ReadonlyMap<string, ApplicationQueryNode>,
+): ApplicationQueryNode | undefined {
+  for (const gateway of gateways) {
+    for (const reference of gateway.queries) {
+      const query = queries.get(reference.nodeId);
+      if (
+        query
+        && (
+          query.id === operation.placement.nodeId
+          || (
+            operation.target?.model
+            && query.modelOperation?.model.nodeId
+              === operation.placement.nodeId
+            && query.modelOperation.name === operation.name
+          )
+        )
+      ) {
+        return query;
+      }
+    }
+  }
+  return undefined;
 }
 
 function gatewayReceivesOperation(

@@ -180,6 +180,7 @@ describe('generated v0.6 reactive workloads', () => {
       { id: 'stream.cards.changed.v1', kind: 'stream', name: 'cards.changed', version: 'v1', stability: 'stable', payload: schema({ type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] }), authority: 'postgres-outbox', delivery: 'at-least-once', replay: 'supported', retention: { maxAgeSeconds: 3600 }, partitioning: 'declared', compatibility: 'versioned-schema', authorization: 'application-defined', database, partitionSource: '(payload) => payload.cardId', authorizationSource: '() => true' },
       { id: 'subscription.card-events', kind: 'subscription', name: 'card-events', stability: 'stable', source: { nodeId: 'stream.cards.changed.v1' }, delivery: 'sse', cursor: 'opaque-scoped', authorization: 'application-defined', authorizationSource: '({ principal }) => principal.id === "generated-stream-subscription-proof"', retry: { mode: 'boundedExponentialBackoff', maxAttempts: 5, initialDelayMs: 250, maxDelayMs: 30000 }, suspension: 'bounded-failures' },
       { id: 'gateway.public', kind: 'gateway', name: 'public', stability: 'stable', queries: [{ nodeId: 'query.cards.list.v1' }], commands: [{ command: { nodeId: 'command.cards.rename.v1' }, handler: { nodeId: 'command-handler.card-rename' } }], subscriptions: [{ nodeId: 'subscription.card-events' }], transport: 'http-sse', authentication: 'external-provider', trustedContextAdmission: 'server-validated', browserCredentials: 'forbidden', subscriptionLimits: { perPrincipal: 10, total: 100 }, routes: { snapshots: '/queries/:query/snapshot', subscriptions: '/queries/:query/subscribe', streamReplay: '/streams/:subscription/replay', streamSubscriptions: '/streams/:subscription/subscribe', commandSubmission: '/commands/:command/submit', commandProgress: '/commands/:command/progress' }, resume: 'resumableInvalidation', materialization: 'generatedDeployment', authenticationSource: 'async () => ({ principal: { id: "test" }, trustedContext: {}, authorizationVersion: "v1" })', identityReadinessSource: 'async () => undefined', authorizationReadinessSource: 'async () => undefined', commandAuthorizationSource: '({ command }) => command === Card.rename.operation.id', commandAuthorizationDependencies: { source: 'import { Card } from "./authoring-only";', resolveDir: process.cwd() }, cursorSecret: { apiVersion: 'v1', kind: 'Secret', name: 'gateway-cursor', namespace: 'catalog', key: 'secret' }, deployment: { namespace: 'catalog', image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2', replicas: 2, port: 8080 } },
+      { id: 'mcpServer.public', kind: 'mcpServer', name: 'public', stability: 'stable', protocol: { preferred: '2025-11-25', supported: ['2025-11-25'], sdk: '@modelcontextprotocol/sdk@1.30.0', extensions: ['io.modelcontextprotocol/oauth-client-credentials/v1'] }, path: '/__applik8s/mcp/public', resource: 'https://reactive.example.test/mcp', audience: 'https://reactive.example.test/mcp', authorizationServers: ['https://identity.example.test'], scopes: ['operations:invoke'], tools: [{ publicName: 'rename-card', operationId: 'applik8s://models/Card/operations/rename', schemaRevision: 'operation' }], sessions: { mode: 'stateful-pinned', catalog: 'operation-catalog-revision', authorization: 'revalidate-every-call', compatibleBindings: 'drain', incompatibleBindings: 'reinitialize', lifetimeMs: 3600000 }, transport: { kind: 'streamable-http', protectedResourceMetadata: true, tokenPassthrough: 'forbidden', maximumRequestBytes: 1048576, maximumResponseBytes: 10485760 } },
     ] as unknown as ApplicationGraphNode[]);
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-reactive-gateway-'));
     const [artifact] = await emitGeneratedApplicationReactive({ graph, outDir, entrypoint: import.meta.filename });
@@ -197,7 +198,8 @@ describe('generated v0.6 reactive workloads', () => {
     const generatedSource = await readFile(join(dirname(artifact?.sourcePath ?? ''), 'gateway.generated.ts'), 'utf8');
     expect(source).toContain('APPLIK8S_CURSOR_SECRET');
     expect(source).toContain('applik8s.dev/principal');
-    expect(source).toContain('applik8s.dev/authorization-version');
+    expect(source).toContain('authorityRevision');
+    expect(source).toContain('trustedContextDigest');
     expect(source).toContain('applik8s.command/v1alpha1');
     expect(source).toContain('generated-stream-subscription-proof');
     expect(source).toContain('applik8s.stream/v1alpha1');
@@ -208,11 +210,17 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generatedSource).toContain('applik8s://models/Card/operations/rename');
     expect(generatedSource).toContain('authorizeOperation:');
     expect(generatedSource).toContain('revalidateOperation:');
+    expect(generatedSource).toContain('createApplicationInternalOperationHandler');
+    expect(generatedSource).toContain("requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET')");
+    expect(generatedSource).toContain('commandGateway.invoke({ operationId: operation.id');
+    expect(generatedSource).not.toContain('authorization: request.headers');
     expect(generatedSource).toContain('operationAuthority.admitPrincipal');
     expect(generatedSource).toContain('verifyIdentityReadiness()');
     expect(generatedSource).toContain('verifyAuthorizationReadiness()');
     expect(generatedSource).toContain("from './identity-readiness.generated.js'");
     expect(generatedSource).not.toContain('authenticate: admit,');
+    expect(JSON.stringify(deployment)).toContain('APPLIK8S_INTERNAL_OPERATION_SECRET');
+    expect(JSON.stringify(deployment)).toContain('reactive-test-internal-operation');
     const commandAuthorizationSource = await readFile(join(dirname(artifact?.sourcePath ?? ''), 'command-authorization.generated.ts'), 'utf8');
     expect(commandAuthorizationSource).toContain('"cards.rename.v1"');
     expect(commandAuthorizationSource).not.toContain('authoring-only');

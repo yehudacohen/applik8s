@@ -65,6 +65,7 @@ export async function emitApplicationDeploymentGraph(
   const generatedSecrets = await applicationGeneratedSecretRequirements(
     request.bundlePath,
     request.graph.metadata.namespace,
+    request.graph,
   );
   const installationSpec = jsonObject(request.installationSpec, "installation spec");
   const profileTransition = request.profileTransition
@@ -109,32 +110,33 @@ export async function emitApplicationDeploymentGraph(
 async function applicationGeneratedSecretRequirements(
   bundlePath: string,
   resolvedApplicationNamespace: string | undefined,
+  graph: ApplicationGraph,
 ): Promise<readonly ApplicationGeneratedSecretRequirement[]> {
+  const requirements: ApplicationGeneratedSecretRequirement[] = [];
   const hostPath = join(
     dirname(bundlePath),
     "application-host",
     "application-host.json",
   );
-  if (!(await exists(hostPath))) return [];
-  const host = await readJson(hostPath);
-  const metadata = objectValue(host.metadata, "ApplicationHost metadata");
-  const spec = objectValue(host.spec, "ApplicationHost artifact spec");
-  const cursor = objectValue(
-    spec.cursorSecret,
-    "ApplicationHost cursor Secret",
-  );
-  const authoredNamespace = stringValue(
-    spec.namespace,
-    "ApplicationHost namespace",
-  );
-  const namespace = authoredNamespace.includes("${")
-    ? stringValue(
-        resolvedApplicationNamespace,
-        "resolved ApplicationHost namespace",
-      )
-    : authoredNamespace;
-  return [
-    {
+  if (await exists(hostPath)) {
+    const host = await readJson(hostPath);
+    const metadata = objectValue(host.metadata, "ApplicationHost metadata");
+    const spec = objectValue(host.spec, "ApplicationHost artifact spec");
+    const cursor = objectValue(
+      spec.cursorSecret,
+      "ApplicationHost cursor Secret",
+    );
+    const authoredNamespace = stringValue(
+      spec.namespace,
+      "ApplicationHost namespace",
+    );
+    const namespace = authoredNamespace.includes("${")
+      ? stringValue(
+          resolvedApplicationNamespace,
+          "resolved ApplicationHost namespace",
+        )
+      : authoredNamespace;
+    requirements.push({
       namespace,
       name: stringValue(cursor.name, "ApplicationHost cursor Secret name"),
       values: {
@@ -147,8 +149,38 @@ async function applicationGeneratedSecretRequirements(
       consumers: [
         stringValue(metadata.name, "ApplicationHost metadata.name"),
       ],
-    },
-  ];
+    });
+  }
+  const mcpServers = graph.nodes.filter((node) => node.kind === "mcpServer");
+  if (mcpServers.length > 0) {
+    const namespace = stringValue(
+      resolvedApplicationNamespace ?? graph.metadata.namespace ?? "default",
+      "Application MCP namespace",
+    );
+    const gatewayConsumers = graph.nodes
+      .filter(
+        (node) =>
+          node.kind === "gateway"
+          && node.materialization === "generatedDeployment",
+      )
+      .map((node) => node.id);
+    requirements.push({
+      namespace,
+      name: `${kubernetesName(graph.metadata.name)}-internal-operation`,
+      values: {
+        key: {
+          kind: "random",
+          bytes: 48,
+          encoding: "base64url",
+        },
+      },
+      consumers: [
+        ...mcpServers.map((server) => server.id),
+        ...gatewayConsumers,
+      ].sort(),
+    });
+  }
+  return requirements;
 }
 
 async function applicationMaterializedComposition(
@@ -203,6 +235,15 @@ async function applicationMaterializedComposition(
       `ResourceGraphDefinition/${applicationName} status`,
     ),
   };
+}
+
+function kubernetesName(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    || "app";
 }
 
 async function applicationArtifactRequirements(

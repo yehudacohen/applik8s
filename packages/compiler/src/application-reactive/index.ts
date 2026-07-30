@@ -9,6 +9,8 @@ import ts from 'typescript';
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphNumberValue, applicationGraphServiceHost, applicationGraphStringValue } from '../application-installation-values.js';
+import type { ApplicationMcpPlacementRoute } from '../application-mcp/index.js';
+import { compileApplicationMcpPlacementRoutes } from '../application-mcp/index.js';
 import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
@@ -146,19 +148,35 @@ interface GatewayKubernetesPermission {
 /** Lowers deployable v0.6 query gateways and analytical/online projections into immutable Node workloads. */
 export async function emitGeneratedApplicationReactive(options: { readonly graph: ApplicationGraph; readonly operationCatalog?: ApplicationOperationCatalog; readonly outDir: string; readonly entrypoint: string }): Promise<readonly GeneratedApplicationReactiveArtifact[]> {
   const operationCatalog = options.operationCatalog ?? compileApplicationOperationCatalog(options.graph);
+  const mcpRoutes = compileApplicationMcpPlacementRoutes(
+    options.graph,
+    operationCatalog,
+  );
   const gateways = options.graph.nodes.filter((node): node is ApplicationGatewayNode => node.kind === 'gateway' && node.materialization === 'generatedDeployment');
   const projections = options.graph.nodes.filter((node): node is ApplicationProjectionNode => node.kind === 'projection');
   const streamProcessors = options.graph.nodes.filter((node): node is ApplicationStreamProcessorNode => node.kind === 'streamProcessor');
   if (gateways.length === 0 && projections.length === 0 && streamProcessors.length === 0) return [];
   await mkdir(options.outDir, { recursive: true });
   return [
-    ...await Promise.all(gateways.map((gateway) => emitGateway(options.graph, gateway, operationCatalog, options.outDir))),
+    ...await Promise.all(gateways.map((gateway) => emitGateway(
+      options.graph,
+      gateway,
+      operationCatalog,
+      mcpRoutes.filter((route) => route.receiver.nodeId === gateway.id),
+      options.outDir,
+    ))),
     ...await Promise.all(projections.map((projection) => emitProjection(options.graph, projection, options.outDir))),
     ...await Promise.all(streamProcessors.map((processor) => emitStreamProcessor(options.graph, processor, options.outDir))),
   ].sort((left, right) => left.name.localeCompare(right.name));
 }
 
-async function emitGateway(graph: ApplicationGraph, gateway: ApplicationGatewayNode, operationCatalog: ApplicationOperationCatalog | undefined, outDir: string): Promise<GeneratedApplicationReactiveArtifact> {
+async function emitGateway(
+  graph: ApplicationGraph,
+  gateway: ApplicationGatewayNode,
+  operationCatalog: ApplicationOperationCatalog,
+  mcpRoutes: readonly ApplicationMcpPlacementRoute[],
+  outDir: string,
+): Promise<GeneratedApplicationReactiveArtifact> {
   if (!gateway.deployment || !gateway.cursorSecret || !gateway.authenticationSource) throw new Error(`Generated application gateway ${gateway.id} is missing deployment, cursor Secret, or authentication source.`);
   const gatewayNamespace = applicationGraphStringValue(gateway.deployment.namespace) ?? 'default';
   assertResolved(gateway.id, 'authentication', gateway.authenticationUnresolved);
@@ -195,6 +213,14 @@ async function emitGateway(graph: ApplicationGraph, gateway: ApplicationGatewayN
   const eventLog = commands.length > 0 ? gatewayEventLog(nodes, gateway.id) : undefined;
   if (commands.length > 0 && !operationCatalog) {
     throw new Error(`Generated application gateway ${gateway.id} requires its compiled operation catalog.`);
+  }
+  if (
+    mcpRoutes.length > 0
+    && !gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions)
+  ) {
+    throw new Error(
+      `Generated application gateway ${gateway.id} requires one transactional operation-authority database before it can receive MCP placement invocations.`,
+    );
   }
   if (eventLog) {
     const connectionSecret = objectConfig(eventLog.config?.connectionSecret);
@@ -245,13 +271,30 @@ async function emitGateway(graph: ApplicationGraph, gateway: ApplicationGatewayN
     }
   }
   const entrypoint = join(artifactDir, 'gateway.generated.ts');
-  await writeFile(entrypoint, generatedGatewaySource(graph, gateway, queries, commands, subscriptions, operationCatalog, eventLog));
+  await writeFile(entrypoint, generatedGatewaySource(
+    graph,
+    gateway,
+    queries,
+    commands,
+    subscriptions,
+    operationCatalog,
+    eventLog,
+    mcpRoutes,
+  ));
   return bundleReactive({
     graphName: graph.metadata.name, name, kind: 'queryGateway', namespace: gatewayNamespace,
     image: gateway.deployment.image || DEFAULT_NODE_IMAGE,
     replicas: applicationGraphNumberValue(gateway.deployment.replicas) ?? 1,
     port: gateway.deployment.port, entrypoint, artifactDir,
-    env: gatewayEnvironment(graph, gateway, queries, commands, subscriptions, eventLog),
+    env: gatewayEnvironment(
+      graph,
+      gateway,
+      queries,
+      commands,
+      subscriptions,
+      eventLog,
+      mcpRoutes.length > 0,
+    ),
     permissions: gatewayKubernetesPermissions(queries, gatewayNamespace),
   });
 }
@@ -425,7 +468,16 @@ async function bundleReactive(options: { readonly graphName: string; readonly na
   return { name: options.name, kind: options.kind, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
 }
 
-function generatedGatewaySource(graph: ApplicationGraph, gateway: ApplicationGatewayNode, queries: readonly ApplicationQueryNode[], commands: readonly GatewayCommandContract[], subscriptions: readonly GatewayStreamSubscriptionContract[], operationCatalog?: ApplicationOperationCatalog, eventLog?: ApplicationProviderNode): string {
+function generatedGatewaySource(
+  graph: ApplicationGraph,
+  gateway: ApplicationGatewayNode,
+  queries: readonly ApplicationQueryNode[],
+  commands: readonly GatewayCommandContract[],
+  subscriptions: readonly GatewayStreamSubscriptionContract[],
+  operationCatalog: ApplicationOperationCatalog,
+  eventLog: ApplicationProviderNode | undefined,
+  mcpRoutes: readonly ApplicationMcpPlacementRoute[],
+): string {
   const gatewayNamespace = applicationGraphStringValue(gateway.deployment?.namespace) ?? 'default';
   const relationalQueries = queries.filter((query) => !query.kubernetes);
   const kubernetesQueries = queries.filter((query) => Boolean(query.kubernetes));
@@ -441,8 +493,11 @@ function generatedGatewaySource(graph: ApplicationGraph, gateway: ApplicationGat
     ...(onlineSources.length > 0 ? ["import { createValkeyOnlineProjectionReader } from '@applik8s/applik8s/projection-worker-runtime';"] : []),
     ...(analyticalSources.length > 0 ? ["import { createClickHouseAnalyticalProjectionReader } from '@applik8s/applik8s/projection-worker-runtime';"] : []),
     ...(commands.length > 0 ? ["import { createApplicationCommandGateway } from '@applik8s/applik8s/command-gateway-runtime';", "import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';"] : []),
-    ...(operationCatalog && gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions)
+    ...(gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions)
       ? ["import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';"]
+      : []),
+    ...(mcpRoutes.length > 0
+      ? ["import { createApplicationInternalOperationHandler } from '@applik8s/operations';"]
       : []),
     ...(subscriptions.length > 0 ? ["import { applicationAdmittedContextDigest, createApplicationStreamSubscriptionGateway, createPostgresApplicationStream } from '@applik8s/applik8s/subscription-runtime';"] : []),
     ...(kubernetesQueries.length > 0 ? ["import { createApplik8sKubernetesGateway } from '@applik8s/server/kubernetes-gateway';"] : []),
@@ -477,7 +532,7 @@ function generatedGatewaySource(graph: ApplicationGraph, gateway: ApplicationGat
   const queryDeclarations = relationalQueries.map((query) => generatedQueryBinding(query, graphReadNames(graph, query), projectionSourceByQuery.get(query.id))).join(',\n');
   const kubernetesQueryDeclarations = kubernetesQueries.map((query) => generatedKubernetesQueryBinding(query, graph, gatewayNamespace)).join(',\n');
   const authorityDatabaseEnvironment = gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions);
-  const operationAuthority = authorityDatabaseEnvironment && operationCatalog
+  const operationAuthority = authorityDatabaseEnvironment
     ? generatedGatewayOperationAuthority(graph, authorityDatabaseEnvironment, operationCatalog)
     : '';
   const commandGateway = commands.length > 0 && eventLog && operationCatalog
@@ -488,6 +543,15 @@ function generatedGatewaySource(graph: ApplicationGraph, gateway: ApplicationGat
     gateway,
     subscriptions,
     operationCatalog,
+    Boolean(authorityDatabaseEnvironment),
+  );
+  const internalOperationHandler = generatedGatewayInternalOperationHandler(
+    graph,
+    gateway,
+    queries,
+    commands,
+    operationCatalog,
+    mcpRoutes,
     Boolean(authorityDatabaseEnvironment),
   );
   const mixedQueryMultiplex = relationalQueries.length > 0 && kubernetesQueries.length > 0
@@ -509,11 +573,12 @@ async function handleMixedQueryMultiplex(request) {
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
 function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(name + ' must be an integer between ' + minimum + ' and ' + maximum + '.'); return value; }
 function schema(json, name) { const normalized = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema: json }, name); const validate = (value) => { const result = normalized.validate(value); return result.ok ? result.value : { summary: result.error.message }; }; validate.toJsonSchema = () => json; return validate; }
+function strictSchema(json, name) { const normalized = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema: json }, name); return (value) => { const result = normalized.validate(value); if (!result.ok) throw new Error(name + ' validation failed.'); return result.value; }; }
 ${databaseDeclarations}
 ${onlineSourceDeclarations}
 ${analyticalSourceDeclarations}
 ${operationAuthority}
-${operationCatalog && authorityDatabaseEnvironment ? `async function admitGatewayPrincipal(admission, trustedContextDigest) {
+${authorityDatabaseEnvironment ? `async function admitGatewayPrincipal(admission, trustedContextDigest) {
   return operationAuthority.admitPrincipal({
     id: admission.principal.id,
     identity: admission.principal.identity,
@@ -540,7 +605,7 @@ const gateway = queries.length > 0 ? createApplicationQueryGateway({
     const admitted = await admitQuery(request, query, input);
     const trustedContext = admitted.trustedContext ?? {};
     const trustedContextDigest = applicationAdmittedContextDigest({ values: trustedContext, digestSecret: cursorSecret });
-    const principal = ${operationCatalog && authorityDatabaseEnvironment ? 'await admitGatewayPrincipal(admitted, trustedContextDigest)' : 'admitted.principal'};
+    const principal = ${authorityDatabaseEnvironment ? 'await admitGatewayPrincipal(admitted, trustedContextDigest)' : 'admitted.principal'};
     return {
       principal,
       admittedContext: {
@@ -549,7 +614,7 @@ const gateway = queries.length > 0 ? createApplicationQueryGateway({
       },
     };
   },
-  ${operationCatalog && authorityDatabaseEnvironment ? generatedQueryAuthority(graph, gateway, relationalQueries, operationCatalog) : ''}
+  ${authorityDatabaseEnvironment ? generatedQueryAuthority(graph, gateway, relationalQueries, operationCatalog) : ''}
   context: (identity) => createApplicationRelationalContext({ databases: [${databases.map((database) => `{ binding: ${databaseVariable(database.name)}Binding, db: ${databaseVariable(database.name)}Db }`).join(', ')}], admittedContext: identity.admittedContext }),
 }) : undefined;
 const kubernetesGateway = ${kubernetesQueries.length > 0 ? `createApplik8sKubernetesGateway({
@@ -560,11 +625,12 @@ const kubernetesGateway = ${kubernetesQueries.length > 0 ? `createApplik8sKubern
 })` : 'undefined'};
 ${commandGateway}
 ${streamGateway}
+${internalOperationHandler}
 const handle = gateway ? createApplicationQueryGatewayHttpHandler(gateway, { basePath: ${JSON.stringify(gateway.routes.snapshots.split('/:query/')[0]?.replace(/^\//, '') || 'queries')} }) : undefined;
 ${mixedQueryMultiplex}
 let ready = false; let stopping = false; let lastDependencyError; let degradedDependencyError;
 const dependencyMonitor = new AbortController();
-const server = createServer(async (incoming, outgoing) => { const requestController = new AbortController(); const abortRequest = () => requestController.abort(); incoming.once('aborted', abortRequest); outgoing.once('close', abortRequest); try { if (incoming.url === '/live' || incoming.url === '/ready') { const ok = incoming.url === '/live' || (ready && !stopping); outgoing.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ ready, stopping, lastDependencyError, degradedDependencyError })); return; } const request = await webRequest(incoming, requestController.signal); const multiplexResponse = await handleMixedQueryMultiplex(request.clone()); const commandResponse = multiplexResponse || !commandGateway ? undefined : await commandGateway.handle(request.clone()); const streamResponse = multiplexResponse || commandResponse || !streamGateway ? undefined : await streamGateway.handle(request.clone()); const kubernetesResponse = multiplexResponse || commandResponse || streamResponse || !kubernetesGateway ? undefined : await kubernetesGateway.handle(prefixKubernetesRequest(request.clone())); const relationalResponse = multiplexResponse || commandResponse || streamResponse || (kubernetesResponse && kubernetesResponse.status !== 404) || !handle ? undefined : await handle(request); await writeResponse(outgoing, multiplexResponse ?? commandResponse ?? streamResponse ?? (kubernetesResponse?.status !== 404 ? kubernetesResponse : undefined) ?? relationalResponse ?? new Response(JSON.stringify({ error: 'not_found' }), { status: 404, headers: { 'content-type': 'application/json' } })); } catch (error) { if (!requestController.signal.aborted) { console.error(error); if (!outgoing.headersSent) outgoing.writeHead(500, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ error: 'internal_error' })); } } finally { incoming.removeListener('aborted', abortRequest); outgoing.removeListener('close', abortRequest); } });
+const server = createServer(async (incoming, outgoing) => { const requestController = new AbortController(); const abortRequest = () => requestController.abort(); incoming.once('aborted', abortRequest); outgoing.once('close', abortRequest); try { if (incoming.url === '/live' || incoming.url === '/ready') { const ok = incoming.url === '/live' || (ready && !stopping); outgoing.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ ready, stopping, lastDependencyError, degradedDependencyError })); return; } const request = await webRequest(incoming, requestController.signal); const internalResponse = internalOperationHandler ? await internalOperationHandler(request.clone()) : undefined; const multiplexResponse = internalResponse || await handleMixedQueryMultiplex(request.clone()); const commandResponse = multiplexResponse || !commandGateway ? undefined : await commandGateway.handle(request.clone()); const streamResponse = multiplexResponse || commandResponse || !streamGateway ? undefined : await streamGateway.handle(request.clone()); const kubernetesResponse = multiplexResponse || commandResponse || streamResponse || !kubernetesGateway ? undefined : await kubernetesGateway.handle(prefixKubernetesRequest(request.clone())); const relationalResponse = multiplexResponse || commandResponse || streamResponse || (kubernetesResponse && kubernetesResponse.status !== 404) || !handle ? undefined : await handle(request); await writeResponse(outgoing, internalResponse ?? multiplexResponse ?? commandResponse ?? streamResponse ?? (kubernetesResponse?.status !== 404 ? kubernetesResponse : undefined) ?? relationalResponse ?? new Response(JSON.stringify({ error: 'not_found' }), { status: 404, headers: { 'content-type': 'application/json' } })); } catch (error) { if (!requestController.signal.aborted) { console.error(error); if (!outgoing.headersSent) outgoing.writeHead(500, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ error: 'internal_error' })); } } finally { incoming.removeListener('aborted', abortRequest); outgoing.removeListener('close', abortRequest); } });
 server.listen(Number(process.env.APPLIK8S_HTTP_PORT ?? '${gateway.deployment?.port ?? 8080}'), '0.0.0.0');
 async function monitorDependencies() { while (!stopping) { try { await Promise.all([${databases.map((database) => `${databaseVariable(database.name)}Sql.unsafe('SELECT 1 AS applik8s_ready')`).join(', ')}, ...(commandGateway ? [commandGateway.ready()] : []), ...(kubernetesGateway ? [kubernetesGateway.ready()] : []), ${gateway.identityReadinessSource ? 'verifyIdentityReadiness()' : 'Promise.resolve()'}, ${gateway.authorizationReadinessSource ? 'verifyAuthorizationReadiness()' : 'Promise.resolve()'}]); const degraded = (await Promise.all([${[...onlineSources, ...analyticalSources].map((contract) => `recoverableProjectionReadiness(() => ${projectionQuerySourceVariable(contract.query.id)}.revision())`).join(', ')}])).filter(Boolean); ready = true; lastDependencyError = undefined; degradedDependencyError = degraded[0]; } catch (error) { ready = false; lastDependencyError = providerReadinessError(error); degradedDependencyError = undefined; if (!stopping) console.error(lastDependencyError); } await abortableSleep(5000, dependencyMonitor.signal); } }
 const dependencyMonitorTask = monitorDependencies();
@@ -773,6 +839,100 @@ function generatedCommandGateway(
     operationAuthority.revalidate(receipt, boundary, trustedContextDigest),
   cursorSecret,
   eventLogPublisher: createJetStreamEventLog({ servers: JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS')), stream: ${JSON.stringify(stringConfig(config.stream) || 'APPLIK8S_EVENTS')}, subjectPrefix: ${JSON.stringify(stringConfig(config.subjectPrefix) || 'applik8s')}, connectionName: ${JSON.stringify('applik8s-query-command-gateway')}, ...(process.env.APPLIK8S_NATS_TOKEN ? { token: process.env.APPLIK8S_NATS_TOKEN } : {}), ...(process.env.APPLIK8S_NATS_USER ? { user: process.env.APPLIK8S_NATS_USER, pass: process.env.APPLIK8S_NATS_PASSWORD ?? '' } : {}) }),
+});`;
+}
+
+function generatedGatewayInternalOperationHandler(
+  graph: ApplicationGraph,
+  gateway: ApplicationGatewayNode,
+  queries: readonly ApplicationQueryNode[],
+  commands: readonly GatewayCommandContract[],
+  operationCatalog: ApplicationOperationCatalog,
+  routes: readonly ApplicationMcpPlacementRoute[],
+  hasOperationAuthority: boolean,
+): string {
+  if (routes.length === 0) {
+    return 'const internalOperationHandler = undefined;';
+  }
+  if (!hasOperationAuthority) {
+    throw new Error(
+      `Generated gateway ${gateway.id} cannot receive MCP operations without canonical operation authority.`,
+    );
+  }
+  const byOperation = new Map<
+    string,
+    {
+      readonly operation: ApplicationOperationCatalog['operations'][number];
+      readonly audience: string;
+      readonly invoke: string;
+    }
+  >();
+  for (const route of routes) {
+    const operation = operationCatalog.operations.find(
+      (candidate) => candidate.id === route.operationId,
+    );
+    if (!operation) {
+      throw new Error(
+        `Generated gateway ${gateway.id} MCP route references unavailable operation ${route.operationId}.`,
+      );
+    }
+    const existing = byOperation.get(operation.id);
+    if (existing) {
+      if (existing.audience !== route.audience) {
+        throw new Error(
+          `Generated gateway ${gateway.id} cannot receive ${operation.id} from multiple MCP audiences (${existing.audience}, ${route.audience}) through one placement binding.`,
+        );
+      }
+      continue;
+    }
+    const command = commands.find(
+      (candidate) =>
+        candidate.handler.id === operation.placement.nodeId,
+    );
+    const query = queries.find((candidate) =>
+      candidate.id === operation.placement.nodeId
+      || (
+        operation.target?.model
+        && candidate.modelOperation?.model.nodeId
+          === operation.placement.nodeId
+        && candidate.modelOperation.name === operation.name
+      ),
+    );
+    if (!command && !query) {
+      throw new Error(
+        `Generated gateway ${gateway.id} has no existing runtime binding for MCP operation ${operation.id}.`,
+      );
+    }
+    const invoke = command
+      ? `commandGateway.invoke({ operationId: operation.id, input, invocation, ...(signal ? { signal } : {}) })`
+      : `gateway.invoke({ query: ${JSON.stringify(query!.publicId ?? `${query!.name}.${query!.version}`)}, input, invocation })`;
+    byOperation.set(operation.id, {
+      operation,
+      audience: route.audience,
+      invoke,
+    });
+  }
+  const bindings = [...byOperation.values()]
+    .sort((left, right) => left.operation.id.localeCompare(right.operation.id))
+    .map(({ operation, audience, invoke }) => `{
+      operation: ${JSON.stringify(operation)},
+      audience: ${JSON.stringify(audience)},
+      validateInput: strictSchema(${JSON.stringify(operation.input.schema)}, ${JSON.stringify(`${operation.id}.input`)}),
+      validateOutput: strictSchema(${JSON.stringify(operation.output.schema)}, ${JSON.stringify(`${operation.id}.output`)}),
+      invoke: (input, { invocation, signal }) => ${invoke},
+    }`)
+    .join(',\n');
+  return `const internalOperationHandler = createApplicationInternalOperationHandler({
+  secret: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+  bindings: [${bindings}],
+  revalidate: async ({ invocation, receipt }) => {
+    const result = await operationAuthority.revalidate(
+      receipt,
+      'execution',
+      invocation.admission.principal.trustedContextDigest,
+    );
+    return result.allowed;
+  },
 });`;
 }
 
@@ -1720,12 +1880,31 @@ function reactiveEnvironmentInteger(value: number | string): string {
   return `\${string(${expression})}`;
 }
 
-function gatewayEnvironment(graph: ApplicationGraph, gateway: ApplicationGatewayNode, queries: readonly ApplicationQueryNode[], commands: readonly GatewayCommandContract[], subscriptions: readonly GatewayStreamSubscriptionContract[], eventLog?: ApplicationProviderNode): readonly Record<string, unknown>[] {
+function gatewayEnvironment(
+  graph: ApplicationGraph,
+  gateway: ApplicationGatewayNode,
+  queries: readonly ApplicationQueryNode[],
+  commands: readonly GatewayCommandContract[],
+  subscriptions: readonly GatewayStreamSubscriptionContract[],
+  eventLog: ApplicationProviderNode | undefined,
+  receivesInternalOperations: boolean,
+): readonly Record<string, unknown>[] {
   if (!gateway.cursorSecret) return [];
   const onlineProviders = queries.flatMap((query) => query.projection?.storage === 'online' ? [gatewayOnlineProjectionContract(graph, query)] : []);
   const analyticalProviders = queries.flatMap((query) => query.projection?.storage === 'analytical' ? [gatewayAnalyticalProjectionContract(graph, query)] : []);
   return uniqueEnvironment([
     { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: gateway.cursorSecret.name, key: gateway.cursorSecret.key } } },
+    ...(receivesInternalOperations
+      ? [{
+          name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
+          valueFrom: {
+            secretKeyRef: {
+              name: `${kubernetesName(graph.metadata.name)}-internal-operation`,
+              key: 'key',
+            },
+          },
+        }]
+      : []),
     { name: 'APPLIK8S_NAMESPACE', value: applicationGraphStringValue(gateway.deployment?.namespace) ?? 'default' },
     ...queries.flatMap((query) => query.kubernetes?.namespace && serializedInstallationExpression(query.kubernetes.namespace)
       ? [{ name: kubernetesQueryNamespaceEnvironmentName(query.id), value: query.kubernetes.namespace }]
