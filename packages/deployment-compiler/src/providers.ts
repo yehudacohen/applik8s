@@ -50,6 +50,7 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "AnalyticalDatabase", implementation: "clickhouse", execution: "root-composition" },
   { interface: "Queue", implementation: "kubernetes-configmap-queue", execution: "runtime-only" },
   { interface: "IdentityProvider", implementation: "identity-provider", execution: "runtime-only" },
+  { interface: "OAuthAuthorizationServer", implementation: "oauth-authorization-server", execution: "runtime-only" },
   { interface: "Search", implementation: "opensearch", execution: "external-controller" },
   { interface: "Search", implementation: "postgres-search", execution: "runtime-only" },
   { interface: "Secret", implementation: "kubernetes-secret", execution: "runtime-only" },
@@ -112,9 +113,17 @@ function providerDirectContribution(
     return objectStorageDirectContribution(provider, context);
   }
   if (
-    provider.interface === "IdentityProvider" &&
-    provider.implementation === "identity-provider"
+    (provider.interface === "IdentityProvider" &&
+      provider.implementation === "identity-provider") ||
+    (provider.interface === "OAuthAuthorizationServer" &&
+      provider.implementation === "oauth-authorization-server")
   ) {
+    if (
+      provider.interface === "OAuthAuthorizationServer" &&
+      matchingIdentityInfrastructureOwner(provider, context)
+    ) {
+      return { nodes: [], edges: [] };
+    }
     return identityDirectContribution(provider, context);
   }
   if (
@@ -130,6 +139,31 @@ function providerDirectContribution(
     return openSearchDirectContribution(provider, context);
   }
   return { nodes: [], edges: [] };
+}
+
+function matchingIdentityInfrastructureOwner(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ApplicationProviderNode | undefined {
+  const infrastructure = nestedObject(provider.config, "identityInfrastructure");
+  if (!infrastructure) return undefined;
+  const digest = digestApplicationDeploymentValue(infrastructure);
+  return context.graph.nodes.find(
+    (candidate): candidate is ApplicationProviderNode =>
+      candidate.kind === "provider" &&
+      candidate.interface === "IdentityProvider" &&
+      candidate.implementation === "identity-provider" &&
+      candidate.id !== provider.id &&
+      (() => {
+        const candidateInfrastructure = nestedObject(
+          candidate.config,
+          "identityInfrastructure",
+        );
+        return candidateInfrastructure
+          ? digestApplicationDeploymentValue(candidateInfrastructure) === digest
+          : false;
+      })(),
+  );
 }
 
 function openSearchDirectContribution(

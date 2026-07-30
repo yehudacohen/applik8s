@@ -388,6 +388,15 @@ export function recordApplicationProviderGraph(
         allowDeferredResolution: true,
       })
     : undefined;
+  const oauthAuthorizationDecision = tokenName === 'OAuthAuthorizationServer'
+    && implementation && typeof implementation === 'object'
+    && typeof Reflect.get(implementation, 'decide') === 'function'
+    ? serializeApplicationCallback({
+        registrar: 'OAuthAuthorizationServer', argumentIndex: 1, property: 'decide', label: 'OAuth authorization server decision',
+        callback: Reflect.get(implementation, 'decide') as (...args: never[]) => unknown,
+        allowDeferredResolution: true,
+      })
+    : undefined;
   const nodeId = applicationProviderGraphNodeId(providerInterface, qualification);
   addApplicationGraphNode(state, {
     id: nodeId,
@@ -419,7 +428,15 @@ export function recordApplicationProviderGraph(
           ...(identityProviderAuthentication.unresolved ? { authenticationUnresolved: identityProviderAuthentication.unresolved } : {}),
         }) as JsonValue,
       } : {}),
-      ...(tokenName === 'IdentityProvider' && implementation && typeof implementation === 'object' && Reflect.get(implementation, 'infrastructure')
+      ...(oauthAuthorizationDecision ? {
+        oauthAuthorization: applicationTypeKroGraphValue({
+          decisionSource: oauthAuthorizationDecision.source,
+          ...(oauthAuthorizationDecision.dependencies ? { decisionDependencies: oauthAuthorizationDecision.dependencies } : {}),
+          ...(oauthAuthorizationDecision.location ? { decisionLocation: oauthAuthorizationDecision.location } : {}),
+          ...(oauthAuthorizationDecision.unresolved ? { decisionUnresolved: oauthAuthorizationDecision.unresolved } : {}),
+        }) as JsonValue,
+      } : {}),
+      ...((tokenName === 'IdentityProvider' || tokenName === 'OAuthAuthorizationServer') && implementation && typeof implementation === 'object' && Reflect.get(implementation, 'infrastructure')
         ? { identityInfrastructure: applicationTypeKroGraphValue(Reflect.get(implementation, 'infrastructure')) as JsonValue }
         : {}),
       ...(tokenName === 'ApplicationHost' && implementation && typeof implementation === 'object'

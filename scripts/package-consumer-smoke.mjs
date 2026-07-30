@@ -169,7 +169,7 @@ if (!graph?.nodes.some((node) => node.kind === 'workflowWorker') || !graph.provi
   console.log('Package consumer smoke: packed v0.5 task/workflow graph passed.');
 
   const v06Path = join(consumerDir, 'v06.mjs');
-  await writeFile(v06Path, `import { app, applicationGraphFor, ApplicationHost, Certificate, DnsPublication, IdentityProvider, postgres, trustedContext } from '@applik8s/applik8s';
+  await writeFile(v06Path, `import { app, applicationGraphFor, ApplicationHost, Certificate, DnsPublication, IdentityProvider, OAuthAuthorizationServer, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { authenticatedPrincipalId } from '@applik8s/applik8s/drizzle';
 import { ApplicationQueryClient, preloadApplicationQuery } from '@applik8s/client';
@@ -186,6 +186,7 @@ const platform = app('packed-v06', { namespace: 'packed-v06' });
 const Work = platform.resource('Work', { apiVersion: 'packed.example/v1alpha1', spec: type({ message: 'string' }), status: type({ 'phase?': 'string' }) });
 platform.on(Work, { created: async (work) => { work.status.phase = 'Ready'; } });
 platform.provide(IdentityProvider, IdentityProvider.from(async () => ({ principal: { id: 'guest' }, trustedContext: { organizationId: 'guest' }, authorizationVersion: 'v1' })));
+platform.provide(OAuthAuthorizationServer, OAuthAuthorizationServer.from('packed-oauth', async ({ flow, decision }) => ({ id: 'packed-' + flow.id, providerAuthorizationRequestId: flow.providerAuthorizationRequestId, accepted: decision === 'approve', continuationUri: 'https://oauth.example.test/continue', evidence: {} })));
 platform.provide(ApplicationHost, ApplicationHost.kubernetes({ namespace: 'packed-v06', image: 'registry.example.test/packed-v06@sha256:${'a'.repeat(64)}' }));
 const Database = platform.database.postgres('catalog', { schema: { cards }, access: postgres.rls({ context: OrganizationId, column: 'organizationId' }) });
 const Card = platform.model(cards, { name: 'Card', database: Database });
@@ -197,7 +198,7 @@ platform.expose('public', { service: gateway, hostnames: ['packed.example.test']
 const graph = applicationGraphFor(platform.composition);
 const native = graph?.nodes.find((node) => node.kind === 'model' && node.name === 'Card');
 const exposure = graph?.nodes.find((node) => node.kind === 'exposure' && node.name === 'public');
-if (Card !== cards || native?.runtime?.storageShape !== 'native-relational' || native.native?.schemaAuthority !== 'drizzle' || exposure?.service !== 'packed-v06-public' || exposure.publicUrl !== 'https://packed.example.test' || !graph?.nodes.some((node) => node.kind === 'provider' && node.interface === 'IdentityProvider') || !graph.nodes.some((node) => node.kind === 'provider' && node.interface === 'ApplicationHost') || !graph.nodes.some((node) => node.kind === 'operator' && node.name === 'work-controller')) throw new Error('Packed v0.6 native model/query/application-host/event graph did not materialize.');
+if (Card !== cards || native?.runtime?.storageShape !== 'native-relational' || native.native?.schemaAuthority !== 'drizzle' || exposure?.service !== 'packed-v06-public' || exposure.publicUrl !== 'https://packed.example.test' || !graph?.nodes.some((node) => node.kind === 'provider' && node.interface === 'IdentityProvider') || !graph.nodes.some((node) => node.kind === 'provider' && node.interface === 'OAuthAuthorizationServer') || !graph.nodes.some((node) => node.kind === 'provider' && node.interface === 'ApplicationHost') || !graph.nodes.some((node) => node.kind === 'operator' && node.name === 'work-controller')) throw new Error('Packed v0.6 native model/query/application-host/event graph did not materialize.');
 `);
   await execFileAsync(process.execPath, [v06Path], { cwd: consumerDir });
   console.log('Package consumer smoke: packed v0.6 native model/query/exposure graph passed.');

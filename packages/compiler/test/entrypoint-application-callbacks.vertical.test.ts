@@ -32,11 +32,12 @@ AutomationScheduleChanged.process('automation-schedule', {
     expect(instrumented).toContain('property: "authenticate"');
   });
 
-  it('preserves imported identity and authorization readiness callback provenance', () => {
+  it('preserves imported identity, OAuth, and authorization readiness callback provenance', () => {
     const source = `
-import { authenticate, decide, identityReady, authorizationReady } from './identity';
+import { authenticate, decide, identityReady, oauthReady, authorizationReady } from './identity';
 
 IdentityProvider.from(authenticate, { ready: identityReady });
+OAuthAuthorizationServer.from('primary', decide, { ready: oauthReady });
 Authorization.from(decide, { ready: authorizationReady });
 `;
     const sourceFile = '/workspace/src/app.ts';
@@ -44,8 +45,9 @@ Authorization.from(decide, { ready: authorizationReady });
 
     expect(instrumented).toContain('registrar: "IdentityProvider"');
     expect(instrumented).toContain('property: "ready"');
+    expect(instrumented).toContain('registrar: "OAuthAuthorizationServer"');
     expect(instrumented).toContain('registrar: "Authorization"');
     expect(instrumented).toContain('property: "decide"');
-    expect(instrumented.match(/property: "ready"/g)).toHaveLength(2);
+    expect(instrumented.match(/property: "ready"/g)).toHaveLength(3);
   });
 });

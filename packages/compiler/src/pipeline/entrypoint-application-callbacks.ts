@@ -18,16 +18,20 @@ export function decorateApplicationCallbackArguments(node: ts.CallExpression, fi
   if (
     node.expression.name.text === 'from'
     && ts.isIdentifier(node.expression.expression)
-    && (node.expression.expression.text === 'IdentityProvider' || node.expression.expression.text === 'Authorization')
+    && (node.expression.expression.text === 'IdentityProvider'
+      || node.expression.expression.text === 'OAuthAuthorizationServer'
+      || node.expression.expression.text === 'Authorization')
   ) {
     const registrar = node.expression.expression.text;
     const callbackProperty = registrar === 'IdentityProvider' ? 'authenticate' : 'decide';
+    const callbackIndex = registrar === 'OAuthAuthorizationServer' ? 1 : 0;
+    const optionsIndex = registrar === 'OAuthAuthorizationServer' ? 2 : 1;
     return node.arguments.map((argument, index) => {
-      // typecast: provider constructors accept a callback first and an optional object containing readiness callbacks second.
+      // typecast: identity/authorization constructors have fixed callback and options positions.
       const visited = ts.visitNode(argument, visit) as ts.Expression;
-      return index === 0
+      return index === callbackIndex
         ? decorateApplicationCallbackExpression(visited, file, sourceFile, registrar, callbackProperty)
-        : index === 1 && ts.isObjectLiteralExpression(visited)
+        : index === optionsIndex && ts.isObjectLiteralExpression(visited)
           ? decorateApplicationCallbackObject(visited, ['ready'], file, sourceFile, registrar)
         : visited;
     });

@@ -110,6 +110,7 @@
     "@applik8s/ai-tanstack": "0.6.0",
     "@applik8s/client": "0.6.0",
     "@applik8s/core": "0.6.0",
+    "@applik8s/identity": "0.6.0",
     "@applik8s/operations": "0.6.0",
     "@applik8s/sdk": "0.6.0",
     "@applik8s/typekro-adapter": "0.6.0",

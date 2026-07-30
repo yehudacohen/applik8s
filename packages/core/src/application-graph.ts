@@ -150,6 +150,7 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'ApplicationHost'
   | 'ContainerRegistry'
   | 'IdentityProvider'
+  | 'OAuthAuthorizationServer'
   | 'Authorization'
   | 'StructuredGeneration'
   | 'AI';
@@ -177,6 +178,7 @@ export const applicationProviderInterfaceKinds = [
   'ApplicationHost',
   'ContainerRegistry',
   'IdentityProvider',
+  'OAuthAuthorizationServer',
   'Authorization',
   'StructuredGeneration',
   'AI',

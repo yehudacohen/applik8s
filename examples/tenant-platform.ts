@@ -607,6 +607,7 @@ function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfa
       { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'ContainerRegistry', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'IdentityProvider', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'OAuthAuthorizationServer', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'Authorization', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     ];
 }

@@ -1,5 +1,9 @@
 // typecast-file-boundary: provider constructors validate structural runtime input before restoring provider-specific discriminated contracts.
 import type { ApplicationMigrationContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef } from '@applik8s/core';
+import type {
+  ApplicationOAuthAuthorizationFlowRecord,
+  ApplicationOAuthProviderDecision,
+} from '@applik8s/identity';
 import { Cel } from 'typekro';
 import type { OryIdentityStackConfig, OryPlatformStackConfig } from 'typekro/ory';
 import { applicationTypeKroExpressionValue, applicationTypeKroString } from './application-typekro-values.js';
@@ -321,6 +325,19 @@ export interface ApplicationIdentityProvider {
   readonly kind: 'identity-provider';
   readonly infrastructure?: ApplicationIdentityInfrastructure;
   authenticate(request: Request): ApplicationRequestAdmission | Promise<ApplicationRequestAdmission>;
+  /** Bounded credential-free capability probe used by generated workload readiness. */
+  ready?(): void | Promise<void>;
+}
+
+export interface ApplicationOAuthAuthorizationServerProvider {
+  readonly kind: 'oauth-authorization-server';
+  readonly name: string;
+  readonly infrastructure?: ApplicationIdentityInfrastructure;
+  decide(input: {
+    readonly flow: ApplicationOAuthAuthorizationFlowRecord;
+    readonly decision: 'approve' | 'deny';
+    readonly idempotencyKey: string;
+  }): Promise<ApplicationOAuthProviderDecision>;
   /** Bounded credential-free capability probe used by generated workload readiness. */
   ready?(): void | Promise<void>;
 }
@@ -838,6 +855,14 @@ export interface ApplicationIdentityProviderToken extends ApplicationProviderTok
   ): ApplicationIdentityProvider;
 }
 
+export interface ApplicationOAuthAuthorizationServerProviderToken extends ApplicationProviderToken<ApplicationOAuthAuthorizationServerProvider> {
+  from(
+    name: string,
+    decide: ApplicationOAuthAuthorizationServerProvider['decide'],
+    options?: { readonly infrastructure?: ApplicationIdentityInfrastructure; readonly ready?: NonNullable<ApplicationOAuthAuthorizationServerProvider['ready']> },
+  ): ApplicationOAuthAuthorizationServerProvider;
+}
+
 export interface ApplicationAuthorizationProviderToken extends ApplicationProviderToken<ApplicationAuthorizationProvider> {
   from(decide: ApplicationAuthorizationProvider['decide'], options?: { readonly ready?: NonNullable<ApplicationAuthorizationProvider['ready']> }): ApplicationAuthorizationProvider;
 }
@@ -1339,6 +1364,20 @@ export const IdentityProvider: ApplicationIdentityProviderToken = {
   },
 };
 
+export const OAuthAuthorizationServer: ApplicationOAuthAuthorizationServerProviderToken = {
+  name: 'OAuthAuthorizationServer',
+  description: 'Provider-neutral OAuth authorization requests, consent, delegation, and token lifecycle.',
+  contract: builtInProviderContract('OAuthAuthorizationServer', ['authorizationCode', 'exactConsentBinding', 'idempotentProviderDecision']),
+  accepts: isApplicationOAuthAuthorizationServerProvider,
+  from(name, decide, options) {
+    if (!name.trim()) throw new Error('OAuthAuthorizationServer.from(name, ...) requires a non-empty provider name.');
+    if (typeof decide !== 'function') throw new Error('OAuthAuthorizationServer.from(..., decide) requires a decision function.');
+    if (options?.infrastructure) assertApplicationIdentityInfrastructure(options.infrastructure);
+    if (options?.ready !== undefined && typeof options.ready !== 'function') throw new Error('OAuthAuthorizationServer.from({ ready }) must be a function.');
+    return { kind: 'oauth-authorization-server', name, decide, ...(options?.infrastructure ? { infrastructure: options.infrastructure } : {}), ...(options?.ready ? { ready: options.ready } : {}) };
+  },
+};
+
 export const Authorization: ApplicationAuthorizationProviderToken = {
   name: 'Authorization',
   description: 'Provider-neutral policy and relationship decisions that assist application-owned authorization rules.',
@@ -1356,7 +1395,7 @@ function builtInProviderContract(providerInterface: string, guarantees: readonly
 }
 
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, Search, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ApplicationHost, ContainerRegistry, IdentityProvider, Authorization, StructuredGeneration } as const;
+export const providers = { IndexStore, Search, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ApplicationHost, ContainerRegistry, IdentityProvider, OAuthAuthorizationServer, Authorization, StructuredGeneration } as const;
 
 export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
   if (!name) return undefined;
@@ -1831,6 +1870,14 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     }
     if (!state.providers.extensions) state.providers.extensions = {};
     state.providers.extensions['IdentityProvider@v1alpha1'] = implementation;
+    return;
+  }
+  if ((token as unknown) === OAuthAuthorizationServer) {
+    if (!isApplicationOAuthAuthorizationServerProvider(implementation)) {
+      throw new Error('app.provide(OAuthAuthorizationServer, ...) requires OAuthAuthorizationServer.from(name, decide).');
+    }
+    if (!state.providers.extensions) state.providers.extensions = {};
+    state.providers.extensions['OAuthAuthorizationServer@v1alpha1'] = implementation;
     return;
   }
   if ((token as unknown) === Authorization) {
@@ -2430,7 +2477,7 @@ export function applicationProviderTokenName(token: ApplicationProviderToken<unk
 }
 
 export function applicationProviderInterface(tokenName: string | undefined): ApplicationProviderInterfaceKind | undefined {
-  if (tokenName === 'IndexStore' || tokenName === 'Search' || tokenName === 'TransactionalDatabase' || tokenName === 'AnalyticalDatabase' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'IdentityProvider' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
+  if (tokenName === 'IndexStore' || tokenName === 'Search' || tokenName === 'TransactionalDatabase' || tokenName === 'AnalyticalDatabase' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'IdentityProvider' || tokenName === 'OAuthAuthorizationServer' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
     return tokenName;
   }
   return undefined;
@@ -2438,6 +2485,22 @@ export function applicationProviderInterface(tokenName: string | undefined): App
 
 export function isApplicationIdentityProvider(value: unknown): value is ApplicationIdentityProvider {
   if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'identity-provider' || typeof Reflect.get(value, 'authenticate') !== 'function') return false;
+  if (Reflect.get(value, 'ready') !== undefined && typeof Reflect.get(value, 'ready') !== 'function') return false;
+  const infrastructure = Reflect.get(value, 'infrastructure');
+  if (infrastructure === undefined) return true;
+  try {
+    assertApplicationIdentityInfrastructure(infrastructure);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function isApplicationOAuthAuthorizationServerProvider(value: unknown): value is ApplicationOAuthAuthorizationServerProvider {
+  const name = value && typeof value === 'object'
+    ? Reflect.get(value, 'name')
+    : undefined;
+  if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'oauth-authorization-server' || typeof name !== 'string' || !name.trim() || typeof Reflect.get(value, 'decide') !== 'function') return false;
   if (Reflect.get(value, 'ready') !== undefined && typeof Reflect.get(value, 'ready') !== 'function') return false;
   const infrastructure = Reflect.get(value, 'infrastructure');
   if (infrastructure === undefined) return true;

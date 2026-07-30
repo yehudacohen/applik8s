@@ -516,6 +516,48 @@ describe("Application deployment compiler", () => {
       });
     }
   });
+
+  it("deduplicates one managed Ory stack shared by identity and OAuth providers", () => {
+    const identityInfrastructure = {
+      kind: "ory",
+      stack: "platform",
+      provision: true,
+      spec: { name: "identity", namespace: "identity-system" },
+      deletionPolicy: "retain",
+    } as const;
+    const graph: ApplicationGraph = {
+      ...applicationGraph(),
+      nodes: [
+      {
+        id: "provider.identity",
+        kind: "provider",
+        name: "IdentityProvider",
+        stability: "stable",
+        interface: "IdentityProvider",
+        implementation: "identity-provider",
+        config: { identityInfrastructure },
+      },
+      {
+        id: "provider.oauth",
+        kind: "provider",
+        name: "OAuthAuthorizationServer",
+        stability: "stable",
+        interface: "OAuthAuthorizationServer",
+        implementation: "oauth-authorization-server",
+        config: { identityInfrastructure },
+      },
+      ],
+    };
+
+    const result = compileApplicationDeploymentGraph({ ...request(), graph });
+    const managedOry = result.graph.nodes.filter(
+      (node) =>
+        node.kind === "kubernetesDirect" &&
+        node.spec.compositionId === "ory-platform-stack",
+    );
+    expect(managedOry).toHaveLength(1);
+    expect(managedOry[0]?.source.semanticNodeId).toBe("provider.identity");
+  });
 });
 
 function request() {

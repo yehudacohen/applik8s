@@ -114,6 +114,7 @@ describe('application graph substrate contract', () => {
       'ApplicationHost',
       'ContainerRegistry',
       'IdentityProvider',
+      'OAuthAuthorizationServer',
       'Authorization',
       'StructuredGeneration',
       'AI',
@@ -518,6 +519,7 @@ describe('application graph substrate contract', () => {
       'ApplicationHost:failClosedReserved',
       'ContainerRegistry:failClosedReserved',
       'IdentityProvider:failClosedReserved',
+      'OAuthAuthorizationServer:failClosedReserved',
       'Authorization:failClosedReserved',
       'StructuredGeneration:failClosedReserved',
       'AI:failClosedReserved',
@@ -587,6 +589,7 @@ describe('application graph substrate contract', () => {
       ApplicationHost: 'applicationHost',
       ContainerRegistry: 'containerRegistry',
       IdentityProvider: 'identityProvider',
+      OAuthAuthorizationServer: 'oauthAuthorizationServer',
       Authorization: 'authorization',
       StructuredGeneration: 'taskCapability',
       AI: 'taskCapability',
@@ -603,7 +606,7 @@ describe('application graph substrate contract', () => {
       },
     }) satisfies ApplicationProviderRequirement);
 
-    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['transactionalDatabase', 'indexStore', 'search', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'analyticalDatabase', 'applicationHost', 'containerRegistry', 'identityProvider', 'authorization', 'taskCapability', 'taskCapability']);
+    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['transactionalDatabase', 'indexStore', 'search', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'analyticalDatabase', 'applicationHost', 'containerRegistry', 'identityProvider', 'oauthAuthorizationServer', 'authorization', 'taskCapability', 'taskCapability']);
     for (const requirement of requirements) {
       expect(requirement.diagnostics.missing).toContain(requirement.interface);
     }
