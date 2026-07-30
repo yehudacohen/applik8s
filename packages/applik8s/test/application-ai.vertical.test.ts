@@ -3,9 +3,43 @@ import { AI } from '@applik8s/ai';
 import { app, applicationGraphFor } from '@applik8s/applik8s';
 import { validateApplicationGraphStructure } from '@applik8s/core';
 import { pgTable, text } from 'drizzle-orm/pg-core';
+import { type } from 'arktype';
 import { describe, expect, it } from 'vitest';
 
 describe('application AI agents', () => {
+  it('binds a logical model to an exhaustively selected qualified inference provider', () => {
+    const application = app('profiled-ai', {
+      spec: type({
+        name: 'string',
+        profile: "'starter' | 'dedicated' | 'external'",
+      }),
+      status: type({ ready: 'boolean' }),
+    });
+    const Inference = AI.named('inference');
+    application
+      .profile(application.installation.spec, 'profile')
+      .provide(Inference)
+      .starter(() => AI.deterministic())
+      .dedicated(() => AI.deterministic())
+      .external(() => AI.deterministic())
+      .exhaustive();
+
+    expect(
+      AI.model('fast', {
+        inference: application.inject(Inference),
+        capabilities: [AI.chat, AI.tools],
+      }),
+    ).toMatchObject({
+      inference: {
+        qualification: {
+          capability: 'AI',
+          name: 'inference',
+          key: 'AI@v1alpha1:inference',
+        },
+      },
+    });
+  });
+
   it('records one portable agent node over a logical model, service identity, and canonical tools', () => {
     const research = app('research-platform', { namespace: 'research-system' });
     research.provide(AI, AI.deterministic());

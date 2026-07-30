@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import type {
+	ApplicationAIAgentNode,
 	ApplicationCrdNode,
 	ApplicationGatewayNode,
 	ApplicationGraph,
@@ -8,8 +9,13 @@ import type {
 	ApplicationProviderNode,
 	ApplicationQueryNode,
 	ApplicationSerializedCallbackContract,
+	ApplicationWorkloadAuthorityEnvelope,
 } from "@applik8s/core";
 import { applicationGraphStringValue } from "../application-installation-values.js";
+import {
+	compileApplicationOperationCatalog,
+	compileApplicationWorkloadAuthority,
+} from "../application-operations/index.js";
 
 const applicationRuntimeNamespaceMarker = "__APPLIK8S_RUNTIME_NAMESPACE__";
 
@@ -35,6 +41,10 @@ export function generatedApplicationFetchGatewayModules(
 	const objectStores = graph.nodes.filter(
 		(node): node is ApplicationObjectStoreNode => node.kind === "objectStore",
 	);
+	const agents = graph.nodes.filter(
+		(node): node is ApplicationAIAgentNode => node.kind === "aiAgent",
+	);
+	const agentTargets = applicationAgentGatewayTargets(graph, agents);
 	const remoteRoutes = applicationRemoteGatewayRoutes(graph, remoteGateways);
 	const hasRemoteQueries = remoteRoutes.routes.some(([route]) =>
 		route.startsWith("query:"),
@@ -60,7 +70,8 @@ export function generatedApplicationFetchGatewayModules(
 		queries.length === 0 &&
 		commands.length === 0 &&
 		remoteGateways.length === 0 &&
-		objectStores.length === 0
+		objectStores.length === 0 &&
+		agents.length === 0
 	)
 		return undefined;
 	const identity = graph.nodes.filter(
@@ -68,7 +79,10 @@ export function generatedApplicationFetchGatewayModules(
 			node.kind === "provider" && node.interface === "IdentityProvider",
 	);
 	if (
-		(queries.length > 0 || commands.length > 0 || objectStores.length > 0) &&
+		(queries.length > 0 ||
+			commands.length > 0 ||
+			objectStores.length > 0 ||
+			agents.length > 0) &&
 		identity.length !== 1
 	)
 		throw new Error(
@@ -90,8 +104,15 @@ export function generatedApplicationFetchGatewayModules(
 			"import { createApplicationFetchGateway } from '@applik8s/applik8s/reactive-runtime';",
 			"import { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';",
 		);
+	if (agents.length > 0)
+		imports.push(
+			"import { createApplicationAIAgentGateway } from '@applik8s/runtime-ai';",
+		);
 	const authenticate =
-		(queries.length > 0 || commands.length > 0 || objectStores.length > 0) &&
+		(queries.length > 0 ||
+			commands.length > 0 ||
+			objectStores.length > 0 ||
+			agents.length > 0) &&
 		identity.length === 1
 			? graphCallback(
 					files,
@@ -264,6 +285,19 @@ export function generatedApplicationFetchGatewayModules(
   objects: [${objectStores.map(objectStoreGatewaySource).join(",\n")}],
 })`
 			: "undefined";
+	const agentGateway =
+		agents.length > 0 && authenticate
+			? `createApplicationAIAgentGateway({
+  application: ${JSON.stringify(graph.metadata.name)},
+  secret: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
+  targets: ${JSON.stringify(agentTargets)}.map((target) => ({ ...target, baseUrl: materializeRemoteBaseUrl(target.baseUrl) })),
+  authenticate: (request) => ${authenticate}(request),
+  // Agent invocation is an authenticated application surface. Tool execution
+  // remains independently constrained by service grants, workload envelopes,
+  // and the per-run ExecutionPrincipal admitted by the agent runtime.
+  authorize: ({ admission }) => admission.principal.audience.includes(${JSON.stringify(graph.metadata.name)}),
+})`
+			: "undefined";
 	files["gateway.generated.ts"] = `${imports.join("\n")}
 
 function requiredEnv(name) {
@@ -318,6 +352,8 @@ const materializeRemoteBaseUrl = (baseUrl) => {
 };
 const remoteRoutes = new Map(${JSON.stringify(remoteRoutes.routes)}.map(([route, baseUrl]) => [route, materializeRemoteBaseUrl(baseUrl)]));
 const remoteHealth = ${JSON.stringify(remoteRoutes.health)}.map(({ name, baseUrl }) => ({ name, baseUrl: materializeRemoteBaseUrl(baseUrl) }));
+const agentGateway = ${agentGateway};
+const agentHealth = ${JSON.stringify(agentTargets)}.map(({ name, baseUrl }) => ({ name: \`agent:\${name}\`, baseUrl: materializeRemoteBaseUrl(baseUrl) }));
 
 export const gateway = {
   async handle(request) {
@@ -329,9 +365,12 @@ export const gateway = {
       return new Response(JSON.stringify({ live: true }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     if (url.pathname === '/__applik8s/v1/readyz') {
-      const remoteResults = await Promise.all(remoteHealth.map(async ({ name, baseUrl }) => {
+      const remoteResults = await Promise.all([
+        ...remoteHealth.map(({ name, baseUrl }) => ({ name, baseUrl, path: '/ready' })),
+        ...agentHealth.map(({ name, baseUrl }) => ({ name, baseUrl, path: '/readyz' })),
+      ].map(async ({ name, baseUrl, path }) => {
         try {
-          const response = await fetch(new URL('/ready', baseUrl));
+          const response = await fetch(new URL(path, baseUrl));
           return { name, ready: response.ok };
         } catch (error) {
           return { name, ready: false, error: error instanceof Error ? error.message : String(error) };
@@ -361,6 +400,8 @@ export const gateway = {
     if (multiplexResponse) return multiplexResponse;`
 				: ""
 		}
+    const agentResponse = agentGateway ? await agentGateway.handle(request.clone()) : undefined;
+    if (agentResponse) return agentResponse;
     const route = applicationGatewayRoute(url.pathname);
     if (objectGateway && route?.startsWith('object:')) return objectGateway.handle(request);
     const remoteBaseUrl = route ? remoteRoutes.get(route) : undefined;
@@ -517,6 +558,62 @@ function applicationGatewayRuntimeNamespace(
 		);
 	}
 	return namespace;
+}
+
+function applicationAgentGatewayTargets(
+	graph: ApplicationGraph,
+	agents: readonly ApplicationAIAgentNode[],
+): readonly {
+	readonly name: string;
+	readonly nodeId: string;
+	readonly baseUrl: string;
+	readonly workloadIdentityId: string;
+	readonly serviceIdentityId: string;
+	readonly audience: readonly string[];
+	readonly timeoutMs: number;
+}[] {
+	if (agents.length === 0) return [];
+	const catalog = compileApplicationOperationCatalog(graph);
+	const authority = compileApplicationWorkloadAuthority(graph, catalog);
+	return agents
+		.map((agent) => {
+			const envelopes = authority.filter(
+				(envelope): envelope is ApplicationWorkloadAuthorityEnvelope =>
+					envelope.workloadIdentity.subject === agent.id &&
+					envelope.serviceIdentity?.id === agent.serviceIdentity.id,
+			);
+			const workloadIdentities = new Set(
+				envelopes.map((envelope) => envelope.workloadIdentity.id),
+			);
+			if (envelopes.length === 0 || workloadIdentities.size !== 1) {
+				throw new Error(
+					`Generated application agent gateway ${agent.id} requires one compiled workload identity.`,
+				);
+			}
+			const provider = graph.nodes.find(
+				(node): node is ApplicationProviderNode =>
+					node.kind === "provider" && node.id === agent.inference.nodeId,
+			);
+			const providerConfig = objectConfig(provider?.config?.ai);
+			const namespace = applicationGatewayRuntimeNamespace(
+				graph.metadata.namespace ?? providerConfig.namespace ?? "default",
+				agent.id,
+			);
+			return {
+				name: agent.name,
+				nodeId: agent.id,
+				baseUrl: `http://${kubernetesName(agent.name)}.${namespace}.svc:${agent.deployment.port}`,
+				workloadIdentityId: [...workloadIdentities][0]!,
+				serviceIdentityId: agent.serviceIdentity.id,
+				audience: [
+					...new Set(
+						envelopes.flatMap((envelope) => envelope.audiences),
+					),
+				].sort(),
+				timeoutMs: agent.budgets.timeoutMs,
+			};
+		})
+		.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function applicationFetchGatewayNamespaceSource(namespace: string): string {

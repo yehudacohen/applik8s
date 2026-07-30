@@ -68,6 +68,16 @@ describe('framework-neutral Applik8s Vite integration', () => {
     await expect(plugin.generateBundle({}, {
       'assets/app.js': { type: 'chunk', fileName: 'assets/app.js', code: '', modules: { [`${fixtureRoot}/node_modules/@kubernetes/client-node/dist/index.js`]: {} } },
     })).rejects.toThrow(/browser dependency-zone violation/);
+    await expect(plugin.generateBundle({}, {
+      'assets/app.js': {
+        type: 'chunk',
+        fileName: 'assets/app.js',
+        code: '',
+        modules: {
+          [join(fixtureRoot, '../../../ai/dist/operation-executor.js')]: {},
+        },
+      },
+    })).rejects.toThrow(/server-only package @applik8s\/ai/);
   }, 60_000);
 
   it('configures browser authority before generated operations and defers an absent nested server artifact to application compilation', async () => {
@@ -162,5 +172,5 @@ var public_assets_data_default = {
 });
 
 function adapter(options: Parameters<typeof applik8sVite>[0] = {}): Applik8sVitePlugin {
-  return applik8sVite({ application: 'application.ts', compositionName: 'app', ...options }) as unknown as Applik8sVitePlugin;
+  return applik8sVite({ application: 'application.ts', ...options }) as unknown as Applik8sVitePlugin;
 }

@@ -51,10 +51,12 @@ export interface Applik8sVitePlugin {
 
 const forbiddenBrowserPackages = [
   '@applik8s/applik8s',
+  '@applik8s/ai',
   '@applik8s/compiler',
   '@applik8s/core',
   '@applik8s/runtime',
   '@applik8s/runtime-contract',
+  '@applik8s/operations',
   '@applik8s/sdk',
   '@applik8s/server',
   '@applik8s/testing',
@@ -155,7 +157,10 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
     await readFile(application, 'utf8').catch((cause) => {
       throw new Error(`Applik8s Vite could not read application entrypoint ${application}: ${cause instanceof Error ? cause.message : String(cause)}`);
     });
-    const discovered = await discoverApplicationGraph(application, options.compositionName ?? 'app');
+    const discovered = await discoverApplicationGraph(
+      application,
+      options.compositionName,
+    );
     if (!discovered.ok) throw new Error(`Applik8s Vite could not discover the ApplicationGraph: ${discovered.error.message}`);
     facade = applicationFacadeManifest(discovered.value);
     const metadataPath = resolve(root, '.applik8s/application-facade.json');
@@ -290,11 +295,28 @@ function assertBrowserDependencyZone(files: readonly ViteOutputLike[]): void {
   for (const file of files) {
     if (file.type !== 'chunk') continue;
     for (const forbidden of forbiddenBrowserPackages) {
-      if (Object.keys(file.modules).some((moduleId) => moduleId.includes(`/node_modules/${forbidden}/`) || moduleId.includes(`/${forbidden}/`))) {
+      if (Object.keys(file.modules).some((moduleId) =>
+        isForbiddenBrowserModule(moduleId, forbidden))) {
         throw new Error(`Applik8s browser dependency-zone violation: ${file.fileName} contains server-only package ${forbidden}.`);
       }
     }
   }
+}
+
+function isForbiddenBrowserModule(
+  moduleId: string,
+  forbidden: (typeof forbiddenBrowserPackages)[number],
+): boolean {
+  const normalized = moduleId.replaceAll('\\', '/');
+  if (
+    normalized.includes(`/node_modules/${forbidden}/`)
+    || normalized.includes(`/${forbidden}/`)
+  ) {
+    return true;
+  }
+  if (!forbidden.startsWith('@applik8s/')) return false;
+  const workspacePackage = forbidden.slice('@applik8s/'.length);
+  return normalized.includes(`/packages/${workspacePackage}/`);
 }
 
 function outputContent(file: ViteOutputLike): string | Uint8Array {

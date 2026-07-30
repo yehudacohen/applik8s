@@ -3,6 +3,7 @@
 // restored at this runtime boundary.
 
 export * from './postgres-attempt-store.js';
+export * from './agent-gateway.js';
 
 import type {
   ApplicationAIAgentHandler,

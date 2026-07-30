@@ -113,6 +113,7 @@ async function applicationGeneratedSecretRequirements(
   graph: ApplicationGraph,
 ): Promise<readonly ApplicationGeneratedSecretRequirement[]> {
   const requirements: ApplicationGeneratedSecretRequirement[] = [];
+  let applicationHostConsumer: string | undefined;
   const hostPath = join(
     dirname(bundlePath),
     "application-host",
@@ -121,6 +122,10 @@ async function applicationGeneratedSecretRequirements(
   if (await exists(hostPath)) {
     const host = await readJson(hostPath);
     const metadata = objectValue(host.metadata, "ApplicationHost metadata");
+    applicationHostConsumer = stringValue(
+      metadata.name,
+      "ApplicationHost metadata.name",
+    );
     const spec = objectValue(host.spec, "ApplicationHost artifact spec");
     const cursor = objectValue(
       spec.cursorSecret,
@@ -147,7 +152,7 @@ async function applicationGeneratedSecretRequirements(
         },
       },
       consumers: [
-        stringValue(metadata.name, "ApplicationHost metadata.name"),
+        applicationHostConsumer,
       ],
     });
   }
@@ -176,6 +181,9 @@ async function applicationGeneratedSecretRequirements(
         },
       },
       consumers: [
+        ...(agents.length > 0 && applicationHostConsumer
+          ? [applicationHostConsumer]
+          : []),
         ...mcpServers.map((server) => server.id),
         ...agents.map((agent) => agent.id),
         ...gatewayConsumers,

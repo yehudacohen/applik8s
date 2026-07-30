@@ -55,6 +55,10 @@ export interface ApplicationAIModelDefinition<
   };
 }
 
+export interface ApplicationAIProviderSelection {
+  readonly qualification: ApplicationProviderQualificationContract;
+}
+
 export interface ApplicationAICapabilityCatalog {
   readonly chat: ApplicationAICapability<'chat'>;
   readonly tools: ApplicationAICapability<'tools'>;
@@ -92,7 +96,7 @@ export interface ApplicationAIProviderToken<TImplementation = ApplicationAIProvi
     options: {
       readonly capabilities: TCapabilities;
       readonly constraints?: ApplicationAIModelConstraints;
-      readonly inference?: ApplicationAIQualifiedProviderToken<TImplementation>;
+      readonly inference?: ApplicationAIProviderSelection;
     },
   ): ApplicationAIModelDefinition<TName, TCapabilities>;
   deterministic(

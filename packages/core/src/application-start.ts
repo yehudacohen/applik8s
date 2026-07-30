@@ -6,6 +6,10 @@ export interface ApplicationStartCompatibility {
   readonly tanstackCli: string;
   readonly tanstackStart: string;
   readonly tanstackAI: string;
+  readonly tanstackAIClient: string;
+  readonly tanstackAIReact: string;
+  readonly agUi: string;
+  readonly tanstackAIPersistence: string;
   readonly typekro: string;
 }
 

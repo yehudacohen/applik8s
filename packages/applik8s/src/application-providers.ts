@@ -844,7 +844,7 @@ export interface ApplicationHostProviderToken extends ApplicationProviderToken<A
   kubernetes(options?: Omit<ApplicationKubernetesHostProvider, 'kind'>): ApplicationKubernetesHostProvider;
 }
 
-export interface ApplicationIdentityProviderToken extends ApplicationProviderToken<ApplicationIdentityProvider> {
+export interface ApplicationIdentityProviderToken extends ApplicationQualifiableProviderToken<ApplicationIdentityProvider> {
   from(
     authenticate: ApplicationIdentityProvider['authenticate'],
     options?: { readonly infrastructure?: ApplicationIdentityInfrastructure; readonly ready?: NonNullable<ApplicationIdentityProvider['ready']> },
@@ -852,7 +852,7 @@ export interface ApplicationIdentityProviderToken extends ApplicationProviderTok
   deterministic(options: ApplicationDeterministicIdentityOptions): ApplicationIdentityProvider;
 }
 
-export interface ApplicationOAuthAuthorizationServerProviderToken extends ApplicationProviderToken<ApplicationOAuthAuthorizationServerProvider> {
+export interface ApplicationOAuthAuthorizationServerProviderToken extends ApplicationQualifiableProviderToken<ApplicationOAuthAuthorizationServerProvider> {
   from(
     name: string,
     decide: ApplicationOAuthAuthorizationServerProvider['decide'],
@@ -1349,7 +1349,7 @@ export const ApplicationHost: ApplicationHostProviderToken = {
   },
 };
 
-export const IdentityProvider: ApplicationIdentityProviderToken = {
+export const IdentityProvider: ApplicationIdentityProviderToken = applicationQualifiableProviderToken({
   name: 'IdentityProvider',
   description: 'Application-supplied request authentication and trusted-context admission.',
   contract: builtInProviderContract('IdentityProvider', ['principalIdentity', 'trustedContextAdmission', 'authorizationVersion']),
@@ -1368,9 +1368,9 @@ export const IdentityProvider: ApplicationIdentityProviderToken = {
       ready: () => undefined,
     };
   },
-};
+});
 
-export const OAuthAuthorizationServer: ApplicationOAuthAuthorizationServerProviderToken = {
+export const OAuthAuthorizationServer: ApplicationOAuthAuthorizationServerProviderToken = applicationQualifiableProviderToken({
   name: 'OAuthAuthorizationServer',
   description: 'Provider-neutral OAuth authorization requests, consent, delegation, and token lifecycle.',
   contract: builtInProviderContract('OAuthAuthorizationServer', ['authorizationCode', 'exactConsentBinding', 'idempotentProviderDecision']),
@@ -1382,7 +1382,7 @@ export const OAuthAuthorizationServer: ApplicationOAuthAuthorizationServerProvid
     if (options?.ready !== undefined && typeof options.ready !== 'function') throw new Error('OAuthAuthorizationServer.from({ ready }) must be a function.');
     return { kind: 'oauth-authorization-server', name, decide, ...(options?.infrastructure ? { infrastructure: options.infrastructure } : {}), ...(options?.ready ? { ready: options.ready } : {}) };
   },
-};
+});
 
 export const Authorization: ApplicationAuthorizationProviderToken = {
   name: 'Authorization',

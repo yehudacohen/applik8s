@@ -105,5 +105,49 @@ describe('Agentic Start generator', () => {
     expect(manifest.dependencies['@applik8s/start-agentic']).toBe(
       'workspace:*',
     );
+    expect(manifest.dependencies['@tanstack/ai-react']).toBe('0.18.1');
+  });
+
+  it('generates the file-route tree after installing the generated application', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'applik8s-agentic-start-install-'));
+    temporaryDirectories.push(parent);
+    const target = join(parent, 'research-workspace');
+    const commands: ApplicationStartCommand[] = [];
+
+    await createApplicationAgenticStart({
+      targetDirectory: target,
+      applik8sVersion: 'workspace:*',
+      async run(command) {
+        commands.push(command);
+        if (commands.length !== 1) return;
+        await mkdir(join(target, 'src/routes'), { recursive: true });
+        await writeFile(
+          join(target, 'package.json'),
+          `${JSON.stringify({
+            dependencies: {
+              '@tanstack/react-start': '1.168.28',
+              '@tanstack/react-router': '1.168.28',
+            },
+          })}\n`,
+        );
+        await writeFile(
+          join(target, 'src/routes/index.tsx'),
+          'export const upstream = true;\n',
+        );
+      },
+    });
+
+    expect(commands.slice(1)).toEqual([
+      {
+        executable: 'bun',
+        arguments: ['install'],
+        cwd: target,
+      },
+      {
+        executable: 'bun',
+        arguments: ['run', 'generate-routes'],
+        cwd: target,
+      },
+    ]);
   });
 });

@@ -30,6 +30,37 @@ describe('execution admission transport', () => {
     expect(token).not.toContain('oauth-access-token');
   });
 
+  it('accepts the existing raw SHA-256 trusted-context digest convention', () => {
+    const invocation = fixture();
+    const prefixed = invocation.admission.principal.trustedContextDigest;
+    const rawDigest = prefixed.replace(/^sha256:/u, '');
+    const rawInvocation = {
+      ...invocation,
+      admission: {
+        ...invocation.admission,
+        principal: {
+          ...invocation.admission.principal,
+          trustedContextDigest: rawDigest,
+        },
+      },
+    };
+    const token = encodeApplicationExecutionAdmission(
+      secret,
+      rawInvocation,
+    );
+    expect(
+      decodeApplicationExecutionAdmission(secret, token, {
+        executionKind: 'agent',
+        workloadIdentityId: invocation.workloadIdentityId,
+        ...(invocation.serviceIdentityId
+          ? { serviceIdentityId: invocation.serviceIdentityId }
+          : {}),
+        binding: invocation.binding,
+        now,
+      }).admission.principal.trustedContextDigest,
+    ).toBe(rawDigest);
+  });
+
   it('rejects signature, run binding, identity, and expiry mismatches', () => {
     const invocation = fixture();
     const token = encodeApplicationExecutionAdmission(secret, invocation);

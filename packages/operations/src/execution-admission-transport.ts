@@ -146,8 +146,10 @@ function validateExecutionAdmission(
     || invocation.serviceIdentityId !== expectation.serviceIdentityId
     || !principal?.id
     || !principal.identity?.id
-    || principal.trustedContextDigest
-      !== digestJson(invocation.admission.trustedContext)
+    || !matchesTrustedContextDigest(
+      principal.trustedContextDigest,
+      invocation.admission.trustedContext,
+    )
     || invocation.audience.length === 0
     || invocation.audience.some((value) => !stable(value))
     || (expectation.audience
@@ -177,6 +179,14 @@ function digestJson(value: unknown): string {
   return `sha256:${createHash('sha256')
     .update(canonicalInternalJson(value))
     .digest('hex')}`;
+}
+
+function matchesTrustedContextDigest(
+  digest: string,
+  trustedContext: unknown,
+): boolean {
+  const expected = digestJson(trustedContext);
+  return digest === expected || digest === expected.slice('sha256:'.length);
 }
 
 function stable(value: unknown): value is string {

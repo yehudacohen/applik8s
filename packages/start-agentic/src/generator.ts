@@ -77,6 +77,11 @@ export async function createApplicationAgenticStart(
       arguments: ['install'],
       cwd: targetDirectory,
     });
+    await run({
+      executable: 'bun',
+      arguments: ['run', 'generate-routes'],
+      cwd: targetDirectory,
+    });
   }
   return {
     targetDirectory,
@@ -158,6 +163,8 @@ async function updateGeneratedPackage(
     '@applik8s/tanstack-start': version,
     '@applik8s/usage': version,
     '@tanstack/ai': '0.42.0',
+    '@tanstack/ai-react':
+      applicationAgenticStartDefinition.compatibility.tanstackAIReact,
     arktype: '^2.1.20',
     'drizzle-orm': '^0.45.1',
   };
@@ -190,13 +197,18 @@ export const Installation = type({
   name: 'string',
   profile: "'starter' | 'dedicated' | 'external'",
 });
+
+export const InstallationStatus = type({
+  ready: 'boolean',
+});
 `,
     'src/app.ts': `import { app } from '@applik8s/applik8s';
-import { Installation } from './installation';
+import { Installation, InstallationStatus } from './installation';
 
 export const application = app(${JSON.stringify(projectName)}, {
   namespace: applicationNamespace(${JSON.stringify(projectName)}),
   spec: Installation,
+  status: InstallationStatus,
 });
 
 function applicationNamespace(name: string): string {
@@ -212,7 +224,7 @@ export const researchNotes = pgTable('research_notes', {
 });
 `,
     'src/providers.ts': `import { AI } from '@applik8s/ai';
-import { TransactionalDatabase } from '@applik8s/applik8s';
+import { IdentityProvider, TransactionalDatabase } from '@applik8s/applik8s';
 import { applicationAgenticModuleSchema } from '@applik8s/start-agentic';
 import { application } from './app';
 import { researchNotes } from './features/research/schema';
@@ -245,6 +257,19 @@ export const database = application.database.bind('application', {
   migrations: { path: './drizzle' },
 });
 export const inference = application.inject(Inference);
+export const identity = application.provide(
+  IdentityProvider,
+  IdentityProvider.deterministic({
+    mode: 'starter',
+    application: ${JSON.stringify(projectName)},
+    subject: 'local-developer',
+    audience: [${JSON.stringify(projectName)}],
+    catalogRevision: 'starter-catalog-v1',
+    authorityRevision: 'starter-authority-v1',
+  }),
+);
+export const authenticate = (request: Request) =>
+  identity.implementation.authenticate(request);
 `,
     'src/modules.ts': `import { approvals } from '@applik8s/approvals';
 import { artifacts } from '@applik8s/artifacts';
@@ -259,6 +284,20 @@ export const Approvals = approvals(application, { database });
 export const Artifacts = artifacts(application, { database });
 export const Evaluations = evaluations(application, { database });
 export const Usage = usage(application, { database });
+
+const maintainedModels = [
+  ...Object.values(Conversations),
+  ...Object.values(Approvals),
+  ...Object.values(Artifacts),
+  ...Object.values(Evaluations),
+  ...Object.values(Usage),
+] as const;
+
+export const maintainedCommands = maintainedModels.flatMap((model) => [
+  model.create,
+  model.update,
+  model.delete,
+]);
 `,
     'src/features/research/model.ts': `import { AI } from '@applik8s/ai';
 import { chat } from '@tanstack/ai';
@@ -300,8 +339,24 @@ ResearcherIdentity.can(ResearchNote.create);
 `,
     'src/application.ts': `import { ApplicationHost } from '@applik8s/applik8s';
 import { application } from './app';
-import './modules';
-import './features/research/model';
+import { ResearchNote } from './features/research/model';
+import { maintainedCommands } from './modules';
+import { authenticate } from './providers';
+
+export const gateway = application.gateway('web', {
+  commands: [
+    ResearchNote.create,
+    ResearchNote.update,
+    ResearchNote.delete,
+    ...maintainedCommands,
+  ],
+  authorizeCommand: async () => true,
+  deployment: {
+    namespace: ${JSON.stringify(`${projectName}-system`)},
+    cursorSecret: { name: ${JSON.stringify(`${projectName}-gateway-cursor`)}, key: 'key' },
+    authenticate,
+  },
+});
 
 export const host = application.provide(
   ApplicationHost,
@@ -317,7 +372,33 @@ export const host = application.provide(
 
 export { application };
 `,
-    'src/features/research/view.tsx': `export function ResearchHome() {
+    'src/features/research/view.tsx': `import { createApplicationTanStackConnection } from '@applik8s/ai-tanstack/client';
+import { useChat } from '@tanstack/ai-react';
+import { type FormEvent, useId, useMemo, useState } from 'react';
+
+export function ResearchHome() {
+  const reactId = useId();
+  const threadId = 'research-' + reactId.replaceAll(':', '');
+  const connection = useMemo(
+    () => createApplicationTanStackConnection({
+      forwardedProps: { agent: 'researcher' },
+    }),
+    [],
+  );
+  const { messages, sendMessage, isLoading, error, stop } = useChat({
+    connection,
+    threadId,
+  });
+  const [draft, setDraft] = useState('');
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = draft.trim();
+    if (!message) return;
+    setDraft('');
+    await sendMessage(message);
+  }
+
   return (
     <main>
       <p className="eyebrow">Applik8s Agentic Start</p>
@@ -326,6 +407,32 @@ export { application };
         One typed application graph now owns conversations, agents, tools,
         workflows, reviews, artifacts, evaluations, usage, and deployment.
       </p>
+      <section aria-label="Research conversation">
+        {messages.map((message) => (
+          <article key={message.id} data-role={message.role}>
+            <strong>{message.role}</strong>
+            {message.parts.map((part, index) =>
+              part.type === 'text'
+                ? <p key={index}>{part.content}</p>
+                : null,
+            )}
+          </article>
+        ))}
+        {error ? <p role="alert">{error.message}</p> : null}
+      </section>
+      <form onSubmit={submit}>
+        <label htmlFor="research-prompt">Research prompt</label>
+        <textarea
+          id="research-prompt"
+          value={draft}
+          onChange={(event) => setDraft(event.currentTarget.value)}
+          disabled={isLoading}
+        />
+        <button type="submit" disabled={isLoading || !draft.trim()}>
+          {isLoading ? 'Researching…' : 'Send'}
+        </button>
+        {isLoading ? <button type="button" onClick={stop}>Stop</button> : null}
+      </form>
     </main>
   );
 }

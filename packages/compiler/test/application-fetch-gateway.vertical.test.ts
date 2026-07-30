@@ -6,6 +6,7 @@ import {
 	ObjectStorage,
 } from "@applik8s/applik8s";
 import { entity, type } from "@applik8s/applik8s/dsl";
+import { AI } from "@applik8s/ai";
 import {
 	createDeterministicApplicationAdmission,
 	type ApplicationDeterministicIdentityOptions,
@@ -124,7 +125,7 @@ describe("application host Fetch gateway", () => {
 			"JSON.stringify({ live: true })",
 		);
 		expect(modules?.files["gateway.generated.ts"]).toContain(
-			"fetch(new URL('/ready', baseUrl))",
+			"fetch(new URL(path, baseUrl))",
 		);
 		expect(modules?.files["gateway.generated.ts"]).toContain(
 			"dependencies: remoteResults",
@@ -142,6 +143,87 @@ describe("application host Fetch gateway", () => {
 		expect(modules?.files["gateway.generated.ts"]).not.toContain(
 			"createApplik8sKubernetesGateway({",
 		);
+	});
+
+	it("routes authenticated TanStack AI requests through a signed per-run agent admission", () => {
+		const notes = pgTable("research_notes", {
+			id: text("id").primaryKey(),
+			body: text("body").notNull(),
+		});
+		const research = app("research", { namespace: "research-system" });
+		research.provide(
+			IdentityProvider,
+			IdentityProvider.deterministic({
+				...identityOptions("researcher"),
+				application: "research",
+				audience: ["research"],
+			}),
+		);
+		research.provide(
+			AI,
+			AI.deterministic({ fixture: { response: "ready" } }),
+		);
+		const database = research.database.postgres("application", {
+			schema: { notes },
+		});
+		const Note = research.model(notes, { name: "Note", database });
+		const identity = research.serviceIdentity("researcher");
+		research.agent(
+			"researcher",
+			{
+				identity,
+				model: AI.model("fast", {
+					capabilities: [AI.chat, AI.tools, AI.streaming],
+				}),
+				instructions: "Use the declared note operation.",
+				tools: [Note.create],
+			},
+			async (request, context) => ({
+				threadId: request.threadId,
+				runId: context.runId,
+			}),
+		);
+		identity.can(Note.create);
+		research.gateway("agent-tools", {
+			commands: [Note.create, Note.update, Note.delete],
+			authorizeCommand: () => true,
+			deployment: {
+				namespace: "research-system",
+				cursorSecret: { name: "research-cursor", key: "key" },
+				authenticate: async () =>
+					createDeterministicApplicationAdmission({
+						...identityOptions("researcher"),
+						application: "research",
+						audience: ["research"],
+					}),
+			},
+		});
+		const graph = applicationGraphFor(research.composition);
+		if (!graph) throw new Error("Expected research application graph.");
+
+		const source =
+			generatedApplicationFetchGatewayModules(graph)?.files[
+				"gateway.generated.ts"
+			];
+		expect(source).toContain(
+			"createApplicationAIAgentGateway",
+		);
+		expect(source).toContain(
+			"http://researcher.research-system.svc:3000",
+		);
+		expect(source).toContain(
+			"identity:research:workload:aiAgent.researcher",
+		);
+		expect(source).toContain(
+			"requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET')",
+		);
+		expect(source).toContain(
+			"agentGateway.handle(request.clone())",
+		);
+		expect(source).toContain(
+			"path: '/readyz'",
+		);
+		expect(source).not.toContain("Bearer ");
 	});
 
 	it("does not duplicate remotely assigned Kubernetes queries in the web host", () => {

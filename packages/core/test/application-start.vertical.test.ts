@@ -43,6 +43,10 @@ function startDefinition(): ApplicationStartDefinition {
       tanstackCli: '0.70.1',
       tanstackStart: '1.168.28',
       tanstackAI: '0.42.0',
+      tanstackAIClient: '0.22.1',
+      tanstackAIReact: '0.18.1',
+      agUi: '0.0.52',
+      tanstackAIPersistence: 'unreleased',
       typekro: '0.32.0',
     },
     packages: [
