@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import type { CapabilityDescriptor, JsonSchemaSource, PermissionRule, RuntimeConfig } from '@applik8s/core';
@@ -1189,6 +1189,13 @@ export const commandStack = platform.composition;
       expect(artifact?.sizeBytes).toBeGreaterThan(0);
       expect(artifact?.sizeBytes).toBeLessThan(900_000);
       const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
+      const generatedProcessorSource = await readFile(
+        join(
+          dirname(artifact?.sourcePath ?? ''),
+          'processor.generated.ts',
+        ),
+        'utf8',
+      );
       const logicalSource = source.replace(/\\\r?\n/g, '');
       const manifest = JSON.parse(await readFile(artifact?.manifestPath ?? '', 'utf8'));
       expect(source).toContain('applik8s-command-processor');
@@ -1205,6 +1212,14 @@ export const commandStack = platform.composition;
       expect(logicalSource).toContain('applik8s-command-terminal-recorder-missing');
       expect(logicalSource).toContain('applik8s-command-processor-startup-wait');
       expect(logicalSource).toContain('applik8s-processor-startup-timeout');
+      expect(logicalSource).toContain('PostgreSQL operation authority');
+      expect(
+        generatedProcessorSource.indexOf('function retryStartup'),
+      ).toBeLessThan(
+        generatedProcessorSource.indexOf(
+          "retryStartup('PostgreSQL operation authority'",
+        ),
+      );
       expect(logicalSource).toContain('PostgreSQL');
       expect(logicalSource).toContain('JetStream event log');
       expect(logicalSource).toContain('JetStream command consumer');

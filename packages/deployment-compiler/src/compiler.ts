@@ -160,16 +160,12 @@ function applicationInfrastructureNodes(
     ? "retain"
     : "delete";
   const namespaces = new Map<string, ApplicationDeploymentNode>();
-  namespaces.set(
-    request.identity.controlPlaneNamespace,
-    namespaceNode(
-      "direct.namespace.control-plane",
-      request.identity.controlPlaneNamespace,
-      "delete",
-      request,
-    ),
-  );
-  if (!namespaces.has(workloadNamespace)) {
+  // The control-plane namespace contains the root Application instance and is
+  // therefore always an external lifecycle boundary. Owning it would let a
+  // destroy remove its own finalizing instance (or attempt to delete a
+  // protected namespace such as `default`). Only the application workload
+  // namespace is eligible for graph ownership.
+  if (!protectedKubernetesNamespace(workloadNamespace)) {
     namespaces.set(
       workloadNamespace,
       namespaceNode(
@@ -190,6 +186,13 @@ function applicationInfrastructureNodes(
       generatedSecretNode(secret, request),
     ),
   ];
+}
+
+function protectedKubernetesNamespace(name: string): boolean {
+  return name === "default"
+    || name === "kube-system"
+    || name === "kube-public"
+    || name === "kube-node-lease";
 }
 
 function namespaceNode(

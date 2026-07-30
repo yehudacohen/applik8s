@@ -1,5 +1,6 @@
 import type {
   ApplicationDatabaseBinding,
+  ApplicationProcessorOptions,
   KubernetesApplicationBuilder,
 } from '@applik8s/applik8s';
 import { relations } from 'drizzle-orm';
@@ -188,15 +189,17 @@ export const applicationEvaluationSchema = Object.freeze({
 
 export interface ApplicationEvaluationsModuleOptions {
   readonly database?: ApplicationDatabaseBinding;
+  readonly processor?: ApplicationProcessorOptions;
 }
 
 export function evaluations(
   application: Pick<KubernetesApplicationBuilder, 'model'>,
   options: ApplicationEvaluationsModuleOptions = {},
 ) {
-  const modelOptions = options.database
-    ? { database: options.database }
-    : undefined;
+  const modelOptions = {
+    ...(options.database ? { database: options.database } : {}),
+    ...(options.processor ? { processor: options.processor } : {}),
+  };
   const Dataset = application.model(applicationEvaluationDatasets, {
     ...modelOptions,
     name: 'EvaluationDataset',

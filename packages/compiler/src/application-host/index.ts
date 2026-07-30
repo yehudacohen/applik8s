@@ -71,6 +71,10 @@ export async function emitGeneratedApplicationHost(options: {
     limits: { memory: '256Mi', ...objectValue(resources.limits) },
   };
   const objectStorageEnvironment = applicationHostObjectStorageEnvironment(options.graph, namespace);
+  const internalOperationEnvironment = applicationHostInternalOperationEnvironment(
+    options.graph,
+    namespace,
+  );
   const artifactRoot = resolve(applicationArtifactRoot(manifestPath), manifest.output);
   const contextRoot = resolve(options.outDir, 'context');
   await rm(contextRoot, { recursive: true, force: true });
@@ -156,6 +160,7 @@ export async function emitGeneratedApplicationHost(options: {
                 { name: 'APPLIK8S_NAMESPACE', value: namespace },
                 { name: 'APPLIK8S_WEB_ARTIFACT_DIGEST', value: manifest.digest },
                 { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: cursorSecretName, key: cursorSecretKey } } },
+                ...internalOperationEnvironment,
                 ...objectStorageEnvironment,
               ],
               ports: [{ name: 'http', containerPort: port }],
@@ -197,6 +202,31 @@ export async function emitGeneratedApplicationHost(options: {
     });
   }
   return emitted;
+}
+
+function applicationHostInternalOperationEnvironment(
+  graph: ApplicationGraph,
+  hostNamespace: string,
+): readonly Readonly<Record<string, unknown>>[] {
+  const needsInternalOperations = graph.nodes.some(
+    (node) => node.kind === 'aiAgent' || node.kind === 'mcpServer',
+  );
+  if (!needsInternalOperations) return [];
+  const applicationNamespace = applicationGraphStringValue(graph.metadata.namespace) ?? 'default';
+  if (applicationNamespace !== hostNamespace) {
+    throw new Error(
+      `ApplicationHost internal operations use namespace ${applicationNamespace}, but the host is deployed to ${hostNamespace}. Keep the host with its application or move internal operations behind an explicit gateway.`,
+    );
+  }
+  return [{
+    name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
+    valueFrom: {
+      secretKeyRef: {
+        name: `${graph.metadata.name}-internal-operation`,
+        key: 'key',
+      },
+    },
+  }];
 }
 
 /**

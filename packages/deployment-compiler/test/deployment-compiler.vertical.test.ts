@@ -28,7 +28,6 @@ describe("Application deployment compiler", () => {
     );
     expect(first.graph.nodes.map(({ id }) => id)).toEqual([
       "artifact.web",
-      "direct.namespace.control-plane",
       "direct.namespace.workload",
       "kubernetes.application",
     ]);
@@ -40,8 +39,38 @@ describe("Application deployment compiler", () => {
           relationship: "requiresOutput",
           output: "immutableReference",
         },
+        {
+          from: "direct.namespace.workload",
+          to: "kubernetes.application",
+          relationship: "requiresReady",
+        },
       ]),
     );
+  });
+
+  it("never owns the control-plane or Kubernetes protected namespaces", () => {
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      identity: {
+        ...request().identity,
+        controlPlaneNamespace: "default",
+      },
+      graph: {
+        ...request().graph,
+        metadata: {
+          ...request().graph.metadata,
+          namespace: "default",
+        },
+      },
+    });
+
+    expect(
+      result.graph.nodes.filter(
+        (node) =>
+          node.kind === "kubernetesDirect"
+          && node.spec.compositionId === "applik8s-namespace",
+      ),
+    ).toEqual([]);
   });
 
   it("carries the reviewed profile transition into the portable plan identity", () => {
@@ -523,7 +552,6 @@ describe("Application deployment compiler", () => {
       "rook-object-storage-claim",
       "opensearch-operator-bootstrap",
       "opensearch-cluster",
-      "applik8s-namespace",
       "applik8s-namespace",
     ]);
     expect(direct.find((node) => node.id.endsWith(".operator"))?.lifecycle).toMatchObject({

@@ -22,6 +22,39 @@ AutomationScheduleChanged.process('automation-schedule', {
     expect(instrumented).toContain('source: "async (changed, context) => reconcileSchedule(changed, context)"');
   });
 
+  it('preserves app.agent handler provenance so module imports can be bundled', () => {
+    const source = `
+import { chat } from '@tanstack/ai';
+
+export const Researcher = application.agent(
+  'researcher',
+  {
+    identity: ResearcherIdentity,
+    model: FastModel,
+    instructions: 'Research carefully.',
+    tools: [ResearchNote.create],
+  },
+  async (request, context) => chat({
+    adapter: context.tanstack.adapter,
+    messages: request.messages,
+    threadId: request.threadId,
+    runId: context.runId,
+    tools: context.tanstack.tools,
+    context: context.tanstack.execution,
+  }),
+);
+`;
+
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/features/research/model.ts',
+    );
+
+    expect(instrumented).toContain('registrar: "agent"');
+    expect(instrumented).toContain('property: "handler"');
+    expect(instrumented).toContain('source: "async (request, context) => chat({');
+  });
+
   it('records the defining module for an imported IdentityProvider callback', async () => {
     const application = new URL('./fixtures/callback-provenance/app.ts', import.meta.url).pathname;
     const identity = new URL('./fixtures/callback-provenance/identity.ts', import.meta.url).pathname;

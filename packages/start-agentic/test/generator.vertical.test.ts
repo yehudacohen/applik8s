@@ -86,6 +86,8 @@ describe('Agentic Start generator', () => {
     expect(providers).toContain(
       'provider: application.inject(PrimaryDatabase)',
     );
+    expect(providers.match(/clusterName: 'application-db'/g)).toHaveLength(3);
+    expect(providers.match(/name: 'application-db-app'/g)).toHaveLength(3);
     expect(providers).toContain("migrations: { path: '../drizzle' }");
     expect(providers).not.toContain('export const authenticate');
     expect(providers).not.toContain('application.database.postgres');
@@ -97,6 +99,10 @@ describe('Agentic Start generator', () => {
     const modules = await readFile(join(target, 'src/modules.ts'), 'utf8');
     expect(modules).toContain(
       "import { conversations } from '@applik8s/conversations';",
+    );
+    expect(modules).toContain("group: 'agentic-commands'");
+    expect(modules).toContain(
+      'conversations(application, { database, processor })',
     );
     const manifest = JSON.parse(
       await readFile(join(target, 'package.json'), 'utf8'),

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, unsupportedRouteFreeIdentifiers } from '../src/application-route-source';
+import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationCallObjectFunctionSource, unsupportedRouteFreeIdentifiers } from '../src/application-route-source';
+
+const sourceRegistrar = {
+  register(_options: unknown) {
+    return extractApplicationCallObjectFunctionSource('register', 0, 'deployment.authenticate');
+  },
+};
 
 describe('application callback lexical analysis', () => {
   it('keeps local array/object destructuring and standard collection use inside the generated closure', () => {
@@ -34,5 +40,17 @@ describe('application callback lexical analysis', () => {
     expect(dependencies?.source).toContain('AbortSignal.timeout');
     expect(dependencies?.source).not.toContain('IdentityOptions');
     expect(dependencies?.resolveDir).toBe(new URL('./fixtures', import.meta.url).pathname.replace(/\/$/, ''));
+  });
+
+  it('extracts function-valued properties nested inside registrar options', () => {
+    const extracted = sourceRegistrar.register({
+      deployment: {
+        authenticate: async (request: Request) => ({ principal: request.headers.get('x-principal') }),
+      },
+    });
+
+    expect(extracted?.source).toContain('async (request) =>');
+    expect(extracted?.source).toContain("request.headers.get(\"x-principal\")");
+    expect(extracted?.location.file).toBe(import.meta.filename);
   });
 });

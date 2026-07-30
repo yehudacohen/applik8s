@@ -1,5 +1,6 @@
 import type {
   ApplicationDatabaseBinding,
+  ApplicationProcessorOptions,
   KubernetesApplicationBuilder,
 } from '@applik8s/applik8s';
 import {
@@ -12,15 +13,17 @@ import {
 
 export interface ApplicationConversationsModuleOptions {
   readonly database?: ApplicationDatabaseBinding;
+  readonly processor?: ApplicationProcessorOptions;
 }
 
 export function conversations(
   application: Pick<KubernetesApplicationBuilder, 'model'>,
   options: ApplicationConversationsModuleOptions = {},
 ) {
-  const modelOptions = options.database
-    ? { database: options.database }
-    : undefined;
+  const modelOptions = {
+    ...(options.database ? { database: options.database } : {}),
+    ...(options.processor ? { processor: options.processor } : {}),
+  };
   const Conversation = application.model(applicationConversations, {
     ...modelOptions,
     name: 'Conversation',

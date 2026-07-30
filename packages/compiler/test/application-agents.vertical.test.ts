@@ -1,7 +1,7 @@
 // typecast-file-boundary: generated-agent fixtures inspect JSON manifests only after compiler emission and explicit discriminator assertions.
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { AI } from '@applik8s/ai';
 import { app, applicationGraphFor, IdentityProvider } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
@@ -179,6 +179,10 @@ describe('generated application AI agents', () => {
       },
     });
     const source = await readFile(artifact.sourcePath, 'utf8');
+    const generatedSource = await readFile(
+      join(dirname(artifact.sourcePath), 'agent.generated.ts'),
+      'utf8',
+    );
     const normalizedSource = source.replaceAll('\\\n', '');
     expect(normalizedSource).toContain('x-applik8s-execution-admission');
     expect(normalizedSource).toContain('x-applik8s-internal-invocation');
@@ -196,15 +200,21 @@ describe('generated application AI agents', () => {
     );
     expect(normalizedSource).toContain('applik8s_ai_attempts');
     expect(normalizedSource).toContain('completion-uncertain');
+    expect(generatedSource).toContain('applik8s-agent-startup-wait');
+    expect(generatedSource).toContain('agent_dependencies_unavailable');
+    expect(generatedSource).toContain('initializationController.abort()');
+    expect(generatedSource).toContain(
+      "url.pathname === '/healthz' || url.pathname === '/readyz'",
+    );
     expect(normalizedSource).toContain('APPLIK8S_PROFILE_VARIANT');
     expect(normalizedSource).toContain('starter evidence');
     expect(normalizedSource).toContain('dedicated evidence');
     expect(normalizedSource).toContain('external evidence');
-    expect(normalizedSource).toMatch(
-      /return\{action:\w+\.action,runId:\w+,invocationId:/u,
+    expect(generatedSource).toContain(
+      'action: decision.action,',
     );
-    expect(normalizedSource).toMatch(
-      /recovery:\{observe:\w+=>\w+\.observe\(\w+\),timeoutMs:/u,
+    expect(generatedSource).toContain(
+      'observe: (invocationId) => attemptRuntime.observe(invocationId),',
     );
     expect(normalizedSource).not.toContain(
       'stream joining and terminal replay must complete before redispatch',

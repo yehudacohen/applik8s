@@ -127,20 +127,38 @@ describe('application deployment profiles', () => {
 
     deployment
       .provide(PrimaryDatabase)
-      .starter((spec) =>
+      .starter(() =>
         TransactionalDatabase.postgres({
-          database: `${String(spec.name)}-starter`,
+          clusterName: 'primary-db',
+          connectionSecret: {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            name: 'primary-db-app',
+          },
+          database: 'application',
         }),
       )
       .dedicated(() =>
         TransactionalDatabase.postgres({
-          database: 'dedicated',
+          clusterName: 'primary-db',
+          connectionSecret: {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            name: 'primary-db-app',
+          },
+          database: 'application',
           instances: 3,
         }),
       )
       .external(() =>
         TransactionalDatabase.postgres({
-          database: 'external',
+          clusterName: 'primary-db',
+          connectionSecret: {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            name: 'primary-db-app',
+          },
+          database: 'application',
           provision: false,
           cluster: {
             apiVersion: 'postgresql.cnpg.io/v1',
@@ -242,6 +260,51 @@ describe('application deployment profiles', () => {
     );
   });
 
+  it('fails closed when profile branches change a generated workload database connection', () => {
+    const application = app('unstable-database-profile', {
+      namespace: 'unstable-database-profile',
+      spec: Installation,
+      status: type({ ready: 'boolean' }),
+    });
+    const PrimaryDatabase = TransactionalDatabase.named('primary');
+    application
+      .profile(application.installation.spec, 'profile')
+      .provide(PrimaryDatabase)
+      .starter(() =>
+        TransactionalDatabase.postgres({
+          clusterName: 'starter-db',
+          database: 'application',
+        }),
+      )
+      .dedicated(() =>
+        TransactionalDatabase.postgres({
+          clusterName: 'dedicated-db',
+          database: 'application',
+        }),
+      )
+      .external(() =>
+        TransactionalDatabase.postgres({
+          clusterName: 'external-db',
+          database: 'application',
+          provision: false,
+          cluster: {
+            apiVersion: 'postgresql.cnpg.io/v1',
+            kind: 'Cluster',
+            name: 'external-db',
+            namespace: 'data',
+          },
+        }),
+      )
+      .exhaustive();
+
+    expect(() =>
+      application.model('ProfileEntry', {
+        spec: type({ id: 'string' }),
+        database: application.inject(PrimaryDatabase),
+      }),
+    ).toThrow(/changes its generated workload connection/);
+  });
+
   it('binds a native Drizzle schema to one qualified profile database without provisioning a duplicate default', () => {
     const records = pgTable('profile_records', {
       id: text('id').primaryKey(),
@@ -261,26 +324,44 @@ describe('application deployment profiles', () => {
       .provide(PrimaryDatabase)
       .starter(() =>
         TransactionalDatabase.postgres({
-          name: 'starter-primary',
+          name: 'primary',
+          clusterName: 'primary-db',
+          connectionSecret: {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            name: 'primary-db-app',
+          },
           database: 'application',
         }),
       )
       .dedicated(() =>
         TransactionalDatabase.postgres({
-          name: 'dedicated-primary',
+          name: 'primary',
+          clusterName: 'primary-db',
+          connectionSecret: {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            name: 'primary-db-app',
+          },
           database: 'application',
           instances: 3,
         }),
       )
       .external(() =>
         TransactionalDatabase.postgres({
-          name: 'external-primary',
+          name: 'primary',
+          clusterName: 'primary-db',
+          connectionSecret: {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            name: 'primary-db-app',
+          },
           database: 'application',
           provision: false,
           cluster: {
             apiVersion: 'postgresql.cnpg.io/v1',
             kind: 'Cluster',
-            name: 'external-primary',
+            name: 'primary-db',
             namespace: 'data',
           },
         }),
@@ -426,16 +507,22 @@ describe('application deployment profiles', () => {
     const AuditDatabase = TransactionalDatabase.named('audit');
     const database = (
       role: 'primary' | 'audit',
-      variant: 'starter' | 'dedicated' | 'external',
+      _variant: 'starter' | 'dedicated' | 'external',
     ) =>
       TransactionalDatabase.postgres({
-        name: `${role}-${variant}`,
-        database: `${role}_${variant}`,
+        name: role,
+        clusterName: `${role}-db`,
+        connectionSecret: {
+          apiVersion: 'v1',
+          kind: 'Secret',
+          name: `${role}-db-app`,
+        },
+        database: role,
         provision: false,
         cluster: {
           apiVersion: 'postgresql.cnpg.io/v1',
           kind: 'Cluster',
-          name: `${role}-${variant}`,
+          name: `${role}-db`,
           namespace: 'data',
         },
       });

@@ -1,6 +1,7 @@
 // typecast-file-boundary: the observer validates untyped Kubernetes status payloads before projecting typed readiness.
-import type { ResolvedApplicationContainerRegistry } from '@applik8s/applik8s/deployment-registry';
 import type { DeploymentJsonObject } from '@applik8s/deployment-contract';
+import { kubernetesStatusCode } from './application-deployment-exposure-observer.js';
+import { assertDeploymentJson } from './application-deployment-json.js';
 import { makeKubernetesApiClient } from './kubernetes-api-client.js';
 
 export interface ApplicationDeploymentObserverIo {
@@ -349,128 +350,9 @@ export async function waitForResourceGraphDefinitionReadiness(
   throw new Error(`Timed out after ${timeoutMs}ms waiting for ResourceGraphDefinition/${name}; last status: ${lastSummary || 'unavailable'}.`);
 }
 
-export interface ApplicationEndpointVerificationOptions {
-  readonly timeoutMs?: number;
-  readonly requestTimeoutMs?: number;
-  readonly pollIntervalMs?: number;
-  readonly fetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-}
-
-/** Verify the public URL projected by the authoritative Application status. */
-export async function waitForApplicationEndpoint(
-  url: string,
-  io: ApplicationDeploymentObserverIo,
-  options: ApplicationEndpointVerificationOptions = {},
-): Promise<void> {
-  const endpoint = new URL(url);
-  if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') {
-    throw new Error(`Application status URL ${url} must use http or https.`);
-  }
-  const timeoutMs = options.timeoutMs ?? 2 * 60_000;
-  const requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
-  const pollIntervalMs = options.pollIntervalMs ?? 1_000;
-  const fetchEndpoint = options.fetch ?? fetch;
-  const startedAt = Date.now();
-  let lastFailure = 'no request completed';
-  let lastReport = 0;
-  while (Date.now() - startedAt < timeoutMs) {
-    const remainingMs = timeoutMs - (Date.now() - startedAt);
-    const controller = new AbortController();
-    const requestTimeout = setTimeout(
-      () => controller.abort(new Error(`request exceeded ${Math.min(requestTimeoutMs, remainingMs)}ms`)),
-      Math.min(requestTimeoutMs, remainingMs),
-    );
-    try {
-      const response = await fetchEndpoint(endpoint, {
-        method: 'GET',
-        redirect: 'follow',
-        signal: controller.signal,
-      });
-      if (response.status >= 200 && response.status < 400) return;
-      lastFailure = `HTTP ${response.status}`;
-    } catch (cause) {
-      lastFailure = cause instanceof Error ? cause.message : String(cause);
-    } finally {
-      clearTimeout(requestTimeout);
-    }
-    if (Date.now() - lastReport >= 15_000) {
-      io.stdout(`Waiting for public endpoint ${endpoint.toString()}: ${lastFailure}`);
-      lastReport = Date.now();
-    }
-    if (Date.now() - startedAt < timeoutMs) {
-      await new Promise((resolve) => setTimeout(resolve, Math.min(pollIntervalMs, timeoutMs - (Date.now() - startedAt))));
-    }
-  }
-  throw new Error(`Timed out after ${timeoutMs}ms reaching ${endpoint.toString()}; last result: ${lastFailure}.`);
-}
-
-export async function verifyApplicationRegistryPullSecret(
-  registry: ResolvedApplicationContainerRegistry,
-  context: string,
-): Promise<void> {
-  if (!registry.remote || !registry.pullSecret) {
-    if (registry.remote && registry.provider.kind !== 'orbstack-container-registry' && registry.provider.pushCredentials) {
-      throw new Error('Authenticated remote ContainerRegistry deployments require a namespace-scoped pullSecret before authored workloads can be applied.');
-    }
-    return;
-  }
-  // static-import-exception: Kubernetes observation belongs only in the Node deployment host.
-  const kubernetes = await import('@kubernetes/client-node');
-  const kubeConfig = new kubernetes.KubeConfig();
-  kubeConfig.loadFromDefault();
-  kubeConfig.setCurrentContext(context);
-  const secret = await makeKubernetesApiClient(kubeConfig, kubernetes.CoreV1Api).readNamespacedSecret({
-    name: registry.pullSecret.name,
-    namespace: registry.pullSecret.namespace,
-  }).catch((cause: unknown) => {
-    if (kubernetesStatusCode(cause) === 404) {
-      throw new Error(`ContainerRegistry pull Secret ${registry.pullSecret?.namespace}/${registry.pullSecret?.name} does not exist after registry provisioning.`);
-    }
-    throw cause;
-  });
-  if (secret.type !== 'kubernetes.io/dockerconfigjson' || !secret.data?.['.dockerconfigjson']) {
-    throw new Error(`ContainerRegistry pull Secret ${registry.pullSecret.namespace}/${registry.pullSecret.name} must be type kubernetes.io/dockerconfigjson with .dockerconfigjson data.`);
-  }
-}
-
-function assertDeploymentJson(value: unknown, path: string): void {
-  if (
-    value === null
-    || typeof value === 'string'
-    || typeof value === 'boolean'
-  ) {
-    return;
-  }
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      throw new Error(`${path} contains a non-finite number.`);
-    }
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const [index, entry] of value.entries()) {
-      assertDeploymentJson(entry, `${path}[${index}]`);
-    }
-    return;
-  }
-  if (value && typeof value === 'object') {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      throw new Error(`${path} contains a non-JSON object.`);
-    }
-    for (const [key, entry] of Object.entries(value)) {
-      assertDeploymentJson(entry, `${path}.${key}`);
-    }
-    return;
-  }
-  throw new Error(`${path} contains a non-JSON value.`);
-}
-
-function kubernetesStatusCode(cause: unknown): number | undefined {
-  if (!cause || typeof cause !== 'object') return undefined;
-  const response = Reflect.get(cause, 'response');
-  const responseStatus = response && typeof response === 'object' ? Reflect.get(response, 'statusCode') ?? Reflect.get(response, 'status') : undefined;
-  const direct = Reflect.get(cause, 'statusCode') ?? Reflect.get(cause, 'status');
-  const value = responseStatus ?? direct;
-  return typeof value === 'number' ? value : undefined;
-}
+export {
+  kubernetesStatusCode,
+  verifyApplicationRegistryPullSecret,
+  waitForApplicationEndpoint,
+} from './application-deployment-exposure-observer.js';
+export type { ApplicationEndpointVerificationOptions } from './application-deployment-exposure-observer.js';

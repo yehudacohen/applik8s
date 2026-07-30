@@ -256,12 +256,24 @@ const Inference = AI.named('inference');
 
 deployment
   .provide(PrimaryDatabase)
-  .starter(() => TransactionalDatabase.postgres({ database: 'application', instances: 1 }))
-  .dedicated(() => TransactionalDatabase.postgres({ database: 'application', instances: 3 }))
+  .starter(() => TransactionalDatabase.postgres({
+    clusterName: 'application-db',
+    connectionSecret: { apiVersion: 'v1', kind: 'Secret', name: 'application-db-app' },
+    database: 'application',
+    instances: 1,
+  }))
+  .dedicated(() => TransactionalDatabase.postgres({
+    clusterName: 'application-db',
+    connectionSecret: { apiVersion: 'v1', kind: 'Secret', name: 'application-db-app' },
+    database: 'application',
+    instances: 3,
+  }))
   .external(() => TransactionalDatabase.postgres({
+    clusterName: 'application-db',
+    connectionSecret: { apiVersion: 'v1', kind: 'Secret', name: 'application-db-app' },
     database: 'application',
     provision: false,
-    cluster: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'application', namespace: 'data' },
+    cluster: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'application-db', namespace: 'data' },
   }))
   .exhaustive();
 
@@ -298,11 +310,20 @@ import { usage } from '@applik8s/usage';
 import { application } from './app';
 import { database } from './providers';
 
-export const Conversations = conversations(application, { database });
-export const Approvals = approvals(application, { database });
-export const Artifacts = artifacts(application, { database });
-export const Evaluations = evaluations(application, { database });
-export const Usage = usage(application, { database });
+const processor = {
+  group: 'agentic-commands',
+  deployment: {
+    replicas: 1,
+    concurrency: 8,
+    maxInFlight: 8,
+  },
+} as const;
+
+export const Conversations = conversations(application, { database, processor });
+export const Approvals = approvals(application, { database, processor });
+export const Artifacts = artifacts(application, { database, processor });
+export const Evaluations = evaluations(application, { database, processor });
+export const Usage = usage(application, { database, processor });
 
 const maintainedModels = [
   ...Object.values(Conversations),
@@ -327,6 +348,14 @@ import { researchNotes } from './schema';
 export const ResearchNote = application.model(researchNotes, {
   name: 'ResearchNote',
   database,
+  processor: {
+    group: 'agentic-commands',
+    deployment: {
+      replicas: 1,
+      concurrency: 8,
+      maxInFlight: 8,
+    },
+  },
   revision: false,
 });
 
@@ -378,6 +407,7 @@ export const gateway = application.gateway('web', {
 export const host = application.provide(
   ApplicationHost,
   ApplicationHost.kubernetes({
+    name: ${JSON.stringify(`${projectName}-app`)},
     namespace: ${JSON.stringify(`${projectName}-system`)},
     replicas: 1,
     resources: {

@@ -127,7 +127,6 @@
       "version": "0.6.0",
       "dependencies": {
         "@applik8s/core": "0.6.0",
-        "@applik8s/operations": "0.6.0",
       },
     },
     "packages/ai-tanstack": {

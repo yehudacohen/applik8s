@@ -23,6 +23,9 @@ describe('native relational migration lowering', () => {
     expect(source).not.toContain('\\quit 3');
     expect(source).toContain('applik8s framework migration already applied');
     expect(source).toContain('CREATE TABLE cards');
+    expect(source).toContain(
+      'revision bigint NOT NULL DEFAULT 0\n  );\n\nCREATE TABLE IF NOT EXISTS applik8s_authority_records',
+    );
     expect(source).toContain('CREATE TABLE IF NOT EXISTS applik8s_model_changes');
     expect(source).toContain('CREATE TABLE IF NOT EXISTS applik8s_public_stream_retention_floors');
     expect(source).toContain('ALTER TABLE "cards" FORCE ROW LEVEL SECURITY');

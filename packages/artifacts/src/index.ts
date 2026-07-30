@@ -1,5 +1,6 @@
 import type {
   ApplicationDatabaseBinding,
+  ApplicationProcessorOptions,
   KubernetesApplicationBuilder,
 } from '@applik8s/applik8s';
 import {
@@ -74,6 +75,7 @@ export const applicationArtifactSchema = Object.freeze({
 
 export interface ApplicationArtifactsModuleOptions {
   readonly database?: ApplicationDatabaseBinding;
+  readonly processor?: ApplicationProcessorOptions;
 }
 
 export function artifacts(
@@ -82,6 +84,7 @@ export function artifacts(
 ) {
   const Artifact = application.model(applicationArtifacts, {
     ...(options.database ? { database: options.database } : {}),
+    ...(options.processor ? { processor: options.processor } : {}),
     name: 'Artifact',
     revision: false,
   });

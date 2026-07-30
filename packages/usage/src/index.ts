@@ -1,5 +1,6 @@
 import type {
   ApplicationDatabaseBinding,
+  ApplicationProcessorOptions,
   KubernetesApplicationBuilder,
 } from '@applik8s/applik8s';
 import {
@@ -88,15 +89,17 @@ export const applicationUsageSchema = Object.freeze({
 
 export interface ApplicationUsageModuleOptions {
   readonly database?: ApplicationDatabaseBinding;
+  readonly processor?: ApplicationProcessorOptions;
 }
 
 export function usage(
   application: Pick<KubernetesApplicationBuilder, 'model'>,
   options: ApplicationUsageModuleOptions = {},
 ) {
-  const modelOptions = options.database
-    ? { database: options.database }
-    : undefined;
+  const modelOptions = {
+    ...(options.database ? { database: options.database } : {}),
+    ...(options.processor ? { processor: options.processor } : {}),
+  };
   const UsageFact = application.model(applicationUsageFacts, {
     ...modelOptions,
     name: 'UsageFact',

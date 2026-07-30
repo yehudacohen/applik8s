@@ -86,8 +86,46 @@ export async function createApplicationAlchemyGraphDeployment<
       options.factory,
     ),
   });
-  return createApplicationAlchemyDeployment({
+  const deployment = createApplicationAlchemyDeployment({
     ...options,
     adapted,
   });
+  if (options.graph.metadata.strategy !== "kro") return deployment;
+  return {
+    ...deployment,
+    async destroy() {
+      // Alchemy does not invoke a provider delete hook for a resource whose
+      // prior transaction stopped in `creating`. A live KRO instance can still
+      // exist in that state, so make the TypeKro factory the authoritative
+      // preflight for every destroy. This is idempotent when Alchemy already
+      // holds a completed resource and guarantees that children/finalizers
+      // drain before artifact, Secret, RGD, or Namespace teardown begins.
+      const factory = composition.factory("kro", rootFactory);
+      if (!factory.deleteInstance || !factory.dispose) {
+        throw new Error(
+          `TypeKro composition ${composition.name} does not expose the v0.32 deleteInstance/dispose lifecycle contract.`,
+        );
+      }
+      try {
+        const result = await factory.deleteInstance(
+          options.graph.metadata.identity.instance,
+          {
+            ...(rootFactory.timeout !== undefined
+              ? { timeout: rootFactory.timeout }
+              : {}),
+          },
+        );
+        if (result.status !== "complete") {
+          throw new Error(
+            `TypeKro root instance deletion is ${result.status}: ${result.blockers
+              .map((blocker) => blocker.message)
+              .join("; ") || "finalization has not completed"}`,
+          );
+        }
+      } finally {
+        await factory.dispose();
+      }
+      return deployment.destroy();
+    },
+  };
 }

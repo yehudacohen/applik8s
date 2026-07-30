@@ -1496,21 +1496,25 @@ function applicationModelUnsupportedEvent(modelName: string, event: 'created' | 
 
 export function applicationRuntimeModelContract<TSpec extends object, TStatus extends object>(entity: EntityDefinition<TSpec, TStatus>, provider: ApplicationTransactionalDatabaseProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined): ApplicationRuntimeModelContract {
   const name = options?.name ?? entity.name;
+  const runtimeProvider = applicationTransactionalDatabaseRuntimeProvider(
+    provider,
+    name,
+  );
   const modelSegment = kubernetesNameSegment(name);
-  const resources = applicationTransactionalDatabaseProviderResources(provider, name);
+  const resources = applicationTransactionalDatabaseProviderResources(runtimeProvider, name);
   const cluster = resources[0];
-  const clusterName = applicationTypeKroSerializedValue(provider.clusterName ?? provider.name ?? cluster?.name ?? `${modelSegment}-db`);
-  const secret = provider.connectionSecret ?? { apiVersion: 'v1', kind: 'Secret', name: `${clusterName}-app`, ...(provider.namespace ? { namespace: provider.namespace } : {}) };
+  const clusterName = applicationTypeKroSerializedValue(runtimeProvider.clusterName ?? runtimeProvider.name ?? cluster?.name ?? `${modelSegment}-db`);
+  const secret = runtimeProvider.connectionSecret ?? { apiVersion: 'v1', kind: 'Secret', name: `${clusterName}-app`, ...(runtimeProvider.namespace ? { namespace: runtimeProvider.namespace } : {}) };
   return {
     name,
     tableName: `applik8s_${modelSegment.replace(/[^a-z0-9]+/g, '_')}`,
     provider: 'postgres',
     authorityName: modelSegment,
-    database: applicationTypeKroSerializedValue(provider.database ?? modelSegment),
+    database: applicationTypeKroSerializedValue(runtimeProvider.database ?? modelSegment),
     clusterName,
     secretName: applicationTypeKroSerializedValue(secret.name ?? `${clusterName}-app`),
-    secretKey: applicationTypeKroSerializedValue(provider.connectionSecretKey ?? 'uri'),
-    ...(secret.namespace ?? provider.namespace ? { secretNamespace: applicationTypeKroSerializedValue(secret.namespace ?? provider.namespace) } : {}),
+    secretKey: applicationTypeKroSerializedValue(runtimeProvider.connectionSecretKey ?? 'uri'),
+    ...(secret.namespace ?? runtimeProvider.namespace ? { secretNamespace: applicationTypeKroSerializedValue(secret.namespace ?? runtimeProvider.namespace) } : {}),
     connectionEnvName: `APPLIK8S_TRANSACTIONAL_DATABASE_${modelSegment.replace(/[^A-Z0-9_a-z]+/g, '_').toUpperCase()}_DATABASE_URL`,
     constraints: applicationTransactionalDatabaseConstraints(options?.schema),
     indexes: applicationTransactionalDatabaseIndexes(options?.schema),
@@ -1769,36 +1773,111 @@ function applicationTransactionalDatabaseReconciliation(provider: ApplicationTra
   readonly ownership: 'application' | 'external';
   readonly deletionPolicy: 'retain' | 'deleteWithApplication';
 } {
-  const ownership = provider.provision === false || provider.cluster || provider.ownership === 'external'
+  const runtimeProvider = applicationTransactionalDatabaseRuntimeProvider(
+    provider,
+    'application',
+  );
+  const ownership = runtimeProvider.provision === false || runtimeProvider.cluster || runtimeProvider.ownership === 'external'
     ? 'external'
     : 'application';
   const deletionPolicy = ownership === 'external'
-    || (provider.ownership === 'direct-provisioned' && provider.lifecycle?.deletionPolicy === 'retain')
+    || (runtimeProvider.ownership === 'direct-provisioned' && runtimeProvider.lifecycle?.deletionPolicy === 'retain')
     ? 'retain'
     : 'deleteWithApplication';
   return { ownership, deletionPolicy };
 }
 
 function applicationTransactionalDatabaseProviderResources(provider: ApplicationTransactionalDatabaseProvider, modelName: string): readonly ApplicationResourceRef[] {
-  if (provider.cluster) {
-    return [provider.cluster];
+  const runtimeProvider = applicationTransactionalDatabaseRuntimeProvider(
+    provider,
+    modelName,
+  );
+  if (runtimeProvider.cluster) {
+    return [runtimeProvider.cluster];
   }
-  const clusterName = provider.clusterName ?? provider.name ?? `${kubernetesNameSegment(modelName)}-db`;
-  return [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: clusterName, ...(provider.namespace ? { namespace: provider.namespace } : {}) }];
+  const clusterName = runtimeProvider.clusterName ?? runtimeProvider.name ?? `${kubernetesNameSegment(modelName)}-db`;
+  return [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: clusterName, ...(runtimeProvider.namespace ? { namespace: runtimeProvider.namespace } : {}) }];
 }
 
 function applicationTransactionalDatabaseRuntime(provider: ApplicationTransactionalDatabaseProvider, modelName: string, resources: readonly ApplicationResourceRef[]): ApplicationProviderRuntimeContract {
+  const runtimeProvider = applicationTransactionalDatabaseRuntimeProvider(
+    provider,
+    modelName,
+  );
   const cluster = resources[0];
-  const secret = provider.connectionSecret ?? { apiVersion: 'v1', kind: 'Secret', name: `${cluster?.name ?? kubernetesNameSegment(modelName)}-app`, ...(provider.namespace ? { namespace: provider.namespace } : {}) };
+  const secret = runtimeProvider.connectionSecret ?? { apiVersion: 'v1', kind: 'Secret', name: `${cluster?.name ?? kubernetesNameSegment(modelName)}-app`, ...(runtimeProvider.namespace ? { namespace: runtimeProvider.namespace } : {}) };
   return {
-    ...(provider.runtime ?? {}),
-    env: { DATABASE_URL_SECRET: secret.name ?? `${kubernetesNameSegment(modelName)}-db-app`, ...(provider.runtime?.env ?? {}) },
-    secretRefs: uniqueApplicationResourceRefs([secret, ...(provider.runtime?.secretRefs ?? [])]),
-    readiness: provider.runtime?.readiness ?? {
+    ...(runtimeProvider.runtime ?? {}),
+    env: { DATABASE_URL_SECRET: secret.name ?? `${kubernetesNameSegment(modelName)}-db-app`, ...(runtimeProvider.runtime?.env ?? {}) },
+    secretRefs: uniqueApplicationResourceRefs([secret, ...(runtimeProvider.runtime?.secretRefs ?? [])]),
+    readiness: runtimeProvider.runtime?.readiness ?? {
       dependencies: resources,
-      condition: provider.readiness?.condition ?? 'Ready',
-      timeoutSeconds: provider.readiness?.timeoutSeconds ?? 300,
+      condition: runtimeProvider.readiness?.condition ?? 'Ready',
+      timeoutSeconds: runtimeProvider.readiness?.timeoutSeconds ?? 300,
     },
+  };
+}
+
+/**
+ * A profile may replace the database implementation, but generated workloads
+ * have one immutable connection contract. Require every branch to preserve
+ * that logical database/Secret identity and use the declared default branch
+ * as the concrete runtime descriptor.
+ */
+function applicationTransactionalDatabaseRuntimeProvider(
+  provider: ApplicationTransactionalDatabaseProvider,
+  modelName: string,
+): ApplicationTransactionalDatabaseProvider {
+  const selection =
+    applicationProviderSelectionFor<ApplicationTransactionalDatabaseProvider>(
+      provider,
+    );
+  if (!selection) return provider;
+  const branches = [
+    ...Object.entries(selection.cases),
+    ['default', selection.default] as const,
+  ];
+  const identities = branches.map(([variant, branch]) => ({
+    variant,
+    identity: applicationTransactionalDatabaseRuntimeIdentity(
+      branch,
+      modelName,
+    ),
+  }));
+  const expected = identities[0];
+  const mismatch = identities.find(
+    (candidate) =>
+      JSON.stringify(candidate.identity) !== JSON.stringify(expected?.identity),
+  );
+  if (expected && mismatch) {
+    throw new Error(
+      `Profile-selected TransactionalDatabase for model ${modelName} changes its generated workload connection between ${expected.variant} and ${mismatch.variant}. Keep clusterName, database, connectionSecret name/namespace, and connectionSecretKey stable across profile branches.`,
+    );
+  }
+  return selection.default;
+}
+
+function applicationTransactionalDatabaseRuntimeIdentity(
+  provider: ApplicationTransactionalDatabaseProvider,
+  modelName: string,
+): Readonly<Record<string, string>> {
+  const clusterName =
+    provider.clusterName
+    ?? provider.name
+    ?? provider.cluster?.name
+    ?? `${kubernetesNameSegment(modelName)}-db`;
+  const secret = provider.connectionSecret ?? {
+    apiVersion: 'v1',
+    kind: 'Secret',
+    name: `${clusterName}-app`,
+    ...(provider.namespace ? { namespace: provider.namespace } : {}),
+  };
+  return {
+    clusterName,
+    database: provider.database ?? kubernetesNameSegment(modelName),
+    secretName: secret.name ?? `${clusterName}-app`,
+    secretNamespace: secret.namespace ?? provider.namespace ?? '',
+    secretKey: provider.connectionSecretKey ?? 'uri',
   };
 }
 

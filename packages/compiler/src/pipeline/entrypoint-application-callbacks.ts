@@ -37,11 +37,19 @@ export function decorateApplicationCallbackArguments(node: ts.CallExpression, fi
     });
   }
   const registrar = node.expression.name.text;
-  if (registrar === 'task' || registrar === 'workflow' || registrar === 'process') {
+  if (registrar === 'task' || registrar === 'workflow' || registrar === 'process' || registrar === 'agent') {
     return node.arguments.map((argument, index) => {
       // typecast: the TypeScript visitor preserves expression arguments while recursively instrumenting their children.
       const visited = ts.visitNode(argument, visit) as ts.Expression;
-      return index === 2 ? decorateApplicationCallbackExpression(visited, file, sourceFile, registrar === 'process' ? 'stream.process' : registrar, 'handler') : visited;
+      return index === 2
+        ? decorateApplicationCallbackExpression(
+            visited,
+            file,
+            sourceFile,
+            registrar === 'process' ? 'stream.process' : registrar,
+            'handler',
+          )
+        : visited;
     });
   }
   const properties = applicationCallbackProperties[registrar];

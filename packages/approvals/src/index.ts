@@ -1,5 +1,6 @@
 import type {
   ApplicationDatabaseBinding,
+  ApplicationProcessorOptions,
   KubernetesApplicationBuilder,
 } from '@applik8s/applik8s';
 import { relations } from 'drizzle-orm';
@@ -122,6 +123,7 @@ export const applicationApprovalSchema = Object.freeze({
 
 export interface ApplicationApprovalsModuleOptions {
   readonly database?: ApplicationDatabaseBinding;
+  readonly processor?: ApplicationProcessorOptions;
 }
 
 /**
@@ -133,9 +135,10 @@ export function approvals(
   application: Pick<KubernetesApplicationBuilder, 'model'>,
   options: ApplicationApprovalsModuleOptions = {},
 ) {
-  const modelOptions = options.database
-    ? { database: options.database }
-    : undefined;
+  const modelOptions = {
+    ...(options.database ? { database: options.database } : {}),
+    ...(options.processor ? { processor: options.processor } : {}),
+  };
   const ApprovalReview = application.model(applicationApprovalReviews, {
     ...modelOptions,
     name: 'ApprovalReview',

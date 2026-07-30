@@ -215,6 +215,13 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generatedSource).toContain('commandGateway.invoke({ operationId: operation.id');
     expect(generatedSource).not.toContain('authorization: request.headers');
     expect(generatedSource).toContain('operationAuthority.admitPrincipal');
+    expect(generatedSource).toContain(
+      'async function prepareOperationAuthority()',
+    );
+    expect(generatedSource).toContain('prepareOperationAuthority(),');
+    expect(generatedSource).not.toContain(
+      '});\nawait operationAuthority.prepare();',
+    );
     expect(generatedSource).toContain('verifyIdentityReadiness()');
     expect(generatedSource).toContain('verifyAuthorizationReadiness()');
     expect(generatedSource).toContain("from './identity-readiness.generated.js'");

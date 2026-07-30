@@ -155,7 +155,7 @@ async function sqlFiles(root: string): Promise<string[]> {
 
 function frameworkMigrationSql(models: readonly ApplicationModelNode[]): string {
   const statements = [
-    ...applicationAuthorityPostgresSchemaStatements,
+    ...applicationAuthorityPostgresSchemaStatements.map((statement) => `${statement.trimEnd()};`),
     'CREATE TABLE IF NOT EXISTS applik8s_command_admissions (scope text PRIMARY KEY, command text NOT NULL, binding_id text NOT NULL, command_id text NOT NULL, authorization_receipt jsonb NOT NULL, admitted_at timestamptz NOT NULL DEFAULT now());',
     'CREATE INDEX IF NOT EXISTS applik8s_command_admissions_cleanup ON applik8s_command_admissions (binding_id, admitted_at);',
     'CREATE TABLE IF NOT EXISTS applik8s_command_inbox (scope text PRIMARY KEY, binding_id text NOT NULL, model text NOT NULL, target_key text NOT NULL, idempotency_key text NOT NULL, message_id text NOT NULL, input jsonb NOT NULL, authorization_receipt jsonb, received_at timestamptz NOT NULL DEFAULT now());',

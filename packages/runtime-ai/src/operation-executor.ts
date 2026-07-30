@@ -12,10 +12,10 @@ import {
   applicationInternalOperationInputDigest,
   encodeApplicationInternalOperationInvocation,
 } from '@applik8s/operations';
-import type { ApplicationAIToolProposalRecord } from './contracts.js';
+import type { ApplicationAIToolProposalRecord } from '@applik8s/ai';
 import type {
   ApplicationAIToolProposalInput,
-} from './runtime.js';
+} from '@applik8s/ai';
 
 export interface ApplicationAIOperationDispatch {
   dispatch(input: {

@@ -252,7 +252,6 @@ const operationAuthority = createApplicationOperationAuthorityRuntime({
   catalog: ${JSON.stringify(contract.operationCatalog)},
   ${contract.authorityManifest ? `authorityManifest: ${JSON.stringify(contract.authorityManifest)},` : ''}
 });
-await operationAuthority.prepare();
 
 const bindings = [
 ${bindingSources}
@@ -278,6 +277,7 @@ async function retryStartup(dependency, operation, timeoutMs = 600_000) {
   }
 }
 
+await retryStartup('PostgreSQL operation authority', () => operationAuthority.prepare());
 await retryStartup('PostgreSQL', () => observePostgresOutboxLag(process.env.DATABASE_URL));
 const eventLog = await retryStartup('JetStream event log', async () => {
   const candidate = createJetStreamEventLog({

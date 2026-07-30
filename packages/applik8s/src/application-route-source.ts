@@ -298,12 +298,15 @@ export function extractApplicationCallObjectFunctionSource(methodName: string, a
   Error.stackTraceLimit = Math.max(previousStackTraceLimit, 50);
   const stack = new Error().stack;
   Error.stackTraceLimit = previousStackTraceLimit;
-  for (const location of applicationRouteCallsiteLocations(stack)) {
+  const locations = applicationRouteCallsiteLocations(stack);
+  if (locations.length === 0) debugRouteSourceExtraction(`no ${methodName}.${property} callsite location`);
+  for (const location of locations) {
     try {
       const fileSource = readFileSync(location.file, 'utf8');
       const objectSource = callArgumentRawAtLocation(fileSource, location, methodName, argumentIndex);
       const expression = objectSource ? objectLiteralFunctionProperty(objectSource, property) : undefined;
       if (expression) return { source: transpileApplicationCallbackExpression(expression), location };
+      debugRouteSourceExtraction(`no ${methodName}.${property} expression at ${location.file}:${location.line}:${location.column}`);
     } catch (error) {
       debugRouteSourceExtraction(error instanceof Error ? error.message : String(error));
     }
@@ -1043,6 +1046,31 @@ function callArgumentsAtLocation(source: string, location: ApplicationRouteSourc
 }
 
 function objectLiteralFunctionProperty(source: string, property: string): string | undefined {
+  const path = property.split('.');
+  if (path.some((segment) => !/^[$A-Z_a-z][$\w]*$/.test(segment))) return undefined;
+  let owner = source;
+  for (const segment of path.slice(0, -1)) {
+    const nested = objectLiteralPropertyValue(owner, segment);
+    if (!nested) return undefined;
+    owner = nested;
+  }
+  return objectLiteralDirectFunctionProperty(owner, path.at(-1) ?? '');
+}
+
+function objectLiteralPropertyValue(source: string, property: string): string | undefined {
+  const trimmed = source.trim();
+  if (!trimmed.startsWith('{')) return undefined;
+  const close = matchingDelimiter(trimmed, 0, '{', '}');
+  if (close === undefined) return undefined;
+  for (const entry of splitTopLevelArguments(trimmed.slice(1, close))) {
+    const candidate = entry.trim();
+    const assignment = candidate.match(new RegExp(`^(?:['"]${escapeRegExp(property)}['"]|${escapeRegExp(property)})\\s*:\\s*([\\s\\S]+)$`));
+    if (assignment?.[1]) return assignment[1].trim();
+  }
+  return undefined;
+}
+
+function objectLiteralDirectFunctionProperty(source: string, property: string): string | undefined {
   const trimmed = source.trim();
   if (!trimmed.startsWith('{')) return undefined;
   const close = matchingDelimiter(trimmed, 0, '{', '}');

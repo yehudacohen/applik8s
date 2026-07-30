@@ -314,6 +314,8 @@ async function applicationArtifactRequirements(
     ["processors", "processor"],
     ["workflows", "workflow"],
     ["reactive", "reactive"],
+    ["mcp", "mcp"],
+    ["agents", "agent"],
   ] as const) {
     for (const entryValue of arrayValue(spec[collection])) {
       const entry = objectValue(entryValue, `${collection} bundle entry`);

@@ -4,6 +4,7 @@ import { entity, type } from '@applik8s/applik8s/dsl';
 import { canonicalApplicationCommandKey } from '@applik8s/applik8s/processor-runtime';
 import { validateApplicationGraphStructure } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 
 const AccountEntity = entity('Account', {
   spec: type({ tenant: 'string', email: 'string', displayName: 'string' }),
@@ -255,6 +256,36 @@ describe('v0.4 application behavior contracts', () => {
       expect.objectContaining({ role: 'policy', resource: expect.objectContaining({ kind: 'NetworkPolicy', name: 'account-commands' }) }),
       expect.objectContaining({ resource: expect.objectContaining({ kind: 'Stream', name: 'applik8s-events' }) }),
     ]) });
+    const managedDefinition = parse(
+      managed.composition.factory('kro').toYaml(),
+    ) as {
+      readonly spec?: {
+        readonly resources?: readonly {
+          readonly template?: {
+            readonly kind?: string;
+            readonly metadata?: { readonly name?: string };
+            readonly spec?: { readonly values?: unknown };
+          };
+        }[];
+      };
+    };
+    const natsRelease = managedDefinition.spec?.resources?.find(
+      (resource) =>
+        resource.template?.kind === 'HelmRelease'
+        && resource.template.metadata?.name === 'applik8s-events',
+    );
+    expect(natsRelease?.template?.spec?.values).toMatchObject({
+      statefulSet: {
+        merge: {
+          spec: {
+            persistentVolumeClaimRetentionPolicy: {
+              whenDeleted: 'Retain',
+              whenScaled: 'Retain',
+            },
+          },
+        },
+      },
+    });
 
     const external = app('external-stream-platform');
     external.provide(EventLog, { kind: 'nats-jetstream', name: 'external-events', provision: false, servers: ['nats://external-events.messaging.svc:4222'] });

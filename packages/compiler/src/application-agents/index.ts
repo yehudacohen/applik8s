@@ -345,9 +345,9 @@ function generatedAgentSource(contract: ApplicationAgentCompilerContract): strin
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import postgres from 'postgres';
-import { createApplicationAIAttemptRuntime, createApplicationAIOperationExecutor } from '@applik8s/ai';
+import { createApplicationAIAttemptRuntime } from '@applik8s/ai';
 import { createApplicationOperationAuthorityRuntime, decodeApplicationExecutionAdmission } from '@applik8s/operations';
-import { createApplicationAIAgentRequestHandler, createPostgresApplicationAIAttemptStore } from '@applik8s/runtime-ai';
+import { createApplicationAIAgentRequestHandler, createApplicationAIOperationExecutor, createPostgresApplicationAIAttemptStore } from '@applik8s/runtime-ai';
 import { callback as handler } from './handler.generated.js';
 ${contract.agent.instructions.kind === 'closure'
     ? "import { callback as instructions } from './instructions.generated.js';"
@@ -391,7 +391,6 @@ const sql = postgres(requiredEnv(${JSON.stringify(contract.state.connectionEnvNa
   prepare: false,
 });
 const attemptStore = createPostgresApplicationAIAttemptStore({ sql });
-await attemptStore.prepare();
 const attemptRuntime = createApplicationAIAttemptRuntime({ store: attemptStore });
 const operationAuthority = createApplicationOperationAuthorityRuntime({
   sql,
@@ -399,7 +398,6 @@ const operationAuthority = createApplicationOperationAuthorityRuntime({
   catalog: ${JSON.stringify(contract.operationCatalog)},
   ${applicationStaticAuthorityManifest(contract.graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(contract.graph))},` : ''}
 });
-await operationAuthority.prepare();
 const placementRoutes = new Map([${routeEntries}]);
 const invokeOperation = createApplicationAIOperationExecutor({
   authority: operationAuthority,
@@ -619,8 +617,71 @@ const handle = createApplicationAIAgentRequestHandler({
     }),
   handler,
 });
+let ready = false;
+let stopping = false;
+let lastDependencyError;
+const initializationController = new AbortController();
+async function initializeDependencies() {
+  let attempt = 0;
+  let delayMs = 250;
+  while (!stopping) {
+    attempt += 1;
+    try {
+      await attemptStore.prepare();
+      await operationAuthority.prepare();
+      ready = true;
+      lastDependencyError = undefined;
+      return;
+    } catch (error) {
+      ready = false;
+      lastDependencyError = error instanceof Error
+        ? error.message
+        : 'Application agent dependency initialization failed.';
+      console.error(JSON.stringify({
+        event: 'applik8s-agent-startup-wait',
+        agent: contract.name,
+        attempt,
+        error: lastDependencyError,
+      }));
+      await abortableSleep(delayMs, initializationController.signal);
+      delayMs = Math.min(5_000, delayMs * 2);
+    }
+  }
+}
+function abortableSleep(ms, signal) {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolveSleep) => {
+    const timeout = setTimeout(done, ms);
+    const abort = () => done();
+    function done() {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', abort);
+      resolveSleep();
+    }
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? '/', 'http://' + (request.headers.host ?? 'localhost'));
+  if (request.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/readyz')) {
+    const healthy = url.pathname === '/healthz' || (ready && !stopping);
+    response.writeHead(healthy ? 200 : 503, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({
+      live: true,
+      ready,
+      stopping,
+      ...(lastDependencyError ? { lastDependencyError } : {}),
+    }));
+    return;
+  }
+  if (!ready || stopping) {
+    response.writeHead(503, {
+      'content-type': 'application/json',
+      'retry-after': '1',
+    });
+    response.end(JSON.stringify({ error: 'agent_dependencies_unavailable' }));
+    return;
+  }
   const body = request.method === 'GET' || request.method === 'HEAD'
     ? undefined
     : request;
@@ -638,12 +699,15 @@ const server = createServer(async (request, response) => {
   for await (const chunk of result.body) response.write(chunk);
   response.end();
 });
-let stopping = false;
 server.listen(contract.deployment.port, '0.0.0.0');
+const initializationTask = initializeDependencies();
 async function shutdown() {
   if (stopping) return;
   stopping = true;
+  ready = false;
+  initializationController.abort();
   await new Promise((resolveShutdown) => server.close(resolveShutdown));
+  await initializationTask;
   await sql.end({ timeout: 5 });
 }
 process.once('SIGTERM', () => { void shutdown(); });

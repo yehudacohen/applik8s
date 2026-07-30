@@ -4,6 +4,7 @@
 
 export * from './postgres-attempt-store.js';
 export * from './agent-gateway.js';
+export * from './operation-executor.js';
 
 import type {
   ApplicationAIAgentHandler,

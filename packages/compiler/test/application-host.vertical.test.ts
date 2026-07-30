@@ -162,6 +162,58 @@ describe('generated ApplicationHost', () => {
       ]) })] } } },
     });
   });
+
+  it('injects the internal-operation authority into an agentic application host', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-host-agentic-'));
+    await mkdir(join(root, '.applik8s/web-artifacts'), { recursive: true });
+    await mkdir(join(root, 'dist/server/server'), { recursive: true });
+    const source = 'console.log("agentic");\n';
+    await writeFile(join(root, 'dist/server/server/index.mjs'), source);
+    await writeFile(join(root, '.applik8s/web-artifacts/server.json'), JSON.stringify({
+      apiVersion: 'applik8s.webArtifact/v1alpha1',
+      application: 'src/application.ts',
+      output: 'dist/server',
+      target: 'server',
+      digest: `sha256:${'e'.repeat(64)}`,
+      entrypoint: 'server/index.mjs',
+      artifacts: [{
+        path: 'server/index.mjs',
+        bytes: source.length,
+        digest: createHash('sha256').update(source).digest('hex'),
+      }],
+    }));
+    const base = hostGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: 'aiAgent.researcher',
+          kind: 'aiAgent',
+          name: 'researcher',
+          stability: 'stable',
+        } as unknown as ApplicationGraph['nodes'][number],
+      ],
+    };
+    const resources = await emitGeneratedApplicationHost({
+      graph,
+      entrypoint: join(root, 'src/application.ts'),
+      outDir: join(root, 'host'),
+    });
+    expect(resources.find((resource) => resource.kind === 'Deployment')).toMatchObject({
+      spec: { template: { spec: { containers: [expect.objectContaining({
+        env: expect.arrayContaining([{
+          name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
+          valueFrom: {
+            secretKeyRef: {
+              name: 'guestbook-internal-operation',
+              key: 'key',
+            },
+          },
+        }]),
+      })] } } },
+    });
+  });
 });
 
 function hostGraph(nodePort = false, objects = false, objectStorageEnabled: boolean | string = true): ApplicationGraph {

@@ -32,6 +32,12 @@ describe("compiler deployment graph emission", () => {
       bundlePath,
       JSON.stringify({
         spec: {
+          agents: [
+            generatedContainerEntry("researcher", "agent"),
+          ],
+          mcp: [
+            generatedContainerEntry("tools", "mcp"),
+          ],
           operators: [
             {
               name: "notes-operator",
@@ -105,25 +111,19 @@ describe("compiler deployment graph emission", () => {
     const second = await emitApplicationDeploymentGraph(request);
 
     expect(validateApplicationDeploymentGraph(first.graph).valid).toBe(true);
-    expect(first.artifactCount).toBe(1);
+    expect(first.artifactCount).toBe(3);
     expect(first.digest).toBe(second.digest);
     expect(first.digest).toBe(digestApplicationDeploymentGraph(first.graph));
     expect(first.graph.nodes.map(({ id }) => id)).toEqual([
+      "artifact.agent.researcher",
+      "artifact.mcp.tools",
       "artifact.operator.notes-operator",
-      "direct.namespace.control-plane",
       "direct.namespace.workload",
       "kubernetes.application",
     ]);
     expect(
       first.graph.nodes.filter((node) => node.kind === "kubernetesDirect"),
     ).toMatchObject([
-      {
-        id: "direct.namespace.control-plane",
-        spec: {
-          compositionId: "applik8s-namespace",
-          configuration: { name: "applik8s-system" },
-        },
-      },
       {
         id: "direct.namespace.workload",
         spec: {
@@ -167,6 +167,21 @@ function applicationGraph(): ApplicationGraph {
       experimentalSurfaces: [],
       postV3Surfaces: [],
       labels: [],
+    },
+  };
+}
+
+function generatedContainerEntry(name: string, role: string) {
+  return {
+    name,
+    digest: artifactDigest,
+    container: {
+      image: `${role}:sha-source`,
+      sourceDigest: artifactDigest,
+      contextPath: `./generated/${role}`,
+      dockerfilePath: `./generated/${role}/Dockerfile`,
+      baseImage: "node:22.22.0-slim",
+      command: ["node", `/app/${role}.mjs`],
     },
   };
 }

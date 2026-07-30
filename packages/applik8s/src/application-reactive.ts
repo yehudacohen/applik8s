@@ -693,7 +693,7 @@ export function registerApplicationGateway(state: ApplicationReactiveState, name
   // typecast: generated authentication receives the standard Request boundary and returns the declared gateway identity contract.
   const authentication = deployment
     ? deployment.authenticate
-      ? serializeApplicationCallback({ registrar: 'gateway', argumentIndex: 1, property: 'authenticate', label: `Application gateway ${name} authentication`, callback: deployment.authenticate as (...args: never[]) => unknown, allowDeferredResolution: true })
+      ? serializeApplicationCallback({ registrar: 'gateway', argumentIndex: 1, property: 'deployment.authenticate', label: `Application gateway ${name} authentication`, callback: deployment.authenticate as (...args: never[]) => unknown, allowDeferredResolution: true })
       : applicationIdentityAuthentication(state, name)
     : undefined;
   const identityProvider = state.providers.extensions?.['IdentityProvider@v1alpha1'];

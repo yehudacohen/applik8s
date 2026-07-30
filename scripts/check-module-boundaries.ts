@@ -26,7 +26,7 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/runtime-ai/src'],
-    forbidden: [/^@applik8s\/(?!ai(?:\/|$)|ai-tanstack(?:\/|$)|client(?:\/|$)|core(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    forbidden: [/^@applik8s\/(?!ai(?:\/|$)|ai-tanstack(?:\/|$)|client(?:\/|$)|core(?:\/|$)|operations(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
     rationale: 'The AI execution runtime may join AI, TanStack, operation, and authority contracts but must remain independent of infrastructure and deployment implementations.',
   },
   {

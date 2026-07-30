@@ -63,7 +63,9 @@ export function emitApplicationEventLogResources(
         },
       },
       natsBox: { enabled: true },
-      statefulSet: { merge: { persistentVolumeClaimRetentionPolicy: { whenDeleted: 'Retain', whenScaled: 'Retain' } } },
+      // The NATS chart merges this object at the StatefulSet root. Kubernetes
+      // owns persistentVolumeClaimRetentionPolicy under StatefulSet.spec.
+      statefulSet: { merge: { spec: { persistentVolumeClaimRetentionPolicy: { whenDeleted: 'Retain', whenScaled: 'Retain' } } } },
     },
   });
   natsHelmRelease({

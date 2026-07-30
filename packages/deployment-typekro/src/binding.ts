@@ -122,6 +122,14 @@ export interface TypeKroPlannableComposition<TSpec extends KroCompatibleType> {
       spec: TSpec,
       options?: { readonly instanceNameOverride?: string },
     ): Promise<AlchemyResourceDeclaration[]>;
+    deleteInstance?(
+      name: string,
+      options?: { readonly timeout?: number },
+    ): Promise<{
+      readonly status: string;
+      readonly blockers: readonly { readonly message: string }[];
+    }>;
+    dispose?(): Promise<void>;
   };
 }
 
