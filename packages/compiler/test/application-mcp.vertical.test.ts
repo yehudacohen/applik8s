@@ -1,8 +1,12 @@
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type {
   ApplicationGraph,
   ApplicationOperationCatalog,
 } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
+import { emitGeneratedApplicationMcpServers } from '../src/application-mcp/emitter.js';
 import { compileApplicationMcpPlacementRoutes } from '../src/application-mcp/index.js';
 
 const operationId = 'applik8s://models/Post/operations/create' as const;
@@ -54,6 +58,117 @@ function fixture(options: {
     kind: 'ApplicationGraph',
     metadata: { name: 'chirp', namespace: 'chirp-system' },
     nodes: [
+      {
+        id: 'provider.identity-provider',
+        kind: 'provider',
+        name: 'IdentityProvider',
+        stability: 'stable',
+        interface: 'IdentityProvider',
+        implementation: 'identity-provider',
+        config: {
+          identityInfrastructure: {
+            kind: 'ory',
+            stack: 'platform',
+            provision: true,
+            spec: { name: 'chirp-identity', namespace: 'chirp-system' },
+            deletionPolicy: 'retain',
+          },
+        },
+      },
+      {
+        id: 'model.post',
+        kind: 'model',
+        name: 'Post',
+        stability: 'stable',
+        entity: { name: 'Post' },
+        database: {
+          interface: 'TransactionalDatabase',
+          nodeId: 'provider.transactional-database',
+        },
+        schema: {
+          identity: ['id'],
+          constraints: [],
+          indexes: [],
+          migrations: {
+            strategy: 'generatedJob',
+            compatibility: 'requiresExplicitMigration',
+          },
+          transactions: 'required',
+        },
+        materialization: {
+          mode: 'providerBacked',
+          provider: {
+            interface: 'TransactionalDatabase',
+            nodeId: 'provider.transactional-database',
+          },
+          backingResources: [],
+          connection: {},
+          runtimeBoundary: {
+            serializedCallbacks: 'generatedRuntimeClient',
+            scriptExecution: 'scriptRuntimeClient',
+          },
+          reconciliation: {
+            ownership: 'application',
+            schemaDrift: 'failClosed',
+            deletionPolicy: 'retain',
+          },
+        },
+        runtime: {
+          name: 'Post',
+          tableName: 'posts',
+          provider: 'postgres',
+          database: 'application',
+          clusterName: 'chirp-db',
+          secretName: 'chirp-db-app',
+          secretKey: 'uri',
+          secretNamespace: 'chirp-system',
+          connectionEnvName: 'APPLIK8S_DATABASE_APPLICATION_URL',
+          constraints: [],
+          indexes: [],
+          retention: { mode: 'retain' },
+        },
+      },
+      {
+        id: 'commandHandler.post-create',
+        kind: 'commandHandler',
+        name: 'Post-posts.create.v1',
+        stability: 'stable',
+        model: { nodeId: 'model.post' },
+        command: { nodeId: 'command.posts.create.v1' },
+        key: { kind: 'field', source: 'input.id' },
+        ordering: 'serial',
+        missing: 'reject',
+        transaction: { models: [{ nodeId: 'model.post' }], history: [], outbox: [] },
+        retry: {
+          mode: 'boundedExponentialBackoff',
+          maxAttempts: 3,
+          initialDelayMs: 100,
+          maxDelayMs: 1_000,
+        },
+        retention: {
+          replayWindowSeconds: 3_600,
+          auditWindowSeconds: 7_200,
+          publishedOutboxWindowSeconds: 3_600,
+          cleanupIntervalSeconds: 60,
+          cleanupBatchSize: 100,
+        },
+        effectBoundary: 'transactionSafeOnly',
+        effectEnforcement: {
+          sourceAnalysis: 'closedStructuralAllowlist',
+          runtimeMembrane: 'asyncContextAmbientIo',
+          externalEffects: 'outboxOrTaskOnly',
+        },
+        handlerSource: 'async () => ({ created: true })',
+        projectionReadiness: {
+          submissionAcknowledgement: 'transportOnly',
+          durableResultAuthority: 'postgresCommandResults',
+          duplicateRecovery: 'idempotentRedelivery',
+          correlation: 'commandCorrelationCausation',
+          resultRevisionAuthority: 'postgresCommandResults',
+          stateRevisionAuthority: 'modelRevision',
+          reconciliationLink: 'modelRevisionWhenPresent',
+        },
+      },
       gateway('gateway.social', 'social'),
       ...(options.secondGateway
         ? [gateway('gateway.other', 'other')]
@@ -196,5 +311,50 @@ describe('application MCP placement routing', () => {
 
     expect(() => compileApplicationMcpPlacementRoutes(graph, catalog))
       .toThrow(/ambiguous receivers.+gateway.other, gateway.social/);
+  });
+
+  it('emits a durable OAuth-protected MCP workload without copying operation handlers', async () => {
+    const { graph, catalog } = fixture();
+    const [artifact] = await emitGeneratedApplicationMcpServers({
+      graph,
+      operationCatalog: catalog,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-mcp-artifact-')),
+    });
+    if (!artifact) throw new Error('Expected one generated MCP artifact.');
+    const generated = await readFile(
+      join(dirname(artifact.sourcePath), 'mcp.generated.ts'),
+      'utf8',
+    );
+    const deployment = artifact.resources.find(
+      (resource) => resource.kind === 'Deployment',
+    );
+
+    expect(artifact).toMatchObject({
+      name: 'chirp-public-mcp',
+      serverId: 'mcpServer.public',
+      container: {
+        entrypoint: '/app/runtime.mjs',
+        baseImage: expect.stringContaining('node:22-alpine@sha256:'),
+      },
+    });
+    expect(artifact.resources.map((resource) => resource.kind)).toEqual([
+      'Deployment',
+      'Service',
+      'NetworkPolicy',
+      'PodDisruptionBudget',
+    ]);
+    expect(generated).toContain('createPostgresApplicationMcpStores');
+    expect(generated).toContain('createApplicationOAuthResourceAdmission');
+    expect(generated).toContain('OryHydraOAuthAdapter');
+    expect(generated).toContain('createApplicationMcpPlacementExecutor');
+    expect(generated).toContain('x-applik8s-internal-invocation');
+    expect(generated).not.toContain('created: true');
+    expect(generated).not.toContain('Authorization:');
+    expect(JSON.stringify(deployment)).toContain(
+      'APPLIK8S_INTERNAL_OPERATION_SECRET',
+    );
+    expect(JSON.stringify(deployment)).toContain(
+      'http://chirp-identity-hydra-admin.chirp-system.svc:4445',
+    );
   });
 });

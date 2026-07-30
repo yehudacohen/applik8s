@@ -14,6 +14,7 @@ export interface TypeKroEmissionPlanInput {
   readonly processors: readonly TypeKroEmissionResource[];
   readonly workflows: readonly TypeKroEmissionResource[];
   readonly reactive: readonly TypeKroEmissionResource[];
+  readonly mcp: readonly TypeKroEmissionResource[];
   readonly agents: readonly TypeKroEmissionResource[];
 }
 
@@ -27,13 +28,14 @@ export interface TypeKroEmissionPlan {
     readonly processors: number;
     readonly workflows: number;
     readonly reactive: number;
+    readonly mcp: number;
     readonly agents: number;
   };
 }
 
 /** Creates the deterministic lowering IR before any files or cluster-facing YAML are emitted. */
 export function planTypeKroEmission(input: TypeKroEmissionPlanInput): TypeKroEmissionPlan {
-  const ordered = [...input.factory, ...input.composition, ...input.migrations, ...input.processors, ...input.workflows, ...input.reactive, ...input.agents];
+  const ordered = [...input.factory, ...input.composition, ...input.migrations, ...input.processors, ...input.workflows, ...input.reactive, ...input.mcp, ...input.agents];
   const seen = new Set<string>();
   const resources: TypeKroEmissionResource[] = [];
   for (const [index, resource] of ordered.entries()) {
@@ -52,6 +54,7 @@ export function planTypeKroEmission(input: TypeKroEmissionPlanInput): TypeKroEmi
       processors: input.processors.length,
       workflows: input.workflows.length,
       reactive: input.reactive.length,
+      mcp: input.mcp.length,
       agents: input.agents.length,
     },
   };
