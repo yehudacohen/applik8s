@@ -7,6 +7,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { discoverApplicationGraph } from '@applik8s/compiler';
 import {
   type ApplicationStartCommand,
   createApplicationAgenticStart,
@@ -179,4 +180,64 @@ describe('Agentic Start generator', () => {
       },
     ]);
   });
+
+  it(
+    'emits an application entrypoint that the real compiler discovers as one graph',
+    async () => {
+      const temporaryRoot = join(process.cwd(), '.applik8s-tmp');
+      await mkdir(temporaryRoot, { recursive: true });
+      const parent = await mkdtemp(
+        join(temporaryRoot, 'agentic-start-discovery-'),
+      );
+      temporaryDirectories.push(parent);
+      const target = join(parent, 'research-workspace');
+
+      await createApplicationAgenticStart({
+        targetDirectory: target,
+        applik8sVersion: 'workspace:*',
+        install: false,
+        async run() {
+          await mkdir(join(target, 'src/routes'), { recursive: true });
+          await writeFile(
+            join(target, 'package.json'),
+            `${JSON.stringify({
+              dependencies: {
+                '@tanstack/react-start': '1.168.28',
+                '@tanstack/react-router': '1.168.28',
+              },
+            })}\n`,
+          );
+          await writeFile(
+            join(target, 'src/routes/index.tsx'),
+            'export const upstream = true;\n',
+          );
+        },
+      });
+
+      const result = await discoverApplicationGraph(
+        join(target, 'src/application.ts'),
+        'application',
+      );
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(
+        true,
+      );
+      if (!result.ok) return;
+      expect(result.value.metadata.name).toBe('research-workspace');
+      expect(
+        result.value.nodes
+          .filter((node) => node.kind === 'model')
+          .map((model) => model.name),
+      ).toContain(
+        'ResearchNote',
+      );
+      expect(
+        result.value.nodes
+          .filter((node) => node.kind === 'aiAgent')
+          .map((agent) => agent.name),
+      ).toContain(
+        'researcher',
+      );
+    },
+    30_000,
+  );
 });

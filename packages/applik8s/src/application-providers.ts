@@ -1,9 +1,9 @@
 // typecast-file-boundary: provider constructors validate structural runtime input before restoring provider-specific discriminated contracts.
 import type { ApplicationMigrationContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef } from '@applik8s/core';
 import type {
+  ApplicationDeterministicIdentityOptions,
   ApplicationOAuthAuthorizationFlowRecord,
   ApplicationOAuthProviderDecision,
-  ApplicationDeterministicIdentityOptions,
 } from '@applik8s/identity';
 import { createDeterministicApplicationAdmission } from '@applik8s/identity';
 import { Cel } from 'typekro';
@@ -799,20 +799,20 @@ export interface ApplicationDatabaseConstructors {
   readonly migrations: ApplicationTransactionalDatabaseProviderToken['migrations'];
 }
 
-export interface ApplicationCertificateProviderToken extends ApplicationProviderToken<ApplicationCertificateProvider> {
+export interface ApplicationCertificateProviderToken extends ApplicationQualifiableProviderToken<ApplicationCertificateProvider> {
   certManager(options: Omit<ApplicationCertManagerCertificateProvider, 'kind'>): ApplicationCertManagerCertificateProvider;
 }
 
-export interface ApplicationHttpExposureProviderToken extends ApplicationProviderToken<ApplicationHttpExposureProvider> {
+export interface ApplicationHttpExposureProviderToken extends ApplicationQualifiableProviderToken<ApplicationHttpExposureProvider> {
   ingress(options?: Omit<ApplicationIngressHttpExposureProvider, 'kind'>): ApplicationIngressHttpExposureProvider;
   nodePort(options: Omit<ApplicationNodePortHttpExposureProvider, 'kind'>): ApplicationNodePortHttpExposureProvider;
 }
 
-export interface ApplicationDnsPublicationProviderToken extends ApplicationProviderToken<ApplicationDnsPublicationProvider> {
+export interface ApplicationDnsPublicationProviderToken extends ApplicationQualifiableProviderToken<ApplicationDnsPublicationProvider> {
   externalDns(options?: Omit<ApplicationExternalDnsPublicationProvider, 'kind'>): ApplicationExternalDnsPublicationProvider;
 }
 
-export interface ApplicationWorkflowEngineProviderToken extends ApplicationProviderToken<ApplicationWorkflowEngineProvider> {
+export interface ApplicationWorkflowEngineProviderToken extends ApplicationQualifiableProviderToken<ApplicationWorkflowEngineProvider> {
   hatchet(options?: Omit<ApplicationHatchetWorkflowEngineProvider, 'kind'>): ApplicationHatchetWorkflowEngineProvider;
 }
 
@@ -827,7 +827,7 @@ export interface ApplicationAnalyticsConstructors {
   externalClickHouse(options: ApplicationExternalClickHouseOptions): ApplicationClickHouseAnalyticalDatabaseProvider;
 }
 
-export interface ApplicationContainerRegistryProviderToken extends ApplicationProviderToken<ApplicationContainerRegistryProvider> {
+export interface ApplicationContainerRegistryProviderToken extends ApplicationQualifiableProviderToken<ApplicationContainerRegistryProvider> {
   orbstack(): ApplicationOrbstackContainerRegistryProvider;
   oci(options: Omit<ApplicationOciContainerRegistryProvider, 'kind'>): ApplicationOciContainerRegistryProvider;
   harbor(options: ApplicationHarborContainerRegistryOptions): ApplicationHarborContainerRegistryProvider;
@@ -835,12 +835,12 @@ export interface ApplicationContainerRegistryProviderToken extends ApplicationPr
   nodePort(options: Omit<Extract<ApplicationContainerRegistryEndpoint, { readonly kind: 'kubernetes-node-port' }>, 'kind'>): ApplicationContainerRegistryEndpoint;
 }
 
-export interface ApplicationObjectStorageProviderToken extends ApplicationProviderToken<ApplicationObjectStorageProvider> {
+export interface ApplicationObjectStorageProviderToken extends ApplicationQualifiableProviderToken<ApplicationObjectStorageProvider> {
   s3(options: Omit<ApplicationS3ObjectStorageProvider, 'kind'>): ApplicationS3ObjectStorageProvider;
   configMap(options?: Omit<ApplicationKubernetesConfigMapObjectStorageProvider, 'kind'>): ApplicationKubernetesConfigMapObjectStorageProvider;
 }
 
-export interface ApplicationHostProviderToken extends ApplicationProviderToken<ApplicationHostProvider> {
+export interface ApplicationHostProviderToken extends ApplicationQualifiableProviderToken<ApplicationHostProvider> {
   kubernetes(options?: Omit<ApplicationKubernetesHostProvider, 'kind'>): ApplicationKubernetesHostProvider;
 }
 
@@ -860,7 +860,7 @@ export interface ApplicationOAuthAuthorizationServerProviderToken extends Applic
   ): ApplicationOAuthAuthorizationServerProvider;
 }
 
-export interface ApplicationAuthorizationProviderToken extends ApplicationProviderToken<ApplicationAuthorizationProvider> {
+export interface ApplicationAuthorizationProviderToken extends ApplicationQualifiableProviderToken<ApplicationAuthorizationProvider> {
   from(decide: ApplicationAuthorizationProvider['decide'], options?: { readonly ready?: NonNullable<ApplicationAuthorizationProvider['ready']> }): ApplicationAuthorizationProvider;
 }
 
@@ -889,7 +889,7 @@ export interface ApplicationProviderState {
   readonly providers: { indexes?: unknown; search?: unknown; database?: unknown; counters?: unknown; events?: unknown; eventLogs?: unknown; secrets?: unknown; queues?: unknown; objects?: unknown; expose?: unknown; certificates?: unknown; dns?: unknown; credentials?: unknown; analytics?: unknown; extensions?: Record<string, unknown> };
 }
 
-export interface ApplicationIndexStoreProviderToken extends ApplicationProviderToken<ApplicationIndexBackend | 'valkey'> {
+export interface ApplicationIndexStoreProviderToken extends ApplicationQualifiableProviderToken<ApplicationIndexBackend | 'valkey'> {
   valkey(options?: Omit<ApplicationValkeyIndexBackend, 'kind'>): ApplicationValkeyIndexBackend;
 }
 
@@ -908,14 +908,14 @@ export interface ApplicationSearchProviderToken
   ): ApplicationOpenSearchProvider;
 }
 
-export const IndexStore: ApplicationIndexStoreProviderToken = {
+export const IndexStore: ApplicationIndexStoreProviderToken = applicationQualifiableProviderToken({
   name: 'IndexStore',
   description: 'Default app-scoped index backend provider.',
   contract: builtInProviderContract('IndexStore', ['typedIndexes']),
   valkey(options = {}) {
     return { kind: 'valkey', ...options };
   },
-};
+});
 
 export const Search: ApplicationSearchProviderToken =
   applicationQualifiableProviderToken({
@@ -1059,37 +1059,37 @@ export const Database: ApplicationDatabaseConstructors = Object.freeze({
   migrations: TransactionalDatabase.migrations,
 });
 
-export const CounterStore: ApplicationProviderToken<ApplicationCounterStoreProvider> = {
+export const CounterStore: ApplicationQualifiableProviderToken<ApplicationCounterStoreProvider> = applicationQualifiableProviderToken({
   name: 'CounterStore',
   description: 'Default app-scoped counter backend provider.',
   contract: builtInProviderContract('CounterStore', ['atomicIncrement']),
-};
+});
 
-export const EventSource: ApplicationProviderToken<ApplicationEventSourceProvider> = {
+export const EventSource: ApplicationQualifiableProviderToken<ApplicationEventSourceProvider> = applicationQualifiableProviderToken({
   name: 'EventSource',
   description: 'Default app-scoped event source provider.',
   contract: builtInProviderContract('EventSource', ['watch']),
-};
+});
 
-export const EventLog: ApplicationProviderToken<ApplicationEventLogProvider> = {
+export const EventLog: ApplicationQualifiableProviderToken<ApplicationEventLogProvider> = applicationQualifiableProviderToken({
   name: 'EventLog',
   description: 'Durable app-scoped command and committed-event transport provider.',
   contract: builtInProviderContract('EventLog', ['atLeastOnce', 'stableMessageIds', 'replay']),
-};
+});
 
-export const Secret: ApplicationProviderToken<ApplicationSecretProvider> = {
+export const Secret: ApplicationQualifiableProviderToken<ApplicationSecretProvider> = applicationQualifiableProviderToken({
   name: 'Secret',
   description: 'Default app-scoped secret material provider.',
   contract: builtInProviderContract('Secret', ['secretReferences']),
-};
+});
 
-export const Queue: ApplicationProviderToken<ApplicationQueueProvider> = {
+export const Queue: ApplicationQualifiableProviderToken<ApplicationQueueProvider> = applicationQualifiableProviderToken({
   name: 'Queue',
   description: 'Default app-scoped queue provider.',
   contract: builtInProviderContract('Queue', ['boundedDelivery']),
-};
+});
 
-export const ObjectStorage: ApplicationObjectStorageProviderToken = {
+export const ObjectStorage: ApplicationObjectStorageProviderToken = applicationQualifiableProviderToken({
   name: 'ObjectStorage',
   description: 'Default app-scoped object storage provider.',
   contract: builtInProviderContract('ObjectStorage', ['objectReadWrite', 'boundedObjects', 'serverOnlyCredentials']),
@@ -1112,9 +1112,9 @@ export const ObjectStorage: ApplicationObjectStorageProviderToken = {
   configMap(options = {}) {
     return { kind: 'kubernetes-configmap-objects', ...options };
   },
-};
+});
 
-export const HttpExposure: ApplicationHttpExposureProviderToken = {
+export const HttpExposure: ApplicationHttpExposureProviderToken = applicationQualifiableProviderToken({
   name: 'HttpExposure',
   description: 'Default app-scoped HTTP exposure provider.',
   contract: builtInProviderContract('HttpExposure', ['httpRouting']),
@@ -1128,33 +1128,33 @@ export const HttpExposure: ApplicationHttpExposureProviderToken = {
     }
     return { kind: 'node-port', ...options };
   },
-};
+});
 
-export const Certificate: ApplicationCertificateProviderToken = {
+export const Certificate: ApplicationCertificateProviderToken = applicationQualifiableProviderToken({
   name: 'Certificate',
   description: 'Managed TLS certificate provider for public application exposure.',
   contract: builtInProviderContract('Certificate', ['managedCertificate']),
   certManager(options) {
     return { kind: 'cert-manager', ...options };
   },
-};
+});
 
-export const DnsPublication: ApplicationDnsPublicationProviderToken = {
+export const DnsPublication: ApplicationDnsPublicationProviderToken = applicationQualifiableProviderToken({
   name: 'DnsPublication',
   description: 'Managed DNS publication provider for public application exposure.',
   contract: builtInProviderContract('DnsPublication', ['dnsPublication']),
   externalDns(options = {}) {
     return { kind: 'external-dns', ...options };
   },
-};
+});
 
-export const CredentialStore: ApplicationProviderToken<ApplicationCredentialStoreProvider> = {
+export const CredentialStore: ApplicationQualifiableProviderToken<ApplicationCredentialStoreProvider> = applicationQualifiableProviderToken({
   name: 'CredentialStore',
   description: 'Default app-scoped credential storage provider.',
   contract: builtInProviderContract('CredentialStore', ['credentialReferences']),
-};
+});
 
-export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = {
+export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = applicationQualifiableProviderToken({
   name: 'WorkflowEngine',
   description: 'Provider-neutral durable task and workflow execution engine.',
   contract: {
@@ -1168,7 +1168,7 @@ export const WorkflowEngine: ApplicationWorkflowEngineProviderToken = {
   hatchet(options = {}) {
     return { kind: 'hatchet', ...options };
   },
-};
+});
 
 export const AnalyticalDatabase: ApplicationAnalyticalDatabaseProviderToken = applicationQualifiableProviderToken({
   name: 'AnalyticalDatabase',
@@ -1248,7 +1248,7 @@ export const Analytics: ApplicationAnalyticsConstructors = Object.freeze({
   },
 });
 
-export const ContainerRegistry: ApplicationContainerRegistryProviderToken = {
+export const ContainerRegistry: ApplicationContainerRegistryProviderToken = applicationQualifiableProviderToken({
   name: 'ContainerRegistry',
   description: 'Provider-neutral publication and immutable resolution of generated OCI workloads.',
   contract: builtInProviderContract('ContainerRegistry', [
@@ -1322,9 +1322,9 @@ export const ContainerRegistry: ApplicationContainerRegistryProviderToken = {
     }
     return { kind: 'kubernetes-node-port', ...options };
   },
-};
+});
 
-export const ApplicationHost: ApplicationHostProviderToken = {
+export const ApplicationHost: ApplicationHostProviderToken = applicationQualifiableProviderToken({
   name: 'ApplicationHost',
   description: 'Immutable application artifact hosting and runtime lifecycle.',
   contract: builtInProviderContract('ApplicationHost', ['immutableArtifact', 'readiness', 'gracefulShutdown', 'serviceDiscovery']),
@@ -1347,7 +1347,7 @@ export const ApplicationHost: ApplicationHostProviderToken = {
     }
     return { kind: 'kubernetes-application-host', ...options };
   },
-};
+});
 
 export const IdentityProvider: ApplicationIdentityProviderToken = applicationQualifiableProviderToken({
   name: 'IdentityProvider',
@@ -1384,7 +1384,7 @@ export const OAuthAuthorizationServer: ApplicationOAuthAuthorizationServerProvid
   },
 });
 
-export const Authorization: ApplicationAuthorizationProviderToken = {
+export const Authorization: ApplicationAuthorizationProviderToken = applicationQualifiableProviderToken({
   name: 'Authorization',
   description: 'Provider-neutral policy and relationship decisions that assist application-owned authorization rules.',
   contract: builtInProviderContract('Authorization', ['versionedDecisions', 'policyAssistance', 'failClosed']),
@@ -1393,7 +1393,7 @@ export const Authorization: ApplicationAuthorizationProviderToken = {
     if (options?.ready !== undefined && typeof options.ready !== 'function') throw new Error('Authorization.from({ ready }) must be a function.');
     return { kind: 'application-authorization', decide, ...(options?.ready ? { ready: options.ready } : {}) };
   },
-};
+});
 
 
 function builtInProviderContract(providerInterface: string, guarantees: readonly string[]): ApplicationTypedProviderContract {

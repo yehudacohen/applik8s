@@ -2,11 +2,26 @@
 import {
   AnalyticalDatabase,
   Analytics,
+  ApplicationHost,
+  Authorization,
   app,
   applicationGraphFor,
+  Certificate,
+  ContainerRegistry,
+  CounterStore,
+  CredentialStore,
   Database,
+  DnsPublication,
+  EventLog,
+  EventSource,
   event,
+  HttpExposure,
+  IndexStore,
+  ObjectStorage,
+  Queue,
+  Secret,
   TransactionalDatabase,
+  WorkflowEngine,
 } from '@applik8s/applik8s';
 import {
   type ApplicationProviderNode,
@@ -22,6 +37,46 @@ const Installation = type({
 });
 
 describe('application deployment profiles', () => {
+  it('qualifies every infrastructure capability used by exhaustive Start profiles', () => {
+    const qualified = [
+      IndexStore.named('search-cache'),
+      EventSource.named('events'),
+      EventLog.named('events'),
+      Secret.named('application-secrets'),
+      Queue.named('work'),
+      ObjectStorage.named('artifacts'),
+      HttpExposure.named('public-http'),
+      Certificate.named('public-tls'),
+      DnsPublication.named('public-dns'),
+      WorkflowEngine.named('workflows'),
+      ContainerRegistry.named('images'),
+      ApplicationHost.named('web'),
+      Authorization.named('authority-projection'),
+      CounterStore.named('usage-counters'),
+      CredentialStore.named('provider-credentials'),
+    ];
+
+    expect(
+      qualified.map((token) => token.qualification.key),
+    ).toEqual([
+      'IndexStore@v1alpha1:search-cache',
+      'EventSource@v1alpha1:events',
+      'EventLog@v1alpha1:events',
+      'Secret@v1alpha1:application-secrets',
+      'Queue@v1alpha1:work',
+      'ObjectStorage@v1alpha1:artifacts',
+      'HttpExposure@v1alpha1:public-http',
+      'Certificate@v1alpha1:public-tls',
+      'DnsPublication@v1alpha1:public-dns',
+      'WorkflowEngine@v1alpha1:workflows',
+      'ContainerRegistry@v1alpha1:images',
+      'ApplicationHost@v1alpha1:web',
+      'Authorization@v1alpha1:authority-projection',
+      'CounterStore@v1alpha1:usage-counters',
+      'CredentialStore@v1alpha1:provider-credentials',
+    ]);
+  });
+
   it('constructs provider-neutral database and analytics capabilities without leaking infrastructure ownership', () => {
     const primary = Database.postgres({
       name: 'primary',

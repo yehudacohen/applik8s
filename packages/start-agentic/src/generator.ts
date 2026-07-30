@@ -397,7 +397,7 @@ export const gateway = application.gateway('web', {
     ResearchNote.delete,
     ...maintainedCommands,
   ],
-  authorizeCommand: async () => true,
+  authorizeCommand: ({ principal }) => principal.id.length > 0,
   deployment: {
     namespace: ${JSON.stringify(`${projectName}-system`)},
     cursorSecret: { name: ${JSON.stringify(`${projectName}-gateway-cursor`)}, key: 'key' },

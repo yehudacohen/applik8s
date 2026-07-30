@@ -1,0 +1,178 @@
+{
+  "apiVersion": "applik8s.releaseScorecard/v1alpha1",
+  "release": "v0.7",
+  "releaseAuthorized": false,
+  "baseline": {
+    "repository": "/Users/yehudac/workspace/stimp",
+    "revision": "602ec975f7c29c9e2faa7b767ec218745590c7cf",
+    "inventory": "docs/v07-baseline-and-contract-inventory.md"
+  },
+  "compatibility": {
+    "tanstackCli": "0.70.1",
+    "tanstackStart": "1.168.28",
+    "tanstackAI": "0.42.0",
+    "tanstackAIClient": "0.22.1",
+    "tanstackAIReact": "0.18.1",
+    "agUi": "0.0.52",
+    "typekro": "0.32.0"
+  },
+  "items": [
+    {
+      "id": "baseline-disposition",
+      "owner": "start-agentic",
+      "state": "complete",
+      "evidence": ["docs/v07-baseline-and-contract-inventory.md"]
+    },
+    {
+      "id": "operation-authority",
+      "owner": "operations",
+      "state": "complete",
+      "evidence": [
+        "packages/operations/test/authority.vertical.test.ts",
+        "packages/operations/test/execution-admission-transport.vertical.test.ts",
+        "packages/applik8s/test/application-authority.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "provider-native-models",
+      "owner": "applik8s",
+      "state": "complete",
+      "evidence": [
+        "packages/applik8s/test/native-model-application.vertical.test.ts",
+        "packages/applik8s/test/native-models.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "ai-tanstack-contract",
+      "owner": "ai-tanstack",
+      "state": "complete",
+      "evidence": [
+        "packages/ai-tanstack/test/adapters.vertical.test.ts",
+        "packages/runtime-ai/test/runtime.vertical.test.ts",
+        "packages/applik8s/test/application-ai.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "identity-oauth-contract",
+      "owner": "identity",
+      "state": "complete",
+      "evidence": [
+        "packages/identity/test/runtime.vertical.test.ts",
+        "packages/identity-ory/test/hydra.vertical.test.ts",
+        "packages/identity-ory/test/kratos.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "mcp-contract",
+      "owner": "mcp",
+      "state": "complete",
+      "evidence": [
+        "packages/mcp/test/server.vertical.test.ts",
+        "packages/mcp/test/client.vertical.test.ts",
+        "packages/applik8s/test/application-mcp.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "search-contract",
+      "owner": "search",
+      "state": "complete",
+      "evidence": [
+        "packages/applik8s/test/application-search.vertical.test.ts",
+        "packages/runtime-opensearch/test/runtime.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "maintained-modules-and-operations-ui",
+      "owner": "start-agentic",
+      "state": "partial",
+      "evidence": [
+        "packages/conversations/src/index.ts",
+        "packages/approvals/src/index.ts",
+        "packages/artifacts/src/index.ts",
+        "packages/evals/src/index.ts",
+        "packages/usage/src/index.ts"
+      ]
+    },
+    {
+      "id": "agentic-start-generator",
+      "owner": "start-agentic",
+      "state": "partial",
+      "evidence": [
+        "packages/start-agentic/src/generator.ts",
+        "packages/start-agentic/test/generator.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "starter-profile",
+      "owner": "start-agentic",
+      "state": "partial",
+      "evidence": ["packages/start-agentic/src/generator.ts"]
+    },
+    {
+      "id": "dedicated-profile",
+      "owner": "start-agentic",
+      "state": "partial",
+      "evidence": ["packages/start-agentic/src/generator.ts"]
+    },
+    {
+      "id": "external-profile",
+      "owner": "start-agentic",
+      "state": "partial",
+      "evidence": ["packages/start-agentic/src/generator.ts"]
+    },
+    {
+      "id": "vasco-acceptance",
+      "owner": "start-agentic",
+      "state": "pending",
+      "evidence": []
+    },
+    {
+      "id": "agentic-identity-acceptance",
+      "owner": "start-agentic",
+      "state": "pending",
+      "evidence": []
+    },
+    {
+      "id": "stimp-behavioral-parity",
+      "owner": "start-agentic",
+      "state": "partial",
+      "evidence": ["docs/v07-baseline-and-contract-inventory.md"]
+    },
+    {
+      "id": "packed-agentic-start-consumer",
+      "owner": "release",
+      "state": "pending",
+      "evidence": []
+    },
+    {
+      "id": "typekro-provider-qualification",
+      "owner": "deployment",
+      "state": "partial",
+      "evidence": ["docs/typekro-golden-path.md"]
+    },
+    {
+      "id": "integrated-orbstack-lifecycle",
+      "owner": "e2e",
+      "state": "pending",
+      "evidence": []
+    },
+    {
+      "id": "browser-security-matrix",
+      "owner": "e2e",
+      "state": "pending",
+      "evidence": []
+    },
+    {
+      "id": "v07-performance-history",
+      "owner": "performance",
+      "state": "pending",
+      "evidence": []
+    },
+    {
+      "id": "multi-cluster-qualification",
+      "owner": "deployment",
+      "state": "deferred",
+      "evidence": ["docs/v07-baseline-and-contract-inventory.md"]
+    }
+  ]
+}
