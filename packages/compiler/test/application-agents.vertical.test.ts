@@ -143,6 +143,15 @@ describe('generated application AI agents', () => {
     expect(normalizedSource).toContain('canonical execution-principal admission');
     expect(normalizedSource).toContain('applik8s_ai_attempts');
     expect(normalizedSource).toContain('completion-uncertain');
+    expect(normalizedSource).toMatch(
+      /return\{action:\w+\.action,runId:\w+,invocationId:/u,
+    );
+    expect(normalizedSource).toMatch(
+      /recovery:\{observe:\w+=>\w+\.observe\(\w+\),timeoutMs:/u,
+    );
+    expect(normalizedSource).not.toContain(
+      'stream joining and terminal replay must complete before redispatch',
+    );
     expect(source).not.toContain('packageManagerAtStartup');
     expect(artifact.sizeBytes).toBeLessThan(1_500_000);
   });

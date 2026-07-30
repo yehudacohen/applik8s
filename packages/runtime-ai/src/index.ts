@@ -4,7 +4,12 @@
 
 export * from './postgres-attempt-store.js';
 
-import type { ApplicationAIAgentHandler } from '@applik8s/ai';
+import type {
+  ApplicationAIAgentHandler,
+  ApplicationAIAttemptRecord,
+  ApplicationAIInvocationRecord,
+  ApplicationAIStreamDelta,
+} from '@applik8s/ai';
 import type {
   ApplicationTanStackAgentRuntime,
   ApplicationTanStackAIAgentRequest,
@@ -60,10 +65,26 @@ export type ApplicationAITextProvider =
     };
 
 export interface ApplicationAIAgentAttemptReservation {
+  readonly action: 'dispatch' | 'join' | 'return-terminal' | 'escalate';
   readonly invocationId: string;
   readonly attemptId: string;
   readonly runId: string;
   readonly version: number;
+}
+
+export interface ApplicationAIAgentAttemptObservation {
+  readonly invocation: ApplicationAIInvocationRecord;
+  readonly attempts: readonly ApplicationAIAttemptRecord[];
+  readonly deltas: readonly ApplicationAIStreamDelta[];
+}
+
+export interface ApplicationAIAgentAttemptRecovery {
+  readonly observe: (
+    invocationId: string,
+  ) => Promise<ApplicationAIAgentAttemptObservation>;
+  readonly timeoutMs?: number;
+  readonly minimumPollMs?: number;
+  readonly maximumPollMs?: number;
 }
 
 export interface ApplicationAIAgentAttemptLifecycle {
@@ -138,6 +159,7 @@ export interface ApplicationAIAgentRuntimeOptions<
   ) =>
     | Promise<ApplicationAIAgentAttemptReservation>
     | ApplicationAIAgentAttemptReservation;
+  readonly recovery: ApplicationAIAgentAttemptRecovery;
   readonly attemptLifecycle: ApplicationAIAgentAttemptLifecycle;
   readonly invoke: (
     operation: ApplicationOperationDescriptor,
@@ -175,6 +197,13 @@ export function createApplicationAIAgentRequestHandler<TResult>(
       );
     }
     active += 1;
+    let capacityTransferred = false;
+    let capacityReleased = false;
+    const releaseCapacity = () => {
+      if (capacityReleased) return;
+      capacityReleased = true;
+      active -= 1;
+    };
     try {
       const body = await boundedJson(request, maximumRequestBytes);
       assertAgentRequest(body);
@@ -190,6 +219,19 @@ export function createApplicationAIAgentRequestHandler<TResult>(
       if (reservation.runId !== body.runId) {
         throw new Error(`Agent ${options.name} attempt reservation changed protocol run identity.`);
       }
+      if (reservation.action !== 'dispatch') {
+        const response = await recoverApplicationAIAgentAttempt(
+          reservation,
+          options.recovery,
+          request.signal,
+        );
+        if (isServerSentEventsResponse(response)) {
+          const managed = responseWithCapacity(response, releaseCapacity);
+          capacityTransferred = true;
+          return managed;
+        }
+        return response;
+      }
       reservation = await options.attemptLifecycle.dispatching(reservation);
       const instructions = typeof options.instructions === 'string'
         ? options.instructions
@@ -204,6 +246,11 @@ export function createApplicationAIAgentRequestHandler<TResult>(
         () => controller.abort(new Error(`Agent ${options.name} exceeded ${options.timeoutMs}ms.`)),
         options.timeoutMs,
       );
+      let executionTransferred = false;
+      const releaseExecution = () => {
+        clearTimeout(timeout);
+        request.signal.removeEventListener('abort', abort);
+      };
       const execution: ApplicationTanStackToolExecutionContext = {
         principal,
         invocationId: reservation.invocationId,
@@ -247,14 +294,21 @@ export function createApplicationAIAgentRequestHandler<TResult>(
           );
         }
         if (isAsyncIterable(result)) {
-          return toServerSentEventsResponse(durableAgentStream(
-            result as AsyncIterable<StreamChunk>,
-            reservation,
-            options.attemptLifecycle,
-            controller.signal,
+          const response = toServerSentEventsResponse(managedAgentStream(
+            durableAgentStream(
+              result as AsyncIterable<StreamChunk>,
+              reservation,
+              options.attemptLifecycle,
+              controller.signal,
+            ),
+            releaseExecution,
           ), {
             abortController: controller,
           });
+          const managed = responseWithCapacity(response, releaseCapacity);
+          executionTransferred = true;
+          capacityTransferred = true;
+          return managed;
         }
         const messageId = `message-${reservation.attemptId}`;
         reservation = await options.attemptLifecycle.completeProvider(
@@ -270,16 +324,85 @@ export function createApplicationAIAgentRequestHandler<TResult>(
         );
         return Response.json({ result });
       } finally {
-        clearTimeout(timeout);
-        request.signal.removeEventListener('abort', abort);
+        if (!executionTransferred) releaseExecution();
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return Response.json({ error: 'agent_request_failed', message }, { status: 400 });
     } finally {
-      active -= 1;
+      if (!capacityTransferred) releaseCapacity();
     }
   };
+}
+
+export async function recoverApplicationAIAgentAttempt(
+  reservation: ApplicationAIAgentAttemptReservation,
+  recovery: ApplicationAIAgentAttemptRecovery,
+  signal: AbortSignal,
+): Promise<Response> {
+  if (reservation.action === 'dispatch') {
+    throw new Error(
+      `AI attempt ${reservation.attemptId} cannot enter recovery while dispatch is authoritative.`,
+    );
+  }
+  const initial = await recovery.observe(reservation.invocationId);
+  const attempt = requiredObservedAttempt(initial, reservation);
+  if (reservation.action === 'escalate') {
+    return Response.json(
+      {
+        error: 'agent_completion_uncertain',
+        invocationId: reservation.invocationId,
+        attemptId: reservation.attemptId,
+        state: attempt.state,
+        reason:
+          attempt.terminalReason
+          ?? 'Provider completion cannot be classified safely.',
+      },
+      { status: 409 },
+    );
+  }
+  if (reservation.action === 'return-terminal') {
+    return terminalAttemptResponse(reservation, initial, attempt);
+  }
+  const timeoutMs = boundedRecoveryNumber(
+    recovery.timeoutMs ?? 120_000,
+    'timeoutMs',
+    1_000,
+    15 * 60_000,
+  );
+  const minimumPollMs = boundedRecoveryNumber(
+    recovery.minimumPollMs ?? 50,
+    'minimumPollMs',
+    10,
+    5_000,
+  );
+  const maximumPollMs = boundedRecoveryNumber(
+    recovery.maximumPollMs ?? 1_000,
+    'maximumPollMs',
+    minimumPollMs,
+    10_000,
+  );
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal.reason);
+  signal.addEventListener('abort', abort, { once: true });
+  return toServerSentEventsResponse(
+    (async function* (): AsyncIterable<StreamChunk> {
+      try {
+        yield* replayDurableAttempt({
+          reservation,
+          recovery,
+          initial,
+          signal: controller.signal,
+          timeoutMs,
+          minimumPollMs,
+          maximumPollMs,
+        });
+      } finally {
+        signal.removeEventListener('abort', abort);
+      }
+    })(),
+    { abortController: controller },
+  );
 }
 
 async function* durableAgentStream(
@@ -349,6 +472,254 @@ async function* durableAgentStream(
     }
     throw error;
   }
+}
+
+async function* managedAgentStream(
+  source: AsyncIterable<StreamChunk>,
+  release: () => void,
+): AsyncIterable<StreamChunk> {
+  try {
+    yield* source;
+  } finally {
+    release();
+  }
+}
+
+async function* replayDurableAttempt(options: {
+  readonly reservation: ApplicationAIAgentAttemptReservation;
+  readonly recovery: ApplicationAIAgentAttemptRecovery;
+  readonly initial: ApplicationAIAgentAttemptObservation;
+  readonly signal: AbortSignal;
+  readonly timeoutMs: number;
+  readonly minimumPollMs: number;
+  readonly maximumPollMs: number;
+}): AsyncIterable<StreamChunk> {
+  const deadline = Date.now() + options.timeoutMs;
+  let observation = options.initial;
+  let sequence = 0;
+  let delayMs = options.minimumPollMs;
+  while (true) {
+    const attempt = requiredObservedAttempt(observation, options.reservation);
+    const deltas = observation.deltas
+      .filter(
+        (delta) =>
+          delta.attemptId === options.reservation.attemptId
+          && delta.sequence > sequence,
+      )
+      .sort((left, right) => left.sequence - right.sequence);
+    for (const delta of deltas) {
+      if (delta.sequence !== sequence + 1) {
+        throw new Error(
+          `AI attempt ${attempt.id} durable replay expected sequence ${sequence + 1}, observed ${delta.sequence}.`,
+        );
+      }
+      sequence = delta.sequence;
+      yield streamChunk(delta.event);
+    }
+    if (attempt.state === 'canonical-committed') return;
+    if (attempt.state === 'completion-uncertain') {
+      throw new Error(
+        attempt.terminalReason
+          ?? `AI attempt ${attempt.id} completion became uncertain while joining.`,
+      );
+    }
+    if (attempt.state === 'provider-failed' || attempt.state === 'cancelled') {
+      throw new Error(
+        attempt.terminalReason
+          ?? `AI attempt ${attempt.id} became ${attempt.state} while joining.`,
+      );
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `AI attempt ${attempt.id} did not reach a durable terminal state within ${options.timeoutMs}ms.`,
+      );
+    }
+    await abortableDelay(delayMs, options.signal);
+    delayMs = Math.min(options.maximumPollMs, Math.ceil(delayMs * 1.75));
+    observation = await options.recovery.observe(
+      options.reservation.invocationId,
+    );
+  }
+}
+
+function terminalAttemptResponse(
+  reservation: ApplicationAIAgentAttemptReservation,
+  observation: ApplicationAIAgentAttemptObservation,
+  attempt: ApplicationAIAttemptRecord,
+): Response {
+  if (attempt.state === 'canonical-committed') {
+    const deltas = observation.deltas
+      .filter((delta) => delta.attemptId === reservation.attemptId)
+      .sort((left, right) => left.sequence - right.sequence);
+    if (deltas.length === 0) {
+      return Response.json(
+        {
+          error: 'agent_terminal_result_unavailable',
+          invocationId: reservation.invocationId,
+          attemptId: reservation.attemptId,
+        },
+        { status: 409 },
+      );
+    }
+    const controller = new AbortController();
+    return toServerSentEventsResponse(
+      (async function* (): AsyncIterable<StreamChunk> {
+        let sequence = 0;
+        for (const delta of deltas) {
+          if (delta.sequence !== sequence + 1) {
+            throw new Error(
+              `AI attempt ${attempt.id} durable replay expected sequence ${sequence + 1}, observed ${delta.sequence}.`,
+            );
+          }
+          sequence = delta.sequence;
+          yield streamChunk(delta.event);
+        }
+      })(),
+      { abortController: controller },
+    );
+  }
+  const status = attempt.state === 'cancelled' ? 410 : 409;
+  return Response.json(
+    {
+      error:
+        attempt.state === 'cancelled'
+          ? 'agent_invocation_cancelled'
+          : 'agent_invocation_terminal',
+      invocationId: reservation.invocationId,
+      attemptId: reservation.attemptId,
+      state: attempt.state,
+      ...(attempt.terminalReason ? { reason: attempt.terminalReason } : {}),
+    },
+    { status },
+  );
+}
+
+function requiredObservedAttempt(
+  observation: ApplicationAIAgentAttemptObservation,
+  reservation: ApplicationAIAgentAttemptReservation,
+): ApplicationAIAttemptRecord {
+  if (observation.invocation.id !== reservation.invocationId) {
+    throw new Error(
+      `AI attempt recovery for ${reservation.invocationId} observed invocation ${observation.invocation.id}.`,
+    );
+  }
+  if (observation.invocation.currentAttemptId !== reservation.attemptId) {
+    throw new Error(
+      `AI attempt recovery for ${reservation.invocationId} expected current attempt ${reservation.attemptId}, observed ${observation.invocation.currentAttemptId}.`,
+    );
+  }
+  const attempt = observation.attempts.find(
+    (candidate) => candidate.id === reservation.attemptId,
+  );
+  if (!attempt || attempt.invocationId !== reservation.invocationId) {
+    throw new Error(
+      `AI attempt recovery cannot observe ${reservation.attemptId} in ${reservation.invocationId}.`,
+    );
+  }
+  return attempt;
+}
+
+function streamChunk(event: Readonly<Record<string, unknown>>): StreamChunk {
+  if (typeof event.type !== 'string' || !event.type.trim()) {
+    throw new Error(
+      'Durable AI replay encountered an event without a TanStack type.',
+    );
+  }
+  return event as StreamChunk;
+}
+
+function boundedRecoveryNumber(
+  value: number,
+  field: string,
+  minimum: number,
+  maximum: number,
+): number {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(
+      `AI attempt recovery ${field} must be an integer between ${minimum} and ${maximum}.`,
+    );
+  }
+  return value;
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(abortError(signal.reason));
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(done, ms);
+    const abort = () => {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', abort);
+      reject(abortError(signal.reason));
+    };
+    function done() {
+      signal.removeEventListener('abort', abort);
+      resolve();
+    }
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
+function abortError(reason: unknown): Error {
+  const error = new Error(
+    reason instanceof Error
+      ? reason.message
+      : 'AI attempt recovery was aborted.',
+  );
+  error.name = 'AbortError';
+  return error;
+}
+
+function isServerSentEventsResponse(response: Response): boolean {
+  return response.headers.get('content-type')
+    ?.toLowerCase()
+    .includes('text/event-stream') === true;
+}
+
+function responseWithCapacity(
+  response: Response,
+  release: () => void,
+): Response {
+  if (!response.body) {
+    release();
+    return response;
+  }
+  const reader = response.body.getReader();
+  let released = false;
+  const releaseOnce = () => {
+    if (released) return;
+    released = true;
+    release();
+  };
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        try {
+          const result = await reader.read();
+          if (result.done) {
+            releaseOnce();
+            controller.close();
+            return;
+          }
+          controller.enqueue(result.value);
+        } catch (error) {
+          releaseOnce();
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        try {
+          await reader.cancel(reason);
+        } finally {
+          releaseOnce();
+        }
+      },
+    }),
+    {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    },
+  );
 }
 
 export function applicationAITextAdapter(

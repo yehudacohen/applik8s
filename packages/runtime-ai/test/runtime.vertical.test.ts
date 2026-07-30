@@ -26,11 +26,13 @@ describe('generated application AI runtime', () => {
       maximumConcurrency: 2,
       admit: () => principal(),
       reserveAttempt: ({ runId }) => ({
+        action: 'dispatch',
         runId,
         invocationId: 'invocation-1',
         attemptId: 'attempt-1',
         version: 1,
       }),
+      recovery: unavailableRecovery(),
       attemptLifecycle: attemptLifecycle(lifecycleEvents),
       invoke: async (...args) => {
         invocations.push(args);
@@ -85,6 +87,7 @@ describe('generated application AI runtime', () => {
       reserveAttempt: async () => {
         throw new Error('must not reserve');
       },
+      recovery: unavailableRecovery(),
       attemptLifecycle: attemptLifecycle([]),
       invoke: async () => ({}),
       handler: async () => ({}),
@@ -112,11 +115,13 @@ describe('generated application AI runtime', () => {
       maximumConcurrency: 1,
       admit: () => principal(),
       reserveAttempt: ({ runId }) => ({
+        action: 'dispatch',
         runId,
         invocationId: 'invocation-uncertain',
         attemptId: 'attempt-uncertain',
         version: 1,
       }),
+      recovery: unavailableRecovery(),
       attemptLifecycle: attemptLifecycle(lifecycleEvents),
       invoke: async () => ({}),
       handler: async () => (async function* () {
@@ -138,7 +143,262 @@ describe('generated application AI runtime', () => {
       'fail:completion-uncertain:3',
     ]);
   });
+
+  it('joins a durable in-flight attempt and replays its canonical TanStack stream', async () => {
+    let handlerInvoked = false;
+    let observations = 0;
+    const handler = createApplicationAIAgentRequestHandler({
+      name: 'researcher',
+      logicalModel: 'fast',
+      instructions: 'Do work.',
+      provider: { kind: 'deterministic' },
+      tools: [],
+      persistence: {},
+      timeoutMs: 5_000,
+      maximumConcurrency: 1,
+      admit: () => principal(),
+      reserveAttempt: ({ runId }) => ({
+        action: 'join',
+        runId,
+        invocationId: 'invocation-join',
+        attemptId: 'attempt-join',
+        version: 3,
+      }),
+      recovery: {
+        minimumPollMs: 10,
+        maximumPollMs: 10,
+        timeoutMs: 1_000,
+        async observe() {
+          observations += 1;
+          return recoveryObservation(
+            observations === 1 ? 'streaming' : 'canonical-committed',
+          );
+        },
+      },
+      attemptLifecycle: attemptLifecycle([]),
+      invoke: async () => ({}),
+      handler: async () => {
+        handlerInvoked = true;
+        return {};
+      },
+    });
+
+    const response = await handler(agentRequest());
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    const events = await response.text();
+    expect(events).toContain('"type":"RUN_STARTED"');
+    expect(events).toContain('"type":"RUN_FINISHED"');
+    expect(observations).toBe(2);
+    expect(handlerInvoked).toBe(false);
+  });
+
+  it('returns a stable escalation response for completion-uncertain attempts', async () => {
+    const handler = createApplicationAIAgentRequestHandler({
+      name: 'researcher',
+      logicalModel: 'fast',
+      instructions: 'Do work.',
+      provider: { kind: 'deterministic' },
+      tools: [],
+      persistence: {},
+      timeoutMs: 5_000,
+      maximumConcurrency: 1,
+      admit: () => principal(),
+      reserveAttempt: ({ runId }) => ({
+        action: 'escalate',
+        runId,
+        invocationId: 'invocation-join',
+        attemptId: 'attempt-join',
+        version: 3,
+      }),
+      recovery: {
+        async observe() {
+          return recoveryObservation('completion-uncertain');
+        },
+      },
+      attemptLifecycle: attemptLifecycle([]),
+      invoke: async () => ({}),
+      handler: async () => {
+        throw new Error('must not dispatch');
+      },
+    });
+
+    const response = await handler(agentRequest());
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: 'agent_completion_uncertain',
+      invocationId: 'invocation-join',
+      attemptId: 'attempt-join',
+    });
+  });
+
+  it('holds bounded concurrency until a streaming response is finished', async () => {
+    let finishStream: (() => void) | undefined;
+    const streamGate = new Promise<void>((resolve) => {
+      finishStream = resolve;
+    });
+    const handler = createApplicationAIAgentRequestHandler({
+      name: 'researcher',
+      logicalModel: 'fast',
+      instructions: 'Do work.',
+      provider: { kind: 'deterministic' },
+      tools: [],
+      persistence: {},
+      timeoutMs: 5_000,
+      maximumConcurrency: 1,
+      admit: () => principal(),
+      reserveAttempt: ({ runId }) => ({
+        action: 'dispatch',
+        runId,
+        invocationId: 'invocation-capacity',
+        attemptId: 'attempt-capacity',
+        version: 1,
+      }),
+      recovery: unavailableRecovery(),
+      attemptLifecycle: attemptLifecycle([]),
+      invoke: async () => ({}),
+      handler: async () => (async function* () {
+        const event = {
+          runId: 'protocol-run-1',
+          threadId: 'conversation-1',
+          timestamp: 0,
+        };
+        yield { type: 'RUN_STARTED', ...event };
+        await streamGate;
+        yield {
+          type: 'TEXT_MESSAGE_START',
+          messageId: 'message-capacity',
+          role: 'assistant',
+          timestamp: 1,
+        };
+        yield {
+          type: 'TEXT_MESSAGE_CONTENT',
+          messageId: 'message-capacity',
+          delta: 'finished',
+          timestamp: 2,
+        };
+        yield {
+          type: 'TEXT_MESSAGE_END',
+          messageId: 'message-capacity',
+          timestamp: 3,
+        };
+        yield { type: 'RUN_FINISHED', ...event, timestamp: 4 };
+      })(),
+    });
+
+    const streaming = await handler(agentRequest());
+    const rejected = await handler(agentRequest());
+
+    expect(streaming.status).toBe(200);
+    expect(rejected.status).toBe(429);
+
+    finishStream?.();
+    await streaming.text();
+
+    const admitted = await handler(agentRequest());
+    expect(admitted.status).toBe(200);
+    await admitted.text();
+  });
 });
+
+function unavailableRecovery() {
+  return {
+    async observe(): Promise<never> {
+      throw new Error('Attempt recovery must not run in this fixture.');
+    },
+  };
+}
+
+function recoveryObservation(
+  state: 'streaming' | 'canonical-committed' | 'completion-uncertain',
+) {
+  const now = new Date().toISOString();
+  return {
+    invocation: {
+      apiVersion: 'applik8s.aiInvocation/v1alpha1' as const,
+      id: 'invocation-join',
+      conversationId: 'conversation-1',
+      protocolRunId: 'protocol-run-1',
+      agentRunId: 'run-1',
+      logicalModel: 'fast',
+      requestHash: 'sha256:request',
+      admittedPrincipal: principal(),
+      authorityRevision: 'authority-1',
+      state:
+        state === 'canonical-committed'
+          ? 'completed' as const
+          : state === 'completion-uncertain'
+            ? 'uncertain' as const
+            : 'active' as const,
+      currentAttemptId: 'attempt-join',
+      ...(state === 'canonical-committed'
+        ? { canonicalMessageId: 'message-join' }
+        : {}),
+      createdAt: now,
+      updatedAt: now,
+    },
+    attempts: [{
+      apiVersion: 'applik8s.aiAttempt/v1alpha1' as const,
+      id: 'attempt-join',
+      invocationId: 'invocation-join',
+      ordinal: 1,
+      state,
+      recovery:
+        state === 'completion-uncertain'
+          ? 'uncertain' as const
+          : state === 'canonical-committed'
+            ? 'terminal' as const
+            : 'joinable' as const,
+      requestHash: 'sha256:request',
+      redactedRequestMetadata: {},
+      route: {
+        policyRevision: 'routing-v1',
+        logicalModel: 'fast',
+        providerClass: 'deterministic',
+        backend: 'deterministic',
+        concreteModel: 'deterministic',
+        capabilities: ['chat', 'streaming'] as const,
+        route: 'deterministic/fast',
+        fallbackChain: [],
+      },
+      streamFrontier: state === 'streaming' ? 1 : 2,
+      ...(state === 'completion-uncertain'
+        ? { terminalReason: 'provider outcome cannot be observed' }
+        : {}),
+      version: 3,
+      createdAt: now,
+      updatedAt: now,
+    }],
+    deltas: [
+      {
+        attemptId: 'attempt-join',
+        sequence: 1,
+        event: {
+          type: 'RUN_STARTED',
+          runId: 'protocol-run-1',
+          threadId: 'conversation-1',
+          timestamp: 0,
+        },
+        createdAt: now,
+      },
+      ...(state === 'streaming'
+        ? []
+        : [{
+            attemptId: 'attempt-join',
+            sequence: 2,
+            event: {
+              type: 'RUN_FINISHED',
+              runId: 'protocol-run-1',
+              threadId: 'conversation-1',
+              timestamp: 1,
+            },
+            createdAt: now,
+          }]),
+    ],
+  };
+}
 
 function attemptLifecycle(events: string[]): ApplicationAIAgentAttemptLifecycle {
   return {

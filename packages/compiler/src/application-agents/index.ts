@@ -405,18 +405,17 @@ const handle = createApplicationAIAgentRequestHandler({
         ? 'if-replay-safe'
         : 'never',
     });
-    if (decision.action !== 'dispatch') {
-      throw new Error(
-        'AI invocation ' + invocationId + ' resolved durable action ' + decision.action
-        + '; stream joining and terminal replay must complete before redispatch.',
-      );
-    }
     return {
+      action: decision.action,
       runId,
       invocationId,
       attemptId: decision.attempt.id,
       version: decision.attempt.version,
     };
+  },
+  recovery: {
+    observe: (invocationId) => attemptRuntime.observe(invocationId),
+    timeoutMs: contract.budgets.timeoutMs,
   },
   attemptLifecycle: {
     async dispatching(reservation) {
