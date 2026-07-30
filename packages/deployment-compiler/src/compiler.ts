@@ -13,7 +13,10 @@ import {
   digestApplicationDeploymentValue,
   validateApplicationDeploymentGraph,
 } from "@applik8s/deployment-contract";
-import { builtinApplicationDeploymentContributors } from "./providers.js";
+import {
+  applicationProviderSelectionDeploymentContributor,
+  builtinApplicationDeploymentContributors,
+} from "./providers.js";
 import type {
   ApplicationArtifactRequirement,
   ApplicationDeploymentContribution,
@@ -42,7 +45,10 @@ export function compileApplicationDeploymentGraph(
   const contributorKeys: string[] = [];
   for (const provider of providerNodes(request.graph.nodes)) {
     const key = contributorKey(provider.interface, provider.implementation);
-    const contributor = contributors.get(key);
+    const contributor = contributors.get(key)
+      ?? (provider.implementation === "application-provider-selection"
+        ? applicationProviderSelectionDeploymentContributor(provider.interface)
+        : undefined);
     if (!contributor) {
       throw new Error(
         `Application provider ${provider.id} has no deployment contributor for ${provider.interface}/${provider.implementation}.`,

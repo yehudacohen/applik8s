@@ -274,9 +274,20 @@ describe('v0.6 app-scoped native model promotion', () => {
     expect(Gateway.commands[0]).toMatchObject({ command: 'models.Card.create.v1', model: 'Card' });
     expect(Gateway.commands[1]).toMatchObject({ command: 'models.Card.update.v1', model: 'Card' });
     expect(Gateway.commands[2]).toMatchObject({ command: 'models.Card.delete.v1', model: 'Card' });
+    expect(Card.create.authority.classification).toBe('application-policy');
+    expect(Card.update.authority.classification).toBe('application-policy');
+    expect(Card.delete.authority.classification).toBe('application-policy');
     const graph = applicationGraphFor(catalog.composition);
     expect(graph?.nodes.find((node) => node.kind === 'model' && node.name === 'Card')).toMatchObject({
-      common: { operations: expect.arrayContaining([expect.objectContaining({ name: 'create', publicId: 'models.Card.create.v1' })]) },
+      common: {
+        operations: expect.arrayContaining([
+          expect.objectContaining({
+            name: 'create',
+            publicId: 'models.Card.create.v1',
+            authority: expect.objectContaining({ classification: 'application-policy' }),
+          }),
+        ]),
+      },
     });
     expect(graph?.nodes.find((node) => node.kind === 'command' && node.name === 'models.Card.create.v1')).toBeDefined();
     expect(graph?.nodes.find((node) => node.kind === 'event' && node.name === 'models.Card.created.v1')).toBeDefined();

@@ -1,5 +1,6 @@
 export { compileApplicationDeploymentGraph } from "./compiler.js";
 export {
+  applicationProviderSelectionDeploymentContributor,
   type ApplicationProviderExecution,
   builtinApplicationDeploymentContributors,
 } from "./providers.js";

@@ -7,7 +7,11 @@ const request = JSON.parse(process.argv[2] ?? '{}');
 const cwd = resolve(request.cwd ?? process.cwd());
 const sourceEntrypoint = resolve(cwd, request.entrypoint ?? '');
 const options = request.options ?? {};
-const command = request.command === 'delete' ? 'delete' : 'deploy';
+const command = request.command === 'delete'
+  ? 'delete'
+  : request.command === 'status'
+    ? 'status'
+    : 'deploy';
 
 process.chdir(cwd);
 
@@ -44,7 +48,27 @@ const deleteArgs = [
   ...(options.instanceName ? ['--instance-name', String(options.instanceName)] : []),
   ...(options.controlPlaneNamespace ? ['--control-plane-namespace', String(options.controlPlaneNamespace)] : []),
 ];
-process.exitCode = await run(process.execPath, command === 'delete' ? deleteArgs : deployArgs);
+const statusArgs = [
+  '--enable-source-maps',
+  '--import', pathToFileURL(registerTypescript).href,
+  cli,
+  'status',
+  sourceEntrypoint,
+  '--context', String(options.context ?? ''),
+  '--out-dir', String(options.outDir ?? '.applik8s/deploy'),
+  '--composition-name', String(options.compositionName ?? 'app'),
+  ...(options.instanceName ? ['--instance-name', String(options.instanceName)] : []),
+  ...(options.controlPlaneNamespace ? ['--control-plane-namespace', String(options.controlPlaneNamespace)] : []),
+  ...(options.json ? ['--json'] : []),
+];
+process.exitCode = await run(
+  process.execPath,
+  command === 'delete'
+    ? deleteArgs
+    : command === 'status'
+      ? statusArgs
+      : deployArgs,
+);
 
 async function resolveNodeCliEntrypoint() {
   const runnerDirectory = dirname(fileURLToPath(import.meta.url));
@@ -74,6 +98,7 @@ function run(command, args) {
         ...process.env,
         APPLIK8S_DISABLE_NODE_DEPLOY_HANDOFF: '1',
         APPLIK8S_DISABLE_NODE_DELETE_HANDOFF: '1',
+        APPLIK8S_DISABLE_NODE_STATUS_HANDOFF: '1',
       },
     });
     child.on('close', (code) => resolvePromise(code ?? 1));

@@ -29,6 +29,15 @@ export async function readApplicationInstanceSpec(
   context: string,
   instance: ObservedApplicationInstance,
 ): Promise<DeploymentJsonObject | undefined> {
+  const resource = await readApplicationInstance(context, instance);
+  return resource ? applicationInstanceSpec(resource, instance) : undefined;
+}
+
+/** Read one root Application observation without waiting or mutating cluster state. */
+export async function readApplicationInstance(
+  context: string,
+  instance: ObservedApplicationInstance,
+): Promise<unknown | undefined> {
   const [group, version] = instance.apiVersion.split('/');
   if (!group || !version) {
     throw new Error(
@@ -72,8 +81,30 @@ export async function readApplicationInstanceSpec(
       if (kubernetesStatusCode(cause) === 404) return undefined;
       throw cause;
     });
-  if (!resource) return undefined;
-  return applicationInstanceSpec(resource, instance);
+  return resource;
+}
+
+/** Read one KRO ResourceGraphDefinition observation without waiting. */
+export async function readResourceGraphDefinition(
+  context: string,
+  name: string,
+): Promise<unknown | undefined> {
+  const kubernetes = await import('@kubernetes/client-node');
+  const kubeConfig = new kubernetes.KubeConfig();
+  kubeConfig.loadFromDefault();
+  kubeConfig.setCurrentContext(context);
+  return makeKubernetesApiClient(
+    kubeConfig,
+    kubernetes.CustomObjectsApi,
+  ).getClusterCustomObject({
+    group: 'kro.run',
+    version: 'v1alpha1',
+    plural: 'resourcegraphdefinitions',
+    name,
+  }).catch((cause: unknown) => {
+    if (kubernetesStatusCode(cause) === 404) return undefined;
+    throw cause;
+  });
 }
 
 export function applicationInstanceSpec(

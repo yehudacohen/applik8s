@@ -196,6 +196,62 @@ describe("Application deployment compiler", () => {
     );
   });
 
+  it("treats profile provider selection as framework deployment indirection for any interface", () => {
+    const graph = applicationGraph();
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph: {
+        ...graph,
+        nodes: [
+          ...graph.nodes,
+          {
+            id: "provider.ai.v1alpha1.inference",
+            kind: "provider",
+            name: "AI",
+            stability: "stable",
+            interface: "AI",
+            implementation: "application-provider-selection",
+            config: {
+              profile: {
+                selectedBy: "schema.spec.profile",
+                branches: [
+                  {
+                    variant: "starter",
+                    implementation: "ai-deterministic",
+                    config: { kind: "ai-deterministic", production: false },
+                    resources: [],
+                    credentialReferences: [],
+                    provenance: "application",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(result.contributorKeys).toContain(
+      "AI\u0000application-provider-selection@1",
+    );
+    expect(
+      result.graph.nodes.find(
+        (node) => node.kind === "kubernetesComposition",
+      ),
+    ).toMatchObject({
+      spec: {
+        fragments: expect.arrayContaining([
+          expect.objectContaining({
+            sourceNodeId: "provider.ai.v1alpha1.inference",
+            providerInterface: "AI",
+            providerImplementation: "application-provider-selection",
+            execution: "root-composition",
+          }),
+        ]),
+      },
+    });
+  });
+
   it("makes managed Harbor a first-class prerequisite of every artifact", () => {
     const graph = applicationGraph();
     const result = compileApplicationDeploymentGraph({

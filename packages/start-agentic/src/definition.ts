@@ -118,6 +118,7 @@ export const applicationAgenticStartDefinition = Object.freeze({
       'src/routes/index.tsx',
       'vite.config.ts',
       'drizzle.config.ts',
+      'kubernetes/application.yaml',
       '.env.example',
     ],
   },

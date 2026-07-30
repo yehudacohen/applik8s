@@ -211,6 +211,14 @@ describe('application operations', () => {
       operationId: createContract.id,
     });
     expect(getApplicationOperationContract(create)?.authority).toEqual(create.authority);
+
+    expect(create.applicationPolicy()).toBe(create);
+    expect(create.authority).toMatchObject({
+      classification: 'application-policy',
+      grantable: false,
+      delegable: false,
+      permissionIds: [],
+    });
   });
 
   it('builds serializable target scopes and terminal execution bindings from the callable handle', () => {

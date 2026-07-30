@@ -16,6 +16,11 @@ import {
   stageExplicitApplicationInstance,
   waitForApplicationEndpoint,
 } from '@applik8s/cli';
+import {
+  compileApplicationOperationCatalog,
+} from '@applik8s/compiler';
+import { app, applicationGraphFor } from '@applik8s/applik8s';
+import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { resolveApplicationInstallationValues } from '../../cli/src/application-installation-values.js';
 
@@ -172,16 +177,19 @@ describe('applik8s CLI', () => {
     expect(loader).toContain('resolveExportTarget(manifest.exports, subpath)');
   });
 
-  it('uses one TypeScript-aware Node deployment host for deploy and delete', async () => {
+  it('uses one TypeScript-aware Node deployment host for deploy, status, and destroy', async () => {
     const workspaceRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
     const runner = await readFile(join(workspaceRoot, 'packages', 'cli', 'src', 'node-deploy-runner.mjs'), 'utf8');
 
     expect(runner).toContain("request.command === 'delete'");
+    expect(runner).toContain("request.command === 'status'");
     expect(runner).toContain("'node-register-typescript.mjs'");
-    expect(runner).toContain("command === 'delete' ? deleteArgs : deployArgs");
+    expect(runner).toContain("? statusArgs");
     expect(runner).toContain("'delete'");
+    expect(runner).toContain("'status'");
     expect(runner).toContain("APPLIK8S_DISABLE_NODE_DELETE_HANDOFF: '1'");
     expect(runner).toContain("APPLIK8S_DISABLE_NODE_DEPLOY_HANDOFF: '1'");
+    expect(runner).toContain("APPLIK8S_DISABLE_NODE_STATUS_HANDOFF: '1'");
     expect(runner).not.toContain('kubectl');
   });
 
@@ -192,8 +200,11 @@ describe('applik8s CLI', () => {
 
     expect(code).toBe(0);
     expect(output.join('\n')).toContain('build [options] <entrypoint>');
-    expect(output.join('\n')).toContain('deploy [options] <entrypoint>');
-    expect(output.join('\n')).toContain('delete [options] <entrypoint>');
+    expect(output.join('\n')).toContain('plan [options] [entrypoint]');
+    expect(output.join('\n')).toContain('deploy [options] [entrypoint]');
+    expect(output.join('\n')).toContain('status [options] [entrypoint]');
+    expect(output.join('\n')).toContain('destroy [options] [entrypoint]');
+    expect(output.join('\n')).toContain('delete [options] [entrypoint]');
     expect(output.join('\n')).toContain('replay');
   });
 
@@ -258,6 +269,39 @@ describe('applik8s CLI', () => {
     expect(output.join('\n')).toContain('--strategy must be "direct" or "kro"');
   });
 
+  it('resolves the lifecycle entrypoint from package configuration without using an ambient Kubernetes context', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-project-config-'));
+    const output: string[] = [];
+    const previousContext = process.env.APPLIK8S_CONTEXT;
+    try {
+      await writeFile(join(dir, 'package.json'), JSON.stringify({
+        applik8s: {
+          entrypoint: 'src/application.ts',
+          compositionName: 'application',
+          instance: 'kubernetes/application.yaml',
+        },
+      }));
+      process.env.APPLIK8S_CONTEXT = 'orbstack';
+      const code = await runCli(
+        ['deploy', '--strategy', 'other'],
+        {
+          cwd: dir,
+          stdout: (message) => output.push(message),
+          stderr: (message) => output.push(message),
+        },
+      );
+      expect(code).toBe(1);
+      expect(output.join('\n')).toContain(
+        '--strategy must be "direct" or "kro"',
+      );
+      expect(output.join('\n')).not.toContain('No application entrypoint');
+    } finally {
+      if (previousContext === undefined) delete process.env.APPLIK8S_CONTEXT;
+      else process.env.APPLIK8S_CONTEXT = previousContext;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('explains diagnostic reasons through the shared taxonomy', async () => {
     const output: string[] = [];
 
@@ -274,7 +318,73 @@ describe('applik8s CLI', () => {
     const code = await runCli(['explain', 'NotAReason'], { cwd: process.cwd(), stdout: (message) => output.push(message), stderr: (message) => output.push(message) });
 
     expect(code).toBe(1);
-    expect(output.join('\n')).toContain('No diagnostic advice is registered');
+    expect(output.join('\n')).toContain('No application entrypoint');
+  });
+
+  it('explains an operation from the same normalized graph and catalog used by build', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-explain-operation-'));
+    try {
+      const sourceRows = pgTable('source_rows', {
+        id: text('id').primaryKey(),
+        value: text('value').notNull(),
+      });
+      const application = app('explain-source');
+      const database = application.database.postgres('application', {
+        schema: { sourceRows },
+      });
+      const Source = application.model(sourceRows, {
+        name: 'Source',
+        database,
+      });
+      void Source;
+      const graph = applicationGraphFor(application.composition);
+      if (!graph) throw new Error('Expected an application graph.');
+      const catalog = compileApplicationOperationCatalog(graph);
+      const outputDirectory = join(dir, '.applik8s', 'deploy', 'typekro');
+      await mkdir(outputDirectory, { recursive: true });
+      await writeFile(
+        join(outputDirectory, 'application-graph.json'),
+        JSON.stringify(graph),
+      );
+      await writeFile(
+        join(outputDirectory, 'operation-catalog.json'),
+        JSON.stringify(catalog),
+      );
+      await writeFile(
+        join(outputDirectory, 'typekro-composition.json'),
+        JSON.stringify({
+          spec: {
+            applicationGraph: {
+              digest: `sha256:${'a'.repeat(64)}`,
+            },
+          },
+        }),
+      );
+      const output: string[] = [];
+      const code = await runCli(
+        ['explain', 'Source.create', '--json'],
+        {
+          cwd: dir,
+          stdout: (message) => output.push(message),
+          stderr: (message) => output.push(message),
+        },
+      );
+      expect(code).toBe(0);
+      const explanation = JSON.parse(output.join('\n')) as {
+        readonly apiVersion: string;
+        readonly operation: { readonly id: string };
+        readonly deployment: { readonly state: string };
+      };
+      expect(explanation).toMatchObject({
+        apiVersion: 'applik8s.explanation/v1alpha1',
+        operation: {
+          id: 'applik8s://models/Source/operations/create',
+        },
+        deployment: { state: 'not-planned' },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('stages the one authored Application instance matching the root RGD', async () => {

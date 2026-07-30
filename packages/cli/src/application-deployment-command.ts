@@ -13,7 +13,11 @@ import {
   stageExplicitApplicationInstance,
 } from './application-deployment-files.js';
 import {
+  applicationInstallationReadiness,
   readApplicationInstanceSpec,
+  readApplicationInstance,
+  readResourceGraphDefinition,
+  resourceGraphDefinitionReadiness,
   verifyApplicationRegistryPullSecret,
   waitForApplicationEndpoint,
   waitForApplicationInstanceReadiness,
@@ -51,6 +55,11 @@ export interface ApplicationDeleteCommandOptions {
   readonly compositionName?: string;
   readonly instanceName?: string;
   readonly controlPlaneNamespace?: string;
+}
+
+export interface ApplicationStatusCommandOptions
+  extends ApplicationDeleteCommandOptions {
+  readonly json?: boolean;
 }
 
 export interface ApplicationDeploymentCommandRuntime {
@@ -256,6 +265,127 @@ export async function runApplicationDelete(
   await runPhase('alchemy-destroy', io, () => deployment.destroy());
   io.stdout(`Application instance ${target.instanceName} deleted; Alchemy and TypeKro finalization completed.`);
   return 0;
+}
+
+export async function runApplicationStatus(
+  entrypoint: string,
+  options: ApplicationStatusCommandOptions,
+  io: ApplicationDeploymentCommandIo,
+): Promise<number> {
+  const outDir = options.outDir ?? '.applik8s/deploy';
+  const bundlePath = resolve(io.cwd, outDir, 'typekro', 'typekro-composition.json');
+  const graphPath = join(dirname(bundlePath), 'application-deployment-graph.json');
+  if (!await access(graphPath).then(() => true).catch(() => false)) {
+    throw new Error(
+      `No deployment graph exists at ${graphPath}. Run applik8s plan or applik8s deploy before requesting graph-native status.`,
+    );
+  }
+  const target = await resolveGeneratedApplicationDeleteTarget(bundlePath, options);
+  const {
+    applicationDeploymentInstallationSpec,
+    createGeneratedApplicationAlchemyDeployment,
+    readApplicationDeploymentGraph,
+  } = await import('./application-alchemy-deployment.js');
+  const graph = await readApplicationDeploymentGraph(graphPath);
+  if (
+    graph.metadata.identity.instance !== target.instanceName
+    || graph.metadata.identity.controlPlaneNamespace
+      !== target.controlPlaneNamespace
+  ) {
+    throw new Error(
+      `Status target ${target.controlPlaneNamespace}/${target.instanceName} does not match persisted Alchemy stack identity ${graph.metadata.identity.controlPlaneNamespace}/${graph.metadata.identity.instance}.`,
+    );
+  }
+  const spec = applicationDeploymentInstallationSpec(graph);
+  const source = await loadTypeKroCompositionEntrypoint(
+    resolve(io.cwd, entrypoint),
+    options.compositionName ?? 'app',
+  );
+  const registry = await resolveDeploymentContainerRegistry(
+    bundlePath,
+    options.context,
+    spec,
+    io,
+  );
+  const deployment = await createGeneratedApplicationAlchemyDeployment({
+    graphPath,
+    source: source as never,
+    spec: spec as never,
+    context: options.context,
+    registry,
+    projectRoot: io.cwd,
+  });
+  const [alchemy, definitionResource, instanceResource] = await Promise.all([
+    deployment.plan(),
+    target.resourceGraphDefinitionName
+      ? readResourceGraphDefinition(
+          options.context,
+          target.resourceGraphDefinitionName,
+        )
+      : Promise.resolve(undefined),
+    readApplicationInstance(options.context, {
+      apiVersion: target.apiVersion,
+      kind: target.kind,
+      name: target.instanceName,
+      namespace: target.controlPlaneNamespace,
+    }),
+  ]);
+  const definition = resourceGraphDefinitionReadiness(definitionResource);
+  const installation = applicationInstallationReadiness(instanceResource);
+  const changes = alchemy.changes.filter((change) => change.action !== 'noop');
+  const report = {
+    apiVersion: 'applik8s.status/v1alpha1',
+    application: graph.metadata.identity.application,
+    context: options.context,
+    deploymentGraph: {
+      digest: graph.metadata.sourceGraphDigest,
+      profile: graph.metadata.identity.profile,
+      strategy: graph.metadata.strategy,
+    },
+    instance: {
+      apiVersion: target.apiVersion,
+      kind: target.kind,
+      name: target.instanceName,
+      namespace: target.controlPlaneNamespace,
+      state: installation.state,
+      summary: installation.summary,
+      ...(installation.url ? { url: installation.url } : {}),
+    },
+    resourceGraphDefinition: {
+      name: target.resourceGraphDefinitionName,
+      state: definition.state,
+      summary: definition.summary,
+    },
+    alchemy: {
+      resources: alchemy.changes.length,
+      pendingChanges: changes.map((change) => ({
+        action: change.action,
+        type: change.type,
+        id: change.id,
+      })),
+      declarationCount: alchemy.declarationCount,
+    },
+  } as const;
+  if (options.json) {
+    io.stdout(JSON.stringify(report));
+  } else {
+    io.stdout(
+      `${target.apiVersion}/${target.kind}/${target.controlPlaneNamespace}/${target.instanceName}: ${installation.state} (${installation.summary})`,
+    );
+    io.stdout(
+      `ResourceGraphDefinition/${target.resourceGraphDefinitionName ?? '<unknown>'}: ${definition.state} (${definition.summary})`,
+    );
+    io.stdout(
+      `Alchemy: ${alchemy.changes.length} resources, ${changes.length} pending change(s), ${alchemy.declarationCount} TypeKro declaration(s)`,
+    );
+    for (const change of changes) {
+      io.stdout(`  ${change.action} ${change.type} ${change.id}`);
+    }
+    if (installation.url) io.stdout(`URL: ${installation.url}`);
+  }
+  return installation.state === 'failed' || definition.state === 'failed'
+    ? 1
+    : 0;
 }
 
 async function emitDeploymentGraph(

@@ -1,6 +1,9 @@
 // typecast-file-boundary: schema-normalized streams, projections, and subscriptions cross erased graph registries and regain declaration-time generics by stable IDs.
 
-import type { ApplicationOperationLike } from '@applik8s/client';
+import {
+  getApplicationOperationContract,
+  type ApplicationOperationLike,
+} from '@applik8s/client';
 import type { ApplicationMessageContractSchema, ApplicationProviderNode, ApplicationProviderRef, ApplicationRetryPolicy, JsonObject, JsonValue } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk';
@@ -670,6 +673,21 @@ export function registerApplicationGateway(state: ApplicationReactiveState, name
   const subscriptionRefs = subscriptions.map((subscription) => ({ nodeId: reactiveNodeId('subscription', subscription.name) }));
   for (const subscription of subscriptionRefs) if (!state.graphNodes.some((node) => node.id === subscription.nodeId && node.kind === 'subscription')) throw new Error(`Application gateway ${name} references unregistered subscription ${subscription.nodeId}.`);
   if (commandRefs.length > 0 && !options.authorizeCommand) throw new Error(`Application gateway ${name} exposes commands and must declare authorizeCommand.`);
+  if (options.authorizeCommand) {
+    for (const command of options.commands ?? []) {
+      const contract = getApplicationOperationContract(command);
+      if ((contract?.authority?.classification ?? 'unclassified') !== 'unclassified') continue;
+      const classify = (typeof command === 'function' || (typeof command === 'object' && command !== null))
+        ? Reflect.get(command, 'applicationPolicy')
+        : undefined;
+      if (typeof classify !== 'function') {
+        throw new Error(
+          `Application gateway ${name} cannot classify command ${contract?.id ?? '<unknown>'} through its application policy.`,
+        );
+      }
+      Reflect.apply(classify, command, []);
+    }
+  }
   const deployment = options.deployment;
   if (deployment?.cursorSecret.namespace && deployment.cursorSecret.namespace !== deployment.namespace) throw new Error(`Application gateway ${name} cannot mount cursor Secret from another namespace.`);
   // typecast: generated authentication receives the standard Request boundary and returns the declared gateway identity contract.

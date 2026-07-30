@@ -1,14 +1,23 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command, CommanderError } from 'commander';
 import {
   runApplicationDeploy,
   runApplicationDelete,
+  runApplicationStatus,
   type ApplicationDeleteCommandOptions,
   type ApplicationDeployCommandOptions,
   type ApplicationDeploymentCommandIo,
+  type ApplicationStatusCommandOptions,
 } from './application-deployment-command.js';
+import {
+  readApplicationProjectConfiguration,
+  resolveApplicationContext,
+  resolveApplicationEntrypoint,
+} from './application-project-config.js';
+import { resolveApplicationBuildPackage } from './application-deployment-files.js';
 
 interface CliIo extends ApplicationDeploymentCommandIo {}
 
@@ -19,6 +28,30 @@ interface BuildCommandOptions {
   readonly compositionName?: string;
   readonly connectionBindings?: string;
   readonly production?: boolean;
+}
+
+interface ApplicationDeployCliOptions
+  extends Omit<ApplicationDeployCommandOptions, 'context'> {
+  readonly context?: string;
+}
+
+interface ApplicationDeleteCliOptions
+  extends Omit<ApplicationDeleteCommandOptions, 'context'> {
+  readonly context?: string;
+}
+
+interface ApplicationStatusCliOptions
+  extends Omit<ApplicationStatusCommandOptions, 'context'> {
+  readonly context?: string;
+}
+
+interface ExplainCommandOptions {
+  readonly entrypoint?: string;
+  readonly outDir?: string;
+  readonly compositionName?: string;
+  readonly connectionBindings?: string;
+  readonly skipAppBuild?: boolean;
+  readonly json?: boolean;
 }
 
 interface ChildProcessOptions {
@@ -70,13 +103,39 @@ function createProgram(io: CliIo): Command {
     });
 
   program
+    .command('plan')
+    .description('Compile and preview the graph-native Alchemy and TypeKro deployment without applying effects.')
+    .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
+    .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
+    .option('--strategy <strategy>', 'root TypeKro deployment strategy: kro or direct', 'kro')
+    .option('--out-dir <dir>', 'output directory')
+    .option('--composition-name <name>', 'TypeKro composition export name')
+    .option('--connection-bindings <path>', 'JSON operator-to-alias connection bindings')
+    .option('--instance <path>', 'explicit Application instance YAML')
+    .option('--skip-app-build', 'skip the application package build')
+    .option(
+      '--acknowledge <token>',
+      'acknowledge one exact installation-scoped destructive profile transition',
+      collectOption,
+      [],
+    )
+    .action(async (entrypoint: string | undefined, options: ApplicationDeployCliOptions) => {
+      const resolved = await resolveDeployCommand(entrypoint, options, io);
+      const code = await runDeploy(resolved.entrypoint, {
+        ...resolved.options,
+        planOnly: true,
+      }, io);
+      if (code !== 0) throw new CommanderError(code, 'applik8s.plan.failed', 'Plan failed.');
+    });
+
+  program
     .command('deploy')
     .description('Build, plan, and reconcile an Application through Alchemy and TypeKro.')
-    .argument('<entrypoint>', 'application entrypoint module')
-    .requiredOption('--context <context>', 'explicit kubeconfig context')
+    .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
+    .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
     .option('--strategy <strategy>', 'root TypeKro deployment strategy: kro or direct', 'kro')
-    .option('--out-dir <dir>', 'output directory', '.applik8s/deploy')
-    .option('--composition-name <name>', 'TypeKro composition export name', 'app')
+    .option('--out-dir <dir>', 'output directory')
+    .option('--composition-name <name>', 'TypeKro composition export name')
     .option('--connection-bindings <path>', 'JSON operator-to-alias connection bindings')
     .option('--instance <path>', 'explicit Application instance YAML')
     .option('--skip-app-build', 'skip the application package build')
@@ -89,31 +148,70 @@ function createProgram(io: CliIo): Command {
       [],
     )
     .option('--runtime-entrypoint <path>', 'internal prebuilt application module used by the Node deployment host')
-    .action(async (entrypoint: string, options: ApplicationDeployCommandOptions) => {
-      const code = await runDeploy(entrypoint, options, io);
+    .action(async (entrypoint: string | undefined, options: ApplicationDeployCliOptions) => {
+      const resolved = await resolveDeployCommand(entrypoint, options, io);
+      const code = await runDeploy(resolved.entrypoint, resolved.options, io);
       if (code !== 0) throw new CommanderError(code, 'applik8s.deploy.failed', 'Deploy failed.');
     });
 
   program
-    .command('delete')
-    .description('Destroy the scoped Alchemy Stack and its TypeKro application lifecycle.')
-    .argument('<entrypoint>', 'application entrypoint module')
-    .requiredOption('--context <context>', 'explicit kubeconfig context')
-    .option('--out-dir <dir>', 'existing deployment artifact directory', '.applik8s/deploy')
-    .option('--composition-name <name>', 'TypeKro composition export name', 'app')
+    .command('status')
+    .description('Observe the persisted Alchemy plan and authoritative TypeKro Application status.')
+    .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
+    .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
+    .option('--out-dir <dir>', 'existing deployment artifact directory')
+    .option('--composition-name <name>', 'TypeKro composition export name')
     .option('--instance-name <name>', 'instance name when selection is ambiguous')
     .option('--control-plane-namespace <namespace>', 'namespace containing the root Application instance')
-    .action(async (entrypoint: string, options: ApplicationDeleteCommandOptions) => {
-      const code = await runDelete(entrypoint, options, io);
+    .option('--json', 'print the shared machine-readable status contract')
+    .action(async (entrypoint: string | undefined, options: ApplicationStatusCliOptions) => {
+      const resolved = await resolveStatusCommand(entrypoint, options, io);
+      const code = await runStatus(resolved.entrypoint, resolved.options, io);
+      if (code !== 0) throw new CommanderError(code, 'applik8s.status.failed', 'Status failed.');
+    });
+
+  program
+    .command('destroy')
+    .description('Destroy the scoped Alchemy Stack and its TypeKro application lifecycle.')
+    .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
+    .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
+    .option('--out-dir <dir>', 'existing deployment artifact directory')
+    .option('--composition-name <name>', 'TypeKro composition export name')
+    .option('--instance-name <name>', 'instance name when selection is ambiguous')
+    .option('--control-plane-namespace <namespace>', 'namespace containing the root Application instance')
+    .action(async (entrypoint: string | undefined, options: ApplicationDeleteCliOptions) => {
+      const resolved = await resolveDeleteCommand(entrypoint, options, io);
+      const code = await runDelete(resolved.entrypoint, resolved.options, io);
+      if (code !== 0) throw new CommanderError(code, 'applik8s.destroy.failed', 'Destroy failed.');
+    });
+
+  program
+    .command('delete')
+    .description('Deprecated alias for destroy.')
+    .argument('[entrypoint]', 'application entrypoint module; defaults to package.json applik8s.entrypoint')
+    .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
+    .option('--out-dir <dir>', 'existing deployment artifact directory')
+    .option('--composition-name <name>', 'TypeKro composition export name')
+    .option('--instance-name <name>', 'instance name when selection is ambiguous')
+    .option('--control-plane-namespace <namespace>', 'namespace containing the root Application instance')
+    .action(async (entrypoint: string | undefined, options: ApplicationDeleteCliOptions) => {
+      const resolved = await resolveDeleteCommand(entrypoint, options, io);
+      const code = await runDelete(resolved.entrypoint, resolved.options, io);
       if (code !== 0) throw new CommanderError(code, 'applik8s.delete.failed', 'Delete failed.');
     });
 
   program
     .command('explain')
-    .description('Explain a diagnostic reason and first recovery steps.')
-    .argument('<reason>', 'diagnostic reason')
-    .action(async (reason: string) => {
-      const code = await runExplain(reason, io);
+    .description('Explain one operation from the normalized graph, or a registered diagnostic reason.')
+    .argument('<target>', 'operation alias/id or diagnostic reason')
+    .option('--entrypoint <path>', 'application entrypoint; defaults to package.json applik8s.entrypoint')
+    .option('--out-dir <dir>', 'compiled graph/deployment artifact directory')
+    .option('--composition-name <name>', 'TypeKro composition export name')
+    .option('--connection-bindings <path>', 'JSON operator-to-alias connection bindings')
+    .option('--skip-app-build', 'skip the application package build when graph artifacts need compilation')
+    .option('--json', 'print the shared machine-readable explanation contract')
+    .action(async (target: string, options: ExplainCommandOptions) => {
+      const code = await runExplain(target, options, io);
       if (code !== 0) throw new CommanderError(code, 'applik8s.explain.failed', 'Explain failed.');
     });
 
@@ -149,6 +247,69 @@ function createProgram(io: CliIo): Command {
   return program;
 }
 
+async function resolveDeployCommand(
+  entrypoint: string | undefined,
+  options: ApplicationDeployCliOptions,
+  io: CliIo,
+): Promise<{
+  readonly entrypoint: string;
+  readonly options: ApplicationDeployCommandOptions;
+}> {
+  const configuration = await readApplicationProjectConfiguration(io.cwd);
+  return {
+    entrypoint: resolveApplicationEntrypoint(entrypoint, configuration),
+    options: {
+      ...options,
+      context: resolveApplicationContext(options.context, configuration),
+      outDir: options.outDir ?? configuration.outDir ?? '.applik8s/deploy',
+      compositionName:
+        options.compositionName ?? configuration.compositionName ?? 'app',
+      ...(options.instance ?? configuration.instance
+        ? { instance: options.instance ?? configuration.instance }
+        : {}),
+    },
+  };
+}
+
+async function resolveDeleteCommand(
+  entrypoint: string | undefined,
+  options: ApplicationDeleteCliOptions,
+  io: CliIo,
+): Promise<{
+  readonly entrypoint: string;
+  readonly options: ApplicationDeleteCommandOptions;
+}> {
+  const configuration = await readApplicationProjectConfiguration(io.cwd);
+  return {
+    entrypoint: resolveApplicationEntrypoint(entrypoint, configuration),
+    options: {
+      ...options,
+      context: resolveApplicationContext(options.context, configuration),
+      outDir: options.outDir ?? configuration.outDir ?? '.applik8s/deploy',
+      compositionName:
+        options.compositionName ?? configuration.compositionName ?? 'app',
+    },
+  };
+}
+
+async function resolveStatusCommand(
+  entrypoint: string | undefined,
+  options: ApplicationStatusCliOptions,
+  io: CliIo,
+): Promise<{
+  readonly entrypoint: string;
+  readonly options: ApplicationStatusCommandOptions;
+}> {
+  const resolved = await resolveDeleteCommand(entrypoint, options, io);
+  return {
+    entrypoint: resolved.entrypoint,
+    options: {
+      ...resolved.options,
+      ...(options.json ? { json: true } : {}),
+    },
+  };
+}
+
 async function runDeploy(
   entrypoint: string,
   options: ApplicationDeployCommandOptions,
@@ -174,6 +335,25 @@ async function runDeploy(
     });
   }
   return runApplicationDeploy(entrypoint, options, io, { runChild, runBuild });
+}
+
+async function runStatus(
+  entrypoint: string,
+  options: ApplicationStatusCommandOptions,
+  io: CliIo,
+): Promise<number> {
+  if (isBunRuntime() && process.env.APPLIK8S_DISABLE_NODE_STATUS_HANDOFF !== '1') {
+    io.stdout('Handing application status observation to the Node deployment host.');
+    return runChild({
+      command: 'node',
+      args: [
+        fileURLToPath(new URL('./node-deploy-runner.mjs', import.meta.url)),
+        JSON.stringify({ command: 'status', entrypoint, options, cwd: io.cwd }),
+      ],
+      cwd: io.cwd,
+    });
+  }
+  return runApplicationStatus(entrypoint, options, io);
 }
 
 async function runDelete(
@@ -221,21 +401,73 @@ async function runBuild(
   }
 }
 
-async function runExplain(reason: string, io: CliIo): Promise<number> {
+async function runExplain(
+  target: string,
+  options: ExplainCommandOptions,
+  io: CliIo,
+): Promise<number> {
   // static-import-exception: diagnostics stay out of the startup path until the explain command is selected.
   const { diagnosticAdviceForReason } = await import('@applik8s/compiler/diagnostics');
-  const advice = diagnosticAdviceForReason(reason);
-  if (!advice) {
-    io.stderr(`No diagnostic advice is registered for ${reason}.`);
-    return 1;
+  const advice = diagnosticAdviceForReason(target);
+  if (advice) {
+    if (options.json) {
+      io.stdout(JSON.stringify({
+        apiVersion: 'applik8s.diagnosticExplanation/v1alpha1',
+        ...advice,
+      }));
+      return 0;
+    }
+    io.stdout(`${advice.reason} (${advice.category})`);
+    io.stdout(`What happened: ${advice.whatHappened}`);
+    io.stdout(`Likely cause: ${advice.likelyCause}`);
+    io.stdout(`How to fix: ${advice.howToFix}`);
+    io.stdout(`Effects: ${advice.effects}`);
+    io.stdout(`Retry: ${advice.retry}`);
+    return 0;
   }
-  io.stdout(`${advice.reason} (${advice.category})`);
-  io.stdout(`What happened: ${advice.whatHappened}`);
-  io.stdout(`Likely cause: ${advice.likelyCause}`);
-  io.stdout(`How to fix: ${advice.howToFix}`);
-  io.stdout(`Effects: ${advice.effects}`);
-  io.stdout(`Retry: ${advice.retry}`);
-  return 0;
+  const configuration = await readApplicationProjectConfiguration(io.cwd);
+  const outDir = options.outDir ?? configuration.outDir ?? '.applik8s/deploy';
+  const graphPath = resolve(
+    io.cwd,
+    outDir,
+    'typekro',
+    'application-graph.json',
+  );
+  if (!await fileExists(graphPath)) {
+    const entrypoint = resolveApplicationEntrypoint(
+      options.entrypoint,
+      configuration,
+    );
+    if (!options.skipAppBuild) {
+      const applicationPackage = await resolveApplicationBuildPackage(
+        resolve(io.cwd, entrypoint),
+      );
+      const applicationBuild = await runChild({
+        command: 'bun',
+        args: ['run', 'build'],
+        cwd: applicationPackage.directory,
+      });
+      if (applicationBuild !== 0) return applicationBuild;
+    }
+    const build = await runBuild(entrypoint, {
+      outDir,
+      typekro: true,
+      compositionName:
+        options.compositionName ?? configuration.compositionName ?? 'app',
+      ...(options.connectionBindings
+        ? { connectionBindings: options.connectionBindings }
+        : {}),
+    }, io);
+    if (build !== 0) return build;
+  }
+  const { explainCompiledApplicationOperation } = await import(
+    './application-explain-command.js'
+  );
+  return explainCompiledApplicationOperation(
+    target,
+    { outDir, ...(options.json ? { json: true } : {}) },
+    io,
+  );
 }
 
 function runChild(options: ChildProcessOptions): Promise<number> {
@@ -274,6 +506,11 @@ function isBunRuntime(): boolean {
   return typeof process.versions.bun === 'string';
 }
 
+async function fileExists(path: string): Promise<boolean> {
+  const { access } = await import('node:fs/promises');
+  return access(path).then(() => true).catch(() => false);
+}
+
 function collectOption(value: string, previous: readonly string[]): string[] {
   return [...previous, value];
 }
@@ -298,7 +535,9 @@ export {
 export {
   applicationInstanceSpec,
   applicationInstallationReadiness,
+  readApplicationInstance,
   readApplicationInstanceSpec,
+  readResourceGraphDefinition,
   resourceGraphDefinitionReadiness,
   waitForApplicationEndpoint,
 } from './application-deployment-observer.js';
@@ -306,3 +545,8 @@ export {
   applicationGraphDeploymentSlice,
   readGeneratedApplicationGraph,
 } from './application-deployment-registry.js';
+export {
+  readApplicationProjectConfiguration,
+  resolveApplicationContext,
+  resolveApplicationEntrypoint,
+} from './application-project-config.js';

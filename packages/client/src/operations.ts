@@ -190,6 +190,12 @@ export interface AuthorizableOperation<TInput, TOutput, TTarget = unknown> {
   readonly authority: ApplicationOperationAuthorizationContract;
   readonly permission: ApplicationOperationPermission<this>;
   requires(permission: ApplicationPermissionDefinition): this;
+  /**
+   * Delegate the final allow/deny decision to the application policy installed
+   * at the transport boundary. Gateways call this automatically for otherwise
+   * unclassified commands when `authorizeCommand` is present.
+   */
+  applicationPolicy(): this;
   public(): this;
   all(): ApplicationScopedOperation<this, TTarget>;
   on(target: ApplicationModelReference<TTarget>): ApplicationScopedOperation<this, TTarget>;
@@ -537,6 +543,19 @@ function decorateAuthorizableOperation<
           ...value,
           classification: 'assigned',
           permissionIds: [...new Set([...value.permissionIds, permission.id])],
+        }));
+        return callable;
+      },
+      enumerable: false,
+    },
+    applicationPolicy: {
+      value: () => {
+        updateAuthority((value) => ({
+          ...value,
+          classification: 'application-policy',
+          permissionIds: [],
+          grantable: false,
+          delegable: false,
         }));
         return callable;
       },

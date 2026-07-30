@@ -103,16 +103,27 @@ describe('Agentic Start generator', () => {
     ) as {
       readonly scripts: Readonly<Record<string, string>>;
       readonly dependencies: Readonly<Record<string, string>>;
+      readonly applik8s: Readonly<Record<string, string>>;
     };
-    expect(manifest.scripts.deploy).toBe(
-      'applik8s deploy src/application.ts',
-    );
+    expect(manifest.scripts.plan).toBe('applik8s plan');
+    expect(manifest.scripts.deploy).toBe('applik8s deploy');
+    expect(manifest.scripts.status).toBe('applik8s status');
+    expect(manifest.scripts.destroy).toBe('applik8s destroy');
+    expect(manifest.applik8s).toEqual({
+      entrypoint: 'src/application.ts',
+      compositionName: 'application',
+      instance: 'kubernetes/application.yaml',
+      outDir: '.applik8s/deploy',
+    });
     expect(manifest.dependencies['@tanstack/react-start']).toBe('1.168.28');
     expect(manifest.dependencies['@tanstack/react-router']).toBe('1.168.28');
     expect(manifest.dependencies['@applik8s/start-agentic']).toBe(
       'workspace:*',
     );
     expect(manifest.dependencies['@tanstack/ai-react']).toBe('0.18.1');
+    expect(
+      await readFile(join(target, 'kubernetes/application.yaml'), 'utf8'),
+    ).toContain('kind: ResearchWorkspace');
   });
 
   it('generates the file-route tree after installing the generated application', async () => {

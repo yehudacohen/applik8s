@@ -142,15 +142,22 @@ async function updateGeneratedPackage(
     scripts?: Record<string, string>;
     dependencies?: Record<string, string>;
     devDependencies?: Record<string, string>;
+    applik8s?: Record<string, string>;
   };
   manifest.name = projectName;
   manifest.scripts = {
     ...manifest.scripts,
     'db:generate': 'drizzle-kit generate',
-    plan: 'applik8s plan src/application.ts',
-    deploy: 'applik8s deploy src/application.ts',
-    status: 'applik8s status src/application.ts',
-    destroy: 'applik8s delete src/application.ts',
+    plan: 'applik8s plan',
+    deploy: 'applik8s deploy',
+    status: 'applik8s status',
+    destroy: 'applik8s destroy',
+  };
+  manifest.applik8s = {
+    entrypoint: 'src/application.ts',
+    compositionName: 'application',
+    instance: 'kubernetes/application.yaml',
+    outDir: '.applik8s/deploy',
   };
   manifest.dependencies = {
     ...manifest.dependencies,
@@ -477,8 +484,27 @@ export default defineConfig({
   out: './drizzle',
 });
 `,
+    'kubernetes/application.yaml': `apiVersion: ${projectName}.applik8s.dev/v1alpha1
+kind: ${applicationKind(projectName)}
+metadata:
+  name: ${projectName}
+  namespace: default
+spec:
+  name: ${projectName}
+  profile: starter
+`,
     '.env.example': `# Starter is credential-free and explicitly non-production.
 APPLIK8S_PROFILE=starter
+# The CLI never adopts kubectl's ambient current context implicitly.
+APPLIK8S_CONTEXT=orbstack
 `,
   };
+}
+
+function applicationKind(projectName: string): string {
+  return projectName
+    .split('-')
+    .filter(Boolean)
+    .map((segment) => segment[0]?.toUpperCase() + segment.slice(1))
+    .join('');
 }

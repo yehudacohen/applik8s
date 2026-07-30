@@ -91,6 +91,35 @@ export function builtinApplicationDeploymentContributors(): readonly Application
   }));
 }
 
+/**
+ * Profile selections are a framework-owned deployment indirection rather than
+ * a provider implementation. The selected branches remain encoded in the
+ * source composition so TypeKro can lower their installation-schema
+ * conditions. This keeps qualified/custom interfaces extensible without
+ * requiring every provider adapter to register the same meta implementation.
+ */
+export function applicationProviderSelectionDeploymentContributor(
+  providerInterface: string,
+): ApplicationDeploymentContributor {
+  return {
+    interface: providerInterface,
+    implementation: "application-provider-selection",
+    version: 1,
+    contribute(
+      provider: ApplicationProviderNode,
+      context: ApplicationDeploymentPlanningContext,
+    ): ApplicationDeploymentContribution {
+      return {
+        nodes: [],
+        edges: [],
+        compositionFragments: [
+          providerFragment(provider, context, "root-composition"),
+        ],
+      };
+    },
+  };
+}
+
 interface ProviderDirectContribution {
   readonly nodes: readonly ApplicationDeploymentNode[];
   readonly edges: readonly ApplicationDeploymentEdge[];
