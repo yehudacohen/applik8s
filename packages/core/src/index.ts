@@ -23,5 +23,10 @@ export {
   planApplicationProfileTransitions,
   profileTransitionAcknowledgement,
 } from './application-profile-transition.js';
+export type * from './application-start.js';
+export {
+  applicationStartDefinitionApiVersion,
+  validateApplicationStartDefinition,
+} from './application-start.js';
 export type * from './dns.js';
 export type * from './types.js';

@@ -1,0 +1,20 @@
+{
+  "name": "create-applik8s",
+  "version": "0.6.0",
+  "description": "Create an upstream-shaped TanStack Start application with an Applik8s Start overlay.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "bin": {
+    "create-applik8s": "./dist/bin.js"
+  },
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/create-applik8s"
+  },
+  "dependencies": {
+    "@applik8s/start-agentic": "0.6.0"
+  }
+}

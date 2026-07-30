@@ -27,3 +27,4 @@ await cp(join(root, 'packages/cli/src/node-deploy-runner.mjs'), join(root, 'pack
 await cp(join(root, 'packages/cli/src/node-typescript-loader.mjs'), join(root, 'packages/cli/dist/node-typescript-loader.mjs'));
 await cp(join(root, 'packages/cli/src/node-register-typescript.mjs'), join(root, 'packages/cli/dist/node-register-typescript.mjs'));
 await chmod(join(root, 'packages/cli/dist/bin.js'), 0o755);
+await chmod(join(root, 'packages/create-applik8s/dist/bin.js'), 0o755);

@@ -37,6 +37,7 @@ const publicEntrypoints = [
   '@applik8s/approvals',
   '@applik8s/artifacts',
   '@applik8s/conversations',
+  '@applik8s/start-agentic',
   '@applik8s/evals',
   '@applik8s/usage',
   '@applik8s/identity',

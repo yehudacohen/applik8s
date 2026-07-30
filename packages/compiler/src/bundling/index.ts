@@ -236,6 +236,7 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/approvals', resolve(workspaceRoot, 'packages/approvals/src/index.ts')],
     ['@applik8s/artifacts', resolve(workspaceRoot, 'packages/artifacts/src/index.ts')],
     ['@applik8s/conversations', resolve(workspaceRoot, 'packages/conversations/src/index.ts')],
+    ['@applik8s/start-agentic', resolve(workspaceRoot, 'packages/start-agentic/src/index.ts')],
     ['@applik8s/evals', resolve(workspaceRoot, 'packages/evals/src/index.ts')],
     ['@applik8s/usage', resolve(workspaceRoot, 'packages/usage/src/index.ts')],
     ['@applik8s/client', resolve(workspaceRoot, 'packages/client/src/index.ts')],

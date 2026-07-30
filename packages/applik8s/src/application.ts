@@ -256,9 +256,22 @@ export interface ApplicationStorageRegistrar {
 
 export interface ApplicationDatabaseRegistrar {
   postgres<TSchema extends Readonly<Record<string, unknown>>>(name: string, options: ApplicationDatabasePostgresOptions<TSchema>): ApplicationDatabaseBinding<TSchema>;
+  bind<TSchema extends Readonly<Record<string, unknown>>>(name: string, options: ApplicationDatabaseBindOptions<TSchema>): ApplicationDatabaseBinding<TSchema>;
 }
 
 export interface ApplicationDatabasePostgresOptions<TSchema extends Readonly<Record<string, unknown>>> extends Omit<ApplicationStoragePostgresOptions, 'migrations'> {
+  readonly schema: TSchema;
+  readonly migrations?: string | { readonly path: string; readonly digest?: string };
+  readonly access?: ApplicationPostgresRlsPolicy;
+}
+
+/**
+ * Binds native model schema and migration metadata to an already-provided
+ * transactional database. This is the profile-safe counterpart to
+ * database.postgres(...): it does not provision or register a second provider.
+ */
+export interface ApplicationDatabaseBindOptions<TSchema extends Readonly<Record<string, unknown>>> {
+  readonly provider: ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
   readonly schema: TSchema;
   readonly migrations?: string | { readonly path: string; readonly digest?: string };
   readonly access?: ApplicationPostgresRlsPolicy;
@@ -1014,6 +1027,14 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
       const binding = preview.database.postgres(databaseName, normalizedOptions);
       replays.push((scope) => {
         scope.database.postgres(databaseName, normalizedOptions);
+      });
+      invalidate();
+      return binding;
+    },
+    bind(databaseName, databaseOptions) {
+      const binding = preview.database.bind(databaseName, databaseOptions);
+      replays.push((scope) => {
+        scope.database.bind(databaseName, databaseOptions);
       });
       invalidate();
       return binding;
@@ -2141,6 +2162,30 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
         schema,
         ...(migrationArtifact ? { migrations: migrationArtifact } : {}),
         ...(access ? { access } : {}),
+      };
+      state.databases.set(name, binding);
+      return binding;
+    },
+    bind(name, options) {
+      if (state.databases.has(name)) {
+        throw new Error(`Application database ${name} is already registered.`);
+      }
+      const provider = applicationTransactionalDatabaseImplementation(options.provider);
+      if (!provider) {
+        throw new Error(
+          `app.database.bind(${JSON.stringify(name)}, ...) requires a provided TransactionalDatabase implementation.`,
+        );
+      }
+      const migrationArtifact = typeof options.migrations === 'string'
+        ? { path: options.migrations }
+        : options.migrations;
+      const binding: ApplicationDatabaseBinding<typeof options.schema> = {
+        kind: 'applicationDatabase',
+        name,
+        provider,
+        schema: options.schema,
+        ...(migrationArtifact ? { migrations: migrationArtifact } : {}),
+        ...(options.access ? { access: options.access } : {}),
       };
       state.databases.set(name, binding);
       return binding;

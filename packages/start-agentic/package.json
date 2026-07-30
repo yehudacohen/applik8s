@@ -1,0 +1,28 @@
+{
+  "name": "@applik8s/start-agentic",
+  "version": "0.6.0",
+  "description": "The maintained Applik8s Agentic Start definition, modules, profiles, and generator overlay.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/start-agentic"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/approvals": "0.6.0",
+    "@applik8s/artifacts": "0.6.0",
+    "@applik8s/conversations": "0.6.0",
+    "@applik8s/core": "0.6.0",
+    "@applik8s/evals": "0.6.0",
+    "@applik8s/usage": "0.6.0"
+  }
+}

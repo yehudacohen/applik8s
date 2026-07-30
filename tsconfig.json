@@ -22,6 +22,7 @@
       "@applik8s/approvals": ["packages/approvals/src/index.ts"],
       "@applik8s/artifacts": ["packages/artifacts/src/index.ts"],
       "@applik8s/conversations": ["packages/conversations/src/index.ts"],
+      "@applik8s/start-agentic": ["packages/start-agentic/src/index.ts"],
       "@applik8s/evals": ["packages/evals/src/index.ts"],
       "@applik8s/usage": ["packages/usage/src/index.ts"],
       "@applik8s/identity": ["packages/identity/src/index.ts"],

@@ -8,7 +8,10 @@ import {
   event,
   TransactionalDatabase,
 } from '@applik8s/applik8s';
-import { validateApplicationGraph } from '@applik8s/core';
+import {
+  type ApplicationProviderNode,
+  validateApplicationGraph,
+} from '@applik8s/core';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
@@ -236,6 +239,108 @@ describe('application deployment profiles', () => {
     );
     expect(kroYaml).toContain(
       '${schema.spec.profile == "starter"}',
+    );
+  });
+
+  it('binds a native Drizzle schema to one qualified profile database without provisioning a duplicate default', () => {
+    const records = pgTable('profile_records', {
+      id: text('id').primaryKey(),
+      body: text('body').notNull(),
+    });
+    const application = app('profile-native-database', {
+      namespace: 'profile-native-database',
+      spec: Installation,
+      status: type({ ready: 'boolean' }),
+    });
+    const PrimaryDatabase = TransactionalDatabase.named('primary');
+    const deployment = application.profile(
+      application.installation.spec,
+      'profile',
+    );
+    deployment
+      .provide(PrimaryDatabase)
+      .starter(() =>
+        TransactionalDatabase.postgres({
+          name: 'starter-primary',
+          database: 'application',
+        }),
+      )
+      .dedicated(() =>
+        TransactionalDatabase.postgres({
+          name: 'dedicated-primary',
+          database: 'application',
+          instances: 3,
+        }),
+      )
+      .external(() =>
+        TransactionalDatabase.postgres({
+          name: 'external-primary',
+          database: 'application',
+          provision: false,
+          cluster: {
+            apiVersion: 'postgresql.cnpg.io/v1',
+            kind: 'Cluster',
+            name: 'external-primary',
+            namespace: 'data',
+          },
+        }),
+      )
+      .exhaustive();
+
+    const database = application.database.bind('application', {
+      provider: application.inject(PrimaryDatabase),
+      schema: { records },
+      migrations: { path: './drizzle' },
+    });
+    application.model(records, { name: 'Record', database });
+
+    expect(database).toMatchObject({
+      kind: 'applicationDatabase',
+      name: 'application',
+      provider: {
+        kind: 'postgres',
+        database: 'application',
+      },
+      migrations: { path: './drizzle' },
+    });
+    const providers = applicationGraphFor(application.composition)?.nodes.filter(
+      (node): node is ApplicationProviderNode =>
+        node.kind === 'provider'
+        && node.interface === 'TransactionalDatabase'
+        && 'config' in node,
+    );
+    const provided = providers?.filter(
+      (node) => node.config?.bindingKind === 'provided',
+    );
+    expect(provided).toHaveLength(1);
+    expect(
+      providers?.some((node) => node.config?.bindingKind === 'default'),
+    ).toBe(false);
+    expect(provided?.[0]).toMatchObject({
+      implementation: 'application-provider-selection',
+      config: {
+        bindingKind: 'provided',
+        qualification: {
+          capability: 'TransactionalDatabase',
+          name: 'primary',
+        },
+      },
+    });
+    expect(
+      providers?.find(
+        (node) => node.config?.bindingKind === 'nativeRelationalModel',
+      ),
+    ).toMatchObject({
+      implementation: 'application-provider-selection',
+      config: {
+        transactionalDatabase: {
+          kind: 'application-provider-selection',
+          selector: 'schema.spec.profile',
+        },
+      },
+    });
+    expect(application.composition.factory('kro').toYaml()).toContain(
+      'schema.spec.profile',
     );
   });
 

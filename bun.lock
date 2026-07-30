@@ -31,6 +31,7 @@
         "@applik8s/runtime-opensearch": "0.6.0",
         "@applik8s/sdk": "0.6.0",
         "@applik8s/server": "0.6.0",
+        "@applik8s/start-agentic": "0.6.0",
         "@applik8s/tanstack-start": "0.6.0",
         "@applik8s/testing": "0.6.0",
         "@applik8s/typekro-adapter": "0.6.0",
@@ -265,6 +266,16 @@
       "name": "@applik8s/core",
       "version": "0.6.0",
     },
+    "packages/create-applik8s": {
+      "name": "create-applik8s",
+      "version": "0.6.0",
+      "bin": {
+        "create-applik8s": "./dist/bin.js",
+      },
+      "dependencies": {
+        "@applik8s/start-agentic": "0.6.0",
+      },
+    },
     "packages/deployment-alchemy": {
       "name": "@applik8s/deployment-alchemy",
       "version": "0.6.0",
@@ -492,6 +503,18 @@
         "@kubernetes/client-node": "^1.3.0",
       },
     },
+    "packages/start-agentic": {
+      "name": "@applik8s/start-agentic",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/approvals": "0.6.0",
+        "@applik8s/artifacts": "0.6.0",
+        "@applik8s/conversations": "0.6.0",
+        "@applik8s/core": "0.6.0",
+        "@applik8s/evals": "0.6.0",
+        "@applik8s/usage": "0.6.0",
+      },
+    },
     "packages/tanstack-start": {
       "name": "@applik8s/tanstack-start",
       "version": "0.6.0",
@@ -635,6 +658,8 @@
     "@applik8s/sdk": ["@applik8s/sdk@workspace:packages/sdk"],
 
     "@applik8s/server": ["@applik8s/server@workspace:packages/server"],
+
+    "@applik8s/start-agentic": ["@applik8s/start-agentic@workspace:packages/start-agentic"],
 
     "@applik8s/tanstack-start": ["@applik8s/tanstack-start@workspace:packages/tanstack-start"],
 
@@ -1499,6 +1524,8 @@
     "core-util-is": ["core-util-is@1.0.3", "", {}, "sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ=="],
 
     "cors": ["cors@2.8.6", "", { "dependencies": { "object-assign": "^4", "vary": "^1" } }, "sha512-tJtZBBHA6vjIAaF6EnIaq6laBBP9aq/Y3ouVJjEfoHbRBcHBAHYcMh/w8LDrk2PvIMMq8gmopa5D4V8RmbrxGw=="],
+
+    "create-applik8s": ["create-applik8s@workspace:packages/create-applik8s"],
 
     "cross-spawn": ["cross-spawn@7.0.6", "", { "dependencies": { "path-key": "^3.1.0", "shebang-command": "^2.0.0", "which": "^2.0.1" } }, "sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA=="],
 
