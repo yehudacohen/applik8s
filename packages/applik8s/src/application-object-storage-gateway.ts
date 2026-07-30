@@ -1,7 +1,7 @@
 // typecast-file-boundary: HTTP and object-store payloads are validated before conversion at this protocol adapter boundary.
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { ApplicationObjectStorageRuntime, ApplicationSignedObjectIntent, ApplicationVerifiedObjectCompletion } from './application-object-storage.js';
-import type { ApplicationRequestAdmission, ApplicationRequestIdentityProvider } from './application-providers.js';
+import type { ApplicationIdentityProvider, ApplicationRequestAdmission } from './application-providers.js';
 
 export interface ApplicationObjectStoreGatewayBinding {
   readonly name: string;
@@ -19,7 +19,7 @@ export interface ApplicationObjectStoreGatewayBinding {
 }
 
 export interface ApplicationObjectStorageGatewayOptions {
-  readonly identity: ApplicationRequestIdentityProvider;
+  readonly identity: ApplicationIdentityProvider;
   readonly cursorSecret: string;
   readonly stores: readonly ApplicationObjectStoreGatewayBinding[];
   readonly basePath?: string;

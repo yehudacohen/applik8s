@@ -1,18 +1,17 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { type as arkType } from 'arktype';
-import { parse } from 'yaml';
-
 import type { JsonSchemaSource, OperatorDefinition, OperatorManifest } from '@applik8s/core';
 import { sdk } from '@applik8s/sdk';
+import { type as arkType } from 'arktype';
+import { describe, expect, it } from 'vitest';
+import { parse } from 'yaml';
 import {
   buildOperatorManifest,
   emitOperatorKubernetesYaml,
   type KubernetesDocument,
-  validateStructuralOpenApiSchema,
   validateGeneratedKubernetesDocuments,
+  validateStructuralOpenApiSchema,
 } from '../src/index.js';
 
 interface ImageSpec {

@@ -1,6 +1,6 @@
 import type { FinalizeHandlerOptions, HandlerRegistration, OperatorDefinition, OperatorDeploymentOptions, PermissionRule, ResourceDefinition, ResourceObject } from '@applik8s/core';
-import { sdk } from '@applik8s/sdk';
 import type { OperatorDeploymentBindingKind, OperatorDeploymentStatus } from '@applik8s/sdk';
+import { sdk } from '@applik8s/sdk';
 import { kubernetesNameSegment } from './application-identifiers.js';
 import { applicationTypeKroString } from './application-typekro-values.js';
 

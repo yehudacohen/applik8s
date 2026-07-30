@@ -11,8 +11,8 @@ import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProvide
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationModelCommandBinding } from './application-models.js';
 import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions } from './application-processor-policy.js';
-import type { ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationAnalyticalDatabaseProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState } from './application-providers.js';
-import { applicationIndexBackend, applicationAnalyticalDatabaseImplementation, applicationProviderImplementationName, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationTransactionalDatabaseImplementation, defaultApplicationIndexProvider, IndexStore, isApplicationAnalyticalDatabaseProvider, isClickHouseAnalyticalDatabaseProvider, isPostgresAnalyticalDatabaseProvider } from './application-providers.js';
+import type { ApplicationAnalyticalDatabaseProvider, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState } from './application-providers.js';
+import { applicationAnalyticalDatabaseImplementation, applicationIndexBackend, applicationProviderImplementationName, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationTransactionalDatabaseImplementation, defaultApplicationIndexProvider, IndexStore, isApplicationAnalyticalDatabaseProvider, isClickHouseAnalyticalDatabaseProvider, isPostgresAnalyticalDatabaseProvider } from './application-providers.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
 import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString } from './application-typekro-values.js';
@@ -673,10 +673,10 @@ export function registerApplicationGateway(state: ApplicationReactiveState, name
   if (deployment?.cursorSecret.namespace && deployment.cursorSecret.namespace !== deployment.namespace) throw new Error(`Application gateway ${name} cannot mount cursor Secret from another namespace.`);
   // typecast: generated authentication receives the standard Request boundary and returns the declared gateway identity contract.
   const authentication = deployment ? serializeApplicationCallback({ registrar: 'gateway', argumentIndex: 1, property: 'authenticate', label: `Application gateway ${name} authentication`, callback: deployment.authenticate as (...args: never[]) => unknown, allowDeferredResolution: true }) : undefined;
-  const identityProvider = state.providers.extensions?.['RequestIdentity@v1alpha1'];
+  const identityProvider = state.providers.extensions?.['IdentityProvider@v1alpha1'];
   const identityReadyCallback = identityProvider && typeof identityProvider === 'object' ? Reflect.get(identityProvider, 'ready') : undefined;
   const identityReadiness = deployment && typeof identityReadyCallback === 'function'
-    ? serializeApplicationCallback({ registrar: 'RequestIdentity', argumentIndex: 1, property: 'ready', label: `Application gateway ${name} identity readiness`, callback: identityReadyCallback as (...args: never[]) => unknown, allowDeferredResolution: true })
+    ? serializeApplicationCallback({ registrar: 'IdentityProvider', argumentIndex: 1, property: 'ready', label: `Application gateway ${name} identity readiness`, callback: identityReadyCallback as (...args: never[]) => unknown, allowDeferredResolution: true })
     : undefined;
   const authorizationProvider = state.providers.extensions?.['Authorization@v1alpha1'];
   const authorizationReadyCallback = authorizationProvider && typeof authorizationProvider === 'object' ? Reflect.get(authorizationProvider, 'ready') : undefined;

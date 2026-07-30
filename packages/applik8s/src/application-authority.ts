@@ -1,17 +1,15 @@
 // typecast-file-boundary: the authority DSL preserves operation and predicate generics while serializing validated immutable graph contracts.
 import { createHash } from 'node:crypto';
 import {
-  getApplicationOperationContract,
-  isApplicationBoundOperation,
-  isApplicationScopedOperation,
   type ApplicationBoundOperation,
   type ApplicationOperationLike,
   type ApplicationPermissionDefinition,
   type ApplicationScopedOperation,
+  getApplicationOperationContract,
+  isApplicationBoundOperation,
+  isApplicationScopedOperation,
 } from '@applik8s/client';
 import {
-  applicationOperationId,
-  intersectApplicationScopes,
   type ApplicationAuthorityManifestNode,
   type ApplicationIdentityReference,
   type ApplicationOperationId,
@@ -20,6 +18,8 @@ import {
   type ApplicationStaticAuthorityManifest,
   type ApplicationStaticGrantDefinition,
   type ApplicationStaticPermissionDefinition,
+  applicationOperationId,
+  intersectApplicationScopes,
 } from '@applik8s/core';
 import type { ApplicationGraphState } from './application-graph-state.js';
 

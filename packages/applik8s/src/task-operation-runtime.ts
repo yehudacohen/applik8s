@@ -8,11 +8,11 @@ import type {
   JsonObject,
 } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
-import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
 import { applicationRequestContextValues } from './command-principal.js';
+import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
 import type { ApplicationEventLogPublisher } from './event-log-runtime.js';
-import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 import { applicationAdmittedContextDigest, applicationRelationalChangeScopes } from './relational-runtime.js';
 
 export interface ApplicationTaskOperationRuntimeContract {
@@ -248,7 +248,7 @@ function completeBoundInput(
   supplied: object,
 ): object {
   if (binding.boundKeys.length === 0) return supplied;
-  const overridden = binding.boundKeys.filter((key) => Object.prototype.hasOwnProperty.call(supplied, key));
+  const overridden = binding.boundKeys.filter((key) => Object.hasOwn(supplied, key));
   if (overridden.length > 0) {
     throw new ApplicationTaskOperationAuthorityError(
       'AUTHORITY_BOUND_FIELD_OVERRIDE',

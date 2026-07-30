@@ -1,10 +1,10 @@
 import {
-  createApplicationFetchGateway,
-  applicationAdmittedContextDigest,
-  applicationRequestContextValues,
-  RequestIdentity,
   type ApplicationQueryBinding,
   type ApplicationRelationalContext,
+  applicationAdmittedContextDigest,
+  applicationRequestContextValues,
+  createApplicationFetchGateway,
+  IdentityProvider,
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { describe, expect, it } from 'vitest';
@@ -25,7 +25,7 @@ describe('framework-neutral application gateway', () => {
       async authorize(principal) { return principal.id === 'author'; },
       async run() { return ['hello']; },
     };
-    const identity = RequestIdentity.from(async () => ({
+    const identity = IdentityProvider.from(async () => ({
       principal: { id: 'author' },
       trustedContext: { guestbook: 'main' },
       authorizationVersion: 'membership-1',
@@ -61,7 +61,7 @@ describe('framework-neutral application gateway', () => {
 
   it('keeps framework routing outside the gateway', async () => {
     const gateway = createApplicationFetchGateway({
-      identity: RequestIdentity.from(async () => ({
+      identity: IdentityProvider.from(async () => ({
         principal: { id: 'author' },
         trustedContext: {},
         authorizationVersion: 'membership-1',

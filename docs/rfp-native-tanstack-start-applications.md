@@ -17,7 +17,7 @@ The framework-neutral architecture in this RFP is implemented on the v0.6 work b
 
 - `@applik8s/vite` discovers the application graph, emits browser/server model facades, enforces the
   browser dependency zone, generates the Fetch gateway, and records immutable artifact metadata;
-- `RequestIdentity` adapts application-owned authentication into principal, trusted context, and
+- `IdentityProvider` adapts application-owned authentication into principal, trusted context, and
   authorization-version admission;
 - Kubernetes-backed models can declare authorized creation and bounded named views with
   list/resource-version/watch snapshot-resume semantics;
@@ -72,7 +72,7 @@ server artifact and browser-safe model facade; `applik8s deploy` remains the onl
 authority.
 
 The generic gateway consumes standard Web `Request` values and returns standard Web `Response` values.
-`app.provide(RequestIdentity, implementation)` adapts an application-owned identity system into principal,
+`app.provide(IdentityProvider, implementation)` adapts an application-owned identity system into principal,
 trusted-context, and authorization-version admission. Applik8s owns validation, scoping, cursor integrity,
 and provider enforcement, but it does not own login, sessions, users, organizations, membership, or
 application policy. TanStack Start mounts this gateway in-process and adds SSR/dehydration conveniences;
@@ -312,11 +312,11 @@ Kubernetes-context configuration.
 This module is the dependency root. It must not import models, operators, routes, or components.
 
 ```ts
-import { app as defineApplication, RequestIdentity } from '@applik8s/applik8s';
+import { app as defineApplication, IdentityProvider } from '@applik8s/applik8s';
 import { authenticateGuestBookRequest } from './auth';
 
 export const app = defineApplication('guestbook', { namespace: 'guestbook' });
-app.provide(RequestIdentity, RequestIdentity.from(authenticateGuestBookRequest));
+app.provide(IdentityProvider, IdentityProvider.from(authenticateGuestBookRequest));
 ```
 
 ### `src/application.ts`
@@ -420,9 +420,9 @@ TanStack Start hosts the public boundary, but Applik8s retains the admitted-cont
 contract.
 
 ```ts
-import { RequestIdentity } from '@applik8s/applik8s';
+import { IdentityProvider } from '@applik8s/applik8s';
 
-export const guestBookIdentity = RequestIdentity.from(async (request) => {
+export const guestBookIdentity = IdentityProvider.from(async (request) => {
   const session = await readApplicationSession(request);
 
   return {
@@ -439,7 +439,7 @@ export const guestBookIdentity = RequestIdentity.from(async (request) => {
 });
 ```
 
-`src/app.ts` installs this authority with `app.provide(RequestIdentity, guestBookIdentity)`. Authentication
+`src/app.ts` installs this authority with `app.provide(IdentityProvider, guestBookIdentity)`. Authentication
 is an application capability; the TanStack package only adapts Nitro's current request context to the
 framework-neutral server runtime.
 

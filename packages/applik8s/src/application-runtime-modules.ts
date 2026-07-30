@@ -1,7 +1,9 @@
 import type { ApplicationDurableStatusOwnershipContract, ApplicationRuntimeModuleKind } from '@applik8s/core';
 
 import { applicationGeneratedJobAppStatusSchemaContract, applicationGeneratedStatusConcurrencyContract, applicationGeneratedStatusConfigMapContract, applicationGeneratedStatusObservabilityContract } from './application-jobs.js';
-export { mergeGeneratedJobStatusConfigMapData, summarizeGeneratedJobStatusConfigMapMerge, type GeneratedJobStatusConfigMapDataMergeInput, type GeneratedJobStatusConfigMapDataMergeSummary } from './application-generated-job-status.js';
+
+export { type GeneratedJobStatusConfigMapDataMergeInput, type GeneratedJobStatusConfigMapDataMergeSummary, mergeGeneratedJobStatusConfigMapData, summarizeGeneratedJobStatusConfigMapMerge } from './application-generated-job-status.js';
+
 import { generatedRuntimeModuleBundle } from './application-runtime-module-bundle.js';
 import { generatedRuntimeModuleApiVersion } from './application-runtime-module-manifest.js';
 import { generatedRuntimeModuleSource, generatedRuntimeModuleSourcePreamble } from './application-runtime-module-sources.js';

@@ -3,8 +3,8 @@ import { createHash } from 'node:crypto';
 import type { ApplicationModelRuntimeContract } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
-import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 
 export interface ApplicationProjectionSnapshotItem<TPayload extends object> {
   readonly id: string;

@@ -1,5 +1,5 @@
 // typecast-file-boundary: reactive vertical fixtures inspect erased graph metadata after checking node identities and discriminators.
-import { ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IndexStore, AnalyticalDatabase, stream, task, WorkflowEngine } from '@applik8s/applik8s';
+import { AnalyticalDatabase, ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IndexStore, stream, task, WorkflowEngine } from '@applik8s/applik8s';
 import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';

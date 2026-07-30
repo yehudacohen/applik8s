@@ -4,8 +4,8 @@ import type { SchemaInput } from "@applik8s/sdk";
 import { normalizeSchema } from "@applik8s/sdk/schema-runtime";
 import type { ApplicationProjectionWriter } from "./projection-runtime-clickhouse.js";
 import {
-	createApplicationValkeyCommand,
 	type ApplicationValkeyCommand,
+	createApplicationValkeyCommand,
 	type ValkeyResponse,
 } from "./valkey-protocol.js";
 

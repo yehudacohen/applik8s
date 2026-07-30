@@ -1,4 +1,4 @@
-import { describeCharacterSuite, type CharacterScenario } from '../../testing/test/character.js';
+import { type CharacterScenario, describeCharacterSuite } from '../../testing/test/character.js';
 
 const s = (name: string, userStory: string, arrange: readonly string[], act: readonly string[], assert: readonly string[]): CharacterScenario => ({ name, userStory, arrange, act, assert });
 

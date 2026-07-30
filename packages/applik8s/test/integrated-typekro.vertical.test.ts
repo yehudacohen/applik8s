@@ -4,7 +4,7 @@ import { runInNewContext } from 'node:vm';
 import type { ApplicationModelBinding, ApplicationProviderToken, ApplicationTransactionalDatabaseProvider } from '@applik8s/applik8s';
 import { app, applicationGraphFor, Certificate, ContainerRegistry, CounterStore, CredentialStore, cel, DnsPublication, EventSource, HttpExposure, IndexStore, inferRbac, kubernetesComposition, ObjectStorage, permissions, providers, Queue, resolveOperatorInstalls, resources, Secret, sdk, TransactionalDatabase, typeKro } from '@applik8s/applik8s';
 import type { ApplicationRuntimeModuleInterfaceContract, ApplicationRuntimeModuleManifestContract, OperationTarget, Result } from '@applik8s/core';
-import { serializeApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationJobStatusLifecycleContract, validateApplicationTransactionalDatabaseSemanticsContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract } from '@applik8s/core';
+import { serializeApplicationGraph, validateApplicationGraphCompatibilityPolicy, validateApplicationJobStatusLifecycleContract, validateApplicationProviderInterfaceContract, validateApplicationRuntimeModuleInterfaceContract, validateApplicationRuntimeModuleManifestContract, validateApplicationTransactionalDatabaseSemanticsContract } from '@applik8s/core';
 import { transformSync } from 'esbuild';
 import { describe, expect, it } from 'vitest';
 import { mergeGeneratedJobStatusConfigMapData, patchGeneratedJobStatusConfigMapData, persistGeneratedJobStatusWithDurableFallback, summarizeGeneratedJobStatusConfigMapMerge } from '../src/application-generated-job-status.js';
@@ -13,8 +13,8 @@ import { generatedRuntimeModuleBundle } from '../src/application-runtime-module-
 import { generatedApplicationRuntimeModuleKinds, generatedApplicationRuntimeModuleManifest } from '../src/application-runtime-module-manifest.js';
 import { generatedRuntimeModuleSource, generatedRuntimeModuleSourcePreamble } from '../src/application-runtime-module-sources.js';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
-import { type GeneratedServerRuntimeBundleContract, validateGeneratedServerRuntimeBundleContract } from '../src/application-server-runtime-bundle.js';
 import { serializeApplicationServerCaptures } from '../src/application-server-routing.js';
+import { type GeneratedServerRuntimeBundleContract, validateGeneratedServerRuntimeBundleContract } from '../src/application-server-runtime-bundle.js';
 import { entity, field, label, metadata, type } from '../src/dsl.js';
 import * as kubernetesFactories from '../src/factories/kubernetes.js';
 import { cnpg, rook, simple, valkey } from '../src/factories.js';

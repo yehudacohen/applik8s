@@ -154,7 +154,7 @@ export class ApplicationOperationAuthorityRuntime {
     const identity = admission.identity ?? {
       id: `identity:${admission.id}`,
       kind: admission.kind ?? 'external',
-      issuer: 'applik8s.request-identity',
+      issuer: 'applik8s.identity-provider',
       subject: admission.id,
     };
     const kind = admission.kind ?? identity.kind;
@@ -162,7 +162,7 @@ export class ApplicationOperationAuthorityRuntime {
       id: admission.id,
       identity,
       kind,
-      authenticationMethod: admission.authenticationMethod ?? 'request-identity-provider',
+      authenticationMethod: admission.authenticationMethod ?? 'identity-provider-provider',
       audience: admission.audience ?? [],
       trustedContextDigest,
       catalogRevision: catalog.revision,

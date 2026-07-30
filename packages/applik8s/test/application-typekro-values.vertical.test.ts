@@ -1,7 +1,8 @@
 // typecast-file-boundary: Tests inspect TypeKro proxy internals and serialized CEL fixtures that intentionally cross static type boundaries.
+
+import { type } from 'arktype';
 import { Cel } from 'typekro';
 import { describe, expect, test } from 'vitest';
-import { type } from 'arktype';
 import { app } from '../src/application.js';
 import { applicationTypeKroGreaterThan } from '../src/application-typekro-values.js';
 

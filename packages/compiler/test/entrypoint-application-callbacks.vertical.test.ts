@@ -22,13 +22,13 @@ AutomationScheduleChanged.process('automation-schedule', {
     expect(instrumented).toContain('source: "async (changed, context) => reconcileSchedule(changed, context)"');
   });
 
-  it('records the defining module for an imported RequestIdentity callback', async () => {
+  it('records the defining module for an imported IdentityProvider callback', async () => {
     const application = new URL('./fixtures/callback-provenance/app.ts', import.meta.url).pathname;
     const identity = new URL('./fixtures/callback-provenance/identity.ts', import.meta.url).pathname;
     const instrumented = instrumentApplicationCallbackRegistrations(await readFile(application, 'utf8'), application);
 
     expect(instrumented).toContain(`file: ${JSON.stringify(identity)}`);
-    expect(instrumented).toContain('registrar: "RequestIdentity"');
+    expect(instrumented).toContain('registrar: "IdentityProvider"');
     expect(instrumented).toContain('property: "authenticate"');
   });
 
@@ -36,13 +36,13 @@ AutomationScheduleChanged.process('automation-schedule', {
     const source = `
 import { authenticate, decide, identityReady, authorizationReady } from './identity';
 
-RequestIdentity.from(authenticate, { ready: identityReady });
+IdentityProvider.from(authenticate, { ready: identityReady });
 Authorization.from(decide, { ready: authorizationReady });
 `;
     const sourceFile = '/workspace/src/app.ts';
     const instrumented = instrumentApplicationCallbackRegistrations(source, sourceFile);
 
-    expect(instrumented).toContain('registrar: "RequestIdentity"');
+    expect(instrumented).toContain('registrar: "IdentityProvider"');
     expect(instrumented).toContain('property: "ready"');
     expect(instrumented).toContain('registrar: "Authorization"');
     expect(instrumented).toContain('property: "decide"');

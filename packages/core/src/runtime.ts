@@ -1,5 +1,5 @@
-import type { CanonicalHandlerAbiFunctionName, CanonicalHandlerAbiVersion, DiagnosticSeverity, HandlerAbiFunctionKind, HandlerAbiResultEncoding, HandlerAbiScalarType, HandlerCancellationMode, HandlerEventType, HandlerId, HealthStatus, JavaScriptRuntimeFeature, JsonObject, LogLevel, MetricKind, ObjectRef, OperatorName, ReconcileId, Result, RuntimeAdapterKind, Sha256Digest, Timestamp } from './common.js';
 import type { CapabilityDescriptor } from './capability.js';
+import type { CanonicalHandlerAbiFunctionName, CanonicalHandlerAbiVersion, DiagnosticSeverity, HandlerAbiFunctionKind, HandlerAbiResultEncoding, HandlerAbiScalarType, HandlerCancellationMode, HandlerEventType, HandlerId, HealthStatus, JavaScriptRuntimeFeature, JsonObject, LogLevel, MetricKind, ObjectRef, OperatorName, ReconcileId, Result, RuntimeAdapterKind, Sha256Digest, Timestamp } from './common.js';
 import type { HandlerResult, NormalizedOperationPlan, Operation } from './operation-plan.js';
 import type { ResourceObject } from './resource.js';
 import type { RuntimePayloadSchemaDigests, RuntimePayloadSchemas } from './schema.js';

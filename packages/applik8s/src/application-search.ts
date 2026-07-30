@@ -1,43 +1,43 @@
 // typecast-file-boundary: search paths preserve model/column generics while the serialized planner stores their normalized runtime metadata.
 import { createHash } from 'node:crypto';
 import {
-  type ApplicationGraphNodeRef,
-  type ApplicationSearchFieldKind,
-  type ApplicationSearchFieldPlan,
-  type ApplicationSearchIndexPlan,
-  type ApplicationSearchSourceFrontier,
+  type ApplicationQueryOperation,
+  createApplicationQueryOperation,
+} from '@applik8s/client';
+import type {
+  ApplicationGraphNodeRef,
+  ApplicationSearchFieldKind,
+  ApplicationSearchFieldPlan,
+  ApplicationSearchIndexPlan,
+  ApplicationSearchSourceFrontier,
 } from '@applik8s/core';
 import {
-  createApplicationQueryOperation,
-  type ApplicationQueryOperation,
-} from '@applik8s/client';
-import {
-  getTableColumns,
   type AnyColumn,
   type GetColumnData,
+  getTableColumns,
 } from 'drizzle-orm';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import {
+  type ApplicationGraphState,
   addApplicationGraphEdge,
   addApplicationGraphNode,
   addApplicationProviderBinding,
   addApplicationProviderRequirement,
-  type ApplicationGraphState,
 } from './application-graph-state.js';
 import {
   applicationProviderGraphNodeId,
   kubernetesNameSegment,
 } from './application-identifiers.js';
 import {
-  applicationProviderImplementationName,
   type ApplicationProviderQualification,
   type ApplicationSearchCapability,
   type ApplicationSearchProvider,
+  applicationProviderImplementationName,
 } from './application-providers.js';
 import {
-  getApplicationModelFacet,
   type ApplicationModelRelationshipContract,
   type CommonApplicationModelFacet,
+  getApplicationModelFacet,
 } from './native-models.js';
 
 const applicationSearchPath = Symbol.for('@applik8s/search-path');

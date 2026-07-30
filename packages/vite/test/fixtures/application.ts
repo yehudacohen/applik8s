@@ -1,10 +1,10 @@
-import { app as createApp, RequestIdentity } from '@applik8s/applik8s';
+import { app as createApp, IdentityProvider } from '@applik8s/applik8s';
 import { entity, type } from '@applik8s/applik8s/dsl';
 import type { ApplicationQueryOperation } from '@applik8s/client';
 import { fixtureAdmission } from './identity';
 
 export const app = createApp('vite-facade-fixture');
-app.provide(RequestIdentity, RequestIdentity.from(async () => fixtureAdmission('fixture')));
+app.provide(IdentityProvider, IdentityProvider.from(async () => fixtureAdmission('fixture')));
 const EntryEntity = entity('GuestBookEntry', {
   spec: type({ message: 'string' }),
   status: type({ "phase?": "'Pending' | 'Published'" }),

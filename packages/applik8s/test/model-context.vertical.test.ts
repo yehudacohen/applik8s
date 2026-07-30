@@ -1,5 +1,5 @@
 // typecast-file-boundary: provider-neutral doubles erase provider generics so runtime dispatch can be exercised.
-import { ApplicationModelContextBoundaryError, ApplicationModelReferenceMissingError, app, createApplicationModelContext, createApplicationRelationalContext, trustedContext, type ApplicationKubernetesModelReader } from '@applik8s/applik8s';
+import { type ApplicationKubernetesModelReader, ApplicationModelContextBoundaryError, ApplicationModelReferenceMissingError, app, createApplicationModelContext, createApplicationRelationalContext, trustedContext } from '@applik8s/applik8s';
 import { entity, type } from '@applik8s/applik8s/dsl';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, test, vi } from 'vitest';

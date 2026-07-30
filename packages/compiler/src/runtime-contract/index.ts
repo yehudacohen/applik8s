@@ -3,7 +3,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import type { Result } from '@applik8s/core';
-import { assertCanonicalRuntimeContract, canonicalHandlerWit as runtimeContractHandlerWit, canonicalRuntimeContract, type CanonicalRuntimeContract } from '@applik8s/runtime-contract';
+import { assertCanonicalRuntimeContract, type CanonicalRuntimeContract, canonicalRuntimeContract, canonicalHandlerWit as runtimeContractHandlerWit } from '@applik8s/runtime-contract';
 
 export interface RuntimeContractArtifactOptions {
   readonly outDir: string;

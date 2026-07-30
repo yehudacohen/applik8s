@@ -1,9 +1,9 @@
 import { and, eq, sql } from 'drizzle-orm';
-import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import { jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core';
+import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
 import type { ApplicationModelCreateInput, ApplicationModelIndexOptions, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationModelTransactionClient, ApplicationRuntimeModelContract } from './application-models.js';
-import { createApplicationPostgresDrizzle } from './postgres-runtime-loader.js';
 import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
+import { createApplicationPostgresDrizzle } from './postgres-runtime-loader.js';
 
 interface TransactionalDatabaseConnection {
   readonly client: ApplicationPostgresSql;

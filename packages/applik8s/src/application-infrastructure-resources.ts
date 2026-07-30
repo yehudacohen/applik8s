@@ -379,11 +379,11 @@ export function recordApplicationProviderGraph(
   const resolvedContract = typedContract ?? applicationTypedProviderContract(tokenName);
   const providerInterface = applicationProviderInterface(tokenName) ?? resolvedContract?.interface;
   if (!providerInterface) return;
-  const requestIdentityAuthentication = tokenName === 'RequestIdentity'
+  const identityProviderAuthentication = tokenName === 'IdentityProvider'
     && implementation && typeof implementation === 'object'
     && typeof Reflect.get(implementation, 'authenticate') === 'function'
     ? serializeApplicationCallback({
-        registrar: 'RequestIdentity', argumentIndex: 0, property: 'authenticate', label: 'RequestIdentity authentication',
+        registrar: 'IdentityProvider', argumentIndex: 0, property: 'authenticate', label: 'IdentityProvider authentication',
         callback: Reflect.get(implementation, 'authenticate') as (...args: never[]) => unknown,
         allowDeferredResolution: true,
       })
@@ -411,15 +411,15 @@ export function recordApplicationProviderGraph(
       ...(qualification
         ? { qualification: qualification as unknown as JsonValue }
         : {}),
-      ...(requestIdentityAuthentication ? {
+      ...(identityProviderAuthentication ? {
         identity: applicationTypeKroGraphValue({
-          authenticationSource: requestIdentityAuthentication.source,
-          ...(requestIdentityAuthentication.dependencies ? { authenticationDependencies: requestIdentityAuthentication.dependencies } : {}),
-          ...(requestIdentityAuthentication.location ? { authenticationLocation: requestIdentityAuthentication.location } : {}),
-          ...(requestIdentityAuthentication.unresolved ? { authenticationUnresolved: requestIdentityAuthentication.unresolved } : {}),
+          authenticationSource: identityProviderAuthentication.source,
+          ...(identityProviderAuthentication.dependencies ? { authenticationDependencies: identityProviderAuthentication.dependencies } : {}),
+          ...(identityProviderAuthentication.location ? { authenticationLocation: identityProviderAuthentication.location } : {}),
+          ...(identityProviderAuthentication.unresolved ? { authenticationUnresolved: identityProviderAuthentication.unresolved } : {}),
         }) as JsonValue,
       } : {}),
-      ...(tokenName === 'RequestIdentity' && implementation && typeof implementation === 'object' && Reflect.get(implementation, 'infrastructure')
+      ...(tokenName === 'IdentityProvider' && implementation && typeof implementation === 'object' && Reflect.get(implementation, 'infrastructure')
         ? { identityInfrastructure: applicationTypeKroGraphValue(Reflect.get(implementation, 'infrastructure')) as JsonValue }
         : {}),
       ...(tokenName === 'ApplicationHost' && implementation && typeof implementation === 'object'

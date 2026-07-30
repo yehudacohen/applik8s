@@ -7,8 +7,8 @@ import type {
   ApplicationScopedOperation,
 } from '@applik8s/client';
 import type { JsonObject } from '@applik8s/core';
-import type { ApplicationGraphState } from './application-graph-state.js';
 import type { ApplicationServiceIdentityBinding } from './application-authority.js';
+import type { ApplicationGraphState } from './application-graph-state.js';
 import type { ApplicationObjectReference, ApplicationObjectStoreBinding } from './application-object-storage.js';
 import type { ApplicationProviderState, ApplicationProviderToken } from './application-providers.js';
 import type { ApplicationOnlineProjectionBinding } from './application-reactive.js';

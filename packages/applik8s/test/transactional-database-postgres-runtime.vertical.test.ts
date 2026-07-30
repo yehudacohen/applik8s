@@ -1,19 +1,20 @@
 // typecast-file-boundary: PostgreSQL vertical fixtures decode controlled fake result rows into the same runtime shapes used by the adapter.
-import postgres from 'postgres';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { type } from 'arktype';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { pgTable, text } from 'drizzle-orm/pg-core';
+import postgres from 'postgres';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { app } from '../src/application.js';
+import { type ApplicationRuntimeModelContract, applicationModelMigrationPreflightSql, applicationModelMigrationSql } from '../src/application-models.js';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
-import { applicationModelMigrationPreflightSql, applicationModelMigrationSql, type ApplicationRuntimeModelContract } from '../src/application-models.js';
-import { closePostgresModelCommandRuntime, executePostgresModelCommand, isRetryablePostgresTransactionError, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
-import { closePostgresModelClients, createPostgresModelClient } from '../src/transactional-database-postgres-runtime.js';
-import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor } from '../src/native-models.js';
-import { applicationRelationalFrameworkMigrationSql } from '../src/relational-runtime.js';
-import { command, event } from '../src/dsl.js';
-import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/postgres-outbox-runtime.js';
-import { type } from 'arktype';
 import { applicationRequestContextValues } from '../src/command-principal.js';
+import { command, event } from '../src/dsl.js';
+import { closePostgresModelCommandRuntime, executePostgresModelCommand, isRetryablePostgresTransactionError, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
+import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor } from '../src/native-models.js';
+import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/postgres-outbox-runtime.js';
+import { applicationRelationalFrameworkMigrationSql } from '../src/relational-runtime.js';
+import { closePostgresModelClients, createPostgresModelClient } from '../src/transactional-database-postgres-runtime.js';
 
 const liveDatabaseUrl = process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL;
 

@@ -1,7 +1,7 @@
 // typecast-file-boundary: Drizzle table identity and schema-normalized graph registries preserve generics that are restored after runtime identity checks.
 
-import type { SchemaInput } from '@applik8s/sdk';
 import { observeApplicationOperationAuthority } from '@applik8s/client';
+import type { SchemaInput } from '@applik8s/sdk';
 import { type as arkType } from 'arktype';
 import type { ApplicationDatabaseBinding, ApplicationNativeDrizzleModelOptions } from './application.js';
 import type { ApplicationEventLogResourceState } from './application-event-log-resources.js';

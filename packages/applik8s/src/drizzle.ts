@@ -1,5 +1,5 @@
 // typecast-file-boundary: Drizzle's generic table metadata is promoted into an equivalent model type after runtime table validation.
-import { sql, type SQL } from 'drizzle-orm';
+import { type SQL, sql } from 'drizzle-orm';
 
 const authenticatedPrincipalDefault = Symbol.for('@applik8s/drizzle-authenticated-principal-default');
 

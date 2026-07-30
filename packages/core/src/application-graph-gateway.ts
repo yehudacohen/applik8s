@@ -1,9 +1,9 @@
-import type { SourceLocation } from './common.js';
 import type {
   ApplicationGraphNodeRef,
   ApplicationMessageContractSchema,
   ApplicationResourceRef,
 } from './application-graph.js';
+import type { SourceLocation } from './common.js';
 
 export interface ApplicationHandlerDependencies {
   readonly source: string;

@@ -1,4 +1,4 @@
-import { ApplicationStreamProcessorPausedError, ApplicationStreamProcessorRetentionGapError, runApplicationStreamProcessor, type ApplicationReplayPage, type ApplicationStreamProcessorStore } from '@applik8s/applik8s';
+import { type ApplicationReplayPage, ApplicationStreamProcessorPausedError, ApplicationStreamProcessorRetentionGapError, type ApplicationStreamProcessorStore, runApplicationStreamProcessor } from '@applik8s/applik8s';
 import { describe, expect, it } from 'vitest';
 
 function envelope(sequence: number) {

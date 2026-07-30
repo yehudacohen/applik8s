@@ -1,8 +1,8 @@
 // typecast-file-boundary: negative fixtures cross overload boundaries deliberately to assert fail-closed diagnostics.
 import { app, applicationGraphFor, applicationModelFacet, postgres, trustedContext } from '@applik8s/applik8s';
-import { command, entity, event, type } from '@applik8s/applik8s/dsl';
 import { authenticatedPrincipalId } from '@applik8s/applik8s/drizzle';
-import { serializeApplicationGraph, validateApplicationGraphStructure, type ApplicationCommandNode } from '@applik8s/core';
+import { command, entity, event, type } from '@applik8s/applik8s/dsl';
+import { type ApplicationCommandNode, serializeApplicationGraph, validateApplicationGraphStructure } from '@applik8s/core';
 import { eq, relations } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { describe, expect, expectTypeOf, test } from 'vitest';

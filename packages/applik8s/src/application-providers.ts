@@ -317,8 +317,8 @@ export interface ApplicationRequestAdmission {
   readonly authorizationVersion: string;
 }
 
-export interface ApplicationRequestIdentityProvider {
-  readonly kind: 'request-identity';
+export interface ApplicationIdentityProvider {
+  readonly kind: 'identity-provider';
   readonly infrastructure?: ApplicationIdentityInfrastructure;
   authenticate(request: Request): ApplicationRequestAdmission | Promise<ApplicationRequestAdmission>;
   /** Bounded credential-free capability probe used by generated workload readiness. */
@@ -831,11 +831,11 @@ export interface ApplicationHostProviderToken extends ApplicationProviderToken<A
   kubernetes(options?: Omit<ApplicationKubernetesHostProvider, 'kind'>): ApplicationKubernetesHostProvider;
 }
 
-export interface ApplicationRequestIdentityProviderToken extends ApplicationProviderToken<ApplicationRequestIdentityProvider> {
+export interface ApplicationIdentityProviderToken extends ApplicationProviderToken<ApplicationIdentityProvider> {
   from(
-    authenticate: ApplicationRequestIdentityProvider['authenticate'],
-    options?: { readonly infrastructure?: ApplicationIdentityInfrastructure; readonly ready?: NonNullable<ApplicationRequestIdentityProvider['ready']> },
-  ): ApplicationRequestIdentityProvider;
+    authenticate: ApplicationIdentityProvider['authenticate'],
+    options?: { readonly infrastructure?: ApplicationIdentityInfrastructure; readonly ready?: NonNullable<ApplicationIdentityProvider['ready']> },
+  ): ApplicationIdentityProvider;
 }
 
 export interface ApplicationAuthorizationProviderToken extends ApplicationProviderToken<ApplicationAuthorizationProvider> {
@@ -1327,15 +1327,15 @@ export const ApplicationHost: ApplicationHostProviderToken = {
   },
 };
 
-export const RequestIdentity: ApplicationRequestIdentityProviderToken = {
-  name: 'RequestIdentity',
+export const IdentityProvider: ApplicationIdentityProviderToken = {
+  name: 'IdentityProvider',
   description: 'Application-supplied request authentication and trusted-context admission.',
-  contract: builtInProviderContract('RequestIdentity', ['principalIdentity', 'trustedContextAdmission', 'authorizationVersion']),
-  accepts: isApplicationRequestIdentityProvider,
+  contract: builtInProviderContract('IdentityProvider', ['principalIdentity', 'trustedContextAdmission', 'authorizationVersion']),
+  accepts: isApplicationIdentityProvider,
   from(authenticate, options) {
     if (options?.infrastructure) assertApplicationIdentityInfrastructure(options.infrastructure);
-    if (options?.ready !== undefined && typeof options.ready !== 'function') throw new Error('RequestIdentity.from({ ready }) must be a function.');
-    return { kind: 'request-identity', authenticate, ...(options?.infrastructure ? { infrastructure: options.infrastructure } : {}), ...(options?.ready ? { ready: options.ready } : {}) };
+    if (options?.ready !== undefined && typeof options.ready !== 'function') throw new Error('IdentityProvider.from({ ready }) must be a function.');
+    return { kind: 'identity-provider', authenticate, ...(options?.infrastructure ? { infrastructure: options.infrastructure } : {}), ...(options?.ready ? { ready: options.ready } : {}) };
   },
 };
 
@@ -1356,7 +1356,7 @@ function builtInProviderContract(providerInterface: string, guarantees: readonly
 }
 
 // typecast: provider registry names are literal public API keys used for app.provide(...) inference.
-export const providers = { IndexStore, Search, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ApplicationHost, ContainerRegistry, RequestIdentity, Authorization, StructuredGeneration } as const;
+export const providers = { IndexStore, Search, TransactionalDatabase, AnalyticalDatabase, CounterStore, EventSource, EventLog, Secret, Queue, ObjectStorage, HttpExposure, Certificate, DnsPublication, CredentialStore, WorkflowEngine, ApplicationHost, ContainerRegistry, IdentityProvider, Authorization, StructuredGeneration } as const;
 
 export function applicationTypedProviderContract(name: string | undefined): ApplicationTypedProviderContract | undefined {
   if (!name) return undefined;
@@ -1825,12 +1825,12 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.extensions['ContainerRegistry@v1alpha1'] = implementation;
     return;
   }
-  if ((token as unknown) === RequestIdentity) {
-    if (!isApplicationRequestIdentityProvider(implementation)) {
-      throw new Error('app.provide(RequestIdentity, ...) requires RequestIdentity.from(authenticate).');
+  if ((token as unknown) === IdentityProvider) {
+    if (!isApplicationIdentityProvider(implementation)) {
+      throw new Error('app.provide(IdentityProvider, ...) requires IdentityProvider.from(authenticate).');
     }
     if (!state.providers.extensions) state.providers.extensions = {};
-    state.providers.extensions['RequestIdentity@v1alpha1'] = implementation;
+    state.providers.extensions['IdentityProvider@v1alpha1'] = implementation;
     return;
   }
   if ((token as unknown) === Authorization) {
@@ -2430,14 +2430,14 @@ export function applicationProviderTokenName(token: ApplicationProviderToken<unk
 }
 
 export function applicationProviderInterface(tokenName: string | undefined): ApplicationProviderInterfaceKind | undefined {
-  if (tokenName === 'IndexStore' || tokenName === 'Search' || tokenName === 'TransactionalDatabase' || tokenName === 'AnalyticalDatabase' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'RequestIdentity' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
+  if (tokenName === 'IndexStore' || tokenName === 'Search' || tokenName === 'TransactionalDatabase' || tokenName === 'AnalyticalDatabase' || tokenName === 'CounterStore' || tokenName === 'EventSource' || tokenName === 'EventLog' || tokenName === 'Secret' || tokenName === 'Queue' || tokenName === 'ObjectStorage' || tokenName === 'HttpExposure' || tokenName === 'Certificate' || tokenName === 'DnsPublication' || tokenName === 'CredentialStore' || tokenName === 'WorkflowEngine' || tokenName === 'ApplicationHost' || tokenName === 'ContainerRegistry' || tokenName === 'IdentityProvider' || tokenName === 'Authorization' || tokenName === 'StructuredGeneration') {
     return tokenName;
   }
   return undefined;
 }
 
-export function isApplicationRequestIdentityProvider(value: unknown): value is ApplicationRequestIdentityProvider {
-  if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'request-identity' || typeof Reflect.get(value, 'authenticate') !== 'function') return false;
+export function isApplicationIdentityProvider(value: unknown): value is ApplicationIdentityProvider {
+  if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'identity-provider' || typeof Reflect.get(value, 'authenticate') !== 'function') return false;
   if (Reflect.get(value, 'ready') !== undefined && typeof Reflect.get(value, 'ready') !== 'function') return false;
   const infrastructure = Reflect.get(value, 'infrastructure');
   if (infrastructure === undefined) return true;
@@ -2451,7 +2451,7 @@ export function isApplicationRequestIdentityProvider(value: unknown): value is A
 
 function assertApplicationIdentityInfrastructure(value: unknown): asserts value is ApplicationIdentityInfrastructure {
   if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'ory') {
-    throw new Error('RequestIdentity infrastructure currently supports the released TypeKro Ory integration.');
+    throw new Error('IdentityProvider infrastructure currently supports the released TypeKro Ory integration.');
   }
   const stack = Reflect.get(value, 'stack');
   const spec = Reflect.get(value, 'spec');

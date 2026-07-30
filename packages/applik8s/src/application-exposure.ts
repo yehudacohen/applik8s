@@ -1,7 +1,7 @@
-import type { ApplicationGatewayBinding } from './application-reactive.js';
 import type { ApplicationDnsIntent, ApplicationExposureOptions, ApplicationServerBinding } from './application.js';
 import { kubernetesNameSegment } from './application-identifiers.js';
 import type { ApplicationDnsPublicationProvider, ApplicationHostBinding } from './application-providers.js';
+import type { ApplicationGatewayBinding } from './application-reactive.js';
 
 export type NormalizedApplicationTlsIntent =
   | { readonly mode: 'disabled' }

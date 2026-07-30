@@ -73,7 +73,7 @@ select either Ory (Kratos session admission plus Keto relation assistance) or
 Zitadel (OIDC userinfo plus admitted project roles). Both require an HTTPS
 issuer, a concrete session endpoint, and a versioned authorization policy;
 mismatched, unavailable, non-JSON, inactive, or incomplete provider responses
-fail closed. Provider payloads are normalized at the `RequestIdentity` and
+fail closed. Provider payloads are normalized at the `IdentityProvider` and
 `Authorization` boundary, so domain models, queries, gateways, and routes do
 not import vendor APIs.
 

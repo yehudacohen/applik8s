@@ -1,8 +1,8 @@
 // typecast-file-boundary: Graph lowering erases heterogeneous model generics after discriminant and schema validation.
 import type { AnyResourceDefinition } from '@applik8s/core';
-import { addApplicationGraphNode, type ApplicationGraphState } from './application-graph-state.js';
-import { kubernetesNameSegment } from './application-identifiers.js';
 import { serializeApplicationCallback } from './application-callback.js';
+import { type ApplicationGraphState, addApplicationGraphNode } from './application-graph-state.js';
+import { kubernetesNameSegment } from './application-identifiers.js';
 import {
   getApplicationModelFacet,
   type KubernetesApplicationModelFacet,

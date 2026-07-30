@@ -18,10 +18,10 @@ export function decorateApplicationCallbackArguments(node: ts.CallExpression, fi
   if (
     node.expression.name.text === 'from'
     && ts.isIdentifier(node.expression.expression)
-    && (node.expression.expression.text === 'RequestIdentity' || node.expression.expression.text === 'Authorization')
+    && (node.expression.expression.text === 'IdentityProvider' || node.expression.expression.text === 'Authorization')
   ) {
     const registrar = node.expression.expression.text;
-    const callbackProperty = registrar === 'RequestIdentity' ? 'authenticate' : 'decide';
+    const callbackProperty = registrar === 'IdentityProvider' ? 'authenticate' : 'decide';
     return node.arguments.map((argument, index) => {
       // typecast: provider constructors accept a callback first and an optional object containing readiness callbacks second.
       const visited = ts.visitNode(argument, visit) as ts.Expression;

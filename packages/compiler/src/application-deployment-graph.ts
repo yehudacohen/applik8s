@@ -1,21 +1,21 @@
 // typecast-file-boundary: This compiler validates authored manifests before
 // translating them into the closed portable deployment graph.
 import { createHash } from "node:crypto";
-import { access, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { ApplicationGraph } from "@applik8s/core";
 import {
-  compileApplicationDeploymentGraph,
   type ApplicationArtifactRequirement,
   type ApplicationGeneratedSecretRequirement,
+  compileApplicationDeploymentGraph,
 } from "@applik8s/deployment-compiler";
 import {
-  digestApplicationDeploymentGraph,
-  digestApplicationDeploymentValue,
-  serializeApplicationDeploymentGraph,
   type ApplicationDeploymentGraph,
   type ApplicationDeploymentStrategy,
   type DeploymentJsonObject,
+  digestApplicationDeploymentGraph,
+  digestApplicationDeploymentValue,
+  serializeApplicationDeploymentGraph,
 } from "@applik8s/deployment-contract";
 
 export const applicationDeploymentCompilerVersion = "0.6.0";

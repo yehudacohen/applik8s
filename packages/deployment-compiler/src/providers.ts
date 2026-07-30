@@ -49,7 +49,7 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "ObjectStorage", implementation: "s3", execution: "root-composition" },
   { interface: "AnalyticalDatabase", implementation: "clickhouse", execution: "root-composition" },
   { interface: "Queue", implementation: "kubernetes-configmap-queue", execution: "runtime-only" },
-  { interface: "RequestIdentity", implementation: "request-identity", execution: "runtime-only" },
+  { interface: "IdentityProvider", implementation: "identity-provider", execution: "runtime-only" },
   { interface: "Search", implementation: "opensearch", execution: "external-controller" },
   { interface: "Search", implementation: "postgres-search", execution: "runtime-only" },
   { interface: "Secret", implementation: "kubernetes-secret", execution: "runtime-only" },
@@ -112,8 +112,8 @@ function providerDirectContribution(
     return objectStorageDirectContribution(provider, context);
   }
   if (
-    provider.interface === "RequestIdentity" &&
-    provider.implementation === "request-identity"
+    provider.interface === "IdentityProvider" &&
+    provider.implementation === "identity-provider"
   ) {
     return identityDirectContribution(provider, context);
   }

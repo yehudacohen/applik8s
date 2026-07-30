@@ -5,8 +5,8 @@ import { pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
 
 import type { Diagnostic, OperatorDefinition, Result } from '@applik8s/core';
-import { build } from 'esbuild';
 import type { Plugin } from 'esbuild';
+import { build } from 'esbuild';
 import ts from 'typescript';
 
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';

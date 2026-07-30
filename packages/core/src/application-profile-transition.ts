@@ -1,5 +1,5 @@
 // typecast-file-boundary: profile transition planning validates schema-derived selections and graph identities before restoring transition contracts.
-import type { JsonObject, JsonValue } from './common.js';
+
 import type {
   ApplicationGraph,
   ApplicationProviderNode,
@@ -8,6 +8,7 @@ import type {
   ApplicationProfileProviderSelectionContract,
   ApplicationProfileTransitionContract,
 } from './application-profile.js';
+import type { JsonObject, JsonValue } from './common.js';
 
 export interface ApplicationProfileTransitionInstallation {
   readonly namespace: string;

@@ -2,11 +2,11 @@
 import {
   AnalyticalDatabase,
   Analytics,
-  Database,
-  TransactionalDatabase,
   app,
   applicationGraphFor,
+  Database,
   event,
+  TransactionalDatabase,
 } from '@applik8s/applik8s';
 import { validateApplicationGraph } from '@applik8s/core';
 import { type } from 'arktype';

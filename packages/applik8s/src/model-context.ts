@@ -1,7 +1,7 @@
 import type { ResourceGetQuery, ResourceObject } from '@applik8s/core';
 import type { InferSelectModel } from 'drizzle-orm';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
-import { getApplicationModelFacet, type ApplicationModelSnapshot, type PromotedDrizzleTable, type PromotedKubernetesResource } from './native-models.js';
+import { type ApplicationModelSnapshot, getApplicationModelFacet, type PromotedDrizzleTable, type PromotedKubernetesResource } from './native-models.js';
 import type { ApplicationAdmittedContext, ApplicationRelationalContext } from './relational-runtime.js';
 
 export interface ApplicationKubernetesModelReader {

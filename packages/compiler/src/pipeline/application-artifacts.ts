@@ -505,7 +505,7 @@ function applicationProviderStatusProjection(resources: readonly unknown[], grap
     analytics: { predicate: (_entry, resource) => resource.kind === 'ClickHouseInstallation' },
     objectStorage: { predicate: (entry) => entry.id === 'applik8sObjectStorageCredentials' },
     workflows: { predicate: (entry, resource) => /workflow/i.test(String(entry.id)) && ['Cluster', 'HelmRelease', 'Deployment'].includes(String(resource.kind)) },
-    identity: { predicate: identityWorkload, configured: applicationProviderIsConfigured(graph, 'RequestIdentity') },
+    identity: { predicate: identityWorkload, configured: applicationProviderIsConfigured(graph, 'IdentityProvider') },
     authorization: { predicate: authorizationWorkload, configured: applicationProviderIsConfigured(graph, 'Authorization') },
     exposure: {
       predicate: (_entry, resource) => resource.kind === 'Ingress'

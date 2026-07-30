@@ -1,8 +1,9 @@
 // typecast-file-boundary: stream envelope payloads are schema-authoritative and regain their declared payload generic after runtime decoding.
-import type { ApplicationReplayableStream, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
+
 import type { ApplicationStreamProcessContext } from './application-reactive.js';
-import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import type { ApplicationReplayableStream, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
 
 export interface ApplicationStreamProcessorStore {
   prepare(): Promise<void>;

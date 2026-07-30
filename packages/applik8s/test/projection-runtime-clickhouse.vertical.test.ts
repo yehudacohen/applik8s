@@ -1,5 +1,5 @@
 // typecast-file-boundary: ClickHouse adapter tests construct generic wire fixtures and inspect provider calls beyond the SDK's static surface.
-import { createClickHouseAnalyticalProjectionReader, createClickHouseAnalyticalProjectionWriter, runApplicationProjection, type ApplicationStreamEnvelope } from '@applik8s/applik8s';
+import { type ApplicationStreamEnvelope, createClickHouseAnalyticalProjectionReader, createClickHouseAnalyticalProjectionWriter, runApplicationProjection } from '@applik8s/applik8s';
 import { type } from 'arktype';
 import { describe, expect, it } from 'vitest';
 

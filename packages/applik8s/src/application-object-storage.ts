@@ -1,12 +1,13 @@
 // typecast-file-boundary: provider implementations are discriminator-checked before being restored to their typed object-storage contracts.
+
+import {
+	type ApplicationOperation,
+	createApplicationRuntimeOperation,
+} from "@applik8s/client";
 import type {
 	ApplicationObjectStoreNode,
 	ApplicationProviderRef,
 } from "@applik8s/core";
-import {
-	createApplicationRuntimeOperation,
-	type ApplicationOperation,
-} from "@applik8s/client";
 import type { ApplicationGraphState } from "./application-graph-state.js";
 import {
 	addApplicationGraphEdge,
@@ -20,8 +21,8 @@ import type {
 	ApplicationProviderState,
 } from "./application-providers.js";
 import {
-	ObjectStorage,
 	isApplicationObjectStorageProvider,
+	ObjectStorage,
 } from "./application-providers.js";
 import { applicationTypeKroGraphValue } from "./application-typekro-values.js";
 

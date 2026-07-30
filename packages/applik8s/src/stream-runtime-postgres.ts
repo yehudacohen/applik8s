@@ -1,12 +1,13 @@
 // typecast-file-boundary: PostgreSQL result rows are checked by the runtime contract before restoring stream event shapes.
-import type { ApplicationQueryPrincipal } from './application-queries.js';
+
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
+import type { ApplicationQueryPrincipal } from './application-queries.js';
 import type { ApplicationStreamBinding } from './application-reactive.js';
-import type { ApplicationReplayPage, ApplicationReplayableStream, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
-import { applicationCommandPrincipal, applicationCommandTrustedContext } from './command-principal.js';
 import { applicationPublicStreamCommitScope } from './application-stream-commit.js';
-import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import { applicationCommandPrincipal, applicationCommandTrustedContext } from './command-principal.js';
 import type { ApplicationPostgresSql } from './postgres-runtime-contract.js';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import type { ApplicationReplayableStream, ApplicationReplayPage, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
 
 export interface PostgresApplicationStreamOptions<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal> {
   readonly stream: ApplicationStreamBinding<TPayload, TPrincipal>;

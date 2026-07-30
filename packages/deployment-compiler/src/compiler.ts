@@ -4,15 +4,16 @@ import type {
   ApplicationProviderNode,
 } from "@applik8s/core";
 import {
-  digestApplicationDeploymentValue,
   type ApplicationArtifactDeploymentNode,
   type ApplicationDeploymentEdge,
   type ApplicationDeploymentGraph,
   type ApplicationDeploymentInput,
   type ApplicationDeploymentNode,
   type ApplicationKubernetesCompositionDeploymentNode,
+  digestApplicationDeploymentValue,
   validateApplicationDeploymentGraph,
 } from "@applik8s/deployment-contract";
+import { builtinApplicationDeploymentContributors } from "./providers.js";
 import type {
   ApplicationArtifactRequirement,
   ApplicationDeploymentContribution,
@@ -23,7 +24,6 @@ import type {
   CompileApplicationDeploymentGraphRequest,
   CompileApplicationDeploymentGraphResult,
 } from "./types.js";
-import { builtinApplicationDeploymentContributors } from "./providers.js";
 
 export function compileApplicationDeploymentGraph(
   request: CompileApplicationDeploymentGraphRequest,

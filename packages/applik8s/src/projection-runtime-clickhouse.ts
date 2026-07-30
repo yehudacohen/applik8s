@@ -1,12 +1,13 @@
 // typecast-file-boundary: ClickHouse JSON wire values are validated and normalized at this analytical-database adapter boundary.
+
+import type { JsonValue } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
-import type { JsonValue } from '@applik8s/core';
-import type { ApplicationCommandPrincipal } from './command-principal.js';
 import type {
   ApplicationAnalyticalMeasure,
   ApplicationAnalyticalQueryRuntimeSource,
 } from './application-queries.js';
+import type { ApplicationCommandPrincipal } from './command-principal.js';
 
 export interface ApplicationStreamEnvelope<TPayload extends object = object> {
   readonly id: string;

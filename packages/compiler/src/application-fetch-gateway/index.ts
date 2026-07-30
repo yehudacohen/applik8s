@@ -65,14 +65,14 @@ export function generatedApplicationFetchGatewayModules(
 		return undefined;
 	const identity = graph.nodes.filter(
 		(node): node is ApplicationProviderNode =>
-			node.kind === "provider" && node.interface === "RequestIdentity",
+			node.kind === "provider" && node.interface === "IdentityProvider",
 	);
 	if (
 		(queries.length > 0 || commands.length > 0 || objectStores.length > 0) &&
 		identity.length !== 1
 	)
 		throw new Error(
-			"Generated application Fetch gateway requires exactly one RequestIdentity provider.",
+			"Generated application Fetch gateway requires exactly one IdentityProvider provider.",
 		);
 	const files: Record<string, string> = {};
 	const imports =
@@ -96,7 +96,7 @@ export function generatedApplicationFetchGatewayModules(
 			? graphCallback(
 					files,
 					imports,
-					identity[0]?.id ?? "RequestIdentity",
+					identity[0]?.id ?? "IdentityProvider",
 					"identity",
 					serializedCallbackConfig(
 						objectConfig(objectConfig(identity[0]?.config).identity),
@@ -259,7 +259,7 @@ export function generatedApplicationFetchGatewayModules(
 	const objectGateway =
 		objectStores.length > 0 && authenticate
 			? `createApplicationFetchGateway({
-  identity: { kind: 'request-identity', authenticate: (request) => ${authenticate}(request) },
+  identity: { kind: 'identity-provider', authenticate: (request) => ${authenticate}(request) },
   cursorSecret: requiredEnv('APPLIK8S_CURSOR_SECRET'),
   objects: [${objectStores.map(objectStoreGatewaySource).join(",\n")}],
 })`

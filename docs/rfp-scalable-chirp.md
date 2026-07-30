@@ -70,7 +70,7 @@ parallel product-specific runtime:
 - `app.query()` and model views lower through provider-neutral query authorities for relational, Kubernetes,
   online-index, and analytical sources;
 - the existing `ObjectStorage` capability gains an S3-compatible runtime and TypeKro Rook/Ceph provisioning;
-- `RequestIdentity` and a generic authorization capability accept Ory, Zitadel, OIDC, OpenFGA, local-test, or
+- `IdentityProvider` and a generic authorization capability accept Ory, Zitadel, OIDC, OpenFGA, local-test, or
   future adapters without changing Chirp domain code.
 
 GuestBook remains the smallest complete teaching application. Chirp proves that the same developer
@@ -244,7 +244,7 @@ This RFP begins from the current codebase rather than assuming a blank slate.
 | `app.projection(...)` backed by ClickHouse | Projection provider is analytical-only | Allow projection bindings to target compatible online or analytical capabilities without weakening their different guarantees |
 | PostgreSQL and Kubernetes `app.query()` authorities | Valkey and ClickHouse reads require separate or incomplete paths | Introduce a common query-authority contract selected from the declared source |
 | Bounded ConfigMap `ObjectStorage` default | Unsuitable for media and batch artifacts | Add S3-compatible runtime semantics plus Rook/Ceph and external-provider adapters |
-| `RequestIdentity` | Application authorization is primarily callback-shaped | Preserve callbacks and add a separate generic `Authorization` capability with Ory, Zitadel, OpenFGA, and local adapters |
+| `IdentityProvider` | Application authorization is primarily callback-shaped | Preserve callbacks and add a separate generic `Authorization` capability with Ory, Zitadel, OpenFGA, and local adapters |
 | Hatchet workflows | Dynamic batch and scheduled automation pressure remains | Qualify bounded child work, checkpoints, cancellation, schedules, progress, and artifact references |
 
 This consolidation must remove duplicate concepts where possible. It must not add a second event runtime,
@@ -275,7 +275,7 @@ Hosted provisioning UI/API                  Self-hosted operator
 Browser / SSR / API
        │
        ▼
-RequestIdentity + Authorization + RequestAdmission
+IdentityProvider + Authorization + RequestAdmission
        │
        ▼
 direct model mutations and views
@@ -296,7 +296,7 @@ replayable streams ──► processors ──► online/analytical projections
 | Installation desired state | Kubernetes `ChirpInstallation` spec | TypeKro child resources | Reconcile from the surviving instance and compiled RGD |
 | Installation observed state | KRO-owned `ChirpInstallation` status | Hosted control-plane/read UI | Rehydrate from child/provider status |
 | Immutable application artifact | OCI registry digest | Node image cache | Pull by approved digest; registry retention is an operational requirement |
-| Browser identity/session | Injected identity provider | Validated `RequestIdentity` principal | Provider-specific session recovery; no Applik8s session authority |
+| Browser identity/session | Injected identity provider | Validated `IdentityProvider` principal | Provider-specific session recovery; no Applik8s session authority |
 | Application account and identity link | PostgreSQL | Request principal enrichment | Restore from database backup; external subject remains provider-owned |
 | Posts, follows, reactions, moderation, automation configuration | PostgreSQL | Events, indexes, analytics, browser snapshots | Restore from database backup/replication |
 | Action results, idempotency, revisions, history | PostgreSQL | Gateway receipts and traces | Must survive processor and broker restarts |
@@ -330,7 +330,7 @@ import {
   ApplicationHost,
   Authorization,
   ObjectStorage,
-  RequestIdentity,
+  IdentityProvider,
 } from '@applik8s/applik8s';
 import { type } from 'arktype';
 import { namespace as kubernetesNamespace } from 'typekro/kubernetes';
@@ -541,7 +541,7 @@ import {
   ObjectStorage,
   ProjectionStore,
   RequestAdmission,
-  RequestIdentity,
+  IdentityProvider,
   StructuredGeneration,
   WorkflowEngine,
 } from '@applik8s/applik8s';
@@ -569,7 +569,7 @@ implementations nor server credentials.
 | `ProjectionStore` | Rebuildable analytical facts, checkpoints, bounded queries | ClickHouse | Pinot, Druid, warehouse adapter |
 | `ObjectStorage` | S3-like immutable and mutable objects, metadata, signed access | Rook/Ceph RGW | AWS S3, MinIO, GCS adapter |
 | `WorkflowEngine` | Durable tasks/workflows, schedules, retries, cancellation | Hatchet | Temporal adapter |
-| `RequestIdentity` | Resolve and validate request principal/session | Ory Kratos | Zitadel OIDC, Auth.js, generic OIDC, test provider |
+| `IdentityProvider` | Resolve and validate request principal/session | Ory Kratos | Zitadel OIDC, Auth.js, generic OIDC, test provider |
 | `Authorization` | Provider-assisted policy/relationship decision and versioning | Ory Keto | Zitadel roles, OpenFGA, SpiceDB, local policy |
 | `RequestAdmission` | Transport-level rate, quota, and overload admission | Later gateway adapter | Envoy Gateway, Kong, application-local test |
 | `StructuredGeneration` | Schema-bound generation, usage, cancellation, credential policy | HTTP adapter | OpenAI, Anthropic, local model, deterministic fake |
@@ -582,7 +582,7 @@ Provider contracts must publish honest limitations. For example, a ConfigMap obj
 `provide()` remains the only dependency-injection mechanism:
 
 ```ts
-chirp.provide(RequestIdentity, identityProvider);
+chirp.provide(IdentityProvider, identityProvider);
 chirp.provide(Authorization, authorizationProvider);
 chirp.provide(ObjectStorage, objectStorageProvider);
 ```
@@ -598,10 +598,10 @@ uses more than one implementation of the same capability.
 
 ### Generic contracts
 
-`RequestIdentity` establishes who is making a request:
+`IdentityProvider` establishes who is making a request:
 
 ```ts
-interface RequestIdentityProvider {
+interface IdentityProviderProvider {
   authenticate(request: Request): Promise<{
     principal: {
       id: string;
@@ -658,7 +658,7 @@ const keto = chirp.infra(ory.keto({
   namespace,
 }));
 
-chirp.provide(RequestIdentity, ory.requestIdentity({ kratos }));
+chirp.provide(IdentityProvider, ory.identityProvider({ kratos }));
 chirp.provide(Authorization, ory.authorization({ keto }));
 ```
 
@@ -667,7 +667,7 @@ chirp.provide(Authorization, ory.authorization({ keto }));
 The following alternative must compile without changing any model, route, action, view, or React component:
 
 ```ts
-chirp.provide(RequestIdentity, zitadel.oidcIdentity({
+chirp.provide(IdentityProvider, zitadel.oidcIdentity({
   issuer: chirp.secret('zitadel-issuer'),
   client: chirp.secret('zitadel-client'),
 }));
@@ -1366,7 +1366,7 @@ export function bindProductionProviders(application: Application) {
   application.provide(ProjectionStore, providers.clickhouse(analytics));
   application.provide(ObjectStorage, providers.s3(objects));
   application.provide(WorkflowEngine, providers.hatchet(workflows));
-  application.provide(RequestIdentity, providers.oryIdentity(identity));
+  application.provide(IdentityProvider, providers.oryIdentity(identity));
   application.provide(Authorization, providers.oryAuthorization(authorization));
 }
 ```
@@ -1601,7 +1601,7 @@ profile:
 - prototype `app.install(...)` composition/nesting;
 - prototype `Stream.process(...)`, `Stream.project(...)`, and provider-selected query authority;
 - prototype `app.objectStore(...)` against a fake S3 provider;
-- prototype `RequestIdentity` plus `Authorization` with two interchangeable adapters;
+- prototype `IdentityProvider` plus `Authorization` with two interchangeable adapters;
 - decide compatibility aliases for `Model.command(...)` and current `app.subscription(...)` behavior;
 - run module-boundary and browser-bundle review.
 

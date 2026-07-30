@@ -1,5 +1,5 @@
 // typecast-file-boundary: ClickHouse JSONEachRow responses are locally parsed and asserted only after protocol-level field checks.
-import { createClickHouseAnalyticalProjectionWriter, runApplicationProjection, type ApplicationStreamEnvelope } from '@applik8s/applik8s';
+import { type ApplicationStreamEnvelope, createClickHouseAnalyticalProjectionWriter, runApplicationProjection } from '@applik8s/applik8s';
 import { type } from 'arktype';
 import { describe, expect, test } from 'vitest';
 

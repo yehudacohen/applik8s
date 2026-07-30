@@ -1,4 +1,5 @@
 import {
+  type ApplicationRouteSourceLocation,
   analyzeApplicationServerRouteSource,
   applicationRouteSourceDependencies,
   extractApplicationCallObjectFunctionSource,
@@ -6,7 +7,6 @@ import {
   serializedCallbackClosureMessage,
   transpileApplicationCallbackExpression,
   unsupportedRouteFreeIdentifiers,
-  type ApplicationRouteSourceLocation,
 } from './application-route-source.js';
 
 export interface SerializedApplicationCallback {

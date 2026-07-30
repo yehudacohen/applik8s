@@ -1,16 +1,16 @@
+import { type ApplicationObjectStoreGatewayBinding, createApplicationObjectStorageGateway } from './application-object-storage-gateway.js';
+import type { ApplicationIdentityProvider } from './application-providers.js';
 import type { ApplicationCommandGatewayOptions } from './command-gateway.js';
 import { createApplicationCommandGateway } from './command-gateway.js';
-import type { ApplicationRequestIdentityProvider } from './application-providers.js';
-import { createApplicationObjectStorageGateway, type ApplicationObjectStoreGatewayBinding } from './application-object-storage-gateway.js';
+import { applicationRequestContextValues } from './command-principal.js';
 import type { ApplicationQueryGatewayOptions } from './query-gateway.js';
 import { createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationSubscriptionLimiter } from './query-gateway.js';
-import { applicationRequestContextValues } from './command-principal.js';
 import { applicationAdmittedContextDigest } from './relational-runtime.js';
 import type { ApplicationStreamSubscriptionGatewayOptions } from './stream-subscription-gateway.js';
 import { createApplicationStreamSubscriptionGateway } from './stream-subscription-gateway.js';
 
 export interface ApplicationFetchGatewayOptions {
-  readonly identity: ApplicationRequestIdentityProvider;
+  readonly identity: ApplicationIdentityProvider;
   readonly cursorSecret: string;
   readonly basePath?: string;
   readonly query?: Omit<ApplicationQueryGatewayOptions<Request>, 'authenticate' | 'cursorSecret' | 'subscriptionLimiter'>;
@@ -134,10 +134,10 @@ export function createApplicationFetchGateway(options: ApplicationFetchGatewayOp
   }
 }
 
-async function admitted(identity: ApplicationRequestIdentityProvider, request: Request) {
+async function admitted(identity: ApplicationIdentityProvider, request: Request) {
   const admission = await identity.authenticate(request);
   if (!admission?.principal?.id || !admission.authorizationVersion || !admission.trustedContext || typeof admission.trustedContext !== 'object') {
-    throw new Error('Application RequestIdentity provider returned an incomplete admission.');
+    throw new Error('Application IdentityProvider provider returned an incomplete admission.');
   }
   return admission;
 }

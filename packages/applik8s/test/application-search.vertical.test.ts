@@ -3,11 +3,11 @@ import { relations } from 'drizzle-orm';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { describe, expect, test } from 'vitest';
 import {
-  Search,
-  TransactionalDatabase,
   app,
   applicationGraphFor,
+  Search,
   search,
+  TransactionalDatabase,
 } from '../src/application.js';
 
 function catalogSchema() {

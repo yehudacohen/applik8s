@@ -1,10 +1,8 @@
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-
-import { componentize } from '@bytecodealliance/componentize-js';
-
 import type { Result } from '@applik8s/core';
+import { componentize } from '@bytecodealliance/componentize-js';
 
 export interface WasmComponentArtifactOptions {
   readonly javascriptBundlePath: string;

@@ -1,14 +1,14 @@
 import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
-import { AnalyticalDatabase, Analytics, app as defineApplication, applicationModelFacet, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationSecretBinding, type ApplicationTaskBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, Database, DnsPublication, EventSource, event, HttpExposure, IndexStore, ObjectStorage, Queue, Secret, task, TransactionalDatabase, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { AnalyticalDatabase, Analytics, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationSecretBinding, type ApplicationTaskBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, applicationModelFacet, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, Database, DnsPublication, app as defineApplication, EventSource, event, HttpExposure, IndexStore, ObjectStorage, Queue, Secret, TransactionalDatabase, task, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import type {
   ApplicationDurableStatusOwnershipContract,
   ApplicationMigrationDriftCheckContract,
-  ApplicationTransactionalDatabaseGuaranteesContract,
-  ApplicationTransactionalDatabaseSemanticsContract,
   ApplicationOperationTargetContract,
   ApplicationRuntimeModuleContract,
   ApplicationRuntimeModuleInterfaceContract,
+  ApplicationTransactionalDatabaseGuaranteesContract,
+  ApplicationTransactionalDatabaseSemanticsContract,
   ApplicationV03PressureTestContract,
   ApplicationWatchScopeLoweringContract,
   CapabilityClient,
@@ -371,7 +371,7 @@ const v03ProviderInterfaces = [
   { interface: 'AnalyticalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'ContainerRegistry', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
-  { interface: 'RequestIdentity', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+  { interface: 'IdentityProvider', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
   { interface: 'Authorization', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
 ] satisfies ApplicationV03PressureTestContract['requiredProviderInterfaces'];
 

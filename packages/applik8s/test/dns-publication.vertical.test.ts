@@ -1,6 +1,6 @@
+import { createHash } from 'node:crypto';
 import type { DnsEndpointObject, DnsPublicationCapabilities, DnsPublicationEvidence, DnsPublicationOwnership, DnsPublicationPlacement, JsonSchemaSource, NormalizedDnsPublicationIntent } from '@applik8s/core';
 import { dispatchOperatorHandler, sdk } from '@applik8s/sdk';
-import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   decideExternalDnsPublication,

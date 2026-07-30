@@ -1,5 +1,5 @@
 // typecast-file-boundary: subscription gateway fixtures decode deliberately erased transport events through the validated public protocol boundary.
-import { createApplicationStreamSubscriptionGateway, type ApplicationReplayPage } from '@applik8s/applik8s';
+import { type ApplicationReplayPage, createApplicationStreamSubscriptionGateway } from '@applik8s/applik8s';
 import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
 import { describe, expect, test, vi } from 'vitest';
 

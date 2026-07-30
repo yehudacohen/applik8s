@@ -12,8 +12,6 @@ import {
   type ApplicationMigrationDriftCheckContract,
   type ApplicationMigrationPlanContract,
   type ApplicationModelMaterializationContract,
-  type ApplicationTransactionalDatabaseGuaranteesContract,
-  type ApplicationTransactionalDatabaseSemanticsContract,
   type ApplicationObservabilityContract,
   type ApplicationOperationTargetContract,
   type ApplicationPhaseStatus,
@@ -27,6 +25,8 @@ import {
   type ApplicationRuntimeModuleInterfaceContract,
   type ApplicationRuntimeModuleManifestContract,
   type ApplicationScheduleContract,
+  type ApplicationTransactionalDatabaseGuaranteesContract,
+  type ApplicationTransactionalDatabaseSemanticsContract,
   type ApplicationV03PressureTestContract,
   type ApplicationWatchScopeLoweringContract,
   applicationGraphNodeKinds,
@@ -48,12 +48,12 @@ import {
   validateApplicationGraphStructure,
   validateApplicationJobStatusLifecycleContract,
   validateApplicationMigrationDriftCheckContract,
-  validateApplicationTransactionalDatabaseSemanticsContract,
   validateApplicationOperationTargetContract,
   validateApplicationProviderCompatibilityMatrixContract,
   validateApplicationProviderInterfaceContract,
   validateApplicationRuntimeModuleInterfaceContract,
   validateApplicationRuntimeModuleManifestContract,
+  validateApplicationTransactionalDatabaseSemanticsContract,
   validateApplicationV03PressureTestContract,
   validateApplicationWatchScopeLoweringContract,
 } from '../src/index.js';
@@ -78,6 +78,7 @@ describe('application graph substrate contract', () => {
       'workflow',
       'workflowHandler',
       'workflowWorker',
+      'aiAgent',
       'query',
       'gateway',
       'stream',
@@ -112,9 +113,10 @@ describe('application graph substrate contract', () => {
       'AnalyticalDatabase',
       'ApplicationHost',
       'ContainerRegistry',
-      'RequestIdentity',
+      'IdentityProvider',
       'Authorization',
       'StructuredGeneration',
+      'AI',
     ]);
     expect(isApplicationGraphNodeKind('job')).toBe(true);
     expect(isApplicationGraphNodeKind('workflow')).toBe(true);
@@ -515,9 +517,10 @@ describe('application graph substrate contract', () => {
       'AnalyticalDatabase:failClosedReserved',
       'ApplicationHost:failClosedReserved',
       'ContainerRegistry:failClosedReserved',
-      'RequestIdentity:failClosedReserved',
+      'IdentityProvider:failClosedReserved',
       'Authorization:failClosedReserved',
       'StructuredGeneration:failClosedReserved',
+      'AI:failClosedReserved',
     ]);
     expect(contracts.flatMap(validateApplicationProviderInterfaceContract)).toEqual([]);
     expect(validateApplicationProviderInterfaceContract({ interface: 'Queue', surface: 'stablePublicApi', support: 'failClosedReserved', diagnostics: [] })).toEqual(expect.arrayContaining([
@@ -583,7 +586,7 @@ describe('application graph substrate contract', () => {
       AnalyticalDatabase: 'analyticalDatabase',
       ApplicationHost: 'applicationHost',
       ContainerRegistry: 'containerRegistry',
-      RequestIdentity: 'requestIdentity',
+      IdentityProvider: 'identityProvider',
       Authorization: 'authorization',
       StructuredGeneration: 'taskCapability',
       AI: 'taskCapability',
@@ -600,7 +603,7 @@ describe('application graph substrate contract', () => {
       },
     }) satisfies ApplicationProviderRequirement);
 
-    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['transactionalDatabase', 'indexStore', 'search', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'analyticalDatabase', 'applicationHost', 'containerRegistry', 'requestIdentity', 'authorization', 'taskCapability']);
+    expect(requirements.map((requirement) => requirement.purpose)).toEqual(['transactionalDatabase', 'indexStore', 'search', 'counterStore', 'eventSource', 'eventLog', 'secret', 'queue', 'objectStorage', 'httpExposure', 'certificate', 'dnsPublication', 'credentialStore', 'workflowEngine', 'analyticalDatabase', 'applicationHost', 'containerRegistry', 'identityProvider', 'authorization', 'taskCapability', 'taskCapability']);
     for (const requirement of requirements) {
       expect(requirement.diagnostics.missing).toContain(requirement.interface);
     }

@@ -1,13 +1,12 @@
 import type { ApplicationGraph, ApplicationProviderNode } from '@applik8s/core';
-
-import {
-  canonicalApplicationContainerRegistryOrigin,
-  isApplicationContainerRegistryProvider,
-} from './application-providers.js';
 import type {
   ApplicationContainerRegistryEndpoint,
   ApplicationContainerRegistryProvider,
   ApplicationContainerRegistrySecretRef,
+} from './application-providers.js';
+import {
+  canonicalApplicationContainerRegistryOrigin,
+  isApplicationContainerRegistryProvider,
 } from './application-providers.js';
 
 export type {

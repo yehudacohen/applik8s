@@ -1,8 +1,9 @@
 // typecast-file-boundary: host compiler fixtures inspect generated Kubernetes structures after asserting their kinds and paths.
+
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
 import type { ApplicationGraph } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import { emitGeneratedApplicationHost } from '../src/application-host/index.js';

@@ -1,9 +1,10 @@
 // typecast-file-boundary: metadata fixtures inspect deliberately type-erased Drizzle and ArkType adapter boundaries.
-import { describe, expect, test } from 'vitest';
-import { createTableRelationsHelpers, eq, extractTablesRelationalConfig, relations } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/pg-proxy';
-import { alias, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+
 import { getApplicationOperationContract } from '@applik8s/client';
+import { createTableRelationsHelpers, eq, extractTablesRelationalConfig, relations } from 'drizzle-orm';
+import { alias, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { drizzle } from 'drizzle-orm/pg-proxy';
+import { describe, expect, test } from 'vitest';
 import { applicationModelFacet, getApplicationModelFacet, isPromotedApplicationModel, modelReferenceContract, promoteDrizzleTable } from '../src/native-models.js';
 
 const sets = pgTable('sets', {

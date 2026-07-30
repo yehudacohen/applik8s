@@ -149,7 +149,7 @@ export type ApplicationBuiltInProviderInterfaceKind =
   | 'AnalyticalDatabase'
   | 'ApplicationHost'
   | 'ContainerRegistry'
-  | 'RequestIdentity'
+  | 'IdentityProvider'
   | 'Authorization'
   | 'StructuredGeneration'
   | 'AI';
@@ -176,7 +176,7 @@ export const applicationProviderInterfaceKinds = [
   'AnalyticalDatabase',
   'ApplicationHost',
   'ContainerRegistry',
-  'RequestIdentity',
+  'IdentityProvider',
   'Authorization',
   'StructuredGeneration',
   'AI',

@@ -18,11 +18,11 @@ describe('application callback lexical analysis', () => {
   it('captures typed transitive helpers whose function signatures contain object defaults', () => {
     const source = 'async (request) => authenticateWithHelpers(request)';
     const dependencies = applicationRouteSourceDependencies({
-      id: 'identity', method: 'POST', path: '/RequestIdentity/authenticate',
+      id: 'identity', method: 'POST', path: '/IdentityProvider/authenticate',
       handlerSource: source,
       handlerSourceKind: 'source',
       handlerSourceLocation: {
-        file: new URL('./fixtures/request-identity-helpers.ts', import.meta.url).pathname,
+        file: new URL('./fixtures/identity-provider-helpers.ts', import.meta.url).pathname,
         line: 6,
         column: 1,
       },

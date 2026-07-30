@@ -2,8 +2,8 @@ import { typeKro } from '@applik8s/typekro-adapter';
 
 export type * from '@applik8s/typekro-adapter';
 export * from '@applik8s/typekro-adapter';
-export { cel } from 'typekro';
 export { typeKro } from '@applik8s/typekro-adapter';
+export { cel } from 'typekro';
 
 export const kubernetesComposition = typeKro.kubernetesComposition;
 export const listenerOperator = typeKro.listenerOperator;

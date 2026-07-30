@@ -1,10 +1,11 @@
 // typecast-file-boundary: Task-operation tests intentionally construct protocol envelopes and provider fakes around runtime validation boundaries.
-import { describe, expect, it, vi } from 'vitest';
-import type { ApplicationPostgresSql } from '../src/postgres-runtime-contract.js';
+
 import type { ApplicationAuthorizationReceipt, ApplicationExecutionPrincipal, ApplicationWorkloadAuthorityEnvelope, JsonValue } from '@applik8s/core';
+import { describe, expect, it, vi } from 'vitest';
 import { applicationCommandPrincipal } from '../src/command-principal.js';
+import type { ApplicationPostgresSql } from '../src/postgres-runtime-contract.js';
 import {
-  ApplicationTaskOperationAuthorityError,
+  type ApplicationTaskOperationAuthorityError,
   ApplicationTaskOperationFailedError,
   ApplicationTaskOperationRejectedError,
   createApplicationTaskOperationRuntime,

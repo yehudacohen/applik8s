@@ -1,10 +1,10 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { queryInputKey, type ApplicationQueryEvent, type ApplicationQueryMultiplexErrorFrame, type ApplicationQueryMultiplexFrame, type ApplicationQueryMultiplexSubscription, type ApplicationQuerySnapshot } from '@applik8s/client';
-import { validateApplicationAuthorizationReceipt, type ApplicationAuthorizationReceipt } from '@applik8s/core';
+import { type ApplicationQueryEvent, type ApplicationQueryMultiplexErrorFrame, type ApplicationQueryMultiplexFrame, type ApplicationQueryMultiplexSubscription, type ApplicationQuerySnapshot, queryInputKey } from '@applik8s/client';
+import { type ApplicationAuthorizationReceipt, validateApplicationAuthorizationReceipt } from '@applik8s/core';
+import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { validateQueryInput, validateQueryOutput } from './application-query-runtime.js';
-import { applicationOperationInputDigest } from './application-operation-runtime.js';
-import { applicationAdmittedContextDigest, type ApplicationAdmittedContext, type ApplicationRelationalContext } from './relational-runtime.js';
+import { type ApplicationAdmittedContext, type ApplicationRelationalContext, applicationAdmittedContextDigest } from './relational-runtime.js';
 import { validateTrustedContextValue } from './trusted-context.js';
 
 export interface ApplicationGatewayIdentity<TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {

@@ -2,8 +2,8 @@ import {
 	app,
 	applicationGraphFor,
 	command,
+	IdentityProvider,
 	ObjectStorage,
-	RequestIdentity,
 } from "@applik8s/applik8s";
 import { entity, type } from "@applik8s/applik8s/dsl";
 import { pgTable, text } from "drizzle-orm/pg-core";
@@ -20,8 +20,8 @@ describe("application host Fetch gateway", () => {
 			namespace: (spec) => spec.name,
 		});
 		chirp.provide(
-			RequestIdentity,
-			RequestIdentity.from(async () => ({
+			IdentityProvider,
+			IdentityProvider.from(async () => ({
 				principal: { id: "viewer" },
 				trustedContext: {},
 				authorizationVersion: "v1",
@@ -151,8 +151,8 @@ describe("application host Fetch gateway", () => {
 	it("does not duplicate remotely assigned Kubernetes queries in the web host", () => {
 		const chirp = app("chirp", { namespace: "chirp" });
 		chirp.provide(
-			RequestIdentity,
-			RequestIdentity.from(async () => ({
+			IdentityProvider,
+			IdentityProvider.from(async () => ({
 				principal: { id: "moderator", claims: { role: "moderator" } },
 				trustedContext: {},
 				authorizationVersion: "v1",
@@ -212,8 +212,8 @@ describe("application host Fetch gateway", () => {
 	it("bounds request-derived Kubernetes model namespaces to the ApplicationHost namespace", () => {
 		const guestbook = app("guestbook", { namespace: "guestbook" });
 		guestbook.provide(
-			RequestIdentity,
-			RequestIdentity.from(async () => ({
+			IdentityProvider,
+			IdentityProvider.from(async () => ({
 				principal: { id: "author" },
 				trustedContext: { namespace: "guestbook" },
 				authorizationVersion: "v1",

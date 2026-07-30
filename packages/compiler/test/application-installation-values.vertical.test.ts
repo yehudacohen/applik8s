@@ -1,6 +1,7 @@
 // typecast-file-boundary: Compiler tests inspect serialized installation artifacts and deliberately malformed values beyond their authored generic types.
-import { describe, expect, test } from 'vitest';
+
 import type { ApplicationGraph } from '@applik8s/core';
+import { describe, expect, test } from 'vitest';
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphServiceHost, applicationGraphStringValue, applicationKroIncludeWhen } from '../src/application-installation-values.js';
 import { injectGeneratedResourcesIntoApplicationRgd } from '../src/pipeline/application-artifacts.js';
 

@@ -1,4 +1,4 @@
-import { app as defineApplication, RequestIdentity } from '@applik8s/applik8s';
+import { app as defineApplication, IdentityProvider } from '@applik8s/applik8s';
 
 export const app = defineApplication(
   process.env.APPLIK8S_APPLICATION_NAME ?? 'guestbook-start',
@@ -7,14 +7,14 @@ export const app = defineApplication(
 
 if (process.env.APPLIK8S_PUBLIC_HOSTNAME && process.env.APPLIK8S_ALLOW_INSECURE_DEMO_IDENTITY !== '1') {
   throw new Error(
-    'The GuestBook demo identity grants author access to every request. Public exposure requires a real RequestIdentity provider; '
+    'The GuestBook demo identity grants author access to every request. Public exposure requires a real IdentityProvider provider; '
     + 'set APPLIK8S_ALLOW_INSECURE_DEMO_IDENTITY=1 only for an explicitly disposable demonstration.',
   );
 }
 
 app.provide(
-  RequestIdentity,
-  RequestIdentity.from(async () => ({
+  IdentityProvider,
+  IdentityProvider.from(async () => ({
     principal: { id: 'guestbook-demo' },
     authorizationVersion: 'demo-v1',
     trustedContext: {

@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { type ApplicationModelBinding, type ApplicationV03PressureTestContract, app, applicationGraphFor, DnsPublication, type KubernetesApplicationBuilder, sdk, WorkflowEngine } from '@applik8s/applik8s';
-import type { ApplicationMutationOperation } from '@applik8s/client';
 import { dns, externalDnsPublicationMetadata, externalDnsPublicationName } from '@applik8s/applik8s/dns';
 import { command, entity, event, task, type, workflow } from '@applik8s/applik8s/dsl';
+import type { ApplicationMutationOperation } from '@applik8s/client';
 import { type ApplicationDurableStatusOwnershipContract, type ApplicationProviderCompatibilityMatrixContract, type ApplicationProviderInterfaceContract, serializeApplicationGraph } from '@applik8s/core';
 import * as k8s from '@kubernetes/client-node';
 
@@ -590,6 +590,7 @@ function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfa
       { interface: 'TransactionalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'HttpExposure', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'IndexStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'Search', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'CounterStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'Secret', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'CredentialStore', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
@@ -601,10 +602,11 @@ function tenantPlatformProviderInterfaces(): readonly ApplicationProviderInterfa
       { interface: 'DnsPublication', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'WorkflowEngine', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'StructuredGeneration', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'AI', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'AnalyticalDatabase', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'ApplicationHost', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'ContainerRegistry', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
-      { interface: 'RequestIdentity', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
+      { interface: 'IdentityProvider', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
       { interface: 'Authorization', surface: 'stablePublicApi', support: 'implemented', diagnostics: [] },
     ];
 }

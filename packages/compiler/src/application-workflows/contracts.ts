@@ -10,14 +10,14 @@ import type {
   ApplicationProjectionNode,
   ApplicationProviderNode,
   ApplicationQueryNode,
+  ApplicationStaticAuthorityManifest,
   ApplicationStreamNode,
   ApplicationTaskHandlerNode,
   ApplicationTaskNode,
-  ApplicationStaticAuthorityManifest,
-  ApplicationWorkloadAuthorityEnvelope,
   ApplicationWorkflowHandlerNode,
   ApplicationWorkflowNode,
   ApplicationWorkflowWorkerNode,
+  ApplicationWorkloadAuthorityEnvelope,
 } from '@applik8s/core';
 import ts from 'typescript';
 import { applicationGraphStringValue } from '../application-installation-values.js';

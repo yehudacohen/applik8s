@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import type { OperatorManifest, Result } from '@applik8s/core';
-import { imageRefString, type ImageRefInput } from '@applik8s/typetainer';
+import { type ImageRefInput, imageRefString } from '@applik8s/typetainer';
 
 const execFileAsync = promisify(execFile);
 

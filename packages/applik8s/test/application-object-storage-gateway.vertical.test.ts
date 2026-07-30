@@ -1,7 +1,7 @@
 // typecast-file-boundary: Gateway tests construct protocol-boundary fakes and inspect validated response bodies as their expected contracts.
 import { createHash } from 'node:crypto';
+import { type ApplicationObjectMetadata, type ApplicationObjectStorageRuntime, createApplicationFetchGateway, verifyApplicationObjectCompletionReceipt } from '@applik8s/applik8s';
 import { describe, expect, it, vi } from 'vitest';
-import { createApplicationFetchGateway, type ApplicationObjectMetadata, type ApplicationObjectStorageRuntime, verifyApplicationObjectCompletionReceipt } from '@applik8s/applik8s';
 
 describe('authenticated application object-storage gateway', () => {
   it('issues principal-scoped intents and verifies the complete upload/download path', async () => {
@@ -23,7 +23,7 @@ describe('authenticated application object-storage gateway', () => {
     };
     const gateway = createApplicationFetchGateway({
       identity: {
-        kind: 'request-identity',
+        kind: 'identity-provider',
         authenticate: (request) => {
           const id = request.headers.get('x-user');
           if (!id) throw new Error('missing identity');
@@ -93,7 +93,7 @@ describe('authenticated application object-storage gateway', () => {
 
     const publicGateway = createApplicationFetchGateway({
       identity: {
-        kind: 'request-identity',
+        kind: 'identity-provider',
         authenticate: (request) => {
           const id = request.headers.get('x-user');
           if (!id) throw new Error('missing identity');
@@ -127,7 +127,7 @@ describe('authenticated application object-storage gateway', () => {
       async signUpload() { throw new Error('unused'); }, async signDownload() { throw new Error('unused'); },
     };
     const gateway = createApplicationFetchGateway({
-      identity: { kind: 'request-identity', authenticate: () => ({ principal: { id: 'alice' }, trustedContext: {}, authorizationVersion: 'v1' }) },
+      identity: { kind: 'identity-provider', authenticate: () => ({ principal: { id: 'alice' }, trustedContext: {}, authorizationVersion: 'v1' }) },
       cursorSecret: 'another-object-intent-secret-with-sufficient-entropy',
       objects: [{ name: 'attachments', mode: 'immutable', maxObjectBytes: 5, contentTypes: ['text/plain'], browser: { upload: 'signed', download: 'none', downloadAccess: 'owner', ttlSeconds: 60 }, runtime }],
     });

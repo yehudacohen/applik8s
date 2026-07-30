@@ -1,6 +1,7 @@
 // typecast-file-boundary: Chirp composes ArkType-derived optional installation proxies into provider contracts whose inactive branches are concretized only after spec validation.
-import { AnalyticalDatabase, Authorization, ContainerRegistry, defaultApplicationEventLogProvider, app as defineApplication, IndexStore, ObjectStorage, RequestIdentity, StructuredGeneration, WorkflowEngine } from '@applik8s/applik8s';
+
 import type { ApplicationIdentityInfrastructure } from '@applik8s/applik8s';
+import { AnalyticalDatabase, Authorization, ContainerRegistry, defaultApplicationEventLogProvider, app as defineApplication, IdentityProvider, IndexStore, ObjectStorage, StructuredGeneration, WorkflowEngine } from '@applik8s/applik8s';
 import { type } from 'arktype';
 import { externalInfrastructureProviders } from './providers/external';
 import { authenticateChirpRequest, chirpAuthorization, probeChirpIdentity } from './providers/identity';
@@ -285,7 +286,7 @@ const oryInfrastructure: ApplicationIdentityInfrastructure = {
   deletionPolicy: identityInfrastructure.deletionPolicy,
   timeoutMs: 15 * 60_000,
 };
-app.provide(RequestIdentity, RequestIdentity.from(authenticateChirpRequest, { infrastructure: oryInfrastructure, ready: probeChirpIdentity }));
+app.provide(IdentityProvider, IdentityProvider.from(authenticateChirpRequest, { infrastructure: oryInfrastructure, ready: probeChirpIdentity }));
 app.provide(Authorization, chirpAuthorization);
 const externalGeneration = StructuredGeneration.http({
   endpoint: external.generation.endpoint,

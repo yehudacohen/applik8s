@@ -1,5 +1,5 @@
-import type { CompatibilityDecision, ManagedByMetadata, ObjectRef } from './common.js';
 import type { ExternalEffectState } from './capability.js';
+import type { CompatibilityDecision, ManagedByMetadata, ObjectRef } from './common.js';
 import type { BundleMetadata } from './manifest.js';
 
 export interface LifecyclePlan { readonly action: import('./common.js').LifecycleAction; readonly fromBundle?: BundleMetadata; readonly toBundle?: BundleMetadata; readonly compatibility: CompatibilityReport; readonly domainDataPolicy: DomainDataPolicy; }

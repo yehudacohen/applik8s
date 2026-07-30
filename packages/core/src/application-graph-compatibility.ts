@@ -1,4 +1,3 @@
-import type { Diagnostic } from './common.js';
 import type {
   ApplicationCompatibilityLabel,
   ApplicationCompatibilitySurface,
@@ -6,6 +5,7 @@ import type {
   ApplicationGraphNode,
   ApplicationGraphNodeKind,
 } from './application-graph.js';
+import type { Diagnostic } from './common.js';
 
 /** Compatibility policy is a separate pass so graph construction stays independent from release-surface classification. */
 export function validateApplicationGraphCompatibility(graph: ApplicationGraph): readonly Diagnostic[] {

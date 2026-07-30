@@ -5,9 +5,6 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-
-import { describe, expect, it } from 'vitest';
-
 import {
   applicationGraphDeploymentSlice,
   applicationInstallationReadiness,
@@ -19,6 +16,7 @@ import {
   stageExplicitApplicationInstance,
   waitForApplicationEndpoint,
 } from '@applik8s/cli';
+import { describe, expect, it } from 'vitest';
 import { resolveApplicationInstallationValues } from '../../cli/src/application-installation-values.js';
 
 const execFileAsync = promisify(execFile);

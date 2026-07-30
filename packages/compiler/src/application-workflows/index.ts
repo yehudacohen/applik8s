@@ -1,9 +1,9 @@
 import { mkdir } from 'node:fs/promises';
 import type { ApplicationGraph, ApplicationOperationCatalog, ApplicationWorkflowWorkerNode, ApplicationWorkloadAuthorityEnvelope } from '@applik8s/core';
+import { compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 import { workflowContract } from './contracts.js';
 import { emitWorkflowWorker } from './emitter.js';
 import type { GeneratedApplicationWorkflowArtifact } from './types.js';
-import { compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 
 export type { GeneratedApplicationWorkflowArtifact, GeneratedApplicationWorkflowResource } from './types.js';
 
