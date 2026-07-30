@@ -8,6 +8,8 @@
         "@applik8s/ai": "0.6.0",
         "@applik8s/ai-tanstack": "0.6.0",
         "@applik8s/applik8s": "0.6.0",
+        "@applik8s/approvals": "0.6.0",
+        "@applik8s/artifacts": "0.6.0",
         "@applik8s/client": "0.6.0",
         "@applik8s/compiler": "0.6.0",
         "@applik8s/conversations": "0.6.0",
@@ -19,6 +21,7 @@
         "@applik8s/deployment-provider-kubernetes": "0.6.0",
         "@applik8s/deployment-provider-oci": "0.6.0",
         "@applik8s/deployment-typekro": "0.6.0",
+        "@applik8s/evals": "0.6.0",
         "@applik8s/identity": "0.6.0",
         "@applik8s/identity-ory": "0.6.0",
         "@applik8s/identity-postgres": "0.6.0",
@@ -32,6 +35,7 @@
         "@applik8s/testing": "0.6.0",
         "@applik8s/typekro-adapter": "0.6.0",
         "@applik8s/typetainer": "0.6.0",
+        "@applik8s/usage": "0.6.0",
         "@applik8s/vite": "0.6.0",
         "@aws-sdk/client-s3": "^3.1075.0",
         "@hatchet-dev/typescript-sdk": "1.24.3",
@@ -173,6 +177,22 @@
         "@applik8s/runtime-postgres",
       ],
     },
+    "packages/approvals": {
+      "name": "@applik8s/approvals",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/applik8s": "0.6.0",
+        "drizzle-orm": "^0.45.1",
+      },
+    },
+    "packages/artifacts": {
+      "name": "@applik8s/artifacts",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/applik8s": "0.6.0",
+        "drizzle-orm": "^0.45.1",
+      },
+    },
     "packages/cli": {
       "name": "@applik8s/cli",
       "version": "0.6.0",
@@ -311,6 +331,14 @@
     },
     "packages/e2e": {
       "name": "@applik8s/e2e",
+    },
+    "packages/evals": {
+      "name": "@applik8s/evals",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/applik8s": "0.6.0",
+        "drizzle-orm": "^0.45.1",
+      },
     },
     "packages/identity": {
       "name": "@applik8s/identity",
@@ -505,6 +533,14 @@
       "name": "@applik8s/typetainer",
       "version": "0.6.0",
     },
+    "packages/usage": {
+      "name": "@applik8s/usage",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/applik8s": "0.6.0",
+        "drizzle-orm": "^0.45.1",
+      },
+    },
     "packages/vite": {
       "name": "@applik8s/vite",
       "version": "0.6.0",
@@ -529,6 +565,10 @@
     "@applik8s/ai-tanstack": ["@applik8s/ai-tanstack@workspace:packages/ai-tanstack"],
 
     "@applik8s/applik8s": ["@applik8s/applik8s@workspace:packages/applik8s"],
+
+    "@applik8s/approvals": ["@applik8s/approvals@workspace:packages/approvals"],
+
+    "@applik8s/artifacts": ["@applik8s/artifacts@workspace:packages/artifacts"],
 
     "@applik8s/cli": ["@applik8s/cli@workspace:packages/cli"],
 
@@ -555,6 +595,8 @@
     "@applik8s/deployment-typekro": ["@applik8s/deployment-typekro@workspace:packages/deployment-typekro"],
 
     "@applik8s/e2e": ["@applik8s/e2e@workspace:packages/e2e"],
+
+    "@applik8s/evals": ["@applik8s/evals@workspace:packages/evals"],
 
     "@applik8s/example-chirp-start": ["@applik8s/example-chirp-start@workspace:examples/chirp-start"],
 
@@ -603,6 +645,8 @@
     "@applik8s/typekro-adapter": ["@applik8s/typekro-adapter@workspace:packages/typekro-adapter"],
 
     "@applik8s/typetainer": ["@applik8s/typetainer@workspace:packages/typetainer"],
+
+    "@applik8s/usage": ["@applik8s/usage@workspace:packages/usage"],
 
     "@applik8s/vite": ["@applik8s/vite@workspace:packages/vite"],
 

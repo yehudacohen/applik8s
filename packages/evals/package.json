@@ -1,0 +1,24 @@
+{
+  "name": "@applik8s/evals",
+  "version": "0.6.0",
+  "description": "Versioned datasets, scorers, evaluation runs, and result models for Applik8s.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/evals"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/applik8s": "0.6.0",
+    "drizzle-orm": "^0.45.1"
+  }
+}
