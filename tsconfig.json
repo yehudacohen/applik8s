@@ -27,6 +27,7 @@
       "@applik8s/mcp": ["packages/mcp/src/index.ts"],
       "@applik8s/mcp/client": ["packages/mcp/src/client.ts"],
       "@applik8s/mcp/server": ["packages/mcp/src/server.ts"],
+      "@applik8s/mcp/postgres": ["packages/mcp/src/postgres.ts"],
       "@applik8s/core": ["packages/core/src/index.ts"],
       "@applik8s/deployment-contract": ["packages/deployment-contract/src/index.ts"],
       "@applik8s/deployment-compiler": ["packages/deployment-compiler/src/index.ts"],

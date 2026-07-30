@@ -21,6 +21,7 @@
         "@applik8s/identity": "0.6.0",
         "@applik8s/identity-ory": "0.6.0",
         "@applik8s/identity-postgres": "0.6.0",
+        "@applik8s/mcp": "0.6.0",
         "@applik8s/react": "0.6.0",
         "@applik8s/runtime-ai": "0.6.0",
         "@applik8s/runtime-opensearch": "0.6.0",
@@ -324,6 +325,8 @@
       "version": "0.6.0",
       "dependencies": {
         "@applik8s/core": "0.6.0",
+        "@applik8s/operations": "0.6.0",
+        "postgres": "^3.4.7",
       },
       "devDependencies": {
         "@modelcontextprotocol/sdk": "1.30.0",

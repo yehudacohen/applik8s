@@ -106,8 +106,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/client/src', 'packages/react/src'],
-    forbidden: [/^node:/, /^@kubernetes\/client-node$/, /^@applik8s\/(?!client(?:\/|$)|core(?:\/|$))/, /^typekro(?:\/|$)/],
-    rationale: 'Browser packages may depend only on browser-safe client and portable core authority contracts.',
+    forbidden: [/^node:/, /^@kubernetes\/client-node$/, /^@applik8s\/(?!client(?:\/|$)|core(?:\/|$)|identity\/client$)/, /^typekro(?:\/|$)/],
+    rationale: 'Browser packages may depend only on browser-safe client, focused identity-client, and portable core authority contracts.',
   },
   {
     roots: ['packages/vite/src/index.ts'],

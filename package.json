@@ -154,6 +154,7 @@
     "@applik8s/identity": "0.6.0",
     "@applik8s/identity-ory": "0.6.0",
     "@applik8s/identity-postgres": "0.6.0",
+    "@applik8s/mcp": "0.6.0",
     "@applik8s/core": "0.6.0",
     "@applik8s/deployment-contract": "0.6.0",
     "@applik8s/deployment-compiler": "0.6.0",

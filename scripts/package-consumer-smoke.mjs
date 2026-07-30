@@ -42,6 +42,7 @@ const publicEntrypoints = [
   '@applik8s/mcp',
   '@applik8s/mcp/client',
   '@applik8s/mcp/server',
+  '@applik8s/mcp/postgres',
   '@applik8s/deployment-contract',
   '@applik8s/deployment-compiler',
   '@applik8s/deployment-typekro',
