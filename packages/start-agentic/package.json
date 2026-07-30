@@ -23,6 +23,7 @@
     "@applik8s/conversations": "0.6.0",
     "@applik8s/core": "0.6.0",
     "@applik8s/evals": "0.6.0",
+    "@applik8s/operations-ui": "0.6.0",
     "@applik8s/usage": "0.6.0"
   }
 }

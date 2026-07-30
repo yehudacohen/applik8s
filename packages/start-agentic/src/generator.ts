@@ -172,6 +172,8 @@ async function updateGeneratedPackage(
     '@applik8s/artifacts': version,
     '@applik8s/conversations': version,
     '@applik8s/evals': version,
+    '@applik8s/operations-ui': version,
+    '@applik8s/react': version,
     '@applik8s/start-agentic': version,
     '@applik8s/tanstack-start': version,
     '@applik8s/usage': version,
@@ -306,6 +308,7 @@ application.provide(
 import { artifacts } from '@applik8s/artifacts';
 import { conversations } from '@applik8s/conversations';
 import { evaluations } from '@applik8s/evals';
+import { operationsControlCenter } from '@applik8s/operations-ui';
 import { usage } from '@applik8s/usage';
 import { application } from './app';
 import { database } from './providers';
@@ -324,6 +327,17 @@ export const Approvals = approvals(application, { database, processor });
 export const Artifacts = artifacts(application, { database, processor });
 export const Evaluations = evaluations(application, { database, processor });
 export const Usage = usage(application, { database, processor });
+export const Operations = operationsControlCenter(application, {
+  database,
+  models: {
+    Conversation: Conversations.Conversation,
+    ProtocolRun: Conversations.ProtocolRun,
+    ApprovalReview: Approvals.ApprovalReview,
+    Artifact: Artifacts.Artifact,
+    EvaluationRun: Evaluations.EvaluationRun,
+    UsageFact: Usage.UsageFact,
+  },
+});
 
 const maintainedModels = [
   ...Object.values(Conversations),
@@ -388,7 +402,7 @@ ResearcherIdentity.can(ResearchNote.create);
     'src/application.ts': `import { ApplicationHost } from '@applik8s/applik8s';
 import { application } from './app';
 import { ResearchNote } from './features/research/model';
-import { maintainedCommands } from './modules';
+import { maintainedCommands, Operations } from './modules';
 
 export const gateway = application.gateway('web', {
   commands: [
@@ -397,6 +411,7 @@ export const gateway = application.gateway('web', {
     ResearchNote.delete,
     ...maintainedCommands,
   ],
+  queries: [Operations.snapshot],
   authorizeCommand: ({ principal }) => principal.id.length > 0,
   deployment: {
     namespace: ${JSON.stringify(`${projectName}-system`)},
@@ -489,6 +504,19 @@ import { ResearchHome } from '../features/research/view';
 
 export const Route = createFileRoute('/')({
   component: ResearchHome,
+});
+`,
+    'src/routes/operations.tsx': `import { ApplicationOperationsControlCenter } from '@applik8s/operations-ui/react';
+import { createFileRoute } from '@tanstack/react-router';
+import { Operations } from '../modules';
+
+export const Route = createFileRoute('/operations')({
+  component: () => (
+    <ApplicationOperationsControlCenter
+      snapshot={Operations.snapshot}
+      title=${JSON.stringify(`${projectName} operations`)}
+    />
+  ),
 });
 `,
     'vite.config.ts': `import { applik8sStart } from '@applik8s/tanstack-start/vite';

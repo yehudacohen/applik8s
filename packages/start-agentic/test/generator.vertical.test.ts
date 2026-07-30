@@ -105,6 +105,12 @@ describe('Agentic Start generator', () => {
     expect(modules).toContain(
       'conversations(application, { database, processor })',
     );
+    expect(modules).toContain(
+      "import { operationsControlCenter } from '@applik8s/operations-ui';",
+    );
+    expect(modules).toContain(
+      'export const Operations = operationsControlCenter(application, {',
+    );
     const manifest = JSON.parse(
       await readFile(join(target, 'package.json'), 'utf8'),
     ) as {
@@ -127,10 +133,16 @@ describe('Agentic Start generator', () => {
     expect(manifest.dependencies['@applik8s/start-agentic']).toBe(
       'workspace:*',
     );
+    expect(manifest.dependencies['@applik8s/operations-ui']).toBe(
+      'workspace:*',
+    );
     expect(manifest.dependencies['@tanstack/ai-react']).toBe('0.18.1');
     expect(
       await readFile(join(target, 'kubernetes/application.yaml'), 'utf8'),
     ).toContain('kind: ResearchWorkspace');
+    expect(
+      await readFile(join(target, 'src/routes/operations.tsx'), 'utf8'),
+    ).toContain('ApplicationOperationsControlCenter');
   });
 
   it('generates the file-route tree after installing the generated application', async () => {

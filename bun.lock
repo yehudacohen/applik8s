@@ -26,6 +26,7 @@
         "@applik8s/identity-ory": "0.6.0",
         "@applik8s/identity-postgres": "0.6.0",
         "@applik8s/mcp": "0.6.0",
+        "@applik8s/operations-ui": "0.6.0",
         "@applik8s/react": "0.6.0",
         "@applik8s/runtime-ai": "0.6.0",
         "@applik8s/runtime-opensearch": "0.6.0",
@@ -392,6 +393,19 @@
         "@applik8s/core": "0.6.0",
       },
     },
+    "packages/operations-ui": {
+      "name": "@applik8s/operations-ui",
+      "version": "0.6.0",
+      "dependencies": {
+        "@applik8s/applik8s": "0.6.0",
+        "@applik8s/client": "0.6.0",
+        "arktype": "^2.1.20",
+      },
+      "peerDependencies": {
+        "@applik8s/react": "0.6.0",
+        "react": ">=18.3.0 <20",
+      },
+    },
     "packages/react": {
       "name": "@applik8s/react",
       "version": "0.6.0",
@@ -512,6 +526,7 @@
         "@applik8s/conversations": "0.6.0",
         "@applik8s/core": "0.6.0",
         "@applik8s/evals": "0.6.0",
+        "@applik8s/operations-ui": "0.6.0",
         "@applik8s/usage": "0.6.0",
       },
     },
@@ -634,6 +649,8 @@
     "@applik8s/mcp": ["@applik8s/mcp@workspace:packages/mcp"],
 
     "@applik8s/operations": ["@applik8s/operations@workspace:packages/operations"],
+
+    "@applik8s/operations-ui": ["@applik8s/operations-ui@workspace:packages/operations-ui"],
 
     "@applik8s/react": ["@applik8s/react@workspace:packages/react"],
 

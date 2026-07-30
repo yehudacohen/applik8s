@@ -40,6 +40,10 @@ export const applicationAgenticStartDefinition = Object.freeze({
       '@applik8s/usage',
       'provider-neutral usage, cost, quota, and entitlement facts',
     ),
+    packageContribution(
+      '@applik8s/operations-ui',
+      'authority-preserving operational snapshot and router-neutral control center',
+    ),
     {
       package: '@applik8s/identity-ory',
       purpose: 'dedicated identity and OAuth provider adapter',
@@ -79,7 +83,7 @@ export const applicationAgenticStartDefinition = Object.freeze({
   routes: [
     route('conversations', '/conversations', '@applik8s/conversations'),
     route('reviews', '/reviews', '@applik8s/approvals'),
-    route('operations', '/operations', '@applik8s/start-agentic'),
+    route('operations', '/operations', '@applik8s/operations-ui'),
     route('administration', '/administration', '@applik8s/start-agentic'),
   ],
   diagnostics: [
@@ -103,7 +107,7 @@ export const applicationAgenticStartDefinition = Object.freeze({
       mode: 'start-file-router',
       blank: true,
     },
-    maximumApplicationFiles: 14,
+    maximumApplicationFiles: 15,
     maximumIntegrationLines: 600,
     files: [
       'src/app.ts',
@@ -116,6 +120,7 @@ export const applicationAgenticStartDefinition = Object.freeze({
       'src/features/research/model.ts',
       'src/features/research/view.tsx',
       'src/routes/index.tsx',
+      'src/routes/operations.tsx',
       'vite.config.ts',
       'drizzle.config.ts',
       'kubernetes/application.yaml',
