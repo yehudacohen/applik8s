@@ -81,6 +81,47 @@ describe('application operations', () => {
     await expect(decorated({ message: 'hello' })).resolves.toEqual({ identity: 'hello' });
   });
 
+  it('lazily materializes compiler-owned operation metadata on an ordinary function', async () => {
+    const input = Object.freeze({ kind: 'input-schema' });
+    const output = Object.freeze({ kind: 'output-schema' });
+    const publish = async (value: { postId: string }) => ({
+      postId: value.postId,
+      published: true,
+    });
+    Object.defineProperty(
+      publish,
+      Symbol.for('applik8s.generatedFunctionOperation'),
+      {
+        value: {
+          contract: {
+            ...createContract,
+            id: 'applik8s://functions/publish/operations/invoke',
+            model: 'Function',
+            name: 'publish',
+            operation: 'custom',
+          },
+          schemas: { input, output },
+        },
+      },
+    );
+
+    expect(getApplicationOperationContract(publish)).toMatchObject({
+      id: 'applik8s://functions/publish/operations/invoke',
+      name: 'publish',
+      operation: 'custom',
+    });
+    expect(getApplicationOperationSchemas(
+      publish as unknown as Parameters<typeof getApplicationOperationSchemas>[0],
+    )).toEqual({ input, output });
+    expect(getApplicationOperationContract(publish)?.id).toBe(
+      'applik8s://functions/publish/operations/invoke',
+    );
+    expect(await publish({ postId: 'post-1' })).toEqual({
+      postId: 'post-1',
+      published: true,
+    });
+  });
+
   it('preserves authoring schemas as hidden operation metadata without changing the public contract', () => {
     const input = { '~standard': { version: 1, vendor: 'test' } };
     const output = { '~standard': { version: 1, vendor: 'test' } };
@@ -151,11 +192,49 @@ describe('application operations', () => {
         operation: 'GuestBookEntry.published',
         input: { guestbook: 'main' },
       }]);
+      expect(await published({ guestbook: 'main' })).toEqual([{
+        operation: 'GuestBookEntry.published',
+        input: { guestbook: 'main' },
+      }]);
       expect(invocation.useQuery()).toMatchObject({ phase: 'ready', revision: 1 });
       expect(invocation.useSuspenseQuery()).toMatchObject({ data: [expect.objectContaining({ operation: 'GuestBookEntry.published' })] });
     } finally {
       restoreHook();
       restoreRuntime();
+    }
+  });
+
+  it('normalizes empty-input operations so their public call is truly nullary', async () => {
+    const observed: unknown[] = [];
+    const restore = installApplicationOperationRuntime({
+      async execute(_operation, input) {
+        observed.push(input);
+        return { ok: true } as never;
+      },
+      async snapshotQuery(operation, input) {
+        observed.push(input);
+        return {
+          kind: 'snapshot',
+          protocol: 'applik8s.query/v1alpha1',
+          query: operation.id,
+          inputKey: queryInputKey(input),
+          value: { ready: true },
+          cursor: 'empty-input-cursor',
+          capability: 'resumableInvalidation',
+          generatedAt: '2026-07-31T00:00:00.000Z',
+        } as never;
+      },
+    });
+    try {
+      const refresh = createApplicationMutationOperation<{}, { readonly ok: true }>(createContract);
+      const current = createApplicationQueryOperation<{}, { readonly ready: true }>(publishedContract);
+
+      await expect(refresh()).resolves.toEqual({ ok: true });
+      expect(await current()).toEqual({ ready: true });
+      expect(current().input).toEqual({});
+      expect(observed).toEqual([{}, {}]);
+    } finally {
+      restore();
     }
   });
 
@@ -230,6 +309,10 @@ describe('application operations', () => {
     const scoped = create
       .where((target) => target.tenantId.eq({ source: 'principal', path: 'identity.tenantId' }))
       .on({ model: 'GuestBookEntry', identity: { id: 'entry-1' } })
+      .where((target) => target.tenantId.eq({
+        kind: 'applicationTrustedContext',
+        name: 'workspaceId',
+      }))
       .where((target) => target.authorId.eq('author-1'));
     expect(scoped).toMatchObject({
       target: { kind: 'target', model: 'GuestBookEntry', identity: { id: 'entry-1' } },
@@ -239,6 +322,16 @@ describe('application operations', () => {
           field: 'tenantId',
           operator: 'eq',
           value: { kind: 'reference', source: 'principal', path: 'identity.tenantId' },
+        },
+        {
+          kind: 'compare',
+          field: 'tenantId',
+          operator: 'eq',
+          value: {
+            kind: 'reference',
+            source: 'trusted-context',
+            path: 'workspaceId',
+          },
         },
         {
           kind: 'compare',

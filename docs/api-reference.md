@@ -1,9 +1,13 @@
 # API Reference
 
-For the v0.6 native Drizzle/Kubernetes model, trusted-context, migration, query, stream, client, and
-projection contracts, see [Native Models and Live Queries](./native-models-and-live-queries.md).
+For the native Drizzle/Kubernetes model, trusted-context, migration, query,
+stream, client, and projection contracts, see
+[Native Models and Live Queries](./native-models-and-live-queries.md).
 
-This is the supported public surface for the pending `applik8s` v0.6 release. It includes the v0.3 application substrate, v0.4 durable commands, v0.5 tasks/connections, and v0.6 native models, live queries, browser facades, and application hosting.
+This is the supported public surface for the pending `applik8s` v0.7 release.
+It includes the earlier application substrate, durable messaging and
+workflows, native models, live queries, browser facades, application hosting,
+and the v0.7 function-native execution and Agentic Start contracts.
 
 ## Packages
 
@@ -83,13 +87,62 @@ The primary authoring sequence is:
 - `myApp.resource('Kind', { spec, status })` for schema-first CRDs
 - `myApp.storage.postgres('db', { database, migrations: 'generated-job' })` for the concrete Postgres `TransactionalDatabase` slice
 - `myApp.model('Name', { spec, indexes })` for storage-backed app data
-- `myApp.http('server', (http) => { ... })` for generated HTTP workloads with inferred resources/models
-- `myApp.on(Resource, { created, updated, finalize })` for explicit app-native lifecycle controllers
-- `myApp.reconcile(Resource, handler)` as the continuous-reconciliation shorthand
+- `const api = myApp.http('public-api', options)` followed by
+  `api.post(name, path, { input, output, authorize }, handler)` for typed,
+  function-native HTTP routes
+- `Resource.on.reconcile(handler)` for continuous reconciliation with an inferred generated operator
+- `resource(..., { controller: ApplicationResourceControllerOptions })` for
+  advanced placement, secondary watches, and explicit RBAC without a parallel
+  application-level registrar
+- `Resource.on.finalize(handler, options)` for resource-owned cleanup
+- `Resource.on.created(handler)`, `.updated(handler)`, and `.deleted(handler)` for resource-owned lifecycle facts
+- `myApp.resource('Kind', { ..., controller: deploymentOptions })` only when the inferred operator needs explicit placement or SDK RBAC
 - `myApp.install(childApp, { spec })` to statically nest another installable Application into the generated TypeKro graph
 - `myApp.composition` when a TypeKro composition is needed
 
+The Application object deliberately exposes neither `reconcile` nor `on`.
+Resource behavior is declared once on `Resource.on.*`; the framework groups
+those declarations into one inferred controller per CRD and replays its
+installation during Application materialization.
+
+`app.http(...)` deliberately has no wrapping configuration callback. Its final
+request closure is schema-validated, receives a framework-authenticated
+principal, and contributes one context-scoped idempotent route boundary to the
+application graph. `app.server(name, options, configure)` is the advanced raw
+HTTP escape hatch for legacy HTML/form workloads; it is not an alias for
+`app.http`.
+
 Provider APIs such as `app.provide(TransactionalDatabase, ...)`, `app.defaults(...)`, and explicit `app.server(...)` options remain supported for advanced composition. They should be treated as progressive disclosure: use them when you need a non-default binding, explicit provider ownership, or lower-level compatibility inspection.
+
+### Callback-native modules
+
+Reusable application features use the top-level `module()` function:
+
+```ts
+const notes = module(
+  'notes',
+  { schema: { Note, NoteRelations } },
+  application => {
+    const Notes = Note.view(contract, listNotes);
+    const Member = application.role('member');
+    Member.can(Note.create, Notes);
+    return { Note, Notes, Member };
+  },
+);
+
+export const { Note, Notes } = application.include(notes);
+```
+
+Use `module(name, setup)` when the application database already contains the
+models or when top-level returned models/relations can be inferred after setup.
+Use `module(name, { schema }, setup)` when setup itself needs promoted model
+facets. The returned plain object retains its exact inferred type and is
+validated and frozen by Applik8s. Inclusion runs once per application; the
+same module may be included in separate applications without sharing bindings.
+Distinct modules with the same stable name, conflicting schema members,
+ambiguous databases, missing providers, symbol exports, unsafe names, and
+undefined exports fail closed. `defineApplicationModule()` is a deprecated
+compatibility adapter, not the public golden path.
 
 PostgreSQL ownership is explicit when data must outlive the Application graph. The compact default,
 `TransactionalDatabase.postgres()`, makes the CNPG `Cluster` a KRO child and therefore deletes it with the Application
@@ -210,6 +263,11 @@ operations plus typed `Model.on.create`, `Model.on.update`, and `Model.on.delete
 authorization, validation, derivation, transaction participants, and declared event/command outboxes. It
 does not create a second public action or event path. The framework owns the conventional mutation,
 durable result, versioned lifecycle event, replay stream, and bounded processor lowering.
+An ordinary error thrown by this policy becomes the conventional operation's durable
+`policyRejected` result and is acknowledged without broker redelivery; authors do not classify expected
+policy decisions manually. PostgreSQL serialization, deadlock, and optimistic-concurrency failures remain
+retryable from a clean transaction boundary. Policy rejection rolls back the model mutation, history,
+transition, and outbox before recording its idempotently replayable terminal result.
 
 Lifecycle handlers receive inferred snapshots: create has `value`; update has `previous` and `current`;
 delete has `previous` and a typed tombstone. Handler context exposes event identity, stream name/version,
@@ -218,14 +276,28 @@ principal and trusted values, attempt, and abort signal. Principal/trusted value
 generated server-side processors and are excluded from public replay and SSE. Essential initialization
 belongs in database defaults or `beforeCommit`; `on.*` is retryable post-commit work.
 
-A genuinely exceptional non-CRUD declaration derives both a direct `Model.<verb>(input)` method and a typed
-`Model.on.<verb>(...)` completion registration. Completion carries previous/current snapshots, result,
-identity, and committed revision through the same transactional outbox. It does not require an
-`.actions({...})` registry.
+Genuinely exceptional non-CRUD behavior is an ordinary exported TypeScript
+function containing `Model.edit(...)` or direct model calls. The compiler
+discovers its statically reachable model/event dependencies and lowers the
+function through the same operation catalog, authority, durable-result, and
+transactional-outbox machinery. Authors do not maintain `.actions({...})`,
+`.operation(...)`, or `.action(...)` registries. Public type and runtime tests
+enforce that those registries are absent.
 
-`$model.on.command`, `$model.on.action`, and generic command registration are lower-level protocol and
-framework integration surfaces. They are not the ordinary model API and do not appear in golden-path
-examples.
+## Maintained Operations UI
+
+`application.include(operationsOverview)` installs the bounded,
+administrator-authorized provider/workflow/delivery/authority overview used by
+a fresh product. It contributes only the operational-observation and
+authority-audit schema; it does not silently add conversations, approvals,
+artifacts, evaluations, billing, or usage.
+
+Applications that intentionally include that complete maintained product suite
+use `application.include(operationsControlCenter)` instead. Both expose an
+`ApplicationOperationsSnapshot` to the router-neutral React control center.
+The UI leads with failed, blocked, waiting, degraded, and unknown evidence and
+retains category/id identifiers while keeping raw evidence and credentials
+server-side.
 
 ## Resource Operations
 
@@ -247,15 +319,34 @@ The defaults are deliberately bounded: Postgres/CNPG for models; Valkey for inde
 
 “Broad provider implementations” can also mean multiple production-scale adapters behind each contract—for example S3 and GCS, several hosted queues, multiple SQL databases, secret managers, and several gateway choices. v0.3 does not require that catalog: it requires one working zero-configuration default for every native interface. `defaultApplicationProviders` exposes those choices, while `app.defaults(...)` and `app.provide(...)` remain override points.
 
-Applik8s consumes TypeKro 0.31 and re-exports its production Valkey, Rook/Ceph, and NATS/JetStream integration surfaces. These are explicit scale-up paths rather than unconditional defaults: operators and durable storage have platform lifecycle prerequisites, while data claims that cannot be reconciled safely by KRO remain direct-only. Keeping those lifecycle prerequisites explicit preserves the bounded-application contract.
+Applik8s qualifies TypeKro 0.33.5 and consumes its production Valkey,
+Rook/Ceph, NATS/JetStream, Harbor, Hatchet, OpenSearch, Ory, and deployment
+planning surfaces through the focused deployment packages. These are explicit
+profile scale-up paths rather than unconditional defaults: operators and
+durable storage have platform lifecycle prerequisites, while data claims that
+cannot be reconciled safely by KRO remain direct-only. Keeping those lifecycle
+prerequisites explicit preserves the bounded-application contract.
 
 ## v0.4 Durable Behavior
 
-`command(...)`, `event(...)`, and the `EventLog` provider remain the versioned durable-message foundation introduced in v0.4. Promoted relational models now derive direct CRUD operations and typed committed lifecycle handlers; one exceptional `Model.action(...)` declaration derives a direct method and its completion stream. Both paths lower into PostgreSQL command authority, declared transactional outboxes, bounded generated processors, and JetStream transport. PostgreSQL owns idempotency and durable results; JetStream is at-least-once delivery. `Model.on.command(...)` is the lower-level explicit-protocol registrar; ordinary domain code uses direct lifecycle mutations or `Model.action(...)`. See `docs/commands.md` for ordering, missing-target, revision, recovery, and effect-boundary semantics.
+`command(...)`, `event(...)`, and the `EventLog` provider remain the versioned
+durable-message foundation introduced in v0.4. Relational models derive direct
+CRUD operations and typed committed lifecycle handlers; exceptional domain
+behavior is an ordinary exported function over those handles. Both paths lower
+into PostgreSQL command authority, declared transactional outboxes, bounded
+generated processors, and JetStream transport. PostgreSQL owns idempotency and
+durable results; JetStream is at-least-once delivery. See `docs/commands.md` for
+ordering, missing-target, revision, recovery, and effect-boundary semantics.
 
-## v0.5 Durable Tasks and Workflows
+## v0.7 Durable workflows and managed closures
 
-`task(...)`, `workflow(...)`, `app.task(...)`, `app.workflow(...)`, and `WorkflowEngine` are stable v0.5 APIs. App-bound task and workflow handles support run, start, schedule, result observation, cancellation, and declared signals. Workflow contexts expose declared task/child calls, durable sleep, event waits, a provider clock, and cancellation; direct external effects in orchestration fail compilation, including effects hidden in captured module-scope helpers.
+`workflow(...)` is the sole public durable-execution declaration.
+Function-native calls to ordinary operations, queries, providers, and child
+workflows become compiler-owned retryable steps; applications do not declare a
+task catalog or invoke `context.task(...)`. Workflow handles support direct
+invocation, start, schedule, result observation, cancellation, and typed
+signals. Direct ambient effects in durable orchestration fail compilation,
+including effects hidden in captured module-local helpers.
 
 The initial provider is pinned Hatchet in PostgreSQL-only mode with CNPG and no RabbitMQ. Generated worker groups include a self-contained bundle, health, graceful drain, bounded slots, disruption policy, explicit egress, fixed replicas, and optional KEDA task-stat scaling. Hatchet is operational workflow authority; canonical application transitions still commit through the v0.4 PostgreSQL transaction boundary. See `docs/workflows.md`.
 

@@ -1,7 +1,10 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import ts from 'typescript';
 import { publishablePackageDirectories } from './publishable-packages.mjs';
@@ -35,13 +38,25 @@ const publicEntrypoints = [
   '@applik8s/ai',
   '@applik8s/ai-tanstack',
   '@applik8s/approvals',
+  '@applik8s/approvals/schema',
   '@applik8s/artifacts',
+  '@applik8s/artifacts/schema',
+  '@applik8s/billing',
+  '@applik8s/billing/schema',
+  '@applik8s/billing-stripe',
   '@applik8s/conversations',
+  '@applik8s/conversations/schema',
   '@applik8s/start-agentic',
+  '@applik8s/start-agentic/react',
+  '@applik8s/start-agentic/identity-runtime',
+  '@applik8s/start-agentic/payments-runtime',
   '@applik8s/operations-ui',
   '@applik8s/operations-ui/react',
+  '@applik8s/operations-ui/schema',
   '@applik8s/evals',
+  '@applik8s/evals/schema',
   '@applik8s/usage',
+  '@applik8s/usage/schema',
   '@applik8s/identity',
   '@applik8s/identity/client',
   '@applik8s/identity/server',
@@ -71,6 +86,7 @@ const publicEntrypoints = [
   '@applik8s/runtime-nats/command-processor',
   '@applik8s/runtime-kubernetes',
   '@applik8s/runtime-postgres',
+  '@applik8s/search',
   '@applik8s/runtime-opensearch',
   '@applik8s/runtime-ai',
   '@applik8s/testing',
@@ -112,6 +128,7 @@ async function assertDirectRuntimeDependencies(packageDir, manifest) {
       for (const specifier of specifiers) {
         if (!specifier || specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:') || specifier.startsWith('applik8s:')) continue;
         const packageName = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
+        if (packageName === manifest.name) continue;
         if (!declared.has(packageName)) {
           throw new Error(`${manifest.name}: ${path.slice(packageDir.length + 1)} imports undeclared runtime dependency ${packageName}.`);
         }
@@ -149,9 +166,27 @@ try {
   console.log(`Package consumer smoke: packed and unpacked ${packageDirs.length} packages.`);
 
   const consumerDir = join(workDir, 'consumer');
+  for (const dependency of [
+    '@types/react',
+    '@types/react-dom',
+    '@tanstack/ai',
+    '@tanstack/ai-react',
+    '@vitejs/plugin-react',
+    'drizzle-kit',
+    'react-dom',
+    'vitest',
+  ]) {
+    externalPackages.set(
+      dependency,
+      join(root, 'node_modules', ...dependency.split('/')),
+    );
+  }
   for (const [dependency, packageTarget] of externalPackages) {
     const rootTarget = join(root, 'node_modules', ...dependency.split('/'));
-    const target = dependency === 'typescript' ? rootTarget : packageTarget;
+    const target =
+      dependency === 'typescript' || !existsSync(packageTarget)
+        ? rootTarget
+        : packageTarget;
     const link = join(consumerModules, ...dependency.split('/'));
     await mkdir(join(link, '..'), { recursive: true });
     await symlink(target, link, 'junction');
@@ -166,22 +201,25 @@ try {
   console.log(`Package consumer smoke: imported ${publicEntrypoints.length} public entrypoints under Node.`);
 
   const v05Path = join(consumerDir, 'v05.mjs');
-  await writeFile(v05Path, `import { app, applicationGraphFor, task, workflow } from '@applik8s/applik8s';
+  await writeFile(v05Path, `import { app, applicationGraphFor } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
-const Provision = task('packed.provision.v1', { input: type({ id: 'string' }), output: type({ endpoint: 'string' }), errors: { unavailable: type({ retryAfterSeconds: 'number' }) } });
-const Onboard = workflow('packed.onboard.v1', { input: type({ id: 'string' }), output: type({ endpoint: 'string' }), errors: { rejected: type({ reason: 'string' }) }, signals: { approval: type({ approved: 'boolean' }) } });
 const platform = app('packed-v05', { namespace: 'packed-v05' });
-const provision = platform.task(Provision, {}, async (input) => ({ endpoint: 'https://' + input.id + '.example.test' }));
-platform.workflow(Onboard, { tasks: { provision } }, async (input, context) => {
-  const approval = await context.waitFor('approval');
-  if (!approval.approved) context.fail('rejected', { reason: 'approval denied' });
-  return context.task('provision', input);
-});
+const provision = platform.workflow(
+  'packed.provision.v1',
+  { input: type({ id: 'string' }), output: type({ endpoint: 'string' }) },
+  { retries: 2, idempotencyKey: ({ id }) => id },
+  async (input) => ({ endpoint: 'https://' + input.id + '.example.test' }),
+);
+platform.workflow(
+  'packed.onboard.v1',
+  { input: type({ id: 'string' }), output: type({ endpoint: 'string' }) },
+  async (input) => provision(input, { idempotencyKey: input.id }),
+);
 const graph = applicationGraphFor(platform.composition);
-if (!graph?.nodes.some((node) => node.kind === 'workflowWorker') || !graph.providerRequirements.some((requirement) => requirement.interface === 'WorkflowEngine')) throw new Error('Packed v0.5 task/workflow graph did not materialize.');
+if (!graph?.nodes.some((node) => node.kind === 'workflowWorker') || !graph.providerRequirements.some((requirement) => requirement.interface === 'WorkflowEngine')) throw new Error('Packed function-native workflow graph did not materialize.');
 `);
   await execFileAsync(process.execPath, [v05Path], { cwd: consumerDir });
-  console.log('Package consumer smoke: packed v0.5 task/workflow graph passed.');
+  console.log('Package consumer smoke: packed function-native workflow graph passed.');
 
   const v06Path = join(consumerDir, 'v06.mjs');
   await writeFile(v06Path, `import { app, applicationGraphFor, ApplicationHost, Certificate, DnsPublication, IdentityProvider, OAuthAuthorizationServer, postgres, trustedContext } from '@applik8s/applik8s';
@@ -199,12 +237,14 @@ const cards = pgTable('cards', { id: text('id').default(authenticatedPrincipalId
 const OrganizationId = trustedContext('organizationId', { schema: type('string') });
 const platform = app('packed-v06', { namespace: 'packed-v06' });
 const Work = platform.resource('Work', { apiVersion: 'packed.example/v1alpha1', spec: type({ message: 'string' }), status: type({ 'phase?': 'string' }) });
-platform.on(Work, { created: async (work) => { work.status.phase = 'Ready'; } });
+Work.on.reconcile(async (work) => { work.status.phase = 'Ready'; });
 platform.provide(IdentityProvider, IdentityProvider.from(async () => ({ principal: { id: 'guest' }, trustedContext: { organizationId: 'guest' }, authorizationVersion: 'v1' })));
 platform.provide(OAuthAuthorizationServer, OAuthAuthorizationServer.from('packed-oauth', async ({ flow, decision }) => ({ id: 'packed-' + flow.id, providerAuthorizationRequestId: flow.providerAuthorizationRequestId, accepted: decision === 'approve', continuationUri: 'https://oauth.example.test/continue', evidence: {} })));
 platform.provide(ApplicationHost, ApplicationHost.kubernetes({ namespace: 'packed-v06', image: 'registry.example.test/packed-v06@sha256:${'a'.repeat(64)}' }));
 const Database = platform.database.postgres('catalog', { schema: { cards }, access: postgres.rls({ context: OrganizationId, column: 'organizationId' }) });
 const Card = platform.model(cards, { name: 'Card', database: Database });
+if (typeof Card.require !== 'function' || typeof Card.edit !== 'function') throw new Error('Packed function-native model require/edit surface is missing.');
+if ('command' in Card || 'operation' in Card || 'action' in Card || 'command' in Card.on || 'operation' in Card.on || 'action' in Card.on) throw new Error('Packed model exposed a removed command/operation/action registry.');
 const query = platform.query('cards.list.v1', { input: type({}), output: Card.$model.schema.select.array(), database: Database, context: [OrganizationId], reads: [Card], authorize: () => true, run: async ({ context }) => context.database(Database).select().from(Card) });
 const gateway = platform.gateway('public', { queries: [query], deployment: { namespace: 'packed-v06', cursorSecret: { name: 'cursor', key: 'secret' }, authenticate: async () => ({ principal: { id: 'guest' }, trustedContext: { organizationId: 'guest' }, authorizationVersion: 'v1' }) } });
 platform.provide(Certificate, Certificate.certManager({ issuerRef: { name: 'letsencrypt-prod', kind: 'ClusterIssuer' } }));
@@ -234,27 +274,242 @@ export const smoke = sdk.operator({ name: 'packed-smoke', deployment: { namespac
   await readFile(join(outDir, 'operator-manifest.json'));
   console.log('Package consumer smoke: clean-directory CLI build passed.');
 
-  const v04Path = join(consumerDir, 'v04.mjs');
-  await writeFile(v04Path, `import { app, applicationGraphFor, command, event } from '@applik8s/applik8s';
-import { entity, type } from '@applik8s/applik8s/dsl';
-const AccountEntity = entity('Account', { spec: type({ name: 'string' }) });
-const Rename = command('account.rename.v1', { input: type({ accountId: 'string', name: 'string' }), output: type({ changed: 'boolean' }) });
-const Changed = event('account.changed.v1', { payload: type({ accountId: 'string', name: 'string' }) });
-const platform = app('packed-v04', { namespace: 'packed-v04' });
-platform.storage.postgres('packed-v04-db', { migrations: 'generated-job' });
-const Account = platform.model(AccountEntity, { schema: { transactions: 'required' } });
-Account.on.command(Rename, { key: ({ accountId }) => accountId, transaction: { history: [Account], outbox: [Changed] } }, async (account, input, context) => {
-  account.patch({ spec: { name: input.name } });
-  context.emit(Changed, { accountId: input.accountId, name: input.name });
-  return { changed: true };
-});
-const graph = applicationGraphFor(platform.composition);
-if (!graph?.nodes.some((node) => node.kind === 'processor') || !graph.providerRequirements.some((requirement) => requirement.interface === 'EventLog')) throw new Error('Packed v0.4 command/EventLog graph did not materialize.');
-`);
-  await execFileAsync(process.execPath, [v04Path], { cwd: consumerDir });
-  console.log('Package consumer smoke: packed v0.4 graph passed.');
+  const agenticStartTarget = join(consumerDir, 'packed-agentic-start');
+  // static-import-exception: load the packed artifact from the isolated consumer node_modules tree, not workspace source.
+  const { createApplicationAgenticStart } = await import(
+    pathToFileURL(
+      join(consumerModules, '@applik8s', 'start-agentic', 'dist', 'index.js'),
+    ).href
+  );
+  // static-import-exception: load the packed compiler from the isolated consumer node_modules tree.
+  const { compileTypeKroComposition, discoverApplicationGraph } = await import(
+    pathToFileURL(
+      join(consumerModules, '@applik8s', 'compiler', 'dist', 'index.js'),
+    ).href
+  );
+  await createApplicationAgenticStart({
+    targetDirectory: agenticStartTarget,
+    projectName: 'packed-agentic-start',
+    applik8sVersion: '0.7.0',
+    install: false,
+    async run(command) {
+      if (
+        command.executable !== 'bunx'
+        || command.arguments[0] !== '@tanstack/cli@0.70.1'
+      ) {
+        throw new Error(`Packed Agentic Start invoked an unexpected scaffold command: ${command.executable} ${command.arguments.join(' ')}`);
+      }
+      await mkdir(join(agenticStartTarget, 'src', 'routes'), { recursive: true });
+      await writeFile(
+        join(agenticStartTarget, 'package.json'),
+        `${JSON.stringify({
+          name: 'upstream-scaffold',
+          type: 'module',
+          scripts: { dev: 'vite --port 3000' },
+          dependencies: {
+            '@tanstack/react-start': '1.168.28',
+            '@tanstack/react-router': '1.168.28',
+            react: '^19.1.0',
+            'react-dom': '^19.1.0',
+          },
+          devDependencies: {
+            '@vitejs/plugin-react': '^5.0.4',
+            vite: '^7.1.7',
+          },
+        })}\n`,
+      );
+      await writeFile(
+        join(agenticStartTarget, 'src', 'routes', 'index.tsx'),
+        'export const upstreamScaffold = true;\n',
+      );
+      await writeFile(
+        join(agenticStartTarget, 'src', 'routes', '__root.tsx'),
+        `import { createRootRoute, Outlet } from '@tanstack/react-router';
+export const Route = createRootRoute({ component: () => <Outlet /> });
+`,
+      );
+      await writeFile(
+        join(agenticStartTarget, 'src', 'router.tsx'),
+        `import { createRouter } from '@tanstack/react-router';
+import { routeTree } from './routeTree.gen';
+export function getRouter() {
+  return createRouter({ routeTree, scrollRestoration: true });
+}
+`,
+      );
+      await writeFile(
+        join(agenticStartTarget, 'tsconfig.json'),
+        `${JSON.stringify({
+          compilerOptions: {
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+            jsx: 'react-jsx',
+            strict: true,
+            skipLibCheck: true,
+            noEmit: true,
+          },
+          include: ['src/**/*.ts', 'src/**/*.tsx', 'vite.config.ts', 'drizzle.config.ts'],
+        })}\n`,
+      );
+    },
+  });
+  await execFileAsync(
+    join(root, 'node_modules', '.bin', 'drizzle-kit'),
+    ['generate', '--config', 'drizzle.config.ts'],
+    {
+      cwd: agenticStartTarget,
+      maxBuffer: 20 * 1024 * 1024,
+    },
+  );
+  const packedMigrations = (await readdir(
+    join(agenticStartTarget, 'drizzle'),
+  )).filter((file) => file.endsWith('.sql'));
+  if (packedMigrations.length === 0) {
+    throw new Error(
+      'Packed Agentic Start migration generation reported success without emitting SQL.',
+    );
+  }
+  const packedServerSource = 'export default {};\n';
+  const packedServerArtifacts = [{
+    path: 'server/index.mjs',
+    bytes: Buffer.byteLength(packedServerSource),
+    digest: createHash('sha256').update(packedServerSource).digest('hex'),
+  }];
+  await mkdir(join(agenticStartTarget, '.output', 'server'), { recursive: true });
+  await mkdir(join(agenticStartTarget, '.applik8s', 'web-artifacts'), { recursive: true });
+  await writeFile(
+    join(agenticStartTarget, '.output', 'server', 'index.mjs'),
+    packedServerSource,
+  );
+  await writeFile(
+    join(agenticStartTarget, '.applik8s', 'web-artifacts', 'server.json'),
+    `${JSON.stringify({
+      apiVersion: 'applik8s.webArtifact/v1alpha1',
+      application: 'src/application.ts',
+      output: '.output',
+      target: 'server',
+      digest: `sha256:${createHash('sha256').update(JSON.stringify(packedServerArtifacts)).digest('hex')}`,
+      entrypoint: 'server/index.mjs',
+      artifacts: packedServerArtifacts,
+    })}\n`,
+  );
+  const packedAgenticEntrypoint = join(agenticStartTarget, 'src', 'application.ts');
+  const discoveredAgenticStart = await discoverApplicationGraph(
+    packedAgenticEntrypoint,
+    'application',
+  );
+  if (!discoveredAgenticStart.ok) {
+    throw new Error(`Packed Agentic Start discovery failed: ${discoveredAgenticStart.error.message}`);
+  }
+  if (
+    !discoveredAgenticStart.value.nodes.some((node) => node.kind === 'aiAgent')
+    || !discoveredAgenticStart.value.nodes.some((node) => node.kind === 'model')
+  ) {
+    throw new Error('Packed Agentic Start did not materialize its maintained agent and model modules.');
+  }
+  const compiledAgenticStart = await compileTypeKroComposition({
+    entrypoint: packedAgenticEntrypoint,
+    compositionName: 'application',
+    outDir: join(agenticStartTarget, '.applik8s', 'build'),
+    runtimeVersionRange: '^0.7.0',
+    handlerAbiVersion: 'applik8s.handler/v1alpha1',
+    adapter: 'wasmComponent',
+    portability: {
+      deterministicBuild: true,
+      allowEnvironmentAccess: false,
+      allowFilesystemAccess: false,
+      allowNetworkAccess: true,
+      allowedHostImports: [],
+      sourceMaps: {
+        emit: true,
+        includeSourceContent: false,
+        redactPaths: false,
+      },
+    },
+  });
+  if (!compiledAgenticStart.ok) {
+    throw new Error(`Packed Agentic Start compilation failed: ${compiledAgenticStart.error.message}`);
+  }
+  if (
+    discoveredAgenticStart.value.nodes.some(
+      (node) =>
+        node.kind === 'model'
+        && ['model.conversation', 'model.approval-review'].includes(node.id),
+    )
+  ) {
+    throw new Error(
+      'The default packed Agentic Start installed research-only product domains.',
+    );
+  }
+  const packedAgenticGraph = JSON.parse(await readFile(
+    compiledAgenticStart.value.artifacts.applicationGraphJsonPath,
+    'utf8',
+  ));
+  const packedAgenticYaml = await readFile(
+    compiledAgenticStart.value.artifacts.combinedYamlPath,
+    'utf8',
+  );
+  if (
+    !packedAgenticGraph.nodes.some(
+      (node) =>
+        node.kind === 'provider'
+        && node.interface === 'ApplicationHost'
+        && node.config?.host?.name === 'packed-agentic-start-app',
+    )
+    || !packedAgenticYaml.includes('name: packed-agentic-start-app')
+    || !packedAgenticYaml.includes('kind: Deployment')
+    || !packedAgenticYaml.includes('kind: Service')
+  ) {
+    throw new Error(
+      'Packed Agentic Start did not infer its ApplicationHost Deployment and Service from the built Start server artifact.',
+    );
+  }
+  if (!(await readFile(join(agenticStartTarget, 'src', 'routes', 'operations.tsx'), 'utf8')).includes('ApplicationOperationsControlCenter')) {
+    throw new Error('Packed Agentic Start omitted the maintained operations route.');
+  }
+  await execFileAsync(
+    join(root, 'node_modules', '.bin', 'tsr'),
+    ['generate'],
+    {
+      cwd: agenticStartTarget,
+      maxBuffer: 20 * 1024 * 1024,
+    },
+  );
+  await execFileAsync(
+    join(root, 'node_modules', '.bin', 'tsc'),
+    ['--project', join(agenticStartTarget, 'tsconfig.json')],
+    {
+      cwd: agenticStartTarget,
+      maxBuffer: 20 * 1024 * 1024,
+    },
+  );
+  await execFileAsync(
+    join(root, 'node_modules', '.bin', 'vitest'),
+    ['run'],
+    {
+      cwd: agenticStartTarget,
+      maxBuffer: 20 * 1024 * 1024,
+    },
+  );
+  await execFileAsync(
+    join(root, 'node_modules', '.bin', 'vite'),
+    ['build'],
+    {
+      cwd: agenticStartTarget,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: [
+          process.env.NODE_OPTIONS,
+          '--max-old-space-size=8192',
+        ].filter(Boolean).join(' '),
+      },
+      maxBuffer: 50 * 1024 * 1024,
+    },
+  );
+  console.log('Package consumer smoke: packed Agentic Start generation, discovery, compilation, and browser/server build passed.');
 
-  console.log(`Package consumer smoke passed under Node for ${packageDirs.length} packed packages, ${publicEntrypoints.length} public entrypoints, the packed executable, v0.4 command/EventLog, v0.5 task/workflow, and v0.6 native model/query/exposure graphs, plus a clean-directory CLI build.`);
+  console.log(`Package consumer smoke passed under Node for ${packageDirs.length} packed packages, ${publicEntrypoints.length} public entrypoints, the packed executable, function-native workflows and the registry-free model API, v0.6 native model/query/exposure, and packed Agentic Start graphs, plus clean-directory CLI, generated migration/tests, and Agentic Start builds.`);
 } finally {
   await rm(workDir, { recursive: true, force: true });
 }

@@ -142,13 +142,17 @@ export class ApplicationStreamAuthorizationError extends Error {
 function streamEnvelope<TPayload extends object>(stream: ApplicationStreamBinding<TPayload>, row: Record<string, unknown>, includeTrustedContext: boolean): ApplicationStreamEnvelope<TPayload> {
   const sequence = Number(row.sequence);
   const recordedAt = row.recorded_at instanceof Date ? row.recorded_at.toISOString() : String(row.recorded_at);
-  if (typeof row.id !== 'string' || !Number.isSafeInteger(sequence) || sequence < 1 || typeof row.partition_key !== 'string' || !row.payload || typeof row.payload !== 'object') throw new Error(`PostgreSQL returned an invalid ${stream.definition.id} outbox row.`);
-  const payload = normalizeSchema(stream.definition.payload, `${stream.definition.id}.payload`).validate(row.payload as never);
+  const rawPayload = postgresStreamJsonValue(row.payload);
+  if (typeof row.id !== 'string' || !Number.isSafeInteger(sequence) || sequence < 1 || typeof row.partition_key !== 'string' || !rawPayload || typeof rawPayload !== 'object' || Array.isArray(rawPayload)) throw new Error(`PostgreSQL returned an invalid ${stream.definition.id} outbox row.`);
+  const payload = normalizeSchema(stream.definition.payload, `${stream.definition.id}.payload`).validate(rawPayload as never);
   if (!payload.ok) throw new Error(`PostgreSQL returned an invalid ${stream.definition.id} payload: ${payload.error.message}`);
   const contextDigest = typeof row.context_digest === 'string' && row.context_digest.length > 0 ? row.context_digest : undefined;
-  const durableContext = includeTrustedContext ? durableEnvelopeContext(row.envelope) : undefined;
+  const durableContext = includeTrustedContext
+    ? durableEnvelopeContext(postgresStreamJsonValue(row.envelope))
+    : undefined;
   const principal = applicationCommandPrincipal(durableContext);
   const trustedContext = durableContext ? applicationCommandTrustedContext(durableContext) : undefined;
+  const changeScopes = durableContext?.changeScopes;
   return {
     id: row.id,
     stream: { name: stream.definition.name, version: stream.definition.version },
@@ -158,16 +162,45 @@ function streamEnvelope<TPayload extends object>(stream: ApplicationStreamBindin
     ...(contextDigest ? { contextDigest } : {}),
     ...(principal ? { principal } : {}),
     ...(trustedContext ? { trustedContext } : {}),
+    ...(changeScopes ? { changeScopes } : {}),
     payload: payload.value,
   };
 }
 
-function durableEnvelopeContext(envelope: unknown): { readonly values: Readonly<Record<string, import('@applik8s/core').JsonValue>> } | undefined {
+function postgresStreamJsonValue(value: unknown): unknown {
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function durableEnvelopeContext(envelope: unknown): {
+  readonly values: Readonly<Record<string, import('@applik8s/core').JsonValue>>;
+  readonly digest?: string;
+  readonly changeScopes?: Readonly<Record<string, string>>;
+} | undefined {
   if (!envelope || typeof envelope !== 'object') return undefined;
   const context = Reflect.get(envelope, 'trustedContext');
   if (!context || typeof context !== 'object') return undefined;
   const values = Reflect.get(context, 'values');
-  return values && typeof values === 'object' && !Array.isArray(values)
-    ? { values: values as Readonly<Record<string, import('@applik8s/core').JsonValue>> }
-    : undefined;
+  if (!values || typeof values !== 'object' || Array.isArray(values)) return undefined;
+  const digest = Reflect.get(context, 'digest');
+  const rawScopes = Reflect.get(context, 'changeScopes');
+  const changeScopes = validChangeScopes(rawScopes) ? rawScopes : undefined;
+  return {
+    values: values as Readonly<Record<string, import('@applik8s/core').JsonValue>>,
+    ...(typeof digest === 'string' && /^[a-f0-9]{64}$/i.test(digest) ? { digest } : {}),
+    ...(changeScopes ? { changeScopes } : {}),
+  };
+}
+
+function validChangeScopes(value: unknown): value is Readonly<Record<string, string>> {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Object.values(value).every((digest) => typeof digest === 'string' && /^[a-f0-9]{64}$/i.test(digest)),
+  );
 }

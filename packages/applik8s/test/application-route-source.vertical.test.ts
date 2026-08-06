@@ -1,11 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationCallObjectFunctionSource, unsupportedRouteFreeIdentifiers } from '../src/application-route-source';
+import { applicationCallbackSourceMatchesRuntime } from '../src/application-callback-source-equivalence';
+import { analyzeApplicationServerRouteSource, applicationRouteSourceDependencies, extractApplicationCallArgumentSource, extractApplicationCallObjectFunctionSource, unsupportedRouteFreeIdentifiers } from '../src/application-route-source';
 
 const sourceRegistrar = {
   register(_options: unknown) {
     return extractApplicationCallObjectFunctionSource('register', 0, 'deployment.authenticate');
   },
 };
+
+function workflowSource(
+  _id: string,
+  _contract: object,
+  _options: object,
+  _handler: (...args: never[]) => unknown,
+) {
+  return extractApplicationCallArgumentSource('workflowSource', 3);
+}
 
 describe('application callback lexical analysis', () => {
   it('keeps local array/object destructuring and standard collection use inside the generated closure', () => {
@@ -19,6 +29,19 @@ describe('application callback lexical analysis', () => {
       return context.read(authors, counts, weak, seen);
     }`;
     expect(unsupportedRouteFreeIdentifiers(analyzeApplicationServerRouteSource(source), new Set())).toEqual(['load']);
+  });
+
+  it('treats dynamic import as syntax rather than a captured identifier', () => {
+    const source = `async request => {
+      const runtime = await import('@applik8s/start-agentic/identity-runtime');
+      return runtime.authenticateAgenticProfileRequest(request, 'dedicated');
+    }`;
+    expect(
+      unsupportedRouteFreeIdentifiers(
+        analyzeApplicationServerRouteSource(source),
+        new Set(),
+      ),
+    ).toEqual([]);
   });
 
   it('captures typed transitive helpers whose function signatures contain object defaults', () => {
@@ -52,5 +75,29 @@ describe('application callback lexical analysis', () => {
     expect(extracted?.source).toContain('async (request) =>');
     expect(extracted?.source).toContain("request.headers.get(\"x-principal\")");
     expect(extracted?.location.file).toBe(import.meta.filename);
+  });
+
+  it('extracts the fourth-argument handler from an unqualified function-native registrar', () => {
+    const extracted = workflowSource(
+      'timeline.rebuild.v1',
+      {},
+      { retries: 3 },
+      async ({ generation }: { generation: string }) => ({ generation }),
+    );
+
+    expect(extracted?.source).toContain('async ({ generation }) =>');
+    expect(extracted?.source).toContain('({ generation })');
+    expect(extracted?.location.file).toBe(import.meta.filename);
+  });
+
+  it('matches Vite SSR import wrappers to the exact authored imported export', () => {
+    const authored = 'async input => HomeTimeline.rebuild(input)';
+    const runtime = 'async input => __vite_ssr_import_2__.HomeTimeline.rebuild(input)';
+
+    expect(applicationCallbackSourceMatchesRuntime(authored, runtime)).toBe(true);
+    expect(applicationCallbackSourceMatchesRuntime(
+      authored,
+      'async input => __vite_ssr_import_2__.OtherTimeline.rebuild(input)',
+    )).toBe(false);
   });
 });

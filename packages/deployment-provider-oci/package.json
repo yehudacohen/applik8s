@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/deployment-provider-oci",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "OCI artifact Alchemy provider resources for Applik8s deployment.",
   "license": "Apache-2.0",
   "type": "module",
@@ -18,12 +18,13 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "dependencies": {
     "alchemy": "2.0.0-beta.58",
     "effect": "4.0.0-beta.84",
-    "typekro": "0.32.0"
+    "typekro": "0.33.5"
   }
 }

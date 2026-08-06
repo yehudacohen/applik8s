@@ -1,0 +1,54 @@
+import { application } from './app';
+import {
+  BillingDashboard,
+  OpenBillingPortal,
+  StartCheckout,
+} from './features/billing';
+import {
+  Conversation,
+  ConversationDetail,
+  ConversationInbox,
+} from './features/conversations/model';
+import { PublicAssistant } from './features/public-assistant';
+import { Researcher } from './features/research/model';
+import {
+  ResearchReview,
+  ResearchReviewDecision,
+  ResearchReviewList,
+} from './features/reviews/model';
+import {
+  Invitation,
+  Membership,
+  Workspace,
+  WorkspaceDashboard,
+  WorkspaceList,
+} from './features/workspaces/model';
+import { OperationsSnapshot } from './modules';
+
+/**
+ * Browser imports of these typed handles are discovered by the Applik8s Vite
+ * integration. It generates admitted transport plus the TanStack server
+ * container, Service, health contract, and deployment dependencies. The
+ * application does not maintain a gateway registry or host workload.
+ */
+export {
+  BillingDashboard,
+  Conversation,
+  ConversationDetail,
+  ConversationInbox,
+  OpenBillingPortal,
+  OperationsSnapshot,
+  PublicAssistant,
+  Researcher,
+  ResearchReview,
+  ResearchReviewDecision,
+  ResearchReviewList,
+  StartCheckout,
+  Invitation,
+  Membership,
+  Workspace,
+  WorkspaceDashboard,
+  WorkspaceList,
+};
+
+export { application };

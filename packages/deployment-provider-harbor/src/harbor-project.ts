@@ -8,8 +8,10 @@ import * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
 import {
   deleteHarborProject,
+  createHarborKubernetesStore,
   HarborApiClient,
   reconcileHarborProject,
+  type HarborKubernetesStore,
   type HarborProjectPolicy,
 } from "typekro/harbor";
 import type { OciRegistryCredential } from "typekro/containers";
@@ -86,25 +88,37 @@ export function applicationHarborProjectProvider(
 > {
   return Provider.succeed(ApplicationHarborProject, {
     version: 1,
-    read: ({ output }) => Effect.succeed(output),
+    read: ({ olds, output }) =>
+      Effect.tryPromise({
+        try: async (signal) =>
+          observeApplicationHarborProject(olds, output, options, signal),
+        catch: toError,
+      }),
     list: () => Effect.succeed([]),
+    diff: ({ olds, output }) =>
+      Effect.tryPromise({
+        try: async (signal): Promise<{ action: "update" } | undefined> =>
+          (await observeApplicationHarborProject(
+            olds,
+            output,
+            options,
+            signal,
+          ))
+            ? undefined
+            : { action: "update" },
+        catch: toError,
+      }),
     reconcile: ({ news }) =>
       Effect.tryPromise({
         try: async (signal) => {
           assertHarborProjectProps(news);
           const ca = news.caFile ? await readFile(news.caFile) : undefined;
-          const client = new HarborApiClient({
-            endpoint: news.endpoint,
-            credentialProvider: () =>
-              options.resolveCredential(
-                news.adminCredentials,
-                news.context,
-                signal,
-              ),
-            allowPlainHttp: news.allowPlainHttp === true,
-            rejectUnauthorized: news.insecure !== true,
-            ...(ca ? { ca } : {}),
-          });
+          const client = applicationHarborClient(
+            news,
+            options,
+            signal,
+            ca,
+          );
           const robotSecretNames: string[] = [];
           let projectId: number | undefined;
           const groups = groupRobotsByRegistry(news.robots);
@@ -144,20 +158,14 @@ export function applicationHarborProjectProvider(
       olds.deletionPolicy !== "delete"
         ? Effect.void
         : Effect.tryPromise({
-            try: async (signal) => {
-              const ca = olds.caFile ? await readFile(olds.caFile) : undefined;
-              const client = new HarborApiClient({
-                endpoint: olds.endpoint,
-                credentialProvider: () =>
-                  options.resolveCredential(
-                    olds.adminCredentials,
-                    olds.context,
-                    signal,
-                  ),
-                allowPlainHttp: olds.allowPlainHttp === true,
-                rejectUnauthorized: olds.insecure !== true,
-                ...(ca ? { ca } : {}),
-              });
+          try: async (signal) => {
+            const ca = olds.caFile ? await readFile(olds.caFile) : undefined;
+              const client = applicationHarborClient(
+                olds,
+                options,
+                signal,
+                ca,
+              );
               await deleteHarborProject(client, olds.project, {
                 confirmProjectName: olds.project,
                 purgeRepositories: olds.purgeRepositories === true,
@@ -177,6 +185,75 @@ export function applicationHarborProjectProvider(
           }),
   });
 }
+
+async function observeApplicationHarborProject(
+  props: ApplicationHarborProjectProps,
+  output: ApplicationHarborProjectAttributes | undefined,
+  options: ApplicationHarborProjectProviderOptions,
+  signal: AbortSignal,
+  dependencies: {
+    readonly client?: HarborApiClient;
+    readonly store?: HarborKubernetesStore;
+  } = {},
+): Promise<ApplicationHarborProjectAttributes | undefined> {
+  assertHarborProjectProps(props);
+  if (!output) return undefined;
+  const ca = !dependencies.client && props.caFile
+    ? await readFile(props.caFile)
+    : undefined;
+  const client =
+    dependencies.client ??
+    applicationHarborClient(props, options, signal, ca);
+  const project = await client.request<{ readonly project_id?: number }>({
+    method: "GET",
+    path: `/projects/${encodeURIComponent(props.project)}`,
+    signal,
+  }, [200, 404]);
+  if (project.status === 404) return undefined;
+
+  const store =
+    dependencies.store ??
+    createHarborKubernetesStore({
+      loadFromDefault: true,
+      context: props.context,
+    });
+  for (const secretName of new Set(props.robots.map((robot) => robot.secretName))) {
+    if (!(await store.readSecret(props.secretNamespace, secretName))) {
+      return undefined;
+    }
+  }
+
+  return {
+    ...output,
+    projectId: project.body?.project_id ?? output.projectId,
+    ready: true,
+    robotSecretNames: [...new Set(props.robots.map((robot) => robot.secretName))].sort(),
+  };
+}
+
+function applicationHarborClient(
+  props: ApplicationHarborProjectProps,
+  options: ApplicationHarborProjectProviderOptions,
+  signal: AbortSignal,
+  ca: string | Buffer | undefined,
+): HarborApiClient {
+  return new HarborApiClient({
+    endpoint: props.endpoint,
+    credentialProvider: () =>
+      options.resolveCredential(
+        props.adminCredentials,
+        props.context,
+        signal,
+      ),
+    allowPlainHttp: props.allowPlainHttp === true,
+    rejectUnauthorized: props.insecure !== true,
+    ...(ca ? { ca } : {}),
+  });
+}
+
+/** Internal test hook for live Harbor drift observation. */
+export const observeApplicationHarborProjectForTest =
+  observeApplicationHarborProject;
 
 function groupRobotsByRegistry(
   robots: readonly ApplicationHarborProjectRobot[],

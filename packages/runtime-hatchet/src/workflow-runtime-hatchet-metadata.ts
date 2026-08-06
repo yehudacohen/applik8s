@@ -1,4 +1,4 @@
-import type { ApplicationWorkflowInvocationMetadata } from '@applik8s/applik8s';
+import type { ApplicationWorkflowInvocationMetadata } from '@applik8s/applik8s/workflow-runtime';
 import { Priority } from '@hatchet-dev/typescript-sdk/v1/index.js';
 
 export function hatchetRunOptions(

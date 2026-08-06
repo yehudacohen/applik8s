@@ -21,6 +21,12 @@ export interface ApplicationStreamEnvelope<TPayload extends object = object> {
   readonly principal?: ApplicationCommandPrincipal;
   /** Present only for explicitly internal processor reads, with reserved identity keys removed. */
   readonly trustedContext?: Readonly<Record<string, JsonValue>>;
+  /**
+   * Opaque data-isolation scopes admitted with the originating mutation.
+   * Internal processors may propagate these into durable children; public
+   * replay and subscription consumers never receive them.
+   */
+  readonly changeScopes?: Readonly<Record<string, string>>;
   readonly payload: TPayload;
 }
 
@@ -242,7 +248,7 @@ export interface RunApplicationProjectionOptions<TPayload extends object, TRow e
   readonly streamName: string;
   readonly source: ApplicationReplayableStream<TPayload>;
   readonly store: ApplicationProjectionWriter<TRow>;
-  readonly project: (payload: TPayload, event: { readonly id: string; readonly recordedAt: string; readonly partitionKey: string }) => TRow | readonly TRow[] | Promise<TRow | readonly TRow[]>;
+  readonly project: (payload: TPayload, event: { readonly id: string; readonly sequence: number; readonly recordedAt: string; readonly partitionKey: string }) => TRow | readonly TRow[] | Promise<TRow | readonly TRow[]>;
   readonly batchSize?: number;
   readonly maxBatches?: number;
 }
@@ -261,7 +267,12 @@ export async function runApplicationProjection<TPayload extends object, TRow ext
       throw new ApplicationProjectionRetentionGapError(options.projection, options.streamName, checkpoint.sequence, page.retentionFloor);
     }
     const events = await Promise.all(page.items.map(async (envelope) => {
-      const projected = await options.project(envelope.payload, { id: envelope.id, recordedAt: envelope.recordedAt, partitionKey: envelope.partitionKey });
+      const projected = await options.project(envelope.payload, {
+        id: envelope.id,
+        sequence: envelope.sequence,
+        recordedAt: envelope.recordedAt,
+        partitionKey: envelope.partitionKey,
+      });
       return { envelope, rows: projectionRows(projected) };
     }));
     await options.store.write(events);

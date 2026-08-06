@@ -1,15 +1,11 @@
-import { relations } from 'drizzle-orm';
 import {
-  bigint,
+  field,
   index,
-  integer,
-  jsonb,
+  model,
   pgEnum,
-  pgTable,
-  text,
-  timestamp,
+  relations,
   uniqueIndex,
-} from 'drizzle-orm/pg-core';
+} from '@applik8s/applik8s/drizzle';
 
 export const applicationConversationRole = pgEnum(
   'applik8s_conversation_role',
@@ -31,22 +27,26 @@ export const applicationConversationEventVisibility = pgEnum(
   ['browser', 'audit-only'],
 );
 
-export const applicationConversations = pgTable(
+export const applicationConversations = model(
   'applik8s_conversations',
   {
-    id: text('id').primaryKey(),
-    principalScope: text('principal_scope').notNull(),
-    title: text('title'),
-    revision: bigint('revision', { mode: 'number' }).notNull().default(0),
-    createdAt: timestamp('created_at', {
+    id: field.text('id').primaryKey(),
+    principalScope: field.text('principal_scope').notNull(),
+    title: field.text('title'),
+    revision: field.bigint('revision', { mode: 'number' }).notNull().default(0),
+    createdAt: field.timestamp('created_at', {
       withTimezone: true,
       mode: 'string',
     }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', {
+    updatedAt: field.timestamp('updated_at', {
       withTimezone: true,
       mode: 'string',
     }).notNull().defaultNow(),
-    retentionUntil: timestamp('retention_until', {
+    archivedAt: field.timestamp('archived_at', {
+      withTimezone: true,
+      mode: 'string',
+    }),
+    retentionUntil: field.timestamp('retention_until', {
       withTimezone: true,
       mode: 'string',
     }),
@@ -57,25 +57,26 @@ export const applicationConversations = pgTable(
       table.updatedAt,
     ),
   ],
+  { name: 'Conversation', revision: false },
 );
 
-export const applicationConversationMessages = pgTable(
+export const applicationConversationMessages = model(
   'applik8s_conversation_messages',
   {
-    id: text('id').primaryKey(),
-    conversationId: text('conversation_id')
+    id: field.text('id').primaryKey(),
+    conversationId: field.text('conversation_id')
       .notNull()
       .references(() => applicationConversations.id, {
         onDelete: 'cascade',
       }),
-    revision: bigint('revision', { mode: 'number' }).notNull(),
+    revision: field.bigint('revision', { mode: 'number' }).notNull(),
     role: applicationConversationRole('role').notNull(),
-    content: jsonb('content').notNull(),
+    content: field.jsonb('content').notNull(),
     state: applicationConversationMessageState('state')
       .notNull()
       .default('committed'),
-    invocationId: text('invocation_id'),
-    createdAt: timestamp('created_at', {
+    invocationId: field.text('invocation_id'),
+    createdAt: field.timestamp('created_at', {
       withTimezone: true,
       mode: 'string',
     }).notNull().defaultNow(),
@@ -90,30 +91,31 @@ export const applicationConversationMessages = pgTable(
       table.createdAt,
     ),
   ],
+  { name: 'Message', revision: false },
 );
 
-export const applicationConversationRuns = pgTable(
+export const applicationConversationRuns = model(
   'applik8s_conversation_runs',
   {
-    id: text('id').primaryKey(),
-    conversationId: text('conversation_id')
+    id: field.text('id').primaryKey(),
+    conversationId: field.text('conversation_id')
       .notNull()
       .references(() => applicationConversations.id, {
         onDelete: 'cascade',
       }),
-    principalScope: text('principal_scope').notNull(),
+    principalScope: field.text('principal_scope').notNull(),
     status: applicationConversationRunState('status').notNull(),
-    agentRunId: text('agent_run_id'),
-    invocationId: text('invocation_id'),
-    startedAt: timestamp('started_at', {
+    agentRunId: field.text('agent_run_id'),
+    invocationId: field.text('invocation_id'),
+    startedAt: field.timestamp('started_at', {
       withTimezone: true,
       mode: 'string',
     }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', {
+    updatedAt: field.timestamp('updated_at', {
       withTimezone: true,
       mode: 'string',
     }).notNull().defaultNow(),
-    terminalReason: text('terminal_reason'),
+    terminalReason: field.text('terminal_reason'),
   },
   (table) => [
     index('applik8s_conversation_runs_scope_status_idx').on(
@@ -126,22 +128,23 @@ export const applicationConversationRuns = pgTable(
       table.updatedAt,
     ),
   ],
+  { name: 'ProtocolRun', revision: false },
 );
 
-export const applicationConversationRunEvents = pgTable(
+export const applicationConversationRunEvents = model(
   'applik8s_conversation_run_events',
   {
-    id: text('id').primaryKey(),
-    runId: text('run_id')
+    id: field.text('id').primaryKey(),
+    runId: field.text('run_id')
       .notNull()
       .references(() => applicationConversationRuns.id, {
         onDelete: 'cascade',
       }),
-    sequence: bigint('sequence', { mode: 'number' }).notNull(),
-    type: text('type').notNull(),
-    payload: jsonb('payload').notNull(),
+    sequence: field.bigint('sequence', { mode: 'number' }).notNull(),
+    type: field.text('type').notNull(),
+    payload: field.jsonb('payload').notNull(),
     visibility: applicationConversationEventVisibility('visibility').notNull(),
-    createdAt: timestamp('created_at', {
+    createdAt: field.timestamp('created_at', {
       withTimezone: true,
       mode: 'string',
     }).notNull().defaultNow(),
@@ -156,29 +159,30 @@ export const applicationConversationRunEvents = pgTable(
       table.createdAt,
     ),
   ],
+  { name: 'RunEvent', revision: false },
 );
 
-export const applicationConversationMemory = pgTable(
+export const applicationConversationMemory = model(
   'applik8s_conversation_memory',
   {
-    id: text('id').primaryKey(),
-    principalScope: text('principal_scope').notNull(),
-    conversationId: text('conversation_id').references(
+    id: field.text('id').primaryKey(),
+    principalScope: field.text('principal_scope').notNull(),
+    conversationId: field.text('conversation_id').references(
       () => applicationConversations.id,
       { onDelete: 'cascade' },
     ),
-    namespace: text('namespace').notNull(),
-    revision: integer('revision').notNull().default(1),
-    content: jsonb('content').notNull(),
-    retentionUntil: timestamp('retention_until', {
+    namespace: field.text('namespace').notNull(),
+    revision: field.integer('revision').notNull().default(1),
+    content: field.jsonb('content').notNull(),
+    retentionUntil: field.timestamp('retention_until', {
       withTimezone: true,
       mode: 'string',
     }).notNull(),
-    createdAt: timestamp('created_at', {
+    createdAt: field.timestamp('created_at', {
       withTimezone: true,
       mode: 'string',
     }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', {
+    updatedAt: field.timestamp('updated_at', {
       withTimezone: true,
       mode: 'string',
     }).notNull().defaultNow(),
@@ -190,6 +194,7 @@ export const applicationConversationMemory = pgTable(
       table.retentionUntil,
     ),
   ],
+  { name: 'Memory', revision: false },
 );
 
 export const applicationConversationRelations = relations(

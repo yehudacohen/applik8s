@@ -1,6 +1,8 @@
-import { type ApplicationReplayPage, ApplicationStreamProcessorPausedError, ApplicationStreamProcessorRetentionGapError, type ApplicationStreamProcessorStore, runApplicationStreamProcessor } from '@applik8s/applik8s';
+// typecast-file-boundary: adversarial stream fixtures deliberately restore provider records and callback generics after explicit shape checks.
+import { type ApplicationEventBatch, type ApplicationFrozenStreamBatchGroup, type ApplicationReplayPage, ApplicationStreamProcessorPausedError, ApplicationStreamProcessorRetentionGapError, type ApplicationStreamProcessorStore, createPostgresApplicationStreamProcessorStore, runApplicationStreamBatchProcessor, runApplicationStreamProcessor } from '@applik8s/applik8s';
 import { describe, expect, it } from 'vitest';
 import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
+import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from '../src/postgres-runtime-contract.js';
 
 function envelope(sequence: number) {
   return {
@@ -10,6 +12,10 @@ function envelope(sequence: number) {
     partitionKey: 'author-1',
     recordedAt: '2026-01-01T00:00:00.000Z',
     contextDigest: 'a'.repeat(64),
+    changeScopes: {
+      global: 'b'.repeat(64),
+      'context:tenantId': 'c'.repeat(64),
+    },
     principal: testApplicationPrincipal('author-1', { authorityRevision: 'authz-v1' }),
     trustedContext: { tenantId: 'tenant-1' },
     payload: { postId: `post-${sequence}` },
@@ -29,10 +35,107 @@ function store() {
   return { value, deadLetters, checkpoint: () => checkpoint };
 }
 
+function batchStore() {
+  let checkpoint = 0;
+  let group: ApplicationFrozenStreamBatchGroup<{ postId: string }> | undefined;
+  const deadLetters: string[] = [];
+  const value: ApplicationStreamProcessorStore = {
+    async prepare() {},
+    async checkpoint() { return checkpoint; },
+    async advance(_processor, _stream, sequence) { checkpoint = Math.max(checkpoint, sequence); },
+    async deadLetter(_processor, _stream, event) { deadLetters.push(event.id); },
+    async pendingBatchGroup() { return group; },
+    async freezeBatchGroup(_processor, _stream, candidate) {
+      group ??= candidate as ApplicationFrozenStreamBatchGroup<{ postId: string }>;
+      return group;
+    },
+    async markBatchComplete(_processor, _stream, groupId, batchId) {
+      if (!group || group.id !== groupId) throw new Error('unknown group');
+      group = {
+        ...group,
+        completedBatchIds: [...new Set([...group.completedBatchIds, batchId])],
+      };
+    },
+    async completeBatchGroup(_processor, _stream, groupId, sequence) {
+      if (!group || group.id !== groupId || group.batches.some((batch) => !group?.completedBatchIds.includes(batch.id))) {
+        throw new Error('incomplete group');
+      }
+      group = undefined;
+      checkpoint = Math.max(checkpoint, sequence);
+    },
+    async close() {},
+  };
+  return {
+    value,
+    deadLetters,
+    checkpoint: () => checkpoint,
+    pending: () => group,
+  };
+}
+
 describe('durable replay stream processor runtime', () => {
+  it('persists batch manifests and dead letters as structured JSONB values', async () => {
+    const calls: Array<{ readonly query: string; readonly parameters: readonly unknown[] }> = [];
+    const json = (value: unknown) => ({ __postgresJson: value });
+    const execute = async (query: string, parameters: readonly unknown[] = []) => {
+      calls.push({ query, parameters });
+      if (query.includes('SELECT group_id') && query.includes('FOR UPDATE')) return [];
+      if (query.includes('RETURNING group_id')) return [{ group_id: 'batch-group-1' }];
+      return [];
+    };
+    const transaction: ApplicationPostgresTransactionSql = {
+      unsafe: execute,
+      json,
+    };
+    const sql: ApplicationPostgresSql = {
+      unsafe: execute,
+      begin: async (operation) => operation(transaction),
+      async end() {},
+    };
+    const processorStore = createPostgresApplicationStreamProcessorStore({ sql });
+    const event = envelope(1);
+    const batch = {
+      id: 'batch-1',
+      partition: event.partitionKey,
+      firstSequence: 1,
+      lastSequence: 1,
+      events: [event],
+    };
+    const group = {
+      id: 'batch-group-1',
+      firstSequence: 1,
+      lastSequence: 1,
+      batches: [batch],
+      completedBatchIds: [],
+    };
+
+    await processorStore.prepare();
+    await processorStore.deadLetter('batch-worker', 'posts.published.v1', event, 2, 'failed');
+    await processorStore.freezeBatchGroup?.('batch-worker', 'posts.published.v1', group);
+    await processorStore.markBatchComplete?.(
+      'batch-worker',
+      'posts.published.v1',
+      group.id,
+      batch.id,
+    );
+
+    expect(calls.some(({ query }) =>
+      query.includes("SET batches = (batches #>> '{}')::jsonb"))).toBe(true);
+    const deadLetter = calls.find(({ query }) =>
+      query.includes('INSERT INTO applik8s_stream_processor_dead_letters'));
+    expect(deadLetter?.parameters[6]).toEqual(json(event.payload));
+    const frozen = calls.find(({ query }) =>
+      query.includes('INSERT INTO applik8s_stream_processor_batch_groups'));
+    expect(frozen?.parameters[5]).toEqual(json(group.batches));
+    const completed = calls.find(({ query }) =>
+      query.includes('SET completed_batch_ids = CASE'));
+    expect(completed?.parameters[3]).toEqual(json([{ id: batch.id }]));
+    expect(completed?.parameters[4]).toEqual(json([batch.id]));
+  });
+
   it('uses stable event idempotency keys and advances only after a terminal batch', async () => {
     const checkpoints = store();
-    const observed: Array<{ readonly idempotencyKey: string; readonly version: string; readonly contextDigest?: string; readonly principal?: string; readonly tenant?: string }> = [];
+    const observed: Array<{ readonly idempotencyKey: string; readonly version: string; readonly contextDigest?: string; readonly globalChangeScope?: string; readonly principal?: string; readonly tenant?: string }> = [];
     const source = { async read(): Promise<ApplicationReplayPage<{ postId: string }>> { return { items: [envelope(1), envelope(2)], nextSequence: 2, exhausted: true, retentionFloor: 0 }; } };
     const result = await runApplicationStreamProcessor({
       processor: 'timeline', streamName: 'posts.published.v1', source, store: checkpoints.value,
@@ -41,6 +144,7 @@ describe('durable replay stream processor runtime', () => {
           idempotencyKey: context.idempotencyKey,
           version: context.event.stream.version,
           ...(context.event.contextDigest ? { contextDigest: context.event.contextDigest } : {}),
+          ...(context.event.changeScopes?.global ? { globalChangeScope: context.event.changeScopes.global } : {}),
           ...(context.principal ? { principal: context.principal.id } : {}),
           ...(typeof context.trustedContext.tenantId === 'string' ? { tenant: context.trustedContext.tenantId } : {}),
         });
@@ -51,10 +155,122 @@ describe('durable replay stream processor runtime', () => {
     });
     expect(result).toEqual({ processed: 2, deadLettered: 0, checkpoint: 2, exhausted: true });
     expect(observed).toEqual([
-      { idempotencyKey: 'event-1', version: 'v1', contextDigest: 'a'.repeat(64), principal: 'author-1', tenant: 'tenant-1' },
-      { idempotencyKey: 'event-2', version: 'v1', contextDigest: 'a'.repeat(64), principal: 'author-1', tenant: 'tenant-1' },
+      { idempotencyKey: 'event-1', version: 'v1', contextDigest: 'a'.repeat(64), globalChangeScope: 'b'.repeat(64), principal: 'author-1', tenant: 'tenant-1' },
+      { idempotencyKey: 'event-2', version: 'v1', contextDigest: 'a'.repeat(64), globalChangeScope: 'b'.repeat(64), principal: 'author-1', tenant: 'tenant-1' },
     ]);
     expect(checkpoints.checkpoint()).toBe(2);
+  });
+
+  it('preserves event order within each partition while processing independent partitions concurrently', async () => {
+    const checkpoints = store();
+    let releaseFirstPartition: (() => void) | undefined;
+    const firstPartitionGate = new Promise<void>((resolve) => {
+      releaseFirstPartition = resolve;
+    });
+    let confirmSecondPartition: (() => void) | undefined;
+    const secondPartitionFinished = new Promise<void>((resolve) => {
+      confirmSecondPartition = resolve;
+    });
+    const calls: string[] = [];
+    const source = {
+      async read(): Promise<ApplicationReplayPage<{ postId: string }>> {
+        return {
+          items: [
+            { ...envelope(1), partitionKey: 'author-a' },
+            { ...envelope(2), partitionKey: 'author-a' },
+            { ...envelope(3), partitionKey: 'author-b' },
+            { ...envelope(4), partitionKey: 'author-b' },
+          ],
+          nextSequence: 4,
+          exhausted: true,
+          retentionFloor: 0,
+        };
+      },
+    };
+    const running = runApplicationStreamProcessor({
+      processor: 'partitioned-timeline',
+      streamName: 'posts.published.v1',
+      source,
+      store: checkpoints.value,
+      handle: async (_payload, context) => {
+        const key = `${context.event.partitionKey}:${context.event.sequence}`;
+        calls.push(`start:${key}`);
+        if (context.event.sequence === 1) await firstPartitionGate;
+        calls.push(`finish:${key}`);
+        if (context.event.sequence === 4) confirmSecondPartition?.();
+      },
+      concurrency: 2,
+      retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
+      failure: 'pause',
+      timeoutMs: 1_000,
+      maxInputBytes: 1_000,
+    });
+
+    await secondPartitionFinished;
+    expect(calls).toEqual([
+      'start:author-a:1',
+      'start:author-b:3',
+      'finish:author-b:3',
+      'start:author-b:4',
+      'finish:author-b:4',
+    ]);
+    expect(calls).not.toContain('start:author-a:2');
+    releaseFirstPartition?.();
+
+    await expect(running).resolves.toEqual({
+      processed: 4,
+      deadLettered: 0,
+      checkpoint: 4,
+      exhausted: true,
+    });
+    expect(calls.indexOf('finish:author-a:1')).toBeLessThan(
+      calls.indexOf('start:author-a:2'),
+    );
+    expect(calls.indexOf('finish:author-b:3')).toBeLessThan(
+      calls.indexOf('start:author-b:4'),
+    );
+  });
+
+  it('does not execute later events from a paused partition before replay', async () => {
+    const checkpoints = store();
+    const invoked: number[] = [];
+    const source = {
+      async read(): Promise<ApplicationReplayPage<{ postId: string }>> {
+        return {
+          items: [
+            { ...envelope(1), partitionKey: 'author-a' },
+            { ...envelope(2), partitionKey: 'author-a' },
+            { ...envelope(3), partitionKey: 'author-b' },
+          ],
+          nextSequence: 3,
+          exhausted: true,
+          retentionFloor: 0,
+        };
+      },
+    };
+    await expect(
+      runApplicationStreamProcessor({
+        processor: 'partitioned-failure',
+        streamName: 'posts.published.v1',
+        source,
+        store: checkpoints.value,
+        handle: async (_payload, context) => {
+          invoked.push(context.event.sequence);
+          if (context.event.sequence === 1) throw new Error('pause author-a');
+        },
+        concurrency: 2,
+        retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
+        failure: 'pause',
+        timeoutMs: 1_000,
+        maxInputBytes: 1_000,
+      }),
+    ).rejects.toMatchObject({
+      eventId: 'event-1',
+    });
+    expect(invoked).toContain(1);
+    expect(invoked).toContain(3);
+    expect(invoked).not.toContain(2);
+    expect(checkpoints.checkpoint()).toBe(0);
   });
 
   it('dead-letters only after bounded retries and otherwise pauses without advancing', async () => {
@@ -66,6 +282,43 @@ describe('durable replay stream processor runtime', () => {
     const paused = store();
     await expect(runApplicationStreamProcessor({ processor: 'timeline', streamName: 'posts.published.v1', source, store: paused.value, handle: async () => { throw new Error('boom'); }, concurrency: 1, retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 }, failure: 'pause', timeoutMs: 1_000, maxInputBytes: 1_000 })).rejects.toBeInstanceOf(ApplicationStreamProcessorPausedError);
     expect(paused.checkpoint()).toBe(0);
+  });
+
+  it('rehydrates inert event payloads for every admitted delivery attempt', async () => {
+    const checkpoints = store();
+    const inert = envelope(1);
+    let decodes = 0;
+    let attempts = 0;
+    const source = {
+      async read(): Promise<ApplicationReplayPage<{ postId: string }>> {
+        return { items: [inert], nextSequence: 1, exhausted: true, retentionFloor: 0 };
+      },
+    };
+    await expect(runApplicationStreamProcessor({
+      processor: 'signal-handler',
+      streamName: 'review-decision.v1',
+      source,
+      store: checkpoints.value,
+      decodePayload: async (payload, context) => {
+        decodes += 1;
+        expect(payload).toBe(inert.payload);
+        expect(context.event.id).toBe('event-1');
+        expect(context.principal?.id).toBe('author-1');
+        return { ...payload, approve: async () => 'approved' } as typeof payload;
+      },
+      handle: async (payload) => {
+        attempts += 1;
+        expect(typeof Reflect.get(payload, 'approve')).toBe('function');
+        if (attempts === 1) throw new Error('retry after authority changed');
+      },
+      concurrency: 1,
+      retry: { maxAttempts: 2, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
+      failure: 'pause',
+      timeoutMs: 1_000,
+      maxInputBytes: 1_000,
+    })).resolves.toMatchObject({ processed: 1, checkpoint: 1 });
+    expect(decodes).toBe(2);
+    expect(inert.payload).toEqual({ postId: 'post-1' });
   });
 
   it('does not confuse a globally allocated first event sequence with retention, but fails closed for an actual deletion watermark', async () => {
@@ -96,5 +349,105 @@ describe('durable replay stream processor runtime', () => {
       timeoutMs: 1_000,
       maxInputBytes: 1_000,
     })).rejects.toBeInstanceOf(ApplicationStreamProcessorRetentionGapError);
+  });
+
+  it('freezes exact partition batches and resumes only unfinished membership after failure', async () => {
+    const persisted = batchStore();
+    let sourceReads = 0;
+    const source = {
+      async read(after: number): Promise<ApplicationReplayPage<{ postId: string }>> {
+        sourceReads += 1;
+        const items = [
+          { ...envelope(1), partitionKey: 'author-a' },
+          { ...envelope(2), partitionKey: 'author-b' },
+          { ...envelope(3), partitionKey: 'author-a' },
+          { ...envelope(4), partitionKey: 'author-b' },
+        ].filter((event) => event.sequence > after);
+        return { items, nextSequence: 4, exhausted: true, retentionFloor: 0 };
+      },
+    };
+    const calls: Array<{ readonly id: string; readonly partition?: string; readonly values: readonly string[]; readonly frozen: boolean }> = [];
+    let failAuthorA = true;
+    const options = {
+      processor: 'bulk-index',
+      streamName: 'posts.published.v1',
+      source,
+      store: persisted.value,
+      handle: async (batch: ApplicationEventBatch<{ postId: string }>) => {
+        calls.push({
+          id: batch.id,
+          ...(batch.partition ? { partition: batch.partition } : {}),
+          values: batch.events.map((event) => event.value.postId),
+          frozen: Object.isFrozen(batch) && Object.isFrozen(batch.events),
+        });
+        if (batch.partition === 'author-a' && failAuthorA) {
+          failAuthorA = false;
+          throw new Error('temporary index failure');
+        }
+      },
+      concurrency: 2,
+      retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
+      failure: 'pause' as const,
+      timeoutMs: 1_000,
+      maxInputBytes: 10_000,
+      maxItems: 2,
+      maxBytes: 5_000,
+      maxBatches: 1,
+    };
+
+    await expect(runApplicationStreamBatchProcessor(options)).rejects.toBeInstanceOf(ApplicationStreamProcessorPausedError);
+    expect(persisted.checkpoint()).toBe(0);
+    expect(persisted.pending()?.completedBatchIds).toHaveLength(1);
+
+    await expect(runApplicationStreamBatchProcessor(options)).resolves.toMatchObject({
+      processed: 2,
+      checkpoint: 4,
+      exhausted: false,
+    });
+    expect(sourceReads).toBe(1);
+    expect(calls.filter((call) => call.partition === 'author-a')).toHaveLength(2);
+    expect(calls.filter((call) => call.partition === 'author-b')).toHaveLength(1);
+    expect(calls.every((call) => call.frozen)).toBe(true);
+    expect(calls.find((call) => call.partition === 'author-a')?.values).toEqual(['post-1', 'post-3']);
+    expect(calls.find((call) => call.partition === 'author-b')?.values).toEqual(['post-2', 'post-4']);
+  });
+
+  it('keeps frozen batch manifests inert and decodes each event only for invocation', async () => {
+    const persisted = batchStore();
+    const source = {
+      async read(): Promise<ApplicationReplayPage<{ postId: string }>> {
+        return {
+          items: [envelope(1)],
+          nextSequence: 1,
+          exhausted: true,
+          retentionFloor: 0,
+        };
+      },
+    };
+    let observedCallable = false;
+    const result = await runApplicationStreamBatchProcessor({
+      processor: 'signal-batch',
+      streamName: 'review-decision.v1',
+      source,
+      store: persisted.value,
+      decodePayload: async (payload) =>
+        ({ ...payload, approve: async () => 'approved' }) as typeof payload,
+      handle: async (batch) => {
+        const value = batch.events[0]?.value;
+        observedCallable =
+          Boolean(value) && typeof Reflect.get(value!, 'approve') === 'function';
+      },
+      concurrency: 1,
+      retry: { maxAttempts: 1, initialDelayMs: 1, maxDelayMs: 1, factor: 2 },
+      failure: 'pause',
+      timeoutMs: 1_000,
+      maxInputBytes: 10_000,
+      maxItems: 10,
+      maxBytes: 5_000,
+      maxBatches: 1,
+    });
+    expect(result).toMatchObject({ processed: 1, checkpoint: 1 });
+    expect(observedCallable).toBe(true);
+    expect(persisted.pending()).toBeUndefined();
   });
 });

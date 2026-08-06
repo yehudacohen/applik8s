@@ -1,23 +1,20 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command, CommanderError } from 'commander';
-import {
-  runApplicationDeploy,
-  runApplicationDelete,
-  runApplicationStatus,
-  type ApplicationDeleteCommandOptions,
-  type ApplicationDeployCommandOptions,
-  type ApplicationDeploymentCommandIo,
-  type ApplicationStatusCommandOptions,
+import type {
+  ApplicationDeleteCommandOptions,
+  ApplicationDeployCommandOptions,
+  ApplicationDeploymentCommandIo,
+  ApplicationStatusCommandOptions,
 } from './application-deployment-command.js';
 import {
   readApplicationProjectConfiguration,
   resolveApplicationContext,
   resolveApplicationEntrypoint,
 } from './application-project-config.js';
-import { resolveApplicationBuildPackage } from './application-deployment-files.js';
+import { resolveApplicationBuildPackage } from './application-build-package.js';
 
 interface CliIo extends ApplicationDeploymentCommandIo {}
 
@@ -141,6 +138,10 @@ function createProgram(io: CliIo): Command {
     .option('--skip-app-build', 'skip the application package build')
     .option('--skip-image-build', 'reject image-building deployment work')
     .option('--plan-only', 'compile and preview without applying effects')
+    .option(
+      '--allow-breaking-changes',
+      'allow one reviewed TypeKro root-schema migration for this deployment only',
+    )
     .option(
       '--acknowledge <token>',
       'acknowledge one exact installation-scoped destructive profile transition',
@@ -334,6 +335,7 @@ async function runDeploy(
       cwd: io.cwd,
     });
   }
+  const { runApplicationDeploy } = await loadApplicationDeploymentCommands();
   return runApplicationDeploy(entrypoint, options, io, { runChild, runBuild });
 }
 
@@ -353,6 +355,7 @@ async function runStatus(
       cwd: io.cwd,
     });
   }
+  const { runApplicationStatus } = await loadApplicationDeploymentCommands();
   return runApplicationStatus(entrypoint, options, io);
 }
 
@@ -376,6 +379,7 @@ async function runDelete(
       cwd: io.cwd,
     });
   }
+  const { runApplicationDelete } = await loadApplicationDeploymentCommands();
   return runApplicationDelete(entrypoint, options, io);
 }
 
@@ -460,9 +464,8 @@ async function runExplain(
     }, io);
     if (build !== 0) return build;
   }
-  const { explainCompiledApplicationOperation } = await import(
-    './application-explain-command.js'
-  );
+  const { explainCompiledApplicationOperation } =
+    await loadApplicationExplainCommand();
   return explainCompiledApplicationOperation(
     target,
     { outDir, ...(options.json ? { json: true } : {}) },
@@ -470,7 +473,20 @@ async function runExplain(
   );
 }
 
-function runChild(options: ChildProcessOptions): Promise<number> {
+async function runChild(options: ChildProcessOptions): Promise<number> {
+  if (isBunRuntime()) {
+    const stdio = options.stdio ?? 'inherit';
+    const child = Bun.spawnSync([options.command, ...options.args], {
+      cwd: options.cwd,
+      stdin:
+        options.input === undefined ? 'inherit' : Buffer.from(options.input),
+      stdout: stdio,
+      stderr: stdio,
+      env: options.env ?? process.env,
+    });
+    return child.exitCode;
+  }
+  const { spawn } = await loadNodeChildProcess();
   return new Promise((resolve) => {
     const child = spawn(options.command, options.args, {
       cwd: options.cwd,
@@ -483,7 +499,11 @@ function runChild(options: ChildProcessOptions): Promise<number> {
   });
 }
 
-function runChildCapture(options: Omit<ChildProcessOptions, 'input' | 'stdio'>): Promise<string> {
+async function runChildCapture(
+  options: Omit<ChildProcessOptions, 'input' | 'stdio'>,
+): Promise<string> {
+  if (isBunRuntime()) return runBunChildCapture(options);
+  const { spawn } = await loadNodeChildProcess();
   return new Promise((resolveOutput, reject) => {
     const child = spawn(options.command, options.args, {
       cwd: options.cwd,
@@ -502,12 +522,43 @@ function runChildCapture(options: Omit<ChildProcessOptions, 'input' | 'stdio'>):
   });
 }
 
+async function runBunChildCapture(
+  options: Omit<ChildProcessOptions, 'input' | 'stdio'>,
+): Promise<string> {
+  const child = Bun.spawnSync([options.command, ...options.args], {
+    cwd: options.cwd,
+    stdin: 'ignore',
+    stdout: 'inherit',
+    stderr: 'inherit',
+    env: options.env ?? process.env,
+  });
+  const code = child.exitCode;
+  if (code === 0) return '';
+  throw new Error(
+    `${options.command} ${options.args.join(' ')} failed with exit code ${code}.`,
+  );
+}
+
 function isBunRuntime(): boolean {
   return typeof process.versions.bun === 'string';
 }
 
+function loadApplicationDeploymentCommands() {
+  // static-import-exception: deployment planning must not initialize in Bun before the CLI hands it to Node.
+  return import('./application-deployment-command.js');
+}
+
+function loadApplicationExplainCommand() {
+  // static-import-exception: explain reaches compiler workers and must load only in the selected runtime.
+  return import('./application-explain-command.js');
+}
+
+function loadNodeChildProcess() {
+  // static-import-exception: the Bun-distributed CLI must not eagerly load Node's child-process implementation.
+  return import('node:child_process');
+}
+
 async function fileExists(path: string): Promise<boolean> {
-  const { access } = await import('node:fs/promises');
   return access(path).then(() => true).catch(() => false);
 }
 
@@ -528,10 +579,13 @@ function trimTrailingNewline(message: string): string {
 }
 
 export {
-  resolveApplicationBuildPackage,
   resolveGeneratedApplicationDeleteTarget,
   stageExplicitApplicationInstance,
 } from './application-deployment-files.js';
+export {
+  resolveApplicationBuildPackage,
+  resolveApplicationProjectRoot,
+} from './application-build-package.js';
 export {
   applicationInstanceSpec,
   applicationInstallationReadiness,

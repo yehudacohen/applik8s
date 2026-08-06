@@ -3,7 +3,19 @@ import { createApplicationCommandGateway } from '@applik8s/applik8s';
 import { describe, expect, it, vi } from 'vitest';
 import { applicationCommandPrincipal, applicationCommandTrustedContext } from '../src/command-principal.js';
 import { applicationCommandScope } from '../src/command-runtime-contract.js';
+import { applicationRelationalChangeScopes } from '../src/relational-runtime.js';
 import { testApplicationAdmission, testApplicationPrincipal } from '../../../test-support/application-principal.js';
+
+function transactionalSql(unsafe: (statement: string, parameters: readonly unknown[]) => Promise<readonly Record<string, unknown>[]>) {
+  return {
+    unsafe,
+    begin: async <T>(operation: (transaction: {
+      unsafe: typeof unsafe;
+      json(value: unknown): unknown;
+    }) => Promise<T>) => operation({ unsafe, json: (value) => value }),
+    async end() {},
+  };
+}
 
 describe('authenticated command gateway', () => {
   it('includes admitted context in durable idempotency scope', () => {
@@ -69,7 +81,7 @@ describe('authenticated command gateway', () => {
           additionalProperties: false,
         },
         databaseUrl: 'postgres://unused',
-        sql: { unsafe } as never,
+        sql: transactionalSql(unsafe) as never,
         key: (input) => String(Reflect.get(input, 'cardId')),
       }],
       authenticate: async () => {
@@ -164,16 +176,18 @@ describe('authenticated command gateway', () => {
   });
 
   it('separates transport acknowledgement from durable result and scopes opaque progress to admission', async () => {
+    const contextSecret = 'an-application-wide-context-secret-with-32-characters';
     const publish = vi.fn(async () => ({ stream: 'APPLIK8S_EVENTS', sequence: 1, duplicate: false, subject: 'applik8s.commands.cards.rename.v1.card-1', messageId: 'command-1' }));
     const unsafe = vi.fn(async () => [{ output: { changed: true }, error: null, model_revision: 'revision-2' }]);
     const gateway = createApplicationCommandGateway({
-      commands: [{ id: 'cards.rename.v1', bindingId: 'Card-cards.rename.v1', model: 'Card', inputSchema: { type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] }, databaseUrl: 'postgres://unused', sql: { unsafe } as never, key: (input, context) => {
+      commands: [{ id: 'cards.rename.v1', bindingId: 'Card-cards.rename.v1', model: 'Card', inputSchema: { type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] }, databaseUrl: 'postgres://unused', sql: transactionalSql(unsafe) as never, key: (input, context) => {
         expect(context).toMatchObject({ principal: { id: 'user-1' }, authorizationVersion: 'membership-2', trustedContext: { organizationId: 'organization-1' } });
         return Reflect.get(input, 'cardId');
       } }],
       authenticate: async () => testApplicationAdmission('user-1', { authorityRevision: 'membership-2', trustedContext: { organizationId: 'organization-1' } }),
       authorize: async ({ principal }) => principal.id === 'user-1',
       cursorSecret: 'a-secure-test-secret-with-at-least-32-characters',
+      contextSecret,
       eventLogPublisher: { publish, async drain() {} },
       now: () => new Date('2026-07-15T00:00:00.000Z'),
     });
@@ -218,9 +232,15 @@ describe('authenticated command gateway', () => {
     expect(applicationCommandTrustedContext(published.trustedContext)).toEqual({ organizationId: 'organization-1' });
     expect(JSON.stringify(published.trustedContext?.changeScopes)).not.toContain('organization-1');
     expect(JSON.stringify(published.trustedContext?.changeScopes)).not.toContain('user-1');
+    expect(published.trustedContext?.changeScopes?.global).toBe(
+      applicationRelationalChangeScopes({
+        values: {},
+        digestSecret: contextSecret,
+      }).global,
+    );
 
     const progressResponse = await gateway.handle(new Request('https://catalog.test/commands/cards.rename.v1/progress', { method: 'POST', body: JSON.stringify({ cursor: submission.progressCursor }) }));
-    await expect(progressResponse?.json()).resolves.toMatchObject({ durableResult: 'succeeded', output: { changed: true }, modelRevision: 'revision-2', reconciliation: 'progressing' });
+    await expect(progressResponse?.json()).resolves.toMatchObject({ durableResult: 'succeeded', output: { changed: true }, modelRevision: 'revision-2', reconciliation: 'ready' });
     expect(unsafe).toHaveBeenCalledWith(expect.stringContaining('applik8s_command_results'), [expect.stringMatching(/^sha256:/)]);
     await gateway.close();
   });
@@ -232,7 +252,7 @@ describe('authenticated command gateway', () => {
       model_revision: 'terminal-revision',
     }]);
     const gateway = createApplicationCommandGateway({
-      commands: [{ id: 'cards.rename.v1', bindingId: 'Card-cards.rename.v1', model: 'Card', inputSchema: { type: 'object' }, databaseUrl: 'postgres://unused', sql: { unsafe } as never, key: () => 'card-1' }],
+      commands: [{ id: 'cards.rename.v1', bindingId: 'Card-cards.rename.v1', model: 'Card', inputSchema: { type: 'object' }, databaseUrl: 'postgres://unused', sql: transactionalSql(unsafe) as never, key: () => 'card-1' }],
       authenticate: async () => testApplicationAdmission('user-1', { authorityRevision: 'membership-1' }),
       authorize: async () => true,
       cursorSecret: 'a-secure-test-secret-with-at-least-32-characters',
@@ -274,11 +294,15 @@ describe('authenticated command gateway', () => {
     let durableReceipt: unknown;
     const unsafe = vi.fn(async (statement: string, parameters: readonly unknown[]) => {
       if (statement.includes('INSERT INTO applik8s_command_admissions')) {
-        durableReceipt = JSON.parse(String(parameters[4]));
+        durableReceipt = typeof parameters[4] === 'string'
+          ? JSON.parse(parameters[4])
+          : parameters[4];
         return [{ scope: parameters[0] }];
       }
       if (statement.includes('SELECT authorization_receipt')) {
-        return [{ authorization_receipt: durableReceipt }];
+        // Compatibility fixture for the brief v0.7 development encoding that
+        // stored the receipt as a JSON string scalar.
+        return [{ authorization_receipt: JSON.stringify(durableReceipt) }];
       }
       if (statement.includes('applik8s_command_results')) {
         return [{ output: { changed: true }, error: null, model_revision: 'revision-2' }];
@@ -286,6 +310,29 @@ describe('authenticated command gateway', () => {
       throw new Error(`Unexpected SQL in command gateway fixture: ${statement}`);
     });
     let resultReadAllowed = true;
+    let currentAuthorityRevision = 'authority-1';
+    const authorizeOperation = vi.fn(async (request: Parameters<NonNullable<Parameters<typeof createApplicationCommandGateway>[0]['authorizeOperation']>>[0]) => ({
+      allowed: true as const,
+      receipt: {
+        apiVersion: 'applik8s.authorizationReceipt/v1alpha1' as const,
+        application: 'test',
+        id: 'receipt-1',
+        operationId: 'applik8s://models/Card/operations/rename' as const,
+        operationVersion: 'v1',
+        catalogRevision: request.principal.catalogRevision,
+        authorityRevision: request.principal.authorityRevision,
+        principal: { ...request.principal, trustedContextDigest: request.trustedContextDigest },
+        trustedContextDigest: request.trustedContextDigest,
+        matchedPermissionIds: ['permission:card.rename'],
+        matchedGrantIds: ['grant:card.rename'],
+        inputDigest: request.inputDigest,
+        target: { kind: 'target' as const, model: 'Card', identity: { id: request.targetKey } },
+        scopeEvidence: [],
+        audience: 'chirp',
+        transport: 'http' as const,
+        admittedAt: '2026-07-29T00:00:00.000Z',
+      },
+    }));
     const revalidateOperation = vi.fn(async () => resultReadAllowed
       ? { allowed: true as const }
       : { allowed: false as const, code: 'AUTHORITY_REVOKED', message: 'revoked' });
@@ -298,35 +345,24 @@ describe('authenticated command gateway', () => {
         operationVersion: 'v1',
         inputSchema: { type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] },
         databaseUrl: 'postgres://unused',
-        sql: { unsafe } as never,
+        sql: transactionalSql(unsafe) as never,
         key: (input) => String(Reflect.get(input, 'cardId')),
       }],
       authenticate: async () => ({
-        principal: principalContract,
+        principal: {
+          ...principalContract,
+          // The identity provider and operation authority intentionally expose
+          // different revisions. Identity-scoped capability verification must
+          // receive this admission revision.
+          authorityRevision: 'identity-admission-7',
+        },
         trustedContext: { organizationId: 'organization-1' },
       }),
-      authorizeOperation: async (request) => ({
-        allowed: true,
-        receipt: {
-          apiVersion: 'applik8s.authorizationReceipt/v1alpha1',
-          application: 'test',
-          id: 'receipt-1',
-          operationId: 'applik8s://models/Card/operations/rename',
-          operationVersion: 'v1',
-          catalogRevision: request.principal.catalogRevision,
-          authorityRevision: request.principal.authorityRevision,
-          principal: { ...request.principal, trustedContextDigest: request.trustedContextDigest },
-          trustedContextDigest: request.trustedContextDigest,
-          matchedPermissionIds: ['permission:card.rename'],
-          matchedGrantIds: ['grant:card.rename'],
-          inputDigest: request.inputDigest,
-          target: { kind: 'target', model: 'Card', identity: { id: request.targetKey } },
-          scopeEvidence: [],
-          audience: 'chirp',
-          transport: 'http',
-          admittedAt: '2026-07-29T00:00:00.000Z',
-        },
+      admitPrincipal: async () => ({
+        ...principalContract,
+        authorityRevision: currentAuthorityRevision,
       }),
+      authorizeOperation,
       revalidateOperation,
       cursorSecret: 'a-secure-test-secret-with-at-least-32-characters',
       eventLogPublisher: { publish, async drain() {} },
@@ -342,6 +378,10 @@ describe('authenticated command gateway', () => {
     }));
 
     expect(response?.status).toBe(202);
+    expect(authorizeOperation).toHaveBeenCalledWith(expect.objectContaining({
+      authorizationVersion: 'identity-admission-7',
+      principal: expect.objectContaining({ authorityRevision: 'authority-1' }),
+    }));
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({
       authorizationReceipt: expect.objectContaining({
         id: 'receipt-1',
@@ -364,6 +404,11 @@ describe('authenticated command gateway', () => {
     expect(JSON.stringify(cursorBody)).not.toContain('principal:user-1');
     expect(JSON.stringify(cursorBody)).not.toContain('receipt-1');
 
+    // Authorization itself may append an audit event, advancing the authority
+    // revision before the first poll. The receipt remains bound to the issuing
+    // revision and must be revalidated rather than rejected as a malformed
+    // cursor.
+    currentAuthorityRevision = 'authority-2';
     const progress = await gateway.handle(new Request(
       'https://catalog.test/commands/cards.rename.v1/progress',
       { method: 'POST', body: JSON.stringify({ cursor: submission.progressCursor }) },
@@ -376,7 +421,10 @@ describe('authenticated command gateway', () => {
     expect(revalidateOperation).toHaveBeenCalledWith(expect.objectContaining({
       boundary: 'result-read',
       receipt: expect.objectContaining({ id: 'receipt-1' }),
-      principal: expect.objectContaining({ id: 'principal:user-1' }),
+      principal: expect.objectContaining({
+        id: 'principal:user-1',
+        authorityRevision: 'authority-2',
+      }),
     }));
 
     resultReadAllowed = false;

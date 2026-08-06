@@ -1,5 +1,9 @@
 import type { ApplicationResourceRef } from '@applik8s/core';
-import type { ApplicationProviderToken, ApplicationTypedProviderContract } from './application-providers.js';
+import type {
+  ApplicationQualifiableProviderToken,
+  ApplicationTypedProviderContract,
+} from './application-providers.js';
+import { applicationQualifiableProviderToken } from './application-provider-qualification.js';
 
 export interface ApplicationStructuredGenerationHttpProvider {
   readonly kind: 'structured-generation-http';
@@ -26,7 +30,7 @@ export type ApplicationStructuredGenerationProvider =
   | ApplicationStructuredGenerationHttpProvider
   | ApplicationStructuredGenerationDeterministicProvider;
 
-export interface ApplicationStructuredGenerationProviderToken extends ApplicationProviderToken<ApplicationStructuredGenerationProvider> {
+export interface ApplicationStructuredGenerationProviderToken extends ApplicationQualifiableProviderToken<ApplicationStructuredGenerationProvider> {
   http(options: Omit<ApplicationStructuredGenerationHttpProvider, 'kind'>): ApplicationStructuredGenerationHttpProvider;
   deterministic(options: Omit<ApplicationStructuredGenerationDeterministicProvider, 'kind'>): ApplicationStructuredGenerationDeterministicProvider;
 }
@@ -40,7 +44,7 @@ const contract: ApplicationTypedProviderContract = {
 };
 
 /** Handler-safe capability token shared by provide() and task context.use(). */
-export const StructuredGeneration: ApplicationStructuredGenerationProviderToken = {
+export const StructuredGeneration: ApplicationStructuredGenerationProviderToken = applicationQualifiableProviderToken({
   name: 'StructuredGeneration',
   description: 'Schema-bound, cancellable structured generation with bounded usage and Secret-backed credentials.',
   contract,
@@ -68,7 +72,7 @@ export const StructuredGeneration: ApplicationStructuredGenerationProviderToken 
     }
     return { kind: 'structured-generation-deterministic', ...options };
   },
-};
+});
 
 export function isApplicationStructuredGenerationProvider(value: unknown): value is ApplicationStructuredGenerationProvider {
   if (!value || typeof value !== 'object') return false;

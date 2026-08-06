@@ -1,3 +1,4 @@
+// typecast-file-boundary: Provider option records are validated by provider kind before deployment bindings are materialized.
 import type { ApplicationProviderNode } from "@applik8s/core";
 import {
   type ApplicationDeploymentEdge,
@@ -17,6 +18,7 @@ import type {
 
 export type ApplicationProviderExecution =
   | "root-composition"
+  | "direct-provider"
   | "runtime-only"
   | "external-controller";
 
@@ -27,6 +29,8 @@ interface BuiltinProviderRegistration {
 }
 
 const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
+  { interface: "AI", implementation: "ai-deterministic", execution: "runtime-only" },
+  { interface: "AI", implementation: "envoy-ai-gateway", execution: "external-controller" },
   { interface: "ApplicationHost", implementation: "kubernetes-application-host", execution: "root-composition" },
   { interface: "Authorization", implementation: "application-authorization", execution: "runtime-only" },
   { interface: "Certificate", implementation: "cert-manager", execution: "root-composition" },
@@ -39,7 +43,7 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "CredentialStore", implementation: "kubernetes-secret-credentials", execution: "runtime-only" },
   { interface: "DnsPublication", implementation: "custom", execution: "runtime-only" },
   { interface: "DnsPublication", implementation: "external-dns", execution: "root-composition" },
-  { interface: "EventLog", implementation: "nats-jetstream", execution: "root-composition" },
+  { interface: "EventLog", implementation: "nats-jetstream", execution: "direct-provider" },
   { interface: "EventSource", implementation: "kubernetes-watch", execution: "runtime-only" },
   { interface: "HttpExposure", implementation: "ingress", execution: "root-composition" },
   { interface: "HttpExposure", implementation: "node-port", execution: "root-composition" },
@@ -57,7 +61,7 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "StructuredGeneration", implementation: "application-provider-selection", execution: "runtime-only" },
   { interface: "StructuredGeneration", implementation: "structured-generation-deterministic", execution: "runtime-only" },
   { interface: "StructuredGeneration", implementation: "structured-generation-http", execution: "runtime-only" },
-  { interface: "WorkflowEngine", implementation: "hatchet", execution: "root-composition" },
+  { interface: "WorkflowEngine", implementation: "hatchet", execution: "direct-provider" },
 ];
 
 /**
@@ -109,15 +113,320 @@ export function applicationProviderSelectionDeploymentContributor(
       provider: ApplicationProviderNode,
       context: ApplicationDeploymentPlanningContext,
     ): ApplicationDeploymentContribution {
+      const selected = selectedProfileProvider(provider, context);
+      const providerDirect = providerDirectContribution(selected, context);
       return {
-        nodes: [],
-        edges: [],
+        nodes: [
+          ...(selected.interface === "ContainerRegistry"
+            ? managedHarborNodes(selected, context)
+            : []),
+          ...providerDirect.nodes,
+        ],
+        edges: providerDirect.edges,
         compositionFragments: [
-          providerFragment(provider, context, "root-composition"),
+          providerFragment(
+            selected,
+            context,
+            providerExecution(selected.interface, selected.implementation),
+          ),
         ],
       };
     },
   };
+}
+
+function selectedProfileProvider(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ApplicationProviderNode {
+  const profile = optionalObject(provider.config?.profile);
+  const branches = Array.isArray(profile?.branches) ? profile.branches : [];
+  if (branches.length === 0) {
+    // Some non-profile indirections (notably the registry bootstrap) retain a
+    // concrete provider configuration while using the selection identity.
+    return {
+      ...provider,
+      implementation:
+        selectedProviderImplementationFromConfig(provider.config)
+        ?? provider.implementation,
+    };
+  }
+  const branch = branches.find((candidate) => {
+    const value = optionalObject(candidate);
+    return value?.variant === context.profile;
+  });
+  const selectedBranch = optionalObject(branch);
+  if (!selectedBranch) {
+    throw new Error(
+      `Application provider ${provider.id} has no deployment branch for profile ${context.profile}.`,
+    );
+  }
+  const implementation = requiredString(
+    selectedBranch.implementation,
+    `Application provider ${provider.id} profile ${context.profile} implementation`,
+  ).split("/", 1)[0]!;
+  const selectedConfig = selectedProviderConfiguration(provider.config, context);
+  const aliasConfig = selectedProviderAliasConfiguration(
+    provider,
+    implementation,
+    context,
+  );
+  const branchConfig = optionalObject(
+    selectedBranch.config === undefined
+      ? undefined
+      : selectedProviderValue(
+          selectedBranch.config as DeploymentJsonValue,
+          context,
+        ),
+  );
+  const mergedConfig = {
+    ...(selectedConfig ?? {}),
+    ...(aliasConfig ?? {}),
+  };
+  const branchConfigKey = providerGraphConfigurationKey(provider.interface);
+  const config =
+    selectedConfig || aliasConfig || branchConfig
+      ? branchConfig && branchConfigKey
+        ? {
+            ...mergedConfig,
+            [branchConfigKey]: mergeProviderBranchConfiguration(
+              optionalObject(mergedConfig[branchConfigKey]) ?? {},
+              branchConfig,
+            ),
+          }
+        : {
+            ...mergedConfig,
+            ...(branchConfig ?? {}),
+          }
+      : undefined;
+  return {
+    ...provider,
+    implementation,
+    ...(config ? { config } : { config: {} }),
+  };
+}
+
+function mergeProviderBranchConfiguration(
+  base: DeploymentJsonObject,
+  branch: DeploymentJsonObject,
+): DeploymentJsonObject {
+  const merged: Record<string, DeploymentJsonValue> = { ...base };
+  for (const [key, value] of Object.entries(branch)) {
+    const previous = merged[key];
+    const previousObject = optionalObject(previous);
+    const valueObject = optionalObject(value);
+    if (previousObject && valueObject) {
+      merged[key] = mergeProviderBranchConfiguration(
+        previousObject,
+        valueObject,
+      );
+      continue;
+    }
+    if (Array.isArray(previous) && Array.isArray(value)) {
+      merged[key] = Array.from(
+        { length: Math.max(previous.length, value.length) },
+        (_, index) => {
+          const previousValue = previous[index];
+          const branchValue = value[index];
+          if (branchValue === undefined) return previousValue ?? null;
+          const previousEntry = optionalObject(previousValue);
+          const branchEntry = optionalObject(branchValue);
+          return previousEntry && branchEntry
+            ? mergeProviderBranchConfiguration(previousEntry, branchEntry)
+            : branchValue;
+        },
+      );
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged;
+}
+
+/**
+ * Profile metadata stores the provider implementation itself, while ordinary
+ * ApplicationGraph provider nodes wrap several implementations under a
+ * capability-specific key. Merge the selected concrete branch at that same
+ * boundary so nested topology/lifecycle configuration replaces CEL-merged
+ * aliases rather than being stranded at the root of `config`.
+ */
+function providerGraphConfigurationKey(
+  providerInterface: string,
+): string | undefined {
+  switch (providerInterface) {
+    case "AI":
+      return "ai";
+    case "AnalyticalDatabase":
+      return "analyticalDatabase";
+    case "ApplicationHost":
+      return "host";
+    case "ContainerRegistry":
+      return "containerRegistry";
+    case "IndexStore":
+      return "indexStore";
+    case "ObjectStorage":
+      return "objectStorage";
+    case "Search":
+      return "search";
+    case "TransactionalDatabase":
+      return "transactionalDatabase";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * A qualified profile binding can also be installed as an application's
+ * unqualified default. That derived alias carries the complete provider-native
+ * configuration (including nested provisioning/lifecycle fields), while the
+ * profile contract intentionally contains only non-sensitive descriptive
+ * fields. Reuse the alias configuration for deployment planning without
+ * compiling the alias as a second provider.
+ */
+function selectedProviderAliasConfiguration(
+  provider: ApplicationProviderNode,
+  implementation: string,
+  context: ApplicationDeploymentPlanningContext,
+): ApplicationProviderNode["config"] {
+  const candidates = context.graph.nodes.filter(
+    (candidate): candidate is ApplicationProviderNode =>
+      candidate.kind === "provider"
+      && candidate.id !== provider.id
+      && candidate.interface === provider.interface
+      && candidate.implementation === implementation
+      && !optionalObject(candidate.config?.qualification),
+  );
+  if (candidates.length > 1) {
+    throw new Error(
+      `Application provider ${provider.id} has multiple unqualified ${provider.interface}/${implementation} aliases; deployment configuration is ambiguous.`,
+    );
+  }
+  return candidates[0]
+    ? selectedProviderConfiguration(candidates[0].config, context)
+    : undefined;
+}
+
+function selectedProviderConfiguration(
+  config: ApplicationProviderNode["config"],
+  context: ApplicationDeploymentPlanningContext,
+): ApplicationProviderNode["config"] {
+  if (!config) return config;
+  return Object.fromEntries(
+    Object.entries(config)
+      .map(([key, value]) => [
+        key,
+        selectedProviderValue(value, context),
+      ] as const)
+      .filter((entry): entry is readonly [string, DeploymentJsonValue] =>
+        entry[1] !== undefined),
+  ) as ApplicationProviderNode["config"];
+}
+
+function selectedProviderValue(
+  value: DeploymentJsonValue,
+  context: ApplicationDeploymentPlanningContext,
+): DeploymentJsonValue | undefined {
+  if (typeof value === "string") {
+    return materializedInstallationValue(value, context.installationSpec);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => selectedProviderValue(entry, context))
+      .filter((entry): entry is DeploymentJsonValue => entry !== undefined);
+  }
+  const object = optionalObject(value);
+  if (!object) return value;
+  if (object.kind === "application-provider-selection") {
+    const cases = optionalObject(object.cases);
+    const selected = cases?.[context.profile] ?? object.default;
+    if (selected === undefined) {
+      throw new Error(
+        `Application provider selection has no branch for profile ${context.profile}.`,
+      );
+    }
+    return selectedProviderValue(selected, context);
+  }
+  return Object.fromEntries(
+    Object.entries(object)
+      .map(([key, entry]) => [
+        key,
+        selectedProviderValue(entry, context),
+      ] as const)
+      .filter((entry): entry is readonly [string, DeploymentJsonValue] =>
+        entry[1] !== undefined),
+  ) as DeploymentJsonObject;
+}
+
+function materializedInstallationValue(
+  value: string,
+  installationSpec: DeploymentJsonObject,
+): DeploymentJsonValue | undefined {
+  const exact = /^\$\{schema\.spec((?:\.[A-Za-z_][A-Za-z0-9_]*)*)\}$/.exec(
+    value,
+  );
+  if (exact) {
+    return installationPathValue(installationSpec, exact[1] ?? "");
+  }
+  return value.replace(
+    /\$\{schema\.spec((?:\.[A-Za-z_][A-Za-z0-9_]*)*)\}/g,
+    (_marker, path: string) => {
+      const resolved = installationPathValue(installationSpec, path);
+      if (
+        resolved === undefined
+        || resolved === null
+        || typeof resolved === "object"
+      ) {
+        throw new Error(
+          `Application provider configuration cannot interpolate installation path schema.spec${path} as text.`,
+        );
+      }
+      return String(resolved);
+    },
+  );
+}
+
+function installationPathValue(
+  installationSpec: DeploymentJsonObject,
+  path: string,
+): DeploymentJsonValue | undefined {
+  let current: DeploymentJsonValue | undefined = installationSpec;
+  for (const segment of path.split(".").filter(Boolean)) {
+    const object = optionalObject(current);
+    if (!object) return undefined;
+    current = object[segment];
+  }
+  return current;
+}
+
+function selectedProviderImplementationFromConfig(
+  config: ApplicationProviderNode["config"],
+): string | undefined {
+  if (!config) return undefined;
+  for (const key of [
+    "containerRegistry",
+    "search",
+    "transactionalDatabase",
+    "analyticalDatabase",
+    "objectStorage",
+    "identityInfrastructure",
+    "ai",
+  ]) {
+    const value = optionalObject(config[key]);
+    const kind = optionalString(value?.kind);
+    if (kind && kind !== "application-provider-selection") return kind;
+  }
+  return undefined;
+}
+
+function providerExecution(
+  providerInterface: string,
+  implementation: string,
+): ApplicationProviderExecution {
+  return builtinProviderRegistrations.find(
+    (registration) =>
+      registration.interface === providerInterface
+      && registration.implementation === implementation,
+  )?.execution ?? "root-composition";
 }
 
 interface ProviderDirectContribution {
@@ -131,6 +440,12 @@ function providerDirectContribution(
 ): ProviderDirectContribution {
   if (provider.interface === "IndexStore" && provider.implementation === "valkey") {
     return valkeyDirectContribution(provider, context);
+  }
+  if (
+    provider.interface === "EventLog"
+    && provider.implementation === "nats-jetstream"
+  ) {
+    return eventLogDirectContribution(provider, context);
   }
   if (
     provider.interface === "TransactionalDatabase" &&
@@ -167,7 +482,535 @@ function providerDirectContribution(
   ) {
     return openSearchDirectContribution(provider, context);
   }
+  if (
+    provider.interface === "AI"
+    && provider.implementation === "envoy-ai-gateway"
+  ) {
+    return envoyAIGatewayDirectContribution(provider, context);
+  }
   return { nodes: [], edges: [] };
+}
+
+function eventLogDirectContribution(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ProviderDirectContribution {
+  const value = provider.config;
+  if (value?.provision === false) return { nodes: [], edges: [] };
+
+  const namespace =
+    optionalString(value?.namespace) ?? applicationNamespace(context);
+  const name = optionalString(value?.name) ?? "applik8s-events";
+  const replicas = optionalInteger(value?.replicas) ?? 1;
+  const storageSize = optionalString(value?.storageSize) ?? "10Gi";
+  const storageClassName = optionalString(value?.storageClassName);
+  const pvcRetentionPolicy =
+    value?.pvcRetentionPolicy === "delete" ? "delete" : "retain";
+  const configuration = compactJson({
+    name,
+    namespace,
+    namespaceOwnership: "external",
+    replicas,
+    storageSize,
+    pvcRetentionPolicy,
+    ...(storageClassName
+      ? {
+          values: {
+            config: {
+              jetstream: {
+                fileStore: {
+                  pvc: { storageClassName },
+                },
+              },
+            },
+          },
+        }
+      : {}),
+  });
+
+  return {
+    nodes: [
+      directNode({
+        id: `direct.${provider.id}.nats`,
+        provider,
+        context,
+        compositionId: "nats-bootstrap",
+        reason:
+          "Install NATS and NACK outside the application KRO ApplySet so Stream and Consumer finalizers drain before their controllers are removed.",
+        namespace,
+        configuration,
+        ownership: "application",
+        deletion: "delete",
+      }),
+    ],
+    edges: [],
+  };
+}
+
+function envoyAIGatewayDirectContribution(
+  provider: ApplicationProviderNode,
+  context: ApplicationDeploymentPlanningContext,
+): ProviderDirectContribution {
+  const value = nestedObject(provider.config, "ai");
+  if (
+    value?.kind !== "envoy-ai-gateway"
+    || value.provision === false
+  ) {
+    return { nodes: [], edges: [] };
+  }
+  const application = context.graph.metadata.name;
+  const namespace = optionalString(value.namespace) ?? applicationNamespace(context);
+  const name = optionalString(value.name) ?? `${application}-ai`;
+  const versions = requiredObject(value.versions, "Envoy AI Gateway versions");
+  const platform = optionalObject(value.platform) ?? {};
+  const envoyGatewayNamespace =
+    optionalString(platform.envoyGatewayNamespace) ?? "envoy-gateway-system";
+  const aiGatewayNamespace =
+    optionalString(platform.aiGatewayNamespace) ?? "envoy-ai-gateway-system";
+  const gatewayClassName =
+    optionalString(platform.gatewayClassName) ?? "envoy-ai-gateway";
+  const seedReference = optionalObject(
+    platform.mcpSessionEncryptionSeedSecret,
+  );
+  const seedName =
+    optionalString(seedReference?.name)
+    ?? "envoy-ai-gateway-mcp-seed";
+  const seedKey = optionalString(seedReference?.key) ?? "seed";
+  const seedNamespace =
+    optionalString(seedReference?.namespace) ?? aiGatewayNamespace;
+  if (seedNamespace !== aiGatewayNamespace) {
+    throw new Error(
+      "Envoy AI Gateway MCP session-encryption Secret must be in the AI Gateway controller namespace.",
+    );
+  }
+  const providers = envoyAIProviders(value, namespace);
+  const models = envoyAIModels(value);
+  const requestPolicy = optionalObject(value.requestPolicy);
+  const telemetry = optionalObject(value.telemetry);
+  const rateLimit = optionalObject(value.rateLimit);
+  const build = compactJson({
+    providers,
+    models,
+    profile: "production",
+    retry: optionalInteger(requestPolicy?.retries) === 0
+      ? false
+      : compactJson({
+          retries: optionalInteger(requestPolicy?.retries) ?? providers.length,
+          attemptsPerPriority: 1,
+          ...(optionalInteger(requestPolicy?.timeoutMs)
+            ? {
+                perRetryTimeout:
+                  `${optionalInteger(requestPolicy?.timeoutMs)}ms`,
+              }
+            : {}),
+        }),
+    ...(rateLimit
+      ? {
+          rateLimit: {
+            redisUrl: requiredString(
+              rateLimit.redisUrl,
+              "Envoy AI Gateway rate-limit Redis URL",
+            ),
+            rules: requiredArray(
+              rateLimit.rules,
+              "Envoy AI Gateway rate-limit rules",
+            ).map((candidate) => {
+              const rule = requiredObject(
+                candidate,
+                "Envoy AI Gateway rate-limit rule",
+              );
+              return compactJson({
+                ...(optionalString(rule.identityHeader)
+                  ? { identityHeader: optionalString(rule.identityHeader) }
+                  : {}),
+                requests: requiredInteger(
+                  rule.requests,
+                  "Envoy AI Gateway rate-limit requests",
+                ),
+                unit: envoyRateLimitUnit(
+                  requiredString(
+                    rule.unit,
+                    "Envoy AI Gateway rate-limit unit",
+                  ),
+                ),
+                cost: optionalString(rule.cost) ?? "total-tokens",
+              });
+            }),
+          },
+        }
+      : {}),
+    telemetry: compactJson({
+      environment: compactJson({
+        APPLIK8S_AI_USAGE_METRICS:
+          telemetry?.usage === false ? "disabled" : "enabled",
+        APPLIK8S_AI_COST_METRICS:
+          telemetry?.cost === false ? "disabled" : "enabled",
+        APPLIK8S_AI_BODY_LOGGING:
+          telemetry?.redactBodies === false ? "disabled" : "redacted",
+      }),
+    }),
+    platform: {
+      profile: "production",
+      // Applik8s establishes these retained lifecycle boundaries before the
+      // generated MCP seed and delegates the remaining platform graph to
+      // TypeKro.
+      namespaceOwnership: "external",
+      envoyGatewayNamespace,
+      aiGatewayNamespace,
+      envoyGatewayVersion: requiredString(
+        versions.envoyGateway,
+        "Envoy Gateway version",
+      ),
+      aiGatewayVersion: requiredString(
+        versions.aiGateway,
+        "Envoy AI Gateway version",
+      ),
+      gatewayClassName,
+      mcpSessionEncryptionSeedSecret: {
+        name: seedName,
+        key: seedKey,
+      },
+      ...(rateLimit
+        ? {
+            rateLimitRedisUrl: requiredString(
+              rateLimit.redisUrl,
+              "Envoy AI Gateway rate-limit Redis URL",
+            ),
+          }
+        : {}),
+    },
+  });
+  const gatewayNodeId = `direct.${provider.id}.envoy-ai-gateway`;
+  const gatewayBase = directNode({
+    id: gatewayNodeId,
+    provider,
+    context,
+    compositionId: "envoy-ai-gateway",
+    reason:
+      "Install provider-neutral logical inference routing through the released TypeKro Envoy AI Gateway composition.",
+    namespace,
+    configuration: {
+      name,
+      namespace,
+      build,
+      instance: {
+        name,
+        namespace,
+        lifecycle: "external",
+      },
+    },
+    ownership: "application",
+    deletion: "delete",
+  });
+  const gatewayNode: ApplicationKubernetesDirectDeploymentNode = {
+    ...gatewayBase,
+    outputs: [
+      ...gatewayBase.outputs,
+      {
+        name: "endpoint",
+        type: "string",
+        sensitivity: "public",
+        persistence: "state",
+      },
+    ],
+  };
+  const namespaceNodes = [
+    envoyGatewayNamespace,
+    aiGatewayNamespace,
+  ].map((platformNamespace) =>
+    directNode({
+      id: `direct.${provider.id}.namespace.${safeProviderNodeId(platformNamespace)}`,
+      provider,
+      context,
+      compositionId: "applik8s-unowned-namespace",
+      reason:
+        "Bootstrap the shared Envoy control-plane namespace before its generated production seed and singleton platform owner.",
+      namespace: platformNamespace,
+      configuration: { name: platformNamespace },
+      ownership: "shared",
+      deletion: "retain",
+    }));
+  const nodes: ApplicationDeploymentNode[] = [
+    ...namespaceNodes,
+    gatewayNode,
+  ];
+  const edges: ApplicationDeploymentEdge[] = namespaceNodes.map((node) => ({
+    from: node.id,
+    to: gatewayNodeId,
+    relationship: "requiresReady",
+  }));
+  edges.push({
+    from: gatewayNodeId,
+    to: "kubernetes.application",
+    relationship: "requiresOutput",
+    output: "endpoint",
+  });
+  if (!seedReference) {
+    const seedNodeId = `external.${provider.id}.mcp-seed`;
+    const seedNode: ApplicationExternalProviderDeploymentNode = {
+      id: seedNodeId,
+      kind: "externalProvider",
+      contractVersion: 1,
+      source: { semanticNodeId: provider.id },
+      provider: {
+        interface: "Secret",
+        implementation: "alchemy-kubernetes-generated-secret",
+        version: "1",
+      },
+      scope: {
+        connectionDigest: context.connection.digest,
+        namespace: seedNamespace,
+      },
+      capabilities: { strategies: ["direct", "kro"], alchemy: true },
+      configurationDigest: digestApplicationDeploymentValue({
+        namespace: seedNamespace,
+        name: seedName,
+        values: {
+          [seedKey]: {
+            kind: "random",
+            bytes: 32,
+            encoding: "base64url",
+          },
+        },
+      }),
+      inputs: {},
+      outputs: [
+        {
+          name: "reference",
+          type: "secretReference",
+          sensitivity: "public",
+          persistence: "reference",
+        },
+        {
+          name: "name",
+          type: "string",
+          sensitivity: "public",
+          persistence: "reference",
+        },
+        {
+          name: "namespace",
+          type: "string",
+          sensitivity: "public",
+          persistence: "reference",
+        },
+      ],
+      lifecycle: {
+        ownership: "shared",
+        deletion: "retain",
+        adoption: "createOrAdoptExact",
+      },
+      spec: {
+        resourceType: "kubernetesGeneratedSecret",
+        controller: "applik8s-alchemy-kubernetes-generated-secret/v1",
+        // The generated name is compiler-owned public identity. The gateway
+        // needs the Secret to exist, not a runtime-discovered output.
+        referenceMode: "staticIdentity",
+        configuration: {
+          namespace: seedNamespace,
+          name: seedName,
+          values: {
+            [seedKey]: {
+              kind: "random",
+              bytes: 32,
+              encoding: "base64url",
+            },
+          },
+          consumers: [provider.id],
+        },
+      },
+    };
+    nodes.push(seedNode);
+    const seedNamespaceNode = namespaceNodes.find(
+      (node) => node.scope.namespace === seedNamespace,
+    );
+    if (seedNamespaceNode) {
+      edges.push({
+        from: seedNamespaceNode.id,
+        to: seedNodeId,
+        relationship: "requiresReady",
+      });
+    }
+    edges.push({
+      from: seedNodeId,
+      to: gatewayNodeId,
+      relationship: "requiresReady",
+    });
+  }
+  return { nodes, edges };
+}
+
+function envoyAIProviders(
+  provider: DeploymentJsonObject,
+  namespace: string,
+): readonly DeploymentJsonObject[] {
+  const models = requiredObject(provider.models, "Envoy AI Gateway models");
+  const byName = new Map<string, DeploymentJsonObject>();
+  for (const routeValue of Object.values(models)) {
+    const route = requiredObject(routeValue, "Envoy AI Gateway model route");
+    for (const backendValue of requiredArray(
+      route.backends,
+      "Envoy AI Gateway route backends",
+    )) {
+      const backend = requiredObject(
+        backendValue,
+        "Envoy AI Gateway backend",
+      );
+      const name = requiredString(backend.name, "Envoy AI Gateway backend name");
+      const existing = byName.get(name);
+      const mapped = envoyAIProvider(backend, namespace);
+      if (
+        existing
+        && digestApplicationDeploymentValue(existing)
+          !== digestApplicationDeploymentValue(mapped)
+      ) {
+        throw new Error(
+          `Envoy AI Gateway backend ${name} is declared with incompatible provider configuration.`,
+        );
+      }
+      byName.set(name, mapped);
+    }
+  }
+  return [...byName.values()].sort((left, right) =>
+    String(left.name).localeCompare(String(right.name)));
+}
+
+function envoyAIProvider(
+  backend: DeploymentJsonObject,
+  namespace: string,
+): DeploymentJsonObject {
+  const name = requiredString(backend.name, "Envoy AI Gateway backend name");
+  const providerClass = requiredString(
+    backend.providerClass,
+    `Envoy AI Gateway backend ${name} provider class`,
+  );
+  const endpoint = optionalString(backend.endpoint);
+  const location = endpoint ? new URL(endpoint) : undefined;
+  const credentials = optionalObject(backend.credentials);
+  if (
+    credentials
+    && (optionalString(credentials.key) ?? "apiKey") !== "apiKey"
+  ) {
+    throw new Error(
+      `Envoy AI Gateway backend ${name} credential Secret must expose key apiKey for the released TypeKro provider contract.`,
+    );
+  }
+  const credential = credentials
+    ? {
+        name: requiredString(
+          credentials.name,
+          `Envoy AI Gateway backend ${name} credential Secret`,
+        ),
+        namespace:
+          optionalString(credentials.namespace) ?? namespace,
+      }
+    : undefined;
+  const connection = location
+    ? {
+        hostname: location.hostname,
+        ...(location.port ? { port: Number(location.port) } : {}),
+        tls: location.protocol === "https:",
+        ...(location.pathname !== "/"
+          ? { prefix: location.pathname.replace(/\/+$/u, "") }
+          : {}),
+      }
+    : {};
+  if (providerClass === "openai" || providerClass === "anthropic") {
+    if (!credential) {
+      throw new Error(
+        `Envoy AI Gateway backend ${name} requires a credential Secret.`,
+      );
+    }
+    return { name, kind: providerClass, ...connection, credential };
+  }
+  if (providerClass === "openai-compatible") {
+    if (!location) {
+      throw new Error(
+        `Envoy AI Gateway openai-compatible backend ${name} requires an endpoint.`,
+      );
+    }
+    return {
+      name,
+      kind: "openai-compatible",
+      ...connection,
+      ...(credential ? { credential } : {}),
+    };
+  }
+  if (providerClass === "bedrock") {
+    return {
+      name,
+      kind: "aws-bedrock",
+      region: requiredString(
+        backend.region,
+        `Envoy AI Gateway backend ${name} region`,
+      ),
+      ...(credential
+        ? {
+            credential: {
+              source: "secret",
+              secret: credential,
+            },
+          }
+        : { credential: { source: "workload-identity" } }),
+    };
+  }
+  throw new Error(
+    `Envoy AI Gateway backend ${name} has unsupported provider class ${providerClass}.`,
+  );
+}
+
+function envoyAIModels(
+  provider: DeploymentJsonObject,
+): readonly DeploymentJsonObject[] {
+  const models = requiredObject(provider.models, "Envoy AI Gateway models");
+  return Object.entries(models)
+    .map(([logicalModel, routeValue]) => {
+      const route = requiredObject(
+        routeValue,
+        `Envoy AI Gateway model ${logicalModel}`,
+      );
+      const fallback = route.fallback === "ordered";
+      return {
+        model: logicalModel,
+        targets: requiredArray(
+          route.backends,
+          `Envoy AI Gateway model ${logicalModel} backends`,
+        ).map((backendValue, index) => {
+          const backend = requiredObject(
+            backendValue,
+            `Envoy AI Gateway model ${logicalModel} backend`,
+          );
+          return compactJson({
+            provider: requiredString(
+              backend.name,
+              `Envoy AI Gateway model ${logicalModel} backend name`,
+            ),
+            model: requiredString(
+              backend.model,
+              `Envoy AI Gateway model ${logicalModel} concrete model`,
+            ),
+            priority: fallback ? index : 0,
+            ...(optionalInteger(backend.weight)
+              ? { weight: optionalInteger(backend.weight) }
+              : {}),
+          });
+        }),
+        ...(optionalInteger(optionalObject(provider.requestPolicy)?.timeoutMs)
+          ? {
+              requestTimeout:
+                `${optionalInteger(optionalObject(provider.requestPolicy)?.timeoutMs)}ms`,
+            }
+          : {}),
+      };
+    })
+    .sort((left, right) => left.model.localeCompare(right.model));
+}
+
+function envoyRateLimitUnit(value: string): "Second" | "Minute" | "Hour" | "Day" {
+  if (value === "second") return "Second";
+  if (value === "minute") return "Minute";
+  if (value === "hour") return "Hour";
+  if (value === "day") return "Day";
+  throw new Error(`Unsupported Envoy AI Gateway rate-limit unit ${value}.`);
 }
 
 function matchingIdentityInfrastructureOwner(
@@ -432,40 +1275,239 @@ function workflowDirectContribution(
   ) {
     return { nodes: [], edges: [] };
   }
-  if (optionalObject(value.adminCredentialsSecret)) {
-    return { nodes: [], edges: [] };
-  }
   const namespace = optionalString(value.namespace) ?? applicationNamespace(context);
-  const name = `${optionalString(value.name) ?? "applik8s-hatchet"}-admin`;
-  const configuration = {
+  const name = optionalString(value.name) ?? "applik8s-hatchet";
+  const nodes: ApplicationDeploymentNode[] = [];
+  const edges: ApplicationDeploymentEdge[] = [];
+  const adminReference = optionalObject(value.adminCredentialsSecret);
+  const adminSecretName =
+    optionalString(adminReference?.name) ?? `${name}-admin`;
+  const adminSecretNamespace =
+    optionalString(adminReference?.namespace) ?? namespace;
+  if (adminSecretNamespace !== namespace) {
+    throw new Error(
+      `Hatchet admin credentials Secret must be in workload namespace ${namespace}.`,
+    );
+  }
+  const adminNodeId = `external.${provider.id}.admin-secret`;
+  if (!adminReference) {
+    nodes.push(workflowGeneratedSecretNode({
+      id: adminNodeId,
+      provider,
+      context,
+      namespace,
+      name: `${name}-admin`,
+      values: {
+        ADMIN_EMAIL: {
+          kind: "publicLiteral",
+          value: "admin@applik8s.local",
+        },
+        ADMIN_PASSWORD: {
+          kind: "random",
+          bytes: 32,
+          encoding: "base64url",
+        },
+      },
+    }));
+  }
+  const database = optionalObject(value.database);
+  const databaseReference = optionalObject(database?.connectionSecret);
+  const databaseSecretName =
+    optionalString(databaseReference?.name) ?? `${name}-database`;
+  const databaseSecretNamespace =
+    optionalString(databaseReference?.namespace) ?? namespace;
+  if (databaseSecretNamespace !== namespace) {
+    throw new Error(
+      `Hatchet database connection Secret must be in workload namespace ${namespace}.`,
+    );
+  }
+  const clusterName =
+    optionalString(database?.clusterName) ?? `${name}-db`;
+  const databaseName =
+    optionalString(database?.database) ?? "hatchet";
+  const databaseNodeId = `direct.${provider.id}.database`;
+  const databaseSecretNodeId = `external.${provider.id}.database-secret`;
+  if (
+    database?.provision !== false
+    && !databaseReference
+  ) {
+    nodes.push(workflowGeneratedSecretNode({
+      id: databaseSecretNodeId,
+      provider,
+      context,
+      namespace,
+      name: `${name}-database`,
+      secretType: "kubernetes.io/basic-auth",
+      values: {
+        username: {
+          kind: "publicLiteral",
+          value: "hatchet",
+        },
+        password: {
+          kind: "random",
+          bytes: 32,
+          encoding: "base64url",
+        },
+        DATABASE_URL: {
+          kind: "template",
+          segments: [
+            {
+              kind: "literal",
+              value: "postgresql://hatchet:",
+            },
+            {
+              kind: "value",
+              key: "password",
+            },
+            {
+              kind: "literal",
+              value:
+                `@${clusterName}-rw.${namespace}.svc.cluster.local:5432/${databaseName}?sslmode=require`,
+            },
+          ],
+        },
+      },
+    }));
+  }
+  if (database?.provision !== false) {
+    const storageClass =
+      optionalString(database?.storageClass)
+      ?? optionalString(database?.storageClassName);
+    nodes.push(directNode({
+      id: databaseNodeId,
+      provider,
+      context,
+      compositionId: "applik8s-postgres-cluster-provider",
+      reason:
+        "Install Hatchet's external PostgreSQL authority before the workflow engine.",
+      namespace,
+      configuration: compactJson({
+        name: clusterName,
+        namespace,
+        spec: {
+          instances:
+            optionalInteger(database?.instances)
+            ?? (value.mode === "ha" ? 3 : 1),
+          storage: {
+            size: optionalString(database?.storageSize) ?? "8Gi",
+            ...(storageClass ? { storageClass } : {}),
+          },
+          bootstrap: {
+            initdb: {
+              database: databaseName,
+              owner: "hatchet",
+              secret: { name: databaseSecretName },
+            },
+          },
+          postgresql: { parameters: { timezone: "UTC" } },
+        },
+      }),
+      ownership: "application",
+      deletion: "delete",
+    }));
+  }
+  const installationNodeId = `direct.${provider.id}.hatchet`;
+  nodes.push(directNode({
+    id: installationNodeId,
+    provider,
+    context,
+    compositionId: "hatchet-installation",
+    reason:
+      "Delegate Hatchet chart, source, readiness, and lifecycle to TypeKro's released integration.",
     namespace,
-    name,
-    values: {
-      adminEmail: {
-        kind: "publicLiteral",
-        value: "admin@applik8s.local",
+    configuration: compactJson({
+      name,
+      namespace,
+      namespaceOwnership: "external",
+      repositoryNamespaceOwnership: "external",
+      ...(optionalString(value.chartVersion)
+        ? { chartVersion: optionalString(value.chartVersion) }
+        : {}),
+      ...(optionalString(value.serverVersion)
+        ? { serverVersion: optionalString(value.serverVersion) }
+        : {}),
+      database: {
+        connectionSecret: { name: databaseSecretName },
       },
-      adminPassword: {
-        kind: "random",
-        bytes: 32,
-        encoding: "base64url",
+      adminCredentialsSecret: { name: adminSecretName },
+      replicas: {
+        api: value.mode === "ha" ? 2 : 1,
+        engine: value.mode === "ha" ? 2 : 1,
+        frontend: value.mode === "ha" ? 2 : 1,
       },
-    },
-    consumers: [provider.id],
+      dashboard: value.dashboard !== "disabled",
+      serverUrl:
+        optionalString(value.apiUrl)
+        ?? `http://hatchet-api.${namespace}.svc:8080`,
+      cookieDomain: `hatchet-api.${namespace}.svc`,
+      cookieInsecure: value.tls !== true,
+      grpcBroadcastAddress:
+        optionalString(value.hostPort)
+        ?? `hatchet-engine.${namespace}.svc:7070`,
+      grpcInsecure: value.tls !== true,
+      workerTokenJob: true,
+    }),
+    ownership: "application",
+    deletion: "delete",
+  }));
+  if (!adminReference) {
+    edges.push({
+      from: adminNodeId,
+      to: installationNodeId,
+      relationship: "requiresReady",
+    });
+  }
+  if (!databaseReference && database?.provision !== false) {
+    edges.push({
+      from: databaseSecretNodeId,
+      to: databaseNodeId,
+      relationship: "requiresReady",
+    });
+    edges.push({
+      from: databaseSecretNodeId,
+      to: installationNodeId,
+      relationship: "requiresReady",
+    });
+  }
+  if (database?.provision !== false) {
+    edges.push({
+      from: databaseNodeId,
+      to: installationNodeId,
+      relationship: "requiresReady",
+    });
+  }
+  return { nodes, edges };
+}
+
+function workflowGeneratedSecretNode(options: {
+  readonly id: string;
+  readonly provider: ApplicationProviderNode;
+  readonly context: ApplicationDeploymentPlanningContext;
+  readonly namespace: string;
+  readonly name: string;
+  readonly secretType?: "Opaque" | "kubernetes.io/basic-auth";
+  readonly values: DeploymentJsonObject;
+}): ApplicationExternalProviderDeploymentNode {
+  const configuration = {
+    namespace: options.namespace,
+    name: options.name,
+    ...(options.secretType ? { secretType: options.secretType } : {}),
+    values: options.values,
+    consumers: [options.provider.id],
   };
-  const node: ApplicationExternalProviderDeploymentNode = {
-    id: `external.${provider.id}.admin-secret`,
+  return {
+    id: options.id,
     kind: "externalProvider",
     contractVersion: 1,
-    source: { semanticNodeId: provider.id },
+    source: { semanticNodeId: options.provider.id },
     provider: {
       interface: "Secret",
       implementation: "alchemy-kubernetes-generated-secret",
       version: "1",
     },
     scope: {
-      connectionDigest: context.connection.digest,
-      namespace,
+      connectionDigest: options.context.connection.digest,
+      namespace: options.namespace,
     },
     capabilities: { strategies: ["direct", "kro"], alchemy: true },
     configurationDigest: digestApplicationDeploymentValue(configuration),
@@ -498,10 +1540,13 @@ function workflowDirectContribution(
     spec: {
       resourceType: "kubernetesGeneratedSecret",
       controller: "applik8s-alchemy-kubernetes-generated-secret/v1",
+      // The Secret name is compiler-owned public identity. Hatchet needs the
+      // object to exist before reconciliation; no generated value crosses the
+      // TypeKro artifact boundary.
+      referenceMode: "staticIdentity",
       configuration,
     },
   };
-  return { nodes: [node], edges: [] };
 }
 
 function valkeyDirectContribution(
@@ -731,6 +1776,128 @@ function objectStorageDirectContribution(
     "Direct-provisioned S3 credentials Secret namespace",
   );
   const bucket = requiredString(value.bucket, "Direct-provisioned S3 bucket");
+  if (provisioning?.kind === "local-s3") {
+    const name =
+      optionalString(provisioning.name)
+      ?? optionalString(value.name)
+      ?? bucket;
+    const secretName = requiredString(
+      secret?.name,
+      "Local S3 credentials Secret name",
+    );
+    const secretConfiguration = {
+      namespace,
+      name: secretName,
+      values: {
+        AWS_ACCESS_KEY_ID: {
+          kind: "random",
+          bytes: 32,
+          encoding: "base64url",
+        },
+        AWS_SECRET_ACCESS_KEY: {
+          kind: "random",
+          bytes: 32,
+          encoding: "base64url",
+        },
+      },
+      consumers: [provider.id],
+    };
+    const secretNodeId = `external.${provider.id}.local-s3-credentials`;
+    const localS3NodeId = `direct.${provider.id}.local-s3`;
+    const secretNode: ApplicationExternalProviderDeploymentNode = {
+      id: secretNodeId,
+      kind: "externalProvider",
+      contractVersion: 1,
+      source: { semanticNodeId: provider.id },
+      provider: {
+        interface: "Secret",
+        implementation: "alchemy-kubernetes-generated-secret",
+        version: "1",
+      },
+      scope: {
+        connectionDigest: context.connection.digest,
+        namespace,
+      },
+      capabilities: { strategies: ["direct", "kro"], alchemy: true },
+      configurationDigest:
+        digestApplicationDeploymentValue(secretConfiguration),
+      inputs: {},
+      outputs: [
+        {
+          name: "reference",
+          type: "secretReference",
+          sensitivity: "public",
+          persistence: "reference",
+        },
+        {
+          name: "name",
+          type: "string",
+          sensitivity: "public",
+          persistence: "reference",
+        },
+        {
+          name: "namespace",
+          type: "string",
+          sensitivity: "public",
+          persistence: "reference",
+        },
+      ],
+      lifecycle: {
+        ownership: "application",
+        deletion: "delete",
+        adoption: "createOrAdoptExact",
+      },
+      spec: {
+        resourceType: "kubernetesGeneratedSecret",
+        controller: "applik8s-alchemy-kubernetes-generated-secret/v1",
+        // The provider configuration already carries the non-secret
+        // namespace/name. Only readiness ordering is required; no generated
+        // value or provider output may enter the TypeKro artifact surface.
+        referenceMode: "staticIdentity",
+        configuration: secretConfiguration,
+      },
+    };
+    const localS3Node = directNode({
+      id: localS3NodeId,
+      provider,
+      context,
+      compositionId: "applik8s-local-s3",
+      reason:
+        "Provide a credentialed, persistent S3-compatible service for the maintained Starter profile.",
+      namespace,
+      configuration: compactJson({
+        name,
+        namespace,
+        bucket,
+        credentialsSecretName: secretName,
+        image:
+          optionalString(provisioning.image)
+          ?? "docker.io/chrislusf/seaweedfs@sha256:f898c91e42d7da5f4bb13f1efd424ff03ba85b420312eb929708a384e8a8b03d",
+        storage: {
+          size: optionalString(provisioning.storageSize) ?? "2Gi",
+          ...(optionalString(provisioning.storageClassName)
+            ? {
+                storageClassName: optionalString(
+                  provisioning.storageClassName,
+                ),
+              }
+            : {}),
+        },
+      }),
+      ownership: "application",
+      deletion: "delete",
+    });
+    return {
+      nodes: [secretNode, localS3Node],
+      edges: [
+        {
+          from: secretNodeId,
+          to: localS3NodeId,
+          relationship: "requiresReady",
+        },
+      ],
+    };
+  }
   const name =
     optionalString(provisioning?.claimName) ??
     optionalString(value.name) ??
@@ -738,33 +1905,140 @@ function objectStorageDirectContribution(
     bucket;
   if (optionalString(secret?.name) !== name) {
     throw new Error(
-      "Direct-provisioned S3 credentials Secret name must match provisioning.claimName.",
+      `Direct-provisioned S3 credentials Secret name ${JSON.stringify(optionalString(secret?.name))} must match provisioning.claimName ${JSON.stringify(name)}.`,
     );
   }
+  const platform = optionalObject(provisioning?.platform);
+  const managedRookPlatform =
+    platform?.kind === "rook-ceph-single-node-development"
+      ? platform
+      : undefined;
+  const rookPlatform =
+    managedRookPlatform
+      ? {
+          name: optionalString(managedRookPlatform.name) ?? "applik8s-rook",
+          namespace:
+            optionalString(managedRookPlatform.namespace)
+            ?? "applik8s-rook-ceph",
+          operatorNamespace:
+            optionalString(managedRookPlatform.operatorNamespace)
+            ?? "applik8s-rook-ceph-operator",
+        }
+      : undefined;
+  const operatorNode =
+    rookPlatform
+      ? directNode({
+          id: `direct.${provider.id}.rook-operator`,
+          provider,
+          context,
+          compositionId: "applik8s-rook-ceph-operator",
+          reason:
+            "Install one explicitly shared Rook operator before reconciling application Ceph platforms.",
+          namespace: rookPlatform.operatorNamespace,
+          configuration: compactJson({
+            name: "applik8s-rook-operator",
+            namespace: rookPlatform.operatorNamespace,
+            repositoryName: "rook-release",
+            repositoryNamespace: rookPlatform.operatorNamespace,
+            repositoryNamespaceOwnership: "owned",
+            enableOBCWatchOperatorNamespace: true,
+            obcProvisionerNamePrefix: rookPlatform.operatorNamespace,
+            resources: { requests: { cpu: "100m", memory: "128Mi" } },
+            values: { allowLoopDevices: true },
+          }),
+          ownership: "shared",
+          deletion: "retain",
+        })
+      : undefined;
+  const platformNode =
+    rookPlatform
+      ? directNode({
+          id: `direct.${provider.id}.rook-platform`,
+          provider,
+          context,
+          compositionId:
+            "applik8s-rook-ceph-external-operator-single-node-platform",
+          reason:
+            "Install the explicitly selected shared one-node Ceph development platform through the separately owned Rook operator.",
+          namespace: rookPlatform.namespace,
+          configuration: compactJson({
+            name: rookPlatform.name,
+            profile: "single-node-development",
+            namespace: rookPlatform.namespace,
+            operatorNamespace: rookPlatform.operatorNamespace,
+            operatorDeploymentName: "rook-ceph-operator",
+            repositoryName: `${rookPlatform.name}-rook-release`,
+            repositoryNamespace: rookPlatform.namespace,
+            repositoryNamespaceOwnership: "owned",
+            bucketProvisionerNamePrefix: rookPlatform.operatorNamespace,
+            bucketProvisionerName:
+              `${rookPlatform.operatorNamespace}.ceph.rook.io/bucket`,
+            storageClassName: requiredString(
+              managedRookPlatform?.deviceStorageClassName,
+              "Managed Rook/Ceph device StorageClass",
+            ),
+            allowLoopDevices: managedRookPlatform?.allowLoopDevices,
+            storageSize:
+              optionalString(managedRookPlatform?.storageSize) ?? "16Gi",
+            objectStoreName:
+              optionalString(managedRookPlatform?.objectStoreName)
+              ?? "applik8s-object-store",
+            bucketStorageClassName: requiredString(
+              provisioning?.storageClassName,
+              "Managed Rook/Ceph bucket StorageClass",
+            ),
+          }),
+          ownership: "shared",
+          deletion: "retain",
+        })
+      : undefined;
+  if (platform && !platformNode) {
+    throw new Error(
+      `Unsupported managed ObjectStorage platform ${JSON.stringify(platform.kind)}.`,
+    );
+  }
+  const claimNode = directNode({
+    id: `direct.${provider.id}.claim`,
+    provider,
+    context,
+    compositionId: "rook-object-storage-claim",
+    reason:
+      "ObjectBucketClaims are controller-mutated and require TypeKro direct mode.",
+    namespace,
+    configuration: compactJson({
+      name,
+      namespace,
+      storageClassName: requiredString(
+        provisioning?.storageClassName,
+        "Direct-provisioned S3 StorageClass",
+      ),
+      bucket: { mode: "fixed", name: bucket },
+    }),
+    ownership: "application",
+    deletion: "delete",
+  });
   return {
     nodes: [
-      directNode({
-        id: `direct.${provider.id}.claim`,
-        provider,
-        context,
-        compositionId: "rook-object-storage-claim",
-        reason:
-          "ObjectBucketClaims are controller-mutated and require TypeKro direct mode.",
-        namespace,
-        configuration: compactJson({
-          name,
-          namespace,
-          storageClassName: requiredString(
-            provisioning?.storageClassName,
-            "Direct-provisioned S3 StorageClass",
-          ),
-          bucket: { mode: "fixed", name: bucket },
-        }),
-        ownership: "application",
-        deletion: "delete",
-      }),
+      ...(operatorNode ? [operatorNode] : []),
+      ...(platformNode ? [platformNode] : []),
+      claimNode,
     ],
-    edges: [],
+    edges: platformNode
+      ? [
+          ...(operatorNode
+            ? [{
+                from: operatorNode.id,
+                to: platformNode.id,
+                relationship: "requiresReady" as const,
+              }]
+            : []),
+          {
+            from: platformNode.id,
+            to: claimNode.id,
+            relationship: "requiresReady",
+          },
+        ]
+      : [],
   };
 }
 
@@ -787,23 +2061,370 @@ function identityDirectContribution(
   if (!stack) {
     throw new Error("Ory identity infrastructure stack must be identity or platform.");
   }
+  const deletion =
+    value.deletionPolicy === "delete" ? "delete" as const : "retain" as const;
+  const oryNodeId = `direct.${provider.id}.ory-${stack}`;
+  const nodes: ApplicationDeploymentNode[] = [];
+  const edges: ApplicationDeploymentEdge[] = [];
+  let configuration: DeploymentJsonObject = {
+    ...spec,
+    namespaceOwnership: "external",
+  };
+
+  if (stack === "platform") {
+    const managed = optionalObject(spec.managed) ?? {};
+    const explicitSources = optionalObject(spec.dependencySources) ?? {};
+    const hydraSources: Record<string, DeploymentJsonValue> = {
+      ...(optionalObject(explicitSources.hydra) ?? {}),
+    };
+    const kratosSources: Record<string, DeploymentJsonValue> = {
+      ...(optionalObject(explicitSources.kratos) ?? {}),
+    };
+    const ketoSources: Record<string, DeploymentJsonValue> = {
+      ...(optionalObject(explicitSources.keto) ?? {}),
+    };
+    const oathkeeperSources: Record<string, DeploymentJsonValue> = {
+      ...(optionalObject(explicitSources.oathkeeper) ?? {}),
+    };
+    const kratosSecrets: Record<string, DeploymentJsonValue> = {
+      ...(optionalObject(kratosSources.secrets) ?? {}),
+    };
+    kratosSources.secrets = kratosSecrets;
+    const manageDatabases = managed.databases !== false;
+    const manageSecrets = managed.secrets !== false;
+    const databaseStorageClass = optionalString(
+      managed.databaseStorageClass,
+    );
+    const name = requiredString(spec.name, "Ory identity infrastructure name");
+    const generatedSources: Record<string, DeploymentJsonValue> = {
+      ...explicitSources,
+      hydra: hydraSources,
+      kratos: kratosSources,
+      keto: ketoSources,
+      oathkeeper: oathkeeperSources,
+    };
+
+    const databaseDependencies = [
+      {
+        component: "hydra",
+        sources: hydraSources,
+      },
+      {
+        component: "kratos",
+        sources: kratosSources,
+      },
+      {
+        component: "keto",
+        sources: ketoSources,
+      },
+    ] as const;
+    if (manageDatabases) {
+      for (const dependency of databaseDependencies) {
+        if (optionalObject(dependency.sources.database)?.dsn !== undefined) {
+          continue;
+        }
+        const clusterName = `${name}-${dependency.component}-db`;
+        const nodeId =
+          `direct.${provider.id}.ory-${dependency.component}-database`;
+        nodes.push(
+          directNode({
+            id: nodeId,
+            provider,
+            context,
+            compositionId: "applik8s-postgres-cluster-provider",
+            reason:
+              `Provide the ${dependency.component} database through an independent lifecycle boundary without persisting its generated DSN.`,
+            namespace,
+            configuration: compactJson({
+              name: clusterName,
+              namespace,
+              spec: {
+                instances: 1,
+                storage: {
+                  size: "1Gi",
+                  ...(databaseStorageClass
+                    ? { storageClass: databaseStorageClass }
+                    : {}),
+                },
+                bootstrap: {
+                  initdb: {
+                    database: dependency.component,
+                    owner: dependency.component,
+                  },
+                },
+              },
+            }),
+            ownership: "application",
+            deletion,
+          }),
+        );
+        dependency.sources.database = {
+          dsn: {
+            mode: "external",
+            value: {
+              secretRef: {
+                name: `${clusterName}-app`,
+                key: "uri",
+              },
+            },
+          },
+          databaseName: dependency.component,
+        };
+        edges.push({
+          from: nodeId,
+          to: oryNodeId,
+          relationship: "requiresReady",
+        });
+      }
+    }
+
+    if (manageSecrets) {
+      const addGeneratedSecret = (
+        component: "hydra" | "kratos" | "oathkeeper",
+        secretName: string,
+        values: DeploymentJsonObject,
+      ) => {
+        const nodeId =
+          `external.${provider.id}.ory-${component}-secrets`;
+        nodes.push(
+          generatedSecretProviderNode({
+            id: nodeId,
+            provider,
+            context,
+            namespace,
+            name: secretName,
+            values,
+            consumers: [oryNodeId],
+            deletion,
+          }),
+        );
+        edges.push({
+          from: nodeId,
+          to: oryNodeId,
+          relationship: "requiresReady",
+        });
+      };
+
+      if (hydraSources.systemSecret === undefined) {
+        addGeneratedSecret(
+          "hydra",
+          `${name}-hydra-secrets`,
+          {
+            system: {
+              kind: "random",
+              bytes: 48,
+              encoding: "base64url",
+            },
+          },
+        );
+        hydraSources.systemSecret = {
+          mode: "external",
+          value: {
+            secretRef: {
+              name: `${name}-hydra-secrets`,
+              key: "system",
+            },
+          },
+        };
+      }
+
+      const missingKratosSecretValues: Record<string, DeploymentJsonValue> = {};
+      if (kratosSecrets.cookie === undefined) {
+        missingKratosSecretValues.cookie = {
+          kind: "random",
+          // Kratos v26 accepts cookie/cipher entries up to 32 characters.
+          // Generate 256 bits and expose 32 base64url characters (192 bits).
+          bytes: 32,
+          encoding: "base64url",
+          characters: 32,
+        };
+        kratosSecrets.cookie = {
+          mode: "external",
+          value: {
+            secretRef: {
+              name: `${name}-kratos-secrets`,
+              key: "cookie",
+            },
+          },
+        };
+      }
+      if (kratosSecrets.cipher === undefined) {
+        missingKratosSecretValues.cipher = {
+          kind: "random",
+          bytes: 32,
+          encoding: "base64url",
+          characters: 32,
+        };
+        kratosSecrets.cipher = {
+          mode: "external",
+          value: {
+            secretRef: {
+              name: `${name}-kratos-secrets`,
+              key: "cipher",
+            },
+          },
+        };
+      }
+      if (Object.keys(missingKratosSecretValues).length > 0) {
+        addGeneratedSecret(
+          "kratos",
+          `${name}-kratos-secrets`,
+          missingKratosSecretValues,
+        );
+      }
+
+      if (oathkeeperSources.mutatorIdTokenJwks === undefined) {
+        addGeneratedSecret(
+          "oathkeeper",
+          `${name}-oathkeeper-secrets`,
+          {
+            jwks: {
+              kind: "jwkSet",
+              algorithm: "RS256",
+              modulusLength: 2048,
+              keyId: `${safeProviderNodeId(name)}-oathkeeper-id-token-v1`,
+            },
+          },
+        );
+        oathkeeperSources.mutatorIdTokenJwks = {
+          mode: "external",
+          value: {
+            secretRef: {
+              name: `${name}-oathkeeper-secrets`,
+              key: "jwks",
+            },
+          },
+        };
+      }
+    }
+
+    configuration = compactJson({
+      ...spec,
+      namespaceOwnership: "external",
+      managed: {
+        ...managed,
+        databases: false,
+        secrets: false,
+      },
+      dependencySources: generatedSources,
+    });
+  }
+
+  nodes.push(
+    directNode({
+      id: oryNodeId,
+      provider,
+      context,
+      compositionId:
+        stack === "platform" ? "ory-platform-stack" : "ory-identity-stack",
+      reason:
+        "Managed identity infrastructure has an explicit lifecycle outside runtime request admission.",
+      namespace,
+      configuration,
+      ownership: "application",
+      deletion,
+    }),
+  );
+  const workloadNamespace = applicationNamespace(context);
+  if (
+    namespace !== workloadNamespace
+    && !["default", "kube-system", "kube-public", "kube-node-lease"].includes(
+      namespace,
+    )
+  ) {
+    const namespaceNode = directNode({
+      id: `direct.${provider.id}.ory-namespace`,
+      provider,
+      context,
+      compositionId: "applik8s-namespace",
+      reason:
+        "Establish the Ory namespace as an explicit lifecycle boundary before identity dependencies.",
+      namespace,
+      configuration: { name: namespace },
+      ownership: "application",
+      deletion,
+    });
+    nodes.unshift(namespaceNode);
+    edges.push(
+      ...nodes
+        .filter((node) => node.id !== namespaceNode.id)
+        .map((node) => ({
+          from: namespaceNode.id,
+          to: node.id,
+          relationship: "requiresReady" as const,
+        })),
+    );
+  }
   return {
-    nodes: [
-      directNode({
-        id: `direct.${provider.id}.ory-${stack}`,
-        provider,
-        context,
-        compositionId:
-          stack === "platform" ? "ory-platform-stack" : "ory-identity-stack",
-        reason:
-          "Managed identity infrastructure has an explicit lifecycle outside runtime request admission.",
-        namespace,
-        configuration: spec,
-        ownership: "application",
-        deletion: value.deletionPolicy === "delete" ? "delete" : "retain",
-      }),
+    nodes,
+    edges,
+  };
+}
+
+function generatedSecretProviderNode(options: {
+  readonly id: string;
+  readonly provider: ApplicationProviderNode;
+  readonly context: ApplicationDeploymentPlanningContext;
+  readonly namespace: string;
+  readonly name: string;
+  readonly values: DeploymentJsonObject;
+  readonly consumers: readonly string[];
+  readonly deletion: "delete" | "retain";
+}): ApplicationExternalProviderDeploymentNode {
+  const configuration = {
+    namespace: options.namespace,
+    name: options.name,
+    values: options.values,
+    consumers: [...options.consumers],
+  };
+  return {
+    id: options.id,
+    kind: "externalProvider",
+    contractVersion: 1,
+    source: { semanticNodeId: options.provider.id },
+    provider: {
+      interface: "Secret",
+      implementation: "alchemy-kubernetes-generated-secret",
+      version: "1",
+    },
+    scope: {
+      connectionDigest: options.context.connection.digest,
+      namespace: options.namespace,
+    },
+    capabilities: { strategies: ["direct", "kro"], alchemy: true },
+    configurationDigest: digestApplicationDeploymentValue(configuration),
+    inputs: {},
+    outputs: [
+      {
+        name: "reference",
+        type: "secretReference",
+        sensitivity: "public",
+        persistence: "reference",
+      },
+      {
+        name: "name",
+        type: "string",
+        sensitivity: "public",
+        persistence: "reference",
+      },
+      {
+        name: "namespace",
+        type: "string",
+        sensitivity: "public",
+        persistence: "reference",
+      },
     ],
-    edges: [],
+    lifecycle: {
+      ownership: "application",
+      deletion: options.deletion,
+      adoption: "createOrAdoptExact",
+    },
+    spec: {
+      resourceType: "kubernetesGeneratedSecret",
+      controller: "applik8s-alchemy-kubernetes-generated-secret/v1",
+      referenceMode: "staticIdentity",
+      configuration,
+    },
   };
 }
 
@@ -996,6 +2617,24 @@ function optionalInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value)
     ? value
     : undefined;
+}
+
+function requiredInteger(value: unknown, label: string): number {
+  const result = optionalInteger(value);
+  if (result === undefined) throw new Error(`${label} must be an integer.`);
+  return result;
+}
+
+function requiredArray(value: unknown, label: string): readonly unknown[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array.`);
+  return value;
+}
+
+function safeProviderNodeId(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "");
 }
 
 function compactJson(

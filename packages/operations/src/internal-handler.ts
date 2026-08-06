@@ -6,6 +6,7 @@ import type {
   JsonValue,
 } from '@applik8s/core';
 import {
+  ApplicationInternalOperationTransportError,
   type ApplicationInternalOperationInvocation,
   applicationInternalOperationInputDigest,
   decodeApplicationInternalOperationInvocation,
@@ -13,7 +14,12 @@ import {
 
 export interface ApplicationInternalOperationBinding {
   readonly operation: ApplicationOperationDescriptor;
-  readonly audience: string;
+  /**
+   * Compiler-proven audiences that may invoke this placement-owned operation.
+   * A binding is shared by every admitted caller; the signed receipt still
+   * pins each invocation to exactly one member.
+   */
+  readonly audiences: readonly string[];
   readonly validateInput: (value: JsonValue) => JsonValue;
   readonly validateOutput: (value: JsonValue) => JsonValue;
   readonly invoke: (
@@ -87,9 +93,12 @@ export function createApplicationInternalOperationHandler(
         maximumResponseBytes,
       );
     }
+    let operationId = 'unknown';
     try {
       const body = await boundedBody(request, maximumRequestBytes);
-      const operationId = body.operationId;
+      operationId = typeof body.operationId === 'string'
+        ? body.operationId
+        : 'unknown';
       if (
         typeof operationId !== 'string'
         || !operationId.startsWith('applik8s://')
@@ -128,7 +137,7 @@ export function createApplicationInternalOperationHandler(
           operationId: binding.operation.id,
           operationVersion: binding.operation.version,
           inputDigest,
-          audience: binding.audience,
+          audience: binding.audiences,
           now: options.clock?.() ?? new Date(),
           ...(options.maximumInvocationLifetimeMs
             ? {
@@ -171,6 +180,19 @@ export function createApplicationInternalOperationHandler(
           maximumResponseBytes,
         );
       }
+      console.error(JSON.stringify({
+        event: 'applik8s-internal-operation-error',
+        operationId,
+        error: {
+          name: error instanceof Error ? error.name : 'Error',
+          ...(error instanceof ApplicationInternalOperationTransportError
+            ? { code: error.code }
+            : {}),
+          message: error instanceof Error
+            ? error.message
+            : 'Unknown internal operation failure.',
+        },
+      }));
       return json(
         { error: 'invocation_invalid' },
         400,

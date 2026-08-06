@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { copyFile, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { type ApplicationWorkflowRun, setApplicationWorkflowRuntimeFactory } from '@applik8s/applik8s';
 import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
@@ -14,6 +13,9 @@ const stackName = `workflow-proof-${process.pid}`;
 const credentialsSecret = 'hatchet-admin';
 const engineName = 'hatchet';
 const workerName = 'workflow-proof';
+const workflowApiGroup = 'workflow-proof-live.applik8s.dev';
+const workflowApiVersion = `${workflowApiGroup}/v1alpha1`;
+const workflowJobResource = `workflowjobs.${workflowApiGroup}`;
 const effectServiceName = 'workflow-effect-api';
 const storageClass = process.env.APPLIK8S_E2E_STORAGE_CLASS ?? 'csi-hostpath-sc';
 const testEmail = `applik8s-workflow-${process.pid}@example.test`;
@@ -21,39 +23,71 @@ const testPassword = `Applik8sWorkflowE2e-${process.pid}-Only`;
 
 let tempDir: string | undefined;
 let outDir: string | undefined;
-let composition: KroDeletableComposition | undefined;
+let entrypointPath: string | undefined;
+let kubeContext: string | undefined;
 let durableProof: WorkflowBinding | undefined;
 let instanceDeployed = false;
 
 describeLive('v0.5 Hatchet durable workflow proof', () => {
   beforeAll(async () => {
     await assertExpectedKubectlContext();
+    kubeContext = (await kubectl(['config', 'current-context'])).stdout.trim();
+    if (!kubeContext) throw new Error('The live workflow proof requires an explicit current Kubernetes context.');
     await assertClusterPrerequisites();
     await exec('bun', ['run', 'build:packages'], process.cwd());
-    tempDir = await mkdtemp(join(tmpdir(), 'applik8s-workflow-live-'));
+    // The Node deployment host imports this authored entrypoint to hand the
+    // composition to TypeKro/Alchemy. Keep the fixture under the workspace
+    // package root so ordinary package resolution matches a real application.
+    tempDir = await mkdtemp(join(process.cwd(), '.applik8s-workflow-live-'));
+    await writeFile(join(tempDir, 'package.json'), JSON.stringify({
+      name: `applik8s-workflow-live-${process.pid}`,
+      private: true,
+      type: 'module',
+    }));
     outDir = join(tempDir, 'dist');
     await ensureNamespace(namespace);
     await installEffectService();
     await createCredentialsSecret();
-    const entrypoint = join(tempDir, 'workflow-live.ts');
-    await writeFile(entrypoint, workflowEntrypointSource());
+    entrypointPath = join(tempDir, 'workflow-live.ts');
+    await writeFile(entrypointPath, workflowEntrypointSource());
     // static-import-exception: the test authors this bounded entrypoint immediately before importing its known exports. typecast: the test validates both expected exports immediately below.
-    const exports = await import(entrypoint) as { readonly workflowProof?: KroDeletableComposition; readonly durableProof?: WorkflowBinding };
+    const exports = await import(entrypointPath) as { readonly workflowProof?: unknown; readonly durableProof?: WorkflowBinding };
     if (!exports.workflowProof || !exports.durableProof) throw new Error('Generated workflow proof entrypoint did not export its composition and workflow binding.');
-    composition = exports.workflowProof;
     durableProof = exports.durableProof;
-    await exec('bun', ['run', 'applik8s', 'build', entrypoint, '--typekro', '--composition-name', 'workflowProof', '--out-dir', outDir], process.cwd());
-    await exec('sh', [join(outDir, 'typekro', 'apply.sh')], process.cwd());
+    await deployApplicationWithAlchemy();
     instanceDeployed = true;
-  }, 300_000);
+  }, 900_000);
 
   afterAll(async () => {
-    if (process.env.APPLIK8S_E2E_LIVE === '1') {
-      await deleteApplicationWithTypeKro();
-      await deleteTestFixtures();
-      await deleteDisposableNamespace();
+    const cleanupErrors: unknown[] = [];
+    try {
+      if (process.env.APPLIK8S_E2E_LIVE === '1') {
+        for (const cleanup of [
+          deleteResourceWorkflowFixtures,
+          deleteApplicationWithTypeKro,
+          deleteTestFixtures,
+          deleteNamespaceEvents,
+          deleteDisposableNamespace,
+        ]) {
+          try {
+            await cleanup();
+          } catch (cause) {
+            cleanupErrors.push(cause);
+          }
+        }
+      }
+    } finally {
+      if (tempDir && process.env.APPLIK8S_KEEP_TMP !== '1') {
+        try {
+          await rm(tempDir, { recursive: true, force: true });
+        } catch (cause) {
+          cleanupErrors.push(cause);
+        }
+      }
     }
-    if (tempDir && process.env.APPLIK8S_KEEP_TMP !== '1') await rm(tempDir, { recursive: true, force: true });
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(cleanupErrors, 'Hatchet live proof cleanup did not complete.');
+    }
   }, 600_000);
 
   it('retries idempotent effects, survives worker replacement and durable waits, propagates correlation, compensates, reports intervention, and cancels', async () => {
@@ -82,6 +116,10 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
         apiUrl: apiForward.endpoint,
         tls: false,
       }));
+
+      await waitForDeploymentReady('workflow-job-controller');
+      await runResourceWorkflowProof('resource-gateway-proof');
+      await waitForEffectCount('provision:resource-gateway-proof', 2);
 
       const binding = requiredWorkflowBinding();
       const run = await binding.start(workflowInput('restart-proof', false), {
@@ -132,14 +170,6 @@ describeLive('v0.5 Hatchet durable workflow proof', () => {
   }, 900_000);
 });
 
-interface KroDeletableComposition {
-  factory(mode: 'kro', options: { readonly namespace: string; readonly waitForReady: boolean; readonly timeout: number }): {
-    getInstances(): Promise<readonly { readonly metadata?: { readonly name?: string } }[]>;
-    deleteInstance(name: string): Promise<void>;
-    dispose(): Promise<void>;
-  };
-}
-
 interface WorkflowBinding {
   start(input: WorkflowInput, metadata?: { readonly idempotencyKey?: string; readonly correlationId?: string; readonly causationId?: string; readonly traceparent?: string }): Promise<ApplicationWorkflowRun<WorkflowOutput>>;
   signal(runId: string, name: string, payload: { readonly approved: boolean; readonly reviewer: string }): Promise<void>;
@@ -178,10 +208,10 @@ function requiredWorkflowBinding(): WorkflowBinding {
 
 function workflowEntrypointSource(): string {
   return `
-import { app, task, workflow, WorkflowEngine } from '@applik8s/applik8s';
+import { app, workflow, WorkflowEngine } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 
-const Effect = task('proof.effect.v1', {
+const Effect = workflow('proof.effect.v1', {
   input: type({ effectEndpoint: 'string', proofId: 'string', operation: "'provision' | 'commit' | 'compensate'", compensationFails: 'boolean' }),
   output: type({ attempts: 'number' }),
 });
@@ -189,6 +219,10 @@ const DurableProof = workflow('proof.durable.v1', {
   input: type({ effectEndpoint: 'string', proofId: 'string', compensationFails: 'boolean' }),
   output: type({ phase: "'Ready' | 'Compensated' | 'NeedsIntervention'", attempts: 'number' }),
   signals: { approval: type({ approved: 'boolean', reviewer: 'string' }) },
+});
+const ResourceProof = workflow('proof.resource.v1', {
+  input: type({ effectEndpoint: 'string', proofId: 'string' }),
+  output: type({ phase: "'Ready'", attempts: 'number' }),
 });
 
 const platform = app(${JSON.stringify(stackName)}, { namespace: ${JSON.stringify(namespace)}, status: type({ ready: 'boolean?' }) });
@@ -199,26 +233,50 @@ platform.provide(WorkflowEngine, WorkflowEngine.hatchet({
   database: { clusterName: 'hatchet-db', database: 'hatchet', instances: 1, storageSize: '1Gi', storageClass: ${JSON.stringify(storageClass)} },
   worker: { replicas: 1, taskSlots: 4, durableSlots: 8, gracefulShutdownSeconds: 30, scaling: { mode: 'fixed' } },
 }));
-const effect = platform.task(Effect, { retries: 1, retryBackoff: { factor: 1, maxSeconds: 2 }, executionTimeoutSeconds: 30, idempotencyKey: (input) => input.proofId + ':' + input.operation, worker: { group: ${JSON.stringify(workerName)}, replicas: 1, taskSlots: 4, durableSlots: 8 } }, async (input, context) => {
+const effect = platform.workflow(Effect, { retries: 1, retryBackoff: { factor: 1, maxSeconds: 2 }, executionTimeoutSeconds: 30, idempotencyKey: (input) => input.proofId + ':' + input.operation, worker: { group: ${JSON.stringify(workerName)}, replicas: 1, taskSlots: 4, durableSlots: 8 } }, async (input, context) => {
   const body = new URLSearchParams({ proofId: input.proofId, operation: input.operation, compensationFails: String(input.compensationFails) });
   const response = await fetch(input.effectEndpoint + '/effect', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'idempotency-key': input.proofId + ':' + input.operation, ...(context.correlationId ? { 'x-correlation-id': context.correlationId } : {}) }, body, signal: context.signal });
   if (!response.ok) throw new Error('effect failed with HTTP ' + response.status);
   return await response.json();
 });
-export const durableProof = platform.workflow(DurableProof, { tasks: { effect }, worker: { group: ${JSON.stringify(workerName)}, replicas: 1, taskSlots: 4, durableSlots: 8 } }, async (input, context) => {
-  const provisioned = await context.task('effect', { ...input, operation: 'provision' }, { idempotencyKey: input.proofId + ':provision', correlationId: context.correlationId, causationId: context.invocationId, traceparent: context.traceparent });
+export const durableProof = platform.workflow(DurableProof, { worker: { group: ${JSON.stringify(workerName)}, replicas: 1, taskSlots: 4, durableSlots: 8 } }, async (input, context) => {
+  const provisioned = await effect({ ...input, operation: 'provision' }, { idempotencyKey: input.proofId + ':provision', correlationId: context.correlationId, causationId: context.invocationId, traceparent: context.traceparent });
   await context.sleep('1s');
   const approval = await context.waitFor('approval', { lookback: '5m' });
   if (!approval.approved) {
     try {
-      await context.task('effect', { ...input, operation: 'compensate' }, { idempotencyKey: input.proofId + ':compensate', correlationId: context.correlationId, causationId: context.invocationId, traceparent: context.traceparent });
+      await effect({ ...input, operation: 'compensate' }, { idempotencyKey: input.proofId + ':compensate', correlationId: context.correlationId, causationId: context.invocationId, traceparent: context.traceparent });
       return { phase: 'Compensated', attempts: provisioned.attempts };
     } catch {
       return { phase: 'NeedsIntervention', attempts: provisioned.attempts };
     }
   }
-  await context.task('effect', { ...input, operation: 'commit' }, { idempotencyKey: input.proofId + ':commit', correlationId: context.correlationId, causationId: context.invocationId, traceparent: context.traceparent });
+  await effect({ ...input, operation: 'commit' }, { idempotencyKey: input.proofId + ':commit', correlationId: context.correlationId, causationId: context.invocationId, traceparent: context.traceparent });
   return { phase: 'Ready', attempts: provisioned.attempts };
+});
+const resourceProof = platform.workflow(ResourceProof, { worker: { group: ${JSON.stringify(workerName)}, replicas: 1, taskSlots: 4, durableSlots: 8 } }, async (input, context) => {
+  const provisioned = await effect({ ...input, operation: 'provision', compensationFails: false }, { idempotencyKey: input.proofId + ':provision', causationId: context.invocationId });
+  return { phase: 'Ready', attempts: provisioned.attempts };
+});
+const WorkflowJob = platform.resource('WorkflowJob', {
+  apiVersion: ${JSON.stringify(workflowApiVersion)},
+  spec: type({ proofId: 'string', effectEndpoint: 'string' }),
+  status: type({ 'phase?': 'string', 'resultPhase?': 'string', 'attempts?': 'number' }),
+});
+WorkflowJob.on.reconcile(async (job) => {
+  const run = await resourceProof.start({
+    effectEndpoint: job.spec.effectEndpoint,
+    proofId: job.spec.proofId,
+  }, { idempotencyKey: job.spec.proofId });
+  const observation = await job.track('resource-proof', run, {
+    onGenerationChange: 'supersede',
+    onDelete: { action: 'cancel', timeout: '30s', onTimeout: 'detach' },
+  });
+  job.status.phase = observation.phase;
+  if (observation.result) {
+    job.status.resultPhase = observation.result.phase;
+    job.status.attempts = observation.result.attempts;
+  }
 });
 export const workflowProof = platform.composition;
 `.trimStart();
@@ -311,6 +369,41 @@ async function waitForEffectCount(key: string, expected: number): Promise<void> 
   throw new Error(`Timed out waiting for effect ${key} count ${expected}: ${JSON.stringify(last)}`);
 }
 
+async function runResourceWorkflowProof(proofId: string): Promise<void> {
+  const resourcePath = join(requiredTempDir(), 'workflow-job.yaml');
+  await writeFile(resourcePath, `apiVersion: ${workflowApiVersion}
+kind: WorkflowJob
+metadata:
+  name: ${proofId}
+  namespace: ${namespace}
+spec:
+  proofId: ${proofId}
+  effectEndpoint: http://${effectServiceName}.${namespace}.svc:8080
+`);
+  await kubectl(['apply', '--filename', resourcePath]);
+  const started = Date.now();
+  let lastStatus = '';
+  while (Date.now() - started < 420_000) {
+    try {
+      lastStatus = (await kubectl([
+        'get',
+        `${workflowJobResource}/${proofId}`,
+        '--namespace',
+        namespace,
+        '--output=jsonpath={.status.phase}|{.status.resultPhase}|{.status.attempts}',
+      ])).stdout.trim();
+      if (lastStatus === 'Succeeded|Ready|2') return;
+      if (lastStatus.startsWith('Failed|')) {
+        throw new Error(`WorkflowJob ${proofId} failed: ${lastStatus}`);
+      }
+    } catch (cause) {
+      if (cause instanceof Error && cause.message.includes(' failed: ')) throw cause;
+    }
+    await sleep(1_000);
+  }
+  throw new Error(`WorkflowJob ${proofId} did not complete through the private workflow gateway: ${lastStatus}`);
+}
+
 async function effectState(): Promise<EffectState> {
   const output = (await kubectl(['exec', '--namespace', namespace, `deployment/${effectServiceName}`, '--', 'node', '-e', "fetch('http://127.0.0.1:8080/state').then(r=>r.text()).then(console.log)"])).stdout;
   // typecast: the private fixture endpoint owns this JSON shape and callers assert its counters and records.
@@ -398,17 +491,65 @@ async function startPortForward(resource: string, remotePort: number): Promise<P
 }
 
 async function deleteApplicationWithTypeKro(): Promise<void> {
-  if (!composition || !instanceDeployed) return;
-  const factory = composition.factory('kro', { namespace, waitForReady: true, timeout: 600_000 });
-  try {
-    const instances = await factory.getInstances();
-    const names = instances.map((instance) => instance.metadata?.name).filter((name): name is string => Boolean(name));
-    if (!names.includes(stackName)) throw new Error(`Expected generated TypeKro instance ${namespace}/${stackName}, found ${JSON.stringify(names)}.`);
-    await factory.deleteInstance(stackName);
-    instanceDeployed = false;
-  } finally {
-    await factory.dispose();
+  if (!instanceDeployed) return;
+  await exec('bun', [
+    'run',
+    'applik8s',
+    'destroy',
+    requiredEntrypointPath(),
+    '--context',
+    requiredKubeContext(),
+    '--composition-name',
+    'workflowProof',
+    '--out-dir',
+    requiredOutDir(),
+    '--instance-name',
+    stackName,
+    '--control-plane-namespace',
+    namespace,
+  ], process.cwd());
+  instanceDeployed = false;
+}
+
+async function deployApplicationWithAlchemy(): Promise<void> {
+  const entrypoint = requiredEntrypointPath();
+  const output = requiredOutDir();
+  await exec('bun', [
+    'run',
+    'applik8s',
+    'build',
+    entrypoint,
+    '--typekro',
+    '--composition-name',
+    'workflowProof',
+    '--out-dir',
+    output,
+  ], process.cwd());
+  const generatedInstances = (await readdir(join(output, 'typekro', 'instances')))
+    .filter((name) => name.endsWith('.yaml'))
+    .sort();
+  if (generatedInstances.length !== 1) {
+    throw new Error(`Expected one generated workflow proof instance, found ${JSON.stringify(generatedInstances)}.`);
   }
+  const generatedInstance = generatedInstances[0];
+  if (!generatedInstance) throw new Error('Generated workflow proof instance disappeared during deployment staging.');
+  const instancePath = join(requiredTempDir(), 'workflow-proof-instance.yaml');
+  await copyFile(join(output, 'typekro', 'instances', generatedInstance), instancePath);
+  await exec('bun', [
+    'run',
+    'applik8s',
+    'deploy',
+    entrypoint,
+    '--context',
+    requiredKubeContext(),
+    '--composition-name',
+    'workflowProof',
+    '--out-dir',
+    output,
+    '--instance',
+    instancePath,
+    '--skip-app-build',
+  ], process.cwd());
 }
 
 async function deleteTestFixtures(): Promise<void> {
@@ -426,11 +567,43 @@ async function deleteTestFixtures(): Promise<void> {
   ]);
 }
 
+async function deleteResourceWorkflowFixtures(): Promise<void> {
+  await kubectl([
+    'delete',
+    `${workflowJobResource}/resource-gateway-proof`,
+    '--namespace',
+    namespace,
+    '--ignore-not-found=true',
+    '--wait=true',
+    '--timeout=120s',
+  ]);
+}
+
+async function deleteNamespaceEvents(): Promise<void> {
+  if (!namespace.startsWith('applik8s-workflow-')) throw new Error(`Refusing bounded cleanup for non-disposable namespace ${namespace}.`);
+  // Long-running controller and workflow tests can produce thousands of Events.
+  // Remove those ordinary namespaced resources before namespace deletion so a
+  // persistent local cluster does not leave the namespace controller processing
+  // a large, already-obsolete event backlog. This does not bypass finalizers.
+  for (const resourceType of ['events', 'events.events.k8s.io']) {
+    await kubectl([
+      'delete',
+      resourceType,
+      '--all',
+      '--namespace',
+      namespace,
+      '--ignore-not-found=true',
+      '--wait=true',
+      '--timeout=120s',
+    ]);
+  }
+}
+
 async function deleteDisposableNamespace(): Promise<void> {
   if (!namespace.startsWith('applik8s-workflow-')) throw new Error(`Refusing bounded cleanup for non-disposable namespace ${namespace}.`);
   await kubectl(['delete', 'namespace', namespace, '--ignore-not-found=true', '--wait=false']);
   const started = Date.now();
-  while (Date.now() - started < 300_000) {
+  while (Date.now() - started < 420_000) {
     try {
       await kubectl(['get', `namespace/${namespace}`]);
     } catch {
@@ -442,16 +615,29 @@ async function deleteDisposableNamespace(): Promise<void> {
   const remaining = resourceTypes.length > 0
     ? (await kubectl(['get', resourceTypes.join(','), '--namespace', namespace, '--ignore-not-found=true', '--output=name'])).stdout.trim()
     : '';
-  if (remaining) throw new Error(`Refusing to finalize namespace/${namespace}; resources remain:\n${remaining}`);
-  const namespaceState = JSON.parse((await kubectl(['get', `namespace/${namespace}`, '--output=json'])).stdout);
-  namespaceState.spec = { ...(namespaceState.spec ?? {}), finalizers: [] };
-  const path = join(requiredTempDir(), 'namespace-finalize.json');
-  await writeFile(path, JSON.stringify(namespaceState));
-  await kubectl(['replace', '--raw', `/api/v1/namespaces/${namespace}/finalize`, '--filename', path]);
-  await kubectl(['wait', '--for=delete', `namespace/${namespace}`, '--timeout=60s']);
+  throw new Error(
+    `Namespace/${namespace} did not finish Kubernetes-managed deletion within 420 seconds.`
+    + (remaining ? ` Resources remain:\n${remaining}` : '')
+    + ' The live gate will not bypass namespace-controller finalization.',
+  );
 }
 
 function requiredTempDir(): string {
   if (!tempDir) throw new Error('Temporary directory is unavailable.');
   return tempDir;
+}
+
+function requiredOutDir(): string {
+  if (!outDir) throw new Error('Generated output directory is unavailable.');
+  return outDir;
+}
+
+function requiredEntrypointPath(): string {
+  if (!entrypointPath) throw new Error('Generated workflow entrypoint is unavailable.');
+  return entrypointPath;
+}
+
+function requiredKubeContext(): string {
+  if (!kubeContext) throw new Error('Pinned Kubernetes context is unavailable.');
+  return kubeContext;
 }

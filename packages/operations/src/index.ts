@@ -3,5 +3,6 @@ export * from './catalog.js';
 export * from './execution-admission-transport.js';
 export * from './internal-handler.js';
 export * from './internal-transport.js';
+export * from './observations.js';
 export * from './postgres.js';
 export * from './runtime.js';

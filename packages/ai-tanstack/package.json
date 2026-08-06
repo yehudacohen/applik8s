@@ -1,11 +1,15 @@
 {
   "name": "@applik8s/ai-tanstack",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Native TanStack AI tool, connection, compatibility, and runtime-context adapters for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
-  "files": ["dist"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yehudacohen/applik8s.git",
@@ -14,18 +18,20 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./client": {
       "types": "./dist/client.d.ts",
-      "import": "./dist/client.js"
+      "import": "./dist/client.js",
+      "default": "./dist/client.js"
     }
   },
   "dependencies": {
-    "@applik8s/ai": "0.6.0",
-    "@applik8s/client": "0.6.0",
-    "@applik8s/core": "0.6.0",
-    "@applik8s/sdk": "0.6.0",
+    "@applik8s/ai": "0.7.0",
+    "@applik8s/client": "0.7.0",
+    "@applik8s/core": "0.7.0",
+    "@applik8s/sdk": "0.7.0",
     "@standard-schema/spec": "1.1.0",
     "@tanstack/ai": "0.42.0",
     "@tanstack/ai-client": "0.22.1"

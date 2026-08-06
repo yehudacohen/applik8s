@@ -1,0 +1,55 @@
+apiVersion: identity-start.applik8s.dev/v1alpha1
+kind: IdentityStart
+metadata:
+  name: identity-start-external
+  namespace: identity-start-control
+spec:
+  name: identity-start-external
+  profile: external
+  # Runnable non-production acceptance binding for the independently owned
+  # provider graph under packages/e2e/test/fixtures/v07-external-providers.
+  # The application consumes these coordinates but never owns their lifecycle.
+  providers:
+    database:
+      clusterName: identity-external-db
+      namespace: identity-start-system
+      database: identity_start
+      connectionSecretName: identity-external-db-app
+      connectionSecretKey: uri
+    analytics:
+      endpoint: http://clickhouse-identity-external-analytics.identity-start-system.svc.cluster.local:8123
+      database: identity_start
+    events:
+      server: nats://identity-external-events.identity-start-system.svc.cluster.local:4222
+      stream: APPLIK8S_EVENTS
+      subjectPrefix: applik8s
+    objects:
+      endpoint: http://identity-external-objects.identity-start-system.svc.cluster.local:8333
+      bucket: identity-external-objects
+      region: us-east-1
+      credentialsSecretName: identity-external-objects-credentials
+      forcePathStyle: true
+    workflows:
+      hostPort: hatchet-engine.identity-start-system.svc.cluster.local:7070
+      apiUrl: http://hatchet-api.identity-start-system.svc.cluster.local:8080
+      tokenSecretName: hatchet-client-config
+      tokenKey: HATCHET_CLIENT_TOKEN
+    search:
+      endpoint: https://identity-external-search.identity-start-system.svc.cluster.local:9200
+      namespace: identity-start
+      credentialsSecretName: identity-external-search-admin-password
+    inference:
+      endpoint: http://identity-start-inference.applik8s-v07-identity-fixture.svc.cluster.local:8080/v1
+      model: identity-reviewer-v1
+      credentialSecretName: identity-start-inference
+      credentialKey: apiKey
+      allowInsecureHttp: true
+    identity:
+      kind: ory
+      issuer: https://identity-start.example.test
+      publicUrl: http://identity-external-identity-kratos-public.identity-start-system.svc.cluster.local
+      adminUrl: http://identity-external-identity-kratos-admin.identity-start-system.svc.cluster.local
+    payments:
+      secretName: identity-external-payments
+      apiKeyKey: apiKey
+      webhookSecretKey: webhookSecret

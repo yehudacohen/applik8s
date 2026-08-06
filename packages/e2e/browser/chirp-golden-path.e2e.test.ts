@@ -1,5 +1,5 @@
 // typecast-file-boundary: browser fixtures use literal route tuples and a controlled global marker solely to prove hydration continuity.
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 test('registers a new admitted principal without accepting a browser-owned account id', async ({ page }) => {
   const principal = `browser-account-${Date.now()}`;
@@ -86,6 +86,62 @@ test('publishes, renders through live requery, and bookmarks a post without a pa
   await expect(saved).toBeHidden();
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
+});
+
+test('finds a newly published post through the bounded typed search view', async ({ page }) => {
+  const token = `search-${Date.now().toString(36)}`;
+  const body = `A uniquely searchable distributed conversation ${token}`;
+
+  await page.goto('/');
+  await page.getByRole('textbox', { name: 'Post text' }).fill(body);
+  await page.getByRole('button', { name: 'Post', exact: true }).click();
+  await expect(page.locator('article').filter({ hasText: body })).toBeVisible();
+
+  await page.getByRole('link', { name: 'Explore' }).click();
+  await expect(page).toHaveURL(/\/explore$/);
+  await page.getByRole('textbox', { name: 'Search public posts' }).fill(token);
+  await expect(page.locator('article').filter({ hasText: body })).toBeVisible();
+});
+
+test('ranks a reacted post through the analytical projection instead of recency fallback', async ({ page }) => {
+  const suffix = Date.now().toString(36);
+  const rankedBody = `Analytical ranking target ${suffix}`;
+  const newerBody = `Newer unranked control ${suffix}`;
+
+  await page.goto('/');
+  await page.getByRole('textbox', { name: 'Post text' }).fill(rankedBody);
+  await page.getByRole('button', { name: 'Post', exact: true }).click();
+  const rankedPost = page.locator('article').filter({ hasText: rankedBody });
+  await expect(rankedPost).toBeVisible();
+  const rankedPostId = await rankedPost.getAttribute('data-post-id');
+  expect(rankedPostId).toBeTruthy();
+
+  await page.getByRole('textbox', { name: 'Post text' }).fill(newerBody);
+  await page.getByRole('button', { name: 'Post', exact: true }).click();
+  const newerPost = page.locator('article').filter({ hasText: newerBody });
+  await expect(newerPost).toBeVisible();
+  const newerPostId = await newerPost.getAttribute('data-post-id');
+  expect(newerPostId).toBeTruthy();
+
+  await rankedPost.getByRole('button', { name: /Like · 0/ }).click();
+  await expect(rankedPost.getByRole('button', { name: /Like · 1/ })).toHaveAttribute('aria-pressed', 'true');
+
+  await expect.poll(async () => page.evaluate(async ({ ranked, unranked }) => {
+    const response = await fetch('/__applik8s/v1/queries/Post.trending/snapshot', {
+      method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: { limit: 50 } }),
+    });
+    if (!response.ok) return false;
+    const payload = await response.json() as { readonly value?: readonly { readonly id?: string }[] };
+    const ids = payload.value?.map(({ id }) => id) ?? [];
+    return ids.includes(ranked) && !ids.includes(unranked);
+  }, { ranked: rankedPostId as string, unranked: newerPostId as string }), {
+    timeout: 60_000,
+  }).toBe(true);
+
+  await page.getByRole('link', { name: 'Explore' }).click();
+  await expect(page.locator('article').filter({ hasText: rankedBody })).toBeVisible();
+  await expect(page.locator('article').filter({ hasText: newerBody })).toHaveCount(0);
 });
 
 test('uploads provider-verified media without exposing object-store credentials', async ({ page }) => {
@@ -191,6 +247,16 @@ test('hydrates and toggles the authenticated viewer follow relationship', async 
   await expect(page.getByRole('button', { name: 'Block', exact: true })).toHaveAttribute('aria-pressed', 'false');
 });
 
+// Run the latency-sensitive schedule-to-signal contract before the separate
+// fixture that deliberately creates and immediately suspends a schedule.
+// Each journey remains independently runnable, while the full serial suite
+// does not manufacture provider backpressure immediately before its bounded
+// signal-delivery assertion.
+test(
+  'receives a risky automation signal over SSE and resumes its durable workflow through a typed approval',
+  riskyAutomationSignalJourney,
+);
+
 test('updates the authenticated profile and configures an idempotent disclosed automation', async ({ page }) => {
   const suffix = Date.now().toString(36);
   const displayName = `Demo User ${suffix}`;
@@ -230,6 +296,119 @@ test('administratively stops and resumes every automated publication through dur
   await control.getByRole('button', { name: 'Resume automation' }).click();
   await expect(control).toContainText('Enabled.');
 });
+
+async function riskyAutomationSignalJourney({ page }: { readonly page: Page }) {
+  test.setTimeout(180_000);
+  const automationPersona = `Signal release fixture ${Date.now().toString(36)}`;
+  let automationId: string | undefined;
+  // Keep this release gate independently runnable: a prior safety-stop journey
+  // or retained local product state must not suppress the scheduled workflow.
+  await page.goto('/moderation');
+  const automationControl = page.locator('section').filter({
+    has: page.getByRole('heading', { name: 'Automated publication' }),
+  });
+  if (await automationControl.getByRole('button', { name: 'Resume automation' }).isVisible().catch(() => false)) {
+    await automationControl.getByRole('button', { name: 'Resume automation' }).click();
+    await expect(automationControl).toContainText('Enabled.');
+  }
+  await page.goto('/automation');
+  const createAnother = page.getByRole('button', { name: 'Create another automation' });
+  if (await createAnother.isVisible().catch(() => false)) await createAnother.click();
+  await page.getByLabel('Persona').fill(automationPersona);
+  await page.getByLabel('Five-field schedule').fill('* * * * *');
+  await page.getByLabel('Daily post limit').fill('24');
+  try {
+    await page.getByRole('button', { name: /Configure automation|Save automation/ }).click();
+    const automation = page.locator('article').filter({ hasText: automationPersona });
+    await expect(automation).toBeVisible();
+    automationId = await automation.getAttribute('data-automation-id') ?? undefined;
+    expect(automationId).toBeTruthy();
+
+    await page.getByRole('link', { name: 'Moderation' }).click();
+    const review = page.locator('article').filter({
+      hasText: `Automation ${automationId}`,
+    }).first();
+    await expect(review).toBeVisible({ timeout: 120_000 });
+    const signalId = await review.getAttribute('data-signal-id');
+    const runId = await review.getAttribute('data-run-id');
+    expect(signalId).toBeTruthy();
+    expect(runId).toBeTruthy();
+    const signalActionPath =
+      `/__applik8s/v1/signals/automation.post-review.v1/${encodeURIComponent(signalId as string)}/actions`;
+    const unauthorized = await page.request.post(`${signalActionPath}/approve`, {
+      headers: {
+        'content-type': 'application/json',
+        'x-chirp-user': 'ordinary-user',
+      },
+      data: {
+        input: { comment: 'A forged non-moderator decision.' },
+        idempotencyKey: `${signalId}:unauthorized`,
+      },
+    });
+    expect(unauthorized.status()).toBe(403);
+
+    // A browser restart must recover the same exact-instance capability from
+    // the durable issuance stream rather than relying on component memory.
+    await page.reload();
+    // Pin the immutable issuance identity. A one-minute schedule may emit the
+    // next review while this assertion is running; a text/.first() locator
+    // would then retarget to that distinct, still-pending signal.
+    const replayedReview = page.locator(
+      `article[data-signal-id="${signalId as string}"]`,
+    );
+    await expect(replayedReview).toBeVisible({ timeout: 60_000 });
+    await expect(replayedReview).toHaveAttribute('data-signal-id', signalId as string);
+    await replayedReview.getByRole('button', { name: 'Approve' }).click();
+    await expect(replayedReview).toBeHidden();
+
+    const losingAction = await page.request.post(`${signalActionPath}/reject`, {
+      headers: {
+        'content-type': 'application/json',
+        'x-chirp-user': 'demo-user',
+      },
+      data: {
+        input: { reason: 'This terminal action lost the compare-and-swap.' },
+        idempotencyKey: `${signalId}:losing-reject`,
+      },
+    });
+    expect(losingAction.status()).toBe(200);
+    const losingResult = await losingAction.json() as {
+      readonly status?: string;
+      readonly outcome?: Readonly<Record<string, unknown>>;
+    };
+    expect(losingResult.status).toBe('alreadyResolved');
+    expect(losingResult.outcome).toMatchObject({ status: 'resolved' });
+    expect(losingResult.outcome).not.toHaveProperty('action');
+    expect(losingResult.outcome).not.toHaveProperty('input');
+    expect(losingResult.outcome).not.toHaveProperty('actor');
+    expect(losingResult.outcome).not.toHaveProperty('receipt');
+
+    await page.getByRole('link', { name: 'Automation' }).click();
+    const run = page.locator(`article[data-run-id="${runId as string}"]`);
+    await expect(run).toContainText('published', { timeout: 60_000 });
+    await expect(run).toContainText(`post:${runId as string}:post`);
+    await page.getByRole('link', { name: 'Home', exact: true }).click();
+    const publishedPost = page.locator(
+      `article[data-post-id="${runId as string}:post"]`,
+    );
+    await expect(publishedPost).toContainText(
+      'Automated Chirp status: review the local runbook at http://status.local before publishing.',
+      { timeout: 60_000 },
+    );
+  } finally {
+    await page.goto('/automation').catch(() => undefined);
+    const created = page.locator('article').filter({ hasText: automationPersona });
+    if (await created.isVisible().catch(() => false)) {
+      const stop = created.getByRole('button', { name: 'Emergency stop' });
+      if (await stop.isVisible().catch(() => false)) {
+        await stop.click().catch(() => undefined);
+        await expect(created.getByText('Suspended', { exact: true }))
+          .toBeVisible()
+          .catch(() => undefined);
+      }
+    }
+  }
+}
 
 test('reports, moderates, and removes a post through durable product state', async ({ page }) => {
   const body = `Moderation journey ${new Date().toISOString()}`;

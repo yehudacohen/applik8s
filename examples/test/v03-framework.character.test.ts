@@ -88,7 +88,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     expect(tenantPlatformSource).not.toContain('TransactionalDatabase.postgres');
     expect(tenantPlatformSource).not.toContain('tenantPlatform.model(AccountEntity, {\n    store:');
     expect(tenantPlatformSource).toContain('tenantPlatform.http');
-    expect(tenantPlatformSource).toContain('tenantPlatform.reconcile');
+    expect(tenantPlatformSource).toContain('Tenant.on.reconcile');
     expect(guestbookSource).toMatch(/from ['"]@applik8s\/applik8s['"]/);
     expect(guestbookSource).toMatch(/from ['"]@applik8s\/applik8s\/dsl['"]/);
     expect(`${tenantPlatformSource}\n${guestbookSource}`).not.toContain("../packages/applik8s/src");
@@ -268,17 +268,26 @@ describe('v0.3 infrastructure-from-code product story', () => {
       return { ready: true };
     });
 
-    expect(composition.resources).toEqual(expect.arrayContaining([
+    const expectedJobResources = [
       expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', metadata: expect.objectContaining({ name: 'compact-accounts' }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'compact-accounts-diagnostics' }), data: expect.objectContaining({ phaseStatusPath: 'status.applik8s.jobs.compact-accounts' }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'compact-accounts-status-runtime' }), data: expect.objectContaining({ 'runtime__job-runner.mjs': expect.stringContaining('runGeneratedJobStatusReconciler') }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'accounts-maintenance-contract-status-reconciler-runtime' }), data: expect.objectContaining({ 'status-runtime.json': expect.stringContaining('compact-accounts') }) }),
       expect.objectContaining({ kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'accounts-maintenance-contract-status-reconciler-status' }) }),
       expect.objectContaining({ apiVersion: 'apps/v1', kind: 'Deployment', metadata: expect.objectContaining({ name: 'accounts-maintenance-contract-status-reconciler' }) }),
-      expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'accounts-maintenance-contract-status-reconciler' }), rules: expect.arrayContaining([
-        expect.objectContaining({ resources: ['configmaps'], verbs: ['create', 'get', 'patch', 'update'] }),
-      ]) }),
-    ]));
+    ];
+    for (const expectedResource of expectedJobResources) {
+      expect(composition.resources).toContainEqual(expectedResource);
+    }
+    const statusRole = composition.resources.find((resource) =>
+      resource.apiVersion === 'rbac.authorization.k8s.io/v1'
+      && resource.kind === 'Role'
+      && resource.metadata.name === 'accounts-maintenance-contract-status-reconciler');
+    expect(statusRole?.rules).toContainEqual({
+      apiGroups: [''],
+      resources: ['configmaps'],
+      verbs: ['create', 'get', 'patch', 'update'],
+    });
     const statusConfigMap = composition.resources.find((resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'accounts-maintenance-contract-status-reconciler-status');
     expect(statusConfigMap).toMatchObject({ __externalRef: true });
     expect(applicationGraphFor(composition)?.nodes).toEqual(expect.arrayContaining([

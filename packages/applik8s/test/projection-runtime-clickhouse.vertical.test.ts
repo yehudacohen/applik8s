@@ -4,6 +4,74 @@ import { type } from 'arktype';
 import { describe, expect, it } from 'vitest';
 
 describe('ClickHouse analytical projection runtime', () => {
+  it('keeps capability-bearing signal references inert in pure projections', async () => {
+    const reference = Object.freeze({
+      $type: 'applik8s.signal/v1' as const,
+      contract: {
+        id: 'review-decision.v1',
+        name: 'review-decision',
+        version: 'v1',
+      },
+      issuance: { id: 'signal-1' },
+      expiresAt: '2026-07-16T00:00:00.000Z',
+    });
+    const payload = {
+      id: 'signal-1',
+      input: { postId: 'post-1' },
+      signal: reference,
+      issuedAt: '2026-07-15T00:00:00.000Z',
+      expiresAt: reference.expiresAt,
+    };
+    let checkpoint = 0;
+    let observed: unknown;
+    const result = await runApplicationProjection({
+      projection: 'review-audit',
+      streamName: 'review-decision.v1',
+      source: {
+        async read() {
+          return {
+            items: [{
+              id: 'event-signal-1',
+              stream: { name: 'review-decision', version: 'v1' },
+              sequence: 1,
+              partitionKey: 'signal-1',
+              recordedAt: payload.issuedAt,
+              payload,
+            }],
+            nextSequence: 1,
+            exhausted: true,
+            retentionFloor: 0,
+          };
+        },
+      },
+      store: {
+        async prepare() {},
+        async checkpoint(projection, stream) {
+          return { projection, stream, sequence: checkpoint };
+        },
+        async write(events) {
+          observed = events[0]?.rows[0];
+        },
+        async advance(next) {
+          checkpoint = next.sequence;
+        },
+        async reset() {},
+      },
+      project: (issuance) => ({
+        signalId: issuance.signal.issuance.id,
+        callable: typeof Reflect.get(issuance.signal, 'approve') === 'function',
+      }),
+    });
+
+    expect(result).toEqual({
+      processed: 1,
+      checkpoint: 1,
+      exhausted: true,
+    });
+    expect(observed).toEqual({ signalId: 'signal-1', callable: false });
+    expect(payload.signal).toBe(reference);
+  });
+
   it('writes stable source event IDs before advancing an idempotent checkpoint', async () => {
     const requests: { readonly query: string; readonly body?: string }[] = [];
     const request = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {

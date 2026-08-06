@@ -1,0 +1,49 @@
+apiVersion: applications.chirp.dev/v1alpha1
+kind: ChirpInstallation
+metadata:
+  name: chirp-dedicated
+  namespace: chirp-control
+spec:
+  name: chirp-dedicated
+  hostname: chirp.example.com
+  profile: dedicated
+  version: 0.7.0-dev
+  features:
+    automatedAccounts: true
+    analytics: true
+    media: true
+  lifecycle:
+    databaseDeletion: retain
+    registryProjectDeletion: retain
+    purgeRegistryRepositories: false
+  backup:
+    enabled: true
+    schedule: "0 0 2 * * *"
+    retentionPolicy: 30d
+  exposure:
+    mode: ingress
+    nodePort: 30082
+    certificateIssuerName: letsencrypt-prod
+  identity:
+    mode: ory
+    issuer: https://identity.example.com
+    authorizationVersion: chirp-production-policy-v1
+    infrastructure:
+      mode: managed-production
+      namespace: chirp-dedicated-identity
+      deletionPolicy: retain
+      hydraDsnSecretName: chirp-hydra-dsn
+      hydraSystemSecretName: chirp-hydra-system
+      kratosDsnSecretName: chirp-kratos-dsn
+      kratosSecretsName: chirp-kratos-secrets
+      ketoDsnSecretName: chirp-keto-dsn
+      oathkeeperJwksSecretName: chirp-oathkeeper-jwks
+  providers:
+    # Dedicated owns its complete stateful platform. Only structured
+    # generation is intentionally supplied by an external service.
+    generation:
+      endpoint: https://generation.example.com/v1/generate
+      credentialsSecretName: chirp-structured-generation
+      credentialKey: apiKey
+      authorization: bearer
+      defaultProfile: chirp-safe-v1

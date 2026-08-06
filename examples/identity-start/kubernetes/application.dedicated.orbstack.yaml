@@ -1,0 +1,28 @@
+apiVersion: identity-start.applik8s.dev/v1alpha1
+kind: IdentityStart
+metadata:
+  name: identity-start-dedicated
+  namespace: identity-start-control
+spec:
+  name: identity-start-dedicated
+  profile: dedicated
+  # Runnable non-production acceptance binding for the TypeKro-managed
+  # Dedicated graph. The inference fixture is prepared independently so the
+  # real Envoy AI Gateway path is exercised without embedding a remote API key.
+  providers:
+    inference:
+      endpoint: http://identity-start-inference.applik8s-v07-identity-fixture.svc.cluster.local:8080/v1
+      model: identity-reviewer-v1
+      credentialSecretName: identity-start-inference
+      credentialKey: apiKey
+    identity:
+      issuer: https://identity.example.test
+    objects:
+      deviceStorageClassName: applik8s-identity-start-ceph-block
+      # Explicit because this maintained local fixture is loop-backed.
+      # Production profiles must use real block devices and leave this false.
+      allowLoopDevices: true
+    payments:
+      secretName: identity-start-payments
+      apiKeyKey: apiKey
+      webhookSecretKey: webhookSecret

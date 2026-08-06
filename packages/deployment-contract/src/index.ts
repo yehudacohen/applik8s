@@ -3,6 +3,11 @@ export {
   decodeApplicationDeploymentGraph,
 } from "./codec.js";
 export {
+  applicationDeploymentOutputReference,
+  applicationOptionalDeploymentOutputReference,
+  parseApplicationDeploymentOutputReference,
+} from "./output-reference.js";
+export {
   digestApplicationDeploymentGraph,
   digestApplicationDeploymentValue,
   normalizeApplicationDeploymentGraph,

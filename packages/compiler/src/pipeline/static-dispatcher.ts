@@ -3,6 +3,10 @@ import { dirname, extname, join, resolve } from 'node:path';
 
 import type { AnyResourceDefinition, Diagnostic, OperatorDefinition, Result } from '@applik8s/core';
 import ts from 'typescript';
+import {
+  registrationWithoutHandler,
+  toSerializableJson,
+} from './static-serialization.js';
 
 export function generatedDispatcherEntrypoint(userEntrypoint: string, operator: OperatorDefinition, hasCapabilities: boolean, hasKubernetesRead: boolean, _mode: 'importEntrypoint' | 'staticSerializable' | undefined): Result<string> {
   const staticOperator = staticSerializableOperatorSource(operator, userEntrypoint);
@@ -76,6 +80,7 @@ return Object.assign(__operator, { handlers: [${handlerRegistrations.join(', ')}
 
 interface StaticEntrypointCaptures {
   createSession(handlerId: string, sourceModule?: string): StaticCaptureSession;
+  inferSourceModule(identifiers: readonly string[]): string | undefined;
   readonly factoryObjectParameters: ReadonlyMap<string, StaticFactoryObjectCapture>;
   readonly factoryParameterOrigins: ReadonlyMap<string, readonly string[]>;
 }
@@ -99,11 +104,24 @@ function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: 
   if (source.includes('[native code]')) {
     return error('BUNDLE_INVALID', `Handler ${handlerId} cannot be statically bundled because it is native code.`);
   }
-  const session = entrypointCaptures.createSession(handlerId, sourceMetadata?.file);
+  const freeCandidates = likelyFreeIdentifiers(source).filter((candidate) => !allowedFreeIdentifiers.has(candidate));
+  const sourceModule = sourceMetadata?.file
+    ?? entrypointCaptures.inferSourceModule(freeCandidates);
+  const session = entrypointCaptures.createSession(handlerId, sourceModule);
   const captureExpressions = new Map<string, string>();
   const directImports = new Set<string>();
-  const freeCandidates = likelyFreeIdentifiers(source).filter((candidate) => !allowedFreeIdentifiers.has(candidate));
+  const applicationDependencies = staticApplicationCallbackDependencies(handler);
   for (const identifier of freeCandidates) {
+    const gatewayBinding = staticWorkflowGatewayBinding(
+      applicationDependencies.get(identifier),
+    );
+    if (gatewayBinding) {
+      directImports.add(
+        "import { createApplicationWorkflowGatewayBinding as __applik8sCreateWorkflowGatewayBinding } from '@applik8s/applik8s/workflow-gateway-binding';",
+      );
+      captureExpressions.set(identifier, gatewayBinding);
+      continue;
+    }
     const moduleCapture = session.resolve(identifier);
     if (moduleCapture) {
       captureExpressions.set(identifier, moduleCapture);
@@ -142,6 +160,49 @@ function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: 
     ? source
     : `((${captureNames.join(', ')}) => (${source}))(${captureNames.map((name) => captureExpressions.get(name)).join(', ')})`;
   return { ok: true, value: { source: wrappedSource, imports: [...directImports, ...session.render()] } };
+}
+
+function staticApplicationCallbackDependencies(
+  handler: (...args: never[]) => unknown,
+): ReadonlyMap<string, unknown> {
+  const value = Reflect.get(
+    handler,
+    Symbol.for('applik8s.applicationCallbackDependencies'),
+  );
+  if (!Array.isArray(value)) return new Map();
+  return new Map(value.flatMap((candidate): readonly [string, unknown][] => {
+    if (!candidate || typeof candidate !== 'object') return [];
+    const identifier = Reflect.get(candidate, 'identifier');
+    if (typeof identifier !== 'string' || identifier.length === 0) return [];
+    return [[identifier, Reflect.get(candidate, 'value')]];
+  }));
+}
+
+function staticWorkflowGatewayBinding(value: unknown): string | undefined {
+  if (
+    (!value || (typeof value !== 'object' && typeof value !== 'function'))
+    || !new Set(['applicationWorkflow', 'applicationTask']).has(
+      String(Reflect.get(value, 'kind')),
+    )
+  ) {
+    return undefined;
+  }
+  const definition = Reflect.get(value, 'definition');
+  const id = definition && typeof definition === 'object'
+    ? Reflect.get(definition, 'id')
+    : undefined;
+  const version = definition && typeof definition === 'object'
+    ? Reflect.get(definition, 'version')
+    : undefined;
+  if (
+    typeof id !== 'string'
+    || id.length === 0
+    || typeof version !== 'string'
+    || version.length === 0
+  ) {
+    return undefined;
+  }
+  return `__applik8sCreateWorkflowGatewayBinding(${JSON.stringify(id)}, ${JSON.stringify(version)})`;
 }
 
 function handlerSourceMetadata(value: unknown): StaticHandlerSourceMetadata | undefined {
@@ -358,6 +419,13 @@ function staticEntrypointCaptures(entrypoint: string): StaticEntrypointCaptures 
   return {
     factoryObjectParameters,
     factoryParameterOrigins,
+    inferSourceModule(identifiers) {
+      const candidates = new Set(
+        identifiers.flatMap((identifier) =>
+          [...(declarationOrigins.get(identifier) ?? [])]),
+      );
+      return candidates.size === 1 ? [...candidates][0] : undefined;
+    },
     createSession: (handlerId, sourceModule) => createStaticCaptureSession(handlerId, sourceModule, modulesByPath, declarationOrigins),
   };
 }
@@ -687,84 +755,6 @@ function isTypeOnlyStaticHandlerIdentifier(node: ts.Identifier): boolean {
     if (ts.isExpression(current) || ts.isStatement(current) || ts.isSourceFile(current)) return false;
   }
   return false;
-}
-
-function registrationWithoutHandler(registration: object): Record<string, unknown> {
-  const output: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(registration)) {
-    if (key !== 'handler') {
-      output[key] = value;
-    }
-  }
-  return output;
-}
-
-function toSerializableJson(value: unknown, path: string): Result<unknown> {
-  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return { ok: true, value };
-  }
-  if (isRuntimeSchemaForStaticSerialization(value)) {
-    const schema = value.emitJsonSchema();
-    if (!schema.ok) {
-      return schema;
-    }
-    return {
-      ok: true,
-      value: {
-        source: schema.value,
-        contract: value.contract,
-      },
-    };
-  }
-  if (Array.isArray(value)) {
-    const items: unknown[] = [];
-    for (const [index, item] of value.entries()) {
-      const serialized = toSerializableJson(item, `${path}[${index}]`);
-      if (!serialized.ok) {
-        return serialized;
-      }
-      items.push(serialized.value);
-    }
-    return { ok: true, value: items };
-  }
-  if (typeof value === 'function') {
-    const entries = Object.entries(value);
-    if (entries.length === 0) {
-      return { ok: true, value: undefined };
-    }
-    return toSerializableJson(Object.fromEntries(entries), path);
-  }
-  if (value && typeof value === 'object') {
-    const output: Record<string, unknown> = {};
-    for (const [key, child] of Object.entries(value)) {
-      if (child === undefined) {
-        continue;
-      }
-      const serialized = toSerializableJson(child, `${path}.${key}`);
-      if (!serialized.ok) {
-        return serialized;
-      }
-      if (serialized.value === undefined) {
-        continue;
-      }
-      output[key] = serialized.value;
-    }
-    return { ok: true, value: output };
-  }
-
-  if (value === undefined) {
-    return { ok: true, value: undefined };
-  }
-  return error('BUNDLE_INVALID', `${path} contains a value that cannot be statically serialized.`);
-}
-
-function isRuntimeSchemaForStaticSerialization(value: unknown): value is { readonly contract: unknown; emitJsonSchema(): Result<unknown> } {
-  return Boolean(
-    value &&
-      typeof value === 'object' &&
-      'contract' in value &&
-      typeof Reflect.get(value, 'emitJsonSchema') === 'function'
-  );
 }
 
 function error<T = never>(code: Diagnostic['code'], message: string): Result<T> {

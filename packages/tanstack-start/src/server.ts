@@ -6,7 +6,15 @@ import {
   createHttpApplicationQueryTransport,
   createHttpApplicationRuntimeTransport,
 } from '@applik8s/client';
-import { installApplik8sServerRequestRuntimeResolver, type Applik8sServerRequestRuntime } from '@applik8s/server';
+import {
+  type ApplicationIdentitySessionView,
+  createApplicationIdentityClient,
+} from '@applik8s/identity/client';
+import {
+  type Applik8sServerRequestRuntime,
+  currentApplik8sServerRequest,
+  installApplik8sServerRequestRuntimeResolver,
+} from '@applik8s/server';
 import { useRequest } from 'nitro/context';
 
 export interface Applik8sNitroGateway {
@@ -40,6 +48,7 @@ export function installApplik8sNitroRequestRuntime(options: Applik8sNitroRequest
   const dispose = installApplik8sServerRequestRuntimeResolver(() => {
     let request: Request;
     try {
+      // biome-ignore lint/correctness/useHookAtTopLevel: Nitro's useRequest reads async request context; it is not a React hook.
       request = useRequest();
     } catch {
       return undefined;
@@ -49,6 +58,7 @@ export function installApplik8sNitroRequestRuntime(options: Applik8sNitroRequest
     const fetch = gatewayFetch(options.gateway, request);
     const runtime: Applik8sServerRequestRuntime = {
       request,
+      fetch,
       queryClient: new ApplicationQueryClient(createHttpApplicationQueryTransport({
         baseUrl: new URL('/__applik8s/v1', request.url).href,
         fetch,
@@ -70,6 +80,20 @@ export function installApplik8sNitroRequestRuntime(options: Applik8sNitroRequest
     if (globalState[resolverDisposerKey] === dispose) delete globalState[resolverDisposerKey];
     dispose();
   };
+}
+
+/**
+ * Loads the provider-neutral identity session through the active request's
+ * in-process gateway. The browser never sees provider cookies or native
+ * identity payloads, and SSR does not need to loop through the public ingress.
+ */
+export async function loadApplicationIdentitySession(): Promise<ApplicationIdentitySessionView> {
+  const runtime = currentApplik8sServerRequest();
+  const client = createApplicationIdentityClient({
+    baseUrl: new URL('/__applik8s/v1/identity', runtime.request.url).href,
+    ...(runtime.fetch ? { fetch: runtime.fetch } : {}),
+  });
+  return client.session();
 }
 
 function gatewayFetch(gateway: Applik8sNitroGateway, sourceRequest: Request): typeof globalThis.fetch {

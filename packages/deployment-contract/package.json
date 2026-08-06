@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/deployment-contract",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Portable deployment graph contracts for Applik8s applications.",
   "license": "Apache-2.0",
   "type": "module",
@@ -18,7 +18,8 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   }
 }

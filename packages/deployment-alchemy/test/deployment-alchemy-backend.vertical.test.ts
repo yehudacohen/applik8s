@@ -2,25 +2,29 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   type ApplicationDeploymentGraph,
+  type ApplicationKubernetesDirectDeploymentNode,
   digestApplicationDeploymentGraph,
   digestApplicationDeploymentValue,
 } from "@applik8s/deployment-contract";
 import {
   adaptApplicationDeploymentToTypeKro,
   bindTypeKroComposition,
+  typeKroArtifactRequirements,
 } from "@applik8s/deployment-typekro";
 import { type } from "arktype";
 import { kubernetesComposition, simple } from "typekro";
+import { artifactOutput } from "typekro/experimental/planning";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  createApplicationAlchemyGraphDeployment,
-  createApplicationAlchemyDeployment,
-} from "../src/index.js";
 import { selectPublishedImmutableReference } from "../src/backend.js";
+import { assertApplicationAlchemyDestroyState } from "../src/destroy-state.js";
+import {
+  createApplicationAlchemyDeployment,
+  createApplicationAlchemyGraphDeployment,
+} from "../src/index.js";
+import { typeKroMaterializationComponents } from "../src/typekro-components.js";
 import {
   withOrderingOnlyPrerequisites,
 } from "../src/typekro-ordering.js";
-import { typeKroMaterializationComponents } from "../src/typekro-components.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -31,6 +35,18 @@ afterEach(async () => {
 });
 
 describe("Alchemy deployment backend", () => {
+  it("fails closed when a destroy transaction leaves resumable state behind", () => {
+    expect(() => assertApplicationAlchemyDestroyState([])).not.toThrow();
+    expect(() =>
+      assertApplicationAlchemyDestroyState([
+        "helmreleaseEvents",
+        "objectbucketclaimMedia",
+      ]),
+    ).toThrow(
+      /returned before 2 persisted resources reached a terminal state.*Resume the same destroy command/,
+    );
+  });
+
   it("upgrades legacy artifact state without losing its immutable base image", () => {
     expect(
       selectPublishedImmutableReference(
@@ -107,6 +123,160 @@ describe("Alchemy deployment backend", () => {
     expect(plan.declarationCount).toBe(1);
     expect(plan.planIdentityDigest).toBe(
       digestApplicationDeploymentGraph(graph),
+    );
+  });
+
+  it("plans a root composition that consumes a direct composition output", async () => {
+    const stateRoot = await mkdtemp(
+      join(
+        process.env.TMPDIR ?? "/tmp",
+        "applik8s-alchemy-composition-output-",
+      ),
+    );
+    temporaryDirectories.push(stateRoot);
+    const base = deploymentGraph();
+    const rootNode = base.nodes[0];
+    if (!rootNode || rootNode.kind !== "kubernetesComposition") {
+      throw new Error("Deployment graph fixture is missing its root.");
+    }
+    const providerNode: ApplicationKubernetesDirectDeploymentNode = {
+      id: "direct.provider.gateway",
+      kind: "kubernetesDirect",
+      contractVersion: 1,
+      source: {},
+      provider: {
+        interface: "AI",
+        implementation: "test-gateway",
+        version: "1",
+      },
+      scope: rootNode.scope,
+      capabilities: {
+        strategies: ["direct"],
+        alchemy: true,
+      },
+      configurationDigest: digestApplicationDeploymentValue({
+        composition: "test-gateway",
+      }),
+      inputs: {},
+      outputs: [
+        {
+          name: "endpoint",
+          type: "string",
+          sensitivity: "public",
+          persistence: "state",
+        },
+      ],
+      lifecycle: {
+        ownership: "application",
+        deletion: "delete",
+        adoption: "createOrAdoptExact",
+      },
+      spec: {
+        compositionId: "test-gateway",
+        reason: "Exercise a direct provider output dependency.",
+        configuration: { name: "test-gateway" },
+      },
+    };
+    const graph: ApplicationDeploymentGraph = {
+      ...base,
+      nodes: [providerNode, rootNode],
+      edges: [
+        {
+          from: providerNode.id,
+          to: rootNode.id,
+          relationship: "requiresReady",
+        },
+        {
+          from: providerNode.id,
+          to: rootNode.id,
+          relationship: "requiresOutput",
+          output: "endpoint",
+        },
+      ],
+    };
+    const provider = kubernetesComposition(
+      {
+        name: "test-gateway",
+        apiVersion: "testing.applik8s.dev/v1alpha1",
+        kind: "TestGateway",
+        spec: type({ name: "string" }),
+        status: type({ endpoint: "string" }),
+      },
+      (spec) => {
+        const config = simple.ConfigMap({
+          id: "gatewayConfig",
+          name: spec.name,
+          data: { endpoint: `http://${spec.name}.default.svc:8080` },
+        });
+        return { endpoint: config.data?.endpoint ?? "" };
+      },
+    );
+    const root = kubernetesComposition(
+      {
+        name: "alchemy-plan",
+        apiVersion: "testing.applik8s.dev/v1alpha1",
+        kind: "AlchemyPlan",
+        spec: type({ name: "string" }),
+        status: type({ ready: "boolean" }),
+      },
+      (spec) => {
+        simple.ConfigMap({
+          id: "applicationConfig",
+          name: spec.name,
+          data: {
+            gatewayEndpoint: artifactOutput(
+              providerNode.id,
+              "endpoint",
+            ),
+          },
+        });
+        return { ready: true };
+      },
+    );
+    const adapted = await adaptApplicationDeploymentToTypeKro({
+      graph,
+      root: bindTypeKroComposition(
+        root,
+        { name: "alchemy-plan" },
+        {
+          factory: {
+            namespace: "alchemy-plan",
+            waitForReady: false,
+          },
+          artifacts: typeKroArtifactRequirements(graph, rootNode.id),
+        },
+      ),
+      direct: {
+        [providerNode.id]: bindTypeKroComposition(
+          provider,
+          { name: "test-gateway" },
+          {
+            factory: {
+              namespace: "alchemy-plan",
+              waitForReady: false,
+            },
+          },
+        ),
+      },
+    });
+    const deployment = createApplicationAlchemyDeployment({
+      graph,
+      adapted,
+      stateRoot,
+      stage: "test",
+      owner: "vertical-test",
+    });
+
+    const plan = await deployment.plan();
+    expect(plan.declarationCount).toBe(2);
+    expect(plan.changes).toHaveLength(2);
+    expect(plan.changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "TypeKro.KroResource",
+          action: "create",
+        }),
+      ]),
     );
   });
 
@@ -200,6 +370,12 @@ describe("Alchemy deployment backend", () => {
       id: "supporting-instance",
       dependsOn: ["supporting-rgd"],
     };
+    const supportingNamespace = {
+      ...base,
+      id: "supporting-namespace",
+      dependsOn: [],
+      schedulingDependsOn: ["supporting-instance"],
+    };
     const rootRgd = {
       ...base,
       id: "root-rgd",
@@ -215,12 +391,13 @@ describe("Alchemy deployment backend", () => {
     const components = typeKroMaterializationComponents([
       supportingRgd,
       supportingInstance,
+      supportingNamespace,
       rootRgd,
       rootInstance,
     ]);
 
     expect(components.map((component) => component.declarations.map(({ id }) => id))).toEqual([
-      ["supporting-rgd", "supporting-instance"],
+      ["supporting-rgd", "supporting-instance", "supporting-namespace"],
       ["root-rgd", "root-instance"],
     ]);
     expect(components[1]?.orderingOnlyDeclarationIds).toEqual([
@@ -228,6 +405,9 @@ describe("Alchemy deployment backend", () => {
     ]);
     expect(rootRgd.dependsOn).toEqual([]);
     expect(rootInstance.dependsOn).toEqual(["root-rgd"]);
+    expect(supportingNamespace.schedulingDependsOn).toEqual([
+      "supporting-instance",
+    ]);
   });
 
   it("fails closed instead of silently ignoring an unmaterialized provider node", () => {
@@ -263,7 +443,7 @@ describe("Alchemy deployment backend", () => {
         },
         adapted: {
           adapter: {
-            typekro: "0.32.0",
+            typekro: "0.33.5",
             semanticPlanVersion: 1,
             artifactPlanVersion: 1,
           },
@@ -271,6 +451,8 @@ describe("Alchemy deployment backend", () => {
             deploymentNodeId: "kubernetes.application",
             strategy: "direct",
             declarations: [],
+            spec: { kind: "object", entries: [] },
+            outputs: {},
             declarationDigest: digestApplicationDeploymentValue([]),
             semanticPlan: {
               version: 1,

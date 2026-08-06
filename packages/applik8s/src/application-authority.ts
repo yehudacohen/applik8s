@@ -18,9 +18,11 @@ import {
   type ApplicationStaticAuthorityManifest,
   type ApplicationStaticGrantDefinition,
   type ApplicationStaticPermissionDefinition,
+  type ApplicationStaticRoleDefinition,
   applicationOperationId,
   intersectApplicationScopes,
 } from '@applik8s/core';
+import { applicationOAuthIdentityReference } from '@applik8s/identity';
 import type { ApplicationGraphState } from './application-graph-state.js';
 
 export interface ApplicationPermissionBinding extends ApplicationPermissionDefinition {
@@ -31,6 +33,7 @@ export interface ApplicationPermissionBinding extends ApplicationPermissionDefin
 
 export type ApplicationAuthoritySelection =
   | ApplicationOperationLike
+  | ((...args: never[]) => unknown)
   | ApplicationScopedOperation<ApplicationOperationLike, unknown>
   | ApplicationBoundOperation<ApplicationOperationLike, string, 'input' | 'event' | 'resource'>
   | ApplicationPermissionBinding;
@@ -40,6 +43,28 @@ export interface ApplicationServiceIdentityBinding {
   readonly name: string;
   readonly identity: ApplicationIdentityReference;
   can(...selections: readonly ApplicationAuthoritySelection[]): ApplicationServiceIdentityBinding;
+}
+
+export interface ApplicationOAuthClientIdentityOptions {
+  /**
+   * Exact issuer asserted by the configured OAuth authorization server.
+   * Authority never matches a client ID across issuers.
+   */
+  readonly issuer: string;
+}
+
+export interface ApplicationOAuthClientIdentityBinding {
+  readonly kind: 'applicationOAuthClientIdentity';
+  readonly clientId: string;
+  readonly identity: ApplicationIdentityReference;
+  can(...selections: readonly ApplicationAuthoritySelection[]): ApplicationOAuthClientIdentityBinding;
+}
+
+export interface ApplicationRoleBinding {
+  readonly kind: 'applicationRole';
+  readonly id: string;
+  readonly name: string;
+  can(...selections: readonly ApplicationAuthoritySelection[]): ApplicationRoleBinding;
 }
 
 export interface ApplicationOutcomeBinding {
@@ -57,7 +82,12 @@ export interface ApplicationOutcomeOptions {
 }
 
 export interface ApplicationAuthorityRegistrar {
+  role(name: string): ApplicationRoleBinding;
   serviceIdentity(name: string): ApplicationServiceIdentityBinding;
+  oauthClient(
+    clientId: string,
+    options: ApplicationOAuthClientIdentityOptions,
+  ): ApplicationOAuthClientIdentityBinding;
   permission(name: string, ...selections: readonly Exclude<ApplicationAuthoritySelection, ApplicationPermissionBinding>[]): ApplicationPermissionBinding;
   outcome(name: string, options: ApplicationOutcomeOptions): ApplicationOutcomeBinding;
 }
@@ -70,6 +100,69 @@ export function applicationAuthorityRegistrar(
   state: ApplicationAuthorityGraphState,
 ): ApplicationAuthorityRegistrar {
   return {
+    role(name) {
+      const normalized = authorityName(name, 'role');
+      const id = `role:${state.authorityApplicationName}:${normalized}`;
+      const definition = (): ApplicationStaticRoleDefinition => ({
+        id,
+        name: normalized,
+        permissionIds: [],
+      });
+      updateManifest(state, (manifest) =>
+        manifest.roles.some((candidate) => candidate.id === id)
+          ? manifest
+          : { ...manifest, roles: [...manifest.roles, definition()] });
+      let declarationOffset = 0;
+      const binding: ApplicationRoleBinding = {
+        kind: 'applicationRole',
+        id,
+        name: normalized,
+        can(...selections) {
+          if (selections.length === 0) {
+            throw new Error(
+              `Application role ${normalized}.can(...) requires at least one operation or permission.`,
+            );
+          }
+          const declarations = selections.flatMap((selection) => {
+            if (isPermissionBinding(selection)) return selection.declarations;
+            const declaration = selectionPermission(
+              state.authorityApplicationName,
+              `role-${normalized}-${declarationOffset++}`,
+              selection,
+            );
+            classifyOperation(selection, declaration);
+            return [declaration];
+          });
+          updateManifest(state, (manifest) => {
+            const existing = manifest.roles.find(
+              (candidate) => candidate.id === id,
+            ) ?? definition();
+            const role: ApplicationStaticRoleDefinition = {
+              ...existing,
+              permissionIds: [
+                ...new Set([
+                  ...existing.permissionIds,
+                  ...declarations.map((declaration) => declaration.id),
+                ]),
+              ].sort(),
+            };
+            return {
+              ...manifest,
+              permissions: uniqueCompatible(
+                manifest.permissions,
+                declarations,
+                (candidate) => candidate.id,
+                'permission',
+              ),
+              roles: manifest.roles.map((candidate) =>
+                candidate.id === id ? role : candidate),
+            };
+          });
+          return binding;
+        },
+      };
+      return Object.freeze(binding);
+    },
     serviceIdentity(name) {
       const normalized = authorityName(name, 'service identity');
       const identity: ApplicationIdentityReference = Object.freeze({
@@ -114,6 +207,86 @@ export function applicationAuthorityRegistrar(
             ...manifest,
             identities: uniqueBy(
               [...manifest.identities, identity, applicationIdentity(state.authorityApplicationName)],
+              (candidate) => candidate.id,
+            ),
+            permissions: uniqueCompatible(
+              manifest.permissions,
+              declarations,
+              (candidate) => candidate.id,
+              'permission',
+            ),
+            grants: uniqueCompatible(
+              manifest.grants,
+              grants,
+              (candidate) => candidate.id,
+              'grant',
+            ),
+          }));
+          return binding;
+        },
+      };
+      return Object.freeze(binding);
+    },
+    oauthClient(clientId, options) {
+      const normalized = oauthClientId(clientId);
+      const identity = applicationOAuthIdentityReference({
+        issuer: options.issuer,
+        subject: normalized,
+        kind: 'workload',
+      });
+      updateManifest(state, (manifest) => ({
+        ...manifest,
+        identities: uniqueBy(
+          [...manifest.identities, identity],
+          (candidate) => candidate.id,
+        ),
+      }));
+      const binding: ApplicationOAuthClientIdentityBinding = {
+        kind: 'applicationOAuthClientIdentity',
+        clientId: normalized,
+        identity,
+        can(...selections) {
+          if (selections.length === 0) {
+            throw new Error(
+              `Application OAuth client ${normalized}.can(...) requires at least one operation or permission.`,
+            );
+          }
+          const declarations = selections.flatMap((selection, index) =>
+            isPermissionBinding(selection)
+              ? selection.declarations
+              : [selectionPermission(
+                  state.authorityApplicationName,
+                  `oauth-client-${normalized}-${index}`,
+                  selection,
+                )]);
+          for (const declaration of declarations) {
+            classifySelection(selections, declaration);
+          }
+          const grants = declarations.map(
+            (declaration): ApplicationStaticGrantDefinition => ({
+              id: `grant:${state.authorityApplicationName}:oauth-client:${normalized}:${declaration.id}`,
+              identity,
+              permissionId: declaration.id,
+              operationIds: declaration.operationIds,
+              scope: declaration.scope,
+              ...(declaration.audiences
+                ? { audiences: declaration.audiences }
+                : {}),
+              ...(declaration.transports
+                ? { transports: declaration.transports }
+                : {}),
+              issuedBy: applicationIdentity(state.authorityApplicationName),
+              reason: `Static OAuth workload authority assigned by ${state.authorityApplicationName}.`,
+            }),
+          );
+          updateManifest(state, (manifest) => ({
+            ...manifest,
+            identities: uniqueBy(
+              [
+                ...manifest.identities,
+                identity,
+                applicationIdentity(state.authorityApplicationName),
+              ],
               (candidate) => candidate.id,
             ),
             permissions: uniqueCompatible(
@@ -227,7 +400,19 @@ function normalizedSelection(
     : selection;
   const contract = getApplicationOperationContract(operation);
   if (!contract) throw new Error('Application authority selections must be operation handles or their typed scopes.');
-  const authority = operation.authority;
+  const authority = Reflect.get(operation as object, 'authority') as
+    | {
+        readonly scope: ApplicationScopeExpression;
+        readonly transports?: readonly import('@applik8s/core').ApplicationOperationTransport[];
+        readonly audiences?: readonly string[];
+        readonly grantable: boolean;
+      }
+    | undefined;
+  if (!authority) {
+    throw new Error(
+      `Application operation ${contract.id} does not expose its authorizable facet.`,
+    );
+  }
   const scoped = isApplicationScopedOperation(selection) || isApplicationBoundOperation(selection)
     ? intersectApplicationScopes(selection.target, ...selection.predicates)
     : authority.scope;
@@ -349,6 +534,20 @@ function authorityName(value: string, label: string): string {
   const normalized = value.trim();
   if (!normalized || /[\s?#]/.test(normalized)) {
     throw new Error(`Application ${label} must be a non-empty stable name without whitespace, ?, or #.`);
+  }
+  return normalized;
+}
+
+function oauthClientId(value: string): string {
+  const normalized = value.trim();
+  if (
+    !normalized
+    || normalized.length > 255
+    || !/^[A-Za-z0-9._~-]+$/u.test(normalized)
+  ) {
+    throw new Error(
+      'Application OAuth client ID must be 1-255 characters using only letters, numbers, ".", "_", "~", or "-".',
+    );
   }
   return normalized;
 }

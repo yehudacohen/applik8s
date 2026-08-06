@@ -78,21 +78,16 @@ const analytics = deployment
   )
   .exhaustive();
 
-export const Account = application.model(accounts, {
-  database,
-});
-
-export const UsageFact = application.model(usageFacts, {
-  database: analytics,
-});
+database.models(Account);
+analytics.models(UsageFact);
 ```
 
-Provider qualification must not turn every model into a relational model. Provider-native,
-single-definition promotion remains authoritative:
+Provider qualification must not turn every model into a relational model. One logical model
+declaration receives only facets its qualified provider can honor:
 
 ```ts
-// Kubernetes authority: the ArkType-backed resource remains the one schema.
-export const ImportJob = application.crd(ImportJobEntity, {
+// Kubernetes authority: the same model declaration gains resource semantics.
+kubernetes.models(ImportJob, {
   apiVersion: "research.example.com/v1alpha1",
 });
 ```
@@ -103,11 +98,11 @@ explicit refinement, not a string branch and not a lowest-common-denominator pro
 
 Profile binding operates on capabilities, not on a universal model kind:
 
-| Native definition | Binding role | Common facets | Required refinement |
+| Model binding | Binding role | Common facets | Required refinement |
 | --- | --- | --- | --- |
-| Drizzle table and relations | `TransactionalDatabase` for authoritative writes, or an explicitly analytical binding for projection state | Typed identity, references, bounded reads, supported operations, committed changes | SQL joins, constraints, transactions, and provider query extensions remain relational. |
-| ArkType CRD/resource | Kubernetes resource authority and its declared cluster/namespace access | Typed identity, references, reads, resource operations, lifecycle events | Admission, watches, status ownership, finalizers, optimistic concurrency, and RBAC remain Kubernetes-specific. |
-| ArkType framework entity | Compatible document/control-plane model-store capability | Only the facets guaranteed by that store | No relational or Kubernetes guarantee is inferred. |
+| PostgreSQL/relational | `TransactionalDatabase` for authoritative writes | Typed identity, references, bounded reads, supported changes, committed facts, generated Drizzle facet | SQL joins, constraints, transactions, and provider query extensions remain relational. |
+| Kubernetes resource | Kubernetes authority and its declared cluster/namespace access | Typed identity, references, reads, resource operations, lifecycle events | Admission, watches, status ownership, finalizers, optimistic concurrency, and RBAC remain Kubernetes-specific. |
+| Document/control-plane | Compatible model-store capability | Only the facets guaranteed by that store | No relational or Kubernetes guarantee is inferred. |
 | Analytical model/projection | `AnalyticalDatabase` | Declared reads, aggregates, ingestion, checkpoint, and rebuild handles | Provider-specific aggregate/query capabilities require an explicit refinement. |
 
 A requested common facet that cannot be supported faithfully is absent at the type level and rejected
@@ -216,7 +211,8 @@ Capability types describe behavioral guarantees:
 ```text
 TransactionalDatabase
   transactions, relational constraints, command/outbox atomicity,
-  authoritative change streams, bounded query contract
+  authoritative change streams, bounded query contract,
+  framework control-schema transaction support
 
 AnalyticalDatabase
   analytical projection ingestion, declared aggregate/query capabilities,
@@ -227,6 +223,33 @@ A PostgreSQL implementation may satisfy both capabilities. A ClickHouse implemen
 analytical capability but cannot bind an authoritative model that requires transactional command
 semantics. Type checking rejects the mismatch before graph construction.
 
+### Non-selectable framework transactional subsystems
+
+`SignalStore` is not another qualified capability. It is a framework-owned subsystem installed in the
+control schema of `TransactionalDatabase.named("primary")` alongside canonical operation receipts,
+grants, idempotency records, and the transactional event outbox. This is required because signal
+issuance and resolution must commit their state, access records, receipts, and outbox rows in one local
+database transaction.
+
+Consequently:
+
+- there is no public `SignalStore.named(...)`, `provide(SignalStore, ...)`, profile branch, or
+  application override;
+- Starter, Dedicated, and External variants inherit signal storage from their selected primary
+  transactional database;
+- a primary database provider qualifies only if it supports the complete versioned framework control
+  schema and transaction boundary;
+- an External binding must permit framework migrations and control tables rather than supplying a
+  read-only or application-table-only connection;
+- a primary-database transition includes pending signal instances, terminal outcomes, exact grants,
+  receipts, outbox rows, and workflow-wait recovery in its state-migration plan; and
+- graph, `plan`, and `explain` show the internal subsystem and schema revision beneath the primary
+  database without presenting it as an independently selectable provider.
+
+The internal subsystem remains provider-neutral at the runtime interface, while PostgreSQL is the only
+qualified v0.7 implementation. Supporting another transactional database requires proving the same
+single-transaction and recovery contract; it does not add another application-facing provider choice.
+
 Model, query, processor, and projection graph nodes depend on the qualified capability, not the concrete
 provider. At runtime the generated server facade resolves the active binding for that installation.
 Provider-neutral model operations retain the same source syntax; provider-specific analytical features
@@ -235,12 +258,12 @@ require an explicit capability refinement rather than conditional string matchin
 This RFP owns binding and routing to declared capabilities. It does not define a new universal query
 language or claim that PostgreSQL and ClickHouse support identical query behavior.
 
-It also does not define a universal model schema. Drizzle tables remain authoritative relational
-definitions; ArkType-backed CRDs/resources remain authoritative Kubernetes definitions; existing
-ArkType entity models remain valid for framework-owned document/control-plane state; analytical
-models/projections retain the schema and capability contract of their selected provider-neutral
-analytical binding. Qualification selects compatible providers for those native definitions and never
-asks application authors to remap their fields into a second schema.
+It also does not define a universal provider query language. The public `model()` declaration remains
+the one logical source of field, identity, relationship, and boundary-schema truth; qualified bindings
+derive their provider-native Drizzle, Kubernetes, analytical, index, or document representation.
+Provider-native schema constructors remain explicit escape hatches for unsupported features, not the
+generated-project path. Qualification never asks application authors to remap fields into a second
+schema.
 
 ### Qualified existing query operations with capability refinements
 
@@ -249,31 +272,32 @@ server/client facade, result, cursor, subscription, and audit machinery. This RF
 declared operations to capabilities; it does not add `Model.find()`, `Model.aggregate()`, or another
 implicit query language.
 
-A relational query remains an explicit v0.6 model view/query with schemas, authorization, budgets, and
-native Drizzle code in its closure:
+A relational query remains an explicit model view/query with schemas, authorization, and budgets. The
+ordinary path uses the model's portable typed query facet; an explicitly qualified provider refinement
+may expose native Drizzle when required:
 
 ```ts
-export const Account = application
-  .model(accounts, { database })
-  .view("byOwner", {
+export const Account = model("Account", {
+  id: field.uuid().primary(),
+  ownerId: field.uuid().index(),
+  displayName: field.string(),
+});
+
+export const AccountsByOwner = Account.view({
     input: AccountsByOwnerInput,
     output: AccountsByOwnerOutput,
-    database,
     authorize: ({ principal, input }) => principal.id === input.ownerId,
-    run: async (input, context) =>
-      context.database(database)
-        .select()
-        .from(accounts)
-        .where(eq(accounts.ownerId, input.ownerId))
-        .limit(input.limit),
-    budgets: {
-      maxRows: 100,
-      maxResultBytes: 256_000,
-      timeoutMs: 2_000,
-    },
+  }, async input => Account
+    .where(account => account.ownerId.eq(input.ownerId))
+    .limit(input.limit)
+    .all())
+  .budget({
+    maxRows: 100,
+    maxResultBytes: 256_000,
+    timeoutMs: 2_000,
   });
 
-await Account.byOwner({ ownerId, limit: 50 });
+await AccountsByOwner({ ownerId, limit: 50 });
 await UsageByTopic({ from, to });
 await PostSearch.search({ text: "release notes" });
 await ActiveApplicationResources({ namespace: "products" });
@@ -310,6 +334,12 @@ The graph must distinguish:
 
 Changing a profile does not imply that stateful provider migration is safe. The deployment plan reports
 every retained, adopted, replaced, imported, exported, and deleted resource before effects execute.
+
+The External profile also defines the workload namespace as an external lifecycle boundary. It must
+exist before deployment because it is the Kubernetes scope in which externally supplied provider
+credential Secrets are referenced. Applik8s may create and delete its own generated runtime Secrets
+inside that namespace, but it must not adopt or delete the namespace itself. This rule is inferred from
+the profile; applications do not configure a separate namespace-ownership flag.
 
 Each binding contributes a transition descriptor containing:
 
@@ -370,23 +400,26 @@ The definition contributes to the existing application graph. It does not execut
 write source files, or deploy resources itself. The generator consumes the definition in a separate
 build-time process and records the selected Start/version in generated project metadata.
 
-`packages` is a generator compatibility/catalog input, not a runtime module registry. The generated
-project contains explicit imports and calls for every selected maintained application module:
+`packages` is a generator compatibility/catalog input, not a runtime module
+registry. The generated project explicitly imports and includes every selected
+maintained application module:
 
 ```ts
 import { conversations } from "@applik8s/conversations";
 import { approvals } from "@applik8s/approvals";
 
-export const Conversations = conversations(application);
-export const Approvals = approvals(application, {
-  conversations: Conversations,
-});
+export const Conversations = application.include(conversations);
+export const Approvals = application.include(approvals);
 ```
 
-Module composition functions are typed, side-effect-free graph discovery functions. They return
-ordinary handles and must not conceal provider wiring, spawn runtimes, or deploy resources during
-authoring. Removing one module import produces a normal graph diff and compile diagnostics for any
-remaining dependent module.
+Module definitions are typed and side-effect-free during graph discovery. They
+return ordinary handles, declare their capability/module requirements, and
+resolve those requirements from the application's `provide(...)` bindings.
+They do not spawn runtimes or deploy resources during authoring. The complete
+provider, workload, permission, and lifecycle wiring remains visible in the
+normalized graph and `explain` output rather than being manually threaded
+through every inclusion. Removing one module inclusion produces a normal graph
+diff and compile diagnostics for any remaining dependent module.
 
 Start profile modules are generic collections of qualified provisions:
 
@@ -501,6 +534,12 @@ server-only.
 - Duplicate and incompatible qualified provisions fail compilation.
 - ClickHouse cannot satisfy a transactional model binding; PostgreSQL can satisfy both declared roles
   only when its analytical adapter declares the required capabilities.
+- The primary transactional database qualifies only with the versioned framework control schema,
+  transactional signal/grant/receipt/outbox support, and required migration permissions.
+- `SignalStore` cannot be independently selected, provided, overridden, or split from the primary
+  transactional database transaction domain in Starter, Dedicated, or External profiles.
+- Primary-database transition plans include pending signals, retained terminal outcomes, grants,
+  receipts, outbox rows, and workflow-wait recovery.
 - Model operations resolve through the selected qualified binding without provider-name branching.
 - Relational, Kubernetes, and framework entity models retain their native authoritative declarations;
   no profile or Start asks authors to mirror fields into a universal schema.

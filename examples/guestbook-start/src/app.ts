@@ -14,13 +14,17 @@ if (process.env.APPLIK8S_PUBLIC_HOSTNAME && process.env.APPLIK8S_ALLOW_INSECURE_
 
 app.provide(
   IdentityProvider,
-  IdentityProvider.from(async () => ({
-    principal: { id: 'guestbook-demo' },
-    authorizationVersion: 'demo-v1',
+  IdentityProvider.deterministic({
+    mode: 'starter',
+    application: process.env.APPLIK8S_APPLICATION_NAME ?? 'guestbook-start',
+    subject: 'guestbook-demo',
+    audience: [process.env.APPLIK8S_APPLICATION_NAME ?? 'guestbook-start'],
+    catalogRevision: 'guestbook-demo-catalog-v1',
+    authorityRevision: 'guestbook-demo-authority-v1',
     trustedContext: {
       guestbook: 'main',
       namespace: process.env.APPLIK8S_NAMESPACE ?? 'guestbook',
       role: 'author',
     },
-  })),
+  }),
 );

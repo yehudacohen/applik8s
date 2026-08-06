@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/runtime-opensearch",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "OpenSearch projection, query, rebuild, and cutover runtime for Applik8s search indexes.",
   "license": "Apache-2.0",
   "type": "module",
@@ -18,10 +18,11 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.6.0"
+    "@applik8s/applik8s": "0.7.0"
   }
 }

@@ -20,6 +20,7 @@ import type {
   ApplicationContainerRegistryProvider,
   ResolvedApplicationContainerRegistry,
 } from '@applik8s/applik8s/deployment-registry';
+import { APPLICATION_DEPLOYMENT_TIMEOUT_MS } from './application-deployment-timeouts.js';
 import { makeKubernetesApiClient } from './kubernetes-api-client.js';
 
 interface KubernetesSecretCredentialBinding {
@@ -41,6 +42,8 @@ export interface GeneratedApplicationAlchemyDeploymentOptions<
   readonly registry: ResolvedApplicationContainerRegistry;
   readonly projectRoot: string;
   readonly owner?: string;
+  /** One-deployment TypeKro schema-migration acknowledgement. */
+  readonly allowBreakingChanges?: boolean;
 }
 
 /**
@@ -96,7 +99,10 @@ export async function createGeneratedApplicationAlchemyDeployment<
       kubeConfig,
       alchemyKubeConfig: { source: { kind: 'default' } },
       waitForReady: true,
-      timeout: 10 * 60_000,
+      timeout: APPLICATION_DEPLOYMENT_TIMEOUT_MS,
+      ...(options.allowBreakingChanges
+        ? { allowBreakingChanges: true }
+        : {}),
     },
   });
 }

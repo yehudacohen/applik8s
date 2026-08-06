@@ -1,6 +1,6 @@
 import { ContainerRegistry } from '@applik8s/applik8s';
 
-interface ExternalProviderInputs {
+export interface ExternalProviderInputs {
   readonly registry: { readonly origin: string; readonly repositoryPrefix: string; readonly pushSecretName: string; readonly pullSecretName: string };
   readonly objectStorage: { readonly endpoint: string; readonly bucket: string; readonly prefix: string; readonly region: string; readonly credentialsSecretName: string; readonly forcePathStyle: boolean };
   readonly database: { readonly database: string; readonly connectionSecretName: string; readonly connectionSecretKey: string };
@@ -8,6 +8,7 @@ interface ExternalProviderInputs {
   readonly workflows: { readonly hostPort: string; readonly apiUrl: string; readonly workerTokenSecretName: string; readonly tls: boolean };
   readonly index: { readonly host: string; readonly port: number; readonly passwordSecretName: string; readonly passwordSecretKey: string };
   readonly generation: { readonly endpoint: string; readonly credentialsSecretName: string; readonly credentialKey: string; readonly authorization: 'bearer' | 'x-api-key'; readonly defaultProfile: string };
+  readonly events: { readonly server: string; readonly stream?: string; readonly subjectPrefix?: string; readonly connectionSecretName?: string };
 }
 
 /**
@@ -40,5 +41,6 @@ export function externalInfrastructureProviders(namespace: string, inputs: Exter
     workflows: inputs.workflows,
     index: inputs.index,
     generation: inputs.generation,
+    events: inputs.events,
   };
 }

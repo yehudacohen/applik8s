@@ -6,7 +6,10 @@ import {
   type ApplicationAIResolvedRoute,
   createApplicationAIAttemptRuntime,
 } from '@applik8s/ai';
-import type { ApplicationExecutionPrincipal } from '@applik8s/core';
+import type {
+  ApplicationExecutionPrincipal,
+  ApplicationOperationId,
+} from '@applik8s/core';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createPostgresApplicationAIAttemptStore } from '../src/index.js';
@@ -80,6 +83,28 @@ live('PostgreSQL durable AI attempt store', () => {
       reserved.id,
       { type: 'TEXT_MESSAGE_CONTENT', delta: 'persisted' },
     );
+    const proposal = await runtime.reserveToolProposal({
+      invocationId: 'invocation-live-1',
+      attemptId: reserved.id,
+      providerToolCallId: 'provider-tool-live-1',
+      operationId: (
+        'applik8s://models/AccessRequest/operations/create'
+      ) as ApplicationOperationId,
+      operationVersion: 'v1',
+      arguments: {
+        target: 'production/catalog',
+        evidence: 'PostgreSQL JSONB accepts the durable proposal identity.',
+      },
+    });
+    expect(proposal.id).toMatch(/^proposal_[a-f0-9]{64}$/u);
+    const persistedProposals = await sql.unsafe(
+      `SELECT count(*)::integer AS count, min(record->>'id') AS id
+       FROM ${schema}.applik8s_ai_tool_proposals`,
+    );
+    expect(persistedProposals[0]).toMatchObject({
+      count: 1,
+      id: proposal.id,
+    });
 
     const replacement = createApplicationAIAttemptRuntime({
       store: createPostgresApplicationAIAttemptStore({ sql, schema }),

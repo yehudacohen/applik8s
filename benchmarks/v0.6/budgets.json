@@ -4,10 +4,14 @@
   "facade": { "maximumMinimalGzipBytes": 35840, "maximumMarginalModelGzipBytes": 4096 },
   "guestbook": { "maximumBrowserJavaScriptGzipBytes": 125000 },
   "chirp": {
-    "maximumBrowserJavaScriptGzipBytes": 125000,
+    "maximumBrowserJavaScriptGzipBytes": 128000,
     "maximumServerOutputBytes": 5242880,
     "maximumResourceGraphDefinitionBytes": 2500000,
     "maximumContainerContextBytes": 12582912,
-    "maximumTotalContainerContextBytes": 41943040
+    "maximumTotalContainerContextBytes": 41943040,
+    "maximumCommandProcessorBytes": 2097152,
+    "maximumFocusedQueryGatewayBytes": 786432,
+    "maximumWorkflowWorkerBytes": 4194304,
+    "maximumWorkflowCallingStreamProcessorBytes": 3145728
   }
 }

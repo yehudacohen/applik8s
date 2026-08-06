@@ -19,4 +19,8 @@ export interface GeneratedApplicationWorkflowResource {
   readonly data?: Readonly<Record<string, string>>;
   readonly binaryData?: Readonly<Record<string, string>>;
   readonly spec?: Readonly<Record<string, unknown>>;
+  readonly automountServiceAccountToken?: boolean;
+  readonly rules?: readonly Readonly<Record<string, unknown>>[];
+  readonly roleRef?: Readonly<Record<string, unknown>>;
+  readonly subjects?: readonly Readonly<Record<string, unknown>>[];
 }

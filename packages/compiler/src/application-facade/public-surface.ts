@@ -1,0 +1,453 @@
+// typecast-file-boundary: provider callback metadata is decoded from the
+// validated ApplicationGraph before constructing one compiler-owned gateway.
+import {
+  applicationOperationId,
+  type ApplicationGatewayNode,
+  type ApplicationGraph,
+  type ApplicationGraphEdge,
+  type ApplicationProfiledCallbackContract,
+  type ApplicationProviderNode,
+  type ApplicationSerializedCallbackContract,
+  normalizeApplicationGraph,
+} from '@applik8s/core';
+
+const generatedGatewayImage =
+  'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
+
+export interface ApplicationEntrypointPublicSurface {
+  readonly operationIds: readonly string[];
+  readonly modelNames: readonly string[];
+  readonly signalIds?: readonly string[];
+}
+
+/**
+ * Makes the application entrypoint's named exports the browser/server
+ * publication boundary.
+ *
+ * A model export publishes its authorized operation family. A direct
+ * operation export publishes only that operation. A public authored gateway
+ * remains authoritative; compiler-owned internal receivers do not suppress
+ * the registry-free browser gateway.
+ */
+export function applicationGraphWithEntrypointPublicSurface(
+  graph: ApplicationGraph,
+  surface: ApplicationEntrypointPublicSurface,
+): ApplicationGraph {
+  const exportedOperations = new Set(surface.operationIds);
+  const graphWithPublishedHttp = publishExportedHttpRoutes(
+    graph,
+    exportedOperations,
+  );
+  const gateways = graph.nodes.filter(
+    (node): node is ApplicationGatewayNode => node.kind === 'gateway',
+  );
+  const exportedSignals = new Set(surface.signalIds ?? []);
+  const exportedSignalStreams = new Set(
+    graphWithPublishedHttp.nodes.flatMap((node) =>
+      node.kind === 'stream'
+      && node.signal
+      && exportedSignals.has(node.signal.id)
+        ? [node.id]
+        : []),
+  );
+  const assignedSubscriptions = new Set(
+    gateways.flatMap((gateway) =>
+      gateway.subscriptions.map((reference) => reference.nodeId)),
+  );
+  const subscriptions = graphWithPublishedHttp.nodes.flatMap((node) =>
+    node.kind === 'subscription'
+    && exportedSignalStreams.has(node.source.nodeId)
+    && !assignedSubscriptions.has(node.id)
+      ? [{ nodeId: node.id }]
+      : []);
+  // A public authored gateway is an explicit transport and authority
+  // boundary. Its routing remains authoritative even when the same module
+  // exports model handles for server-side use. Internal compiler receivers
+  // still coexist with the registry-free browser path. Exported signal
+  // capabilities are different: the entrypoint export is the explicit
+  // publication decision, so subscriptions declared after the authored
+  // gateway are attached to that same boundary.
+  const publicGateways = gateways.filter(
+    (gateway) => gateway.visibility === 'public',
+  );
+  if (publicGateways.length > 0) {
+    if (subscriptions.length === 0) {
+      return graphWithPublishedHttp;
+    }
+    if (publicGateways.length !== 1) {
+      throw new Error(
+        `Application ${graph.metadata.name} exports browser signals but has ${publicGateways.length} public gateways; the signal publication boundary is ambiguous.`,
+      );
+    }
+    const publicGateway = publicGateways[0];
+    if (!publicGateway) {
+      throw new Error(
+        `Application ${graph.metadata.name} lost its public gateway during signal publication.`,
+      );
+    }
+    const publishedGateway = {
+      ...publicGateway,
+      subscriptions: [...publicGateway.subscriptions, ...subscriptions],
+    };
+    return normalizeApplicationGraph({
+      ...graphWithPublishedHttp,
+      nodes: graphWithPublishedHttp.nodes.map((node) =>
+        node.id === publicGateway.id ? publishedGateway : node),
+      edges: [
+        ...graphWithPublishedHttp.edges,
+        ...gatewayEdges(publicGateway.id, [], [], subscriptions),
+      ],
+    });
+  }
+  const exportedModels = new Set(surface.modelNames);
+  const nodes = new Map(graphWithPublishedHttp.nodes.map((node) => [node.id, node]));
+
+  for (const node of graphWithPublishedHttp.nodes) {
+    if (
+      node.kind !== 'model'
+      || !exportedModels.has(node.name)
+    ) {
+      continue;
+    }
+    for (const operation of node.common?.operations ?? []) {
+      if (
+        operation.authorization !== 'undeclared'
+        && operation.authority?.classification !== 'unclassified'
+        && operation.authority !== undefined
+        && operation.transport === 'command'
+      ) {
+        exportedOperations.add(operation.publicId);
+      }
+    }
+  }
+
+  const selectedQueries = graphWithPublishedHttp.nodes.filter(
+    (node) =>
+      node.kind === 'query'
+      && (
+        exportedOperations.has(node.publicId ?? `${node.name}.${node.version}`)
+        || (
+          node.modelOperation !== undefined
+          && exportedModels.has(modelName(nodes, node.modelOperation.model.nodeId))
+        )
+      ),
+  );
+  const selectedCommands = graphWithPublishedHttp.nodes.flatMap((node) => {
+    if (
+      node.kind !== 'command'
+      || !exportedOperations.has(node.name)
+    ) {
+      return [];
+    }
+    const handler = graphWithPublishedHttp.nodes.find(
+      (candidate) =>
+        candidate.kind === 'commandHandler'
+        && candidate.command.nodeId === node.id,
+    );
+    if (handler?.kind !== 'commandHandler') {
+      throw new Error(
+        `Exported application command ${node.name} has no canonical command handler.`,
+      );
+    }
+    return [{ command: { nodeId: node.id }, handler: { nodeId: handler.id } }];
+  });
+
+  const assignedQueries = new Set(
+    gateways.flatMap((gateway) =>
+      gateway.queries.map((reference) => reference.nodeId)),
+  );
+  const assignedCommands = new Set(
+    gateways.flatMap((gateway) =>
+      gateway.commands.map((reference) => reference.command.nodeId)),
+  );
+  const queries = selectedQueries
+    .filter((query) => !assignedQueries.has(query.id))
+    .map((query) => ({ nodeId: query.id }));
+  const commands = selectedCommands.filter(
+    (command) => !assignedCommands.has(command.command.nodeId),
+  );
+  if (queries.length + commands.length + subscriptions.length === 0) {
+    return graphWithPublishedHttp;
+  }
+
+  const gateway = generatedEntrypointGateway(
+    graphWithPublishedHttp,
+    queries,
+    commands,
+    subscriptions,
+  );
+  return normalizeApplicationGraph({
+    ...graphWithPublishedHttp,
+    nodes: [...graphWithPublishedHttp.nodes, gateway],
+    edges: [
+      ...graphWithPublishedHttp.edges,
+      ...gatewayEdges(gateway.id, queries, commands, subscriptions),
+    ],
+  });
+}
+
+function publishExportedHttpRoutes(
+  graph: ApplicationGraph,
+  exportedOperations: ReadonlySet<string>,
+): ApplicationGraph {
+  let changed = false;
+  const nodes = graph.nodes.map((node) => {
+    if (node.kind !== 'server') return node;
+    let serverChanged = false;
+    const routes = node.routes.map((route) => {
+      if (!route.functionNative) return route;
+      const operationId = applicationOperationId({
+        domain: 'http',
+        owner: node.name,
+        operation: route.id,
+      });
+      if (!exportedOperations.has(operationId)) return route;
+      serverChanged = true;
+      return {
+        ...route,
+        functionNative: {
+          ...route.functionNative,
+          publication: {
+            boundary: 'entrypoint-export' as const,
+          },
+        },
+      };
+    });
+    if (!serverChanged) return node;
+    changed = true;
+    return { ...node, routes };
+  });
+  return changed ? normalizeApplicationGraph({ ...graph, nodes }) : graph;
+}
+
+function generatedEntrypointGateway(
+  graph: ApplicationGraph,
+  queries: ApplicationGatewayNode['queries'],
+  commands: ApplicationGatewayNode['commands'],
+  subscriptions: ApplicationGatewayNode['subscriptions'],
+): ApplicationGatewayNode {
+  const identity = graph.nodes.filter(
+    (node): node is ApplicationProviderNode =>
+      node.kind === 'provider'
+      && node.interface === 'IdentityProvider'
+      && !record(node.config).qualification,
+  );
+  if (identity.length !== 1) {
+    throw new Error(
+      `Application ${graph.metadata.name} exports browser operations and requires exactly one unqualified IdentityProvider; found ${identity.length}.`,
+    );
+  }
+  const identityConfig = record(record(identity[0]?.config).identity);
+  const authenticationProfile = profiledCallback(
+    identityConfig.authenticationProfile,
+    'authentication',
+  );
+  const authentication = serializedCallback(
+    identityConfig,
+    'authentication',
+  );
+  if (!authenticationProfile && !authentication) {
+    throw new Error(
+      `Application ${graph.metadata.name} exports browser operations, but its IdentityProvider has no portable authentication callback.`,
+    );
+  }
+  const name = graph.nodes.some(
+    (node) => node.kind === 'gateway' && node.name === 'web',
+  )
+    ? 'browser-exports'
+    : 'web';
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const applicationHostOwnsSurface =
+    graph.nodes.some(
+      (node) =>
+        node.kind === 'provider'
+        && node.interface === 'ApplicationHost',
+    )
+    && commands.length === 0
+    && subscriptions.length === 0
+    && queries.every((reference) => {
+      const node = nodes.get(reference.nodeId);
+      return node?.kind === 'query' && node.kubernetes !== undefined;
+    });
+  return {
+    id: `gateway.${name}`,
+    kind: 'gateway',
+    name,
+    stability: 'stable',
+    visibility: 'public',
+    queries,
+    commands,
+    subscriptions,
+    transport: 'http-sse',
+    authentication: 'external-provider',
+    trustedContextAdmission: 'server-validated',
+    browserCredentials: 'forbidden',
+    subscriptionLimits: { perPrincipal: 20, total: 1_000 },
+    routes: {
+      snapshots: '/queries/:query/snapshot',
+      subscriptions: '/queries/:query/subscribe',
+      streamReplay: '/streams/:subscription/replay',
+      streamSubscriptions: '/streams/:subscription/subscribe',
+      commandSubmission: '/commands/:command/submit',
+      commandProgress: '/commands/:command/progress',
+    },
+    resume: 'resumableInvalidation',
+    // The Start server already materializes Kubernetes-native model reads and
+    // creates through its generated Fetch gateway. Keep the compiler-owned
+    // publication node as routing/authority metadata, but do not emit a
+    // second Deployment with the ApplicationHost's Kubernetes identity.
+    // Relational queries, durable commands, and subscriptions still require
+    // their independently scaled generated gateway.
+    materialization: applicationHostOwnsSurface
+      ? 'runtimeOnly'
+      : 'generatedDeployment',
+    ...(authenticationProfile
+      ? { authenticationProfile }
+      : authentication
+        ? callbackFields(authentication, 'authentication')
+        : {}),
+    commandAuthorizationSource: 'async () => true',
+    cursorSecret: {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      name: `${graph.metadata.name}-web-cursor`,
+      key: 'key',
+    },
+    deployment: {
+      namespace:
+        graph.metadata.namespace ?? `${graph.metadata.name}-system`,
+      image: generatedGatewayImage,
+      replicas: 1,
+      port: 8080,
+    },
+  };
+}
+
+function gatewayEdges(
+  gateway: string,
+  queries: ApplicationGatewayNode['queries'],
+  commands: ApplicationGatewayNode['commands'],
+  subscriptions: ApplicationGatewayNode['subscriptions'],
+): readonly ApplicationGraphEdge[] {
+  return [
+    ...queries.map((query) => ({
+      from: { nodeId: gateway },
+      to: query,
+      relationship: 'exposes' as const,
+    })),
+    ...commands.map((command) => ({
+      from: { nodeId: gateway },
+      to: command.command,
+      relationship: 'exposes' as const,
+    })),
+    ...subscriptions.map((subscription) => ({
+      from: { nodeId: gateway },
+      to: subscription,
+      relationship: 'exposes' as const,
+    })),
+  ];
+}
+
+function modelName(
+  nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>,
+  nodeId: string,
+): string {
+  const node = nodes.get(nodeId);
+  return node?.kind === 'model' || node?.kind === 'crd' ? node.name : '';
+}
+
+function profiledCallback(
+  value: unknown,
+  prefix: string,
+): ApplicationProfiledCallbackContract | undefined {
+  const source = record(value);
+  const selector = source.selector;
+  const cases = record(source.cases);
+  const fallback = serializedCallback(record(source.default), prefix);
+  if (
+    typeof selector !== 'string'
+    || !fallback
+    || Object.keys(cases).length === 0
+  ) {
+    return undefined;
+  }
+  const decoded = Object.fromEntries(
+    Object.entries(cases).map(([variant, candidate]) => {
+      const callback = serializedCallback(record(candidate), prefix);
+      if (!callback) {
+        throw new Error(
+          `Identity profile ${variant} has no portable ${prefix} callback.`,
+        );
+      }
+      return [variant, callback];
+    }),
+  );
+  return { selector, cases: decoded, default: fallback };
+}
+
+function serializedCallback(
+  value: Readonly<Record<string, unknown>>,
+  prefix: string,
+): ApplicationSerializedCallbackContract | undefined {
+  const source = value[`${prefix}Source`];
+  if (typeof source !== 'string' || !source.trim()) return undefined;
+  const dependencies = value[`${prefix}Dependencies`];
+  const location = value[`${prefix}Location`];
+  const unresolved = value[`${prefix}Unresolved`];
+  return {
+    source,
+    ...(dependencies && typeof dependencies === 'object'
+      ? {
+          dependencies:
+            dependencies as NonNullable<
+              ApplicationSerializedCallbackContract['dependencies']
+            >,
+        }
+      : {}),
+    ...(location && typeof location === 'object'
+      ? {
+          location:
+            location as NonNullable<
+              ApplicationSerializedCallbackContract['location']
+            >,
+        }
+      : {}),
+    ...(Array.isArray(unresolved)
+      ? {
+          unresolved: unresolved.filter(
+            (entry): entry is string => typeof entry === 'string',
+          ),
+        }
+      : {}),
+  };
+}
+
+function callbackFields(
+  callback: ApplicationSerializedCallbackContract,
+  prefix: 'authentication',
+): Pick<
+  ApplicationGatewayNode,
+  | 'authenticationSource'
+  | 'authenticationDependencies'
+  | 'authenticationLocation'
+  | 'authenticationUnresolved'
+> {
+  return {
+    authenticationSource: callback.source,
+    ...(callback.dependencies
+      ? { authenticationDependencies: callback.dependencies }
+      : {}),
+    ...(callback.location
+      ? { authenticationLocation: callback.location }
+      : {}),
+    ...(callback.unresolved
+      ? { authenticationUnresolved: callback.unresolved }
+      : {}),
+  };
+}
+
+function record(value: unknown): Readonly<Record<string, unknown>> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Readonly<Record<string, unknown>>
+    : {};
+}

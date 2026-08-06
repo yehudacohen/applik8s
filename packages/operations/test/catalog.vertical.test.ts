@@ -127,6 +127,24 @@ describe('operation catalog lifecycle', () => {
     }));
   });
 
+  it('blocks only durable references that carry an incompatible operation', async () => {
+    const repository = new InMemoryApplicationOperationCatalogRepository();
+    const manager = new ApplicationOperationCatalogManager(repository);
+    const createId = operation().id;
+    const readId = 'applik8s://queries/Timeline/operations/read' as const;
+    await manager.stage(catalog('r1', [operation(createId), operation(readId)]));
+    await manager.activate('chirp', 'r1');
+    await manager.stage(catalog('r2', [
+      operation(createId, { ...schema, digest: 'sha256:breaking-input' }),
+      operation(readId),
+    ], 'r1'));
+    await repository.putReference('chirp', 'r1', 'envelope', 'read-command', [readId]);
+
+    await expect(manager.activate('chirp', 'r2')).resolves.toMatchObject({
+      catalog: { state: 'active', revision: 'r2' },
+    });
+  });
+
   it('recognizes replacement metadata on the successor operation', () => {
     const priorId = operation().id;
     const successorId = 'applik8s://models/Post/operations/publish' as ApplicationOperationId;

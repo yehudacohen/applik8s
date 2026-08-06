@@ -10,6 +10,7 @@ import {
   applicationInstallationReadiness,
   readGeneratedApplicationGraph,
   resolveApplicationBuildPackage,
+  resolveApplicationProjectRoot,
   resolveGeneratedApplicationDeleteTarget,
   resourceGraphDefinitionReadiness,
   runCli,
@@ -27,6 +28,39 @@ import { resolveApplicationInstallationValues } from '../../cli/src/application-
 const execFileAsync = promisify(execFile);
 
 describe('applik8s CLI', () => {
+  it('derives lifecycle state identity from the owning application package rather than invocation cwd', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-project-root-'));
+    try {
+      const application = join(dir, 'apps', 'chirp');
+      await mkdir(join(application, 'src'), { recursive: true });
+      await writeFile(join(dir, 'package.json'), JSON.stringify({ name: 'workspace-root' }));
+      await writeFile(join(application, 'package.json'), JSON.stringify({ name: '@example/chirp' }));
+      const entrypoint = join(application, 'src', 'application.ts');
+      await writeFile(entrypoint, 'export {}\n');
+
+      await expect(resolveApplicationProjectRoot(entrypoint)).resolves.toBe(application);
+      await expect(
+        resolveApplicationProjectRoot(join(dir, 'apps', 'operator.ts')),
+      ).resolves.toBe(dir);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('uses the entrypoint directory as lifecycle state identity for package-less operators', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-package-less-root-'));
+    try {
+      const application = join(dir, 'operator');
+      await mkdir(application, { recursive: true });
+      const entrypoint = join(application, 'application.ts');
+      await writeFile(entrypoint, 'export {}\n');
+
+      await expect(resolveApplicationProjectRoot(entrypoint)).resolves.toBe(application);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('runs the application build from the package that owns a nested entrypoint', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-cli-app-package-'));
     try {
@@ -190,6 +224,7 @@ describe('applik8s CLI', () => {
     expect(runner).toContain("APPLIK8S_DISABLE_NODE_DELETE_HANDOFF: '1'");
     expect(runner).toContain("APPLIK8S_DISABLE_NODE_DEPLOY_HANDOFF: '1'");
     expect(runner).toContain("APPLIK8S_DISABLE_NODE_STATUS_HANDOFF: '1'");
+    expect(runner).toContain("options.allowBreakingChanges ? ['--allow-breaking-changes']");
     expect(runner).not.toContain('kubectl');
   });
 
@@ -225,6 +260,8 @@ describe('applik8s CLI', () => {
 
     expect(code).toBe(0);
     expect(output.join('\n')).toContain('--strategy <strategy>');
+    expect(output.join('\n')).toContain('--allow-breaking-changes');
+    expect(output.join('\n')).toContain('for this deployment only');
     expect(output.join('\n')).not.toContain('migrate-kro-owned');
     expect(output.join('\n')).not.toContain('legacy');
   });
@@ -442,6 +479,7 @@ spec:
   features:
     analytics: true
     media: false
+  typekroArtifactBindings: {}
 `);
 
       const staged = await stageExplicitApplicationInstance(
@@ -450,13 +488,39 @@ spec:
       );
 
       expect(staged).toMatchObject({ name: 'local', namespace: 'chirp-control', resourceGraphDefinitionName: 'chirp' });
-      expect(await readFile(staged.path, 'utf8')).toContain('kind: ChirpInstallation');
+      expect(staged.spec).toEqual({
+        hostname: 'chirp.localhost',
+        features: { analytics: true, media: false },
+      });
+      const stagedYaml = await readFile(staged.path, 'utf8');
+      expect(stagedYaml).toContain('kind: ChirpInstallation');
+      expect(stagedYaml).toContain('typekroArtifactBindings: {}');
       const prerequisiteFiles = await readdir(join(typeKroDir, 'instances'));
       expect(prerequisiteFiles).toContain('analytics-prerequisite.yaml');
       expect(prerequisiteFiles).not.toContain('media-prerequisite.yaml');
       const analyticsPrerequisite = await readFile(join(typeKroDir, 'instances', 'analytics-prerequisite.yaml'), 'utf8');
       expect(analyticsPrerequisite).toContain('typekro.io/singleton-spec-fingerprint');
       expect(analyticsPrerequisite).not.toContain('applik8s.dev/include-when');
+
+      await writeFile(join(dir, 'kubernetes', 'chirp.yaml'), `
+apiVersion: applications.chirp.dev/v1alpha1
+kind: ChirpInstallation
+metadata:
+  name: local
+  namespace: chirp-control
+spec:
+  hostname: chirp.localhost
+  features:
+    analytics: true
+    media: false
+  typekroArtifactBindings:
+    r_user:
+      o_image: registry.invalid/injected@sha256:deadbeef
+`);
+      await expect(stageExplicitApplicationInstance(
+        join(dir, 'src', 'application.ts'),
+        join(typeKroDir, 'typekro-composition.json'),
+      )).rejects.toThrow('cannot supply provider-managed spec.typekroArtifactBindings');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -566,7 +630,11 @@ spec:
       await writeFile(join(typeKroDir, 'instances', 'singleton.yaml'), `
 apiVersion: kro.run/v1alpha1
 kind: ClickHouseOperatorBootstrap
-metadata: { name: clickhouse, namespace: typekro-singletons }
+metadata:
+  name: clickhouse
+  namespace: typekro-singletons
+  labels:
+    typekro.io/factory: clickhouse-operator-bootstrap
 spec: {}
 `);
       await writeFile(join(typeKroDir, 'instances', 'chirp.yaml'), `

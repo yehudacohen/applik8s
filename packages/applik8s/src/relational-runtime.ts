@@ -1,15 +1,100 @@
+// typecast-file-boundary: Database driver rows are schema-validated before being exposed through typed relational runtime contracts.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHmac, randomUUID } from 'node:crypto';
 import { and, eq, getTableColumns, type InferInsertModel, type InferSelectModel, sql } from 'drizzle-orm';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import type { PostgresJsDatabase } from 'drizzle-orm/postgres-js';
+import type { JsonValue } from '@applik8s/core';
 import type { ApplicationDatabaseBinding } from './application.js';
 import { applicationModelFacet, getRequiredDrizzleApplicationModelFacet } from './native-model-runtime.js';
 import type { ApplicationModelSnapshot, PromotedDrizzleTable } from './native-models.js';
 import { applicationModelChangeCommitScope } from './relational-runtime-contract.js';
 import { validateTrustedContextValue } from './trusted-context.js';
 
-export type ApplicationDatabaseClient<TSchema extends Readonly<Record<string, unknown>>> = PostgresJsDatabase<TSchema>;
+type ApplicationDatabaseDirectMember =
+  | '$with'
+  | 'count'
+  | 'delete'
+  | 'execute'
+  | 'insert'
+  | 'query'
+  | 'refreshMaterializedView'
+  | 'select'
+  | 'selectDistinct'
+  | 'selectDistinctOn'
+  | 'transaction'
+  | 'update'
+  | 'with';
+
+/**
+ * The schema-preserving Drizzle surface supported equally by an execution
+ * client and a declared database handle.
+ *
+ * Drizzle's driver object also exposes adapter internals such as `_`, `$cache`,
+ * and `$count`. Those are not portable query capabilities and requiring them
+ * made an otherwise valid direct handle incompatible with ordinary helpers.
+ */
+export type ApplicationDatabaseClient<TSchema extends Readonly<Record<string, unknown>>> =
+  Pick<PostgresJsDatabase<TSchema>, Extract<keyof PostgresJsDatabase<TSchema>, ApplicationDatabaseDirectMember>>;
+
+const applicationDatabaseDirectMembers = new Set<PropertyKey>([
+  '$with',
+  'count',
+  'delete',
+  'execute',
+  'insert',
+  'query',
+  'refreshMaterializedView',
+  'select',
+  'selectDistinct',
+  'selectDistinctOn',
+  'transaction',
+  'update',
+  'with',
+]);
+
+/** A declared database that becomes an ordinary Drizzle client inside managed execution. */
+export type ApplicationDatabaseHandle<TSchema extends Readonly<Record<string, unknown>>> =
+  ApplicationDatabaseBinding<TSchema>
+  & ApplicationDatabaseClient<TSchema>;
+
+type ApplicationDatabaseRuntimeResolver = <TSchema extends Readonly<Record<string, unknown>>>(
+  binding: ApplicationDatabaseBinding<TSchema>,
+) => ApplicationDatabaseClient<TSchema>;
+
+const applicationDatabaseRuntime = new AsyncLocalStorage<ApplicationDatabaseRuntimeResolver>();
+
+/**
+ * Hydrates a declared database through the current managed execution without
+ * leaking the relational context into domain code.
+ */
+export function applicationDatabaseHandle<TSchema extends Readonly<Record<string, unknown>>>(
+  binding: ApplicationDatabaseBinding<TSchema>,
+): ApplicationDatabaseHandle<TSchema> {
+  return new Proxy(binding as ApplicationDatabaseHandle<TSchema>, {
+    get(target, property, receiver) {
+      if (Reflect.has(target, property)) return Reflect.get(target, property, receiver);
+      if (!applicationDatabaseDirectMembers.has(property)) return undefined;
+      const resolve = applicationDatabaseRuntime.getStore();
+      if (!resolve) {
+        throw new Error(
+          `Application database ${binding.name} is only callable inside a managed query, command, event, or workflow execution.`,
+        );
+      }
+      const database = resolve(binding);
+      const value = Reflect.get(database, property, database);
+      return typeof value === 'function' ? value.bind(database) : value;
+    },
+  });
+}
+
+/** Installs the execution-local database resolver used by direct bindings. */
+export function withApplicationDatabaseRuntimeResolver<TResult>(
+  resolve: ApplicationDatabaseRuntimeResolver,
+  operation: () => TResult,
+): TResult {
+  return applicationDatabaseRuntime.run(resolve, operation);
+}
 
 export interface ApplicationAdmittedContext {
   readonly values: Readonly<Record<string, unknown>>;
@@ -76,6 +161,10 @@ interface ActiveDatabaseScope {
 }
 
 export interface ApplicationRelationalContext {
+  /** Exact server-admitted context used to install database policy state. */
+  readonly admittedContext: ApplicationAdmittedContext;
+  /** Provider-admitted values with framework-reserved transport metadata removed. */
+  readonly trustedContext: Readonly<Record<string, JsonValue>>;
   database<TSchema extends Readonly<Record<string, unknown>>>(binding: ApplicationDatabaseBinding<TSchema>): ApplicationDatabaseClient<TSchema>;
   run<TSchema extends Readonly<Record<string, unknown>>, TResult>(binding: ApplicationDatabaseBinding<TSchema>, handler: () => TResult | Promise<TResult>): Promise<TResult>;
   snapshot<TSchema extends Readonly<Record<string, unknown>>, TResult>(binding: ApplicationDatabaseBinding<TSchema>, handler: () => TResult | Promise<TResult>): Promise<{ readonly value: TResult; readonly sequence: number }>;
@@ -98,6 +187,8 @@ export function createApplicationRelationalContext(options: {
   const nextRevision = options.revision ?? randomUUID;
 
   const context: ApplicationRelationalContext = {
+    admittedContext: options.admittedContext,
+    trustedContext: relationalTrustedContext(options.admittedContext),
     database(binding) {
       const registered = registeredDatabase(databases, binding);
       const scope = active.getStore();
@@ -261,19 +352,35 @@ async function installTrustedContext<TSchema extends Readonly<Record<string, unk
 async function persistApplicationChanges<TSchema extends Readonly<Record<string, unknown>>>(db: ApplicationDatabaseClient<TSchema>, changes: readonly ApplicationModelChange[]): Promise<void> {
   for (const change of changes) {
     await db.execute(sql`
+      with next_commit as (
+        update applik8s_model_change_commit_frontier
+        set position = position + 1
+        where singleton = true
+        returning position
+      )
       insert into applik8s_model_changes
-        (model, operation, identity, revision, context_digest, changed_fields, recorded_at)
-      values
-        (${change.model}, ${change.operation}, ${change.identity === undefined ? null : JSON.stringify(change.identity)}::jsonb,
-         ${change.revision ?? null}, ${change.contextDigest}, ${change.changedFields ? JSON.stringify(change.changedFields) : null}::jsonb,
-         ${change.recordedAt}::timestamptz)
+        (commit_position, model, operation, identity, revision, context_digest, changed_fields, recorded_at)
+      select
+        position, ${change.model}, ${change.operation},
+        ${change.identity === undefined ? null : JSON.stringify(change.identity)}::jsonb,
+        ${change.revision ?? null}, ${change.contextDigest},
+        ${change.changedFields ? JSON.stringify(change.changedFields) : null}::jsonb,
+        ${change.recordedAt}::timestamptz
+      from next_commit
     `);
   }
 }
 
 export function applicationRelationalFrameworkMigrationSql(database: ApplicationDatabaseBinding, models: readonly RelationalModelRuntimeTable[]): string {
   const statements = [
-    `CREATE TABLE IF NOT EXISTS applik8s_model_changes (\n  sequence bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  model text NOT NULL,\n  operation text NOT NULL CHECK (operation IN ('insert', 'update', 'delete', 'invalidate', 'reset')),\n  identity jsonb,\n  revision text,\n  context_digest text NOT NULL,\n  changed_fields jsonb,\n  recorded_at timestamptz NOT NULL\n);`,
+    `CREATE TABLE IF NOT EXISTS applik8s_model_change_commit_frontier (\n  singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),\n  position bigint NOT NULL CHECK (position >= 0)\n);`,
+    `INSERT INTO applik8s_model_change_commit_frontier (singleton, position)\nVALUES (true, 0)\nON CONFLICT (singleton) DO NOTHING;`,
+    `CREATE TABLE IF NOT EXISTS applik8s_model_changes (\n  sequence bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,\n  commit_position bigint,\n  model text NOT NULL,\n  operation text NOT NULL CHECK (operation IN ('insert', 'update', 'delete', 'invalidate', 'reset')),\n  identity jsonb,\n  revision text,\n  context_digest text NOT NULL,\n  changed_fields jsonb,\n  recorded_at timestamptz NOT NULL\n);`,
+    'ALTER TABLE applik8s_model_changes ADD COLUMN IF NOT EXISTS commit_position bigint;',
+    `UPDATE applik8s_model_change_commit_frontier\nSET position = GREATEST(\n  position,\n  COALESCE((SELECT max(commit_position) FROM applik8s_model_changes), 0)\n)\nWHERE singleton = true;`,
+    `WITH ordered AS (\n  SELECT sequence, row_number() OVER (ORDER BY sequence) AS position\n  FROM applik8s_model_changes\n  WHERE commit_position IS NULL\n), updated AS (\n  UPDATE applik8s_model_changes AS changes\n  SET commit_position = ordered.position + frontier.position\n  FROM ordered\n  CROSS JOIN applik8s_model_change_commit_frontier AS frontier\n  WHERE frontier.singleton = true\n    AND changes.sequence = ordered.sequence\n  RETURNING changes.commit_position\n)\nUPDATE applik8s_model_change_commit_frontier\nSET position = GREATEST(position, COALESCE((SELECT max(commit_position) FROM updated), position))\nWHERE singleton = true;`,
+    'ALTER TABLE applik8s_model_changes ALTER COLUMN commit_position SET NOT NULL;',
+    'CREATE UNIQUE INDEX IF NOT EXISTS applik8s_model_changes_commit_position ON applik8s_model_changes (commit_position);',
     'CREATE INDEX IF NOT EXISTS applik8s_model_changes_context_sequence ON applik8s_model_changes (context_digest, sequence);',
     'CREATE INDEX IF NOT EXISTS applik8s_model_changes_model_sequence ON applik8s_model_changes (model, sequence);',
     `CREATE TABLE IF NOT EXISTS applik8s_public_stream_retention_floors (\n  contract_name text NOT NULL,\n  contract_version text NOT NULL,\n  context_digest text NOT NULL,\n  deleted_through bigint NOT NULL CHECK (deleted_through >= 0),\n  updated_at timestamptz NOT NULL DEFAULT now(),\n  PRIMARY KEY (contract_name, contract_version, context_digest)\n);`,
@@ -336,6 +443,21 @@ function contextDigest(admitted: ApplicationAdmittedContext): string {
     Object.entries(admitted.values).filter(([name]) => !name.startsWith('applik8s.dev/')),
   );
   return createHmac('sha256', admitted.digestSecret).update(stableJson(providerContext)).digest('hex');
+}
+
+function relationalTrustedContext(
+  admitted: ApplicationAdmittedContext,
+): Readonly<Record<string, JsonValue>> {
+  const providerContext = Object.fromEntries(
+    Object.entries(admitted.values).filter(
+      ([name]) => !name.startsWith('applik8s.dev/'),
+    ),
+  );
+  // typecast-boundary: stableJson rejects non-JSON values before the admitted
+  // provider context is exposed to application code.
+  return Object.freeze(
+    JSON.parse(stableJson(providerContext)) as Record<string, JsonValue>,
+  );
 }
 
 /**

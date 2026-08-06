@@ -1,0 +1,86 @@
+{
+  "apiVersion": "applik8s.browserSecurity/v1alpha1",
+  "release": "v0.7",
+  "requirements": [
+    {
+      "id": "browser-import-zoning",
+      "evidence": [
+        {
+          "path": "scripts/check-module-boundaries.ts",
+          "marker": "Browser packages may depend only on browser-safe client"
+        },
+        {
+          "path": "scripts/check-v07-browser-security.mjs",
+          "marker": "forbiddenBrowserImports"
+        }
+      ]
+    },
+    {
+      "id": "server-only-operation-admission",
+      "evidence": [
+        {
+          "path": "packages/operations/test/execution-admission-transport.vertical.test.ts",
+          "marker": "rejects signature, run binding, identity, and expiry mismatches"
+        }
+      ]
+    },
+    {
+      "id": "context-bound-command-cursors",
+      "evidence": [
+        {
+          "path": "packages/client/test/operations.vertical.test.ts",
+          "marker": "context"
+        }
+      ]
+    },
+    {
+      "id": "authenticated-resumable-events",
+      "evidence": [
+        {
+          "path": "packages/applik8s/test/stream-subscription-gateway.vertical.test.ts",
+          "marker": "resume"
+        }
+      ]
+    },
+    {
+      "id": "signal-capability-admission",
+      "evidence": [
+        {
+          "path": "packages/applik8s/test/signal-gateway.vertical.test.ts",
+          "marker": "fails closed before resolution when action authority is absent"
+        }
+      ]
+    },
+    {
+      "id": "object-intent-admission",
+      "evidence": [
+        {
+          "path": "packages/applik8s/test/application-object-storage-gateway.vertical.test.ts",
+          "marker": "principal"
+        }
+      ]
+    },
+    {
+      "id": "redacted-operations-view",
+      "evidence": [
+        {
+          "path": "packages/operations-ui/test/module.vertical.test.ts",
+          "marker": "redact"
+        }
+      ]
+    },
+    {
+      "id": "generated-browser-bundle-separation",
+      "evidence": [
+        {
+          "path": "packages/vite/test/vite.vertical.test.ts",
+          "marker": "browser"
+        },
+        {
+          "path": "scripts/check-identity-start-build.mjs",
+          "marker": "browser"
+        }
+      ]
+    }
+  ]
+}

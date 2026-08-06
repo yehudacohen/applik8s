@@ -388,6 +388,31 @@
                   "timeoutMs": {
                     "type": "number"
                   },
+                  "retry": {
+                    "type": "object",
+                    "properties": {
+                      "maxAttempts": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5
+                      },
+                      "backoffMs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 30000
+                      },
+                      "maxBackoffMs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 30000
+                      }
+                    },
+                    "required": [
+                      "maxAttempts",
+                      "backoffMs"
+                    ],
+                    "additionalProperties": false
+                  },
                   "idempotencyKeyRequired": {
                     "type": "boolean"
                   },
@@ -481,6 +506,52 @@
                 },
                 "required": [
                   "endpointPolicy"
+                ],
+                "additionalProperties": false
+              },
+              "workflowGateway": {
+                "type": "object",
+                "properties": {
+                  "protocol": {
+                    "const": "applik8s.workflow-gateway/v1alpha1"
+                  },
+                  "worker": {
+                    "type": "string"
+                  },
+                  "contracts": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "uniqueItems": true
+                  },
+                  "caller": {
+                    "type": "object",
+                    "properties": {
+                      "operator": {
+                        "type": "string"
+                      },
+                      "namespace": {
+                        "type": "string"
+                      },
+                      "serviceAccount": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "operator",
+                      "namespace",
+                      "serviceAccount"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "protocol",
+                  "worker",
+                  "contracts",
+                  "caller"
                 ],
                 "additionalProperties": false
               }

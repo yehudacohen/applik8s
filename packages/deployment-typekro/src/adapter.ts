@@ -19,11 +19,11 @@ import {
   type TypeKroSemanticPlanEvidence,
 } from "./types.js";
 
-const supportedTypeKroVersion = "0.32.0";
+const supportedTypeKroVersion = "0.33.5";
 const supportedSemanticPlanVersion = 1;
 const supportedArtifactPlanVersion = 1;
 const adapterCompatibility: AdaptedTypeKroDeployment["adapter"] = {
-  typekro: "0.32.0",
+  typekro: "0.33.5",
   semanticPlanVersion: 1,
   artifactPlanVersion: 1,
 };
@@ -106,6 +106,7 @@ function assertArtifactCoverage(
       .filter(
         (node) =>
           node.kind === "artifact" ||
+          node.kind === "kubernetesDirect" ||
           (node.kind === "externalProvider" &&
             node.provider.interface === "Secret" &&
             node.provider.implementation ===
@@ -245,7 +246,12 @@ async function declarationGroup(
   binding: TypeKroCompositionBinding,
 ): Promise<TypeKroDeclarationGroup> {
   const inspection = binding.inspect();
-  const plan = binding.plan();
+  let plan: ReturnType<TypeKroCompositionBinding["plan"]>;
+  try {
+    plan = binding.plan();
+  } catch (error) {
+    throw semanticPlanningFailure(node.id, error);
+  }
   const diagnostics = [...inspection.diagnostics, ...plan.diagnostics].map(
     normalizeTypeKroDiagnostic,
   );
@@ -261,7 +267,9 @@ async function declarationGroup(
   }
   const declarations = applyDeploymentLifecycle(
     node,
-    await binding.declarations(strategy),
+    (await binding.declarations(strategy)).map(
+      portableResourceGraphDefinitionDeclaration,
+    ),
   );
   assertDeclarationTopology(node.id, strategy, declarations);
   const semanticPlan: TypeKroSemanticPlanEvidence = {
@@ -278,10 +286,93 @@ async function declarationGroup(
     deploymentNodeId: node.id,
     strategy,
     declarations,
+    spec: plan.spec,
+    outputs: plan.outputs,
     declarationDigest: digestApplicationDeploymentValue(
       declarations.map(declarationEvidence),
     ),
     semanticPlan,
+  };
+}
+
+function semanticPlanningFailure(nodeId: string, error: unknown): Error {
+  const diagnostics =
+    error && typeof error === "object"
+      ? Reflect.get(Reflect.get(error, "context") ?? {}, "diagnostics")
+      : undefined;
+  if (!Array.isArray(diagnostics)) {
+    if (error instanceof Error) {
+      return new Error(
+        `TypeKro semantic planning failed for ${nodeId}: ${error.message}`,
+        { cause: error },
+      );
+    }
+    return new Error(
+      `TypeKro semantic planning failed for ${nodeId}: ${String(error)}`,
+      { cause: error },
+    );
+  }
+  const rendered = diagnostics
+    .filter(
+      (diagnostic): diagnostic is {
+        readonly code: string;
+        readonly message: string;
+        readonly path?: string;
+        readonly severity?: string;
+      } =>
+        diagnostic !== null &&
+        typeof diagnostic === "object" &&
+        typeof Reflect.get(diagnostic, "code") === "string" &&
+        typeof Reflect.get(diagnostic, "message") === "string",
+    )
+    .map(
+      (diagnostic) =>
+        `- [${diagnostic.code}] ${diagnostic.message}${
+          diagnostic.path ? ` (${diagnostic.path})` : ""
+        }`,
+    );
+  if (rendered.length === 0) {
+    const message =
+      error instanceof Error ? error.message : "TypeKro rejected the plan.";
+    return new Error(
+      `TypeKro semantic planning failed for ${nodeId}: ${message}`,
+      { cause: error },
+    );
+  }
+  return new Error(
+    `TypeKro semantic planning failed for ${nodeId}:\n${rendered.join("\n")}`,
+    { cause: error },
+  );
+}
+
+/**
+ * TypeKro's Alchemy contract is explicitly state-rehydratable, but a freshly
+ * generated RGD declaration still carries an Enhanced proxy. TypeKro 0.33's
+ * artifact-binding migration sends that proxy directly through
+ * @kubernetes/client-node's typed ObjectMeta serializer; reads of absent array
+ * fields such as ownerReferences then become reference proxies and crash the
+ * serializer. Use the declaration's canonical JSON manifest at this portable
+ * adapter boundary. TypeKro reconstructs the registered RGD readiness strategy
+ * from its artifact bundle before the normal deployment.
+ */
+function portableResourceGraphDefinitionDeclaration(
+  declaration: ApplicationTypeKroDeclaration,
+): ApplicationTypeKroDeclaration {
+  if (declaration.props.resource.kind !== "ResourceGraphDefinition") {
+    return declaration;
+  }
+  const serialized = JSON.stringify(declaration.props.resource);
+  // typecast: JSON is the declared Alchemy persistence boundary; the canonical
+  // artifact bundle retains execution metadata while the resource field is the
+  // ordinary Kubernetes manifest TypeKro already supports after state restore.
+  // typecast: validation restores TypeKro's resource type after JSON materialization.
+  const resource = JSON.parse(serialized) as typeof declaration.props.resource;
+  return {
+    ...declaration,
+    props: {
+      ...declaration.props,
+      resource,
+    },
   };
 }
 
@@ -383,6 +474,13 @@ function assertDeclarationTopology(
         );
       }
     }
+    for (const dependency of declaration.schedulingDependsOn ?? []) {
+      if (!seen.has(dependency)) {
+        throw new Error(
+          `TypeKro declaration ${declaration.id} has scheduling dependency ${dependency}, which is missing or not topologically earlier.`,
+        );
+      }
+    }
     if (
       strategy === "direct" &&
       declaration.props.deploymentStrategy !== "direct"
@@ -462,6 +560,7 @@ function declarationEvidence(
   return {
     id: declaration.id,
     dependsOn: declaration.dependsOn,
+    schedulingDependsOn: declaration.schedulingDependsOn ?? [],
     orderingOnlyDependsOn: declaration.orderingOnlyDependsOn ?? [],
     deploymentStrategy: declaration.props.deploymentStrategy,
     namespace: declaration.props.namespace,

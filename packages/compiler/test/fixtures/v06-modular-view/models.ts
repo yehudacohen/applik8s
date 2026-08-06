@@ -21,22 +21,24 @@ const Database = modularViewApplication.database.postgres('catalog', {
 });
 const BaseCard = modularViewApplication.model(cards, { name: 'Card', database: Database });
 
-const Card = BaseCard.view('owned', {
-  input: type({ ownerId: 'string' }),
-  output: type({ id: 'string', name: 'string' }).array(),
-  database: Database,
-  authorize: ({ principal, input }) => principal.id === input.ownerId,
-  run: async ({ context, input }) => {
-    const rows = await context.database(Database)
+const CardOwned = BaseCard.view(
+  {
+    input: type({ ownerId: 'string' }),
+    output: type({ id: 'string', name: 'string' }).array(),
+    database: Database,
+    authorize: ({ principal, input }) => principal.identity.subject === input.ownerId,
+  },
+  async function owned(input) {
+    const rows = await Database
       .select({ id: BaseCard.id, name: BaseCard.name })
       .from(BaseCard)
       .where(eq(BaseCard.ownerId, input.ownerId));
     return rows.map(({ id, name }) => ({ id, name }));
   },
-});
+);
 
 modularViewApplication.gateway('public', {
-  queries: [Card.owned],
+  queries: [CardOwned],
   deployment: {
     namespace: 'catalog',
     cursorSecret: { name: 'gateway-cursor', namespace: 'catalog', key: 'secret' },

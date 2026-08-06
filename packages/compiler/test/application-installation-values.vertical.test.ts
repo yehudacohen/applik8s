@@ -2,7 +2,7 @@
 
 import type { ApplicationGraph } from '@applik8s/core';
 import { describe, expect, test } from 'vitest';
-import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphServiceHost, applicationGraphStringValue, applicationKroIncludeWhen } from '../src/application-installation-values.js';
+import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphInterpolate, applicationGraphJsonStringArray, applicationGraphServiceHost, applicationGraphStringValue, applicationKroIncludeWhen } from '../src/application-installation-values.js';
 import { injectGeneratedResourcesIntoApplicationRgd } from '../src/pipeline/application-artifacts.js';
 
 describe('installation-derived compiler values', () => {
@@ -19,6 +19,29 @@ describe('installation-derived compiler values', () => {
       .toBe('${schema.spec.name}');
   });
 
+  test('lowers graph-aware interpolation and JSON endpoint arrays once', () => {
+    expect(
+      applicationGraphInterpolate(
+        '${schema.spec.events.prefix}',
+        '.commands.post-created.v1.>',
+      ),
+    ).toBe(
+      '${string(schema.spec.events.prefix) + ".commands.post-created.v1.>"}',
+    );
+    expect(
+      applicationGraphJsonStringArray([
+        '${schema.spec.events.server}',
+      ]),
+    ).toBe(
+      '${"[\\"" + string(schema.spec.events.server) + "\\"]"}',
+    );
+    expect(
+      applicationGraphJsonStringArray([
+        'nats://events.messaging.svc:4222',
+      ]),
+    ).toBe('["nats://events.messaging.svc:4222"]');
+  });
+
   test('combines optional provider feature and provisioning switches without raw authoring CEL', () => {
     expect(applicationGraphBooleanCondition(true)).toBe('true');
     expect(applicationGraphBooleanCondition(false)).toBe('false');
@@ -31,6 +54,376 @@ describe('installation-derived compiler values', () => {
       { expression: 'schema.spec.features.analytics' },
       { expression: 'schema.spec.profile != "external"' },
     )).toBe('${(schema.spec.features.analytics) && (schema.spec.profile != "external")}');
+  });
+
+  test('conditions the complete analytical provider graph from its qualified config', () => {
+    const enabled = '${schema.spec.features.analytics}';
+    const graph = {
+      nodes: [{
+        id: 'provider.analytics',
+        kind: 'provider',
+        name: 'AnalyticalDatabase',
+        stability: 'stable',
+        interface: 'AnalyticalDatabase',
+        implementation: 'clickhouse',
+        config: {
+          bindingKind: 'provided',
+          analyticalDatabase: {
+            kind: 'clickhouse',
+            enabled,
+            provision: true,
+          },
+        },
+      }],
+    } as unknown as ApplicationGraph;
+    const artifacts = injectGeneratedResourcesIntoApplicationRgd({
+      resources: [{
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: { name: 'chirp' },
+        spec: {
+          schema: {
+            apiVersion: 'applications.example.dev/v1alpha1',
+            kind: 'Chirp',
+            spec: { features: { analytics: 'boolean' } },
+            status: {},
+          },
+          resources: [
+            {
+              id: 'repository',
+              externalRef: {
+                apiVersion: 'kro.run/v1alpha1',
+                kind: 'ClickHouseHelmRepository',
+                metadata: { name: 'clickhouse', namespace: 'typekro-system' },
+              },
+            },
+            {
+              id: 'operator',
+              externalRef: {
+                apiVersion: 'kro.run/v1alpha1',
+                kind: 'ClickHouseOperatorBootstrap',
+                metadata: { name: 'clickhouse', namespace: 'typekro-system' },
+              },
+            },
+            {
+              id: 'cluster',
+              template: {
+                apiVersion: 'clickhouse.altinity.com/v1',
+                kind: 'ClickHouseInstallation',
+                metadata: { name: 'chirp-analytics', namespace: 'chirp' },
+                spec: {},
+              },
+            },
+          ],
+        },
+      }],
+      instances: [],
+      instancesAreAuthoritative: true,
+    }, [], 'chirp', undefined, graph);
+
+    const resources = (artifacts.resources[0]?.spec as { resources: Array<{ includeWhen?: string[] }> }).resources;
+    expect(resources).toHaveLength(3);
+    expect(resources.every((resource) => resource.includeWhen?.includes(enabled))).toBe(true);
+  });
+
+  test('replaces legacy raw server scaffolding when a function-native HTTP worker is emitted', () => {
+    const graph = {
+      nodes: [{
+        id: 'server.public-api',
+        kind: 'server',
+        name: 'public-api',
+        stability: 'stable',
+        routes: [{
+          id: 'create-post',
+          named: true,
+          method: 'POST',
+          path: '/posts',
+          functionNative: {},
+        }],
+        resources: [],
+        indexes: [],
+        observability: {},
+        generatedResources: [
+          {
+            role: 'workload',
+            graphNode: { nodeId: 'server.public-api' },
+            resource: {
+              apiVersion: 'apps/v1',
+              kind: 'Deployment',
+              name: 'public-api',
+              namespace: 'chirp',
+            },
+          },
+          {
+            role: 'service',
+            graphNode: { nodeId: 'server.public-api' },
+            resource: {
+              apiVersion: 'v1',
+              kind: 'Service',
+              name: 'public-api',
+              namespace: 'chirp',
+            },
+          },
+          {
+            role: 'rbac',
+            graphNode: { nodeId: 'server.public-api' },
+            resource: {
+              apiVersion: 'rbac.authorization.k8s.io/v1',
+              kind: 'Role',
+              name: 'public-api',
+              namespace: 'chirp',
+            },
+          },
+          {
+            role: 'runtimeBundle',
+            graphNode: { nodeId: 'server.public-api' },
+            resource: {
+              apiVersion: 'v1',
+              kind: 'ConfigMap',
+              name: 'public-api-source',
+              namespace: 'chirp',
+            },
+          },
+        ],
+      }],
+    } as unknown as ApplicationGraph;
+    const old = (apiVersion: string, kind: string, name: string) => ({
+      id: `old${kind}`,
+      template: {
+        apiVersion,
+        kind,
+        metadata: {
+          name,
+          namespace: 'chirp',
+          labels: { runtime: 'legacy' },
+        },
+      },
+    });
+    const generated = (apiVersion: string, kind: string) => ({
+      apiVersion,
+      kind,
+      metadata: {
+        name: 'public-api',
+        namespace: 'chirp',
+        labels: { runtime: 'function-native' },
+      },
+    });
+    const artifacts = injectGeneratedResourcesIntoApplicationRgd({
+      resources: [{
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: { name: 'chirp' },
+        spec: {
+          schema: {
+            apiVersion: 'applications.example.dev/v1alpha1',
+            kind: 'Chirp',
+            spec: {},
+            status: {},
+          },
+          resources: [
+            old('v1', 'ServiceAccount', 'public-api'),
+            old('rbac.authorization.k8s.io/v1', 'Role', 'public-api'),
+            old('rbac.authorization.k8s.io/v1', 'RoleBinding', 'public-api'),
+            old('v1', 'ConfigMap', 'public-api-source'),
+            old('v1', 'Service', 'public-api'),
+            old('apps/v1', 'Deployment', 'public-api'),
+            old('v1', 'Secret', 'unrelated'),
+          ],
+        },
+      }],
+      instances: [],
+      instancesAreAuthoritative: true,
+    }, [
+      generated('v1', 'ServiceAccount'),
+      generated('v1', 'Service'),
+      generated('apps/v1', 'Deployment'),
+    ], 'chirp', undefined, graph);
+
+    const resources = (artifacts.resources[0]?.spec as {
+      resources: Array<{
+        template?: {
+          kind?: string;
+          metadata?: { name?: string; labels?: { runtime?: string } };
+        };
+      }>;
+    }).resources;
+    expect(resources.filter((resource) =>
+      resource.template?.metadata?.name === 'public-api')).toHaveLength(3);
+    expect(resources.filter((resource) =>
+      resource.template?.metadata?.labels?.runtime === 'function-native'))
+      .toHaveLength(3);
+    expect(resources.some((resource) =>
+      resource.template?.metadata?.name === 'public-api-source')).toBe(false);
+    expect(resources.some((resource) =>
+      resource.template?.metadata?.name === 'unrelated')).toBe(true);
+  });
+
+  test('does not block external consumers on profile-conditional managed streams', () => {
+    const artifacts = injectGeneratedResourcesIntoApplicationRgd({
+      resources: [{
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: { name: 'chirp' },
+        spec: {
+          schema: {
+            apiVersion: 'applications.example.dev/v1alpha1',
+            kind: 'Chirp',
+            spec: { profile: 'string' },
+            status: {},
+          },
+          resources: [],
+        },
+      }],
+      instances: [],
+      instancesAreAuthoritative: true,
+    }, [
+      {
+        apiVersion: 'jetstream.nats.io/v1beta2',
+        kind: 'Stream',
+        metadata: {
+          name: 'events',
+          namespace: 'chirp',
+          annotations: {
+            'applik8s.dev/include-when': '${schema.spec.profile != "external"}',
+          },
+        },
+        spec: {
+          name: 'EVENTS',
+          subjects: ['events.>'],
+        },
+      },
+      {
+        apiVersion: 'jetstream.nats.io/v1beta2',
+        kind: 'Consumer',
+        metadata: {
+          name: 'commands',
+          namespace: 'chirp',
+        },
+        spec: {
+          streamName: 'EVENTS',
+          durableName: 'commands',
+        },
+      },
+    ], 'chirp');
+
+    const resources = (artifacts.resources[0]?.spec as {
+      resources: Array<{
+        id?: string;
+        readyWhen?: readonly string[];
+        template?: {
+          kind?: string;
+          metadata?: {
+            annotations?: Record<string, string>;
+            labels?: Record<string, string>;
+          };
+        };
+      }>;
+    }).resources;
+    const stream = resources.find((resource) =>
+      resource.template?.kind === 'Stream');
+    const consumer = resources.find((resource) =>
+      resource.template?.kind === 'Consumer');
+    const dependencies = Object.entries(
+      consumer?.template?.metadata?.annotations ?? {},
+    ).filter(([key]) => key.startsWith('typekro.dev/depends-on-'));
+    expect(stream?.id).toEqual(expect.any(String));
+    expect(dependencies).toEqual([]);
+  });
+
+  test('orders generated application workloads after the authoritative migration Job', () => {
+    const artifacts = injectGeneratedResourcesIntoApplicationRgd({
+      resources: [{
+        apiVersion: 'kro.run/v1alpha1',
+        kind: 'ResourceGraphDefinition',
+        metadata: { name: 'agentic-start' },
+        spec: {
+          schema: {
+            apiVersion: 'applications.example.dev/v1alpha1',
+            kind: 'AgenticStart',
+            spec: {},
+            status: {},
+          },
+          resources: [],
+        },
+      }],
+      instances: [],
+      instancesAreAuthoritative: true,
+    }, [
+      {
+        apiVersion: 'batch/v1',
+        kind: 'Job',
+        metadata: {
+          name: 'agentic-start-application-migration',
+          namespace: 'agentic-start-system',
+          labels: {
+            'app.kubernetes.io/component': 'migration',
+            'app.kubernetes.io/managed-by': 'applik8s',
+          },
+        },
+        spec: {},
+      },
+      {
+        apiVersion: 'apps/v1',
+        kind: 'Deployment',
+        metadata: {
+          name: 'agentic-start-app',
+          namespace: 'agentic-start-system',
+          labels: {
+            'app.kubernetes.io/component': 'application',
+          },
+        },
+        spec: {},
+      },
+      {
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: {
+          name: 'agentic-start-app',
+          namespace: 'agentic-start-system',
+          labels: {
+            'app.kubernetes.io/managed-by': 'applik8s',
+          },
+        },
+        spec: {},
+      },
+    ], 'agentic-start');
+
+    const resources = (artifacts.resources[0]?.spec as {
+      resources: Array<{
+        id?: string;
+        readyWhen?: readonly string[];
+        template?: {
+          kind?: string;
+          metadata?: {
+            annotations?: Record<string, string>;
+            labels?: Record<string, string>;
+          };
+        };
+      }>;
+    }).resources;
+    const migration = resources.find((resource) =>
+      resource.template?.kind === 'Job');
+    const deployment = resources.find((resource) =>
+      resource.template?.kind === 'Deployment');
+    const service = resources.find((resource) =>
+      resource.template?.kind === 'Service');
+    const dependencyValues = (entry: typeof deployment) =>
+      Object.entries(entry?.template?.metadata?.annotations ?? {})
+        .filter(([key]) => key.startsWith('typekro.dev/depends-on-'))
+        .map(([, value]) => value);
+
+    expect(migration?.id).toEqual(expect.any(String));
+    expect(dependencyValues(deployment)).toContain(
+      `\${string(${migration?.id}.status.succeeded)}`,
+    );
+    expect(
+      deployment?.template?.metadata?.labels?.['app.kubernetes.io/managed-by'],
+    ).toBe('applik8s');
+    expect(migration?.readyWhen).toEqual([
+      `\${${migration?.id}.status.succeeded == 1}`,
+    ]);
+    expect(dependencyValues(migration)).toEqual([]);
+    expect(dependencyValues(service)).toEqual([]);
   });
 
   test('projects absent optional capabilities as constant CEL status expressions', () => {

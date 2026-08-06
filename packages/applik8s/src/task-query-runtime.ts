@@ -25,7 +25,7 @@ export interface ApplicationTaskQueryRuntime {
     aliases: Readonly<Record<string, string>>,
     principal: ApplicationTaskServicePrincipal | undefined,
     metadata?: { readonly correlationId?: string; readonly causationId?: string; readonly traceparent?: string },
-  ): Readonly<Record<string, (input: object, options?: { readonly signal?: AbortSignal; readonly timeoutMs?: number }) => Promise<unknown>>>;
+  ): Readonly<Record<string, (input?: object, options?: { readonly signal?: AbortSignal; readonly timeoutMs?: number }) => Promise<unknown>>>;
 }
 
 interface ApplicationTaskQueryToken {
@@ -34,7 +34,11 @@ interface ApplicationTaskQueryToken {
   readonly query: string;
   readonly operation: 'snapshot';
   readonly inputKey: string;
-  readonly principal: { readonly id: string; readonly claims?: Readonly<Record<string, unknown>> };
+  readonly principal: {
+    readonly id: string;
+    readonly roles?: readonly string[];
+    readonly attributes?: Readonly<Record<string, unknown>>;
+  };
   readonly authorizationVersion: string;
   readonly trustedContext: Readonly<Record<string, unknown>>;
   readonly expiresAt: number;
@@ -55,6 +59,7 @@ export function createApplicationTaskQueryRuntime(options: {
     return [query.id, {
       ...query,
       input: runtimeSchema(query.inputSchema, `${query.id}.input`),
+      emptyObjectInput: isEmptyObjectInputSchema(query.inputSchema),
       output: runtimeSchema(query.outputSchema, `${query.id}.output`),
     }] as const;
   }));
@@ -66,8 +71,12 @@ export function createApplicationTaskQueryRuntime(options: {
       return Object.freeze(Object.fromEntries(Object.entries(aliases).map(([alias, queryId]) => {
         const contract = queries.get(queryId);
         if (!contract) throw new Error(`applik8s-task-query-undeclared: ${alias}`);
-        return [alias, async (rawInput: object, invokeOptions: { readonly signal?: AbortSignal; readonly timeoutMs?: number } = {}) => {
-          const input = validate(contract.input, rawInput, `${contract.id}.input`);
+        return [alias, async (rawInput?: object, invokeOptions: { readonly signal?: AbortSignal; readonly timeoutMs?: number } = {}) => {
+          const input = validate(
+            contract.input,
+            rawInput === undefined && contract.emptyObjectInput ? {} : rawInput,
+            `${contract.id}.input`,
+          );
           const timeoutMs = boundedTimeout(invokeOptions.timeoutMs ?? contract.timeoutMs);
           const token = encodeToken(options.cursorSecret, {
             protocol,
@@ -75,7 +84,11 @@ export function createApplicationTaskQueryRuntime(options: {
             query: contract.id,
             operation: 'snapshot',
             inputKey: queryInputKey(input),
-            principal: { id: admitted.id, ...(admitted.claims ? { claims: admitted.claims } : {}) },
+            principal: {
+              id: admitted.id,
+              ...(admitted.roles ? { roles: admitted.roles } : {}),
+              ...(admitted.attributes ? { attributes: admitted.attributes } : {}),
+            },
             authorizationVersion: admitted.authorizationVersion,
             trustedContext: admitted.trustedContext ?? {},
             expiresAt: now().getTime() + Math.min(timeoutMs + 5_000, maximumTokenLifetimeMs),
@@ -115,7 +128,15 @@ export function verifyApplicationTaskQueryAdmission(options: {
   readonly query: string;
   readonly input: unknown;
   readonly now?: Date;
-}): { readonly principal: { readonly id: string; readonly claims?: Readonly<Record<string, unknown>> }; readonly authorizationVersion: string; readonly trustedContext: Readonly<Record<string, unknown>> } | undefined {
+}): {
+  readonly principal: {
+    readonly id: string;
+    readonly roles?: readonly string[];
+    readonly attributes?: Readonly<Record<string, unknown>>;
+  };
+  readonly authorizationVersion: string;
+  readonly trustedContext: Readonly<Record<string, unknown>>;
+} | undefined {
   assertSecret(options.cursorSecret);
   const encoded = options.request.headers.get('x-applik8s-task-query');
   if (!encoded) return undefined;
@@ -176,6 +197,14 @@ function validate<T extends object>(schema: ReturnType<typeof normalizeSchema<T>
 
 function runtimeSchema(schema: JsonObject, name: string) {
   return normalizeSchema<object>({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: name }, schema }, name);
+}
+
+function isEmptyObjectInputSchema(schema: JsonObject): boolean {
+  if (schema.type !== 'object') return false;
+  const properties = schema.properties;
+  const required = schema.required;
+  return (!properties || (typeof properties === 'object' && !Array.isArray(properties) && Object.keys(properties).length === 0))
+    && (!Array.isArray(required) || required.length === 0);
 }
 
 function boundedTimeout(value: number): number {

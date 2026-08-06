@@ -1,0 +1,16 @@
+import { agenticProfiles } from '@applik8s/start-agentic';
+import { application } from './app';
+
+export const {
+  database,
+  analytics,
+  eventLog,
+  objects,
+  search,
+  workflows,
+  inference,
+  identity,
+  payments,
+  capacity,
+  host,
+} = application.include(agenticProfiles);

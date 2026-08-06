@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/runtime-s3",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "S3-compatible object storage runtime for Applik8s workloads.",
   "license": "Apache-2.0",
   "type": "module",
@@ -18,11 +18,12 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.6.0",
+    "@applik8s/applik8s": "0.7.0",
     "@aws-sdk/client-s3": "^3.1075.0",
     "@aws-sdk/s3-request-presigner": "3.1075.0"
   }

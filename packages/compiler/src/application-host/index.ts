@@ -2,7 +2,12 @@
 import { createHash } from 'node:crypto';
 import { access, copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import type { ApplicationGraph, ApplicationProviderNode, JsonObject } from '@applik8s/core';
+import {
+  type ApplicationGraph,
+  type ApplicationProviderNode,
+  type JsonObject,
+  normalizeApplicationGraph,
+} from '@applik8s/core';
 import { applicationGraphNumberValue, applicationGraphStringValue } from '../application-installation-values.js';
 
 export interface GeneratedApplicationHostResource {
@@ -25,6 +30,60 @@ export interface ApplicationWebArtifactManifest {
   readonly digest: string;
   readonly entrypoint?: string;
   readonly artifacts: readonly { readonly path: string; readonly bytes: number; readonly digest: string }[];
+}
+
+/**
+ * A successful Vite/Start server build is itself the user's request to run
+ * that web application. Preserve the authored graph while contributing the
+ * compiler-owned host provider only when no advanced host was selected.
+ */
+export async function applicationGraphWithInferredApplicationHost(
+  graph: ApplicationGraph,
+  entrypoint: string,
+): Promise<ApplicationGraph> {
+  if (
+    graph.nodes.some(
+      (node) =>
+        node.kind === 'provider'
+        && node.interface === 'ApplicationHost',
+    )
+  ) {
+    return graph;
+  }
+  const manifestPath = await findStartArtifactManifest(
+    dirname(resolve(entrypoint)),
+  );
+  if (!manifestPath) return graph;
+  const manifest = validateWebArtifactManifest(
+    JSON.parse(await readFile(manifestPath, 'utf8')),
+  );
+  if (manifest.target !== 'server' || !manifest.entrypoint) {
+    throw new Error(
+      'Inferred ApplicationHost requires the executable server artifact emitted by the Applik8s Vite adapter.',
+    );
+  }
+  const name = `${graph.metadata.name}-app`;
+  const provider: ApplicationProviderNode<'ApplicationHost'> = {
+    id: 'provider.ApplicationHost',
+    kind: 'provider',
+    name: 'ApplicationHost',
+    stability: 'stable',
+    interface: 'ApplicationHost',
+    implementation: 'kubernetes-application-host',
+    config: {
+      host: {
+        kind: 'kubernetes-application-host',
+        name,
+        namespace: graph.metadata.namespace ?? 'default',
+        replicas: 1,
+        port: 3000,
+      },
+    },
+  };
+  return normalizeApplicationGraph({
+    ...graph,
+    nodes: [...graph.nodes, provider],
+  });
 }
 
 export async function emitGeneratedApplicationHost(options: {
@@ -71,6 +130,8 @@ export async function emitGeneratedApplicationHost(options: {
     limits: { memory: '256Mi', ...objectValue(resources.limits) },
   };
   const objectStorageEnvironment = applicationHostObjectStorageEnvironment(options.graph, namespace);
+  const identityDatabaseEnvironment =
+    applicationHostIdentityDatabaseEnvironment(options.graph, namespace);
   const internalOperationEnvironment = applicationHostInternalOperationEnvironment(
     options.graph,
     namespace,
@@ -157,10 +218,12 @@ export async function emitGeneratedApplicationHost(options: {
               command: ['node', `/app/${manifest.entrypoint}`],
               env: [
                 { name: 'PORT', value: String(port) },
+                { name: 'APPLIK8S_APPLICATION_NAME', value: options.graph.metadata.name },
                 { name: 'APPLIK8S_NAMESPACE', value: namespace },
                 { name: 'APPLIK8S_WEB_ARTIFACT_DIGEST', value: manifest.digest },
                 { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: cursorSecretName, key: cursorSecretKey } } },
                 ...internalOperationEnvironment,
+                ...identityDatabaseEnvironment,
                 ...objectStorageEnvironment,
               ],
               ports: [{ name: 'http', containerPort: port }],
@@ -204,6 +267,94 @@ export async function emitGeneratedApplicationHost(options: {
   return emitted;
 }
 
+function applicationHostIdentityDatabaseEnvironment(
+  graph: ApplicationGraph,
+  hostNamespace: string,
+): readonly Readonly<Record<string, unknown>>[] {
+  const providerIds = new Set<string>();
+  for (const node of graph.nodes) {
+    if (node.kind !== 'provider' || node.interface !== 'IdentityProvider') {
+      continue;
+    }
+    const runtime = objectValue(node.config?.identityRuntime);
+    const database = objectValue(runtime.databaseProvider);
+    const nodeId = stringValue(database.nodeId);
+    if (nodeId) providerIds.add(nodeId);
+  }
+  if (providerIds.size === 0) return [];
+  if (providerIds.size !== 1) {
+    throw new Error(
+      `ApplicationHost identity admission resolves ${providerIds.size} TransactionalDatabase dependencies; exactly one is required.`,
+    );
+  }
+  const providerId = [...providerIds][0]!;
+  const consumerIds = new Set(
+    graph.providerRequirements
+      .filter(
+        (requirement) =>
+          requirement.interface === 'TransactionalDatabase'
+          && requirement.provider?.nodeId === providerId,
+      )
+      .map((requirement) => requirement.consumer.nodeId),
+  );
+  const runtimes = new Map<
+    string,
+    {
+      readonly connectionEnvName: string;
+      readonly secretName: string;
+      readonly secretNamespace?: string;
+      readonly secretKey: string;
+    }
+  >();
+  for (const node of graph.nodes) {
+    if (node.kind !== 'model' || !consumerIds.has(node.id) || !node.runtime) {
+      continue;
+    }
+    const runtime = node.runtime;
+    const current = {
+      connectionEnvName: runtime.connectionEnvName,
+      secretName: runtime.secretName,
+      ...(runtime.secretNamespace
+        ? { secretNamespace: runtime.secretNamespace }
+        : {}),
+      secretKey: runtime.secretKey,
+    };
+    const previous = runtimes.get(current.connectionEnvName);
+    if (previous && JSON.stringify(previous) !== JSON.stringify(current)) {
+      throw new Error(
+        `ApplicationHost identity admission resolves incompatible database bindings for ${current.connectionEnvName}.`,
+      );
+    }
+    runtimes.set(current.connectionEnvName, current);
+  }
+  if (runtimes.size === 0) {
+    throw new Error(
+      `ApplicationHost identity admission depends on ${providerId}, but no bound model exposes its runtime connection.`,
+    );
+  }
+  return [...runtimes.values()]
+    .sort((left, right) =>
+      left.connectionEnvName.localeCompare(right.connectionEnvName))
+    .map((runtime) => {
+      const secretNamespace = runtime.secretNamespace ?? hostNamespace;
+      if (secretNamespace !== hostNamespace) {
+        throw new Error(
+          `ApplicationHost identity admission Secret ${runtime.secretName} is in ${secretNamespace}, but the host runs in ${hostNamespace}.`,
+        );
+      }
+      return {
+        name: runtime.connectionEnvName,
+        valueFrom: {
+          secretKeyRef: {
+            name: runtime.secretName,
+            key: runtime.secretKey,
+            optional: false,
+          },
+        },
+      };
+    });
+}
+
 function applicationHostInternalOperationEnvironment(
   graph: ApplicationGraph,
   hostNamespace: string,
@@ -239,7 +390,18 @@ function applicationHostInternalOperationEnvironment(
 function applicationSharedGatewayCursorSecret(graph: ApplicationGraph, namespace: string): { readonly name: string; readonly key: string } | undefined {
   const candidates = new Map<string, { readonly name: string; readonly key: string }>();
   for (const node of graph.nodes) {
-    if (node.kind !== 'gateway' || node.materialization !== 'generatedDeployment' || !node.deployment || !node.cursorSecret) continue;
+    if (
+      node.kind !== 'gateway'
+      || (node.materialization !== 'generatedDeployment'
+        && node.materialization !== 'runtimeOnly')
+      || !node.deployment
+      || !node.cursorSecret
+    ) continue;
+    // Internal placement/tool receivers are separate workload authorities,
+    // not browser context authorities. Counting them makes a host with one
+    // public gateway appear ambiguous and gives agent invocations a different
+    // durable principal scope from browser queries.
+    if (node.visibility === 'internal') continue;
     const gatewayNamespace = applicationGraphStringValue(node.cursorSecret.namespace ?? node.deployment.namespace);
     const name = applicationGraphStringValue(node.cursorSecret.name);
     const key = applicationGraphStringValue(node.cursorSecret.key);
@@ -268,6 +430,36 @@ function applicationHostObjectStorageEnvironment(
     { name: 'APPLIK8S_OBJECT_STORAGE_REGION', value: region },
     { name: 'APPLIK8S_OBJECT_STORAGE_FORCE_PATH_STYLE', value: environmentScalar(config.forcePathStyle, 'false') },
   ];
+  const provisioning = objectValue(config.provisioning);
+  const objectBucketClaim =
+    !stringValue(provisioning.kind)
+    || stringValue(provisioning.kind) === 'object-bucket-claim';
+  const connectionConfigMapName =
+    objectBucketClaim
+      ? stringValue(provisioning.claimName)
+        ?? stringValue(config.name)
+        ?? stringValue(objectValue(config.credentialsSecret).name)
+        ?? bucket
+      : undefined;
+  if (connectionConfigMapName && config.endpoint === undefined) {
+    environment.push(
+      configMapEnvironment(
+        'APPLIK8S_OBJECT_STORAGE_HOST',
+        connectionConfigMapName,
+        'BUCKET_HOST',
+      ),
+      configMapEnvironment(
+        'APPLIK8S_OBJECT_STORAGE_PORT',
+        connectionConfigMapName,
+        'BUCKET_PORT',
+      ),
+      {
+        name: 'APPLIK8S_OBJECT_STORAGE_ENDPOINT',
+        value:
+          'http://$(APPLIK8S_OBJECT_STORAGE_HOST):$(APPLIK8S_OBJECT_STORAGE_PORT)',
+      },
+    );
+  }
   for (const [name, value] of [
     ['APPLIK8S_OBJECT_STORAGE_ENDPOINT', config.endpoint],
     ['APPLIK8S_OBJECT_STORAGE_PREFIX', config.prefix],
@@ -293,6 +485,22 @@ function applicationHostObjectStorageEnvironment(
 
 function secretEnvironment(name: string, secretName: string, key: string, optional: boolean): Readonly<Record<string, unknown>> {
   return { name, valueFrom: { secretKeyRef: { name: secretName, key, ...(optional ? { optional: true } : {}) } } };
+}
+
+function configMapEnvironment(
+  name: string,
+  configMapName: string,
+  key: string,
+): Readonly<Record<string, unknown>> {
+  return {
+    name,
+    valueFrom: {
+      configMapKeyRef: {
+        name: configMapName,
+        key,
+      },
+    },
+  };
 }
 
 function environmentScalar(value: unknown, fallback: string): string {

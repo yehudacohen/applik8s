@@ -27,9 +27,12 @@ import {
 // instead of leaking a new PID-shaped CRD on every invocation.
 const applicationName =
   process.env.APPLIK8S_E2E_GUESTBOOK_NAME ?? "guestbook-start-live-v2";
+const liveRunSuffix = `${process.pid}-${randomUUID().slice(0, 8)}`;
 const namespace =
   process.env.APPLIK8S_E2E_GUESTBOOK_NAMESPACE ??
-  `applik8s-v06-guestbook-${process.pid}`;
+  `applik8s-v06-guestbook-${liveRunSuffix}`;
+const controlPlaneNamespace =
+  process.env.APPLIK8S_E2E_CONTROL_NAMESPACE ?? "typekro-system";
 const context = process.env.APPLIK8S_E2E_CONTEXT ?? "orbstack";
 const nodePort =
   process.env.APPLIK8S_E2E_GUESTBOOK_NODE_PORT ??
@@ -37,8 +40,9 @@ const nodePort =
 const exampleRoot = join(process.cwd(), "examples/guestbook-start");
 const hostName = `${applicationName}-web`;
 const operatorNames = [
-  "publish-new-guestbook-entry",
-  "republish-guestbook-entry",
+  // All Resource.on.* handlers share the single inferred resource controller.
+  // Standalone per-handler processors were removed with app.on(...).
+  "guest-book-entry-controller",
 ] as const;
 const publishedMessage = `Generated GuestBook golden path ${Date.now()}`;
 const restartMessage = `Restart-resumed GuestBook golden path ${Date.now()}`;
@@ -70,7 +74,7 @@ describeLive("v0.6 GuestBook Start golden path on OrbStack", () => {
 kind: ${pascalCase(applicationName)}
 metadata:
   name: ${applicationName}
-  namespace: ${namespace}
+  namespace: ${controlPlaneNamespace}
 spec: {}
 `,
     );
@@ -86,6 +90,10 @@ spec: {}
         context,
         "--instance",
         instancePath,
+        // This fixed-name live fixture intentionally exercises upgrade from
+        // earlier generated schemas. The acknowledgement is scoped to this
+        // deployment and is not persisted as an unsafe project default.
+        "--allow-breaking-changes",
       ],
       exampleRoot,
     );

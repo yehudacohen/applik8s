@@ -10,11 +10,13 @@
   "compatibility": {
     "tanstackCli": "0.70.1",
     "tanstackStart": "1.168.28",
+    "tanstackRouter": "1.170.18",
+    "tanstackRouterCli": "1.167.19",
     "tanstackAI": "0.42.0",
     "tanstackAIClient": "0.22.1",
     "tanstackAIReact": "0.18.1",
     "agUi": "0.0.52",
-    "typekro": "0.32.0"
+    "typekro": "0.33.5"
   },
   "items": [
     {
@@ -43,13 +45,94 @@
       ]
     },
     {
+      "id": "function-native-callback-discovery",
+      "owner": "compiler",
+      "state": "complete",
+      "evidence": [
+        "packages/compiler/test/entrypoint-application-callbacks.vertical.test.ts",
+        "packages/compiler/test/compiler-artifacts.vertical.test.ts",
+        "packages/compiler/test/application-workflows.vertical.test.ts",
+        "packages/applik8s/test/integrated-typekro.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "function-native-model-transactions",
+      "owner": "applik8s",
+      "state": "complete",
+    "evidence": [
+      "packages/applik8s/test/native-model-application.vertical.test.ts",
+      "packages/applik8s/test/application-reactive.vertical.test.ts",
+      "packages/applik8s/test/transactional-database-postgres-runtime.vertical.test.ts",
+      "packages/compiler/test/entrypoint-application-callbacks.vertical.test.ts",
+      "packages/compiler/test/application-reactive.vertical.test.ts",
+      "packages/applik8s/test/application-http.vertical.test.ts",
+      "packages/compiler/test/application-http.vertical.test.ts",
+      "packages/applik8s/test/application-workflows.vertical.test.ts",
+      "packages/compiler/test/application-workflows.vertical.test.ts",
+      "packages/e2e/test/function-native-generated-worker-live.e2e.test.ts",
+      "scripts/run-v07-function-native-worker-live.sh",
+      "packages/e2e/test/function-native-http-live.e2e.test.ts",
+      "scripts/run-v07-function-native-http-live.sh",
+      "packages/type-tests/src/public-api-inference.ts",
+      "scripts/package-consumer-smoke.mjs"
+    ]
+    },
+    {
+      "id": "frozen-stream-batches",
+      "owner": "applik8s",
+      "state": "complete",
+      "evidence": [
+        "packages/applik8s/test/application-reactive.vertical.test.ts",
+        "packages/applik8s/test/stream-processor-runtime.vertical.test.ts",
+        "packages/compiler/test/application-reactive.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "typed-durable-signals",
+      "owner": "applik8s",
+      "state": "complete",
+      "evidence": [
+        "packages/applik8s/test/application-signals.vertical.test.ts",
+        "packages/applik8s/test/signal-runtime.vertical.test.ts",
+        "packages/applik8s/test/signal-gateway.vertical.test.ts",
+        "packages/applik8s/test/query-gateway.vertical.test.ts",
+        "packages/compiler/test/application-reactive.vertical.test.ts",
+        "packages/e2e/test/signal-postgres-live.e2e.test.ts",
+        "scripts/run-v07-signal-postgres-live.sh",
+        "examples/chirp-start/src/automation/workflow.ts",
+        "scripts/check-chirp-start-build.mjs"
+      ]
+    },
+    {
+      "id": "resource-workflow-tracking",
+      "owner": "applik8s",
+      "state": "complete",
+      "evidence": [
+        "packages/sdk/test/handler-dispatch.vertical.test.ts",
+        "packages/applik8s/test/application-workflows.vertical.test.ts",
+        "packages/runtime-hatchet/test/runtime.vertical.test.ts",
+        "packages/compiler/test/kubernetes-yaml.vertical.test.ts",
+        "packages/e2e/test/workflow-hatchet-live.e2e.test.ts"
+      ]
+    },
+    {
+      "id": "single-definition-model-authoring",
+      "owner": "applik8s",
+      "state": "complete",
+      "evidence": [
+        "packages/applik8s/test/native-model-application.vertical.test.ts",
+        "packages/applik8s/test/native-models.vertical.test.ts",
+        "packages/start-agentic/test/generator.vertical.test.ts"
+      ]
+    },
+    {
       "id": "ai-tanstack-contract",
       "owner": "ai-tanstack",
       "state": "complete",
       "evidence": [
         "packages/ai-tanstack/test/adapters.vertical.test.ts",
         "packages/runtime-ai/test/runtime.vertical.test.ts",
-        "packages/applik8s/test/application-ai.vertical.test.ts"
+        "packages/compiler/test/application-agents.vertical.test.ts"
       ]
     },
     {
@@ -69,7 +152,7 @@
       "evidence": [
         "packages/mcp/test/server.vertical.test.ts",
         "packages/mcp/test/client.vertical.test.ts",
-        "packages/applik8s/test/application-mcp.vertical.test.ts"
+        "packages/compiler/test/application-mcp.vertical.test.ts"
       ]
     },
     {
@@ -84,7 +167,7 @@
     {
       "id": "maintained-modules-and-operations-ui",
       "owner": "start-agentic",
-      "state": "partial",
+      "state": "complete",
       "evidence": [
         "packages/conversations/src/index.ts",
         "packages/approvals/src/index.ts",
@@ -93,83 +176,157 @@
         "packages/usage/src/index.ts",
         "packages/operations-ui/src/index.ts",
         "packages/operations-ui/src/react.ts",
-        "packages/operations-ui/test/module.vertical.test.ts"
+        "packages/operations-ui/test/module.vertical.test.ts",
+        "packages/applik8s/test/drizzle-model-authoring.vertical.test.ts",
+        "packages/start-agentic/test/generator.vertical.test.ts"
       ]
     },
     {
       "id": "agentic-start-generator",
       "owner": "start-agentic",
-      "state": "partial",
+      "state": "complete",
       "evidence": [
         "packages/start-agentic/src/generator.ts",
-        "packages/start-agentic/test/generator.vertical.test.ts"
+        "packages/start-agentic/src/definition.ts",
+        "packages/start-agentic/src/templates/product/README.md",
+        "packages/start-agentic/src/templates/product/test/application.test.ts.tmpl",
+        "packages/start-agentic/src/templates/research/README.md",
+        "packages/start-agentic/src/react.ts",
+        "packages/start-agentic/test/generator.vertical.test.ts",
+        "packages/start-agentic/test/react.vertical.test.ts",
+        "scripts/package-consumer-smoke.mjs"
       ]
     },
     {
       "id": "starter-profile",
       "owner": "start-agentic",
-      "state": "partial",
-      "evidence": ["packages/start-agentic/src/generator.ts"]
+      "state": "complete",
+      "evidence": [
+        "packages/start-agentic/src/generator.ts",
+        "packages/start-agentic/test/profiles.vertical.test.ts",
+        "scripts/check-v07-profile-graphs.ts",
+        "benchmarks/v0.7/profile-graphs.json"
+      ]
     },
     {
       "id": "dedicated-profile",
       "owner": "start-agentic",
-      "state": "partial",
-      "evidence": ["packages/start-agentic/src/generator.ts"]
+      "state": "complete",
+      "evidence": [
+        "packages/start-agentic/src/generator.ts",
+        "packages/start-agentic/test/profiles.vertical.test.ts",
+        "scripts/check-v07-profile-graphs.ts",
+        "benchmarks/v0.7/profile-graphs.json"
+      ]
     },
     {
       "id": "external-profile",
       "owner": "start-agentic",
-      "state": "partial",
-      "evidence": ["packages/start-agentic/src/generator.ts"]
+      "state": "complete",
+      "evidence": [
+        "packages/start-agentic/src/generator.ts",
+        "packages/start-agentic/test/profiles.vertical.test.ts",
+        "scripts/check-v07-profile-graphs.ts",
+        "benchmarks/v0.7/profile-graphs.json"
+      ]
     },
     {
-      "id": "vasco-acceptance",
+      "id": "chirp-acceptance",
       "owner": "start-agentic",
-      "state": "pending",
-      "evidence": []
+      "state": "complete",
+      "evidence": [
+        "examples/chirp-start/src/automation/workflow.ts",
+        "scripts/check-chirp-start-build.mjs",
+        "packages/e2e/browser/chirp-golden-path.e2e.test.ts",
+        "scripts/write-chirp-browser-evidence.mjs",
+        "scripts/deploy-v06-chirp-twice.mjs"
+      ]
+    },
+    {
+      "id": "guestbook-acceptance",
+      "owner": "start-agentic",
+      "state": "complete",
+      "evidence": [
+        "examples/guestbook-start/src/models.ts",
+        "scripts/check-guestbook-start-build.mjs",
+        "packages/e2e/test/guestbook-start-live.e2e.test.ts"
+      ]
     },
     {
       "id": "agentic-identity-acceptance",
       "owner": "start-agentic",
-      "state": "pending",
-      "evidence": []
+      "state": "complete",
+      "evidence": [
+        "docs/v07-identity-acceptance.json",
+        "scripts/check-v07-identity-acceptance.mjs",
+        "scripts/check-identity-start-build.mjs",
+        "examples/identity-start/src/application.ts"
+      ]
     },
     {
       "id": "stimp-behavioral-parity",
       "owner": "start-agentic",
-      "state": "partial",
-      "evidence": ["docs/v07-baseline-and-contract-inventory.md"]
+      "state": "complete",
+      "evidence": [
+        "docs/v07-baseline-and-contract-inventory.md",
+        "docs/v07-agentic-start-stimp-capability-map.md",
+        "docs/v07-stimp-parity.json",
+        "scripts/check-v07-stimp-parity.mjs",
+        "scripts/run-agentic-start-starter-live.ts",
+        "packages/e2e/browser/agentic-start-golden-path.e2e.test.ts",
+        "packages/start-agentic/test/stimp-parity.vertical.test.ts",
+        "packages/start-agentic/test/generator.vertical.test.ts",
+        "scripts/package-consumer-smoke.mjs"
+      ]
     },
     {
       "id": "packed-agentic-start-consumer",
       "owner": "release",
-      "state": "pending",
-      "evidence": []
+      "state": "complete",
+      "evidence": ["scripts/package-consumer-smoke.mjs"]
     },
     {
       "id": "typekro-provider-qualification",
       "owner": "deployment",
-      "state": "partial",
-      "evidence": ["docs/typekro-golden-path.md"]
+      "state": "complete",
+      "evidence": [
+        "docs/typekro-golden-path.md",
+        "scripts/check-typekro-qualification.mjs",
+        "packages/deployment-typekro/test/deployment-typekro.vertical.test.ts",
+        "packages/deployment-alchemy/test/deployment-alchemy-backend.vertical.test.ts"
+      ]
     },
     {
       "id": "integrated-orbstack-lifecycle",
       "owner": "e2e",
-      "state": "pending",
-      "evidence": []
+      "state": "complete",
+      "evidence": [
+        "packages/e2e/test/deployment-alchemy-lifecycle.e2e.test.ts",
+        "scripts/check-v07-live-evidence.ts",
+        "scripts/v07-release-evidence-contract.ts",
+        "docs/release-evidence-v0.7-lifecycle.md"
+      ]
     },
     {
       "id": "browser-security-matrix",
       "owner": "e2e",
-      "state": "pending",
-      "evidence": []
+      "state": "complete",
+      "evidence": [
+        "docs/v07-browser-security.json",
+        "scripts/check-v07-browser-security.mjs",
+        "packages/e2e/browser/chirp-golden-path.e2e.test.ts"
+      ]
     },
     {
       "id": "v07-performance-history",
       "owner": "performance",
-      "state": "pending",
-      "evidence": []
+      "state": "complete",
+      "evidence": [
+        "benchmarks/v0.7/budgets.json",
+        "benchmarks/v0.7/baseline.json",
+        "scripts/benchmark-v07.ts",
+        "scripts/check-v07-performance-history.mjs"
+      ]
     },
     {
       "id": "multi-cluster-qualification",

@@ -1,4 +1,7 @@
 import type {
+  ApplicationRequestAdmission,
+} from '@applik8s/core';
+import type {
   ApplicationIdentityAccountView,
   ApplicationIdentityFlowView,
   ApplicationIdentityMfaEnrollmentView,
@@ -13,11 +16,13 @@ import { applicationIdentityHttpProtocol } from './client.js';
 import type { ApplicationPreAuthenticationFlowKind } from './contracts.js';
 
 export type {
+  ApplicationOAuthIdentityReferenceOptions,
   ApplicationOAuthResourceAdmissionContext,
   ApplicationOAuthResourceAdmissionOptions,
 } from './resource-admission.js';
 export {
   ApplicationOAuthResourceAdmissionError,
+  applicationOAuthIdentityReference,
   createApplicationOAuthResourceAdmission,
 } from './resource-admission.js';
 
@@ -84,6 +89,52 @@ export interface ApplicationIdentityHttpHandlerOptions {
     error: unknown,
     context: ApplicationIdentityHttpContext,
   ) => ApplicationIdentityPublicError | Promise<ApplicationIdentityPublicError>;
+}
+
+export interface ApplicationIdentitySessionHandlerOptions {
+  readonly authenticate: (
+    request: Request,
+  ) => ApplicationRequestAdmission | Promise<ApplicationRequestAdmission>;
+}
+
+/**
+ * Projects request admission into the deliberately small public session
+ * contract. Every nested field is reconstructed so provider-native claims,
+ * trusted context, roles, and authority internals cannot cross accidentally.
+ */
+export function createApplicationIdentitySessionHandler(
+  options: ApplicationIdentitySessionHandlerOptions,
+): (request: Request) => Promise<Response> {
+  return async (request) => {
+    try {
+      const admission = await options.authenticate(request);
+      const principal = admission?.principal;
+      if (!principal) return json(anonymousApplicationIdentitySession());
+      return json({
+        protocol: applicationIdentityHttpProtocol,
+        kind: 'session',
+        authenticated: true,
+        principal: {
+          id: principal.id,
+          identity: {
+            id: principal.identity.id,
+            kind: principal.identity.kind,
+            issuer: principal.identity.issuer,
+            subject: principal.identity.subject,
+          },
+          kind: principal.kind,
+          authenticationMethod: principal.authenticationMethod,
+          audience: [...principal.audience],
+          admittedAt: principal.admittedAt,
+          ...(principal.expiresAt ? { expiresAt: principal.expiresAt } : {}),
+          ...(principal.sessionId ? { sessionId: principal.sessionId } : {}),
+        },
+        assurance: [],
+      });
+    } catch {
+      return json(anonymousApplicationIdentitySession());
+    }
+  };
 }
 
 /** Framework-neutral Request/Response adapter over ordinary application identity operations. */
@@ -183,6 +234,15 @@ export function createApplicationIdentityHttpHandler(
         : defaultPublicError(error);
       return json(publicValue, statusFor(publicValue));
     }
+  };
+}
+
+function anonymousApplicationIdentitySession(): ApplicationIdentitySessionView {
+  return {
+    protocol: applicationIdentityHttpProtocol,
+    kind: 'session',
+    authenticated: false,
+    assurance: [],
   };
 }
 

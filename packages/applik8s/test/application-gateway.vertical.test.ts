@@ -76,6 +76,8 @@ describe('framework-neutral application gateway', () => {
 
 function relationalContext(): ApplicationRelationalContext {
   return {
+    admittedContext: { values: {}, digestSecret: 'application-gateway-test-context-secret' },
+    trustedContext: {},
     database() { throw new Error('not used'); },
     async run(_binding, handler) { return handler(); },
     async snapshot(_binding, handler) { return { value: await handler(), sequence: 1 }; },

@@ -28,7 +28,7 @@ const CardsForOrganization = nativeQueryApplication.query('cards.for-organizatio
   database: Database,
   context: [OrganizationId],
   reads: [Card],
-  authorize: ({ principal, input }) => principal.id === input.organizationId,
+  authorize: ({ principal, input }) => principal.identity.subject === input.organizationId,
   run: async ({ context, input }) => context.database(Database).select().from(Card).where(eq(Card.organizationId, input.organizationId)),
 });
 

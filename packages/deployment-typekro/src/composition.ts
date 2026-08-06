@@ -117,7 +117,7 @@ export function assembleApplicationTypeKroComposition<
     );
   }
   const pullSecretResource = pullSecretResources[0];
-  const artifactSubstitutions = artifactSubstitutionIndex(graph);
+  const artifactSubstitutions = artifactSubstitutionIndex(graph, root.id);
   const remoteArtifactBinding = graph.nodes.some(
     (node) =>
       node.kind === "externalProvider" &&
@@ -385,7 +385,8 @@ function generatedSecretReferenceIndex(
       node.provider.interface !== "Secret" ||
       node.provider.implementation !==
         "alchemy-kubernetes-generated-secret" ||
-      node.spec.resourceType !== "kubernetesGeneratedSecret"
+      node.spec.resourceType !== "kubernetesGeneratedSecret" ||
+      node.spec.referenceMode === "staticIdentity"
     ) {
       continue;
     }

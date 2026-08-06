@@ -531,6 +531,25 @@ describe('TypeKro adapter operation targets', () => {
       expect(statusSchema?.properties).toMatchObject({
         observedGeneration: { type: 'integer', format: 'int64' },
         conditions: expect.objectContaining({ type: 'array', 'x-kubernetes-list-type': 'map', 'x-kubernetes-list-map-keys': ['type'] }),
+        applik8s: {
+          type: 'object',
+          properties: {
+            trackedExecutions: {
+              type: 'object',
+              additionalProperties: expect.objectContaining({
+                type: 'object',
+                required: expect.arrayContaining([
+                  'resourceUid',
+                  'resourceGeneration',
+                  'workflow',
+                  'workflowRevision',
+                  'run',
+                  'phase',
+                ]),
+              }),
+            },
+          },
+        },
       });
       expect(JSON.stringify(statusSchema)).toContain('"True"');
       expect(JSON.stringify(statusSchema)).toContain('"False"');

@@ -11,6 +11,7 @@ import {
   CounterStore,
   CredentialStore,
   Database,
+  defineApplicationProvider,
   DnsPublication,
   EventLog,
   EventSource,
@@ -20,9 +21,14 @@ import {
   ObjectStorage,
   Queue,
   Secret,
+  StructuredGeneration,
   TransactionalDatabase,
   WorkflowEngine,
 } from '@applik8s/applik8s';
+import {
+  applicationEventLogImplementation,
+  applicationWorkflowEngineImplementation,
+} from '../src/application-providers';
 import {
   type ApplicationProviderNode,
   validateApplicationGraph,
@@ -35,8 +41,227 @@ const Installation = type({
   name: 'string',
   profile: "'starter' | 'dedicated' | 'external'",
 });
+const ProfileConnectionInstallation = type({
+  name: 'string',
+  profile: "'starter' | 'dedicated' | 'external'",
+  providers: {
+    database: {
+      clusterName: 'string',
+      namespace: 'string',
+      database: 'string',
+      connectionSecretName: 'string',
+      connectionSecretKey: 'string',
+    },
+  },
+});
+
+function graphExpression(value: unknown): string {
+  if (typeof value !== 'object' || value === null) {
+    throw new TypeError('Expected a graph-aware CEL expression.');
+  }
+  const expression = Reflect.get(value, 'expression');
+  if (typeof expression !== 'string') {
+    throw new TypeError('Expected a graph-aware CEL expression string.');
+  }
+  return expression;
+}
 
 describe('application deployment profiles', () => {
+  it('qualifies extension providers through the same exhaustive profile API', () => {
+    const application = app('profile-structured-generation', {
+      spec: Installation,
+      status: type({ ready: 'boolean' }),
+    });
+    const ContentGeneration = StructuredGeneration.named('content');
+
+    application
+      .profile(application.installation.spec, 'profile')
+      .provide(ContentGeneration)
+      .starter(() =>
+        StructuredGeneration.deterministic({
+          output: { body: 'starter' },
+        }),
+      )
+      .dedicated(() =>
+        StructuredGeneration.http({
+          endpoint: 'https://generation.example.test/v1',
+        }),
+      )
+      .external(() =>
+        StructuredGeneration.http({
+          endpoint: 'https://external-generation.example.test/v1',
+        }),
+      )
+      .exhaustive();
+
+    const generation = application.inject(ContentGeneration);
+    application.provide(StructuredGeneration, generation);
+
+    const provider = applicationGraphFor(application.composition)?.nodes.find(
+      (node) =>
+        node.id === 'provider.structured-generation.v1alpha1.content',
+    );
+    expect(provider).toMatchObject({
+      id: 'provider.structured-generation.v1alpha1.content',
+      implementation: 'application-provider-selection',
+      config: {
+        qualification: {
+          capability: 'StructuredGeneration',
+          name: 'content',
+        },
+        profile: {
+          selectedBy: 'schema.spec.profile',
+          branches: expect.arrayContaining([
+            expect.objectContaining({
+              variant: 'starter',
+              implementation: 'structured-generation-deterministic',
+            }),
+            expect.objectContaining({
+              variant: 'dedicated',
+              implementation: 'structured-generation-http',
+            }),
+            expect.objectContaining({
+              variant: 'external',
+              implementation: 'structured-generation-http',
+            }),
+          ]),
+        },
+      },
+    });
+  });
+
+  it('preserves nested branch topology and reference coordinates without retaining raw secrets or shifting arrays', () => {
+    const PortableInstallation = type({
+      name: 'string',
+      profile: "'starter' | 'dedicated' | 'external'",
+      providers: {
+        objects: {
+          deviceStorageClassName: 'string',
+        },
+      },
+    });
+    interface FixtureProvider {
+      readonly kind: 'fixture';
+      readonly topology: {
+        readonly zones: readonly string[];
+        readonly entries: readonly unknown[];
+        readonly deviceStorageClassName: string;
+      };
+      readonly credentials: {
+        readonly password: string;
+        readonly token: string;
+        readonly secret: string;
+        readonly apiKey: string;
+        readonly privateKey: string;
+        readonly clientSecret: string;
+        readonly accessKeyId: string;
+        readonly secretAccessKey: string;
+        readonly credentialsSecret: string;
+        readonly passwordKey: string;
+        readonly credentialKey: string;
+      };
+    }
+    const Fixture = defineApplicationProvider<FixtureProvider>({
+      interface: 'FixtureProvider',
+      version: 'v1alpha1',
+      accepts: (candidate): candidate is FixtureProvider =>
+        candidate !== null
+        && typeof candidate === 'object'
+        && Reflect.get(candidate, 'kind') === 'fixture',
+    }).named('primary');
+    const application = app('profile-portable-config', {
+      spec: PortableInstallation,
+      status: type({ ready: 'boolean' }),
+    });
+    const implementation = (
+      zone: string,
+      deviceStorageClassName: string,
+    ): FixtureProvider => ({
+      kind: 'fixture',
+      topology: {
+        zones: [zone, `${zone}-secondary`],
+        entries: ['first', () => 'runtime-only', 'third'],
+        deviceStorageClassName,
+      },
+      credentials: {
+        password: 'raw-password',
+        token: 'raw-token',
+        secret: 'raw-secret',
+        apiKey: 'raw-api-key',
+        privateKey: 'raw-private-key',
+        clientSecret: 'raw-client-secret',
+        accessKeyId: 'raw-access-key',
+        secretAccessKey: 'raw-secret-access-key',
+        credentialsSecret: `${zone}-credentials`,
+        passwordKey: 'password',
+        credentialKey: 'uri',
+      },
+    });
+
+    application
+      .profile(application.installation.spec, 'profile')
+      .provide(Fixture)
+      .starter(() => implementation('starter', 'starter-block'))
+      .dedicated((spec) =>
+        implementation(
+          'dedicated',
+          spec.providers.objects.deviceStorageClassName,
+        ),
+      )
+      .external(() => implementation('external', 'external-block'))
+      .exhaustive();
+
+    const provider = applicationGraphFor(application.composition)?.nodes.find(
+      (node) =>
+        node.kind === 'provider'
+        && node.interface === 'FixtureProvider',
+    );
+    if (!provider || provider.kind !== 'provider') {
+      throw new Error('Expected the qualified FixtureProvider graph node.');
+    }
+    const branches =
+      provider.config?.profile
+      && typeof provider.config.profile === 'object'
+      && Array.isArray(Reflect.get(provider.config.profile, 'branches'))
+        ? Reflect.get(provider.config.profile, 'branches') as readonly unknown[]
+        : [];
+    const dedicated = branches.find(
+      (branch) =>
+        branch !== null
+        && typeof branch === 'object'
+        && Reflect.get(branch, 'variant') === 'dedicated',
+    );
+
+    expect(dedicated).toMatchObject({
+      config: {
+        topology: {
+          zones: ['dedicated', 'dedicated-secondary'],
+          entries: ['first', null, 'third'],
+          deviceStorageClassName:
+            '${schema.spec.providers.objects.deviceStorageClassName}',
+        },
+        credentials: {
+          credentialsSecret: 'dedicated-credentials',
+          passwordKey: 'password',
+          credentialKey: 'uri',
+        },
+      },
+    });
+    const serialized = JSON.stringify(dedicated);
+    for (const rawSecret of [
+      'raw-password',
+      'raw-token',
+      'raw-secret',
+      'raw-api-key',
+      'raw-private-key',
+      'raw-client-secret',
+      'raw-access-key',
+      'raw-secret-access-key',
+    ]) {
+      expect(serialized).not.toContain(rawSecret);
+    }
+  });
+
   it('qualifies every infrastructure capability used by exhaustive Start profiles', () => {
     const qualified = [
       IndexStore.named('search-cache'),
@@ -75,6 +300,138 @@ describe('application deployment profiles', () => {
       'CounterStore@v1alpha1:usage-counters',
       'CredentialStore@v1alpha1:provider-credentials',
     ]);
+  });
+
+  it('preserves direct EventLog and WorkflowEngine deployment configuration', () => {
+    const application = app('direct-runtime-providers');
+    application.provide(EventLog, {
+      kind: 'nats-jetstream',
+      name: 'runtime-events',
+      namespace: 'runtime-system',
+      provision: true,
+      replicas: 2,
+      storageSize: '4Gi',
+      storageClassName: 'fast-block',
+      pvcRetentionPolicy: 'delete',
+    });
+    application.provide(
+      WorkflowEngine,
+      WorkflowEngine.hatchet({
+        name: 'runtime-workflows',
+        namespace: 'runtime-system',
+        provision: true,
+        mode: 'stack',
+        apiUrl: 'http://runtime-workflows-api.runtime-system.svc:8080',
+        tokenKey: 'HATCHET_CLIENT_TOKEN',
+        dashboard: 'internal',
+      }),
+    );
+
+    const graph = applicationGraphFor(application.composition);
+    const eventLog = graph?.nodes.find(
+      (node): node is ApplicationProviderNode<'EventLog'> =>
+        node.kind === 'provider' && node.interface === 'EventLog',
+    );
+    const workflows = graph?.nodes.find(
+      (node): node is ApplicationProviderNode<'WorkflowEngine'> =>
+        node.kind === 'provider' && node.interface === 'WorkflowEngine',
+    );
+
+    expect(eventLog?.config).toMatchObject({
+      kind: 'nats-jetstream',
+      name: 'runtime-events',
+      namespace: 'runtime-system',
+      provision: true,
+      replicas: 2,
+      storageSize: '4Gi',
+      storageClassName: 'fast-block',
+      pvcRetentionPolicy: 'delete',
+    });
+    expect(workflows?.config).toMatchObject({
+      kind: 'hatchet',
+      name: 'runtime-workflows',
+      namespace: 'runtime-system',
+      provision: true,
+      mode: 'stack',
+      apiUrl: 'http://runtime-workflows-api.runtime-system.svc:8080',
+      tokenKey: 'HATCHET_CLIENT_TOKEN',
+      dashboard: 'internal',
+    });
+  });
+
+  it('normalizes optional workflow booleans before composing profile CEL', () => {
+    const workflows = applicationWorkflowEngineImplementation({
+      defaults: {},
+      providers: {
+        extensions: {
+          'WorkflowEngine@v1alpha1': {
+            kind: 'application-provider-selection',
+            selector: 'schema.spec.profile',
+            cases: {
+              starter: WorkflowEngine.hatchet({
+                name: 'starter-workflows',
+                namespace: 'workflow-system',
+              }),
+              dedicated: WorkflowEngine.hatchet({
+                name: 'dedicated-workflows',
+                namespace: 'workflow-system',
+              }),
+              external: WorkflowEngine.hatchet({
+                name: 'external-workflows',
+                namespace: 'workflow-system',
+                provision: false,
+                tls: true,
+              }),
+            },
+            default: WorkflowEngine.hatchet({
+              name: 'starter-workflows',
+              namespace: 'workflow-system',
+            }),
+          },
+        },
+      },
+    });
+    const tlsExpression = graphExpression(workflows.tls);
+    expect(tlsExpression).toContain('true');
+    expect(tlsExpression).toContain('false');
+    expect(tlsExpression).not.toContain('omit()');
+    const hostExpression = graphExpression(workflows.hostPort);
+    const apiExpression = graphExpression(workflows.apiUrl);
+    expect(hostExpression).toContain('hatchet-engine.');
+    expect(hostExpression).not.toContain('__KUBERNETES_REF_');
+    expect(apiExpression).toContain('http://hatchet-api.');
+    expect(apiExpression).not.toContain('__KUBERNETES_REF_');
+  });
+
+  it('composes default event endpoints without embedding schema markers in CEL string literals', () => {
+    const namespace = { expression: 'schema.spec.name' };
+    const events = applicationEventLogImplementation({
+      kind: 'application-provider-selection',
+      selector: 'schema.spec.profile',
+      cases: {
+        starter: {
+          kind: 'nats-jetstream',
+          namespace,
+        },
+        dedicated: {
+          kind: 'nats-jetstream',
+          namespace,
+        },
+        external: {
+          kind: 'nats-jetstream',
+          namespace: 'external-events',
+          servers: ['nats://events.example.test:4222'],
+          provision: false,
+        },
+      },
+      default: {
+        kind: 'nats-jetstream',
+        namespace,
+      },
+    });
+    const endpointExpression = graphExpression(events?.servers?.[0]);
+    expect(endpointExpression).toContain('string(schema.spec.name)');
+    expect(endpointExpression).not.toContain('__KUBERNETES_REF_');
   });
 
   it('constructs provider-neutral database and analytics capabilities without leaking infrastructure ownership', () => {
@@ -286,36 +643,74 @@ describe('application deployment profiles', () => {
         },
       },
     });
-    expect(application.resources).toEqual(
+    expect(application.resources.filter(
+      (resource) =>
+        resource !== null
+        && typeof resource === 'object'
+        && Reflect.get(resource, 'kind') === 'Cluster',
+    )).toHaveLength(2);
+    expect(application.resources).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           kind: 'Role',
           metadata: expect.objectContaining({
-            labels: expect.objectContaining({
-              'applik8s.dev/profile-variant': 'dedicated',
-            }),
-          }),
-        }),
-        expect.objectContaining({
-          kind: 'Role',
-          metadata: expect.objectContaining({
-            labels: expect.objectContaining({
-              'applik8s.dev/profile-variant': 'starter',
-            }),
+            name: expect.stringContaining('transactional-database'),
           }),
         }),
       ]),
     );
     const kroYaml = application.composition.factory('kro').toYaml();
     expect(kroYaml).toContain(
-      '${schema.spec.profile == "dedicated"}',
+      'schema.spec.profile == "dedicated"',
     );
     expect(kroYaml).toContain(
-      '${schema.spec.profile == "starter"}',
+      'schema.spec.profile == "starter"',
     );
   });
 
-  it('fails closed when profile branches change a generated workload database connection', () => {
+  it('records the selected qualified provider as the authority behind a non-primary application default', () => {
+    const application = app('profile-default-alias', {
+      namespace: 'profile-default-alias',
+      spec: Installation,
+      status: type({ ready: 'boolean' }),
+    });
+    const MediaObjects = ObjectStorage.named('media');
+    const objects = () =>
+      ObjectStorage.s3({
+        name: 'media',
+        bucket: 'media',
+        region: 'us-east-1',
+        credentialsSecret: {
+          apiVersion: 'v1',
+          kind: 'Secret',
+          name: 'media',
+          namespace: 'profile-default-alias',
+        },
+        ownership: 'external',
+      });
+    application
+      .profile(application.installation.spec, 'profile')
+      .provide(MediaObjects)
+      .starter(objects)
+      .dedicated(objects)
+      .external(objects)
+      .exhaustive();
+
+    application.defaults({ objects: application.inject(MediaObjects) });
+
+    const provider = applicationGraphFor(application.composition)?.nodes.find(
+      (node) =>
+        node.kind === 'provider'
+        && node.id === 'provider.object-storage',
+    );
+    expect(provider).toMatchObject({
+      config: {
+        aliasOf: 'provider.object-storage.v1alpha1.media',
+      },
+    });
+  });
+
+  it('preserves profile-selected generated workload database connections', () => {
     const application = app('unstable-database-profile', {
       namespace: 'unstable-database-profile',
       spec: Installation,
@@ -352,12 +747,19 @@ describe('application deployment profiles', () => {
       )
       .exhaustive();
 
-    expect(() =>
-      application.model('ProfileEntry', {
-        spec: type({ id: 'string' }),
-        database: application.inject(PrimaryDatabase),
-      }),
-    ).toThrow(/changes its generated workload connection/);
+    application.model('ProfileEntry', {
+      spec: type({ id: 'string' }),
+      database: application.inject(PrimaryDatabase),
+    });
+    const model = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.kind === 'model' && node.name === 'ProfileEntry',
+    );
+    const materialization = JSON.stringify(
+      model?.kind === 'model' ? model.materialization : undefined,
+    );
+    expect(materialization).toContain('starter-db');
+    expect(materialization).toContain('dedicated-db');
+    expect(materialization).toContain('external-db');
   });
 
   it('binds a native Drizzle schema to one qualified profile database without provisioning a duplicate default', () => {
@@ -494,6 +896,83 @@ describe('application deployment profiles', () => {
     ).toBe(false);
     expect(application.composition.factory('kro').toYaml()).toContain(
       'schema.spec.profile',
+    );
+  });
+
+  it('preserves managed and external connection Secrets across profile-selected databases', () => {
+    const records = pgTable('profile_secret_records', {
+      id: text('id').primaryKey(),
+      body: text('body').notNull(),
+    });
+    const application = app('profile-secret-database', {
+      namespace: 'profile-secret-system',
+      spec: ProfileConnectionInstallation,
+      status: type({ ready: 'boolean' }),
+    });
+    const PrimaryDatabase = TransactionalDatabase.named('primary');
+    application
+      .profile(application.installation.spec, 'profile')
+      .provide(PrimaryDatabase)
+      .starter(() =>
+        TransactionalDatabase.postgres({
+          name: 'primary',
+          clusterName: 'starter-db',
+          namespace: 'profile-secret-system',
+          database: 'application',
+        }),
+      )
+      .dedicated(() =>
+        TransactionalDatabase.postgres({
+          name: 'primary',
+          clusterName: 'dedicated-db',
+          namespace: 'profile-secret-system',
+          database: 'application',
+          instances: 3,
+        }),
+      )
+      .external(() =>
+        TransactionalDatabase.postgres({
+          clusterName: application.installation.spec.providers.database.clusterName,
+          namespace: application.installation.spec.providers.database.namespace,
+          database: application.installation.spec.providers.database.database,
+          ownership: 'external',
+          provision: false,
+          connectionSecret: {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            name: application.installation.spec.providers.database.connectionSecretName,
+            namespace: 'profile-secret-system',
+          },
+          connectionSecretKey:
+            application.installation.spec.providers.database.connectionSecretKey,
+        }),
+      )
+      .exhaustive();
+    const database = application.database.bind('application', {
+      provider: application.inject(PrimaryDatabase),
+      schema: { records },
+      migrations: { path: './drizzle' },
+    });
+    application.model(records, { name: 'Record', database });
+
+    const model = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.kind === 'model' && node.name === 'Record',
+    );
+    if (!model || model.kind !== 'model' || !model.runtime) {
+      throw new Error('Expected Record model runtime.');
+    }
+    expect(model.runtime.secretName).toContain(
+      '(schema.spec.profile) == "starter" ? ("starter-db-app")',
+    );
+    expect(model.runtime.secretName).toContain(
+      '(schema.spec.profile) == "dedicated" ? ("dedicated-db-app")',
+    );
+    expect(model.runtime.secretName).toContain(
+      'schema.spec.providers.database.connectionSecretName',
+    );
+    expect(model.runtime.secretNamespace).toBe('profile-secret-system');
+    expect(model.runtime.secretKey).toContain(
+      '(schema.spec.profile) == "starter" ? ("uri")',
     );
   });
 
@@ -682,6 +1161,12 @@ describe('application deployment profiles', () => {
         Analytics.clickHouse({
           name: 'profile-analytics',
           provision: true,
+          storageSize: application.select(application.installation.spec.profile, {
+            starter: '16Gi',
+            dedicated: '250Gi',
+            external: '16Gi',
+            default: '16Gi',
+          }),
         }),
       )
       .external(() =>
@@ -801,7 +1286,10 @@ describe('application deployment profiles', () => {
     );
     const kroYaml = application.composition.factory('kro').toYaml();
     expect(kroYaml).toContain('ClickHouseInstallation');
-    expect(kroYaml).toContain('schema.spec.profile == "dedicated"');
+    expect(kroYaml).toContain('(schema.spec.profile) == "dedicated"');
+    expect(kroYaml).toContain(
+      '? ((schema.spec.profile) == "starter" ? ("16Gi")',
+    );
     if (!graph) throw new Error('Expected qualified analytical graph.');
     expect(validateApplicationGraph(graph)).toEqual([]);
   });
@@ -821,6 +1309,65 @@ describe('application deployment profiles', () => {
     expect(() =>
       application.profile(application.installation.spec, 'profile'),
     ).toThrow(/already declares profile/);
+  });
+
+  it('derives variants from a discriminated installation union with branch-specific providers', () => {
+    const Common = type({
+      name: 'string',
+    });
+    const DiscriminatedInstallation = Common.and(
+      type({
+        profile: "'starter'",
+      }).or({
+        profile: "'dedicated'",
+        providers: {
+          inference: {
+            endpoint: 'string',
+          },
+        },
+      }).or({
+        profile: "'external'",
+        providers: {
+          database: {
+            connectionSecretName: 'string',
+          },
+        },
+      }),
+    );
+    const application = app('discriminated-profile', {
+      spec: DiscriminatedInstallation,
+      status: type({ ready: 'boolean' }),
+    });
+    const PrimaryDatabase = TransactionalDatabase.named('primary');
+    const binding = application
+      .profile(application.installation.spec, 'profile')
+      .provide(PrimaryDatabase)
+      .starter(() =>
+        TransactionalDatabase.postgres({ database: 'starter' }),
+      )
+      .dedicated((spec) =>
+        TransactionalDatabase.postgres({
+          database: spec.providers.inference.endpoint,
+        }),
+      )
+      .external((spec) =>
+        TransactionalDatabase.postgres({
+          database: spec.providers.database.connectionSecretName,
+        }),
+      )
+      .exhaustive();
+
+    expect(binding.profile.descriptor.variants).toEqual([
+      'dedicated',
+      'external',
+      'starter',
+    ]);
+    expect(
+      DiscriminatedInstallation({
+        name: 'missing-provider-contract',
+        profile: 'external',
+      }),
+    ).toBeInstanceOf(type.errors);
   });
 
   it('rejects side-effectful asynchronous branch construction', () => {

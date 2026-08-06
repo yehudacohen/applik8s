@@ -100,9 +100,15 @@ export const v06ReleaseEvidenceContract = Object.freeze({
 		"profile-update",
 		"automation-configure-update-suspend",
 		"automation-administrator-stop-resume",
+		"signal-issuance-sse-delivery",
+		"signal-exact-instance-approval",
+		"signal-workflow-resumption",
+		"signal-authoritative-ui-requery",
 		"report-triage-resolution",
 		"moderated-post-removal",
 		"browser-console-clean",
+		"typed-search-publication-roundtrip",
+		"clickhouse-ranked-explore-view",
 	]),
 });
 

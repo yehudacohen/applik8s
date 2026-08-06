@@ -6,10 +6,10 @@ release tagging
 **Audience:** Applik8s maintainers, RFP owners, Start authors, TypeKro contributors, provider-adapter
 authors, and acceptance-application implementers
 
-**Requested by:** The first Applik8s Agentic Start, Vasco, and the agentic identity and authorization
-platform
+**Requested by:** The first Applik8s Agentic Start, Chirp, GuestBook, and the agentic identity and
+authorization platform
 
-**Revised:** 2026-07-28
+**Revised:** 2026-07-31
 
 **Target:** Applik8s v0.7. No release tag is authorized by this document. The release is complete only
 after the required local, package-consumer, OrbStack, security, lifecycle, and acceptance-application
@@ -23,13 +23,14 @@ Implementation authority is delegated to bounded RFPs:
 
 | RFP | Owns | Must not own |
 | --- | --- | --- |
+| [`rfp-v07-function-native-execution.md`](rfp-v07-function-native-execution.md) | Function-native execution grammar, callable handles, workflow call/admission semantics, inline durable closures and steps, signal event contracts, canonical signal-store transaction/recovery protocol and callable one-shot decisions, frozen-batch acknowledgement, projection transformation and rebuild declaration, resource/run tracking, context capability consistency, and migration from dependency aliases | Operation authorization enforcement, workflow-provider history, provider-specific event transport, projection storage/convergence implementation, or provider-specific runtime semantics |
 | [`rfp-v07-operation-authority.md`](rfp-v07-operation-authority.md) | Stable operation catalog, identities, permissions, grants, delegation, authorization receipts, enforcement, catalog rollout | Provider-specific identity UI, AI protocol, search storage |
 | [`rfp-v07-profiles-and-starts.md`](rfp-v07-profiles-and-starts.md) | Schema-derived profiles, qualified DI, Start packaging, generator, deployment-profile transitions | Domain authorization semantics, provider runtime internals |
 | [`rfp-v07-search-projections.md`](rfp-v07-search-projections.md) | Named `Index(...)` contracts, relationship hydration, synchronization, rebuild, typed search, OpenSearch provider | Canonical application writes, identity policy |
 | [`rfp-v07-ai-runtime.md`](rfp-v07-ai-runtime.md) | Logical models, agents, TanStack AI adapter, durable AI attempts, Envoy AI Gateway provider | Durable workflow authority, permission issuance |
 | [`rfp-v07-identity-and-oauth.md`](rfp-v07-identity-and-oauth.md) | Authentication flows, provider sessions, OAuth, Ory qualification, and admission into canonical principals | Canonical application grant semantics, MCP transport |
 | [`rfp-v07-mcp.md`](rfp-v07-mcp.md) | MCP client/server transports, protocol-version policy, operation exposure, external tool trust, and optional Envoy routing | Authentication-provider flows, canonical application grant semantics, AI orchestration |
-| [`rfp-v07-agentic-start-distribution.md`](rfp-v07-agentic-start-distribution.md) | Maintained agentic modules, generated shell, operations UI, Vasco and identity acceptance slices | A second runtime, graph, router, or deployment engine |
+| [`rfp-v07-agentic-start-distribution.md`](rfp-v07-agentic-start-distribution.md) | Maintained agentic modules, generated shell, operations UI, Chirp, GuestBook, and identity acceptance slices | A second runtime, graph, router, or deployment engine |
 
 An implementation RFP may refine syntax and internal package boundaries. It may not contradict this
 charter's authority boundaries, add a competing source of truth, silently weaken a gate, or claim the
@@ -39,10 +40,14 @@ The shared seams are exact:
 
 | Shared contract | Authority | Consumer rule |
 | --- | --- | --- |
-| Provider-native model definition and promoted facets | Existing Applik8s model/resource core | Profiles bind compatible providers; authority, search, AI, MCP, and Starts consume model facets without translating the model into a new schema. |
+| Model-first definition and qualified provider facets | Existing Applik8s model/resource core | `model()` is authoritative; profiles derive compatible relational, Kubernetes, analytical, index, or document facets without requiring a second field map or promotion ceremony. |
 | Operation identity, executable operation handle, principal, and grant | Operation-authority RFP | Identity admits a principal; AI and MCP adapt the same handle; no consumer registers a parallel handler or principal shape. |
+| Signal issuance events, actions, and access | Function-native execution RFP for static event contracts, the primary transactional database's internal `SignalStore`, transactional instance/access/event/outbox commit, one-shot callable decisions, recovery, and execution-family decoding; profiles RFP for primary-database qualification; operation-authority RFP for canonical issue, exact issuance-read and action operations, grants, receipts, and enforcement | `SignalStore` is canonical but not independently selectable; workflow history and brokers converge by idempotent receipt and outbox retry; projections receive inert references; `authorize` requires existing exact-read/action authority; `grantAccessTo` derives exact-instance read/action grants only after `canGrant`; client payload never establishes actor identity; event delivery is not resolution authority. |
+| Frozen batch manifest and whole-batch acknowledgement | Function-native execution RFP | Event providers may choose transport and batching mechanics but must preserve stable admitted membership, idempotent identity, retry membership, and checkpoint ordering. |
 | Authentication and OAuth state | Identity/OAuth RFP | Authentication produces an admitted canonical principal but does not mint application grants independently. |
-| Search document and synchronization plan | Search RFP | The index is a rebuildable projection of compatible provider-native paths, never canonical model authority. |
+| Projection authoring and rebuild declaration | Function-native execution RFP | Projection runtimes consume the pure source-to-write transformation and explicit replay or authoritative-snapshot rebuild authority without introducing another public authoring model. |
+| Search document, synchronization, frontier, cutover, and convergence | Search RFP | The index is a rebuildable projection of compatible provider-native paths, never canonical model authority. |
+| Kubernetes resource/workflow tracking | Function-native execution RFP | Generated CR status is canonical; workflow push indexes are rebuildable optimizations; workflow providers remain authoritative only for run history and execution. |
 | Agent execution and TanStack AI adapter | AI RFP | Agent source contains the execution closure and calls TanStack AI directly; Starts configure it but do not wrap it in another agent runtime. |
 | MCP transport admission and mapping | MCP RFP | MCP exposes or invokes existing operations and cannot change their execution or authorization boundary. |
 | Generated product shell and maintained module selection | Agentic Start distribution RFP | Generated source imports modules explicitly and remains an ordinary editable Applik8s application. |
@@ -58,7 +63,7 @@ The work lands as independently reviewable prerelease increments:
 0.7.0-alpha.4  named search projections and provider runtimes
 0.7.0-alpha.5  AI, agents, durable attempts, and MCP
 0.7.0-alpha.6  Ory completion and Agentic Start product paths
-0.7.0-rc.1     Vasco and identity acceptance qualification
+0.7.0-rc.1     Chirp, GuestBook, and identity acceptance qualification
 0.7.0          maintainer-authorized release after every charter gate
 ```
 
@@ -81,7 +86,8 @@ forked frameworks, a second application graph, or a large directory of copied ru
 v0.7 delivers the first such distribution: the **Applik8s Agentic Start**. It must be capable of
 supporting:
 
-- Vasco's provenance-first acquisition, normalization, approval, event, search, and replay workflows;
+- Chirp's relational, streaming, projection, analytics, workflow, approval, agent, and replay paths;
+- GuestBook's minimal model/resource, lifecycle, live-view, and browser-requery path;
 - an Auth0-like agentic identity and authorization platform built on provider-neutral identity,
   authorization, OAuth, workflow, MCP, search, and enforcement contracts;
 - Stimp's current `agent-saas-starter` as the concrete application/product baseline, including its
@@ -137,7 +143,7 @@ Applik8s Starts
   deployment + operational product experience
         |
         v
-Vasco / agentic identity / CollectorBills / future products
+Chirp / GuestBook / agentic identity / future products
 ```
 
 The public term is **Start**, not kit. The initial command should be:
@@ -178,36 +184,28 @@ application constructor and does not hide the public Applik8s framework behind `
 Generated applications import the maintained modules they actually use and may replace them one at a
 time.
 
-Provider-native declarations remain authoritative. A relational model promotes its existing Drizzle
-table and derives its ArkType runtime schemas:
+Model declarations remain authoritative while preserving their provider-native identity. Relational
+models use the Applik8s model/field authoring surface, which produces an ordinary Drizzle table and
+derives the ArkType runtime schemas:
 
 ```ts
-const database = application.inject(PrimaryDatabase);
+export const Source = model("Source", {
+  id: field.uuid().primaryKey(),
+  observationState: field.text().notNull(),
+});
 
-export const Source = application
-  .model(sources, {
-    database,
-  })
-  .operation(
-    "observe",
-    {
-      input: ObserveSourceInput,
-      output: ObserveSourceOutput,
-      key: (input) => input.sourceId,
-      ordering: "serial",
-      events: [ObservationRequested],
-    },
-    async (source, input, context) => {
-      const requestId = context.id("observation");
-      source.patch({ spec: { observationState: "queued" } });
-      context.emit(ObservationRequested, {
-        requestId,
-        sourceId: source.id,
-        reason: input.reason,
-      });
-      return { requestId };
-    },
-  );
+export async function observeSource(input: ObserveSourceInput) {
+  return Source.edit(input.sourceId, async (source, context) => {
+    const requestId = context.id("observation");
+    source.observationState = "queued";
+    ObservationRequested.emit({
+      requestId,
+      sourceId: source.id,
+      reason: input.reason,
+    });
+    return { requestId };
+  });
+}
 ```
 
 The closure is transaction-authoritative: it may validate, derive, mutate declared transactional state,
@@ -218,24 +216,18 @@ A Kubernetes-backed model keeps its ArkType resource definition and its existing
 lifecycle experience:
 
 ```ts
-export const SourceImport = application.crd(SourceImportEntity, {
+export const SourceImport = application.crd("SourceImport", {
   apiVersion: "research.example.com/v1alpha1",
+  spec: SourceImportSpec,
+  status: SourceImportStatus,
 });
 
-SourceImport.on.create(
-  "initialize-source-import",
-  {
-    namespace: application.installation.spec.name,
-  },
-  async (created, context) => {
-    if (!created.spec.sourceUrl.trim()) {
-      created.status.phase = "Rejected";
-      created.status.reason = "A source URL is required.";
-      return;
-    }
-    created.status.phase = "Pending";
-  },
-);
+SourceImport.on.reconcile(async resource => {
+  const run = await observeSource.start({
+    sourceUrl: resource.spec.sourceUrl,
+  });
+  await resource.track("observation", run);
+});
 ```
 
 Declare a logical service identity and an agent definition with those operations as tools. Deployment
@@ -300,6 +292,23 @@ SourceResearcherIdentity.mayRequest(
 );
 ```
 
+The exported agent handle is dual-runtime. Browser routes import the same symbol from the application
+entrypoint and pass it to the TanStack connection; the Vite facade makes that value inert and
+browser-safe:
+
+```tsx
+import { createApplicationTanStackConnection } from "@applik8s/ai-tanstack/client";
+import { SourceResearcher } from "../../application";
+
+const connection = createApplicationTanStackConnection({
+  agent: SourceResearcher,
+});
+```
+
+Applications do not repeat an agent name in `forwardedProps` or route configuration. The framework
+owns that lowering and keeps the authored agent closure, provider configuration, and workload authority
+out of the browser graph.
+
 Build a search projection from existing model columns:
 
 ```ts
@@ -349,24 +358,24 @@ or provider credentials in its domain models, routes, agents, or UI.
 
 Every bounded RFP and generated example must preserve these source-level invariants:
 
-1. **Provider-native, single-definition models.** Relational authority is defined once in Drizzle;
-   Kubernetes authority is defined once in an ArkType-backed CRD/resource; existing ArkType entity models
-   remain valid for framework-owned document/control-plane state; analytical models and projections retain
-   their declared analytical schema/capability contract. Promotion adds common model semantics without
-   copying fields into a universal schema.
+1. **Model-first, single-definition authority.** Fields, identity, relationships, and boundary types are
+   defined once through `model()`. Typed assembly bindings derive provider-native relational,
+   Kubernetes, analytical, index, or document representations. Native provider schemas remain explicit
+   escape hatches for unsupported features, not a required promotion ceremony.
 2. **One convergent model experience.** CRUD, named operations, lifecycle events, references, queries,
    authority, tools, and audit use the same concepts wherever the backing provider can supply their
    guarantees. Provider-specific behavior remains an explicit refinement.
-3. **Colocated executable closures.** Model operations, event processors, tasks, workflows, routes,
+3. **Colocated executable closures.** Model changes, event processors, workflow steps, routes,
    reconcilers, and agents show their ordinary TypeScript implementation closures at their declaration
    site. Handler-free metadata examples are incomplete unless the section is deliberately describing
    metadata only.
 4. **Execution boundaries remain honest.** Transaction closures cannot perform external effects;
-   workflows coordinate only declared durable work; tasks and processors receive only declared
+   workflows coordinate only declared durable work; steps and processors receive only inferred or declared
    capabilities. Convenience syntax may shorten a boundary but may not erase or weaken it.
-5. **Direct operation handles.** Ordinary code invokes `Model.create(...)`, `Model.<operation>(...)`,
-   `Workflow.start(...)`, or another returned typed handle. There is no parallel operation registry,
-   `$model`-first golden path, or string lookup API.
+5. **Function-native behavior.** Ordinary code invokes `Model.create(...)`, ordinary imported domain
+   functions, `Workflow.start(...)`, or another returned typed handle. “Operation” is internal
+   authority/catalog vocabulary; there is no public `.operation()`/`.action()` registry, `$model`-first
+   golden path, or string lookup API.
 6. **TanStack AI remains visible.** Agent closures call TanStack AI's `chat()` and use its native
    message, tool, streaming, interrupt, connection, persistence, and React contracts. Applik8s supplies
    adapters, authority, placement, durability, and deployment; it does not publish a competing chat/tool
@@ -374,39 +383,70 @@ Every bounded RFP and generated example must preserve these source-level invaria
 7. **Starts generate editable applications.** A Start is generator input plus maintained packages and
    profile modules. It does not replace `app(...)`, conceal the application graph, or make generated
    projects depend on an opaque Start runtime.
-8. **One invocation model.** A direct handle call is an application-entry facade call;
-   `context.invoke(handle, input)` is the canonical internal authorized invocation; and declared
-   `context.operations`, `context.queries`, and `context.tasks` members are typed aliases that lower to
-   that same primitive. Managed closures may not call undeclared imported handles.
-9. **One closure grammar.** Subject operations receive `(subject, input, context)`; free queries, tasks,
-   workflow steps, and agents receive `(input, context)`; lifecycle observers receive `(event,
-   context)`; raw routes receive `(request, context)`; and reconcilers receive `(resource, context)`.
-   Typed event facts retain their provider-native fields.
-10. **Dependencies become two-level least-privilege authority.** A task, workflow, processor, or
-    reconciler dependency declaration defines the generated workload identity's maximum operation,
-    input, target, scope, audience, and transport envelope. Each admitted input, event, workflow step, or
-    reconcile attempt receives a distinct `ExecutionPrincipal` narrowed to its bound inputs, targets, and
-    scopes. Neither level grants delegation, impersonation, alternate transport, or undeclared-operation
-    authority; both are serialized in the application graph, deployment plan, receipts, and audit.
+8. **One invocation model.** Application entrypoints and managed closures invoke statically reachable
+   imported handles directly. The compiler lowers those calls through the same normalized
+   `ExecutionBinding` and internal invocation primitive; `context.invoke(...)` is runtime machinery, not
+   the public authoring model. Dynamic, reflective, unresolved, or authority-widening calls fail
+   compilation. Compatibility aliases may lower to the same primitive during migration but are not the
+   golden path.
+9. **One closure grammar.** Model mutations are ordinary functions containing
+   `Model.edit(key, transactionClosure)` or a conventional CRUD `beforeCommit` callback. Transactional
+   facts use `Event.emit(...)`; nested model commands use the explicit lint-safe
+   `void Command(...)` staging form and may not be awaited before commit. Free queries, workflow steps,
+   and agents receive `(input, context)`; lifecycle observers receive `(event,
+   context)`; raw routes receive `(request, context)`; and the golden-path
+   `Resource.on.reconcile(resource => ...)` closure receives the typed
+   resource proxy whose status, resources, finalizers, events, tracking, and
+   requeue facets record its operation plan. The explicit SDK
+   `Resource.on.context.reconcile((resource, context) => ...)` form remains
+   available when a handler genuinely needs the lower-level context API; it
+   is not a second registration authority. Typed event facts retain their
+   provider-native fields. Ordinary errors thrown by a conventional CRUD
+   `beforeCommit` policy are framework-owned durable policy rejections, not broker-retried infrastructure
+   failures; the framework preserves retries for database concurrency failures without asking authors to
+   classify either case.
+10. **Dependencies become two-level least-privilege authority.** Statically reachable handle calls and
+    any explicit fail-closed maximum envelope define the generated workload identity's maximum
+    operation, input, target, scope, audience, and transport authority. Each admitted input, event,
+    workflow step, or reconcile attempt receives a distinct `ExecutionPrincipal` narrowed to its
+    concrete inputs, targets, and scopes. Neither level grants delegation, impersonation, alternate
+    transport, or undeclared-operation authority; both are serialized in the application graph,
+    deployment plan, receipts, and audit.
 11. **Generated source is feature-first.** Maintained modules are imported explicitly, domain behavior
     is colocated by feature, and upstream route files remain thin. Empty global artifact taxonomies are
     not generated.
 12. **Profiles are progressive disclosure.** Generated profile modules are complete and editable, but
     the first tutorial requires no profile knowledge. The same normalized graph and deployment plan
     power `plan`, `deploy`, `status`, `destroy`, and human/JSON `explain`.
+13. **Resources own reconciliation.** Application-owned Kubernetes models register continuous behavior
+    with `Resource.on.reconcile(handler)`. The framework infers and replays the generated operator,
+    watch, namespace, workload identity, RBAC, closure bundle, and callable-handle authority. The
+    redundant `app.reconcile(Resource, handler)` and `app.on(Resource, ...)` APIs are not part of
+    v0.7. Multiple `Resource.on.*` callbacks share one inferred controller; advanced placement or
+    explicit SDK RBAC is resource configuration, not a second behavior-registration surface. Public
+    controller types use resource-owned names (`ApplicationResourceControllerOptions` and
+    `ApplicationResourceEventHandler`); application-centric reconciliation aliases are removed.
+14. **Modules are callback-native feature boundaries.** Reusable features use
+    `module(name, setup)` or the explicit-schema overload and return an ordinary
+    plain object. The framework validates, freezes, and includes that exact
+    inferred value once per application. Dummy throwing installers, a second
+    public `install()` callback, user-written `Object.freeze(...)`, mutable
+    registries, and reachability-derived authority are not part of the v0.7
+    authoring model. `defineApplicationModule(...)` is compatibility machinery
+    during the transition, not the documented golden path.
 
 ## Existing functionality that must be reused
 
 | Capability | Existing behavior to preserve |
 | --- | --- |
 | Application graph | Provider, model, command, event, stream, query, workflow, resource, artifact, and deployment nodes and edges remain the only application graph. |
-| Model operations | Native and named models already derive direct `create`, `update`, `delete`, named operation, and completion-stream surfaces. |
+| Model behavior | Models already derive direct `create`, `update`, `delete`, lifecycle, and completion-stream surfaces; v0.7 makes additional behavior function-native. |
 | Durable commands | Principal, trusted context, authorization version, idempotency, target ordering, durable result, retry, outbox, progress, and recovery remain authoritative. |
-| Workflows | Provider-neutral `task()` and `workflow()` definitions and the Hatchet runtime remain the durable orchestration foundation. |
+| Workflows | Provider-neutral `workflow()` definitions, explicit durable steps, and the Hatchet runtime remain the durable orchestration foundation. |
 | Events and streams | Transactional outboxes, JetStream delivery, replay, processors, subscriptions, and checkpoints remain the event foundation. |
 | Public queries | Query contracts, bounded snapshots, context-scoped cursors, invalidation, SSE resume/reset, and browser requery remain authoritative. |
-| Native models | Promoted Drizzle tables remain Drizzle tables with shared schema, identity, relations, changes, and transactions. |
-| Kubernetes models | ArkType-backed CRDs and resources remain their canonical definitions and retain typed lifecycle, reconciliation, status, reference, and query behavior. |
+| Relational models | `model()` derives a Drizzle-compatible relational facet with shared schema, identity, relations, changes, and transactions. |
+| Kubernetes models | `model()` with a Kubernetes binding retains typed lifecycle, reconciliation, status, reference, and query behavior. |
 | Kubernetes resources | CRDs retain typed operations, reconcile handlers, status authority, watches, finalizers, and inferred Kubernetes RBAC. |
 | Vite and TanStack Start | Framework-neutral browser/server facades, Fetch gateway, React stores, SSR hydration, and the first-party TanStack adapter remain layered. |
 | Provider DI | `provide()` remains the provider-binding mechanism; no configuration registry replaces it. |
@@ -571,9 +611,10 @@ and safer alternative.
 59. **MCP schema compatibility is explicit.** Stateful sessions pin a catalog revision; incompatible
     stateless revisions use versioned tool names or a negotiated catalog extension. Tool name and
     arguments alone cannot reveal a client's cached schema revision.
-60. **Internal calls are declared dependencies.** Direct handles are application-entry facades;
-    `context.invoke()` is the canonical internal invocation; generated typed aliases lower to it. A
-    managed closure that invokes an undeclared handle fails compilation.
+60. **Internal calls are statically discovered dependencies.** Managed closures call imported handles
+    directly. The compiler proves the handle, complete input mapping, target, call site, and bounded
+    authority before lowering through the internal invocation primitive. Dynamic or unresolved calls
+    fail compilation; compatibility aliases do not define a second invocation model.
 61. **Workload identity is an envelope, not a delivery principal.** Declaring a task, workflow,
     processor, or reconciler dependency grants only its generated workload identity the maximum
     operation/input/target/scope envelope required to authenticate the runtime. Each delivery executes
@@ -610,6 +651,10 @@ and safer alternative.
     inputs/targets, workload envelopes, and compatible grants always intersect. Execution binding is
     terminal and cannot replace or weaken a preceding `.on()`, `.all()`, or `.where()` restriction.
     Conflicts fail closed, and the normalized plan preserves every constituent restriction.
+70. **External profile namespaces are external lifecycle boundaries.** The selected workload namespace
+    must pre-exist and survives application destruction because it is allowed to contain externally
+    supplied provider credential Secrets. Application-generated runtime Secrets remain individually
+    application-owned; no separate namespace-ownership option is exposed.
 
 ## Developer experience
 
@@ -752,16 +797,14 @@ const analytics = deployment
   .exhaustive();
 ```
 
-Models and projections bind to the qualified handle:
+Provider selection binds the single authoritative model declarations:
 
 ```ts
-export const Account = application.model(accounts, {
-  database,
-});
+provide(OperationalData, database)
+  .models(Account, CredentialLink, Post);
 
-export const UsageFact = application.model(usageFacts, {
-  database: analytics,
-});
+provide(AnalyticsData, analytics)
+  .models(UsageFact, TimelineThroughput);
 ```
 
 The distinction is semantic rather than a provider enumeration:
@@ -855,8 +898,10 @@ The implementation must extend:
 - MCP tool exposure handles;
 - Kubernetes resource create/update/delete admission operations.
 
-The v0.6 model action semantics remain valid under the canonical v0.7 `.operation(...)` spelling.
-Existing native-model CRUD operations receive the same behavior without a new declaration.
+The v0.6 model action semantics remain valid after lowering to the canonical v0.7 operation catalog.
+Application authors export ordinary functions or use the model's typed CRUD/edit methods; they do not
+maintain a second `.operation(...)` registry. Existing native-model CRUD operations receive the same
+authority behavior without a new declaration.
 
 ### Default-deny reachability
 
@@ -896,12 +941,14 @@ The catalog records:
 - browser/server visibility;
 - emitted events and effects where declared.
 
-Renames require an explicit replacement relationship:
+Renames require explicit replacement metadata attached to the exported function:
 
 ```ts
-Application
-  .operation("deployVersion", /* ... */)
-  .replaces(Application.deploy);
+export const deployVersion = replaces(Application.deploy, async function deployVersion(input) {
+  return Application.edit(input.id, application => {
+    application.version = input.version;
+  });
+});
 ```
 
 Runtime permissions referencing retired operations fail closed and produce migration diagnostics.
@@ -957,32 +1004,21 @@ operation runtime enforces per-execution input/target narrowing. A `ServiceIdent
 baseline application authority, but it neither authenticates the deployed runtime nor replaces the
 concrete execution principal. An initiating principal is not inherited implicitly.
 
-Dependency bindings make that narrowing visible:
+Direct calls make causal input binding visible:
 
 ```ts
-operations: {
-  completeObservation: Source.completeObservation.onInput(
-    (task) => ({
-      sourceId: task.sourceId,
-      requestId: task.requestId,
-    }),
-  ),
-},
-```
-
-The generated alias accepts only the remaining fields:
-
-```ts
-await context.operations.completeObservation({
+await Source.completeObservation({
+  sourceId: task.sourceId,
+  requestId: task.requestId,
   evidenceCount,
 });
 ```
 
-`onInput(...)`, `onEvent(...)`, and `onResource(...)` provide the task/workflow, processor, and
-reconciler forms. They fix callee-input fields from the enclosing execution and lower to one internal
-`ExecutionBinding`; bound keys disappear from the alias input and cannot be overridden. Complete input
-validation, target derivation, authorization, idempotency, and audit run after bound and unbound fields
-are combined.
+The compiler lowers the complete expression to one internal `ExecutionBinding` and records provenance
+for every field. Complete input validation, target derivation, authorization, idempotency, and audit run
+at admission. `onInput(...)`, `onEvent(...)`, `onResource(...)`, and generated aliases remain bounded
+migration forms only; new golden-path source does not split a callee input across a dependency map and
+later alias invocation.
 
 The key set is a compiler-proven constant even when the TypeScript return type could widen. Values may
 be conditional; key presence may not. Every reachable return branch must produce the same exact keys.
@@ -1185,9 +1221,11 @@ context.principal;
 context.trustedContext;
 context.authorization;
 context.permissions;
-context.invoke(operation, input);
 context.inject(capability);
 ```
+
+The runtime may implement direct calls through an internal `invoke(operation, input)` primitive, but
+that primitive is not an application-context authoring API.
 
 Actor-style serialized model commands authorize against the resolved actor/model identity before enqueue,
 persist an authorization receipt in the durable envelope, and revalidate according to the operation's
@@ -1280,9 +1318,9 @@ http.post(
 An adapted route such as `DisableUserRoute` is not a second operation. Granting it—or a route group that
 contains it—grants `User.disable` only through that exact HTTP binding. The operation remains one catalog
 entry and one business closure; direct, MCP, workflow, and other HTTP bindings are not granted
-implicitly. Raw route closures are operations in their own right. Protected nested
-`context.invoke(...)` calls reauthorize; authorizing a raw route does not lend its handler arbitrary
-application authority.
+implicitly. Raw route closures are operations in their own right. Protected nested direct-handle calls
+reauthorize through the internal invocation boundary; authorizing a raw route does not lend its handler
+arbitrary application authority.
 
 ### Queries, search, and browser subscriptions
 
@@ -1310,8 +1348,7 @@ Events remain immutable facts. A processor authenticates as its stable workload 
 delivery executes under `ExecutionPrincipal` with diagnostic kind `ProcessorRunPrincipal`:
 
 ```ts
-ApplicationDeployed.process(
-  "update-search",
+ApplicationDeployed.onEvent(
   processorOptions,
   async (event, context) => {
     context.principal; // ExecutionPrincipal<"processor">
@@ -1622,6 +1659,24 @@ retirement requires reinitialization and rediscovery.
 
 Catalog pinning never freezes authorization: every call revalidates current principal, grant, target,
 audience, and authority revision against the operation represented by the pinned mapping.
+
+Machine clients receive application authority through the provider-neutral
+typed declaration:
+
+```ts
+const ReleaseAutomation = application.oauthClient(
+  "release-automation",
+  { issuer: "https://identity.example.test" },
+);
+
+ReleaseAutomation.can(AccessRequest.create.all());
+```
+
+The selected identity provider proves the issuer and client subject. Applik8s
+derives the same issuer-bound canonical workload identity at declaration and
+admission time; MCP then evaluates the ordinary operation grant. A client ID
+alone, a token scope alone, or a same-named client issued elsewhere cannot
+manufacture application authority.
 
 For stateless transports that cannot prove session pinning, incompatible revisions coexist under
 versioned public tool names. A negotiated catalog-revision extension may provide another safe path.
@@ -1969,9 +2024,14 @@ The required maintained modules are:
 - local, dedicated, and external provider modules;
 - example policies, tests, deployment, and recovery runbooks.
 
-Billing integrations may ship as optional modules, but v0.7 must at least provide authoritative usage
-and entitlement seams so applications do not need to replace their agent, workflow, or operation models when
-adding billing later.
+Billing remains optional for ordinary Applik8s applications, but the full
+Agentic Start must preserve the pinned Stimp baseline's local billing,
+checkout, portal, signed webhook, entitlement-projection, and dashboard
+behavior. v0.7 therefore supplies a provider-neutral maintained billing module,
+an explicitly simulated Starter implementation, and one server-only Stripe
+adapter. Product plans, pricing, catalog policy, and workspace ownership remain
+application-owned. Applications do not replace agent, workflow, usage,
+entitlement, or operation models when changing payment providers.
 
 The Start may provide an optional organization/membership module. It must not make its tenant model a
 framework requirement.
@@ -2113,26 +2173,32 @@ thin upstream routes, explicit modules, and the TypeKro/Alchemy lifecycle.
 
 ## Acceptance applications
 
-### Vasco vertical slice
+### Chirp and GuestBook vertical slices
 
-The required Vasco slice must prove:
+The required public slices divide acceptance deliberately:
 
-1. A customer or agent registers a source through an authorized typed operation.
-2. A Hatchet workflow retrieves source material through a declared provider capability.
-3. Raw evidence is stored through `ObjectStorage`.
-4. An agent proposes a normalized observation and extraction configuration.
-5. A deterministic validator accepts, rejects, or routes the proposal to approval.
-6. Approval waits durably and resumes through a typed operation.
-7. Canonical state commits in PostgreSQL and emits a durable transition event.
-8. `Index(...)` follows source/observation/entity relationships into OpenSearch.
-9. A TanStack Start route server-renders and then live-requeries searchable evidence.
-10. An MCP client can search evidence and request a permitted observation operation.
-11. Provenance, causal identity, workflow run, agent/tool usage, grant, and outcome are auditable.
-12. Rebuild, replay, duplicate event, related-model change, and index cutover are tested.
-13. Concurrent source executions authenticate through one stable worker but receive distinct
-    task/processor principals and cannot access one another's bound source.
+Downstream products such as Vasco are post-release customer-zero dogfooding, not source-tree fixtures
+or v0.7 release gates. They may discover framework defects after consuming the released public
+packages, but Applik8s must not couple its package graph, examples, or release authority to their
+private domain models.
 
-This slice does not require every future Vasco connector or global federation feature.
+1. GuestBook proves the complete minimal path from typed create through `on.create`/`on.update`,
+   publication, persistent view, SSE invalidation, and browser requery.
+2. GuestBook contains one readable authoritative model/resource declaration and no public
+   `operation()`, `action()`, `task()`, repeated local handler-name string, provider lookup, internal
+   import, or manual state/outbox write.
+3. Chirp proves relational and analytical model bindings while its domain files remain provider
+   agnostic.
+4. Chirp proves single-event and frozen microbatch processing, whole-batch acknowledgement, replay,
+   checkpoints, and execution-scoped authority.
+5. Chirp proves online and analytical projections, rebuild from replay and authoritative snapshots,
+   relationship invalidation, and generation cutover.
+6. Chirp proves durable workflows and explicit steps, typed signals delivered through SSE, exact
+   issuance visibility, approval/rejection, restart recovery, and framework-derived actors.
+7. Chirp proves object storage, search, agents, MCP, TanStack Start SSR/live queries, and one causal
+   operations timeline.
+8. Both applications build from packed public packages and deploy without privileged fixture writes or
+   provider-specific imports in domain/UI code.
 
 ### Agentic identity vertical slice
 
@@ -2297,10 +2363,10 @@ definitions of done live in the bounded RFPs listed in the charter document map.
   capability model across source, graph contracts, diagnostics, and examples;
 - rename Kubernetes `ApplicationPermissionRule`;
 - define shared authorizable operation and stable operation-catalog contracts;
-- migrate the v0.6 exceptional-model `.action(...)` spelling and `/actions/` catalog paths to the
-  reviewed `.operation(...)` and `/operations/` vocabulary without creating a second handler surface;
-  retain `.action(...)` only as a deprecated alias to the same operation node through the documented
-  v0.7-to-1.0 migration window;
+- replace the v0.6 exceptional-model `.action(...)` spelling with ordinary exported functions and
+  the internal `/operations/` catalog vocabulary without creating a second handler surface;
+- remove `.action(...)`, draft `.operation(...)`, and model command registries from the public API;
+  no compatibility window is required before the first v0.7 consumer;
 - make named route declarations normative and confine two-argument route declarations to compatibility;
 - define the direct-facade/internal-invocation relationship, normalized closure grammar, declared
   dependency IR, and graph-native `explain` projection;
@@ -2411,7 +2477,7 @@ definitions of done live in the bounded RFPs listed in the charter document map.
 
 - run the pinned Stimp behavioral baseline fixture and require an explicit disposition for every
   baseline capability and product path;
-- implement the Vasco vertical slice;
+- migrate the Chirp and GuestBook vertical slices;
 - implement the identity vertical slice;
 - run the complete live and adversarial matrices;
 - record performance/capacity evidence;
@@ -2434,9 +2500,10 @@ definitions of done live in the bounded RFPs listed in the charter document map.
 - one-to-many index paths require aggregation;
 - browser facades omit server/provider/permission implementation types;
 - agent tools accept operation handles and do not imply `.can()`;
-- direct facade calls, `context.invoke()`, and declared typed aliases preserve one operation identity,
-  schema, result, and authority contract;
-- undeclared managed-closure dependencies fail type checking or static compilation;
+- direct entry and managed-closure handle calls, the internal invocation lowering, and compatibility
+  aliases preserve one operation identity, schema, result, and authority contract;
+- dynamic, unresolved, or authority-widening managed-closure dependencies fail type checking or static
+  compilation;
 - ambiguous existing-target dependencies fail unless explicitly bound or visibly broadened with
   `.all()`;
 - execution-binding projections preserve exact literal bound keys despite TypeScript widening;
@@ -2503,7 +2570,7 @@ definitions of done live in the bounded RFPs listed in the charter document map.
 - complete the documented create/dev/test/plan/deploy/status/destroy loop;
 - explain `Source.observe` in human and JSON form from the same plan used to deploy;
 - deploy through the application deployment graph rather than handwritten `kubectl`;
-- complete the Vasco vertical slice;
+- complete the Chirp and GuestBook vertical slices;
 - complete the identity vertical slice;
 - exercise a real browser through SSR, hydration, streaming update, permission change, and requery;
 - exercise an MCP client through OAuth, operation authorization, workflow, result, and revocation;
@@ -2573,11 +2640,9 @@ explicit:
   API;
 - Ory infrastructure types move behind provider packages;
 - scattered `app.select()` provider selection migrates to schema-derived profile provision;
-- exceptional model `.action(...)` declarations and `/actions/` catalog paths migrate once to
-  `.operation(...)` and `/operations/`; `.action(...)` remains a deprecated source alias to the same
-  operation node through the v0.7-to-1.0 migration window, while legacy catalog references resolve only
-  through explicit migration/replacement metadata; legacy `$model` and low-level command spellings
-  follow the same documented direct-operation migration;
+- exceptional model `.action(...)`, draft `.operation(...)`, and model command registries are removed
+  before release; ordinary exported functions and internal `/operations/` catalog nodes are the only
+  v0.7 path, while historical catalog data can be handled by explicit migration tooling;
 - dynamic permission migration reports retired, renamed, or incompatible operation references;
 - existing applications without public exposure may adopt authorization incrementally;
 - production-exposed operations require explicit classification.
@@ -2594,7 +2659,7 @@ v0.7 does not require:
 - inferred incremental patches for arbitrary SQL or search queries;
 - automatic denormalization of unbounded relationship graphs;
 - global multi-region identity or search federation;
-- a finished commercial Vasco or Auth0 competitor;
+- a finished commercial social network or Auth0 competitor;
 - migration of CollectorBills or an unspecified Flourishnplot product;
 - replacing framework-neutral Vite/React support with TanStack-only contracts;
 - replacing TypeKro or Alchemy deployment machinery;
@@ -2659,8 +2724,8 @@ v0.7 is ready for maintainer release review when:
 - runtime permissions and grants are safe, lifecycle-aware, delegable, auditable, and migration-aware;
 - HTTP, MCP, actor, event, workflow, query, subscription, and Kubernetes boundaries share one normalized
   operation and authority model;
-- direct handle calls, internal `context.invoke()`, and declared typed aliases share one invocation
-  contract, while managed closure dependencies compile into exact least-privilege workload grants;
+- direct handle calls share one invocation contract across entrypoints and managed closures, while
+  statically discovered dependencies compile into exact least-privilege workload grants;
 - generated source is feature-first, the full command loop works from packed packages, `explain` derives
   from the deployment plan, and the beginner path does not require profile configuration;
 - `Index(...)` follows model relationships, maintains OpenSearch from committed changes, and rebuilds
@@ -2672,7 +2737,7 @@ v0.7 is ready for maintainer release review when:
   search, operations, and deployment without copying a private runtime into applications;
 - the pinned Stimp application baseline is fully dispositioned and its preserved/improved behavior passes
   through the generated Applik8s Start without a Stimp runtime dependency;
-- Vasco and the agentic identity vertical slices pass locally and on OrbStack;
+- Chirp, GuestBook, and the agentic identity vertical slices pass locally and on OrbStack;
 - adversarial security, cleanup, upgrade, package-consumer, browser-boundary, and performance gates pass;
 - the maintainer judges the resulting source examples succinct relative to the distributed behavior they
   express;

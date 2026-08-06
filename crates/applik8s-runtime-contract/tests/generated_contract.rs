@@ -130,6 +130,53 @@ fn generated_handler_input_schema_validates_payload_shape() {
 }
 
 #[test]
+fn generated_handler_input_schema_accepts_bounded_capability_retry_policy() {
+    let payload = serde_json::json!({
+        "abiVersion": ABI_VERSION,
+        "handlerId": "WorkflowJob.reconcile.0",
+        "event": "reconcile",
+        "object": {
+            "apiVersion": "workflows.applik8s.dev/v1alpha1",
+            "kind": "WorkflowJob",
+            "metadata": { "name": "proof", "namespace": "workflows" },
+            "spec": {}
+        },
+        "capabilities": {
+            "workflow-gateway": {
+                "name": "workflow-gateway",
+                "kind": "http",
+                "endpoint": "http://workflow-worker.workflows.svc:8002",
+                "policy": {
+                    "timeoutMs": 15000,
+                    "retry": {
+                        "maxAttempts": 3,
+                        "backoffMs": 250,
+                        "maxBackoffMs": 2000
+                    },
+                    "idempotencyKeyRequired": true,
+                    "failureMode": "rejectPromiseWithApplik8sError"
+                }
+            }
+        },
+        "runtime": {
+            "operatorName": "workflow-job-controller",
+            "reconcileId": "reconcile-1",
+            "bundleDigest": VALID_DIGEST,
+            "runtimeVersion": "0.1.1",
+            "startedAt": "2026-08-01T00:00:00Z"
+        }
+    });
+
+    validate_payload_schema("handlerInput", &payload)
+        .expect("bounded capability retry policy is part of the handler ABI");
+
+    let mut invalid = payload;
+    invalid["capabilities"]["workflow-gateway"]["policy"]["retry"]["maxAttempts"] =
+        serde_json::json!(6);
+    assert!(validate_payload_schema("handlerInput", &invalid).is_err());
+}
+
+#[test]
 fn generated_operation_plan_schema_validates_operation_variants() {
     let payload = serde_json::json!({
         "operations": [

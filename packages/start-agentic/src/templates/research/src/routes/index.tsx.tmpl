@@ -1,0 +1,8 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { ConversationInbox } from '../application';
+import { ResearchInbox } from '../features/research/view';
+
+export const Route = createFileRoute('/')({
+  loader: () => ConversationInbox({}).preload(),
+  component: ResearchInbox,
+});

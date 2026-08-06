@@ -53,6 +53,7 @@ v06GeneratedApp.defaults({
     namespace,
     storageSize: '1Gi',
     storageClassName: 'local-path',
+    pvcRetentionPolicy: 'delete',
   },
   analytics: AnalyticalDatabase.clickhouse({ name: 'v06-analytics', namespace, storageSize: '1Gi', storageClassName: 'local-path' }),
 });
@@ -65,12 +66,17 @@ const Database = v06GeneratedApp.database.postgres('catalog', {
 });
 const Card = v06GeneratedApp.model(cards, { name: 'Card', database: Database });
 
+// Delete remains an internal application capability in this fixture. It is
+// intentionally absent from the public gateway, but production catalogs still
+// require every executable operation to have an explicit authority owner.
+Card.delete.applicationPolicy();
+
 const CardChanged = event('cards.changed.v1', {
   payload: type({ cardId: 'string', organizationId: 'string', name: 'string' }),
 });
 
 Card.create.beforeCommit({ events: [CardChanged], history: true }, async (card, input, context) => {
-  if (!context.principal || context.principal.id !== input.organizationId) {
+  if (!context.principal || context.principal.identity.subject !== input.organizationId) {
     throw new Error('A card may only be created inside the authenticated organization.');
   }
   context.emit(CardChanged, {
@@ -81,7 +87,7 @@ Card.create.beforeCommit({ events: [CardChanged], history: true }, async (card, 
 });
 
 Card.update.beforeCommit({ events: [CardChanged], history: true }, async (card, _input, context) => {
-  if (!context.principal || context.principal.id !== card.value.organizationId) {
+  if (!context.principal || context.principal.identity.subject !== card.value.organizationId) {
     throw new Error('A card may only be updated inside the authenticated organization.');
   }
   context.emit(CardChanged, {
@@ -98,7 +104,7 @@ const CardsForOrganization = v06GeneratedApp.query('cards.for-organization.v1', 
   context: [OrganizationId],
   reads: [Card],
   budgets: { timeoutMs: 2_000, maxRows: 100, maxResultBytes: 64 * 1_024 },
-  authorize: ({ principal, input }) => principal.id === input.organizationId,
+  authorize: ({ principal, input }) => principal.identity.subject === input.organizationId,
   run: async ({ context, input }) => context.database(Database).select().from(Card).where(eq(Card.organizationId, input.organizationId)),
 });
 

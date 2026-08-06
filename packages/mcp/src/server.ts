@@ -389,6 +389,11 @@ export class ApplicationMcpServerRuntime {
 
 export interface ApplicationMcpHttpHandlerOptions {
   readonly runtime: ApplicationMcpServerRuntime;
+  /**
+   * Internal HTTP mount path. The OAuth resource URI remains the public
+   * canonical identity even when a gateway mounts the workload elsewhere.
+   */
+  readonly path?: string;
   readonly admitRequest: (
     request: Request,
     context: {
@@ -404,6 +409,10 @@ export interface ApplicationMcpHttpHandlerOptions {
 export function createApplicationMcpHttpHandler(
   options: ApplicationMcpHttpHandlerOptions,
 ): (request: Request) => Promise<Response> {
+  const requestPath =
+    options.path === undefined
+      ? undefined
+      : normalizedMcpRequestPath(options.path);
   const maximumRequestBytes = boundedBytes(
     options.maximumRequestBytes ?? 1_048_576,
     'maximumRequestBytes',
@@ -421,7 +430,10 @@ export function createApplicationMcpHttpHandler(
     ) {
       return jsonResponse(await options.runtime.metadata(), 200, maximumResponseBytes);
     }
-    if (url.pathname !== new URL(definition.endpoint).pathname) {
+    if (
+      url.pathname !==
+      (requestPath ?? new URL(definition.endpoint).pathname)
+    ) {
       return new Response('Not Found', { status: 404 });
     }
     if (url.searchParams.has('access_token')) {
@@ -534,6 +546,22 @@ export function createApplicationMcpHttpHandler(
       return jsonRpcErrorResponse(error, maximumResponseBytes);
     }
   };
+}
+
+function normalizedMcpRequestPath(value: string): string {
+  const path = value.trim();
+  if (
+    !path.startsWith('/') ||
+    path.length > 1_024 ||
+    path.includes('?') ||
+    path.includes('#') ||
+    path.includes('//')
+  ) {
+    throw new Error(
+      'MCP request path must be one absolute HTTP path without query or fragment.',
+    );
+  }
+  return path.length > 1 && path.endsWith('/') ? path.slice(0, -1) : path;
 }
 
 function normalizedServerOptions(
@@ -694,6 +722,9 @@ function validateJsonSchema(
     && !schema.enum.some((candidate) => stable(candidate) === stable(value))
   ) {
     errors.push(`${path} is outside its enum`);
+  }
+  if (value === null && schema.nullable === true) {
+    return errors;
   }
   for (const keyword of ['anyOf', 'oneOf'] as const) {
     const branches = schema[keyword];

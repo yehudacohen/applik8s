@@ -1,5 +1,5 @@
 // typecast-file-boundary: reactive vertical fixtures inspect erased graph metadata after checking node identities and discriminators.
-import { AnalyticalDatabase, ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IdentityProvider, IndexStore, stream, task, WorkflowEngine } from '@applik8s/applik8s';
+import { AnalyticalDatabase, ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IdentityProvider, IndexStore, stream, WorkflowEngine, workflow } from '@applik8s/applik8s';
 import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
@@ -164,11 +164,167 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     if (!graph) throw new Error('Expected reactive ApplicationGraph.');
     expect(graph?.nodes.find((node) => node.kind === 'stream')).toMatchObject({ replay: 'supported', delivery: 'at-least-once', authorization: 'application-defined' });
     expect(graph?.nodes.find((node) => node.kind === 'streamProcessor')).toMatchObject({ delivery: 'at-least-once', checkpoint: 'postgres', failure: 'deadLetter', deployment: { replicas: 1, concurrency: 4 } });
-    expect(graph?.nodes.find((node) => node.kind === 'subscription')).toMatchObject({ delivery: 'sse', suspension: 'bounded-failures' });
+    expect(graph?.nodes.find((node) => node.kind === 'subscription')).toMatchObject({
+      delivery: 'sse',
+      suspension: 'bounded-failures',
+      authority: expect.objectContaining({ classification: 'application-policy' }),
+    });
     expect(graph?.nodes.find((node) => node.kind === 'projection')).toMatchObject({ rebuildable: true, duplicateHandling: 'idempotent', rebuild: 'full-replay' });
     expect(graph?.nodes.find((node) => node.kind === 'provider' && node.interface === 'AnalyticalDatabase')).toMatchObject({ implementation: 'clickhouse' });
     expect(validateApplicationGraph(graph)).toEqual([]);
     expect(validateApplicationGraphCompatibilityPolicy(graph)).toEqual([]);
+  });
+
+  it('derives processor and projection identities from named callbacks', () => {
+    const catalog = app('function-native-reactive');
+    const database = catalog.database.postgres('catalog', { schema: {} });
+    catalog.defaults({ analytics: AnalyticalDatabase.clickhouse({ name: 'catalog-analytics', provision: false, endpoint: 'http://clickhouse.catalog.svc:8123' }) });
+    const changes = catalog.stream(AccountChanged, {
+      database,
+      retention: { maxAgeSeconds: 3_600 },
+      partitionBy: ({ accountId }) => accountId,
+      authorize: () => false,
+    });
+    const processor = changes.onEvent(
+      { processor: { concurrency: 2 } },
+      async function auditAccountChange(_payload, context) { void context.idempotencyKey; },
+    );
+    const observer = changes.onEvent(async function observeAccountChange(_payload, context) {
+      void context.event.id;
+    });
+    const projection = changes.project(
+      type({ eventId: 'string', accountId: 'string', balance: 'number', revision: 'string' }),
+      function accountBalances(payload, output) {
+        return output.append({ eventId: output.sourceId, ...payload });
+      },
+    );
+
+    expect(processor.name).toBe('audit-account-change');
+    expect(observer.name).toBe('observe-account-change');
+    expect(projection.name).toBe('account-balances');
+    expect(projection.storage).toBe('analytical');
+    expect(projection.project(
+      { accountId: 'account-1', balance: 10, revision: 'revision-1' },
+      { id: 'event-1', sequence: 1, recordedAt: '2026-07-31T00:00:00.000Z', partitionKey: 'account-1' },
+    )).toEqual([{
+      eventId: 'event-1',
+      accountId: 'account-1',
+      balance: 10,
+      revision: 'revision-1',
+    }]);
+    const graph = applicationGraphFor(catalog.composition);
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'streamProcessor', name: 'audit-account-change' }),
+      expect.objectContaining({ kind: 'streamProcessor', name: 'observe-account-change' }),
+    ]));
+    expect(() => changes.onEvent(async () => undefined)).toThrow(/cannot infer stable identity/);
+    expect(() => changes.process({}, async () => undefined)).toThrow(/cannot infer stable identity/);
+    expect(() => changes.project({
+      output: type({ eventId: 'string' }),
+      project: () => ({ eventId: 'anonymous' }),
+    })).toThrow(/cannot infer stable identity/);
+  });
+
+  it('infers a function-native model transaction through callback dependencies', () => {
+    const posts = pgTable('function_native_posts', {
+      id: text('id').primaryKey(),
+      accountId: text('account_id').notNull(),
+      state: text('state').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const accounts = pgTable('function_native_accounts', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('function-native-model-transaction');
+    const database = application.database.postgres('application', {
+      schema: { posts, accounts },
+    });
+    const Post = application.model(posts, { name: 'Post', database });
+    const Account = application.model(accounts, { name: 'Account', database });
+    const PostRequested = event('posts.requested.v1', {
+      payload: type({ postId: 'string' }),
+    });
+    const PostChanged = event('posts.changed.v1', {
+      payload: type({ postId: 'string' }),
+    });
+    const requests = application.stream(PostRequested, {
+      database,
+      retention: { maxAgeSeconds: 3_600 },
+      partitionBy: ({ postId }) => postId,
+      authorize: () => false,
+    });
+
+    requests.onEvent(
+      {
+        // Compiler-owned capture metadata is explicit only because this unit
+        // fixture bypasses entrypoint instrumentation.
+        __generatedCalls: [Post.edit, Account.require, PostChanged],
+        __generatedBindings: {
+          PostEdit: Post.edit,
+          AccountRequire: Account.require,
+          PostChanged,
+        },
+      },
+      async function publishPost(event) {
+        return Post.edit(event.postId, async (post) => {
+          await Account.require(post.accountId);
+          await post.update({ state: 'published' });
+          PostChanged.emit({ postId: post.id });
+        });
+      },
+    );
+
+    const graph = applicationGraphFor(application.composition);
+    const processor = graph?.nodes.find(
+      (node) =>
+        node.kind === 'streamProcessor' && node.name === 'publish-post',
+    );
+    expect(processor).toMatchObject({
+      functionNativeTransaction: {
+        primaryModel: { nodeId: 'model.post' },
+        models: [{ nodeId: 'model.account' }, { nodeId: 'model.post' }],
+        modelBindings: [
+          {
+            identifier: 'AccountRequire',
+            model: { nodeId: 'model.account' },
+            access: 'read',
+          },
+          {
+            identifier: 'PostEdit',
+            model: { nodeId: 'model.post' },
+            access: 'write',
+          },
+        ],
+        eventBindings: [
+          {
+            identifier: 'PostChanged',
+            event: { nodeId: 'event.posts.changed.v1' },
+          },
+        ],
+        outbox: [{ nodeId: 'event.posts.changed.v1' }],
+        idempotency: 'source-event-id',
+      },
+    });
+    expect(graph?.edges).toEqual(expect.arrayContaining([
+      {
+        from: { nodeId: 'streamProcessor.publish-post' },
+        to: { nodeId: 'model.post' },
+        relationship: 'dependsOn',
+      },
+      {
+        from: { nodeId: 'streamProcessor.publish-post' },
+        to: { nodeId: 'model.account' },
+        relationship: 'dependsOn',
+      },
+      {
+        from: { nodeId: 'streamProcessor.publish-post' },
+        to: { nodeId: 'event.posts.changed.v1' },
+        relationship: 'emits',
+      },
+    ]));
+    if (!graph) throw new Error('Expected function-native transaction graph.');
+    expect(validateApplicationGraph(graph)).toEqual([]);
   });
 
   it('omits unconditional ClickHouse includeWhen literals that KRO cannot parse', () => {
@@ -216,7 +372,7 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     });
 
     expect(balances).toMatchObject({ storage: 'online', generationScoped: true, provider: { kind: 'valkey', host: 'valkey.catalog.svc' } });
-    expect(balances.map({ accountId: 'a', balance: 2, revision: 'r1' }, { id: 'e1', recordedAt: '2026-07-19T00:00:00Z', partitionKey: 'a' })).toEqual({ accountId: 'a', balance: 2, revision: 'r1' });
+    expect(balances.map({ accountId: 'a', balance: 2, revision: 'r1' }, { id: 'e1', sequence: 1, recordedAt: '2026-07-19T00:00:00Z', partitionKey: 'a' })).toEqual({ accountId: 'a', balance: 2, revision: 'r1' });
     const graph = applicationGraphFor(catalog.composition);
     const projection = graph?.nodes.find((node) => node.kind === 'projection');
     expect(projection).toMatchObject({
@@ -231,6 +387,71 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     });
     expect(graph?.providerRequirements).toEqual(expect.arrayContaining([expect.objectContaining({ interface: 'IndexStore', purpose: 'onlineIndex' })]));
     expect(graph ? validateApplicationGraph(graph) : ['missing']).toEqual([]);
+  });
+
+  it('lowers a function-native projection into provider-specific online mechanics', () => {
+    const catalog = app('function-native-projection', { namespace: 'catalog' });
+    const database = catalog.database.postgres('catalog', { schema: {} });
+    catalog.provide(IndexStore, IndexStore.valkey({
+      name: 'catalog-index',
+      namespace: 'catalog',
+      host: 'valkey.catalog.svc',
+      provision: false,
+    }));
+    const changes = catalog.stream(AccountChanged, {
+      database,
+      retention: { maxAgeSeconds: 604_800 },
+      partitionBy: ({ accountId }) => accountId,
+      authorize: () => true,
+    });
+
+    const balances = changes
+      .project(
+        type({ accountId: 'string', balance: 'number', revision: 'string' }),
+        function accountBalanceIndex(payload, write) {
+          return payload.balance < 0
+            ? write.remove({ partition: payload.accountId, key: payload.accountId })
+            : write.upsert({
+                partition: payload.accountId,
+                key: payload.accountId,
+                score: Date.parse(write.recordedAt),
+                value: payload,
+              });
+        },
+      )
+      .rebuildFromReplay()
+      .retain({ maxItemsPerPartition: 1_000, maxAge: '30d' });
+
+    expect(balances.name).toBe('account-balance-index');
+    expect(balances.map(
+      { accountId: 'a', balance: 2, revision: 'r1' },
+      { id: 'event-1', sequence: 7, recordedAt: '2026-07-19T00:00:00Z', partitionKey: 'a' },
+    )).toEqual([{
+      kind: 'upsert',
+      partition: 'a',
+      key: 'a',
+      score: Date.parse('2026-07-19T00:00:00Z'),
+      value: { accountId: 'a', balance: 2, revision: 'r1' },
+    }]);
+    expect(balances.map(
+      { accountId: 'a', balance: -1, revision: 'r2' },
+      { id: 'event-2', sequence: 8, recordedAt: '2026-07-19T00:00:01Z', partitionKey: 'a' },
+    )).toEqual([{ kind: 'remove', partition: 'a', key: 'a' }]);
+    expect(applicationGraphFor(catalog.composition)?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'projection',
+        name: 'account-balance-index',
+        handlerSource: expect.stringContaining('write.upsert'),
+        online: expect.objectContaining({
+          scoreUnit: 'epochMilliseconds',
+          retention: {
+            maxItemsPerPartition: 1_000,
+            maxPartitions: 100_000,
+            maxAgeSeconds: 2_592_000,
+          },
+        }),
+      }),
+    ]));
   });
 
   it('uses the broad default Valkey implementation and fails closed on a wrong capability or unsafe bounds', () => {
@@ -288,11 +509,11 @@ describe('v0.6 streams, subscriptions, and projections', () => {
       workerTokenSecret: { apiVersion: 'v1', kind: 'Secret', name: 'automation-worker-token', namespace: 'automation-system' },
     }));
     const database = automation.database.postgres('automation', { schema: {} });
-    const Execute = task('automation.execute.v1', {
+    const Execute = workflow('automation.execute.v1', {
       input: type({ automationId: 'string' }),
       output: type({ accepted: 'boolean' }),
     });
-    const execute = automation.task(Execute, {}, async () => ({ accepted: true }));
+    const execute = automation.workflow(Execute, { retries: 1 }, async () => ({ accepted: true }));
     const DesiredSchedule = event('automation.schedule-desired.v1', {
       payload: type({ automationId: 'string', expression: 'string', enabled: 'boolean' }),
     });
@@ -321,25 +542,76 @@ describe('v0.6 streams, subscriptions, and projections', () => {
       enabled: false,
       schedules: [{
         alias: 'execute',
-        target: { nodeId: 'task.automation.execute.v1' },
+        target: { nodeId: 'workflow.automation.execute.v1' },
         contract: { name: 'automation.execute', version: 'v1', input: expect.objectContaining({ jsonSchema: expect.any(Object) }) },
       }],
       workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' },
     });
-    expect(graph?.edges).toContainEqual({ from: { nodeId: 'streamProcessor.reconcile-schedules' }, to: { nodeId: 'task.automation.execute.v1' }, relationship: 'dependsOn' });
+    expect(graph?.edges).toContainEqual({ from: { nodeId: 'streamProcessor.reconcile-schedules' }, to: { nodeId: 'workflow.automation.execute.v1' }, relationship: 'dependsOn' });
     if (!graph) throw new Error('Expected recurring schedule graph.');
     expect(validateApplicationGraph(graph)).toEqual([]);
+  });
+
+  it('lowers callback-native onBatch into bounded frozen whole-batch delivery', () => {
+    const catalog = app('batch-catalog', { namespace: 'catalog' });
+    const database = catalog.database.postgres('catalog', { schema: {} });
+    const changes = catalog.stream(AccountChanged, {
+      database,
+      retention: { maxAgeSeconds: 604_800 },
+      partitionBy: (payload) => payload.accountId,
+      authorize: () => true,
+    });
+
+    async function indexAccountChanges(batch: {
+      readonly id: string;
+      readonly events: readonly { readonly value: { readonly accountId: string } }[];
+    }) {
+      void batch.id;
+      void batch.events.map((event) => event.value.accountId);
+    }
+
+    changes.onBatch(
+      {
+        batch: { maxItems: 500, maxBytes: '4MiB', maxWait: '1s' },
+        ordering: 'partition',
+        concurrency: 8,
+      },
+      indexAccountChanges,
+    );
+
+    const graph = applicationGraphFor(catalog.composition);
+    const processor = graph?.nodes.find(
+      (node) => node.kind === 'streamProcessor',
+    );
+    expect(processor).toMatchObject({
+      name: 'index-account-changes',
+      invocation: 'batch',
+      idempotency: 'frozen-batch-id',
+      delivery: 'at-least-once',
+      checkpoint: 'postgres',
+      deployment: { concurrency: 8, replicas: 1 },
+      budgets: { maxInputBytes: 4 * 1_024 * 1_024 },
+      batch: {
+        maxItems: 500,
+        maxBytes: 4 * 1_024 * 1_024,
+        maxWaitMs: 1_000,
+        ordering: 'partition',
+        acknowledgement: 'wholeBatch',
+        membership: 'durableFrozenManifest',
+      },
+    });
+    expect(graph ? validateApplicationGraph(graph) : []).toEqual([]);
   });
 
 	it('injects typed one-shot durable tasks into bounded stream processors', () => {
 		const application = app('stream-task-fixture', { namespace: 'stream-task-system' });
 		application.provide(WorkflowEngine, WorkflowEngine.hatchet({ namespace: 'stream-task-system' }));
 		const database = application.database.postgres('stream-task', { schema: {} });
-		const Inspect = task('media.inspect.v1', {
+			const Inspect = workflow('media.inspect.v1', {
 			input: type({ objectKey: 'string' }),
 			output: type({ state: "'ready' | 'rejected'" }),
 		});
-		const inspect = application.task(Inspect, {}, async () => ({ state: 'ready' }));
+			const inspect = application.workflow(Inspect, { retries: 1 }, async () => ({ state: 'ready' as const }));
 		const Uploaded = event('media.uploaded.v1', { payload: type({ objectKey: 'string' }) });
 		const uploaded = application.stream(Uploaded, {
 			database,
@@ -347,20 +619,25 @@ describe('v0.6 streams, subscriptions, and projections', () => {
 			partitionBy: ({ objectKey }) => objectKey,
 			authorize: () => false,
 		});
-		uploaded.process('inspect-media', { tasks: { inspect } }, async (value, context) => {
-			const result = await context.tasks.inspect({ objectKey: value.objectKey }, { correlationId: context.event.id });
+			uploaded.process('inspect-media', {
+				// Compiler-owned capture metadata is stated explicitly only because
+				// this graph-level test bypasses entrypoint instrumentation.
+				__generatedCalls: [inspect],
+				__generatedBindings: { inspect },
+			}, async (value, context) => {
+				const result = await inspect({ objectKey: value.objectKey }, { correlationId: context.event.id });
 			if (result.state !== 'ready') throw new Error('media inspection rejected');
 		});
 
 		const graph = applicationGraphFor(application.composition);
 		expect(graph?.nodes.find((node) => node.kind === 'streamProcessor' && node.name === 'inspect-media')).toMatchObject({
 			tasks: [{
-				alias: 'inspect', target: { nodeId: 'task.media.inspect.v1' },
+				alias: 'inspect', target: { nodeId: 'workflow.media.inspect.v1' },
 				contract: { name: 'media.inspect', version: 'v1', input: expect.any(Object), output: expect.any(Object) },
 			}],
 			workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' },
 		});
-		expect(graph?.edges).toContainEqual({ from: { nodeId: 'streamProcessor.inspect-media' }, to: { nodeId: 'task.media.inspect.v1' }, relationship: 'dependsOn' });
+		expect(graph?.edges).toContainEqual({ from: { nodeId: 'streamProcessor.inspect-media' }, to: { nodeId: 'workflow.media.inspect.v1' }, relationship: 'dependsOn' });
 		if (!graph) throw new Error('Expected stream task graph.');
 		expect(validateApplicationGraph(graph)).toEqual([]);
 	});

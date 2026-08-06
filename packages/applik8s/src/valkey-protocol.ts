@@ -1,5 +1,5 @@
 // typecast-file-boundary: RESP arrays are recursively shape-checked before their decoded protocol union is exposed.
-import { createConnection } from 'node:net';
+import { createConnection, type Socket } from 'node:net';
 
 export type ValkeyArgument = string | number;
 export type ValkeyResponse = string | number | null | readonly ValkeyResponse[];
@@ -11,6 +11,8 @@ export interface ApplicationValkeyClientOptions {
   readonly password?: string;
   readonly timeoutMs?: number;
   readonly maxRedirects?: number;
+  /** Bounded persistent connections per Valkey endpoint. */
+  readonly poolSize?: number;
 }
 
 interface ValkeyEndpoint { readonly host: string; readonly port: number }
@@ -21,11 +23,23 @@ export function createApplicationValkeyCommand(options: ApplicationValkeyClientO
   const port = options.port ?? 6379;
   const timeoutMs = options.timeoutMs ?? 5_000;
   const maxRedirects = options.maxRedirects ?? 5;
+  const poolSize = options.poolSize ?? 4;
   if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('Valkey port must be between 1 and 65535.');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120_000) throw new Error('Valkey timeoutMs must be between 1 and 120000.');
   if (!Number.isSafeInteger(maxRedirects) || maxRedirects < 0 || maxRedirects > 16) throw new Error('Valkey maxRedirects must be between 0 and 16.');
+  if (!Number.isSafeInteger(poolSize) || poolSize < 1 || poolSize > 32) throw new Error('Valkey poolSize must be between 1 and 32.');
   const origin = { host: options.host, port };
   const slotEndpoints = new Map<number, ValkeyEndpoint>();
+  const pools = new Map<string, ApplicationValkeyConnectionPool>();
+  const pool = (endpoint: ValkeyEndpoint) => {
+    const key = `${endpoint.host}:${endpoint.port}`;
+    let current = pools.get(key);
+    if (!current) {
+      current = new ApplicationValkeyConnectionPool(endpoint, poolSize, timeoutMs);
+      pools.set(key, current);
+    }
+    return current;
+  };
   return async (parts) => {
     if (parts.length === 0) throw new Error('Valkey command must contain an operation.');
     const slot = commandSlot(parts);
@@ -33,7 +47,7 @@ export function createApplicationValkeyCommand(options: ApplicationValkeyClientO
     let asking = false;
     for (let attempt = 0; attempt <= maxRedirects; attempt += 1) {
       try {
-        return await sendValkeyCommand(endpoint, parts, options.password, timeoutMs, asking);
+        return await sendValkeyCommand(pool(endpoint), parts, options.password, asking);
       } catch (error) {
         const redirect = valkeyRedirect(error);
         if (!redirect || attempt === maxRedirects) throw error;
@@ -47,10 +61,9 @@ export function createApplicationValkeyCommand(options: ApplicationValkeyClientO
 }
 
 async function sendValkeyCommand(
-  endpoint: ValkeyEndpoint,
+  pool: ApplicationValkeyConnectionPool,
   parts: readonly ValkeyArgument[],
   password: string | undefined,
-  timeoutMs: number,
   asking: boolean,
 ): Promise<ValkeyResponse> {
   const commands = [
@@ -58,41 +71,165 @@ async function sendValkeyCommand(
     ...(asking ? [encodeResp(['ASKING'])] : []),
     encodeResp(parts),
   ];
-  return new Promise<ValkeyResponse>((resolve, reject) => {
-      const socket = createConnection(endpoint);
-      let buffer = Buffer.alloc(0);
-      let expectedResponses = commands.length;
-      let lastResponse: ValkeyResponse = null;
+  return pool.execute(Buffer.concat(commands), commands.length);
+}
+
+/**
+ * A tiny bounded RESP2 pool. The previous transport opened one TCP connection
+ * for every projection read. Long-lived SSE polling consequently accumulated
+ * enough TIME_WAIT sockets to exhaust the pod's ephemeral ports. Each lane
+ * below serializes its own commands while separate lanes preserve bounded
+ * concurrency; failed or remotely closed sockets are recreated on demand.
+ */
+class ApplicationValkeyConnectionPool {
+  readonly #lanes: ApplicationValkeyConnection[];
+  #next = 0;
+
+  constructor(endpoint: ValkeyEndpoint, size: number, timeoutMs: number) {
+    this.#lanes = Array.from(
+      { length: size },
+      () => new ApplicationValkeyConnection(endpoint, timeoutMs),
+    );
+  }
+
+  execute(payload: Buffer, responses: number): Promise<ValkeyResponse> {
+    const lane = this.#lanes[this.#next % this.#lanes.length];
+    if (!lane) {
+      throw new Error("Valkey connection pool has no execution lanes.");
+    }
+    this.#next += 1;
+    return lane.execute(payload, responses);
+  }
+}
+
+class ApplicationValkeyConnection {
+  readonly #endpoint: ValkeyEndpoint;
+  readonly #timeoutMs: number;
+  #socket: Socket | undefined;
+  #tail: Promise<void> = Promise.resolve();
+
+  constructor(endpoint: ValkeyEndpoint, timeoutMs: number) {
+    this.#endpoint = endpoint;
+    this.#timeoutMs = timeoutMs;
+  }
+
+  execute(payload: Buffer, responses: number): Promise<ValkeyResponse> {
+    const current = this.#tail
+      .catch(() => undefined)
+      .then(() => this.#execute(payload, responses));
+    this.#tail = current.then(() => undefined, () => undefined);
+    return current;
+  }
+
+  async #execute(payload: Buffer, responses: number): Promise<ValkeyResponse> {
+    const socket = await this.#connectedSocket();
+    try {
+      return await this.#exchange(socket, payload, responses);
+    } catch (error) {
+      // Once bytes may have reached Valkey, transparently retrying could
+      // duplicate a non-idempotent command. Drop the lane and let the caller's
+      // explicit event/idempotency policy decide whether to retry.
+      if (!(error instanceof ValkeyServerError)) this.#discard(socket);
+      throw error;
+    }
+  }
+
+  #connectedSocket(): Promise<Socket> {
+    const existing = this.#socket;
+    if (existing && !existing.destroyed && existing.writable) {
+      return Promise.resolve(existing);
+    }
+    return new Promise<Socket>((resolve, reject) => {
+      const socket = createConnection(this.#endpoint);
+      socket.setNoDelay(true);
+      socket.setKeepAlive(true, 10_000);
+      // A process-lifetime cache must not by itself prevent graceful process
+      // exit; active HTTP/worker servers still keep generated runtimes alive.
+      socket.unref();
       const timeout = setTimeout(() => {
         socket.destroy();
-        reject(new Error(`Valkey command timed out after ${timeoutMs}ms.`));
-      }, timeoutMs);
-      const finish = (callback: () => void) => {
+        reject(new Error(`Valkey connection timed out after ${this.#timeoutMs}ms.`));
+      }, this.#timeoutMs);
+      const settle = (callback: () => void) => {
         clearTimeout(timeout);
-        socket.removeAllListeners();
+        socket.off('connect', connected);
+        socket.off('error', failed);
         callback();
       };
-      socket.once('connect', () => socket.write(Buffer.concat(commands)));
-      socket.on('data', (chunk) => {
+      const connected = () => settle(() => {
+        this.#socket = socket;
+        socket.once('close', () => {
+          if (this.#socket === socket) this.#socket = undefined;
+        });
+        // Idle connection errors are reflected by close and retried by the
+        // next exchange. This listener prevents an unhandled EventEmitter
+        // error between commands.
+        socket.on('error', () => undefined);
+        resolve(socket);
+      });
+      const failed = (error: Error) => settle(() => {
+        socket.destroy();
+        reject(error);
+      });
+      socket.once('connect', connected);
+      socket.once('error', failed);
+    });
+  }
+
+  #exchange(socket: Socket, payload: Buffer, responses: number): Promise<ValkeyResponse> {
+    return new Promise<ValkeyResponse>((resolve, reject) => {
+      let buffer = Buffer.alloc(0);
+      let remaining = responses;
+      let lastResponse: ValkeyResponse = null;
+      let settled = false;
+      const timeout = setTimeout(() => {
+        this.#discard(socket);
+        finish(() => reject(new Error(`Valkey command timed out after ${this.#timeoutMs}ms.`)));
+      }, this.#timeoutMs);
+      const finish = (callback: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        socket.off('data', data);
+        socket.off('close', closed);
+        socket.off('error', failed);
+        callback();
+      };
+      const data = (chunk: Buffer) => {
         buffer = Buffer.concat([buffer, chunk]);
         try {
-          while (expectedResponses > 0) {
+          while (remaining > 0) {
             const parsed = parseResp(buffer);
             lastResponse = parsed.value;
             buffer = buffer.subarray(parsed.offset);
-            expectedResponses -= 1;
+            remaining -= 1;
           }
-          socket.end();
           finish(() => resolve(lastResponse));
         } catch (error) {
           if (!(error instanceof IncompleteRespError)) {
-            socket.destroy();
+            // RESP error replies do not corrupt the connection. Clearing the
+            // consumed response is safe because this lane has one in-flight
+            // exchange and server errors terminate its command sequence.
+            buffer = Buffer.alloc(0);
             finish(() => reject(error));
           }
         }
+      };
+      const closed = () => finish(() => reject(new Error('Valkey connection closed before returning a complete response.')));
+      const failed = (error: Error) => finish(() => reject(error));
+      socket.on('data', data);
+      socket.once('close', closed);
+      socket.once('error', failed);
+      socket.write(payload, (error) => {
+        if (error) finish(() => reject(error));
       });
-      socket.once('error', (error) => finish(() => reject(error)));
-  });
+    });
+  }
+
+  #discard(socket: Socket): void {
+    if (this.#socket === socket) this.#socket = undefined;
+    socket.destroy();
+  }
 }
 
 export function encodeResp(parts: readonly ValkeyArgument[]): Buffer {

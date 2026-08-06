@@ -1,7 +1,6 @@
-import type {
-  ApplicationDatabaseBinding,
-  ApplicationProcessorOptions,
-  KubernetesApplicationBuilder,
+import {
+  type ApplicationRelationalModel,
+  module,
 } from '@applik8s/applik8s';
 import {
   applicationConversationMemory,
@@ -9,52 +8,30 @@ import {
   applicationConversationRunEvents,
   applicationConversationRuns,
   applicationConversations,
+  applicationConversationSchema,
 } from './schema.js';
 
-export interface ApplicationConversationsModuleOptions {
-  readonly database?: ApplicationDatabaseBinding;
-  readonly processor?: ApplicationProcessorOptions;
-}
-
-export function conversations(
-  application: Pick<KubernetesApplicationBuilder, 'model'>,
-  options: ApplicationConversationsModuleOptions = {},
-) {
-  const modelOptions = {
-    ...(options.database ? { database: options.database } : {}),
-    ...(options.processor ? { processor: options.processor } : {}),
+function installConversations() {
+  return {
+    // The declaration is still the one Drizzle table. app.include() registers
+    // the module schema before invoking this installer, so the returned value
+    // has its collision-safe model methods by the time another maintained
+    // module composes it. Preserve that promoted type across package
+    // declaration emission instead of forcing consumers to promote it again.
+    // app.include() performs promotion before installation.
+    // typecast: the table retains that promoted identity through composition.
+    Conversation: applicationConversations as ApplicationRelationalModel<
+      typeof applicationConversations
+    >,
+    Message: applicationConversationMessages,
+    ProtocolRun: applicationConversationRuns,
+    RunEvent: applicationConversationRunEvents,
+    Memory: applicationConversationMemory,
   };
-  const Conversation = application.model(applicationConversations, {
-    ...modelOptions,
-    name: 'Conversation',
-    revision: false,
-  });
-  const Message = application.model(applicationConversationMessages, {
-    ...modelOptions,
-    name: 'Message',
-    revision: false,
-  });
-  const ProtocolRun = application.model(applicationConversationRuns, {
-    ...modelOptions,
-    name: 'ProtocolRun',
-    revision: false,
-  });
-  const RunEvent = application.model(applicationConversationRunEvents, {
-    ...modelOptions,
-    name: 'RunEvent',
-    revision: false,
-  });
-  const Memory = application.model(applicationConversationMemory, {
-    ...modelOptions,
-    name: 'Memory',
-    revision: false,
-  });
-
-  return Object.freeze({
-    Conversation,
-    Message,
-    ProtocolRun,
-    RunEvent,
-    Memory,
-  });
 }
+
+export const conversations = module(
+  'conversations',
+  { schema: applicationConversationSchema },
+  installConversations,
+);

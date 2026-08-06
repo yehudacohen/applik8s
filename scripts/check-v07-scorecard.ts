@@ -1,3 +1,4 @@
+// typecast-file-boundary: The scorecard gate validates repository JSON documents before typed policy evaluation.
 import { access, readFile } from 'node:fs/promises';
 import { applicationAgenticStartDefinition } from '@applik8s/start-agentic';
 
@@ -32,6 +33,7 @@ const requireRelease = process.argv.includes('--require-release');
 const scorecard = parseScorecard(
   JSON.parse(await readFile('docs/v0.7-scorecard.json', 'utf8')),
 );
+const narrativeScorecard = await readFile('docs/v0.7-scorecard.md', 'utf8');
 const findings: string[] = [];
 const itemIds = new Set<string>();
 
@@ -60,6 +62,16 @@ if (
     > applicationAgenticStartDefinition.generator.maximumApplicationFiles
 ) {
   findings.push('The Agentic Start exceeds its declared generated-file budget.');
+}
+if (
+  requireRelease
+  && /^\| [^|\n]+ \| (?:Partial|Pending|Blocked)(?: at contract level)? \|/mu.test(
+    narrativeScorecard,
+  )
+) {
+  findings.push(
+    'The human-readable v0.7 scorecard still claims a partial, pending, or blocked dimension.',
+  );
 }
 
 for (const item of scorecard.items) {
@@ -95,6 +107,7 @@ const requiredItems = [
   'baseline-disposition',
   'operation-authority',
   'provider-native-models',
+  'function-native-model-transactions',
   'ai-tanstack-contract',
   'identity-oauth-contract',
   'mcp-contract',
@@ -104,7 +117,6 @@ const requiredItems = [
   'starter-profile',
   'dedicated-profile',
   'external-profile',
-  'vasco-acceptance',
   'agentic-identity-acceptance',
   'stimp-behavioral-parity',
   'packed-agentic-start-consumer',

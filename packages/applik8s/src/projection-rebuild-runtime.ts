@@ -635,7 +635,21 @@ async function readRebuildManifest(
 		});
 	}
 	const value = projectionRebuildManifest(decoded, expected, maximumBytes);
-	return { value, reference };
+	return { value, reference: stableObjectReference(reference) };
+}
+
+function stableObjectReference(
+	reference: ApplicationObjectReference,
+): ApplicationObjectReference {
+	return {
+		store: reference.store,
+		key: reference.key,
+		size: reference.size,
+		contentType: reference.contentType,
+		sha256: reference.sha256,
+		...(reference.etag ? { etag: reference.etag } : {}),
+		...(reference.version ? { version: reference.version } : {}),
+	};
 }
 
 function projectionRebuildManifest(

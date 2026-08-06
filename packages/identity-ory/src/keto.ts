@@ -129,10 +129,17 @@ function normalizedTuple(tuple: ApplicationRelationshipTuple): ApplicationRelati
 }
 
 function requiredName(value: string, field: string): string {
-  if (!value.trim() || value.length > 512 || /[\u0000-\u001f]/u.test(value)) {
+  if (!value.trim() || value.length > 512 || containsControlCharacter(value)) {
     throw new Error(`Keto relationship ${field} is invalid.`);
   }
   return value;
+}
+
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && codePoint <= 0x1f;
+  });
 }
 
 function boundedSequence(value: number): number {

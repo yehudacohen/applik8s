@@ -405,7 +405,16 @@ function capabilityDescriptorSchema(): JsonSchema {
       resourceNames: { type: 'array', items: { type: 'string' } },
       namespaces: { oneOf: [{ const: 'all' }, { type: 'array', items: { type: 'string' } }] },
     }, ['apiGroups', 'resources', 'verbs']) },
-    policy: objectSchema({ timeoutMs: { type: 'number' }, idempotencyKeyRequired: { type: 'boolean' }, failureMode: { type: 'string' } }),
+    policy: objectSchema({
+      timeoutMs: { type: 'number' },
+      retry: objectSchema({
+        maxAttempts: { type: 'integer', minimum: 1, maximum: 5 },
+        backoffMs: { type: 'integer', minimum: 1, maximum: 30_000 },
+        maxBackoffMs: { type: 'integer', minimum: 1, maximum: 30_000 },
+      }, ['maxAttempts', 'backoffMs']),
+      idempotencyKeyRequired: { type: 'boolean' },
+      failureMode: { type: 'string' },
+    }),
     execution: objectSchema({
       liveExecution: enumSchema(['disabled', 'hostProtocol']),
       protocol: enumSchema(['notImplemented', 'applik8s.capability/v1alpha1', 'applik8s.kubernetes-connection/v1alpha1']),
@@ -415,5 +424,15 @@ function capabilityDescriptorSchema(): JsonSchema {
     }),
     sensitive: { type: 'boolean' },
     kubernetesConnection: objectSchema({ endpointPolicy: { type: 'string' } }, ['endpointPolicy']),
+    workflowGateway: objectSchema({
+      protocol: constSchema('applik8s.workflow-gateway/v1alpha1'),
+      worker: { type: 'string' },
+      contracts: { type: 'array', items: { type: 'string' }, minItems: 1, uniqueItems: true },
+      caller: objectSchema({
+        operator: { type: 'string' },
+        namespace: { type: 'string' },
+        serviceAccount: { type: 'string' },
+      }, ['operator', 'namespace', 'serviceAccount']),
+    }, ['protocol', 'worker', 'contracts', 'caller']),
   }, ['name', 'kind']);
 }

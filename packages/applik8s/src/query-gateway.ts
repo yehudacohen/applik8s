@@ -42,6 +42,27 @@ export interface ApplicationQueryGatewayOptions<TRequest, TPrincipal extends App
     readonly inputDigest: string;
     readonly trustedContextDigest: string;
   }) => ApplicationAuthorizationReceipt | false | Promise<ApplicationAuthorizationReceipt | false>;
+  /**
+   * Exact-instance admission for capability-bearing query output. The gateway
+   * discovers reserved signal references after schema validation and before
+   * returning either a public or internal result.
+   */
+  readonly authorizeOutputCapability?: (request: {
+    readonly query: ApplicationQueryBinding<unknown, unknown, TPrincipal>;
+    readonly identity: ApplicationGatewayIdentity<TPrincipal>;
+    readonly capability: ApplicationQuerySignalCapability;
+  }) => boolean | Promise<boolean>;
+}
+
+export interface ApplicationQuerySignalCapability {
+  readonly kind: 'signalReference';
+  readonly contract: {
+    readonly id: string;
+    readonly name: string;
+    readonly version: string;
+  };
+  readonly issuance: { readonly id: string };
+  readonly expiresAt: string;
 }
 
 export interface ApplicationSubscriptionLimiter {
@@ -94,6 +115,14 @@ export interface ApplicationQueryGatewayHttpOptions {
   readonly maxRequestBytes?: number;
   /** Maximum logical subscriptions admitted through one physical SSE response. */
   readonly maxMultiplexSubscriptions?: number;
+  /**
+   * Operational diagnostics boundary. The HTTP response remains deliberately
+   * redacted while generated runtimes can report the underlying failure.
+   */
+  readonly onError?: (error: unknown, context: {
+    readonly query?: string;
+    readonly operation?: 'snapshot' | 'subscribe';
+  }) => void;
 }
 
 interface CursorPayload {
@@ -154,6 +183,7 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
       const resultValue = providerSnapshot?.value ?? result.value;
       const output = validateQueryOutput(query, resultValue);
       enforceResultBudget(query, output);
+      await authorizeQueryOutputCapabilities(options, query, identity, output);
       const inputKey = queryInputKey(input);
       const cursor = encodeCursor(options.cursorSecret, {
         version: receipt ? 3 : 2,
@@ -327,8 +357,121 @@ export function createApplicationQueryGateway<TRequest, TPrincipal extends Appli
         providerSnapshot?.value ?? result.value,
       );
       enforceResultBudget(query, output);
+      await authorizeQueryOutputCapabilities(options, query, identity, output);
       return jsonValue(output);
     },
+  };
+}
+
+async function authorizeQueryOutputCapabilities<
+  TRequest,
+  TPrincipal extends ApplicationQueryPrincipal,
+>(
+  options: ApplicationQueryGatewayOptions<TRequest, TPrincipal>,
+  query: ApplicationQueryBinding<unknown, unknown, TPrincipal>,
+  identity: ApplicationGatewayIdentity<TPrincipal>,
+  output: unknown,
+): Promise<void> {
+  const capabilities = applicationQuerySignalCapabilities(output);
+  if (capabilities.length === 0) return;
+  if (!options.authorizeOutputCapability) {
+    throw new ApplicationQueryAuthorizationError(query.id);
+  }
+  for (const capability of capabilities) {
+    if (!await options.authorizeOutputCapability({
+      query,
+      identity,
+      capability,
+    })) {
+      options.audit?.({
+        event: 'authorization-denied',
+        query: query.id,
+        principal: identity.principal.id,
+        reason: 'output-capability',
+      });
+      throw new ApplicationQueryAuthorizationError(query.id);
+    }
+  }
+}
+
+function applicationQuerySignalCapabilities(
+  output: unknown,
+): readonly ApplicationQuerySignalCapability[] {
+  const capabilities = new Map<string, ApplicationQuerySignalCapability>();
+  const pending: unknown[] = [output];
+  const seen = new Set<object>();
+  let visited = 0;
+  while (pending.length > 0) {
+    const value = pending.pop();
+    visited += 1;
+    if (visited > 100_000) {
+      throw new Error(
+        'Application query output capability scan exceeded its bounded node budget.',
+      );
+    }
+    if (!value || typeof value !== 'object') continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      pending.push(...value);
+      continue;
+    }
+    const candidate = signalCapability(value);
+    if (candidate) {
+      capabilities.set(
+        `${candidate.contract.id}\0${candidate.issuance.id}`,
+        candidate,
+      );
+      continue;
+    }
+    pending.push(...Object.values(value));
+  }
+  return [...capabilities.values()];
+}
+
+function signalCapability(
+  value: object,
+): ApplicationQuerySignalCapability | undefined {
+  if (Reflect.get(value, '$type') !== 'applik8s.signal/v1') return undefined;
+  const contract = Reflect.get(value, 'contract');
+  const issuance = Reflect.get(value, 'issuance');
+  const expiresAt = Reflect.get(value, 'expiresAt');
+  const contractId = contract && typeof contract === 'object'
+    ? Reflect.get(contract, 'id')
+    : undefined;
+  const contractName = contract && typeof contract === 'object'
+    ? Reflect.get(contract, 'name')
+    : undefined;
+  const contractVersion = contract && typeof contract === 'object'
+    ? Reflect.get(contract, 'version')
+    : undefined;
+  const issuanceId = issuance && typeof issuance === 'object'
+    ? Reflect.get(issuance, 'id')
+    : undefined;
+  if (
+    !contract
+    || typeof contract !== 'object'
+    || !issuance
+    || typeof issuance !== 'object'
+    || typeof contractId !== 'string'
+    || typeof contractName !== 'string'
+    || typeof contractVersion !== 'string'
+    || typeof issuanceId !== 'string'
+    || typeof expiresAt !== 'string'
+  ) {
+    throw new Error(
+      'Application query returned a malformed reserved signal capability.',
+    );
+  }
+  return {
+    kind: 'signalReference',
+    contract: {
+      id: contractId,
+      name: contractName,
+      version: contractVersion,
+    },
+    issuance: { id: issuanceId },
+    expiresAt,
   };
 }
 
@@ -375,14 +518,16 @@ export function createApplicationQueryGatewayHttpHandler(gateway: ApplicationQue
     throw new Error('Application query gateway maxMultiplexSubscriptions must be between 1 and 1000.');
   }
   return async (request) => {
+    let query: string | undefined;
+    let operation: string | undefined;
     try {
       if (request.method !== 'POST') return jsonResponse({ error: 'method_not_allowed' }, 405, { allow: 'POST' });
       const url = new URL(request.url);
       if (!url.pathname.startsWith(basePath)) return jsonResponse({ error: 'not_found' }, 404);
       const tail = url.pathname.slice(basePath.length).split('/').filter(Boolean);
       const multiplex = tail.length === 1 && tail[0] === 'multiplex';
-      const query = tail[0] ? decodeURIComponent(tail[0]) : undefined;
-      const operation = tail[1];
+      query = tail[0] ? decodeURIComponent(tail[0]) : undefined;
+      operation = tail[1];
       if (!multiplex && (!query || (operation !== 'snapshot' && operation !== 'subscribe') || tail.length !== 2)) return jsonResponse({ error: 'not_found' }, 404);
       const contentLength = Number(request.headers.get('content-length') ?? 0);
       if (contentLength > maxRequestBytes) return jsonResponse({ error: 'request_too_large' }, 413);
@@ -422,6 +567,10 @@ export function createApplicationQueryGatewayHttpHandler(gateway: ApplicationQue
       });
       return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store, no-transform', connection: 'keep-alive', 'x-content-type-options': 'nosniff' } });
     } catch (error) {
+      options.onError?.(error, {
+        ...(query ? { query } : {}),
+        ...(operation === 'snapshot' || operation === 'subscribe' ? { operation } : {}),
+      });
       if (error instanceof ApplicationQueryAuthorizationError) return jsonResponse({ error: 'forbidden' }, 403);
       if (error instanceof ApplicationQuerySubscriptionLimitError) return jsonResponse({ error: 'subscription_limit' }, 429, { 'retry-after': '5' });
       if (isProjectionUnavailableError(error)) {

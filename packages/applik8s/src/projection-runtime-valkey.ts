@@ -606,7 +606,8 @@ export function createValkeyOnlineProjectionWriter<
 					: (raw as TRow);
 				const partition = nonEmpty(options.partitionBy(row), "partition");
 				const member = nonEmpty(options.key(row), "key");
-				const score = options.score(row);
+				const remove = options.removeWhen?.(row) === true;
+				const score = remove ? 0 : options.score(row);
 				if (!Number.isFinite(score))
 					throw new Error(
 						`Valkey online projection ${options.projection} score must be finite.`,
@@ -618,11 +619,13 @@ export function createValkeyOnlineProjectionWriter<
 					throw new Error(
 						`Valkey online projection ${options.projection} epoch-millisecond score must be a non-negative safe integer.`,
 					);
-				const value = validate(
-					valueSchema,
-					options.value(row),
-					`${options.projection}.value`,
-				);
+				const value = remove
+					? undefined
+					: validate(
+							valueSchema,
+							options.value(row),
+							`${options.projection}.value`,
+						);
 				const keys = generationKeys(root, generation, partition);
 				const minimumScore =
 					options.retention.maxAgeSeconds === undefined
@@ -649,8 +652,8 @@ export function createValkeyOnlineProjectionWriter<
 					event.envelope.sequence,
 					member,
 					score,
-					options.removeWhen?.(row) ? 1 : 0,
-					JSON.stringify(value),
+					remove ? 1 : 0,
+					value === undefined ? "null" : JSON.stringify(value),
 					options.retention.maxItemsPerPartition,
 					minimumScore,
 				]);

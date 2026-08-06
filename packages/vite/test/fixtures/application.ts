@@ -1,6 +1,5 @@
 import { app as createApp, IdentityProvider } from '@applik8s/applik8s';
 import { entity, type } from '@applik8s/applik8s/dsl';
-import type { ApplicationQueryOperation } from '@applik8s/client';
 import { fixtureAdmission } from './identity';
 
 export const app = createApp('vite-facade-fixture');
@@ -16,18 +15,22 @@ const BaseEntry = app.crd(EntryEntity, {
     place: () => ({ namespace: 'default', generateName: 'entry-' }),
   },
 });
-export const GuestBookEntry: {
-  readonly create: typeof BaseEntry.create;
-  readonly published: ApplicationQueryOperation<{ readonly limit: number }, readonly { readonly id: string; readonly message: string }[]>;
-} = BaseEntry.view('published', {
-  input: type({ limit: 'number.integer >= 1' }),
-  output: type({ id: 'string', message: 'string' }).array(),
-  authorize: () => true,
-  kubernetes: {
-    namespace: 'default',
-    project: ({ value }) => ({
+export const GuestBookEntry = BaseEntry;
+export const CreateEntry = GuestBookEntry.create;
+export const PublishedEntries = GuestBookEntry.view(
+  {
+    input: type({ limit: 'number.integer >= 1' }),
+    output: type({ id: 'string', message: 'string' }).array(),
+    authorize: () => true,
+    select: {
+      namespace: 'default',
+      limit: input => input.limit,
+    },
+  },
+  function published(value) {
+    return {
       id: value.metadata.name,
       message: value.spec.message,
-    }),
+    };
   },
-});
+);

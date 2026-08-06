@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import type { ApplicationKubernetesDirectDeploymentNode } from '@applik8s/deployment-contract';
 import {
+  applicationOwnedDeletionNamespaces,
   applicationInstanceSpec,
   kubernetesStatusCode,
   type ObservedApplicationInstance,
@@ -69,5 +71,74 @@ describe('application deployment observation', () => {
         instance,
       ),
     ).toThrow('non-JSON object');
+  });
+
+  it('derives only application-owned delete namespaces for authoritative destroy receipts', () => {
+    const base: Omit<ApplicationKubernetesDirectDeploymentNode, 'lifecycle'> = {
+      id: 'direct.namespace.workload',
+      kind: 'kubernetesDirect',
+      contractVersion: 1,
+      source: {},
+      provider: {
+        interface: 'Namespace',
+        implementation: 'typekro-kubernetes',
+        version: '1',
+      },
+      scope: { connectionDigest: `sha256:${'a'.repeat(64)}` },
+      capabilities: { strategies: ['direct'], alchemy: true },
+      configurationDigest: `sha256:${'b'.repeat(64)}`,
+      inputs: {},
+      outputs: [],
+      spec: {
+        compositionId: 'applik8s-namespace',
+        reason: 'test',
+        configuration: { name: 'application-system' },
+      },
+    };
+    expect(applicationOwnedDeletionNamespaces({
+      apiVersion: 'applik8s.deploymentGraph/v1alpha1',
+      kind: 'ApplicationDeploymentGraph',
+      metadata: {
+        identity: {
+          connection: {
+            provider: 'kubernetes',
+            cluster: 'orbstack',
+            digest: `sha256:${'a'.repeat(64)}`,
+          },
+          application: 'application',
+          controlPlaneNamespace: 'default',
+          instance: 'application',
+          profile: 'starter',
+        },
+        mode: 'fresh',
+        strategy: 'direct',
+        sourceGraphDigest: `sha256:${'c'.repeat(64)}`,
+        compilerVersion: 'test',
+      },
+      nodes: [
+        {
+          ...base,
+          lifecycle: {
+            ownership: 'application',
+            deletion: 'delete',
+            adoption: 'createOrAdoptExact',
+          },
+        },
+        {
+          ...base,
+          id: 'direct.namespace.shared',
+          spec: {
+            ...base.spec,
+            configuration: { name: 'shared-system' },
+          },
+          lifecycle: {
+            ownership: 'shared',
+            deletion: 'retain',
+            adoption: 'createOrAdoptExact',
+          },
+        },
+      ],
+      edges: [],
+    })).toEqual(['application-system']);
   });
 });

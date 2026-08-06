@@ -4,15 +4,16 @@ import type {
   CompositionInspection,
   DesiredStatePlan,
   PlanDiagnostic,
+  PlanValue,
 } from "typekro/experimental/planning";
 
 /**
  * A canonical TypeKro declaration plus host-only scheduling edges.
  *
- * `dependsOn` belongs exclusively to TypeKro's artifact bundle and may never
- * be rewritten by Applik8s. These ids let Alchemy order independently compiled
- * declaration components without presenting those host edges to TypeKro as
- * resource/reference dependencies.
+ * `dependsOn` and `schedulingDependsOn` belong exclusively to TypeKro's
+ * artifact bundle and may never be rewritten by Applik8s. These ids let
+ * Alchemy order independently compiled declaration components without
+ * presenting those host edges to TypeKro as resource/reference dependencies.
  */
 export interface ApplicationTypeKroDeclaration
   extends AlchemyResourceDeclaration {
@@ -56,13 +57,17 @@ export interface TypeKroDeclarationGroup {
   readonly deploymentNodeId: string;
   readonly strategy: "direct" | "kro";
   readonly declarations: readonly ApplicationTypeKroDeclaration[];
+  /** Concrete canonical input used to evaluate composition outputs after reconciliation. */
+  readonly spec: PlanValue;
+  /** Canonical composition outputs, hydrated from the group's live resource handles. */
+  readonly outputs: Readonly<Record<string, PlanValue>>;
   readonly declarationDigest: string;
   readonly semanticPlan: TypeKroSemanticPlanEvidence;
 }
 
 export interface AdaptedTypeKroDeployment {
   readonly adapter: {
-    readonly typekro: "0.32.0";
+    readonly typekro: "0.33.5";
     readonly semanticPlanVersion: 1;
     readonly artifactPlanVersion: 1;
   };

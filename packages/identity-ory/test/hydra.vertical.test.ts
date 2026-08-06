@@ -112,7 +112,9 @@ describe('Ory Hydra OAuth adapter', () => {
         requests.push(request);
         if (request.method === 'DELETE') return new Response(null, { status: 204 });
         if (request.method === 'GET') return Response.json(hydraClientFixture());
-        return Response.json(hydraClientFixture(), { status: 201 });
+        return Response.json(hydraClientFixture(), {
+          status: request.method === 'POST' ? 201 : 200,
+        });
       },
     });
 

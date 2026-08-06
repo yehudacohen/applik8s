@@ -6,9 +6,66 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ApplicationGraph } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
-import { emitGeneratedApplicationHost } from '../src/application-host/index.js';
+import {
+  applicationGraphWithInferredApplicationHost,
+  emitGeneratedApplicationHost,
+} from '../src/application-host/index.js';
 
 describe('generated ApplicationHost', () => {
+  it('infers one host from a built Start server artifact without overriding an authored host', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-host-inference-'));
+    await mkdir(join(root, '.applik8s/web-artifacts'), { recursive: true });
+    await writeFile(
+      join(root, '.applik8s/web-artifacts/server.json'),
+      JSON.stringify({
+        apiVersion: 'applik8s.webArtifact/v1alpha1',
+        application: 'src/application.ts',
+        output: 'dist/server',
+        target: 'server',
+        digest: `sha256:${'f'.repeat(64)}`,
+        entrypoint: 'server/index.mjs',
+        artifacts: [],
+      }),
+    );
+    const withoutHost = {
+      ...hostGraph(),
+      nodes: hostGraph().nodes.filter(
+        (node) => node.kind !== 'provider'
+          || node.interface !== 'ApplicationHost',
+      ),
+    };
+    const inferred = await applicationGraphWithInferredApplicationHost(
+      withoutHost,
+      join(root, 'src/application.ts'),
+    );
+    expect(
+      inferred.nodes.filter(
+        (node) => node.kind === 'provider'
+          && node.interface === 'ApplicationHost',
+      ),
+    ).toEqual([expect.objectContaining({
+      id: 'provider.ApplicationHost',
+      implementation: 'kubernetes-application-host',
+      config: {
+        host: {
+          kind: 'kubernetes-application-host',
+          name: 'guestbook-app',
+          namespace: 'guestbook',
+          replicas: 1,
+          port: 3000,
+        },
+      },
+    })]);
+
+    const authored = hostGraph();
+    expect(
+      await applicationGraphWithInferredApplicationHost(
+        authored,
+        join(root, 'src/application.ts'),
+      ),
+    ).toBe(authored);
+  });
+
   it('lowers an immutable web artifact into Kubernetes workload resources', async () => {
     const root = await mkdtemp(join(tmpdir(), 'applik8s-host-'));
     await mkdir(join(root, '.applik8s/web-artifacts'), { recursive: true });
@@ -53,6 +110,7 @@ describe('generated ApplicationHost', () => {
               startupProbe: { httpGet: { path: '/__applik8s/v1/healthz', port: 'http' }, periodSeconds: 2, failureThreshold: 30 },
               readinessProbe: { httpGet: { path: '/__applik8s/v1/readyz', port: 'http' }, periodSeconds: 5, failureThreshold: 6 },
               env: expect.arrayContaining([
+                { name: 'APPLIK8S_APPLICATION_NAME', value: 'guestbook' },
                 { name: 'APPLIK8S_NAMESPACE', value: 'guestbook' },
                 { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: 'guestbook-web-gateway-cursor', key: 'key' } } },
               ]),
@@ -119,12 +177,17 @@ describe('generated ApplicationHost', () => {
       digest: `sha256:${'c'.repeat(64)}`, entrypoint: 'server/index.mjs',
       artifacts: [{ path: 'server/index.mjs', bytes: source.length, digest: createHash('sha256').update(source).digest('hex') }],
     }));
-    const baseGraph = hostGraph(false, true);
+    const baseGraph = hostGraph(false, true, true, true);
     const graph: ApplicationGraph = { ...baseGraph, nodes: [...baseGraph.nodes, {
-      id: 'gateway.account', kind: 'gateway', name: 'account', stability: 'stable', materialization: 'generatedDeployment',
+      id: 'gateway.account', kind: 'gateway', name: 'account', stability: 'stable', visibility: 'public', materialization: 'generatedDeployment',
       queries: [], commands: [], subscriptions: [],
       deployment: { namespace: 'guestbook', image: 'gateway', replicas: 1, port: 8080 },
       cursorSecret: { apiVersion: 'v1', kind: 'Secret', name: 'guestbook-shared-runtime', namespace: 'guestbook', key: 'signing-key' },
+    } as unknown as ApplicationGraph['nodes'][number], {
+      id: 'gateway.agent-tools', kind: 'gateway', name: 'agent-tools', stability: 'stable', visibility: 'internal', materialization: 'generatedDeployment',
+      queries: [], commands: [], subscriptions: [],
+      deployment: { namespace: 'guestbook', image: 'agent-tools', replicas: 1, port: 8080 },
+      cursorSecret: { apiVersion: 'v1', kind: 'Secret', name: 'guestbook-agent-tools', namespace: 'guestbook', key: 'key' },
     } as unknown as ApplicationGraph['nodes'][number]] };
     const resources = await emitGeneratedApplicationHost({ graph, entrypoint: join(root, 'src/application.ts'), outDir: join(root, 'host') });
     expect(resources.find((resource) => resource.kind === 'Deployment')).toMatchObject({
@@ -132,7 +195,9 @@ describe('generated ApplicationHost', () => {
         { name: 'APPLIK8S_OBJECT_STORAGE_ENABLED', value: 'true' },
         { name: 'APPLIK8S_OBJECT_STORAGE_BUCKET', value: 'guestbook-media' },
         { name: 'APPLIK8S_OBJECT_STORAGE_REGION', value: 'us-east-1' },
-        { name: 'APPLIK8S_OBJECT_STORAGE_ENDPOINT', value: 'http://rook-rgw.guestbook.svc:80' },
+        { name: 'APPLIK8S_OBJECT_STORAGE_HOST', valueFrom: { configMapKeyRef: { name: 'guestbook-media', key: 'BUCKET_HOST' } } },
+        { name: 'APPLIK8S_OBJECT_STORAGE_PORT', valueFrom: { configMapKeyRef: { name: 'guestbook-media', key: 'BUCKET_PORT' } } },
+        { name: 'APPLIK8S_OBJECT_STORAGE_ENDPOINT', value: 'http://$(APPLIK8S_OBJECT_STORAGE_HOST):$(APPLIK8S_OBJECT_STORAGE_PORT)' },
         { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: 'guestbook-shared-runtime', key: 'signing-key' } } },
         { name: 'AWS_ACCESS_KEY_ID', valueFrom: { secretKeyRef: { name: 'guestbook-media', key: 'AWS_ACCESS_KEY_ID' } } },
         { name: 'AWS_SECRET_ACCESS_KEY', valueFrom: { secretKeyRef: { name: 'guestbook-media', key: 'AWS_SECRET_ACCESS_KEY' } } },
@@ -214,9 +279,124 @@ describe('generated ApplicationHost', () => {
       })] } } },
     });
   });
+
+  it('projects only a declared identity-admission database binding into the server host', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'applik8s-host-identity-db-'));
+    await mkdir(join(root, '.applik8s/web-artifacts'), { recursive: true });
+    await mkdir(join(root, 'dist/server/server'), { recursive: true });
+    const source = 'console.log("identity");\n';
+    await writeFile(join(root, 'dist/server/server/index.mjs'), source);
+    await writeFile(join(root, '.applik8s/web-artifacts/server.json'), JSON.stringify({
+      apiVersion: 'applik8s.webArtifact/v1alpha1',
+      application: 'src/application.ts',
+      output: 'dist/server',
+      target: 'server',
+      digest: `sha256:${'f'.repeat(64)}`,
+      entrypoint: 'server/index.mjs',
+      artifacts: [{
+        path: 'server/index.mjs',
+        bytes: source.length,
+        digest: createHash('sha256').update(source).digest('hex'),
+      }],
+    }));
+    const base = hostGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: 'provider.identity-provider',
+          kind: 'provider',
+          name: 'IdentityProvider',
+          stability: 'stable',
+          interface: 'IdentityProvider',
+          implementation: 'identity-provider',
+          config: {
+            identityRuntime: {
+              databaseProvider: {
+                interface: 'TransactionalDatabase',
+                nodeId: 'provider.transactional-database.primary',
+              },
+            },
+          },
+        },
+        {
+          id: 'model.workspace',
+          kind: 'model',
+          name: 'Workspace',
+          stability: 'stable',
+          runtime: {
+            provider: 'postgres',
+            authorityName: 'application',
+            name: 'Workspace',
+            database: 'guestbook',
+            clusterName: 'guestbook-db',
+            secretName: 'guestbook-db-app',
+            secretNamespace: 'guestbook',
+            secretKey: 'uri',
+            connectionEnvName: 'APPLIK8S_DATABASE_APPLICATION_URL',
+            storageShape: 'native-relational',
+            tableName: 'workspaces',
+            constraints: [],
+            indexes: [],
+            retention: { mode: 'retain' },
+            nativeRelational: {
+              identity: { property: 'id', column: 'id' },
+              columns: [{ property: 'id', column: 'id' }],
+            },
+          },
+        },
+      ] as ApplicationGraph['nodes'],
+      providerRequirements: [{
+        id: 'requirement.model.workspace.database',
+        interface: 'TransactionalDatabase',
+        consumer: { nodeId: 'model.workspace' },
+        provider: {
+          interface: 'TransactionalDatabase',
+          nodeId: 'provider.transactional-database.primary',
+        },
+        required: true,
+        purpose: 'transactionalDatabase',
+        diagnostics: {
+          missing: 'missing',
+          ambiguous: 'ambiguous',
+        },
+      }],
+    };
+    const resources = await emitGeneratedApplicationHost({
+      graph,
+      entrypoint: join(root, 'src/application.ts'),
+      outDir: join(root, 'host'),
+    });
+    expect(resources.find((resource) => resource.kind === 'Deployment')).toMatchObject({
+      spec: {
+        template: {
+          spec: {
+            containers: [expect.objectContaining({
+              env: expect.arrayContaining([{
+                name: 'APPLIK8S_DATABASE_APPLICATION_URL',
+                valueFrom: {
+                  secretKeyRef: {
+                    name: 'guestbook-db-app',
+                    key: 'uri',
+                    optional: false,
+                  },
+                },
+              }]),
+            })],
+          },
+        },
+      },
+    });
+  });
 });
 
-function hostGraph(nodePort = false, objects = false, objectStorageEnabled: boolean | string = true): ApplicationGraph {
+function hostGraph(
+  nodePort = false,
+  objects = false,
+  objectStorageEnabled: boolean | string = true,
+  objectBucketClaim = false,
+): ApplicationGraph {
   return {
     apiVersion: 'applik8s.appGraph/v1alpha1',
     kind: 'ApplicationGraph',
@@ -250,7 +430,21 @@ function hostGraph(nodePort = false, objects = false, objectStorageEnabled: bool
       interface: 'ObjectStorage' as const,
       implementation: 's3',
       config: { objectStorage: {
-        kind: 's3', enabled: objectStorageEnabled, bucket: 'guestbook-media', region: 'us-east-1', endpoint: 'http://rook-rgw.guestbook.svc:80', forcePathStyle: true,
+        kind: 's3',
+        enabled: objectStorageEnabled,
+        bucket: 'guestbook-media',
+        region: 'us-east-1',
+        ...(objectBucketClaim
+          ? {
+              ownership: 'direct-provisioned',
+              provisioning: {
+                kind: 'object-bucket-claim',
+                claimName: 'guestbook-media',
+                storageClassName: 'rook-ceph-bucket',
+              },
+            }
+          : { endpoint: 'http://rook-rgw.guestbook.svc:80' }),
+        forcePathStyle: true,
         credentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: 'guestbook-media', namespace: 'guestbook' },
       } },
     }, {

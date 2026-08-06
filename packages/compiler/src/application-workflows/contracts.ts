@@ -2,11 +2,13 @@
 import type {
   ApplicationCommandHandlerNode,
   ApplicationCommandNode,
+  ApplicationEventNode,
   ApplicationGatewayNode,
   ApplicationGraph,
   ApplicationModelNode,
   ApplicationObjectStoreNode,
   ApplicationOperationCatalog,
+  ApplicationProcessorNode,
   ApplicationProjectionNode,
   ApplicationProviderNode,
   ApplicationQueryNode,
@@ -39,6 +41,8 @@ export interface WorkflowContract {
   readonly queryEffects?: WorkflowQueryEffectsContract;
   readonly projectionEffects?: WorkflowProjectionEffectsContract;
 	readonly objectEffects?: WorkflowObjectEffectsContract;
+  readonly signalEffects?: WorkflowSignalEffectsContract;
+  readonly functionNativeTransactions?: readonly WorkflowFunctionNativeTransactionContract[];
   readonly namespace: string;
   readonly engineName: string;
   readonly adminCredentialsSecret: string;
@@ -46,6 +50,35 @@ export interface WorkflowContract {
   readonly tokenKey: string;
   readonly image: string;
   readonly contractNames: Readonly<Record<string, string>>;
+  readonly gatewayCallers: readonly WorkflowGatewayCallerContract[];
+}
+
+export interface WorkflowFunctionNativeTransactionContract {
+  readonly taskHandlerId: string;
+  readonly primaryModel: ApplicationModelNode & {
+    readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+  };
+  readonly models: readonly (ApplicationModelNode & {
+    readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+  })[];
+  readonly modelBindings: readonly {
+    readonly identifier: string;
+    readonly model: ApplicationModelNode & {
+      readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+    };
+  }[];
+  readonly eventBindings: readonly {
+    readonly identifier: string;
+    readonly event: ApplicationEventNode;
+  }[];
+  readonly outbox: readonly ApplicationEventNode[];
+}
+
+export interface WorkflowGatewayCallerContract {
+  readonly operator: string;
+  readonly namespace: string;
+  readonly serviceAccount: string;
+  readonly contracts: readonly string[];
 }
 
 interface WorkflowTaskOperationContract {
@@ -118,6 +151,19 @@ interface WorkflowObjectEffectsContract {
 	readonly aliases: Readonly<Record<string, Readonly<Record<string, string>>>>;
 }
 
+export interface WorkflowSignalContract {
+  readonly handlerId: string;
+  readonly binding: NonNullable<
+    ApplicationWorkflowHandlerNode['signalBindings']
+  >[number];
+  readonly stream: ApplicationStreamNode;
+}
+
+interface WorkflowSignalEffectsContract {
+  readonly signals: readonly WorkflowSignalContract[];
+  readonly database: ApplicationStreamNode['database'];
+}
+
 export interface StructuredGenerationSelectionConfig {
   readonly selector: string;
   readonly cases: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
@@ -129,6 +175,8 @@ export function workflowContract(
   worker: ApplicationWorkflowWorkerNode,
   operationCatalog?: ApplicationOperationCatalog,
   workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[] = [],
+  gatewayCallers: readonly WorkflowGatewayCallerContract[] = [],
+  authorityManifest?: ApplicationStaticAuthorityManifest,
 ): WorkflowContract {
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const provider = nodes.get(worker.workflowEngine.nodeId);
@@ -169,15 +217,55 @@ export function workflowContract(
     }
   }
   for (const capability of capabilities.values()) validateWorkflowCapability(capability, namespace, worker);
-  const operationEffects = workflowOperationEffects(graph, nodes, tasks, namespace, worker, workloadAuthority);
   const queryEffects = workflowQueryEffects(graph, nodes, tasks, namespace, worker);
+  const operationEffects = workflowOperationEffects(
+    graph,
+    nodes,
+    tasks,
+    namespace,
+    worker,
+    workloadAuthority,
+    queryEffects?.cursorSecret,
+  );
   const projectionEffects = workflowProjectionEffects(nodes, tasks, namespace, worker);
 	const objectEffects = workflowObjectEffects(nodes, tasks, namespace, worker);
+  const signalEffects = workflowSignalEffects(
+    nodes,
+    [
+      ...tasks.map(({ handler }) => handler),
+      ...workflows.map(({ handler }) => handler),
+    ],
+    namespace,
+    worker,
+  );
+  const functionNativeTransactions = workflowFunctionNativeTransactions(
+    nodes,
+    tasks,
+    worker,
+  );
   if (operationEffects && queryEffects && (operationEffects.cursorSecret.name !== queryEffects.cursorSecret.name || operationEffects.cursorSecret.key !== queryEffects.cursorSecret.key)) {
     throw new Error(`Workflow worker ${worker.id} operations and queries must use one service-principal context authority.`);
   }
   if (worker.deployment.scaling.mode === 'kedaHatchetSlots' && !stringConfig(config.tenantId)) {
     throw new Error(`Generated workflow worker ${worker.id} uses KEDA Hatchet task-stat scaling but its WorkflowEngine provider has no tenantId.`);
+  }
+  const declaredContracts = new Set([
+    ...tasks.map(({ task }) => task.name),
+    ...workflows.map(({ workflow }) => workflow.name),
+  ]);
+  for (const caller of gatewayCallers) {
+    if (caller.namespace !== namespace) {
+      throw new Error(
+        `Workflow worker ${worker.id} gateway caller ${caller.operator} is in namespace ${caller.namespace}; private workflow gateways require a shared namespace.`,
+      );
+    }
+    for (const contract of caller.contracts) {
+      if (!declaredContracts.has(contract)) {
+        throw new Error(
+          `Workflow worker ${worker.id} gateway caller ${caller.operator} references undeclared contract ${contract}.`,
+        );
+      }
+    }
   }
   return {
     graphName: graph.metadata.name,
@@ -188,15 +276,17 @@ export function workflowContract(
     workflows,
     capabilities: [...capabilities.values()].sort((left, right) => left.id.localeCompare(right.id)),
     ...(operationEffects ? { operationEffects } : {}),
-    ...(operationEffects && operationCatalog ? { operationCatalog } : {}),
-    ...(operationEffects
-      ? graph.nodes.find((node) => node.kind === 'authorityManifest')
-        ? { authorityManifest: graph.nodes.find((node) => node.kind === 'authorityManifest')!.manifest }
-        : {}
+    ...((operationEffects || signalEffects) && operationCatalog ? { operationCatalog } : {}),
+    ...((operationEffects || signalEffects) && authorityManifest
+      ? { authorityManifest }
       : {}),
     ...(queryEffects ? { queryEffects } : {}),
     ...(projectionEffects ? { projectionEffects } : {}),
 		...(objectEffects ? { objectEffects } : {}),
+    ...(signalEffects ? { signalEffects } : {}),
+    ...(functionNativeTransactions.length > 0
+      ? { functionNativeTransactions }
+      : {}),
     namespace,
     engineName,
     adminCredentialsSecret: stringConfig(adminCredentials.name) || `${engineName}-admin`,
@@ -204,6 +294,138 @@ export function workflowContract(
     tokenKey: stringConfig(config.tokenKey) || (stringConfig(workerToken.name) || config.provision !== false ? 'HATCHET_CLIENT_TOKEN' : 'token'),
     image: stringConfig(objectConfig(config.worker).image) || DEFAULT_WORKER_IMAGE,
     contractNames: Object.fromEntries(graph.nodes.flatMap((node) => node.kind === 'task' || node.kind === 'workflow' ? [[node.id, node.name]] : [])),
+    gatewayCallers: [...gatewayCallers].sort((left, right) =>
+      `${left.namespace}/${left.serviceAccount}/${left.operator}`.localeCompare(
+        `${right.namespace}/${right.serviceAccount}/${right.operator}`,
+      )),
+  };
+}
+
+function workflowFunctionNativeTransactions(
+  nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>,
+  tasks: readonly {
+    readonly handler: ApplicationTaskHandlerNode;
+    readonly task: ApplicationTaskNode;
+  }[],
+  worker: ApplicationWorkflowWorkerNode,
+): readonly WorkflowFunctionNativeTransactionContract[] {
+  return tasks.flatMap(({ handler }) => {
+    const transaction = handler.functionNativeTransaction;
+    if (!transaction) return [];
+    const primary = nodes.get(transaction.primaryModel.nodeId);
+    if (primary?.kind !== 'model' || !primary.runtime) {
+      throw new Error(
+        `Workflow worker ${worker.id} function-native task ${handler.id} requires one PostgreSQL primary model runtime.`,
+      );
+    }
+    const models = transaction.models.map((reference) => {
+      const model = nodes.get(reference.nodeId);
+      if (model?.kind !== 'model' || !model.runtime) {
+        throw new Error(
+          `Workflow worker ${worker.id} function-native task ${handler.id} participant ${reference.nodeId} has no PostgreSQL runtime.`,
+        );
+      }
+      return model as ApplicationModelNode & {
+        readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+      };
+    });
+    const connectionEnvironments = new Set(
+      models.map((model) => model.runtime.connectionEnvName),
+    );
+    if (
+      connectionEnvironments.size !== 1
+      || !connectionEnvironments.has(primary.runtime.connectionEnvName)
+    ) {
+      throw new Error(
+        `Workflow worker ${worker.id} function-native task ${handler.id} spans multiple transactional databases. One Model.edit closure must remain inside one PostgreSQL authority.`,
+      );
+    }
+    const outbox = transaction.outbox.map((reference) => {
+      const event = nodes.get(reference.nodeId);
+      if (event?.kind !== 'event') {
+        throw new Error(
+          `Workflow worker ${worker.id} function-native task ${handler.id} outbox ${reference.nodeId} is not a declared event.`,
+        );
+      }
+      return event;
+    });
+    const modelBindings = transaction.modelBindings.map((binding) => {
+      const model = nodes.get(binding.model.nodeId);
+      if (model?.kind !== 'model' || !model.runtime) {
+        throw new Error(
+          `Workflow worker ${worker.id} function-native task ${handler.id} callback binding ${binding.identifier} has no PostgreSQL model runtime.`,
+        );
+      }
+      return {
+        identifier: binding.identifier,
+        model: model as ApplicationModelNode & {
+          readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+        },
+      };
+    });
+    const eventBindings = (transaction.eventBindings ?? []).map((binding) => {
+      const event = nodes.get(binding.event.nodeId);
+      if (event?.kind !== 'event') {
+        throw new Error(
+          `Workflow worker ${worker.id} function-native task ${handler.id} callback binding ${binding.identifier} does not reference a declared event.`,
+        );
+      }
+      return { identifier: binding.identifier, event };
+    });
+    return [{
+      taskHandlerId: handler.id,
+      primaryModel: primary as ApplicationModelNode & {
+        readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+      },
+      models,
+      modelBindings,
+      eventBindings,
+      outbox,
+    }];
+  });
+}
+
+function workflowSignalEffects(
+  nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>,
+  handlers: readonly (
+    | ApplicationTaskHandlerNode
+    | ApplicationWorkflowHandlerNode
+  )[],
+  namespace: string,
+  worker: ApplicationWorkflowWorkerNode,
+): WorkflowSignalEffectsContract | undefined {
+  const signals: WorkflowSignalContract[] = [];
+  for (const handler of handlers) {
+    for (const binding of handler.signalBindings ?? []) {
+      const stream = nodes.get(`stream.${kubernetesName(binding.id)}`);
+      if (stream?.kind !== 'stream') {
+        throw new Error(
+          `Workflow ${handler.id} signal ${binding.alias} references missing issuance stream ${binding.id}.`,
+        );
+      }
+      assertWorkflowSecretNamespace(
+        stream.database.secretNamespace,
+        namespace,
+        `Workflow ${handler.id} signal ${binding.alias} database Secret`,
+      );
+      signals.push({ handlerId: handler.id, binding, stream });
+    }
+  }
+  if (signals.length === 0) return undefined;
+  const databases = new Map(
+    signals.map(({ stream }) => [
+      `${stream.database.connectionEnvName}\0${stream.database.secretName}\0${stream.database.secretKey}`,
+      stream.database,
+    ]),
+  );
+  if (databases.size !== 1) {
+    throw new Error(
+      `Workflow worker ${worker.id} signals span ${databases.size} transactional databases; SignalStore must use one canonical primary PostgreSQL authority.`,
+    );
+  }
+  return {
+    signals,
+    database: [...databases.values()][0] as ApplicationStreamNode['database'],
   };
 }
 
@@ -257,8 +479,23 @@ function workflowProjectionEffects(
       if (stream?.kind !== 'stream') throw new Error(`Workflow task ${handler.id} projection ${reference.alias} references missing source stream ${candidate.source.nodeId}.`);
       assertWorkflowSecretNamespace(stream.database.secretNamespace, namespace, `Workflow task ${handler.id} projection ${reference.alias} database Secret`);
       const indexProvider = nodes.get(projection.provider.nodeId);
-      if (indexProvider?.kind !== 'provider' || indexProvider.interface !== 'IndexStore' || indexProvider.implementation !== 'valkey') throw new Error(`Workflow task ${handler.id} projection ${reference.alias} requires a Valkey-compatible IndexStore provider.`);
-      const indexConfig = objectConfig(indexProvider.config?.indexStore);
+      const indexConfig =
+        indexProvider?.kind === 'provider'
+          ? objectConfig(indexProvider.config?.indexStore)
+          : {};
+      if (
+        indexProvider?.kind !== 'provider'
+        || indexProvider.interface !== 'IndexStore'
+        || stringConfig(indexConfig.kind) !== 'valkey'
+      ) {
+        const observed =
+          indexProvider?.kind === 'provider'
+            ? `${indexProvider.interface}/${indexProvider.implementation} (${stringConfig(indexConfig.kind) || 'missing config.indexStore.kind'})`
+            : indexProvider?.kind ?? 'missing';
+        throw new Error(
+          `Workflow task ${handler.id} projection ${reference.alias} requires a Valkey-compatible IndexStore provider; observed ${observed}.`,
+        );
+      }
       const indexNamespace = applicationGraphStringValue(indexConfig.namespace) || namespace;
       if (indexNamespace !== namespace) throw new Error(`Workflow task ${handler.id} projection ${reference.alias} IndexStore is in ${indexNamespace}, but the worker is in ${namespace}.`);
       const indexSecret = objectConfig(objectConfig(indexConfig.authentication).secret);
@@ -309,8 +546,8 @@ function workflowQueryEffects(
   const cursorSecrets = new Map<string, { readonly name: string; readonly key: string }>();
   for (const { handler } of tasks) {
     if ((handler.queries?.length ?? 0) === 0) continue;
-    if (!handler.operationPrincipalSource) throw new Error(`Workflow task ${handler.id} declares queries without a service-principal derivation.`);
-    if ((handler.operationPrincipalUnresolved?.length ?? 0) > 0) throw new Error(`Workflow task ${handler.id} service principal contains unresolved identifiers: ${handler.operationPrincipalUnresolved?.join(', ')}.`);
+    if (!handler.serviceIdentity && !handler.operationPrincipalSource) throw new Error(`Workflow task ${handler.id} declares queries without a service-principal derivation.`);
+    if (handler.operationPrincipalSource && (handler.operationPrincipalUnresolved?.length ?? 0) > 0) throw new Error(`Workflow task ${handler.id} service principal contains unresolved identifiers: ${handler.operationPrincipalUnresolved?.join(', ')}.`);
     const taskAliases: Record<string, string> = {};
     for (const reference of handler.queries ?? []) {
       const query = nodes.get(reference.query.nodeId);
@@ -345,20 +582,24 @@ function workflowQueryEffects(
 }
 
 function workflowOperationEffects(
-  _graph: ApplicationGraph,
+  graph: ApplicationGraph,
   nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>,
   tasks: readonly { readonly handler: ApplicationTaskHandlerNode; readonly task: ApplicationTaskNode }[],
   namespace: string,
   worker: ApplicationWorkflowWorkerNode,
   workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
+  sharedContextSecret:
+    | { readonly name: string; readonly key: string }
+    | undefined,
 ): WorkflowOperationEffectsContract | undefined {
   const operations: WorkflowTaskOperationContract[] = [];
   const aliases: Record<string, Record<string, WorkflowOperationAliasContract>> = {};
   const cursorSecrets = new Map<string, { readonly name: string; readonly key: string }>();
+  const eventLogs = new Map<string, ApplicationProviderNode>();
   for (const { handler } of tasks) {
     if ((handler.operations?.length ?? 0) === 0) continue;
-    if (!handler.operationPrincipalSource) throw new Error(`Workflow task ${handler.id} declares operations without a service-principal derivation.`);
-    if ((handler.operationPrincipalUnresolved?.length ?? 0) > 0) throw new Error(`Workflow task ${handler.id} operation principal contains unresolved identifiers: ${handler.operationPrincipalUnresolved?.join(', ')}.`);
+    if (!handler.serviceIdentity && !handler.operationPrincipalSource) throw new Error(`Workflow task ${handler.id} declares operations without a service-principal derivation.`);
+    if (handler.operationPrincipalSource && (handler.operationPrincipalUnresolved?.length ?? 0) > 0) throw new Error(`Workflow task ${handler.id} operation principal contains unresolved identifiers: ${handler.operationPrincipalUnresolved?.join(', ')}.`);
     const taskAliases: Record<string, WorkflowOperationAliasContract> = {};
     for (const operation of handler.operations ?? []) {
       validateWorkflowExecutionBinding(handler.id, operation.alias, operation.authority.binding);
@@ -369,6 +610,21 @@ function workflowOperationEffects(
       }
       const model = nodes.get(commandHandler.model.nodeId);
       if (model?.kind !== 'model' || !model.runtime) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} has no relational model runtime.`);
+      const processors = [...nodes.values()].filter(
+        (candidate): candidate is ApplicationProcessorNode =>
+          candidate.kind === 'processor'
+          && candidate.handlers.some(
+            (reference) => reference.nodeId === commandHandler.id,
+          ),
+      );
+      if (processors.length !== 1 || !processors[0]?.eventLog) {
+        throw new Error(`Workflow task ${handler.id} operation ${operation.alias} must resolve exactly one generated command processor EventLog binding; found ${processors.length}.`);
+      }
+      const eventLog = nodes.get(processors[0].eventLog.nodeId);
+      if (eventLog?.kind !== 'provider' || eventLog.interface !== 'EventLog') {
+        throw new Error(`Workflow task ${handler.id} operation ${operation.alias} references missing EventLog provider ${processors[0].eventLog.nodeId}.`);
+      }
+      eventLogs.set(eventLog.id, eventLog);
       const envelope = workloadAuthority.find((candidate) =>
         candidate.operationId === operation.authority.operationId
         && candidate.workloadIdentity.subject === handler.id);
@@ -379,15 +635,17 @@ function workflowOperationEffects(
       const gateways = [...nodes.values()].filter((candidate): candidate is ApplicationGatewayNode => candidate.kind === 'gateway'
         && candidate.materialization === 'generatedDeployment'
         && candidate.commands.some((entry) => entry.command.nodeId === command.id));
-      if (gateways.length !== 1) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} must be exposed by exactly one generated gateway so its stable context Secret has an explicit owner; found ${gateways.length}.`);
-      const gateway = gateways[0] as ApplicationGatewayNode;
-      if (!gateway.deployment || !gateway.cursorSecret) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} gateway ${gateway.id} has no deployment cursor Secret.`);
-      const gatewayNamespace = applicationGraphStringValue(gateway.deployment.namespace);
-      if (gatewayNamespace && gatewayNamespace !== namespace) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} gateway ${gateway.id} is in ${gatewayNamespace}, but the worker is in ${namespace}.`);
-      assertWorkflowSecretNamespace(gateway.cursorSecret.namespace, namespace, `Workflow task ${handler.id} operation ${operation.alias} cursor Secret`);
-      const secretName = applicationGraphStringValue(gateway.cursorSecret.name);
-      if (!secretName || !gateway.cursorSecret.key) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} gateway cursor Secret is not concrete.`);
-      cursorSecrets.set(`${secretName}\0${gateway.cursorSecret.key}`, { name: secretName, key: gateway.cursorSecret.key });
+      if (gateways.length > 1) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} is exposed by ${gateways.length} generated gateways. A workflow worker requires one unambiguous context authority.`);
+      const gateway = gateways[0];
+      if (gateway) {
+        if (!gateway.deployment || !gateway.cursorSecret) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} gateway ${gateway.id} has no deployment cursor Secret.`);
+        const gatewayNamespace = applicationGraphStringValue(gateway.deployment.namespace);
+        if (gatewayNamespace && gatewayNamespace !== namespace) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} gateway ${gateway.id} is in ${gatewayNamespace}, but the worker is in ${namespace}.`);
+        assertWorkflowSecretNamespace(gateway.cursorSecret.namespace, namespace, `Workflow task ${handler.id} operation ${operation.alias} cursor Secret`);
+        const secretName = applicationGraphStringValue(gateway.cursorSecret.name);
+        if (!secretName || !gateway.cursorSecret.key) throw new Error(`Workflow task ${handler.id} operation ${operation.alias} gateway cursor Secret is not concrete.`);
+        cursorSecrets.set(`${secretName}\0${gateway.cursorSecret.key}`, { name: secretName, key: gateway.cursorSecret.key });
+      }
       operations.push({
         taskHandlerId: handler.id,
         alias: operation.alias,
@@ -409,10 +667,22 @@ function workflowOperationEffects(
     aliases[handler.id] = taskAliases;
   }
   if (operations.length === 0) return undefined;
+  if (sharedContextSecret) {
+    cursorSecrets.set(
+      `${sharedContextSecret.name}\0${sharedContextSecret.key}`,
+      sharedContextSecret,
+    );
+  }
+  if (cursorSecrets.size === 0) {
+    const secret = {
+      name: kubernetesName(`${worker.name}-context`),
+      key: 'key',
+    };
+    cursorSecrets.set(`${secret.name}\0${secret.key}`, secret);
+  }
   if (cursorSecrets.size !== 1) throw new Error(`Workflow worker ${worker.id} declared task operations backed by ${cursorSecrets.size} cursor Secrets. Use one application command context authority per worker group.`);
-  const eventLogs = [...nodes.values()].filter((node): node is ApplicationProviderNode => node.kind === 'provider' && node.interface === 'EventLog');
-  if (eventLogs.length !== 1) throw new Error(`Workflow worker ${worker.id} task operations require exactly one EventLog provider.`);
-  const eventLog = eventLogs[0] as ApplicationProviderNode;
+  if (eventLogs.size !== 1) throw new Error(`Workflow worker ${worker.id} task operations require exactly one EventLog provider.`);
+  const eventLog = [...eventLogs.values()][0] as ApplicationProviderNode;
   const connectionSecret = objectConfig(eventLog.config?.connectionSecret);
   assertWorkflowSecretNamespace(connectionSecret.namespace, namespace, `Workflow worker ${worker.id} EventLog Secret`);
   return {

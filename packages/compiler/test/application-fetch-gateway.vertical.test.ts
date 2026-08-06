@@ -13,9 +13,109 @@ import {
 } from "@applik8s/identity";
 import { pgTable, text } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vitest";
+import {
+	applicationFacadeManifest,
+	generatedApplicationFacadeSource,
+} from "../src/application-facade/index.js";
+import { applicationGraphWithEntrypointPublicSurface } from "../src/application-facade/public-surface.js";
 import { generatedApplicationFetchGatewayModules } from "../src/application-fetch-gateway/index.js";
 
 describe("application host Fetch gateway", () => {
+	it("publishes exported typed HTTP closures as direct browser callables while keeping sibling routes private", () => {
+		const assistant = app("assistant", { namespace: "assistant-system" });
+		assistant.provide(
+			IdentityProvider,
+			IdentityProvider.deterministic(identityOptions("visitor")),
+		);
+		const http = assistant.http("public-assistant");
+		http.post(
+			"internal",
+			"/internal",
+			{ input: type({}), output: type({ ok: "boolean" }) },
+			async () => ({ ok: true }),
+		);
+		const ask = http.post(
+			"ask",
+			"/ask",
+			{
+				input: type({ question: "string > 0" }),
+				output: type({ answer: "string" }),
+			},
+			async ({ input }) => ({ answer: input.question }),
+		);
+		ask.public();
+		const base = applicationGraphFor(assistant.composition);
+		if (!base) throw new Error("Expected typed HTTP application graph.");
+		const operationId = "applik8s://http/public-assistant/operations/ask";
+		const graph = applicationGraphWithEntrypointPublicSurface(base, {
+			operationIds: [operationId],
+			modelNames: [],
+		});
+		const manifest = applicationFacadeManifest(graph, {
+			operationExports: [{ name: "PublicAssistant", operationId }],
+		});
+		expect(manifest.operations).toEqual([
+			expect.objectContaining({
+				id: operationId,
+				name: "ask",
+				owner: "public-assistant",
+				exportNames: ["PublicAssistant"],
+			}),
+		]);
+		const facade = generatedApplicationFacadeSource(manifest, "browser");
+		expect(facade).toContain("export const PublicAssistant = createApplicationRuntimeOperation");
+		const gateway =
+			generatedApplicationFetchGatewayModules(graph)?.files[
+				"gateway.generated.ts"
+			];
+		expect(gateway).toContain(`runtime:${operationId}`);
+		expect(gateway).not.toContain(
+			"applik8s://http/public-assistant/operations/internal",
+		);
+		expect(gateway).toContain(
+			"http://public-assistant.assistant-system.svc:80",
+		);
+		expect(gateway).toContain('"path":"/readyz"');
+	});
+
+	it("generates a provider-neutral public session facade for an identity-only application", () => {
+		const account = app("account", { namespace: "account-system" });
+		account.provide(
+			IdentityProvider,
+			IdentityProvider.deterministic({
+				...identityOptions("member"),
+				roles: ["workspace-owner"],
+				trustedContext: {
+					workspaceId: "workspace-private",
+				},
+			}),
+		);
+		const graph = applicationGraphFor(account.composition);
+		if (!graph) throw new Error("Expected account application graph.");
+
+		const modules = generatedApplicationFetchGatewayModules(graph);
+		const source = modules?.files["gateway.generated.ts"];
+		expect(modules).toBeDefined();
+		expect(source).toContain(
+			"import { createApplicationIdentitySessionHandler } from '@applik8s/identity/server';",
+		);
+		expect(source).toContain(
+			"url.pathname === '/__applik8s/v1/identity/session'",
+		);
+		expect(source).toContain(
+			"const applicationIdentitySession = createApplicationIdentitySessionHandler({",
+		);
+		expect(source).not.toContain("roles: principal.roles");
+		expect(source).not.toContain("attributes: principal.attributes");
+		expect(source).not.toContain(
+			"trustedContextDigest: principal.trustedContextDigest",
+		);
+		expect(source).not.toContain("catalogRevision: principal.catalogRevision");
+		expect(source).not.toContain(
+			"authorityRevision: principal.authorityRevision",
+		);
+	});
+
 	it("generates authenticated logical object-store routes without exposing provider credentials", () => {
 		const chirp = app("chirp", {
 			apiVersion: "applications.chirp.dev/v1alpha1",
@@ -74,6 +174,155 @@ describe("application host Fetch gateway", () => {
 		);
 		expect(source).not.toContain("chirp-media");
 		expect(source).not.toContain("AWS_SECRET_ACCESS_KEY");
+	});
+
+	it("uses the unqualified identity binding without counting its named profile source twice", () => {
+		const research = app("research", { namespace: "research-system" });
+		research.provide(
+			IdentityProvider,
+			IdentityProvider.deterministic(identityOptions("researcher")),
+		);
+		research.provide(
+			ObjectStorage,
+			ObjectStorage.s3({
+				name: "objects",
+				bucket: "research-objects",
+				region: "us-east-1",
+				endpoint: "https://objects.example.test",
+				credentialsSecret: {
+					apiVersion: "v1",
+					kind: "Secret",
+					name: "object-credentials",
+					namespace: "research-system",
+				},
+				ownership: "external",
+			}),
+		);
+		research.objectStore("artifacts", {
+			maxObjectBytes: 1024,
+			contentTypes: ["application/json"],
+			mode: "immutable",
+			browser: { upload: "signed", download: "signed" },
+		});
+		const baseGraph = applicationGraphFor(research.composition);
+		if (!baseGraph) throw new Error("Expected research application graph.");
+		const identity = baseGraph.nodes.find(
+			(node) =>
+				node.kind === "provider"
+				&& node.interface === "IdentityProvider",
+		);
+		if (!identity || identity.kind !== "provider") {
+			throw new Error("Expected research identity provider.");
+		}
+		const graph = {
+			...baseGraph,
+			nodes: [
+				...baseGraph.nodes,
+				{
+					...identity,
+					id: "provider.identity-provider.v1alpha1.primary",
+					config: {
+						...identity.config,
+						qualification: {
+							apiVersion: "applik8s.providerQualification/v1alpha1",
+							capability: "IdentityProvider",
+							name: "primary",
+							compatibilityRevision: "v1alpha1",
+							key: "IdentityProvider@v1alpha1:primary",
+						},
+					},
+				},
+			],
+		};
+
+		expect(
+			graph.nodes.filter(
+				(node) =>
+					node.kind === "provider"
+					&& node.interface === "IdentityProvider",
+			),
+		).toHaveLength(2);
+		expect(
+			generatedApplicationFetchGatewayModules(graph)?.files[
+				"gateway.generated.ts"
+			],
+		).toContain("createS3ApplicationObjectStorageRuntime");
+	});
+
+	it("selects profiled identity authentication in the generated web host", () => {
+		const research = app("profiled-research", {
+			namespace: "research-system",
+		});
+		research.provide(
+			IdentityProvider,
+			IdentityProvider.deterministic(identityOptions("researcher")),
+		);
+		research.provide(
+			ObjectStorage,
+			ObjectStorage.s3({
+				name: "objects",
+				bucket: "research-objects",
+				region: "us-east-1",
+				endpoint: "https://objects.example.test",
+				credentialsSecret: {
+					apiVersion: "v1",
+					kind: "Secret",
+					name: "object-credentials",
+					namespace: "research-system",
+				},
+				ownership: "external",
+			}),
+		);
+		research.objectStore("artifacts", {
+			maxObjectBytes: 1024,
+			contentTypes: ["application/json"],
+			mode: "immutable",
+			browser: { upload: "signed", download: "signed" },
+		});
+		const baseGraph = applicationGraphFor(research.composition);
+		if (!baseGraph) throw new Error("Expected profiled research graph.");
+		const graph = {
+			...baseGraph,
+			nodes: baseGraph.nodes.map((node) =>
+				node.kind === "provider"
+				&& node.interface === "IdentityProvider"
+				? {
+						...node,
+						config: {
+							...node.config,
+							identity: {
+								authenticationProfile: {
+									selector: "schema.spec.profile",
+									cases: {
+										starter: {
+											authenticationSource:
+												'async () => ({ principal: { id: "starter" } })',
+										},
+										dedicated: {
+											authenticationSource:
+												'async () => ({ principal: { id: "dedicated" } })',
+										},
+									},
+									default: {
+										authenticationSource:
+											'async () => ({ principal: { id: "external" } })',
+									},
+								},
+							},
+						},
+					}
+				: node,
+			),
+		};
+
+		const modules = generatedApplicationFetchGatewayModules(graph);
+		const source = modules?.files["gateway.generated.ts"];
+		expect(source).toContain("APPLIK8S_PROFILE_VARIANT");
+		expect(source).toContain('"starter"');
+		expect(source).toContain('"dedicated"');
+		expect(Object.values(modules?.files ?? {}).join("\n")).toContain(
+			'principal: { id: "external" }',
+		);
 	});
 
 	it("routes relational operations to their generated internal gateway behind the same origin", () => {
@@ -142,6 +391,59 @@ describe("application host Fetch gateway", () => {
 		);
 		expect(modules?.files["gateway.generated.ts"]).not.toContain(
 			"createApplik8sKubernetesGateway({",
+		);
+	});
+
+	it("routes both replay and action requests for a gateway-owned durable signal", () => {
+		const chirp = app("chirp", { namespace: "chirp" });
+		chirp.provide(
+			IdentityProvider,
+			IdentityProvider.deterministic(identityOptions("moderator")),
+		);
+		chirp.database.postgres("chirp", { schema: {} });
+		const ReviewDecision = chirp.workflow.signal(
+			"review-decision.v1",
+			{
+				input: type({ postId: "string" }),
+				actions: {
+					approve: type({ "comment?": "string" }),
+					reject: type({ reason: "string" }),
+				},
+			},
+		);
+		const ReviewRequests = ReviewDecision.subscribe("review-requests", {
+			delivery: "sse",
+			authorize: ({ principal }) =>
+				principal.identity.subject === "moderator",
+		});
+		chirp.gateway("moderation", {
+			subscriptions: [ReviewRequests],
+			authorizeCommand: () => true,
+			deployment: {
+				namespace: "chirp",
+				port: 8080,
+				cursorSecret: { name: "chirp-cursor", key: "key" },
+				authenticate: async () =>
+					createDeterministicApplicationAdmission(
+						identityOptions("moderator"),
+					),
+			},
+		});
+		const graph = applicationGraphFor(chirp.composition);
+		if (!graph) throw new Error("Expected Chirp signal graph.");
+
+		const source =
+			generatedApplicationFetchGatewayModules(graph)?.files[
+				"gateway.generated.ts"
+			];
+		expect(source).toContain(
+			'["stream:review-requests","http://chirp-moderation.chirp.svc:8080"]',
+		);
+		expect(source).toContain(
+			'["signal:review-decision.v1","http://chirp-moderation.chirp.svc:8080"]',
+		);
+		expect(source).toContain(
+			"if (parts[0] === 'signals' && parts[1])",
 		);
 	});
 
@@ -216,6 +518,10 @@ describe("application host Fetch gateway", () => {
 		);
 		expect(source).toContain(
 			"requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET')",
+		);
+		expect(source).not.toContain("applicationAdmittedContextDigest");
+		expect(source).toContain(
+			"return { ...admission, trustedContext: admission.trustedContext ?? {} };",
 		);
 		expect(source).toContain(
 			"agentGateway.handle(request.clone())",
@@ -301,15 +607,21 @@ describe("application host Fetch gateway", () => {
 				},
 			},
 		);
-		Entries.view("published", {
-			input: type({}),
-			output: type({ message: "string" }).array(),
-			authorize: () => true,
-			kubernetes: {
-				namespace: ({ context }) => String(context.namespace),
-				project: ({ value }) => ({ message: value.spec.message }),
+		Entries.view(
+			{
+				input: type({}),
+				output: type({ message: "string" }).array(),
+				authorize: () => true,
+				select: {
+					namespace: (_input, { context }) => String(context.namespace),
+					where: (entry) => entry.status?.phase === "Published",
+					limit: () => 20,
+				},
 			},
-		});
+			function published(entry) {
+				return { message: entry.spec.message };
+			},
+		);
 		const graph = applicationGraphFor(guestbook.composition);
 		if (!graph) throw new Error("Expected GuestBook application graph.");
 
@@ -323,6 +635,15 @@ describe("application host Fetch gateway", () => {
 		);
 		expect(source).toContain("commands: [{");
 		expect(source).toContain("queries: [{");
+		expect(source).toContain(
+			"Applik8s Kubernetes application-host request failed",
+		);
+		expect(source).toContain(
+			"(request.input, { input: request.input, context: request.context })",
+		);
+		expect(source).toContain(
+			"(request.value, { input: request.input, context: request.context })",
+		);
 	});
 
 	it("resolves installation-scoped gateway namespaces from the runtime environment", () => {
@@ -382,7 +703,7 @@ describe("application host Fetch gateway", () => {
 		expect(source).not.toContain("__KUBERNETES_REF___schema___spec.name__");
 	});
 
-	it("fails before deployment when a generated model facade view has no gateway route", () => {
+	it("keeps an unassigned model view out of the public application host and facade", () => {
 		const posts = pgTable("posts", {
 			id: text("id").primaryKey(),
 			body: text("body").notNull(),
@@ -405,12 +726,15 @@ describe("application host Fetch gateway", () => {
 		const graph = applicationGraphFor(chirp.composition);
 		if (!graph) throw new Error("Expected Chirp application graph.");
 
-		expect(() => generatedApplicationFetchGatewayModules(graph)).toThrow(
-			"Generated application facade query Post.timeline is not exposed by a generated gateway. Add Post.timeline to exactly one app.gateway(...).queries list.",
-		);
+		const source =
+			generatedApplicationFetchGatewayModules(graph)?.files[
+				"gateway.generated.ts"
+			];
+		expect(source ?? "").not.toContain("query:Post.timeline");
+		expect(applicationFacadeManifest(graph).models).toEqual([]);
 	});
 
-	it("fails before deployment when a generated model facade command has no gateway route", () => {
+	it("keeps an unassigned custom model command out of the public application host and facade", () => {
 		const posts = pgTable("posts", {
 			id: text("id").primaryKey(),
 			body: text("body").notNull(),
@@ -418,17 +742,7 @@ describe("application host Fetch gateway", () => {
 		});
 		const chirp = app("chirp", { namespace: "chirp" });
 		const database = chirp.database.postgres("chirp", { schema: { posts } });
-		const BasePost = chirp.model(posts, { name: "Post", database });
-		const Publish = command("posts.publish.v1", {
-			input: type({ postId: "string" }),
-			output: type({ published: "boolean" }),
-		});
-		const Post = BasePost.command(
-			"publish",
-			Publish,
-			{ key: ({ postId }) => postId },
-			async () => ({ published: true }),
-		);
+			const Post = chirp.model(posts, { name: "Post", database });
 		chirp.gateway("web", {
 			commands: [Post.create, Post.update, Post.delete],
 			authorizeCommand: () => true,
@@ -442,9 +756,93 @@ describe("application host Fetch gateway", () => {
 		const graph = applicationGraphFor(chirp.composition);
 		if (!graph) throw new Error("Expected Chirp application graph.");
 
-		expect(() => generatedApplicationFetchGatewayModules(graph)).toThrow(
-			"Generated application facade command posts.publish.v1 is not exposed by a generated gateway. Add Post.publish to exactly one app.gateway(...).commands list.",
+		const source =
+			generatedApplicationFetchGatewayModules(graph)?.files[
+				"gateway.generated.ts"
+			];
+		expect(source).not.toContain("command:posts.publish.v1");
+		expect(
+			applicationFacadeManifest(graph)
+				.models.find((model) => model.name === "Post")
+				?.operations.map((operation) => operation.name),
+		).toEqual(["create", "delete", "update"]);
+	});
+
+	it("materializes an internal gateway without publishing its routes or model facade", () => {
+		const receipts = pgTable("receipts", {
+			id: text("id").primaryKey(),
+			revision: text("revision").notNull(),
+		});
+		const chirp = app("chirp", { namespace: "chirp" });
+		const database = chirp.database.postgres("chirp", {
+			schema: { receipts },
+		});
+		const Receipt = chirp.model(receipts, {
+			name: "EngagementBatch",
+			database,
+		});
+		chirp.gateway("system", {
+			visibility: "internal",
+			commands: [Receipt.create],
+			authorizeCommand: () => true,
+			deployment: {
+				namespace: "chirp",
+				port: 8080,
+				cursorSecret: { name: "chirp-cursor", key: "key" },
+				authenticate: async () =>
+					createDeterministicApplicationAdmission(
+						identityOptions("processor"),
+					),
+			},
+		});
+		const graph = applicationGraphFor(chirp.composition);
+		if (!graph) throw new Error("Expected Chirp application graph.");
+
+		expect(graph.nodes).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					kind: "gateway",
+					name: "system",
+					visibility: "internal",
+					materialization: "generatedDeployment",
+				}),
+			]),
 		);
+		const source =
+			generatedApplicationFetchGatewayModules(graph)?.files[
+				"gateway.generated.ts"
+			];
+		expect(source ?? "").not.toContain("chirp-system.chirp.svc");
+		expect(source ?? "").not.toContain("command:EngagementBatch.create");
+		const publishedSource = generatedApplicationFetchGatewayModules(graph, {
+			modelExports: [{
+				name: "EngagementBatch",
+				modelName: "EngagementBatch",
+			}],
+		})?.files["gateway.generated.ts"];
+		expect(publishedSource).toContain("chirp-system.chirp.svc:8080");
+		expect(publishedSource).toContain(
+			"command:models.EngagementBatch.create.v1",
+		);
+		expect(applicationFacadeManifest(graph).models).toEqual([]);
+		expect(
+			applicationFacadeManifest(graph, {
+				modelExports: [{
+					name: "EngagementBatch",
+					modelName: "EngagementBatch",
+				}],
+			}).models,
+		).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				name: "EngagementBatch",
+				operations: expect.arrayContaining([
+					expect.objectContaining({
+						id: "models.EngagementBatch.create.v1",
+						name: "create",
+					}),
+				]),
+			}),
+		]));
 	});
 });
 

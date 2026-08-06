@@ -1,23 +1,13 @@
 import { createFileRoute } from '@tanstack/react-router';
-import { ApplicationQueryHydrationBoundary } from '@applik8s/react';
 import { useState } from 'react';
-import { GuestBookEntry } from '../application';
+import { GuestBookEntry, PublishedEntries } from '../application';
 
-const publishedEntries = GuestBookEntry.published({ guestbook: 'main', limit: 20 });
+const publishedEntries = PublishedEntries({ guestbook: 'main', limit: 20 });
 
 export const Route = createFileRoute('/')({
   loader: () => publishedEntries.snapshot(),
-  component: GuestBookPage,
+  component: GuestBookContent,
 });
-
-function GuestBookPage() {
-  const initial = Route.useLoaderData();
-  return (
-    <ApplicationQueryHydrationBoundary snapshots={[initial]}>
-      <GuestBookContent />
-    </ApplicationQueryHydrationBoundary>
-  );
-}
 
 function GuestBookContent() {
   const entries = publishedEntries.useQuery();

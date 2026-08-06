@@ -30,6 +30,152 @@ export function toKubernetesStructuralOpenApiSchema(schema: JsonObject): JsonObj
   return normalized as JsonObject;
 }
 
+/**
+ * Extends an already validated authored status schema with Applik8s-owned,
+ * restart-safe runtime state. The reserved envelope is deliberately absent
+ * from the user's TypeScript status type while both Kubernetes emitters share
+ * this exact storage contract.
+ */
+export function withApplik8sFrameworkStatusSchema(
+  schema: JsonObject,
+  path: string,
+): JsonObject {
+  if (schema.type !== 'object') {
+    throw new Error(`CRD schema ${path} must be an object for framework status.`);
+  }
+  const properties = isJsonObject(schema.properties)
+    ? { ...schema.properties }
+    : {};
+  if (properties.applik8s !== undefined) {
+    throw new Error(
+      `CRD schema ${path}.applik8s is reserved for framework-owned status.`,
+    );
+  }
+  properties.applik8s = {
+    type: 'object',
+    properties: {
+      trackedExecutions: {
+        type: 'object',
+        additionalProperties: {
+          type: 'object',
+          properties: {
+            resourceUid: { type: 'string', minLength: 1 },
+            resourceGeneration: {
+              type: 'integer',
+              format: 'int64',
+              minimum: 1,
+            },
+            workflow: { type: 'string', minLength: 1 },
+            workflowRevision: { type: 'string', minLength: 1 },
+            run: { type: 'string', minLength: 1 },
+            idempotencyKey: { type: 'string', minLength: 1 },
+            phase: {
+              type: 'string',
+              enum: [
+                'Admitted',
+                'Running',
+                'Succeeded',
+                'Failed',
+                'Cancelled',
+                'TimedOut',
+              ],
+            },
+            admittedAt: { type: 'string', format: 'date-time' },
+            startedAt: { type: 'string', format: 'date-time' },
+            finishedAt: { type: 'string', format: 'date-time' },
+            progress: { 'x-kubernetes-preserve-unknown-fields': true },
+            result: {
+              type: 'object',
+              'x-kubernetes-preserve-unknown-fields': true,
+            },
+            error: {
+              type: 'object',
+              properties: {
+                code: { type: 'string' },
+                message: { type: 'string' },
+                retryable: { type: 'boolean' },
+              },
+              required: ['code', 'message', 'retryable'],
+            },
+            onGenerationChange: {
+              type: 'string',
+              enum: ['supersede', 'cancel'],
+            },
+            onDelete: {
+              type: 'object',
+              properties: {
+                action: { type: 'string', enum: ['detach', 'cancel'] },
+                timeoutMs: {
+                  type: 'integer',
+                  format: 'int64',
+                  minimum: 1,
+                },
+                onTimeout: {
+                  type: 'string',
+                  enum: ['detach', 'block'],
+                },
+              },
+              required: ['action'],
+            },
+            cancellationRequestedAt: {
+              type: 'string',
+              format: 'date-time',
+            },
+            detached: { type: 'boolean' },
+            superseded: {
+              type: 'object',
+              properties: {
+                resourceGeneration: {
+                  type: 'integer',
+                  format: 'int64',
+                  minimum: 1,
+                },
+                workflow: { type: 'string', minLength: 1 },
+                workflowRevision: { type: 'string', minLength: 1 },
+                run: { type: 'string', minLength: 1 },
+                phase: {
+                  type: 'string',
+                  enum: [
+                    'Admitted',
+                    'Running',
+                    'Succeeded',
+                    'Failed',
+                    'Cancelled',
+                    'TimedOut',
+                  ],
+                },
+                supersededAt: { type: 'string', format: 'date-time' },
+                cancellationRequested: { type: 'boolean' },
+              },
+              required: [
+                'resourceGeneration',
+                'workflow',
+                'workflowRevision',
+                'run',
+                'phase',
+                'supersededAt',
+                'cancellationRequested',
+              ],
+            },
+          },
+          required: [
+            'resourceUid',
+            'resourceGeneration',
+            'workflow',
+            'workflowRevision',
+            'run',
+            'phase',
+            'admittedAt',
+            'onGenerationChange',
+            'onDelete',
+          ],
+        },
+      },
+    },
+  };
+  return { ...schema, properties };
+}
+
 function validateStructuralSchemaNode(schema: JsonObject, path: string, root: boolean, diagnostics: Diagnostic[]): void {
   if ('oneOf' in schema || 'anyOf' in schema || 'allOf' in schema || 'not' in schema) {
     diagnostics.push(kubernetesDiagnostic(`CRD schema ${path} uses composition keywords, which are not supported.`));

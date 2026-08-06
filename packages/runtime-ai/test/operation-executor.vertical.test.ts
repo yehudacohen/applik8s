@@ -1,3 +1,4 @@
+// typecast-file-boundary: Executor tests use boundary fixtures to verify operation result validation and narrowing.
 import type {
   ApplicationAuthorizationReceipt,
   ApplicationExecutionPrincipal,
@@ -35,17 +36,21 @@ describe('AI operation executor', () => {
       createdAt: now.toISOString(),
     };
     const reserveToolProposal = vi.fn(async () => proposal);
+    const expectedReceipt = receipt(
+      operation,
+      admission.principal,
+      envelope,
+      inputDigest,
+    );
     const authorizeExecution = vi.fn(async () => ({
       allowed: true as const,
       principal: admission.principal,
-      receipt: receipt(
-        operation,
-        admission.principal,
-        envelope,
-        inputDigest,
-      ),
+      receipt: expectedReceipt,
     }));
-    const dispatch = vi.fn(async ({ invocationToken }) => {
+    const dispatch = vi.fn(async ({
+      invocationToken,
+      authorizationReceipt,
+    }) => {
       const invocation = decodeApplicationInternalOperationInvocation(
         secret,
         invocationToken,
@@ -64,6 +69,7 @@ describe('AI operation executor', () => {
       });
       expect(invocation.idempotencyKey).toBe('command-1');
       expect(invocation.admission).toEqual(admission);
+      expect(authorizationReceipt).toEqual(expectedReceipt);
       return { items: ['source-1'] };
     });
     const invoke = createApplicationAIOperationExecutor({

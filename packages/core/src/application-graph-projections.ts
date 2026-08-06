@@ -11,6 +11,37 @@ import type {
 import type { ApplicationHandlerDependencies } from "./application-graph-gateway.js";
 import type { SourceLocation } from "./common.js";
 
+/**
+ * Compiler-inferred atomic model boundary reached through ordinary callable
+ * model helpers. Registration families select the trigger-owned durable
+ * identity; application authors never declare this dependency list.
+ */
+export interface ApplicationFunctionNativeTransactionContract {
+	readonly primaryModel: ApplicationGraphNodeRef;
+	readonly models: readonly ApplicationGraphNodeRef[];
+	readonly modelBindings: readonly {
+		readonly identifier: string;
+		readonly model: ApplicationGraphNodeRef;
+		readonly access: "read" | "write";
+	}[];
+	/**
+	 * Authored callback identifiers that must hydrate to graph-owned event
+	 * handles inside the generated runtime. The compiler records these aliases
+	 * so workers never import and replay an application authoring module.
+	 */
+	readonly eventBindings?: readonly {
+		readonly identifier: string;
+		readonly event: ApplicationGraphNodeRef;
+	}[];
+	readonly outbox: readonly ApplicationGraphNodeRef[];
+	readonly idempotency:
+		| "source-event-id"
+		| "frozen-batch-id"
+		| "durable-task-invocation"
+		| "agent-tool-call"
+		| "http-idempotency-key";
+}
+
 export interface ApplicationStreamProcessorNode
 	extends ApplicationGraphNodeBase<"streamProcessor"> {
 	/** Installation-derived condition controlling whether this processor exists. */
@@ -21,6 +52,12 @@ export interface ApplicationStreamProcessorNode
 	readonly handlerDependencies?: ApplicationHandlerDependencies;
 	readonly handlerLocation?: SourceLocation;
 	readonly handlerUnresolved?: readonly string[];
+	/**
+	 * Compiler-inferred transaction boundary reached through ordinary helper
+	 * calls. The event or frozen-batch identity supplies durable idempotency;
+	 * application code never authors this dependency list.
+	 */
+	readonly functionNativeTransaction?: ApplicationFunctionNativeTransactionContract;
 	/** Recurring workflow/task schedules explicitly available to this effect handler. */
 	readonly schedules?: readonly {
 		readonly alias: string;
@@ -31,7 +68,7 @@ export interface ApplicationStreamProcessorNode
 			readonly input: ApplicationMessageContractSchema;
 		};
 	}[];
-	/** One-shot durable tasks explicitly available to this effect handler. */
+	/** One-shot durable workflows (or legacy task bindings) explicitly available to this effect handler. */
 	readonly tasks?: readonly {
 		readonly alias: string;
 		readonly target: ApplicationGraphNodeRef;
@@ -44,7 +81,16 @@ export interface ApplicationStreamProcessorNode
 	}[];
 	readonly workflowEngine?: ApplicationProviderRef<"WorkflowEngine">;
 	readonly delivery: "at-least-once";
-	readonly idempotency: "source-event-id";
+	readonly invocation: "event" | "batch";
+	readonly idempotency: "source-event-id" | "frozen-batch-id";
+	readonly batch?: {
+		readonly maxItems: number;
+		readonly maxBytes: number;
+		readonly maxWaitMs: number;
+		readonly ordering: "partition";
+		readonly acknowledgement: "wholeBatch";
+		readonly membership: "durableFrozenManifest";
+	};
 	readonly checkpoint: "postgres";
 	readonly failure: "pause" | "deadLetter";
 	readonly retry: Required<
@@ -68,6 +114,21 @@ export interface ApplicationProjectionNode
 	readonly rebuildable: boolean;
 	readonly checkpoint: "transactional" | "idempotent" | "external";
 	readonly output: ApplicationMessageContractSchema;
+	/**
+	 * Explicit capability-bearing output fields. Ordinary projection fields
+	 * cannot persist a signal reference merely because their JSON shape fits.
+	 */
+	readonly capabilityFields?: readonly {
+		readonly path: string;
+		readonly kind: "signalReference";
+		readonly contract: {
+			readonly id: string;
+			readonly name: string;
+			readonly version: string;
+		};
+		readonly visibility: "same-as-issuance";
+		readonly maxAgeSeconds: number;
+	}[];
 	readonly eventIdentity: "stable-source-event-id";
 	readonly duplicateHandling: "idempotent";
 	readonly rebuild: "full-replay";

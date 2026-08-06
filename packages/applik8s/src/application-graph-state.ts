@@ -29,7 +29,7 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
     providerRequirements: requirements,
     providerBindings: bindings,
     compatibility: {
-      stablePublicApis: ['sdk.kubernetesComposition', 'app.installation', 'app.server', 'app.http', 'app.crd', 'app.resource', 'app.model', 'app.on', 'app.reconcile', 'app.database.postgres', 'app.objectStore', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'app.profile', 'app.inject', 'Provider.named', 'app.select', 'app.selectProvider', 'app.when', 'app.any', 'app.all', 'app.interpolate', 'app.aggregate', 'app.config', 'app.secret', 'app.expose', 'app.query', 'app.gateway', 'app.stream', 'app.subscription', 'app.projection', 'app.agent', 'app.mcp', 'app.mcp.client', 'Stream.process', 'Stream.project', 'Stream.subscribe', 'Resource.index', 'Resource.increment', 'command', 'event', 'stream', 'task', 'workflow', 'Model.create', 'Model.update', 'Model.delete', 'Model.on.create', 'Model.on.update', 'Model.on.delete', 'Model.operation', 'Model.on.operation', 'Model.action', 'Model.on.action', 'Model.command', 'Model.on.command', 'app.task', 'app.workflow', 'provider.TransactionalDatabase', 'provider.AnalyticalDatabase', 'provider.IndexStore', 'provider.CounterStore', 'provider.EventSource', 'provider.EventLog', 'provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.Certificate', 'provider.DnsPublication', 'provider.CredentialStore', 'provider.WorkflowEngine', 'provider.Authorization', 'provider.StructuredGeneration', 'provider.AI'],
+      stablePublicApis: ['sdk.kubernetesComposition', 'app.installation', 'app.server', 'app.http', 'app.crd', 'app.resource', 'app.model', 'Resource.on.reconcile', 'app.database.postgres', 'app.objectStore', 'app.job', 'app.schedule', 'app.defaults', 'app.provide', 'app.profile', 'app.inject', 'Provider.named', 'app.select', 'app.selectProvider', 'app.when', 'app.any', 'app.all', 'app.interpolate', 'app.aggregate', 'app.config', 'app.secret', 'app.expose', 'app.query', 'app.gateway', 'app.stream', 'app.subscription', 'app.projection', 'app.agent', 'app.mcp', 'app.mcp.client', 'Stream.process', 'Stream.project', 'Stream.subscribe', 'Resource.index', 'Resource.increment', 'command', 'event', 'stream', 'workflow', 'Model.create', 'Model.update', 'Model.delete', 'Model.require', 'Model.edit', 'Model.on.create', 'Model.on.update', 'Model.on.delete', 'app.workflow', 'provider.TransactionalDatabase', 'provider.AnalyticalDatabase', 'provider.IndexStore', 'provider.CounterStore', 'provider.EventSource', 'provider.EventLog', 'provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.Certificate', 'provider.DnsPublication', 'provider.CredentialStore', 'provider.WorkflowEngine', 'provider.Authorization', 'provider.StructuredGeneration', 'provider.AI'],
       documentedInternalContracts: ['ApplicationGraph'],
       experimentalSurfaces: ['app.graph'],
       postV3Surfaces: ['workload-movement-operator', 'additional-provider-adapters'],
@@ -37,13 +37,12 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
         stableApiLabel('sdk.kubernetesComposition', 'v0.2', 'Canonical TypeKro-backed app composition entrypoint.'),
         stableApiLabel('app.installation', 'v0.7', 'Typed installable Application CRD contract shared by generated manifests, operators, and application code.'),
         stableApiLabel('app.server', 'v0.2', 'Generated app-server workload entrypoint with inferred resources and RBAC.'),
-        stableApiLabel('app.http', 'v0.3', 'Golden-path generated HTTP workload entrypoint; aliases app.server while preserving generated artifacts and RBAC.'),
+        stableApiLabel('app.http', 'v0.7', 'Typed function-native HTTP registrar with schema, authority, authenticated principal, and context-scoped idempotency boundaries.'),
         stableApiLabel('app.crd', 'v0.2', 'Schema-first Kubernetes CRD materialization entrypoint.'),
         stableApiLabel('app.resource', 'v0.3', 'Golden-path Kubernetes control-plane resource declaration that materializes as an app-owned CRD.'),
         { name: 'ApplicationGraph', surface: 'documentedInternalContract', since: 'v0.3', rationale: 'Substrate-freeze app IR before lowering.', implementation: 'implemented' },
         stableApiLabel('app.model', 'v0.3', 'Schema-first storage-backed model materialization entrypoint.'),
-        stableApiLabel('app.on', 'v0.6', 'App-native Kubernetes lifecycle event registration for created, updated, deleted, statusChanged, reconcile, and finalize handlers.'),
-        stableApiLabel('app.reconcile', 'v0.3', 'Golden-path app-scoped reconcile handler entrypoint backed by a generated operator install.'),
+        stableApiLabel('Resource.on.reconcile', 'v0.7', 'Resource-native reconcile handler entrypoint backed by an inferred generated operator install.'),
         stableApiLabel('app.database.postgres', 'v0.7', 'Canonical native relational authority binding backed by PostgreSQL/CNPG.'),
         stableApiLabel('app.objectStore', 'v0.7', 'Provider-neutral bounded object store declaration with server-only credentials, integrity metadata, and optional signed browser intents.'),
         stableApiLabel('app.job', 'v0.3', 'Durable generated Kubernetes Job task entrypoint with diagnostics and status metadata.'),
@@ -76,25 +75,19 @@ export function applicationGraphFromState(name: string, state: ApplicationGraphS
         { name: 'app.graph', surface: 'experimentalSurface', since: 'v0.3', rationale: 'Direct graph introspection remains experimental while the serialized ApplicationGraph artifact is the documented contract.', implementation: 'failClosedReserved' },
         stableApiLabel('command', 'v0.4', 'Inert versioned command contracts with durable schema, identity, result, and compatibility semantics.'),
         stableApiLabel('event', 'v0.4', 'Inert versioned committed-fact contracts written through declared transactional outboxes.'),
-        stableApiLabel('Model.on.command', 'v0.4', 'Low-level keyed command registration for explicit command contracts; ordinary domain code should prefer direct lifecycle mutations or Model.operation.'),
         stableApiLabel('Model.create', 'v0.7', 'Direct schema-derived durable relational creation with transactional outbox change delivery.'),
         stableApiLabel('Model.update', 'v0.7', 'Direct schema-derived durable relational update with transactional outbox change delivery.'),
         stableApiLabel('Model.delete', 'v0.7', 'Direct schema-derived durable relational deletion with retained typed tombstones.'),
+        stableApiLabel('Model.require', 'v0.7', 'Required transaction-scoped point read inferred from the enclosing managed closure.'),
+        stableApiLabel('Model.edit', 'v0.7', 'Model-authoritative atomic mutation boundary inside an ordinary managed TypeScript function.'),
         stableApiLabel('Model.on.create', 'v0.7', 'Typed bounded processing of committed model creation events.'),
         stableApiLabel('Model.on.update', 'v0.7', 'Typed bounded processing of committed model update events with previous/current snapshots.'),
         stableApiLabel('Model.on.delete', 'v0.7', 'Typed bounded processing of committed model deletion events with previous snapshots and tombstones.'),
-        stableApiLabel('Model.operation', 'v0.7', 'Single declaration for exceptional non-CRUD model behavior; derives the direct method and its typed committed Model.on.<verb> completion stream.'),
-        stableApiLabel('Model.on.operation', 'v0.7', 'Low-level operation registration used by Model.operation; ordinary domain code should use the direct named method.'),
-        stableApiLabel('Model.action', 'v0.7', 'Deprecated compatibility alias for Model.operation until 1.0.'),
-        stableApiLabel('Model.on.action', 'v0.7', 'Deprecated compatibility alias for Model.on.operation until 1.0.'),
-        stableApiLabel('Model.command', 'v0.4', 'Versioned command contract foundation retained for explicit protocol-level operations.'),
         stableApiLabel('provider.EventLog', 'v0.4', 'Durable at-least-once transport implemented by NATS JetStream while PostgreSQL remains authoritative.'),
         stableApiLabel('provider.Certificate', 'v0.4', 'Managed TLS intent materializes cert-manager Certificate resources while issuer lifecycle remains platform-owned.'),
         stableApiLabel('provider.DnsPublication', 'v0.4', 'Managed DNS intent materializes external-dns declarations without claiming propagation readiness.'),
-        stableApiLabel('task', 'v0.5', 'Inert provider-neutral durable task contract with schemas, versioned identity, durable results, and named errors.'),
         stableApiLabel('workflow', 'v0.5', 'Inert provider-neutral durable workflow contract with schemas, versioned identity, signals, and named errors.'),
-        stableApiLabel('app.task', 'v0.5', 'App-bound idempotent external-effect task materialized by the selected WorkflowEngine provider.'),
-        stableApiLabel('app.workflow', 'v0.5', 'App-bound durable orchestration with declared tasks, child workflows, waits, schedules, signals, cancellation, and deterministic time.'),
+        stableApiLabel('app.workflow', 'v0.5', 'Function-native durable orchestration with compiler-inferred retryable effect steps, child workflows, waits, schedules, signals, cancellation, and deterministic time.'),
         stableApiLabel('provider.WorkflowEngine', 'v0.5', 'Durable task and workflow execution contract initially implemented by Hatchet with operational PostgreSQL authority.'),
         stableApiLabel('app.query', 'v0.6', 'Versioned authorized query contract with bounded snapshots and invalidation/requery semantics.'),
         stableApiLabel('app.gateway', 'v0.6', 'Authenticated HTTP/SSE bridge for public query snapshots, scoped cursors, resume, and reset.'),
@@ -183,13 +176,37 @@ export function addApplicationGraphNode(state: ApplicationGraphState, node: Appl
       existing?.kind === 'provider'
       && node.kind === 'provider'
       && existing.interface === node.interface
-      && existing.implementation === node.implementation
     ) {
-      state.graphNodes[index] = {
-        ...existing,
-        ...node,
-        config: { ...(existing.config ?? {}), ...(node.config ?? {}) },
-      };
+      const inheritedAlias =
+        node.config?.aliasOf === undefined
+          ? existing.config?.aliasOf
+          : undefined;
+      state.graphNodes[index] =
+        existing.implementation === node.implementation
+          ? {
+              ...existing,
+              ...node,
+              config: {
+                ...(existing.config ?? {}),
+                ...(node.config ?? {}),
+                ...(inheritedAlias !== undefined
+                  ? { aliasOf: inheritedAlias }
+                  : {}),
+              },
+            }
+          : {
+              ...node,
+              ...(node.config || inheritedAlias !== undefined
+                ? {
+                    config: {
+                      ...(node.config ?? {}),
+                      ...(inheritedAlias !== undefined
+                        ? { aliasOf: inheritedAlias }
+                        : {}),
+                    },
+                  }
+                : {}),
+            };
       state.onChange?.();
       return;
     }

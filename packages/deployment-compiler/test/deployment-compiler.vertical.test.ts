@@ -28,6 +28,7 @@ describe("Application deployment compiler", () => {
     );
     expect(first.graph.nodes.map(({ id }) => id)).toEqual([
       "artifact.web",
+      "direct.namespace.control-plane",
       "direct.namespace.workload",
       "kubernetes.application",
     ]);
@@ -44,11 +45,25 @@ describe("Application deployment compiler", () => {
           to: "kubernetes.application",
           relationship: "requiresReady",
         },
+        {
+          from: "direct.namespace.control-plane",
+          to: "kubernetes.application",
+          relationship: "requiresReady",
+        },
       ]),
     );
+    expect(
+      first.graph.nodes.find(
+        (node) => node.id === "direct.namespace.control-plane",
+      )?.lifecycle,
+    ).toMatchObject({
+      ownership: "application",
+      deletion: "retain",
+      adoption: "createOrAdoptExact",
+    });
   });
 
-  it("never owns the control-plane or Kubernetes protected namespaces", () => {
+  it("never creates Kubernetes protected control-plane or workload namespaces", () => {
     const result = compileApplicationDeploymentGraph({
       ...request(),
       identity: {
@@ -71,6 +86,276 @@ describe("Application deployment compiler", () => {
           && node.spec.compositionId === "applik8s-namespace",
       ),
     ).toEqual([]);
+  });
+
+  it("treats the External workload namespace as a pre-existing lifecycle boundary", () => {
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph: {
+        ...request().graph,
+        metadata: {
+          ...request().graph.metadata,
+          namespace: "external-workload",
+        },
+      },
+      identity: {
+        ...request().identity,
+        instance: "external-guestbook",
+        profile: "external",
+      },
+      installationSpec: {
+        name: "external-guestbook",
+        profile: "external",
+      },
+      generatedSecrets: [
+        {
+          id: "external-guestbook.runtime",
+          namespace: "external-workload",
+          name: "external-guestbook-runtime",
+          values: {
+            key: {
+              kind: "random",
+              bytes: 48,
+              encoding: "base64url",
+            },
+          },
+          consumers: ["external-guestbook"],
+        },
+      ],
+    });
+
+    expect(
+      result.graph.nodes.filter(
+        (node) =>
+          node.kind === "kubernetesDirect"
+          && node.spec.compositionId === "applik8s-namespace",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        id: "direct.namespace.control-plane",
+        lifecycle: expect.objectContaining({ deletion: "retain" }),
+        spec: expect.objectContaining({
+          configuration: { name: "applik8s-system" },
+        }),
+      }),
+    ]);
+    expect(
+      result.graph.nodes.find(
+        (node) =>
+          node.id ===
+          "external.generated-secret.external-guestbook.runtime",
+      ),
+    ).toMatchObject({
+      scope: { namespace: "external-workload" },
+      lifecycle: {
+        ownership: "application",
+        deletion: "delete",
+      },
+    });
+    expect(
+      result.graph.edges.some(
+        (edge) => edge.from === "direct.namespace.workload",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps generated Hatchet credentials out of the artifact surface", () => {
+    const base = applicationGraph();
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph: {
+        ...base,
+        nodes: [
+          ...base.nodes,
+          {
+            id: "provider.workflow-engine",
+            kind: "provider",
+            name: "WorkflowEngine",
+            stability: "stable",
+            interface: "WorkflowEngine",
+            implementation: "hatchet",
+            config: {
+              kind: "hatchet",
+              name: "guestbook-workflows",
+              namespace: "guestbook",
+              provision: true,
+              apiUrl:
+                "http://guestbook-workflows-api.guestbook.svc:8080",
+            },
+          },
+        ],
+      },
+    });
+    const secret = result.graph.nodes.find(
+      (node) =>
+        node.id === "external.provider.workflow-engine.admin-secret",
+    );
+    const databaseSecret = result.graph.nodes.find(
+      (node) =>
+        node.id === "external.provider.workflow-engine.database-secret",
+    );
+
+    expect(secret).toMatchObject({
+      kind: "externalProvider",
+      spec: {
+        resourceType: "kubernetesGeneratedSecret",
+        referenceMode: "staticIdentity",
+      },
+    });
+    expect(result.graph.edges).toContainEqual({
+      from: secret?.id,
+      to: "direct.provider.workflow-engine.hatchet",
+      relationship: "requiresReady",
+    });
+    expect(result.graph.edges).not.toContainEqual({
+      from: secret?.id,
+      to: "kubernetes.application",
+      relationship: "requiresOutput",
+      output: "name",
+    });
+    expect(databaseSecret).toMatchObject({
+      kind: "externalProvider",
+      spec: {
+        resourceType: "kubernetesGeneratedSecret",
+        referenceMode: "staticIdentity",
+        configuration: {
+          name: "guestbook-workflows-database",
+          secretType: "kubernetes.io/basic-auth",
+          values: {
+            username: {
+              kind: "publicLiteral",
+              value: "hatchet",
+            },
+            password: {
+              kind: "random",
+              encoding: "base64url",
+            },
+            DATABASE_URL: {
+              kind: "template",
+            },
+          },
+        },
+      },
+    });
+    expect(result.graph.edges).toContainEqual({
+      from: databaseSecret?.id,
+      to: "direct.provider.workflow-engine.database",
+      relationship: "requiresReady",
+    });
+    expect(result.graph.edges).not.toContainEqual({
+      from: databaseSecret?.id,
+      to: "kubernetes.application",
+      relationship: "requiresOutput",
+      output: "name",
+    });
+    expect(
+      result.graph.nodes.find(
+        (node) => node.id === "direct.provider.workflow-engine.database",
+      ),
+    ).toMatchObject({
+      kind: "kubernetesDirect",
+      spec: {
+        compositionId: "applik8s-postgres-cluster-provider",
+        configuration: {
+          name: "guestbook-workflows-db",
+          namespace: "guestbook",
+          spec: {
+            bootstrap: {
+              initdb: {
+                database: "hatchet",
+                owner: "hatchet",
+                secret: { name: "guestbook-workflows-database" },
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(
+      result.graph.nodes.find(
+        (node) => node.id === "direct.provider.workflow-engine.hatchet",
+      ),
+    ).toMatchObject({
+      kind: "kubernetesDirect",
+      spec: {
+        compositionId: "hatchet-installation",
+        configuration: {
+          name: "guestbook-workflows",
+          namespace: "guestbook",
+          namespaceOwnership: "external",
+          repositoryNamespaceOwnership: "external",
+          database: {
+            connectionSecret: {
+              name: "guestbook-workflows-database",
+            },
+          },
+          adminCredentialsSecret: {
+            name: "guestbook-workflows-admin",
+          },
+        },
+      },
+    });
+  });
+
+  it("lowers compiler-owned CRDs into retained API prerequisites before the application", () => {
+    const manifest = {
+      apiVersion: "apiextensions.k8s.io/v1",
+      kind: "CustomResourceDefinition",
+      metadata: { name: "entries.example.test" },
+      spec: {
+        group: "example.test",
+        scope: "Namespaced",
+        names: {
+          plural: "entries",
+          singular: "entry",
+          kind: "Entry",
+        },
+        versions: [
+          {
+            name: "v1alpha1",
+            served: true,
+            storage: true,
+            schema: {
+              openAPIV3Schema: {
+                type: "object",
+              },
+            },
+          },
+        ],
+      },
+    } as const;
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      clusterApiPrerequisites: [manifest],
+    });
+    const crd = result.graph.nodes.find(
+      (node) =>
+        node.kind === "kubernetesDirect" &&
+        node.spec.compositionId === "applik8s-custom-resource-definition",
+    );
+
+    expect(crd).toMatchObject({
+      provider: {
+        interface: "CustomResourceDefinition",
+        implementation: "typekro-kubernetes",
+      },
+      lifecycle: {
+        ownership: "shared",
+        deletion: "retain",
+        adoption: "createOrAdoptExact",
+      },
+      spec: {
+        configuration: {
+          name: "entries.example.test",
+          manifest,
+        },
+      },
+    });
+    expect(result.graph.edges).toContainEqual({
+      from: crd?.id,
+      to: "kubernetes.application",
+      relationship: "installsApi",
+    });
   });
 
   it("carries the reviewed profile transition into the portable plan identity", () => {
@@ -245,7 +530,7 @@ describe("Application deployment compiler", () => {
                 selectedBy: "schema.spec.profile",
                 branches: [
                   {
-                    variant: "starter",
+                    variant: "local",
                     implementation: "ai-deterministic",
                     config: { kind: "ai-deterministic", production: false },
                     resources: [],
@@ -273,10 +558,191 @@ describe("Application deployment compiler", () => {
           expect.objectContaining({
             sourceNodeId: "provider.ai.v1alpha1.inference",
             providerInterface: "AI",
-            providerImplementation: "application-provider-selection",
-            execution: "root-composition",
+            providerImplementation: "ai-deterministic",
+            execution: "runtime-only",
           }),
         ]),
+      },
+    });
+  });
+
+  it("materializes only the selected profile provider infrastructure", () => {
+    const graph = applicationGraph();
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph: {
+        ...graph,
+        nodes: [
+          ...graph.nodes,
+          {
+            id: "provider.search.v1alpha1.primary",
+            kind: "provider",
+            name: "Search",
+            stability: "stable",
+            interface: "Search",
+            implementation: "application-provider-selection",
+            config: {
+              search: {
+                kind: "application-provider-selection",
+                selector: "schema.spec.profile",
+                cases: {
+                  local: {
+                    kind: "postgres-search",
+                    schema: "starter_search",
+                  },
+                  dedicated: {
+                    kind: "opensearch",
+                    name: "guestbook-search",
+                    namespace: "guestbook",
+                    provision: true,
+                    profile: "production",
+                    topology: { nodes: 3 },
+                    storage: { size: "20Gi" },
+                  },
+                },
+                default: {
+                  kind: "postgres-search",
+                  schema: "starter_search",
+                },
+              },
+              profile: {
+                selectedBy: "schema.spec.profile",
+                branches: [
+                  {
+                    variant: "local",
+                    implementation: "postgres-search",
+                    config: { kind: "postgres-search" },
+                    resources: [],
+                    credentialReferences: [],
+                    provenance: "application",
+                  },
+                  {
+                    variant: "dedicated",
+                    implementation: "opensearch/guestbook-search",
+                    config: { kind: "opensearch" },
+                    resources: ["OpenSearchCluster"],
+                    credentialReferences: [],
+                    provenance: "application",
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(
+      result.graph.nodes.filter(
+        (node) =>
+          node.kind === "kubernetesDirect"
+          && node.source.semanticNodeId
+            === "provider.search.v1alpha1.primary",
+      ),
+    ).toEqual([]);
+    expect(
+      result.graph.nodes.find(
+        (node) => node.kind === "kubernetesComposition",
+      ),
+    ).toMatchObject({
+      spec: {
+        fragments: expect.arrayContaining([
+          expect.objectContaining({
+            sourceNodeId: "provider.search.v1alpha1.primary",
+            providerImplementation: "postgres-search",
+            execution: "runtime-only",
+          }),
+        ]),
+      },
+    });
+
+    const dedicated = compileApplicationDeploymentGraph({
+      ...request(),
+      identity: { ...request().identity, profile: "dedicated" },
+      installationSpec: {
+        name: "guestbook",
+        profile: "dedicated",
+        providers: {
+          search: {
+            name: "guestbook-search",
+            namespace: "guestbook",
+          },
+        },
+      },
+      graph: {
+        ...graph,
+        nodes: result.graph.metadata.sourceGraphDigest
+          ? [
+              ...graph.nodes,
+              {
+                id: "provider.search.v1alpha1.primary",
+                kind: "provider",
+                name: "Search",
+                stability: "stable",
+                interface: "Search",
+                implementation: "application-provider-selection",
+                config: {
+                  search: {
+                    kind: "application-provider-selection",
+                    selector: "schema.spec.profile",
+                    cases: {
+                      local: { kind: "postgres-search", schema: "starter_search" },
+                      dedicated: {
+                        kind: "opensearch",
+                        name: "alias-must-not-win",
+                        namespace: "alias-must-not-win",
+                        provision: true,
+                        profile: "production",
+                        topology: { nodes: 3 },
+                        storage: { size: "20Gi" },
+                      },
+                    },
+                    default: { kind: "postgres-search", schema: "starter_search" },
+                  },
+                  profile: {
+                    selectedBy: "schema.spec.profile",
+                    branches: [
+                      { variant: "local", implementation: "postgres-search", config: {}, resources: [], credentialReferences: [], provenance: "application" },
+                      {
+                        variant: "dedicated",
+                        implementation: "opensearch/guestbook-search",
+                        config: {
+                          kind: "opensearch",
+                          name: "${schema.spec.providers.search.name}",
+                          namespace: "${schema.spec.providers.search.namespace}",
+                        },
+                        resources: [],
+                        credentialReferences: [],
+                        provenance: "application",
+                      },
+                    ],
+                  },
+                },
+              },
+            ]
+          : [],
+      },
+    });
+    expect(
+      dedicated.graph.nodes
+        .filter((node) => node.kind === "kubernetesDirect")
+        .map((node) => node.spec.compositionId),
+    ).toEqual(expect.arrayContaining([
+      "opensearch-operator-bootstrap",
+      "opensearch-cluster",
+    ]));
+    expect(
+      dedicated.graph.nodes.find(
+        (node) =>
+          node.kind === "kubernetesDirect"
+          && node.spec.compositionId === "opensearch-cluster",
+      ),
+    ).toMatchObject({
+      spec: {
+        configuration: {
+          name: "guestbook-search",
+          namespace: "guestbook",
+        },
       },
     });
   });
@@ -553,6 +1019,15 @@ describe("Application deployment compiler", () => {
       "opensearch-operator-bootstrap",
       "opensearch-cluster",
       "applik8s-namespace",
+      "applik8s-namespace",
+    ]);
+    expect(
+      direct
+        .filter((node) => node.spec.compositionId === "applik8s-namespace")
+        .map((node) => node.id),
+    ).toEqual([
+      "direct.namespace.control-plane",
+      "direct.namespace.workload",
     ]);
     expect(direct.find((node) => node.id.endsWith(".operator"))?.lifecycle).toMatchObject({
       ownership: "shared",
@@ -601,6 +1076,637 @@ describe("Application deployment compiler", () => {
     }
   });
 
+  it("lowers Starter local S3 into generated credentials plus one persistent TypeKro boundary", () => {
+    const graph = applicationGraph();
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph: {
+        ...graph,
+        metadata: { ...graph.metadata, namespace: "guestbook" },
+        nodes: [
+          {
+            id: "provider.objects",
+            kind: "provider",
+            name: "ObjectStorage",
+            stability: "stable",
+            interface: "ObjectStorage",
+            implementation: "s3",
+            config: {
+              objectStorage: {
+                kind: "s3",
+                enabled: true,
+                name: "objects",
+                endpoint: "http://guestbook-objects.guestbook.svc:8333",
+                ownership: "direct-provisioned",
+                bucket: "guestbook-objects",
+                region: "us-east-1",
+                credentialsSecret: {
+                  apiVersion: "v1",
+                  kind: "Secret",
+                  namespace: "guestbook",
+                  name: "guestbook-objects-credentials",
+                },
+                provisioning: {
+                  kind: "local-s3",
+                  enabled: true,
+                  name: "guestbook-objects",
+                  storageSize: "2Gi",
+                  storageClassName: "local-path",
+                },
+              },
+            },
+          },
+        ],
+      },
+      identity: { ...request().identity, profile: "starter" },
+      installationSpec: { name: "guestbook", profile: "starter" },
+    });
+    const credentials = result.graph.nodes.find(
+      (node) =>
+        node.id === "external.provider.objects.local-s3-credentials",
+    );
+    const localS3 = result.graph.nodes.find(
+      (node) => node.id === "direct.provider.objects.local-s3",
+    );
+
+    expect(credentials).toMatchObject({
+      kind: "externalProvider",
+      lifecycle: { ownership: "application", deletion: "delete" },
+      spec: {
+        resourceType: "kubernetesGeneratedSecret",
+        referenceMode: "staticIdentity",
+        configuration: {
+          namespace: "guestbook",
+          name: "guestbook-objects-credentials",
+          values: {
+            AWS_ACCESS_KEY_ID: {
+              kind: "random",
+              bytes: 32,
+              encoding: "base64url",
+            },
+            AWS_SECRET_ACCESS_KEY: {
+              kind: "random",
+              bytes: 32,
+              encoding: "base64url",
+            },
+          },
+        },
+      },
+    });
+    expect(localS3).toMatchObject({
+      kind: "kubernetesDirect",
+      spec: {
+        compositionId: "applik8s-local-s3",
+        configuration: {
+          name: "guestbook-objects",
+          namespace: "guestbook",
+          bucket: "guestbook-objects",
+          credentialsSecretName: "guestbook-objects-credentials",
+          image:
+            "docker.io/chrislusf/seaweedfs@sha256:f898c91e42d7da5f4bb13f1efd424ff03ba85b420312eb929708a384e8a8b03d",
+          storage: { size: "2Gi", storageClassName: "local-path" },
+        },
+      },
+    });
+    expect(result.graph.edges).toContainEqual({
+      from: credentials?.id,
+      to: localS3?.id,
+      relationship: "requiresReady",
+    });
+    expect(result.graph.edges).not.toContainEqual({
+      from: credentials?.id,
+      to: "kubernetes.application",
+      relationship: "requiresReady",
+    });
+    expect(result.graph.edges).toContainEqual({
+      from: localS3?.id,
+      to: "kubernetes.application",
+      relationship: "requiresReady",
+    });
+    expect(JSON.stringify(result.graph)).not.toContain(
+      '"AWS_SECRET_ACCESS_KEY":"',
+    );
+  });
+
+  it("lowers managed JetStream into a direct provider lifecycle before the application", () => {
+    const graph: ApplicationGraph = {
+      ...applicationGraph(),
+      metadata: { ...applicationGraph().metadata, namespace: "guestbook" },
+      nodes: [
+        {
+          id: "provider.event-log",
+          kind: "provider",
+          name: "EventLog",
+          stability: "stable",
+          interface: "EventLog",
+          implementation: "nats-jetstream",
+          config: {
+            name: "guestbook-events",
+            namespace: "guestbook",
+            provision: true,
+            replicas: 3,
+            storageSize: "20Gi",
+            storageClassName: "ceph-block",
+            pvcRetentionPolicy: "retain",
+          },
+        },
+      ],
+    };
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph,
+      identity: { ...request().identity, profile: "dedicated" },
+      installationSpec: { name: "guestbook", profile: "dedicated" },
+    });
+    const nats = result.graph.nodes.find(
+      (node) => node.id === "direct.provider.event-log.nats",
+    );
+
+    expect(nats).toMatchObject({
+      kind: "kubernetesDirect",
+      provider: {
+        interface: "EventLog",
+        implementation: "nats-bootstrap",
+      },
+      lifecycle: {
+        ownership: "application",
+        deletion: "delete",
+      },
+      spec: {
+        compositionId: "nats-bootstrap",
+        configuration: {
+          name: "guestbook-events",
+          namespace: "guestbook",
+          namespaceOwnership: "external",
+          replicas: 3,
+          storageSize: "20Gi",
+          pvcRetentionPolicy: "retain",
+          values: {
+            config: {
+              jetstream: {
+                fileStore: {
+                  pvc: { storageClassName: "ceph-block" },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    expect(result.graph.edges).toContainEqual({
+      from: "direct.namespace.workload",
+      to: nats?.id,
+      relationship: "requiresReady",
+    });
+    expect(result.graph.edges).toContainEqual({
+      from: nats?.id,
+      to: "kubernetes.application",
+      relationship: "requiresReady",
+    });
+    expect(
+      result.graph.nodes.find(
+        (node) => node.id === "kubernetes.application",
+      )?.spec,
+    ).toMatchObject({
+      fragments: [
+        expect.objectContaining({
+          sourceNodeId: "provider.event-log",
+          execution: "direct-provider",
+        }),
+      ],
+    });
+
+    const eventLogProvider = graph.nodes[0];
+    if (eventLogProvider?.kind !== "provider") {
+      throw new Error("Managed EventLog fixture is missing its provider node.");
+    }
+    const external = compileApplicationDeploymentGraph({
+      ...request(),
+      graph: {
+        ...graph,
+        nodes: [
+          {
+            ...eventLogProvider,
+            config: {
+              name: "external-events",
+              provision: false,
+              servers: ["nats://external.messaging.svc:4222"],
+            },
+          },
+        ],
+      },
+    });
+    expect(
+      external.graph.nodes.some(
+        (node) =>
+          node.kind === "kubernetesDirect"
+          && node.spec.compositionId === "nats-bootstrap",
+      ),
+    ).toBe(false);
+  });
+
+  it("deploys a qualified primary provider once without its derived unqualified alias", () => {
+    const base = applicationGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      metadata: { ...base.metadata, namespace: "identity-start-system" },
+      nodes: [
+        {
+          id: "provider.event-log",
+          kind: "provider",
+          name: "EventLog",
+          stability: "stable",
+          interface: "EventLog",
+          implementation: "nats-jetstream",
+          config: {
+            bindingKind: "commandTransport",
+            name: "identity-start-events",
+            namespace: "identity-start-system",
+            provision: true,
+            replicas: 1,
+            storageSize: "2Gi",
+          },
+        },
+        {
+          id: "provider.event-log.v1alpha1.primary",
+          kind: "provider",
+          name: "EventLog",
+          stability: "stable",
+          interface: "EventLog",
+          implementation: "application-provider-selection",
+          config: {
+            bindingKind: "provided",
+            qualification: {
+              apiVersion: "applik8s.providerQualification/v1alpha1",
+              capability: "EventLog",
+              compatibilityRevision: "v1alpha1",
+              key: "EventLog@v1alpha1:primary",
+              name: "primary",
+            },
+            profile: {
+              selectedBy: "schema.spec.profile",
+              branches: [
+                {
+                  variant: "starter",
+                  implementation: "nats-jetstream/identity-start-events",
+                  config: {
+                    kind: "nats-jetstream",
+                    name: "identity-start-events",
+                    namespace: "identity-start-system",
+                    provision: true,
+                    replicas: 1,
+                    storageSize: "2Gi",
+                  },
+                  resources: [],
+                  credentialReferences: [],
+                  provenance: "application",
+                },
+              ],
+            },
+          },
+        },
+      ],
+    };
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph,
+      identity: { ...request().identity, profile: "starter" },
+      installationSpec: { name: "identity-start", profile: "starter" },
+    });
+    const natsNodes = result.graph.nodes.filter(
+      (node) =>
+        node.kind === "kubernetesDirect"
+        && node.spec.compositionId === "nats-bootstrap",
+    );
+
+    expect(natsNodes).toHaveLength(1);
+    expect(natsNodes[0]).toMatchObject({
+      id: "direct.provider.event-log.v1alpha1.primary.nats",
+      source: {
+        semanticNodeId: "provider.event-log.v1alpha1.primary",
+      },
+      spec: {
+        configuration: {
+          name: "identity-start-events",
+          namespace: "identity-start-system",
+          replicas: 1,
+          storageSize: "2Gi",
+        },
+      },
+    });
+    expect(
+      result.graph.nodes.find(
+        (node) => node.id === "kubernetes.application",
+      )?.spec,
+    ).toMatchObject({
+      fragments: [
+        expect.objectContaining({
+          sourceNodeId: "provider.event-log.v1alpha1.primary",
+          providerImplementation: "nats-jetstream",
+          execution: "direct-provider",
+        }),
+      ],
+    });
+  });
+
+  it("deploys a role-named provider once when its explicit unqualified alias selects it as the application default", () => {
+    const base = applicationGraph();
+    const registry = {
+      kind: "harbor-container-registry",
+      endpoint: {
+        kind: "kubernetes-node-port",
+        namespace: "harbor-system",
+        service: "harbor",
+        port: 32080,
+        protocol: "http",
+      },
+      project: "chirp",
+      management: {
+        adminCredentials: {
+          apiVersion: "v1",
+          kind: "Secret",
+          name: "harbor-admin",
+          namespace: "harbor-system",
+          username: "admin",
+          passwordKey: "password",
+        },
+        secretNamespace: "chirp",
+        pushRobotName: "builder",
+        pullRobotName: "chirp",
+        pushSecretName: "registry-push",
+        pullSecretName: "registry-pull",
+      },
+    };
+    const graph: ApplicationGraph = {
+      ...base,
+      nodes: [
+        {
+          id: "provider.container-registry",
+          kind: "provider",
+          name: "ContainerRegistry",
+          stability: "stable",
+          interface: "ContainerRegistry",
+          implementation: "application-provider-selection",
+          config: {
+            bindingKind: "provided",
+            aliasOf: "provider.container-registry.v1alpha1.images",
+            containerRegistry: registry,
+          },
+        },
+        {
+          id: "provider.container-registry.v1alpha1.images",
+          kind: "provider",
+          name: "ContainerRegistry",
+          stability: "stable",
+          interface: "ContainerRegistry",
+          implementation: "application-provider-selection",
+          config: {
+            bindingKind: "provided",
+            qualification: {
+              apiVersion: "applik8s.providerQualification/v1alpha1",
+              capability: "ContainerRegistry",
+              compatibilityRevision: "v1alpha1",
+              key: "ContainerRegistry@v1alpha1:images",
+              name: "images",
+            },
+            containerRegistry: registry,
+          },
+        },
+      ],
+    };
+
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph,
+      identity: { ...request().identity, profile: "starter" },
+      installationSpec: { name: "chirp", profile: "starter" },
+    });
+    const registries = result.graph.nodes.filter(
+      (node) =>
+        node.kind === "externalProvider"
+        && node.provider.interface === "ContainerRegistry",
+    );
+
+    expect(registries).toHaveLength(1);
+    expect(registries[0]).toMatchObject({
+      id: "external.provider.container-registry.v1alpha1.images.harbor-project",
+      source: {
+        semanticNodeId: "provider.container-registry.v1alpha1.images",
+      },
+    });
+  });
+
+  it("uses retained profile branches after graph normalization names the concrete provider", () => {
+    const base = applicationGraph();
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph: {
+        ...base,
+        metadata: { ...base.metadata, namespace: "chirp" },
+        nodes: [
+          {
+            id: "provider.index-store.v1alpha1.online",
+            kind: "provider",
+            name: "IndexStore",
+            stability: "stable",
+            interface: "IndexStore",
+            implementation: "valkey",
+            config: {
+              bindingKind: "provided",
+              indexStore: {
+                kind: "valkey",
+                provisioner: "hyperspike",
+                provision: true,
+                name: "chirp-online-index",
+                namespace: "chirp",
+                storage:
+                  '${schema.spec.profile == "starter" ? dyn({"size":"8Gi","storageClassName":"local-path"}) : omit()}',
+              },
+              profile: {
+                selectedBy: "schema.spec.profile",
+                branches: [
+                  {
+                    variant: "starter",
+                    implementation: "valkey/chirp-online-index",
+                    config: {
+                      kind: "valkey",
+                      provisioner: "hyperspike",
+                      provision: true,
+                      name: "chirp-online-index",
+                      namespace: "chirp",
+                      topology: { shards: 1, replicas: 0 },
+                      authentication: { mode: "anonymous" },
+                      storage: {
+                        size: "8Gi",
+                        storageClassName: "local-path",
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      },
+      identity: {
+        ...request().identity,
+        application: "chirp",
+        instance: "chirp",
+        profile: "starter",
+      },
+      installationSpec: { name: "chirp", profile: "starter" },
+    });
+
+    expect(
+      result.graph.nodes.find(
+        (node) =>
+          node.id ===
+          "direct.provider.index-store.v1alpha1.online.cluster",
+      ),
+    ).toMatchObject({
+      kind: "kubernetesDirect",
+      spec: {
+        configuration: {
+          spec: {
+            storage: {
+              spec: {
+                resources: { requests: { storage: "8Gi" } },
+                accessModes: ["ReadWriteOnce"],
+                storageClassName: "local-path",
+              },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  it("uses a qualified provider's default alias as deployment configuration authority", () => {
+    const base = applicationGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      metadata: { ...base.metadata, namespace: "identity-start-system" },
+      nodes: [
+        {
+          id: "provider.object-storage",
+          kind: "provider",
+          name: "ObjectStorage",
+          stability: "stable",
+          interface: "ObjectStorage",
+          implementation: "s3",
+          config: {
+            bindingKind: "default",
+            objectStorage: {
+              kind: "s3",
+              name: "objects",
+              endpoint:
+                "http://identity-start-objects.identity-start-system.svc:8333",
+              bucket: "identity-start-objects",
+              region: "us-east-1",
+              forcePathStyle: true,
+              ownership: "direct-provisioned",
+              credentialsSecret: {
+                apiVersion: "v1",
+                kind: "Secret",
+                name: "identity-start-objects-credentials",
+                namespace: "identity-start-system",
+              },
+              provisioning: {
+                kind: "local-s3",
+                enabled: true,
+                name: "identity-start-objects",
+                storageSize: "2Gi",
+                storageClassName: "local-path",
+              },
+            },
+          },
+        },
+        {
+          id: "provider.object-storage.v1alpha1.primary",
+          kind: "provider",
+          name: "ObjectStorage",
+          stability: "stable",
+          interface: "ObjectStorage",
+          implementation: "application-provider-selection",
+          config: {
+            bindingKind: "provided",
+            qualification: {
+              apiVersion: "applik8s.providerQualification/v1alpha1",
+              capability: "ObjectStorage",
+              compatibilityRevision: "v1alpha1",
+              key: "ObjectStorage@v1alpha1:primary",
+              name: "primary",
+            },
+            profile: {
+              selectedBy: "schema.spec.profile",
+              branches: [
+                {
+                  variant: "starter",
+                  implementation: "s3/objects",
+                  config: {
+                    kind: "s3",
+                    name: "objects",
+                    bucket: "identity-start-objects",
+                    region: "us-east-1",
+                    ownership: "direct-provisioned",
+                  },
+                  resources: [],
+                  credentialReferences: [],
+                  provenance: "application",
+                },
+              ],
+            },
+          },
+        },
+      ],
+    };
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph,
+      identity: { ...request().identity, profile: "starter" },
+      installationSpec: { name: "identity-start", profile: "starter" },
+    });
+
+    expect(
+      result.graph.nodes.filter(
+        (node) =>
+          node.kind === "kubernetesDirect"
+          && node.spec.compositionId === "applik8s-local-s3",
+      ),
+    ).toHaveLength(1);
+    expect(
+      result.graph.nodes.find(
+        (node) =>
+          node.id
+          === "external.provider.object-storage.v1alpha1.primary.local-s3-credentials",
+      ),
+    ).toMatchObject({
+      kind: "externalProvider",
+      spec: {
+        configuration: {
+          namespace: "identity-start-system",
+          name: "identity-start-objects-credentials",
+        },
+      },
+    });
+    expect(
+      result.graph.nodes.find(
+        (node) =>
+          node.id === "direct.provider.object-storage.v1alpha1.primary.local-s3",
+      ),
+    ).toMatchObject({
+      kind: "kubernetesDirect",
+      spec: {
+        configuration: {
+          name: "identity-start-objects",
+          namespace: "identity-start-system",
+          bucket: "identity-start-objects",
+          credentialsSecretName: "identity-start-objects-credentials",
+        },
+      },
+    });
+  });
+
   it("deduplicates one managed Ory stack shared by identity and OAuth providers", () => {
     const identityInfrastructure = {
       kind: "ory",
@@ -641,6 +1747,402 @@ describe("Application deployment compiler", () => {
     );
     expect(managedOry).toHaveLength(1);
     expect(managedOry[0]?.source.semanticNodeId).toBe("provider.identity");
+    const databases = result.graph.nodes.filter(
+      (node) =>
+        node.kind === "kubernetesDirect" &&
+        node.spec.compositionId === "applik8s-postgres-cluster-provider",
+    );
+    expect(databases).toHaveLength(3);
+    expect(
+      databases
+        .map((node) =>
+          Reflect.get(node.spec.configuration as object, "name"),
+        )
+        .sort(),
+    ).toEqual([
+      "identity-hydra-db",
+      "identity-keto-db",
+      "identity-kratos-db",
+    ]);
+    const generatedSecrets = result.graph.nodes.filter(
+      (node) =>
+        node.kind === "externalProvider" &&
+        node.provider.implementation
+          === "alchemy-kubernetes-generated-secret" &&
+        node.source.semanticNodeId === "provider.identity",
+    );
+    expect(generatedSecrets).toHaveLength(3);
+    expect(
+      generatedSecrets.find((node) => node.id.endsWith("ory-kratos-secrets"))
+        ?.spec.configuration,
+    ).toMatchObject({
+      values: {
+        cookie: {
+          kind: "random",
+          bytes: 32,
+          encoding: "base64url",
+          characters: 32,
+        },
+        cipher: {
+          kind: "random",
+          bytes: 32,
+          encoding: "base64url",
+          characters: 32,
+        },
+      },
+    });
+    expect(managedOry[0]?.spec.configuration).toMatchObject({
+      namespaceOwnership: "external",
+      managed: {
+        databases: false,
+        secrets: false,
+      },
+      dependencySources: {
+        hydra: {
+          database: {
+            dsn: {
+              mode: "external",
+              value: {
+                secretRef: {
+                  name: "identity-hydra-db-app",
+                  key: "uri",
+                },
+              },
+            },
+          },
+          systemSecret: {
+            mode: "external",
+            value: {
+              secretRef: {
+                name: "identity-hydra-secrets",
+                key: "system",
+              },
+            },
+          },
+        },
+        kratos: {
+          database: {
+            dsn: {
+              mode: "external",
+              value: {
+                secretRef: {
+                  name: "identity-kratos-db-app",
+                  key: "uri",
+                },
+              },
+            },
+          },
+          secrets: {
+            cookie: {
+              mode: "external",
+              value: {
+                secretRef: {
+                  name: "identity-kratos-secrets",
+                  key: "cookie",
+                },
+              },
+            },
+            cipher: {
+              mode: "external",
+              value: {
+                secretRef: {
+                  name: "identity-kratos-secrets",
+                  key: "cipher",
+                },
+              },
+            },
+          },
+        },
+        keto: {
+          database: {
+            dsn: {
+              mode: "external",
+              value: {
+                secretRef: {
+                  name: "identity-keto-db-app",
+                  key: "uri",
+                },
+              },
+            },
+          },
+        },
+        oathkeeper: {
+          mutatorIdTokenJwks: {
+            mode: "external",
+            value: {
+              secretRef: {
+                name: "identity-oathkeeper-secrets",
+                key: "jwks",
+              },
+            },
+          },
+        },
+      },
+    });
+    for (const dependency of [...databases, ...generatedSecrets]) {
+      expect(result.graph.edges).toContainEqual({
+        from: dependency.id,
+        to: managedOry[0]?.id,
+        relationship: "requiresReady",
+      });
+    }
+    const identityNamespace = result.graph.nodes.find(
+      (node) =>
+        node.kind === "kubernetesDirect" &&
+        node.id === "direct.provider.identity.ory-namespace",
+    );
+    expect(identityNamespace).toMatchObject({
+      spec: {
+        compositionId: "applik8s-namespace",
+        configuration: { name: "identity-system" },
+      },
+      lifecycle: { deletion: "retain" },
+    });
+    expect(JSON.stringify(result.graph)).not.toMatch(
+      /hydra-local-system-secret|typekro\.dev\/local-default|"stringData"|"data":\{"jwks"/,
+    );
+  });
+
+  it("preserves explicit Ory dependency sources and only generates missing production capabilities", () => {
+    const identityInfrastructure = {
+      kind: "ory",
+      stack: "platform",
+      provision: true,
+      spec: {
+        name: "identity",
+        namespace: "identity-system",
+        managed: {
+          databases: true,
+          secrets: true,
+          databaseStorageClass: "ceph-block",
+        },
+        dependencySources: {
+          hydra: {
+            database: {
+              dsn: {
+                mode: "external",
+                value: {
+                  secretRef: {
+                    name: "platform-hydra-dsn",
+                    key: "uri",
+                  },
+                },
+              },
+            },
+            systemSecret: {
+              mode: "external",
+              value: {
+                secretRef: {
+                  name: "platform-hydra-secrets",
+                  key: "system",
+                },
+              },
+            },
+          },
+        },
+      },
+      deletionPolicy: "retain",
+    } as const;
+    const graph: ApplicationGraph = {
+      ...applicationGraph(),
+      nodes: [
+        {
+          id: "provider.identity",
+          kind: "provider",
+          name: "IdentityProvider",
+          stability: "stable",
+          interface: "IdentityProvider",
+          implementation: "identity-provider",
+          config: { identityInfrastructure },
+        },
+      ],
+    };
+
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph,
+      identity: { ...request().identity, profile: "dedicated" },
+      installationSpec: { name: "identity", profile: "dedicated" },
+    });
+    const ory = result.graph.nodes.find(
+      (node) =>
+        node.kind === "kubernetesDirect" &&
+        node.spec.compositionId === "ory-platform-stack",
+    );
+    expect(ory?.spec.configuration).toMatchObject({
+      managed: {
+        databases: false,
+        secrets: false,
+        databaseStorageClass: "ceph-block",
+      },
+      dependencySources: {
+        hydra: identityInfrastructure.spec.dependencySources.hydra,
+      },
+    });
+    expect(
+      result.graph.nodes.find(
+        (node) =>
+          node.id === "direct.provider.identity.ory-hydra-database",
+      ),
+    ).toBeUndefined();
+    expect(
+      result.graph.nodes.find(
+        (node) =>
+          node.id === "external.provider.identity.ory-hydra-secrets",
+      ),
+    ).toBeUndefined();
+    const generatedDatabases = result.graph.nodes.filter(
+      (node) =>
+        node.kind === "kubernetesDirect" &&
+        node.spec.compositionId === "applik8s-postgres-cluster-provider",
+    );
+    expect(generatedDatabases).toHaveLength(2);
+    for (const database of generatedDatabases) {
+      expect(database.spec.configuration).toMatchObject({
+        spec: {
+          storage: { storageClass: "ceph-block" },
+        },
+      });
+    }
+    expect(
+      result.graph.nodes.filter(
+        (node) =>
+          node.kind === "externalProvider" &&
+          node.provider.implementation
+            === "alchemy-kubernetes-generated-secret",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("lowers production Envoy AI Gateway routing behind shared platform lifecycle", () => {
+    const graph: ApplicationGraph = {
+      ...applicationGraph(),
+      nodes: [
+        ...applicationGraph().nodes,
+        {
+          id: "provider.ai",
+          kind: "provider",
+          name: "AI",
+          stability: "stable",
+          interface: "AI",
+          implementation: "envoy-ai-gateway",
+          config: {
+            ai: {
+              kind: "envoy-ai-gateway",
+              production: true,
+              name: "guestbook-inference",
+              namespace: "guestbook",
+              provision: true,
+              versions: {
+                envoyGateway: "v1.6.0",
+                aiGateway: "v0.6.0",
+                gatewayApi: "v1.4.1",
+              },
+              models: {
+                fast: {
+                  fallback: "ordered",
+                  backends: [
+                    {
+                      apiVersion: "applik8s.aiBackend/v1alpha1",
+                      name: "primary",
+                      providerClass: "openai-compatible",
+                      model: "local-fast",
+                      endpoint: "http://model-server.guestbook.svc:8080/v1",
+                      capabilities: ["chat", "tools", "streaming"],
+                    },
+                  ],
+                },
+              },
+              telemetry: {
+                usage: true,
+                cost: true,
+                redactBodies: true,
+              },
+            },
+          },
+        },
+      ],
+    };
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph,
+      identity: { ...request().identity, profile: "dedicated" },
+      installationSpec: { name: "guestbook", profile: "dedicated" },
+    });
+    expect(validateApplicationDeploymentGraph(result.graph).valid).toBe(true);
+    const direct = result.graph.nodes.filter(
+      (node) => node.kind === "kubernetesDirect",
+    );
+    expect(direct.map((node) => node.spec.compositionId)).toEqual(
+      expect.arrayContaining([
+        "applik8s-unowned-namespace",
+        "envoy-ai-gateway",
+      ]),
+    );
+    const gateway = direct.find(
+      (node) => node.spec.compositionId === "envoy-ai-gateway",
+    );
+    expect(gateway?.spec.configuration).toMatchObject({
+      build: {
+        profile: "production",
+        providers: [
+          {
+            name: "primary",
+            kind: "openai-compatible",
+            hostname: "model-server.guestbook.svc",
+            port: 8080,
+            tls: false,
+            prefix: "/v1",
+          },
+        ],
+        models: [
+          {
+            model: "fast",
+            targets: [
+              {
+                provider: "primary",
+                model: "local-fast",
+                priority: 0,
+              },
+            ],
+          },
+        ],
+        platform: {
+          profile: "production",
+          mcpSessionEncryptionSeedSecret: {
+            name: "envoy-ai-gateway-mcp-seed",
+            key: "seed",
+          },
+        },
+      },
+      instance: {
+        name: "guestbook-inference",
+        namespace: "guestbook",
+        lifecycle: "external",
+      },
+    });
+    const seed = result.graph.nodes.find(
+      (node) => node.id === "external.provider.ai.mcp-seed",
+    );
+    expect(seed).toMatchObject({
+      kind: "externalProvider",
+      scope: { namespace: "envoy-ai-gateway-system" },
+      lifecycle: { ownership: "shared", deletion: "retain" },
+    });
+    expect(result.graph.edges).toContainEqual({
+      from: seed?.id,
+      to: gateway?.id,
+      relationship: "requiresReady",
+    });
+    expect(seed).toMatchObject({
+      spec: { referenceMode: "staticIdentity" },
+    });
+    expect(result.graph.edges).not.toContainEqual({
+      from: seed?.id,
+      to: "kubernetes.application",
+      relationship: "requiresOutput",
+      output: "name",
+    });
   });
 });
 

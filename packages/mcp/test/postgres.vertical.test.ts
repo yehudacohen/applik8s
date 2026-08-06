@@ -1,3 +1,4 @@
+// typecast-file-boundary: Persistence tests inspect serialized database fixtures after exercising schema validation.
 import type { ApplicationOperationCatalog } from '@applik8s/core';
 import type { ApplicationMcpSession } from '@applik8s/mcp';
 import type { Sql } from 'postgres';
@@ -139,6 +140,13 @@ class FakePostgres {
     if (normalized.startsWith('CREATE TABLE')) return [];
     if (
       normalized.startsWith(
+        'CREATE INDEX IF NOT EXISTS applik8s_authority_audit_occurred_at_idx',
+      )
+    ) {
+      return [];
+    }
+    if (
+      normalized.startsWith(
         'SELECT document FROM applik8s_operation_catalogs WHERE application = $1 ORDER BY revision',
       )
     ) {
@@ -217,6 +225,13 @@ class FakePostgres {
       this.references.delete(
         `${String(parameters[0])}:${String(parameters[1])}:${String(parameters[2])}`,
       );
+      return [];
+    }
+    if (
+      normalized.startsWith(
+        'ALTER TABLE applik8s_operation_catalog_references ADD COLUMN IF NOT EXISTS operation_ids',
+      )
+    ) {
       return [];
     }
     throw new Error(`Unexpected fake PostgreSQL query: ${normalized}`);

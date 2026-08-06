@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "release": "v0.7",
+  "evidenceClass": "synthetic-local",
+  "limitations": [
+    "These measurements use in-memory canonical stores and isolate framework overhead; they do not claim PostgreSQL, JetStream, Hatchet, network, or Kubernetes latency.",
+    "Signal issuance and resolution exercise schema validation, immutable capability hydration, authorization receipts, and outbox creation but not broker publication or workflow wakeup.",
+    "Frozen-batch convergence exercises bounded parallel membership freezing and acknowledgement without datastore contention.",
+    "Live database contention, workflow replacement, consumer scaling, provider cost, and cluster resource footprint remain separate release-candidate evidence lanes."
+  ],
+  "generatedAt": "2026-08-02T04:52:59.075Z",
+  "git": {
+    "commit": "49c23ff3500af30def82078b8974129ab75628be",
+    "dirty": true,
+    "workingTreeDigest": "sha256:13ce225e04ed19ef6d0d521391e250a73f5f3ac5145c59194b4a938efebb2e15"
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpuModel": "Apple M5 Max",
+    "cpuCount": 18,
+    "runtime": "bun-1.3.13"
+  },
+  "operations": 10000,
+  "authority": {
+    "durationMs": 479.18,
+    "decisionsPerSecond": 20868.8,
+    "latencyMs": {
+      "p50": 0.04,
+      "p95": 0.1,
+      "p99": 0.17,
+      "maximum": 6.85
+    },
+    "retainedAuditEvents": 10001,
+    "rssGrowthBytes": 99614720,
+    "rssGrowthBytesPerDecision": 9961.47
+  },
+  "signals": {
+    "issueDurationMs": 281.97,
+    "resolutionDurationMs": 294.22,
+    "issuesPerSecond": 35465.05,
+    "resolutionsPerSecond": 33987.66,
+    "issueLatencyMs": {
+      "p50": 0.02,
+      "p95": 0.06,
+      "p99": 0.12,
+      "maximum": 6.28
+    },
+    "resolutionLatencyMs": {
+      "p50": 0.02,
+      "p95": 0.06,
+      "p99": 0.13,
+      "maximum": 4.48
+    },
+    "rssGrowthBytes": 91095040
+  },
+  "frozenBatches": {
+    "convergenceMs": 52.2,
+    "eventsPerSecond": 191580.52,
+    "batches": 80,
+    "concurrency": 8,
+    "maxItems": 125,
+    "rssGrowthBytes": 3375104
+  }
+}

@@ -1,11 +1,15 @@
 {
   "name": "@applik8s/start-agentic",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "The maintained Applik8s Agentic Start definition, modules, profiles, and generator overlay.",
   "license": "Apache-2.0",
   "type": "module",
-  "files": ["dist"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yehudacohen/applik8s.git",
@@ -14,16 +18,42 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.js",
+      "default": "./dist/react.js"
+    },
+    "./identity-runtime": {
+      "types": "./dist/identity-runtime.d.ts",
+      "import": "./dist/identity-runtime.js",
+      "default": "./dist/identity-runtime.js"
+    },
+    "./payments-runtime": {
+      "types": "./dist/payments-runtime.d.ts",
+      "import": "./dist/payments-runtime.js",
+      "default": "./dist/payments-runtime.js"
     }
   },
   "dependencies": {
-    "@applik8s/approvals": "0.6.0",
-    "@applik8s/artifacts": "0.6.0",
-    "@applik8s/conversations": "0.6.0",
-    "@applik8s/core": "0.6.0",
-    "@applik8s/evals": "0.6.0",
-    "@applik8s/operations-ui": "0.6.0",
-    "@applik8s/usage": "0.6.0"
+    "@applik8s/ai": "0.7.0",
+    "@applik8s/applik8s": "0.7.0",
+    "@applik8s/approvals": "0.7.0",
+    "@applik8s/artifacts": "0.7.0",
+    "@applik8s/billing": "0.7.0",
+    "@applik8s/billing-stripe": "0.7.0",
+    "@applik8s/conversations": "0.7.0",
+    "@applik8s/core": "0.7.0",
+    "@applik8s/evals": "0.7.0",
+    "@applik8s/identity": "0.7.0",
+    "@applik8s/identity-ory": "0.7.0",
+    "@applik8s/operations-ui": "0.7.0",
+    "@applik8s/usage": "0.7.0",
+    "postgres": "^3.4.7"
+  },
+  "peerDependencies": {
+    "react": ">=18.3.0 <20"
   }
 }

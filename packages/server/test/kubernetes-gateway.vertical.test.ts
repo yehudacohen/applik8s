@@ -34,7 +34,10 @@ describe('generated Kubernetes application gateway', () => {
       },
     } as unknown as CustomObjectsApi;
     const gateway = createApplik8sKubernetesGateway({
-      authenticate: identity('tenant-a'),
+      authenticate: async () => ({
+        principal: { id: 'demo', authorityRevision: 'canonical-authority-v1' },
+        trustedContext: { guestbook: 'tenant-a', namespace: 'guestbook', role: 'author' },
+      }),
       cursorSecret: secret,
       objects,
       watch: inertWatch(),
@@ -279,6 +282,57 @@ describe('generated Kubernetes application gateway', () => {
     expect(rejected.status).toBe(503);
     expect(await rejected.json()).toEqual({ error: 'gateway_stopping' });
     await subscription.body?.cancel();
+  });
+
+  it('reports the underlying provider failure without weakening the redacted HTTP contract', async () => {
+    const failure = new Error('provider certificate chain rejected');
+    const observed: Array<{
+      readonly error: unknown;
+      readonly operation: unknown;
+    }> = [];
+    const gateway = createApplik8sKubernetesGateway({
+      authenticate: identity('tenant-a'),
+      cursorSecret: secret,
+      objects: {
+        async listNamespacedCustomObject() {
+          throw failure;
+        },
+      } as unknown as CustomObjectsApi,
+      watch: inertWatch(),
+      readiness: () => undefined,
+      onError(error, operation) {
+        observed.push({ error, operation });
+        throw new Error('diagnostic sink failure must not escape');
+      },
+      queries: [{
+        id: 'GuestBookEntry.published',
+        model: 'GuestBookEntry',
+        resource,
+        inputSchema: { type: 'object', properties: {}, required: [] },
+        outputSchema: { type: 'array', items: { type: 'object' } },
+        budgets: { timeoutMs: 1_000, maxRows: 10, maxResultBytes: 10_000 },
+        bounds: { pageSize: 10, maxPages: 2, maxItems: 10 },
+        authorize: () => true,
+        fixedNamespace: 'guestbook',
+        project: ({ value }) => value,
+      }],
+    });
+
+    const response = await gateway.handle(post(
+      '/__applik8s/v1/queries/GuestBookEntry.published/snapshot',
+      { input: {} },
+    ));
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'internal_error' });
+    expect(observed).toEqual([{
+      error: failure,
+      operation: {
+        kind: 'query',
+        id: 'GuestBookEntry.published',
+        action: 'snapshot',
+      },
+    }]);
   });
 });
 

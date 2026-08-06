@@ -185,7 +185,10 @@ function facadeGzipBytes(modelCount: number): number {
   const manifest: ApplicationFacadeManifest = {
     apiVersion: 'applik8s.facade/v1alpha1',
     application: 'benchmark',
+    operations: [],
     objectStores: [],
+    signals: [],
+    agents: [],
     models: Array.from({ length: modelCount }, (_, index) => ({
       name: `Model${index + 1}`,
       operations: [{

@@ -2,24 +2,36 @@
 
 import {
   getApplicationOperationContract,
+  type ApplicationOperationAuthorizationContract,
   type ApplicationOperationLike,
 } from '@applik8s/client';
-import type { ApplicationMessageContractSchema, ApplicationProviderNode, ApplicationProviderRef, ApplicationRetryPolicy, JsonObject, JsonValue } from '@applik8s/core';
+import type { ApplicationMessageContractSchema, ApplicationProfiledCallbackContract, ApplicationProviderNode, ApplicationProviderRef, ApplicationRetryPolicy, ApplicationStreamNode, JsonObject, JsonValue } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk';
 import type { ApplicationDatabaseBinding } from './application.js';
-import { type SerializedApplicationCallback, serializeApplicationCallback } from './application-callback.js';
+import {
+  expandApplicationCallbackDependencies,
+  type SerializedApplicationCallback,
+  serializeApplicationCallback,
+} from './application-callback.js';
 import type { ApplicationGraphState } from './application-graph-state.js';
 import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
+import { inferApplicationFunctionNativeTransaction } from './application-function-native-transactions.js';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationModelCommandBinding } from './application-models.js';
+import { registerApplicationObjectStore } from './application-object-storage.js';
+import {
+  applicationProjectionRuntime,
+  attachApplicationProjectionRebuildTarget,
+} from './application-projection-binding.js';
 import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions } from './application-processor-policy.js';
-import type { ApplicationAnalyticalDatabaseProvider, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState } from './application-providers.js';
-import { applicationAnalyticalDatabaseImplementation, applicationIndexBackend, applicationProviderImplementationName, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationTransactionalDatabaseImplementation, defaultApplicationIndexProvider, IndexStore, isApplicationAnalyticalDatabaseProvider, isClickHouseAnalyticalDatabaseProvider, isPostgresAnalyticalDatabaseProvider } from './application-providers.js';
+import type { ApplicationAnalyticalDatabaseProvider, ApplicationIdentityProvider, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderSelectionValue, ApplicationProviderState } from './application-providers.js';
+import { applicationAnalyticalDatabaseImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationProviderImplementationName, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationTransactionalDatabaseImplementation, defaultApplicationIndexProvider, IndexStore, isApplicationAnalyticalDatabaseProvider, isApplicationIdentityProvider, isClickHouseAnalyticalDatabaseProvider, isPostgresAnalyticalDatabaseProvider } from './application-providers.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
 import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString } from './application-typekro-values.js';
-import { type ApplicationTaskBinding, type ApplicationWorkflowBinding, type ApplicationWorkflowState, recordApplicationWorkflowEngine } from './application-workflows.js';
+import { applicationGeneratedDependencyAlias, type ApplicationTaskBinding, type ApplicationWorkflowBinding, type ApplicationWorkflowState, recordApplicationWorkflowEngine } from './application-workflows.js';
+import { applicationRelationalModelOptionsFor } from './drizzle.js';
 import type { EventDefinition, StreamDefinition } from './dsl.js';
 import { applicationModelCommandBindingForOperation, applicationModelFacet, type CommonApplicationModelFacet, getApplicationModelFacet } from './native-models.js';
 import type { ApplicationQueryGateway, ApplicationQueryGatewayHttpOptions, ApplicationQueryGatewayOptions as ApplicationQueryGatewayRuntimeOptions } from './query-gateway.js';
@@ -28,13 +40,19 @@ import type { ApplicationWorkflowInvocationMetadata, ApplicationWorkflowSchedule
 
 interface ApplicationReactiveState extends ApplicationGraphState, ApplicationProviderState {}
 
-export type ApplicationStreamScheduleTargets = Readonly<Record<string, ApplicationTaskBinding<object, object> | ApplicationWorkflowBinding<object, object>>>;
+type ApplicationStreamDurableTarget =
+  | Pick<ApplicationTaskBinding<object, object>, 'kind' | 'definition'>
+  | Pick<ApplicationWorkflowBinding<object, object>, 'kind' | 'definition'>;
 
-export type ApplicationStreamTaskTargets = Readonly<Record<string, ApplicationTaskBinding<object, object>>>;
+export type ApplicationStreamScheduleTargets = Readonly<Record<string, ApplicationStreamDurableTarget>>;
+
+export type ApplicationStreamTaskTargets = Readonly<Record<string, ApplicationStreamDurableTarget>>;
 
 export type ApplicationStreamTaskFunctions<TTargets extends ApplicationStreamTaskTargets> = {
   readonly [TAlias in keyof TTargets]: TTargets[TAlias] extends ApplicationTaskBinding<infer TInput, infer TOutput>
     ? (input: TInput, metadata?: ApplicationWorkflowInvocationMetadata) => Promise<TOutput>
+    : TTargets[TAlias] extends ApplicationWorkflowBinding<infer TInput, infer TOutput>
+      ? (input: TInput, metadata?: ApplicationWorkflowInvocationMetadata) => Promise<TOutput>
     : never;
 };
 
@@ -62,6 +80,7 @@ interface ApplicationStreamRegistrars<TPayload extends object> {
   project<TRow extends object, TValue extends object, TSnapshot extends object = object>(name: string, options: Omit<ApplicationOnlineProjectionOptions<TPayload, TRow, TValue, TSnapshot>, 'source'>): ApplicationOnlineProjectionBinding<TPayload, TRow, TValue>;
   subscribe<TSubscriberPrincipal extends ApplicationQueryPrincipal>(name: string, options: Omit<ApplicationSubscriptionOptions<TSubscriberPrincipal>, 'source'>): ApplicationSubscriptionBinding<TSubscriberPrincipal>;
   process<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>>(name: string, options: ApplicationStreamProcessOptions<TSchedules, TTasks>, handler: ApplicationStreamProcessHandler<TPayload, TSchedules, TTasks>): ApplicationStreamProcessorBinding<TPayload, TSchedules, TTasks>;
+  batch<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>>(name: string, options: ApplicationStreamBatchOptions<TSchedules, TTasks>, handler: ApplicationStreamBatchHandler<TPayload, TSchedules, TTasks>): ApplicationStreamProcessorBinding<TPayload, TSchedules, TTasks>;
 }
 
 export interface ApplicationStreamOptions<TPayload extends object, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
@@ -76,6 +95,22 @@ export interface ApplicationStreamOptions<TPayload extends object, TPrincipal ex
 /** A committed domain event can be promoted directly to a durable replay stream without redeclaring its payload. */
 export type ApplicationReplayDefinition<TPayload extends object> = EventDefinition<TPayload> | StreamDefinition<TPayload>;
 
+export type ApplicationProjectionOutput<TValue extends object> =
+  | SchemaInput<TValue>
+  | ApplicationProjectionRebuildModel<TValue>;
+
+interface ApplicationProjectionCapabilityField {
+  readonly path: string;
+  readonly kind: 'signalReference';
+  readonly contract: {
+    readonly id: string;
+    readonly name: string;
+    readonly version: string;
+  };
+  readonly visibility: 'same-as-issuance';
+  readonly maxAgeSeconds: number;
+}
+
 export interface ApplicationStreamBinding<TPayload extends object = object, TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal> {
   readonly kind: 'applicationStream';
   readonly definition: ApplicationReplayDefinition<TPayload>;
@@ -86,12 +121,117 @@ export interface ApplicationStreamBinding<TPayload extends object = object, TPri
   partition(payload: TPayload): string;
   authorize(principal: TPrincipal, action: 'read' | 'replay'): Promise<boolean>;
   /** Declares a derived store directly from this stream while retaining app.projection compatibility. */
+  project<TRow extends object>(options: Omit<ApplicationAnalyticalProjectionOptions<TPayload, TRow>, 'source'>): ApplicationAnalyticalProjectionBinding<TPayload, TRow>;
+  project<TRow extends object, TValue extends object, TSnapshot extends object = object>(options: Omit<ApplicationOnlineProjectionOptions<TPayload, TRow, TValue, TSnapshot>, 'source'>): ApplicationOnlineProjectionBinding<TPayload, TRow, TValue>;
   project<TRow extends object>(name: string, options: Omit<ApplicationAnalyticalProjectionOptions<TPayload, TRow>, 'source'>): ApplicationAnalyticalProjectionBinding<TPayload, TRow>;
   project<TRow extends object, TValue extends object, TSnapshot extends object = object>(name: string, options: Omit<ApplicationOnlineProjectionOptions<TPayload, TRow, TValue, TSnapshot>, 'source'>): ApplicationOnlineProjectionBinding<TPayload, TRow, TValue>;
+  /**
+   * Function-native persisted derivation. The callback returns pure write
+   * descriptors; provider and checkpoint machinery remain framework-owned.
+   */
+  project<TValue extends object>(
+    output: ApplicationProjectionOutput<TValue>,
+    transform: ApplicationAnalyticalProjectionTransform<TPayload, TValue>,
+  ): ApplicationAnalyticalProjectionBinding<TPayload, TValue>;
+  project<TValue extends object>(
+    output: ApplicationProjectionOutput<TValue>,
+    transform: ApplicationOnlineProjectionTransform<TPayload, TValue>,
+  ): ApplicationOnlineProjectionDraft<TPayload, TValue>;
   /** Declares an authorized client delivery directly from this stream. */
   subscribe<TSubscriberPrincipal extends ApplicationQueryPrincipal = TPrincipal>(name: string, options: Omit<ApplicationSubscriptionOptions<TSubscriberPrincipal>, 'source'>): ApplicationSubscriptionBinding<TSubscriberPrincipal>;
   /** Declares bounded durable backend work over this replayable stream. */
+  onEvent<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>>(
+    handler: ApplicationStreamProcessHandler<TPayload, TSchedules, TTasks>,
+  ): ApplicationStreamProcessorBinding<TPayload, TSchedules, TTasks>;
+  onEvent<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>>(
+    options: ApplicationStreamProcessOptions<TSchedules, TTasks>,
+    handler: ApplicationStreamProcessHandler<TPayload, TSchedules, TTasks>,
+  ): ApplicationStreamProcessorBinding<TPayload, TSchedules, TTasks>;
+  /** Declares bounded microbatch work with durable frozen membership and whole-batch acknowledgement. */
+  onBatch<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>>(
+    options: ApplicationStreamBatchOptions<TSchedules, TTasks>,
+    handler: ApplicationStreamBatchHandler<TPayload, TSchedules, TTasks>,
+  ): ApplicationStreamProcessorBinding<TPayload, TSchedules, TTasks>;
+  /**
+   * @deprecated Use onEvent(options?, handler). `process` remains as the
+   * compatibility lowering name until the normalized graph vocabulary moves.
+   */
+  process<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>>(options: ApplicationStreamProcessOptions<TSchedules, TTasks>, handler: ApplicationStreamProcessHandler<TPayload, TSchedules, TTasks>): ApplicationStreamProcessorBinding<TPayload, TSchedules, TTasks>;
   process<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>>(name: string, options: ApplicationStreamProcessOptions<TSchedules, TTasks>, handler: ApplicationStreamProcessHandler<TPayload, TSchedules, TTasks>): ApplicationStreamProcessorBinding<TPayload, TSchedules, TTasks>;
+}
+
+export type ApplicationProjectionWrite<TValue extends object> =
+  | {
+      readonly kind: 'upsert';
+      readonly partition: string;
+      readonly key: string;
+      readonly score: number;
+      readonly value: TValue;
+    }
+  | {
+      readonly kind: 'remove';
+      readonly partition: string;
+      readonly key: string;
+      readonly score?: number;
+    }
+  | { readonly kind: 'skip' };
+
+export type ApplicationAnalyticalProjectionWrite<TValue extends object> =
+  | { readonly kind: 'append'; readonly value: TValue }
+  | { readonly kind: 'skip' };
+
+export interface ApplicationProjectionWriteScope<TValue extends object> {
+  readonly sourceId: string;
+  readonly sequence: number;
+  readonly recordedAt: string;
+  readonly sourcePartition: string;
+  upsert(input: Omit<Extract<ApplicationProjectionWrite<TValue>, { readonly kind: 'upsert' }>, 'kind'>): ApplicationProjectionWrite<TValue>;
+  remove(input: Omit<Extract<ApplicationProjectionWrite<TValue>, { readonly kind: 'remove' }>, 'kind'>): ApplicationProjectionWrite<TValue>;
+  append(value: TValue): ApplicationAnalyticalProjectionWrite<TValue>;
+  skip(): ApplicationProjectionWrite<TValue>;
+}
+
+export type ApplicationOnlineProjectionTransform<TPayload extends object, TValue extends object> = (
+  source: TPayload,
+  write: ApplicationProjectionWriteScope<TValue>,
+) => ApplicationProjectionWrite<TValue> | readonly ApplicationProjectionWrite<TValue>[];
+
+export type ApplicationAnalyticalProjectionTransform<TPayload extends object, TValue extends object> = (
+  source: TPayload,
+  write: ApplicationProjectionWriteScope<TValue>,
+) => ApplicationAnalyticalProjectionWrite<TValue> | readonly ApplicationAnalyticalProjectionWrite<TValue>[];
+
+export type ApplicationProjectionTransform<TPayload extends object, TValue extends object> =
+  | ApplicationOnlineProjectionTransform<TPayload, TValue>
+  | ApplicationAnalyticalProjectionTransform<TPayload, TValue>;
+
+export interface ApplicationOnlineProjectionRetentionPolicy {
+  readonly maxItemsPerPartition: number;
+  readonly maxPartitions?: number;
+  readonly maxAge?: string;
+}
+
+export interface ApplicationProjectionRebuildScope<TPayload extends object> {
+  source(payload: TPayload): TPayload;
+  skip(): undefined;
+}
+
+export interface ApplicationOnlineProjectionDraft<
+  TPayload extends object,
+  TValue extends object,
+  TSnapshot extends object = object,
+> {
+  rebuildFrom<TNextSnapshot extends object>(
+    source: ApplicationProjectionRebuildModel<TNextSnapshot>,
+    map: (
+      snapshot: TNextSnapshot,
+      rebuild: ApplicationProjectionRebuildScope<TPayload>,
+    ) => TPayload | readonly TPayload[] | undefined | Promise<TPayload | readonly TPayload[] | undefined>,
+  ): ApplicationOnlineProjectionDraft<TPayload, TValue, TNextSnapshot>;
+  rebuildFromReplay(): ApplicationOnlineProjectionDraft<TPayload, TValue, TSnapshot>;
+  retain(
+    policy: ApplicationOnlineProjectionRetentionPolicy,
+  ): ApplicationOnlineProjectionBinding<TPayload, ApplicationProjectionWrite<TValue>, TValue>;
 }
 
 export interface ApplicationStreamProcessOptions<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>> {
@@ -102,8 +242,25 @@ export interface ApplicationStreamProcessOptions<TSchedules extends ApplicationS
   readonly budgets?: { readonly timeoutMs?: number; readonly maxInputBytes?: number };
   /** Provider-neutral recurring schedules this handler may converge. */
   readonly schedules?: TSchedules;
-	/** Provider-neutral one-shot durable tasks this handler may invoke. */
-	readonly tasks?: TTasks;
+  /** Provider-neutral durable workflows this handler may invoke. */
+  readonly workflows?: TTasks;
+  /** @deprecated Use workflows. Retained as a source-compatible lowering alias. */
+  readonly tasks?: TTasks;
+  /** Compiler-owned direct callable captures; never authored by applications. */
+  readonly __generatedCalls?: readonly unknown[];
+  /** Compiler-owned source identifiers for direct callable captures. */
+  readonly __generatedBindings?: Readonly<Record<string, unknown>>;
+}
+
+export interface ApplicationStreamBatchOptions<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>> extends ApplicationStreamProcessOptions<TSchedules, TTasks> {
+  readonly batch: {
+    readonly maxItems: number;
+    readonly maxBytes: string | number;
+    readonly maxWait: string | number;
+  };
+  readonly ordering: 'partition';
+  readonly concurrency?: number;
+  readonly acknowledgement?: 'wholeBatch';
 }
 
 export interface ApplicationStreamProcessContext<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>> {
@@ -115,6 +272,8 @@ export interface ApplicationStreamProcessContext<TSchedules extends ApplicationS
     readonly partitionKey: string;
     /** Opaque scope proving which admitted context produced the committed fact. */
     readonly contextDigest?: string;
+    /** Opaque data-isolation scopes propagated only through internal processors. */
+    readonly changeScopes?: Readonly<Record<string, string>>;
   };
   /** Gateway-established actor captured durably with the committed fact. */
   readonly principal?: import('./command-principal.js').ApplicationCommandPrincipal;
@@ -124,10 +283,50 @@ export interface ApplicationStreamProcessContext<TSchedules extends ApplicationS
   readonly attempt: number;
   readonly signal: AbortSignal;
   readonly schedules: ApplicationStreamScheduleFunctions<TSchedules>;
-	readonly tasks: ApplicationStreamTaskFunctions<TTasks>;
+  readonly workflows: ApplicationStreamTaskFunctions<TTasks>;
+  /** @deprecated Use workflows. */
+  readonly tasks: ApplicationStreamTaskFunctions<TTasks>;
 }
 
 export type ApplicationStreamProcessHandler<TPayload extends object, TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>> = (payload: TPayload, context: ApplicationStreamProcessContext<TSchedules, TTasks>) => void | Promise<void>;
+
+export interface ApplicationEventEnvelope<TPayload extends object> {
+  readonly id: string;
+  readonly stream: { readonly name: string; readonly version: string };
+  readonly sequence: number;
+  readonly recordedAt: string;
+  readonly partitionKey: string;
+  readonly contextDigest?: string;
+  /** Opaque data-isolation scopes propagated only through internal processors. */
+  readonly changeScopes?: Readonly<Record<string, string>>;
+  readonly principal?: import('./command-principal.js').ApplicationCommandPrincipal;
+  readonly trustedContext: Readonly<Record<string, JsonValue>>;
+  readonly value: TPayload;
+}
+
+export interface ApplicationEventBatch<TPayload extends object> {
+  readonly id: string;
+  readonly events: readonly ApplicationEventEnvelope<TPayload>[];
+  readonly partition?: string;
+  readonly firstSequence: string;
+  readonly lastSequence: string;
+}
+
+export interface ApplicationStreamBatchContext<TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>> {
+  readonly batch: { readonly id: string; readonly partition?: string; readonly firstSequence: string; readonly lastSequence: string };
+  readonly idempotencyKey: string;
+  readonly attempt: number;
+  readonly signal: AbortSignal;
+  readonly schedules: ApplicationStreamScheduleFunctions<TSchedules>;
+  readonly workflows: ApplicationStreamTaskFunctions<TTasks>;
+  /** @deprecated Use workflows. */
+  readonly tasks: ApplicationStreamTaskFunctions<TTasks>;
+}
+
+export type ApplicationStreamBatchHandler<TPayload extends object, TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>> = (
+  batch: ApplicationEventBatch<TPayload>,
+  context: ApplicationStreamBatchContext<TSchedules, TTasks>,
+) => void | Promise<void>;
 
 export interface ApplicationStreamProcessorBinding<TPayload extends object = object, TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>, TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>> {
   readonly kind: 'applicationStreamProcessor';
@@ -159,7 +358,9 @@ export interface ApplicationAnalyticalProjectionOptions<TPayload extends object,
   readonly provider?: ApplicationAnalyticalDatabaseProvider | ApplicationProviderBinding<ApplicationAnalyticalDatabaseProvider>;
   readonly checkpoint?: 'idempotent';
   readonly rebuildable?: boolean;
-  readonly project: (payload: TPayload, event: { readonly id: string; readonly recordedAt: string; readonly partitionKey: string }) => TRow | readonly TRow[] | Promise<TRow | readonly TRow[]>;
+  /** Compiler-owned capability-bearing output declaration. */
+  readonly __capabilityFields?: readonly ApplicationProjectionCapabilityField[];
+  readonly project: (payload: TPayload, event: { readonly id: string; readonly sequence: number; readonly recordedAt: string; readonly partitionKey: string }) => TRow | readonly TRow[] | Promise<TRow | readonly TRow[]>;
 }
 
 export type ApplicationProjectionRebuildModel<TValue extends object> = object & (
@@ -183,7 +384,7 @@ export interface ApplicationOnlineProjectionOptions<TPayload extends object, TRo
   readonly store: ApplicationIndexStoreProviderToken;
   /** Runtime schema for the value stored and returned by the online authority. */
   readonly output: SchemaInput<TValue>;
-  readonly map: (payload: TPayload, event: { readonly id: string; readonly recordedAt: string; readonly partitionKey: string }) => TRow | readonly TRow[] | Promise<TRow | readonly TRow[]>;
+  readonly map: (payload: TPayload, event: { readonly id: string; readonly sequence: number; readonly recordedAt: string; readonly partitionKey: string }) => TRow | readonly TRow[] | Promise<TRow | readonly TRow[]>;
   readonly partitionBy: (row: TRow) => string;
   readonly key: (row: TRow) => string;
   readonly score: (row: TRow) => number;
@@ -193,6 +394,8 @@ export interface ApplicationOnlineProjectionOptions<TPayload extends object, TRo
   readonly removeWhen?: (row: TRow) => boolean;
   readonly retention: { readonly maxItemsPerPartition: number; readonly maxPartitions?: number; readonly maxAgeSeconds?: number };
   readonly generationScoped: true;
+  /** Compiler-owned capability-bearing output declaration. */
+  readonly __capabilityFields?: readonly ApplicationProjectionCapabilityField[];
   readonly rebuild?: ApplicationOnlineProjectionRebuildOptions<TPayload, TSnapshot>;
 }
 
@@ -227,6 +430,10 @@ export interface ApplicationOnlineProjectionBinding<TPayload extends object = ob
   readonly removeWhen?: ApplicationOnlineProjectionOptions<TPayload, TRow, TValue>['removeWhen'];
   readonly retention: ApplicationOnlineProjectionOptions<TPayload, TRow, TValue>['retention'];
   readonly generationScoped: true;
+  /** Rebuilds and atomically publishes a generation using framework-owned evidence storage. */
+  rebuild(input: { readonly generation: string; readonly artifactPrefix?: string }): Promise<import('./projection-rebuild-runtime.js').ApplicationOnlineProjectionRebuildResult>;
+  /** Retires a generation and the immutable evidence that proved its publication. */
+  retire(input: { readonly generation: string; readonly references: readonly import('./application-object-storage.js').ApplicationObjectReference[] }): Promise<void>;
 }
 
 export type ApplicationProjectionBinding<TPayload extends object = object, TRow extends object = object, TValue extends object = TRow> =
@@ -234,6 +441,11 @@ export type ApplicationProjectionBinding<TPayload extends object = object, TRow 
   | ApplicationOnlineProjectionBinding<TPayload, TRow, TValue>;
 
 export interface ApplicationGatewayOptions {
+  /**
+   * Internal gateways carry generated workload calls without creating a
+   * browser-facing operation route. Defaults to public.
+   */
+  readonly visibility?: 'public' | 'internal';
   readonly queries?: readonly (ApplicationQueryBinding | ApplicationOperationLike)[];
   readonly commands?: readonly (ApplicationModelCommandBinding | ApplicationOperationLike)[];
   readonly subscriptions?: readonly ApplicationSubscriptionBinding[];
@@ -293,6 +505,7 @@ export function registerApplicationStream<TPayload extends object, TPrincipal ex
   const partition = serializeApplicationCallback({ registrar: 'stream', argumentIndex: 1, property: 'partitionBy', label: `Application stream ${definition.id} partition`, callback: options.partitionBy as (...args: never[]) => unknown, allowDeferredResolution: true });
   // typecast: authorization input is reconstructed by the generated gateway and checked against the stream's declared principal boundary.
   const authorization = serializeApplicationCallback({ registrar: 'stream', argumentIndex: 1, property: 'authorize', label: `Application stream ${definition.id} authorization`, callback: options.authorize as (...args: never[]) => unknown, allowDeferredResolution: true });
+  const applicationSignal = applicationSignalGraphContract(options);
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'stream',
@@ -314,6 +527,7 @@ export function registerApplicationStream<TPayload extends object, TPrincipal ex
     authorizationSource: authorization.source,
     ...(authorization.dependencies ? { authorizationDependencies: authorization.dependencies } : {}),
     ...(authorization.unresolved ? { authorizationUnresolved: authorization.unresolved } : {}),
+    ...(applicationSignal ? { signal: applicationSignal } : {}),
   });
   return {
     kind: 'applicationStream',
@@ -331,8 +545,34 @@ export function registerApplicationStream<TPayload extends object, TPrincipal ex
     async authorize(principal, action) {
       return options.authorize({ principal, action });
     },
-    project: ((name: string, projectionOptions: Omit<ApplicationProjectionOptions<TPayload, object, object>, 'source'>) => {
+    project: ((nameOrOutput: string | ApplicationProjectionOutput<object> | Omit<ApplicationProjectionOptions<TPayload, object, object>, 'source'>, optionsOrTransform?: Omit<ApplicationProjectionOptions<TPayload, object, object>, 'source'> | ApplicationProjectionTransform<TPayload, object>) => {
       if (!registrars) throw new Error(`Application stream ${definition.id}.project(...) has no application registration context and fails closed.`);
+      if (typeof optionsOrTransform === 'function') {
+        const mode = functionNativeProjectionMode(optionsOrTransform);
+        return mode === 'analytical'
+          ? functionNativeAnalyticalProjection(
+              registrars,
+              nameOrOutput as ApplicationProjectionOutput<object>,
+              optionsOrTransform as ApplicationAnalyticalProjectionTransform<TPayload, object>,
+              applicationSignal,
+            )
+          : functionNativeOnlineProjection(
+              registrars,
+              nameOrOutput as ApplicationProjectionOutput<object>,
+              optionsOrTransform as ApplicationOnlineProjectionTransform<TPayload, object>,
+              applicationSignal,
+            );
+      }
+      const projectionOptions = typeof nameOrOutput === 'string' ? optionsOrTransform : nameOrOutput;
+      if (!projectionOptions) throw new Error(`Application stream ${definition.id}.project(name, options) requires projection options.`);
+      const name = typeof nameOrOutput === 'string'
+        ? nameOrOutput
+        : inferredFunctionNativeName(
+          'project',
+          'project' in projectionOptions
+            ? projectionOptions.project
+            : (projectionOptions as unknown as { readonly map: unknown }).map,
+        );
       // typecast: the public overload selected the discriminated analytical or online option before this shared registrar boundary.
       return registrars.project(name, projectionOptions as never);
     }) as ApplicationStreamBinding<TPayload, TPrincipal>['project'],
@@ -340,11 +580,543 @@ export function registerApplicationStream<TPayload extends object, TPrincipal ex
       if (!registrars) throw new Error(`Application stream ${definition.id}.subscribe(...) has no application registration context and fails closed.`);
       return registrars.subscribe(name, subscriptionOptions);
     },
-    process(name, processOptions, handler) {
+    onEvent: ((optionsOrHandler: ApplicationStreamProcessOptions | ApplicationStreamProcessHandler<TPayload>, maybeHandler?: ApplicationStreamProcessHandler<TPayload>) => {
+      if (!registrars) throw new Error(`Application stream ${definition.id}.onEvent(...) has no application registration context and fails closed.`);
+      const handler = typeof optionsOrHandler === 'function' ? optionsOrHandler : maybeHandler;
+      if (typeof handler !== 'function') throw new Error(`Application stream ${definition.id}.onEvent(options, handler) requires a handler.`);
+      const options = typeof optionsOrHandler === 'function' ? {} : optionsOrHandler;
+      const name = inferredFunctionNativeName('onEvent', handler);
+      return registrars.process(name, options as never, handler as never);
+    }) as ApplicationStreamBinding<TPayload, TPrincipal>['onEvent'],
+    onBatch: ((options: ApplicationStreamBatchOptions, handler: ApplicationStreamBatchHandler<TPayload>) => {
+      if (!registrars) throw new Error(`Application stream ${definition.id}.onBatch(...) has no application registration context and fails closed.`);
+      if (typeof handler !== 'function') throw new Error(`Application stream ${definition.id}.onBatch(options, handler) requires a handler.`);
+      const name = inferredFunctionNativeName('onBatch', handler);
+      return registrars.batch(name, options as never, handler as never);
+    }) as ApplicationStreamBinding<TPayload, TPrincipal>['onBatch'],
+    process: ((nameOrOptions: string | ApplicationStreamProcessOptions, optionsOrHandler: ApplicationStreamProcessOptions | ApplicationStreamProcessHandler<TPayload>, maybeHandler?: ApplicationStreamProcessHandler<TPayload>) => {
       if (!registrars) throw new Error(`Application stream ${definition.id}.process(...) has no application registration context and fails closed.`);
-      return registrars.process(name, processOptions, handler);
+      const name = typeof nameOrOptions === 'string'
+        ? nameOrOptions
+        : inferredFunctionNativeName('process', optionsOrHandler);
+      const processOptions = typeof nameOrOptions === 'string' ? optionsOrHandler : nameOrOptions;
+      const handler = typeof nameOrOptions === 'string' ? maybeHandler : optionsOrHandler;
+      return registrars.process(name, processOptions as never, handler as never);
+    }) as ApplicationStreamBinding<TPayload, TPrincipal>['process'],
+  };
+}
+
+function applicationSignalGraphContract<
+  TPayload extends object,
+  TPrincipal extends ApplicationQueryPrincipal,
+>(
+  options: ApplicationStreamOptions<TPayload, TPrincipal>,
+): ApplicationStreamNode['signal'] | undefined {
+  const candidate = Reflect.get(options, '__applicationSignal');
+  if (!candidate || typeof candidate !== 'object') return undefined;
+  const id = Reflect.get(candidate, 'id');
+  const name = Reflect.get(candidate, 'name');
+  const version = Reflect.get(candidate, 'version');
+  const actions = Reflect.get(candidate, 'actions');
+  if (
+    typeof id !== 'string'
+    || typeof name !== 'string'
+    || typeof version !== 'string'
+    || !actions
+    || typeof actions !== 'object'
+    || Array.isArray(actions)
+  ) {
+    throw new Error('Application signal stream metadata is malformed.');
+  }
+  return {
+    id,
+    name,
+    version,
+    actions: Object.keys(actions)
+      .sort()
+      .map((action) => ({
+        name: action,
+        schema: declaredSchema(
+          Reflect.get(actions, action),
+          `${id}.actions.${action}`,
+        ),
+      })),
+  };
+}
+
+function inferredFunctionNativeName(surface: 'project' | 'process' | 'onEvent' | 'onBatch', callback: unknown): string {
+  if (
+    typeof callback !== 'function'
+    || !callback.name.trim()
+    || (surface === 'project' && (callback.name === 'project' || callback.name === 'map'))
+  ) {
+    throw new Error(
+      `Stream.${surface}(...) cannot infer stable identity from an anonymous callback. `
+      + `Pass a named function or use the compatibility (name, ...) form.`,
+    );
+  }
+  const normalized = callback.name
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (!normalized) throw new Error(`Stream.${surface}(...) could not derive a stable identity from callback ${JSON.stringify(callback.name)}.`);
+  return normalized;
+}
+
+function functionNativeOnlineProjection<TPayload extends object, TValue extends object>(
+  registrars: ApplicationStreamRegistrars<TPayload>,
+  output: ApplicationProjectionOutput<TValue>,
+  transform: ApplicationOnlineProjectionTransform<TPayload, TValue>,
+  signal: ApplicationStreamNode['signal'] | undefined,
+): ApplicationOnlineProjectionDraft<TPayload, TValue> {
+  const name = inferredFunctionNativeName('project', transform);
+  const outputContract = applicationProjectionOutputContract(
+    output,
+    transform,
+    signal,
+  );
+  const projectionMap = functionNativeProjectionMap(name, transform);
+  let rebuild:
+    | { readonly mode: 'replay' }
+    | {
+        readonly mode: 'snapshot';
+        readonly source: ApplicationProjectionRebuildModel<object>;
+        readonly map: (
+          snapshot: object,
+          rebuild: ApplicationProjectionRebuildScope<TPayload>,
+        ) => TPayload | readonly TPayload[] | undefined | Promise<TPayload | readonly TPayload[] | undefined>;
+      }
+    | undefined;
+
+  const draft: ApplicationOnlineProjectionDraft<TPayload, TValue> = {
+    rebuildFrom(source, map) {
+      rebuild = {
+        mode: 'snapshot',
+        source: source as ApplicationProjectionRebuildModel<object>,
+        map: map as (
+          snapshot: object,
+          rebuild: ApplicationProjectionRebuildScope<TPayload>,
+        ) => TPayload | readonly TPayload[] | undefined | Promise<TPayload | readonly TPayload[] | undefined>,
+      };
+      return draft;
+    },
+    rebuildFromReplay() {
+      rebuild = { mode: 'replay' };
+      return draft;
+    },
+    retain(policy) {
+      const maxAgeSeconds = policy.maxAge === undefined
+        ? undefined
+        : applicationProjectionDurationSeconds(policy.maxAge);
+      const snapshotRebuild = rebuild?.mode === 'snapshot' ? rebuild : undefined;
+      const rebuildOptions = snapshotRebuild
+        ? {
+            source: snapshotRebuild.source,
+            checkpoint: 'durable' as const,
+            map: functionNativeProjectionRebuildMap(name, snapshotRebuild.map),
+          }
+        : { checkpoint: 'durable' as const };
+      return registrars.project(name, {
+        store: IndexStore,
+        output: outputContract.schema,
+        ...(outputContract.capabilityFields.length > 0
+          ? { __capabilityFields: outputContract.capabilityFields }
+          : {}),
+        map: projectionMap,
+        partitionBy: (write) => {
+          if (write.kind === 'skip') throw new Error('A skip projection descriptor cannot be persisted.');
+          return write.partition;
+        },
+        key: (write) => {
+          if (write.kind === 'skip') throw new Error('A skip projection descriptor cannot be persisted.');
+          return write.key;
+        },
+        score: (write) => {
+          if (write.kind === 'skip') throw new Error('A skip projection descriptor cannot be persisted.');
+          return write.kind === 'remove' ? 0 : write.score;
+        },
+        value: (write) => {
+          if (write.kind !== 'upsert') {
+            throw new Error('A remove projection descriptor has no stored value.');
+          }
+          return write.value;
+        },
+        removeWhen: (write) => write.kind === 'remove',
+        retention: {
+          maxItemsPerPartition: policy.maxItemsPerPartition,
+          ...(policy.maxPartitions === undefined ? {} : { maxPartitions: policy.maxPartitions }),
+          ...(maxAgeSeconds === undefined ? {} : { maxAgeSeconds }),
+        },
+        scoreUnit: maxAgeSeconds === undefined ? 'arbitrary' : 'epochMilliseconds',
+        generationScoped: true,
+        rebuild: rebuildOptions,
+      });
     },
   };
+  return draft;
+}
+
+function functionNativeAnalyticalProjection<TPayload extends object, TValue extends object>(
+  registrars: ApplicationStreamRegistrars<TPayload>,
+  output: ApplicationProjectionOutput<TValue>,
+  transform: ApplicationAnalyticalProjectionTransform<TPayload, TValue>,
+  signal: ApplicationStreamNode['signal'] | undefined,
+): ApplicationAnalyticalProjectionBinding<TPayload, TValue> {
+  const name = inferredFunctionNativeName('project', transform);
+  const outputContract = applicationProjectionOutputContract(
+    output,
+    transform,
+    signal,
+  );
+  return registrars.project(name, {
+    output: outputContract.schema,
+    ...(outputContract.capabilityFields.length > 0
+      ? { __capabilityFields: outputContract.capabilityFields }
+      : {}),
+    checkpoint: 'idempotent',
+    rebuildable: true,
+    project: functionNativeAnalyticalProjectionMap(name, transform),
+  });
+}
+
+function applicationProjectionOutputContract<
+  TPayload extends object,
+  TValue extends object,
+>(
+  output: ApplicationProjectionOutput<TValue>,
+  transform: ApplicationProjectionTransform<TPayload, TValue>,
+  signal: ApplicationStreamNode['signal'] | undefined,
+): {
+  readonly schema: SchemaInput<TValue>;
+  readonly capabilityFields: readonly ApplicationProjectionCapabilityField[];
+} {
+  const facet = getApplicationModelFacet(output);
+  const schema = facet?.schema.select as SchemaInput<TValue> | undefined;
+  const declarations = applicationRelationalModelOptionsFor(output).signalFields
+    ?? {};
+  const capabilityFields = Object.entries(declarations).map(
+    ([path, declaration]) => ({
+      path,
+      kind: 'signalReference' as const,
+      contract: declaration.contract,
+      visibility: declaration.visibility,
+      maxAgeSeconds: applicationProjectionDurationSeconds(
+        declaration.maxAge,
+      ),
+    }),
+  );
+  const serialized = serializeApplicationCallback({
+    registrar: 'project',
+    argumentIndex: 1,
+    property: 'transform',
+    label: 'Application capability-bearing projection transform',
+    callback: transform as (...args: never[]) => unknown,
+    extractCallsite: false,
+  });
+  const executableSource = maskApplicationProjectionLiterals(
+    serialized.source,
+  );
+  const standaloneReferences =
+    executableSource.match(/\.signal\b(?!\s*\.)/g)?.length ?? 0;
+  if (capabilityFields.length === 0) {
+    if (standaloneReferences > 0) {
+      throw new Error(
+        'Application projection cannot persist a signal reference in an ordinary output field. '
+        + 'Declare a model field with field.signal(...) or project only inert signal metadata.',
+      );
+    }
+    return {
+      schema: (schema ?? output) as SchemaInput<TValue>,
+      capabilityFields: [],
+    };
+  }
+  if (!schema || !facet) {
+    throw new Error(
+      'Capability-bearing projection output must be an Applik8s model declared with model(...).',
+    );
+  }
+  if (!signal) {
+    throw new Error(
+      'field.signal(...) projection output requires a typed signal issuance source.',
+    );
+  }
+  for (const field of capabilityFields) {
+    if (
+      field.contract.id !== signal.id
+      || field.contract.name !== signal.name
+      || field.contract.version !== signal.version
+    ) {
+      throw new Error(
+        `Projection signal field ${field.path} declares ${field.contract.id} but the source emits ${signal.id}.`,
+      );
+    }
+    const escapedPath = field.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const directAssignment = new RegExp(
+      `(?:^|[{,]\\s*)${escapedPath}\\s*:\\s*[A-Z_a-z$][\\w$]*\\.signal\\s*(?=[,}])`,
+      'm',
+    );
+    if (!directAssignment.test(executableSource)) {
+      throw new Error(
+        `Projection signal field ${field.path} must receive the exact inert event.signal reference directly.`,
+      );
+    }
+  }
+  if (standaloneReferences !== capabilityFields.length) {
+    throw new Error(
+      'Capability-bearing projection contains an undeclared or ambiguous signal reference assignment.',
+    );
+  }
+  return {
+    schema,
+    capabilityFields,
+  };
+}
+
+/**
+ * Static capability checks inspect executable tokens only. Signal-looking
+ * documentation, comments, and string/template data must not be mistaken for
+ * a capability reference. Template interpolation still produces a string, so
+ * masking the complete template is intentionally conservative here.
+ */
+function maskApplicationProjectionLiterals(source: string): string {
+  let output = '';
+  let index = 0;
+  while (index < source.length) {
+    const current = source[index] ?? '';
+    const next = source[index + 1] ?? '';
+    if (current === '/' && next === '/') {
+      output += '  ';
+      index += 2;
+      while (index < source.length && source[index] !== '\n') {
+        output += ' ';
+        index += 1;
+      }
+      continue;
+    }
+    if (current === '/' && next === '*') {
+      output += '  ';
+      index += 2;
+      while (
+        index < source.length
+        && !(source[index] === '*' && source[index + 1] === '/')
+      ) {
+        output += source[index] === '\n' ? '\n' : ' ';
+        index += 1;
+      }
+      if (index < source.length) {
+        output += '  ';
+        index += 2;
+      }
+      continue;
+    }
+    if (current === '\'' || current === '"' || current === '`') {
+      const quote = current;
+      output += ' ';
+      index += 1;
+      while (index < source.length) {
+        const character = source[index] ?? '';
+        if (character === '\\') {
+          output += ' ';
+          index += 1;
+          if (index < source.length) {
+            output += source[index] === '\n' ? '\n' : ' ';
+            index += 1;
+          }
+          continue;
+        }
+        output += character === '\n' ? '\n' : ' ';
+        index += 1;
+        if (character === quote) break;
+      }
+      continue;
+    }
+    output += current;
+    index += 1;
+  }
+  return output;
+}
+
+function functionNativeProjectionMode<TPayload extends object, TValue extends object>(
+  transform: ApplicationProjectionTransform<TPayload, TValue>,
+): 'analytical' | 'online' {
+  const serialized = serializeApplicationCallback({
+    registrar: 'project',
+    argumentIndex: 1,
+    property: 'transform',
+    label: 'Application function-native projection transform',
+    callback: transform as (...args: never[]) => unknown,
+    extractCallsite: false,
+  });
+  const source = serialized.source
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n\r]*/g, ' ')
+    .replace(/(["'`])(?:\\.|(?!\1)[^\\])*\1/g, ' ');
+  const append = /\.append\s*\(/.test(source);
+  const online = /\.(?:upsert|remove)\s*\(/.test(source);
+  if (append === online) {
+    throw new Error(
+      'Function-native Stream.project(...) must use output.append(...) for an analytical projection '
+      + 'or output.upsert(...)/output.remove(...) for an online projection. Mixed or hidden write modes '
+      + 'fail closed; use the explicit projection options form for advanced helper indirection.',
+    );
+  }
+  return append ? 'analytical' : 'online';
+}
+
+function functionNativeProjectionMap<TPayload extends object, TValue extends object>(
+  name: string,
+  transform: ApplicationOnlineProjectionTransform<TPayload, TValue>,
+): ApplicationOnlineProjectionOptions<TPayload, ApplicationProjectionWrite<TValue>, TValue>['map'] {
+  const serialized = serializeApplicationCallback({
+    registrar: 'project',
+    argumentIndex: 1,
+    property: 'transform',
+    label: `Application projection ${name} transform`,
+    callback: transform as (...args: never[]) => unknown,
+    extractCallsite: false,
+  });
+  const functionName = `${name.replace(/-([a-z0-9])/g, (_match, value: string) => value.toUpperCase())}Projection`;
+  const source = `function ${functionName}(payload, event) {
+    const transform = (${serialized.source});
+    const write = Object.freeze({
+      sourceId: event.id,
+      sequence: event.sequence,
+      recordedAt: event.recordedAt,
+      sourcePartition: event.partitionKey,
+      upsert: (input) => Object.freeze({ kind: "upsert", ...input }),
+      remove: (input) => Object.freeze({ kind: "remove", ...input }),
+      append: () => { throw new Error("Online projections cannot append analytical rows."); },
+      skip: () => Object.freeze({ kind: "skip" }),
+    });
+    const writes = transform(payload, write);
+    if (writes && typeof writes.then === "function") {
+      throw new Error("Projection transformations must be synchronous and deterministic.");
+    }
+    return (Array.isArray(writes) ? writes : [writes]).filter((candidate) => candidate.kind !== "skip");
+  }`;
+  const callback = Function(`return (${source});`)() as ApplicationOnlineProjectionOptions<TPayload, ApplicationProjectionWrite<TValue>, TValue>['map'];
+  Object.defineProperty(callback, Symbol.for('applik8s.applicationCallbackSource'), {
+    value: {
+      ...(serialized.location ?? {
+        file: 'applik8s:generated-projection',
+        line: 1,
+        column: 1,
+      }),
+      name: functionName,
+      source,
+      generated: true,
+    },
+    enumerable: false,
+  });
+  return callback;
+}
+
+function functionNativeAnalyticalProjectionMap<TPayload extends object, TValue extends object>(
+  name: string,
+  transform: ApplicationAnalyticalProjectionTransform<TPayload, TValue>,
+): ApplicationAnalyticalProjectionOptions<TPayload, TValue>['project'] {
+  const serialized = serializeApplicationCallback({
+    registrar: 'project',
+    argumentIndex: 1,
+    property: 'transform',
+    label: `Application analytical projection ${name} transform`,
+    callback: transform as (...args: never[]) => unknown,
+    extractCallsite: false,
+  });
+  const functionName = `${name.replace(/-([a-z0-9])/g, (_match, value: string) => value.toUpperCase())}Projection`;
+  const source = `function ${functionName}(payload, event) {
+    const transform = (${serialized.source});
+    const write = Object.freeze({
+      sourceId: event.id,
+      sequence: event.sequence,
+      recordedAt: event.recordedAt,
+      sourcePartition: event.partitionKey,
+      append: (value) => Object.freeze({ kind: "append", value }),
+      upsert: () => { throw new Error("Analytical projections cannot upsert online rows."); },
+      remove: () => { throw new Error("Analytical projections cannot remove online rows."); },
+      skip: () => Object.freeze({ kind: "skip" }),
+    });
+    const writes = transform(payload, write);
+    if (writes && typeof writes.then === "function") {
+      throw new Error("Projection transformations must be synchronous and deterministic.");
+    }
+    return (Array.isArray(writes) ? writes : [writes])
+      .filter((candidate) => candidate.kind !== "skip")
+      .map((candidate) => candidate.value);
+  }`;
+  const callback = Function(`return (${source});`)() as ApplicationAnalyticalProjectionOptions<TPayload, TValue>['project'];
+  Object.defineProperty(callback, Symbol.for('applik8s.applicationCallbackSource'), {
+    value: {
+      ...(serialized.location ?? {
+        file: 'applik8s:generated-analytical-projection',
+        line: 1,
+        column: 1,
+      }),
+      name: functionName,
+      source,
+      generated: true,
+    },
+    enumerable: false,
+  });
+  return callback;
+}
+
+function functionNativeProjectionRebuildMap<TPayload extends object>(
+  name: string,
+  map: (
+    snapshot: object,
+    rebuild: ApplicationProjectionRebuildScope<TPayload>,
+  ) => TPayload | readonly TPayload[] | undefined | Promise<TPayload | readonly TPayload[] | undefined>,
+): (snapshot: object) => TPayload | readonly TPayload[] | Promise<TPayload | readonly TPayload[]> {
+  const serialized = serializeApplicationCallback({
+    registrar: 'project',
+    argumentIndex: 1,
+    property: 'rebuild',
+    label: `Application projection ${name} rebuild`,
+    callback: map as (...args: never[]) => unknown,
+    extractCallsite: false,
+  });
+  const functionName = `${name.replace(/-([a-z0-9])/g, (_match, value: string) => value.toUpperCase())}Rebuild`;
+  const source = `async function ${functionName}(snapshot) {
+    const map = (${serialized.source});
+    const rebuild = Object.freeze({
+      source: (payload) => payload,
+      skip: () => undefined,
+    });
+    return (await map(snapshot, rebuild)) ?? [];
+  }`;
+  const callback = Function(`return (${source});`)() as (snapshot: object) => Promise<TPayload | readonly TPayload[]>;
+  Object.defineProperty(callback, Symbol.for('applik8s.applicationCallbackSource'), {
+    value: {
+      ...(serialized.location ?? {
+        file: 'applik8s:generated-projection',
+        line: 1,
+        column: 1,
+      }),
+      name: functionName,
+      source,
+      generated: true,
+    },
+    enumerable: false,
+  });
+  return callback;
+}
+
+function applicationProjectionDurationSeconds(value: string): number {
+  const match = /^([1-9][0-9]*)(s|m|h|d)$/.exec(value.trim());
+  if (!match) {
+    throw new Error(
+      `Projection retention maxAge ${JSON.stringify(value)} must be a positive duration using s, m, h, or d.`,
+    );
+  }
+  const amount = Number(match[1]);
+  const multiplier = { s: 1, m: 60, h: 3_600, d: 86_400 }[match[2] as 's' | 'm' | 'h' | 'd'];
+  const seconds = amount * multiplier;
+  if (!Number.isSafeInteger(seconds)) {
+    throw new Error(`Projection retention maxAge ${JSON.stringify(value)} exceeds the safe duration range.`);
+  }
+  return seconds;
 }
 
 export function registerApplicationStreamProcessor<
@@ -352,12 +1124,43 @@ export function registerApplicationStreamProcessor<
   TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>,
   TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>,
 >(state: ApplicationReactiveState, name: string, source: ApplicationStreamBinding<TPayload>, options: ApplicationStreamProcessOptions<TSchedules, TTasks>, handler: ApplicationStreamProcessHandler<TPayload, TSchedules, TTasks>): ApplicationStreamProcessorBinding<TPayload, TSchedules, TTasks> {
+  return registerApplicationStreamProcessorInternal(state, name, source, options, handler, 'event');
+}
+
+export function registerApplicationStreamBatchProcessor<
+  TPayload extends object,
+  TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>,
+  TTasks extends ApplicationStreamTaskTargets = Readonly<Record<never, never>>,
+>(state: ApplicationReactiveState, name: string, source: ApplicationStreamBinding<TPayload>, options: ApplicationStreamBatchOptions<TSchedules, TTasks>, handler: ApplicationStreamBatchHandler<TPayload, TSchedules, TTasks>): ApplicationStreamProcessorBinding<TPayload, TSchedules, TTasks> {
+  return registerApplicationStreamProcessorInternal(state, name, source, options, handler, 'batch');
+}
+
+function registerApplicationStreamProcessorInternal<
+  TPayload extends object,
+  TSchedules extends ApplicationStreamScheduleTargets,
+  TTasks extends ApplicationStreamTaskTargets,
+>(
+  state: ApplicationReactiveState,
+  name: string,
+  source: ApplicationStreamBinding<TPayload>,
+  options: ApplicationStreamProcessOptions<TSchedules, TTasks> | ApplicationStreamBatchOptions<TSchedules, TTasks>,
+  handler: ApplicationStreamProcessHandler<TPayload, TSchedules, TTasks> | ApplicationStreamBatchHandler<TPayload, TSchedules, TTasks>,
+  invocation: 'event' | 'batch',
+): ApplicationStreamProcessorBinding<TPayload, TSchedules, TTasks> {
   const nodeId = reactiveNodeId('streamProcessor', name);
   if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error(`Application stream processor ${JSON.stringify(name)} must be a lowercase DNS-style identifier.`);
   if (state.graphNodes.some((node) => node.id === nodeId)) throw new Error(`Application stream processor ${name} is already registered.`);
   const sourceRef = sourceNodeRef(source);
   if (!state.graphNodes.some((node) => node.id === sourceRef.nodeId && node.kind === 'stream')) throw new Error(`Application stream processor ${name} references a source that is not registered in this app.`);
-  const processor = normalizeApplicationProcessorOptions(`Stream ${name}`, options.processor);
+  const batchOptions = invocation === 'batch'
+    ? options as ApplicationStreamBatchOptions<TSchedules, TTasks>
+    : undefined;
+  const processor = normalizeApplicationProcessorOptions(
+    `Stream ${name}`,
+    batchOptions?.concurrency !== undefined
+      ? { ...options.processor, concurrency: batchOptions.concurrency }
+      : options.processor,
+  );
   if (processor.deployment.replicas !== 1) throw new Error(`Application stream processor ${name} currently requires replicas: 1 because its PostgreSQL checkpoint authority has not yet gained distributed partition claims.`);
   const retry = {
     mode: 'boundedExponentialBackoff' as const,
@@ -367,12 +1170,72 @@ export function registerApplicationStreamProcessor<
     factor: 2,
   };
   if (!Number.isSafeInteger(retry.maxAttempts) || retry.maxAttempts < 1 || !Number.isSafeInteger(retry.initialDelayMs) || retry.initialDelayMs < 1 || !Number.isSafeInteger(retry.maxDelayMs) || retry.maxDelayMs < retry.initialDelayMs) throw new Error(`Application stream processor ${name} has invalid retry bounds.`);
+  const batch = invocation === 'batch'
+    ? normalizeApplicationStreamBatchOptions(name, batchOptions as ApplicationStreamBatchOptions<TSchedules, TTasks>)
+    : undefined;
   const timeoutMs = options.budgets?.timeoutMs ?? 30_000;
-  const maxInputBytes = options.budgets?.maxInputBytes ?? 256_000;
+  const maxInputBytes = options.budgets?.maxInputBytes ?? Math.max(256_000, batch?.maxBytes ?? 0);
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || !Number.isSafeInteger(maxInputBytes) || maxInputBytes < 1) throw new Error(`Application stream processor ${name} has invalid execution budgets.`);
-  const serialized = serializeApplicationCallback({ registrar: 'stream.process', argumentIndex: 2, property: 'handler', label: `Application stream processor ${name}`, callback: handler as (...args: never[]) => unknown, allowDeferredResolution: true });
+  if (batch && maxInputBytes < batch.maxBytes) throw new Error(`Application batch processor ${name} maxInputBytes must be at least its maxBytes bound.`);
   const schedules = recordApplicationStreamSchedules(state, nodeId, options.schedules ?? {});
-	const tasks = recordApplicationStreamTasks(state, nodeId, options.tasks ?? {});
+  if (options.tasks && options.workflows) throw new Error(`Application stream processor ${name} must use workflows or deprecated tasks, not both.`);
+  const inferred = expandApplicationCallbackDependencies({
+    calls: options.__generatedCalls,
+    bindings: options.__generatedBindings,
+  });
+  const functionNativeTransaction = inferApplicationFunctionNativeTransaction(
+    state,
+    `Application stream processor ${name}`,
+    inferred,
+    invocation === 'batch' ? 'frozen-batch-id' : 'source-event-id',
+  );
+  const inferredTasks = Object.fromEntries(
+    inferred.calls
+      .filter((value): value is ApplicationTaskBinding<object, object> | ApplicationWorkflowBinding<object, object> =>
+        typeof value === 'function'
+        && (Reflect.get(value, 'kind') === 'applicationTask' || Reflect.get(value, 'kind') === 'applicationWorkflow'))
+      .flatMap((value) => {
+        const identifiers = Object.entries(inferred.bindings)
+          .filter(
+            ([identifier, candidate]) =>
+              candidate === value && !/^generatedCall\d+$/.test(identifier),
+          )
+          .map(([identifier]) => identifier);
+        return (identifiers.length > 0
+          ? identifiers
+          : [applicationGeneratedDependencyAlias(value.definition.id)])
+          .map((identifier) => [identifier, value] as const);
+      }),
+  );
+	const tasks = recordApplicationStreamTasks(
+    state,
+    nodeId,
+    { ...inferredTasks, ...(options.workflows ?? options.tasks ?? {}) },
+  );
+  const injectedIdentifiers = [
+    ...tasks.map(({ alias }) => alias),
+    ...(functionNativeTransaction?.modelBindings ?? [])
+      .map(({ identifier }) => identifier),
+    ...(functionNativeTransaction?.eventBindings ?? [])
+      .map(({ identifier }) => identifier),
+  ]
+    .flatMap((identifier) => [
+      identifier,
+      identifier.split('.')[0] ?? identifier,
+    ])
+    .filter(
+      (identifier, index, values) =>
+        identifier.length > 0 && values.indexOf(identifier) === index,
+    );
+  const serialized = serializeApplicationCallback({
+    registrar: invocation === 'batch' ? 'stream.onBatch' : 'stream.process',
+    argumentIndex: 2,
+    property: 'handler',
+    label: `Application stream processor ${name}`,
+    callback: handler as (...args: never[]) => unknown,
+    allowDeferredResolution: true,
+    injectedIdentifiers,
+  });
   addApplicationGraphNode(state, {
     id: nodeId,
     kind: 'streamProcessor',
@@ -385,24 +1248,91 @@ export function registerApplicationStreamProcessor<
     ...(serialized.dependencies ? { handlerDependencies: serialized.dependencies } : {}),
     ...(serialized.location ? { handlerLocation: serialized.location } : {}),
     ...(serialized.unresolved ? { handlerUnresolved: serialized.unresolved } : {}),
+    ...(functionNativeTransaction ? { functionNativeTransaction } : {}),
     ...(schedules.length > 0 ? {
       schedules,
     } : {}),
 		...(tasks.length > 0 ? { tasks } : {}),
-		...(schedules.length + tasks.length > 0 ? { workflowEngine: { interface: 'WorkflowEngine' as const, nodeId: reactiveNodeId('provider', 'WorkflowEngine') } } : {}),
+    ...(schedules.length + tasks.length > 0 ? { workflowEngine: { interface: 'WorkflowEngine' as const, nodeId: reactiveNodeId('provider', 'WorkflowEngine') } } : {}),
     delivery: 'at-least-once',
-    idempotency: 'source-event-id',
+    invocation,
+    idempotency: invocation === 'batch' ? 'frozen-batch-id' : 'source-event-id',
+    ...(batch ? { batch } : {}),
     checkpoint: 'postgres',
     failure: options.retry?.deadLetter ? 'deadLetter' : 'pause',
     retry,
     deployment: processor.deployment,
     budgets: { timeoutMs, maxInputBytes },
   });
+  if (functionNativeTransaction) {
+    for (const model of functionNativeTransaction.models) {
+      addApplicationGraphEdge(state, {
+        from: { nodeId },
+        to: model,
+        relationship: 'dependsOn',
+      });
+    }
+    for (const event of functionNativeTransaction.outbox) {
+      addApplicationGraphEdge(state, {
+        from: { nodeId },
+        to: event,
+        relationship: 'emits',
+      });
+    }
+  }
   addApplicationGraphEdge(state, { from: { nodeId }, to: sourceRef, relationship: 'reads' });
   for (const schedule of schedules) addApplicationGraphEdge(state, { from: { nodeId }, to: schedule.target, relationship: 'dependsOn' });
 	for (const task of tasks) addApplicationGraphEdge(state, { from: { nodeId }, to: task.target, relationship: 'dependsOn' });
   if (schedules.length + tasks.length > 0) addApplicationGraphEdge(state, { from: { nodeId: reactiveNodeId('provider', 'WorkflowEngine') }, to: { nodeId }, relationship: 'provides' });
-  return { kind: 'applicationStreamProcessor', name, source, handler, options };
+  // typecast: the public event and batch registrars preserve their respective
+  // handler shapes; the erased graph binding intentionally exposes one
+  // processor identity to deployment code.
+  return { kind: 'applicationStreamProcessor', name, source, handler: handler as ApplicationStreamProcessHandler<TPayload, TSchedules, TTasks>, options };
+}
+
+function normalizeApplicationStreamBatchOptions(
+  name: string,
+  options: ApplicationStreamBatchOptions,
+): NonNullable<import('@applik8s/core').ApplicationStreamProcessorNode['batch']> {
+  const maxItems = options.batch.maxItems;
+  if (!Number.isSafeInteger(maxItems) || maxItems < 1 || maxItems > 1_000) {
+    throw new Error(`Application batch processor ${name} maxItems must be an integer between 1 and 1000.`);
+  }
+  if (options.ordering !== 'partition') {
+    throw new Error(`Application batch processor ${name} supports only partition ordering.`);
+  }
+  if (options.acknowledgement !== undefined && options.acknowledgement !== 'wholeBatch') {
+    throw new Error(`Application batch processor ${name} supports only wholeBatch acknowledgement.`);
+  }
+  return {
+    maxItems,
+    maxBytes: applicationStreamBoundedQuantity(options.batch.maxBytes, 'bytes', name),
+    maxWaitMs: applicationStreamBoundedQuantity(options.batch.maxWait, 'duration', name),
+    ordering: 'partition',
+    acknowledgement: 'wholeBatch',
+    membership: 'durableFrozenManifest',
+  };
+}
+
+function applicationStreamBoundedQuantity(
+  input: string | number,
+  kind: 'bytes' | 'duration',
+  name: string,
+): number {
+  if (typeof input === 'number') {
+    if (!Number.isSafeInteger(input) || input < 1) throw new Error(`Application batch processor ${name} ${kind} bound must be a positive safe integer.`);
+    return input;
+  }
+  const units = kind === 'bytes'
+    ? { B: 1, KiB: 1_024, MiB: 1_048_576 }
+    : { ms: 1, s: 1_000, m: 60_000 };
+  const match = /^([1-9][0-9]*)(B|KiB|MiB|ms|s|m)$/.exec(input.trim());
+  const multiplier = match ? units[match[2] as keyof typeof units] : undefined;
+  const value = match && multiplier ? Number(match[1]) * multiplier : Number.NaN;
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`Application batch processor ${name} ${kind} bound ${JSON.stringify(input)} is invalid.`);
+  }
+  return value;
 }
 
 function recordApplicationStreamTasks(
@@ -419,10 +1349,11 @@ function recordApplicationStreamTasks(
 	recordApplicationWorkflowEngine(state as ApplicationWorkflowState);
 	return entries.map(([alias, target]) => {
 		if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(alias)) throw new Error(`Application stream processor ${processorNodeId} task alias ${JSON.stringify(alias)} must start with a letter and contain only letters, digits, underscore, or dash.`);
-		if (target.kind !== 'applicationTask') throw new Error(`Application stream processor ${processorNodeId} task ${alias} must target an application task binding.`);
-		const nodeId = reactiveNodeId('task', target.definition.id);
+		const kind = target.kind === 'applicationTask' ? 'task' : target.kind === 'applicationWorkflow' ? 'workflow' : undefined;
+		if (!kind) throw new Error(`Application stream processor ${processorNodeId} workflow ${alias} must target an application workflow or legacy task binding.`);
+		const nodeId = reactiveNodeId(kind, target.definition.id);
 		const node = state.graphNodes.find((candidate) => candidate.id === nodeId);
-		if (node?.kind !== 'task') throw new Error(`Application stream processor ${processorNodeId} task ${alias} references unregistered task ${target.definition.id}.`);
+		if (node?.kind !== kind) throw new Error(`Application stream processor ${processorNodeId} workflow ${alias} references unregistered ${kind} ${target.definition.id}.`);
 		return { alias, target: { nodeId }, contract: { name: node.contract.name, version: node.contract.version, input: node.contract.input, output: node.contract.output } };
 	});
 }
@@ -460,9 +1391,25 @@ export function registerApplicationSubscription<TPrincipal extends ApplicationQu
   if ((retry.maxAttempts ?? 0) < 1 || (retry.initialDelayMs ?? 0) < 1 || (retry.maxDelayMs ?? 0) < (retry.initialDelayMs ?? 0)) throw new Error(`Application subscription ${name} has invalid retry bounds.`);
   // typecast: the generated subscription gateway reconstructs the declared principal boundary after authenticating each request.
   const authorization = serializeApplicationCallback({ registrar: 'subscription', argumentIndex: 1, property: 'authorize', label: `Application subscription ${name} authorization`, callback: options.authorize as (...args: never[]) => unknown, allowDeferredResolution: true });
-  addApplicationGraphNode(state, { id: nodeId, kind: 'subscription', name, stability: 'stable', source, delivery: options.delivery ?? 'sse', cursor: 'opaque-scoped', authorization: 'application-defined', authorizationSource: authorization.source, ...(authorization.dependencies ? { authorizationDependencies: authorization.dependencies } : {}), ...(authorization.location ? { authorizationLocation: authorization.location } : {}), ...(authorization.unresolved ? { authorizationUnresolved: authorization.unresolved } : {}), retry, suspension: 'bounded-failures' });
+  addApplicationGraphNode(state, { id: nodeId, kind: 'subscription', name, stability: 'stable', source, delivery: options.delivery ?? 'sse', cursor: 'opaque-scoped', authorization: 'application-defined', authority: applicationSubscriptionPolicyAuthority(), authorizationSource: authorization.source, ...(authorization.dependencies ? { authorizationDependencies: authorization.dependencies } : {}), ...(authorization.location ? { authorizationLocation: authorization.location } : {}), ...(authorization.unresolved ? { authorizationUnresolved: authorization.unresolved } : {}), retry, suspension: 'bounded-failures' });
   addApplicationGraphEdge(state, { from: { nodeId }, to: source, relationship: 'reads' });
   return { kind: 'applicationSubscription', name, source: options.source, async authorize(principal) { return options.authorize({ principal }); } };
+}
+
+/**
+ * Subscription visibility is decided by its required authorization callback.
+ * Record that callback as application-policy authority so production builds do
+ * not force authors to restate the same policy through another API.
+ */
+function applicationSubscriptionPolicyAuthority(): ApplicationOperationAuthorizationContract {
+  return {
+    classification: 'application-policy',
+    permissionIds: [],
+    grantable: false,
+    delegable: false,
+    scope: { kind: 'all' },
+    transports: ['http', 'event'],
+  };
 }
 
 export function registerApplicationProjection<TPayload extends object, TRow extends object>(state: ApplicationReactiveState, name: string, options: ApplicationAnalyticalProjectionOptions<TPayload, TRow>): ApplicationAnalyticalProjectionBinding<TPayload, TRow>;
@@ -483,11 +1430,11 @@ export function registerApplicationProjection<TPayload extends object, TRow exte
     );
   }
   const qualification = applicationProviderQualificationFor(options.provider);
-  const providerNode = recordProjectionProvider(
-    state,
-    provider ?? selection!,
-    qualification,
-  );
+  const selectedProvider = provider ?? selection;
+  if (!selectedProvider) {
+    throw new Error(`Projection ${name} requires an explicit provider or an application provider selection.`);
+  }
+  const providerNode = recordProjectionProvider(state, selectedProvider, qualification);
   const nodeId = reactiveNodeId('projection', name);
   const source = sourceNodeRef(options.source);
   if (options.checkpoint && options.checkpoint !== 'idempotent') throw new Error(`Application projection ${name} supports only idempotent analytical checkpoints.`);
@@ -504,6 +1451,9 @@ export function registerApplicationProjection<TPayload extends object, TRow exte
     rebuildable: options.rebuildable ?? true,
     checkpoint: 'idempotent',
     output: declaredSchema(options.output, `${name}.output`),
+    ...(options.__capabilityFields?.length
+      ? { capabilityFields: options.__capabilityFields }
+      : {}),
     eventIdentity: 'stable-source-event-id',
     duplicateHandling: 'idempotent',
     rebuild: 'full-replay',
@@ -582,6 +1532,9 @@ function registerOnlineApplicationProjection<TPayload extends object, TRow exten
     rebuildable: true,
     checkpoint: 'idempotent',
     output: declaredSchema(options.output, `${name}.output`),
+    ...(options.__capabilityFields?.length
+      ? { capabilityFields: options.__capabilityFields }
+      : {}),
     eventIdentity: 'stable-source-event-id',
     duplicateHandling: 'idempotent',
     rebuild: 'full-replay',
@@ -633,11 +1586,46 @@ function registerOnlineApplicationProjection<TPayload extends object, TRow exten
   const requirement = `index-store.${reactiveName(name)}`;
   addApplicationProviderRequirement(state, { id: requirement, interface: 'IndexStore', consumer: { nodeId }, provider: providerNode, required: true, purpose: 'onlineIndex', diagnostics: { missing: `Online projection ${name} requires an IndexStore provider.`, ambiguous: `Online projection ${name} has multiple IndexStore providers.` } });
   addApplicationProviderBinding(state, { requirement, provider: providerNode, generatedResources: [], runtime: {}, metadataLinks: [] });
-  return {
+  let binding: ApplicationOnlineProjectionBinding<TPayload, TRow, TValue>;
+  binding = {
     kind: 'applicationProjection', storage: 'online', name, source: options.source, provider, output: options.output,
     map: options.map, partitionBy: options.partitionBy, key: options.key, score: options.score, value: options.value,
     ...(options.removeWhen ? { removeWhen: options.removeWhen } : {}), retention: options.retention, generationScoped: true,
+    rebuild: (input) => applicationProjectionRuntime(binding).rebuild(input),
+    retire: (input) => applicationProjectionRuntime(binding).retire(input),
   };
+  if (options.rebuild) {
+    const objectStorage = applicationObjectStorageImplementation(
+      state.providers.objects ?? state.defaults.objects,
+    );
+    const maxSegmentBytes = objectStorage?.kind === 'kubernetes-configmap-objects'
+      ? Math.min(8_000_000, objectStorage.maxObjectBytes ?? 524_288)
+      : 8_000_000;
+    const artifacts = registerApplicationObjectStore(
+      state,
+      `${reactiveName(name)}-rebuild-artifacts`,
+      {
+        maxObjectBytes: maxSegmentBytes,
+        contentTypes: [
+          'application/vnd.applik8s.projection-segment+json',
+          'application/vnd.applik8s.projection-rebuild+json',
+        ],
+        mode: 'immutable',
+        deletion: 'explicit',
+      },
+    );
+    attachApplicationProjectionRebuildTarget(binding, {
+      artifacts,
+      bounds: {
+        batchSize: 500,
+        maxSegments: 20_000,
+        maxSegmentBytes,
+        maxEvents: 10_000_000,
+        maxCatchUpRounds: 32,
+      },
+    });
+  }
+  return binding;
 }
 
 function serializeProjectionCallback(name: string, property: string, callback: (...args: never[]) => unknown) {
@@ -672,7 +1660,9 @@ export function registerApplicationGateway(state: ApplicationReactiveState, name
   });
   const subscriptionRefs = subscriptions.map((subscription) => ({ nodeId: reactiveNodeId('subscription', subscription.name) }));
   for (const subscription of subscriptionRefs) if (!state.graphNodes.some((node) => node.id === subscription.nodeId && node.kind === 'subscription')) throw new Error(`Application gateway ${name} references unregistered subscription ${subscription.nodeId}.`);
-  if (commandRefs.length > 0 && !options.authorizeCommand) throw new Error(`Application gateway ${name} exposes commands and must declare authorizeCommand.`);
+  if (commandRefs.length > 0 && !options.authorizeCommand && options.visibility !== 'internal') {
+    throw new Error(`Application gateway ${name} exposes commands and must declare authorizeCommand.`);
+  }
   if (options.authorizeCommand) {
     for (const command of options.commands ?? []) {
       const contract = getApplicationOperationContract(command);
@@ -697,9 +1687,8 @@ export function registerApplicationGateway(state: ApplicationReactiveState, name
       : applicationIdentityAuthentication(state, name)
     : undefined;
   const identityProvider = state.providers.extensions?.['IdentityProvider@v1alpha1'];
-  const identityReadyCallback = identityProvider && typeof identityProvider === 'object' ? Reflect.get(identityProvider, 'ready') : undefined;
-  const identityReadiness = deployment && typeof identityReadyCallback === 'function'
-    ? serializeApplicationCallback({ registrar: 'IdentityProvider', argumentIndex: 1, property: 'ready', label: `Application gateway ${name} identity readiness`, callback: identityReadyCallback as (...args: never[]) => unknown, allowDeferredResolution: true })
+  const identityReadiness = deployment
+    ? applicationIdentityReadiness(identityProvider, name)
     : undefined;
   const authorizationProvider = state.providers.extensions?.['Authorization@v1alpha1'];
   const authorizationReadyCallback = authorizationProvider && typeof authorizationProvider === 'object' ? Reflect.get(authorizationProvider, 'ready') : undefined;
@@ -709,16 +1698,28 @@ export function registerApplicationGateway(state: ApplicationReactiveState, name
   // typecast: generated command admission receives a schema-validated command input and the gateway-established principal.
   const commandAuthorization = options.authorizeCommand ? serializeApplicationCallback({ registrar: 'gateway', argumentIndex: 1, property: 'authorizeCommand', label: `Application gateway ${name} command authorization`, callback: options.authorizeCommand as (...args: never[]) => unknown, allowDeferredResolution: true }) : undefined;
   addApplicationGraphNode(state, {
-    id: nodeId, kind: 'gateway', name, stability: 'stable', queries: queryRefs, commands: commandRefs, subscriptions: subscriptionRefs, transport: 'http-sse', authentication: 'external-provider', trustedContextAdmission: 'server-validated', browserCredentials: 'forbidden', subscriptionLimits: limits, routes: { snapshots: `${basePath}/:query/snapshot`, subscriptions: `${basePath}/:query/subscribe`, streamReplay: '/streams/:subscription/replay', streamSubscriptions: '/streams/:subscription/subscribe', commandSubmission: '/commands/:command/submit', commandProgress: '/commands/:command/progress' }, resume: 'resumableInvalidation',
+    id: nodeId, kind: 'gateway', name, stability: 'stable', visibility: options.visibility ?? 'public', queries: queryRefs, commands: commandRefs, subscriptions: subscriptionRefs, transport: 'http-sse', authentication: 'external-provider', trustedContextAdmission: 'server-validated', browserCredentials: 'forbidden', subscriptionLimits: limits, routes: { snapshots: `${basePath}/:query/snapshot`, subscriptions: `${basePath}/:query/subscribe`, streamReplay: '/streams/:subscription/replay', streamSubscriptions: '/streams/:subscription/subscribe', commandSubmission: '/commands/:command/submit', commandProgress: '/commands/:command/progress' }, resume: 'resumableInvalidation',
     materialization: deployment ? 'generatedDeployment' : 'runtimeOnly',
-    ...(authentication ? { authenticationSource: authentication.source } : {}),
-    ...(authentication?.dependencies ? { authenticationDependencies: authentication.dependencies } : {}),
-    ...(authentication?.location ? { authenticationLocation: authentication.location } : {}),
-    ...(authentication?.unresolved ? { authenticationUnresolved: authentication.unresolved } : {}),
-    ...(identityReadiness ? { identityReadinessSource: identityReadiness.source } : {}),
-    ...(identityReadiness?.dependencies ? { identityReadinessDependencies: identityReadiness.dependencies } : {}),
-    ...(identityReadiness?.location ? { identityReadinessLocation: identityReadiness.location } : {}),
-    ...(identityReadiness?.unresolved ? { identityReadinessUnresolved: identityReadiness.unresolved } : {}),
+    ...(authentication && isApplicationProfiledCallback(authentication)
+      ? { authenticationProfile: authentication }
+      : authentication
+        ? {
+            authenticationSource: authentication.source,
+            ...(authentication.dependencies ? { authenticationDependencies: authentication.dependencies } : {}),
+            ...(authentication.location ? { authenticationLocation: authentication.location } : {}),
+            ...(authentication.unresolved ? { authenticationUnresolved: authentication.unresolved } : {}),
+          }
+        : {}),
+    ...(identityReadiness && isApplicationProfiledCallback(identityReadiness)
+      ? { identityReadinessProfile: identityReadiness }
+      : identityReadiness
+        ? {
+            identityReadinessSource: identityReadiness.source,
+            ...(identityReadiness.dependencies ? { identityReadinessDependencies: identityReadiness.dependencies } : {}),
+            ...(identityReadiness.location ? { identityReadinessLocation: identityReadiness.location } : {}),
+            ...(identityReadiness.unresolved ? { identityReadinessUnresolved: identityReadiness.unresolved } : {}),
+          }
+        : {}),
     ...(authorizationReadiness ? { authorizationReadinessSource: authorizationReadiness.source } : {}),
     ...(authorizationReadiness?.dependencies ? { authorizationReadinessDependencies: authorizationReadiness.dependencies } : {}),
     ...(authorizationReadiness?.location ? { authorizationReadinessLocation: authorizationReadiness.location } : {}),
@@ -756,7 +1757,26 @@ export function registerApplicationGateway(state: ApplicationReactiveState, name
 function applicationIdentityAuthentication(
   state: ApplicationReactiveState,
   gateway: string,
-): SerializedApplicationCallback {
+): SerializedApplicationCallback | ApplicationProfiledCallbackContract {
+  const configured = state.providers.extensions?.['IdentityProvider@v1alpha1'];
+  const selection =
+    applicationProviderSelectionFor<ApplicationIdentityProvider>(configured);
+  if (selection) {
+    return applicationProfiledIdentityCallback(
+      selection,
+      (provider, variant) =>
+        serializeApplicationIdentityAuthentication(
+          provider,
+          `Application gateway ${gateway} ${variant} identity authentication`,
+        ),
+    );
+  }
+  if (isApplicationIdentityProvider(configured)) {
+    return serializeApplicationIdentityAuthentication(
+      configured,
+      `Application gateway ${gateway} identity authentication`,
+    );
+  }
   const candidates = state.graphNodes
     .filter((node): node is ApplicationProviderNode =>
       node.kind === 'provider'
@@ -811,6 +1831,107 @@ function applicationIdentityAuthentication(
         }
       : {}),
   };
+}
+
+function applicationIdentityReadiness(
+  configured: unknown,
+  gateway: string,
+): SerializedApplicationCallback | ApplicationProfiledCallbackContract | undefined {
+  const selection =
+    applicationProviderSelectionFor<ApplicationIdentityProvider>(configured);
+  if (selection) {
+    const candidates = [
+      ...Object.values(selection.cases),
+      selection.default,
+    ];
+    if (!candidates.some((provider) => typeof provider.ready === 'function')) {
+      return undefined;
+    }
+    return applicationProfiledIdentityCallback(
+      selection,
+      (provider, variant) =>
+        typeof provider.ready === 'function'
+          ? serializeApplicationCallback({
+              registrar: 'IdentityProvider',
+              argumentIndex: 1,
+              property: 'ready',
+              label: `Application gateway ${gateway} ${variant} identity readiness`,
+              callback: provider.ready as (...args: never[]) => unknown,
+              allowDeferredResolution: true,
+            })
+          : { source: 'async () => undefined' },
+    );
+  }
+  if (!isApplicationIdentityProvider(configured) || typeof configured.ready !== 'function') {
+    return undefined;
+  }
+  return serializeApplicationCallback({
+    registrar: 'IdentityProvider',
+    argumentIndex: 1,
+    property: 'ready',
+    label: `Application gateway ${gateway} identity readiness`,
+    callback: configured.ready as (...args: never[]) => unknown,
+    allowDeferredResolution: true,
+  });
+}
+
+function serializeApplicationIdentityAuthentication(
+  provider: ApplicationIdentityProvider,
+  label: string,
+): SerializedApplicationCallback {
+  if (provider.deterministicAdmission) {
+    return {
+      source: `async () => (${JSON.stringify(provider.deterministicAdmission)})`,
+    };
+  }
+  return serializeApplicationCallback({
+    registrar: 'IdentityProvider',
+    argumentIndex: 0,
+    property: 'authenticate',
+    label,
+    callback: provider.authenticate as (...args: never[]) => unknown,
+    allowDeferredResolution: true,
+  });
+}
+
+function applicationProfiledIdentityCallback(
+  selection: ApplicationProviderSelectionValue<ApplicationIdentityProvider>,
+  serialize: (
+    provider: ApplicationIdentityProvider,
+    variant: string,
+  ) => SerializedApplicationCallback,
+): ApplicationProfiledCallbackContract {
+  const entries = Object.entries(selection.cases);
+  for (const [variant, provider] of [
+    ...entries,
+    ['default', selection.default] as const,
+  ]) {
+    if (!isApplicationIdentityProvider(provider)) {
+      throw new Error(
+        `Application IdentityProvider profile branch ${variant} does not satisfy the identity provider contract.`,
+      );
+    }
+  }
+  return {
+    selector: selection.selector,
+    cases: Object.fromEntries(
+      entries.map(([variant, provider]) => [
+        variant,
+        serialize(provider, variant),
+      ]),
+    ),
+    default: serialize(selection.default, 'default'),
+  };
+}
+
+function isApplicationProfiledCallback(
+  value: SerializedApplicationCallback | ApplicationProfiledCallbackContract,
+): value is ApplicationProfiledCallbackContract {
+  return (
+    typeof Reflect.get(value, 'selector') === 'string'
+    && Reflect.get(value, 'cases') !== undefined
+    && Reflect.get(value, 'default') !== undefined
+  );
 }
 
 function isApplicationQueryBinding(value: unknown): value is ApplicationQueryBinding {

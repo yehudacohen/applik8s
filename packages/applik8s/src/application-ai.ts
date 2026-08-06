@@ -20,8 +20,13 @@ import {
   type ApplicationOperationId,
   applicationOperationId,
 } from '@applik8s/core';
+import type { SchemaInput } from '@applik8s/sdk';
 import type { ApplicationServiceIdentityBinding } from './application-authority.js';
-import { serializeApplicationCallback } from './application-callback.js';
+import {
+  expandApplicationCallbackDependencies,
+  serializeApplicationCallback,
+} from './application-callback.js';
+import { inferApplicationFunctionNativeTransaction } from './application-function-native-transactions.js';
 import {
   type ApplicationGraphState,
   addApplicationGraphEdge,
@@ -29,6 +34,7 @@ import {
   addApplicationProviderRequirement,
 } from './application-graph-state.js';
 import { applicationProviderGraphNodeId, kubernetesNameSegment } from './application-identifiers.js';
+import { declaredSchema } from './application-workflow-serialization.js';
 
 export interface ApplicationAgentDeploymentOptions {
   readonly replicas?: number;
@@ -42,7 +48,12 @@ export interface ApplicationAgentOptions {
   readonly identity: ApplicationServiceIdentityBinding;
   readonly model: ApplicationAIModelDefinition;
   readonly instructions: string | ((context: Readonly<Record<string, unknown>>) => string);
-  readonly tools: readonly ApplicationOperationLike[];
+  /**
+   * Existing model/query handles or ordinary typed domain functions. The
+   * compiler derives schemas and durable placement for an ordinary function;
+   * no operation/tool wrapper is authored by the application.
+   */
+  readonly tools: readonly ApplicationAgentTool[];
   readonly responseSchemaDigest?: string;
   readonly budgets?: {
     readonly maximumInputTokens?: number;
@@ -56,6 +67,10 @@ export interface ApplicationAgentOptions {
   };
   readonly deployment?: ApplicationAgentDeploymentOptions;
 }
+
+export type ApplicationAgentTool =
+  | ApplicationOperationLike
+  | ((...args: never[]) => unknown);
 
 export interface ApplicationAgentBinding<
   TName extends string = string,
@@ -115,7 +130,7 @@ export function registerApplicationAgent<
     ? staticInstructions(normalizedName, options.instructions)
     : closureInstructions(normalizedName, options.instructions);
   const tools = options.tools.map((operation, index) =>
-    applicationAgentTool(state.graphNodes, normalizedName, operation, index));
+    applicationAgentTool(state, normalizedName, operation, index));
   const duplicateTool = duplicate(tools.map((tool) => tool.operationId));
   if (duplicateTool) {
     throw new Error(`Application agent ${normalizedName} declares operation ${duplicateTool} more than once.`);
@@ -214,12 +229,30 @@ export function registerApplicationAgent<
     relationship: 'provides',
   });
   for (const tool of tools) {
-    if (!tool.graphNode) continue;
-    addApplicationGraphEdge(state, {
-      from: { nodeId },
-      to: tool.graphNode,
-      relationship: tool.transport === 'query' ? 'reads' : 'writes',
-    });
+    if (tool.graphNode) {
+      addApplicationGraphEdge(state, {
+        from: { nodeId },
+        to: tool.graphNode,
+        relationship: tool.transport === 'query' ? 'reads' : 'writes',
+      });
+    }
+    for (const model of tool.local?.functionNativeTransaction.models ?? []) {
+      addApplicationGraphEdge(state, {
+        from: { nodeId },
+        to: model,
+        relationship: model.nodeId
+          === tool.local?.functionNativeTransaction.primaryModel.nodeId
+          ? 'writes'
+          : 'reads',
+      });
+    }
+    for (const event of tool.local?.functionNativeTransaction.outbox ?? []) {
+      addApplicationGraphEdge(state, {
+        from: { nodeId },
+        to: event,
+        relationship: 'emits',
+      });
+    }
   }
   addApplicationProviderRequirement(state, {
     id: `requirement.${nodeId}.ai`,
@@ -275,13 +308,18 @@ function applicationAgentStateProviderNodeId(
   }
   const toolModelProviders = new Set(
     tools.flatMap((tool) => {
-      if (!tool.graphNode) return [];
-      const model = nodes.find(
-        (node) =>
-          node.id === tool.graphNode?.nodeId
-          && node.kind === 'model',
-      );
-      return model?.kind === 'model' ? [model.database.nodeId] : [];
+      const references = [
+        ...(tool.graphNode ? [tool.graphNode] : []),
+        ...(tool.local?.functionNativeTransaction.models ?? []),
+      ];
+      return references.flatMap((reference) => {
+        const model = nodes.find(
+          (node) =>
+            node.id === reference.nodeId
+            && node.kind === 'model',
+        );
+        return model?.kind === 'model' ? [model.database.nodeId] : [];
+      });
     }),
   );
   if (toolModelProviders.size === 1) {
@@ -293,41 +331,132 @@ function applicationAgentStateProviderNodeId(
 }
 
 function applicationAgentTool(
-  nodes: readonly ApplicationGraphNode[],
+  state: ApplicationGraphState,
   agentName: string,
-  operation: ApplicationOperationLike,
+  candidate: ApplicationAgentTool,
   index: number,
 ): ApplicationAIAgentNode['tools'][number] {
-  const contract = getApplicationOperationContract(operation);
+  const nodes = state.graphNodes;
+  const contract = getApplicationOperationContract(candidate);
   if (!contract) {
     throw new Error(
-      `Application agent ${agentName} tool ${index} must be an application operation handle.`,
+      `Application agent ${agentName} tool ${index} must be a model/query handle or an ordinary typed function compiled by Applik8s.`,
     );
   }
-  if (!getApplicationOperationSchemas(
+  const operation = candidate as ApplicationOperationLike;
+  const schemas = getApplicationOperationSchemas(
     operation as ApplicationTanStackToolOperation<unknown, unknown>,
-  )) {
+  );
+  if (!schemas) {
     throw new Error(
       `Application agent ${agentName} tool ${contract.id} has no authored input/output schemas and cannot be adapted safely.`,
     );
   }
-  const operationId = canonicalOperationId(contract);
   const graphNode = operationGraphNode(nodes, contract.model, contract.id, contract.name);
+  const operationId = graphNode?.kind === 'query'
+    ? applicationOperationId({
+        domain: 'queries',
+        owner: graphNode.name,
+        operation: graphNode.modelOperation?.name ?? 'read',
+      })
+    : canonicalOperationId(contract);
+  const generated = generatedFunctionOperationMetadata(operation);
+  const local = generated
+    ? applicationLocalAgentTool(
+        state,
+        agentName,
+        operationId,
+        contract.name,
+        operation,
+        schemas,
+      )
+    : undefined;
   return {
     operationId,
     operationVersion: contract.version ?? 'v1',
     transport: contract.transport,
     ...(graphNode ? { graphNode: { nodeId: graphNode.id } } : {}),
+    ...(local ? { local } : {}),
     authority: {
       classification: contract.authority?.classification ?? 'unclassified',
+      permissionIds: contract.authority?.permissionIds ?? [],
       grantable: contract.authority?.grantable ?? false,
       delegable: contract.authority?.delegable ?? false,
       scope: contract.authority?.scope ?? {
         kind: 'none',
         reason: `Operation ${operationId} has no declared authority.`,
       },
+      ...(contract.authority?.audiences
+        ? { audiences: contract.authority.audiences }
+        : {}),
+      ...(contract.authority?.transports
+        ? { transports: contract.authority.transports }
+        : {}),
+      ...(contract.authority?.lifetime
+        ? { lifetime: contract.authority.lifetime }
+        : {}),
     },
   };
+}
+
+function applicationLocalAgentTool(
+  state: ApplicationGraphState,
+  agentName: string,
+  operationId: ApplicationOperationId,
+  operationName: string,
+  operation: ApplicationOperationLike,
+  schemas: { readonly input: unknown; readonly output: unknown },
+): NonNullable<ApplicationAIAgentNode['tools'][number]['local']> {
+  const dependencies = expandApplicationCallbackDependencies({
+    calls: [operation],
+  });
+  const functionNativeTransaction = inferApplicationFunctionNativeTransaction(
+    state,
+    `Application agent ${agentName} tool ${operationId}`,
+    dependencies,
+    'agent-tool-call',
+  );
+  if (!functionNativeTransaction) {
+    throw new Error(
+      `Application agent ${agentName} ordinary function tool ${operationId} must reach exactly one Model.edit(...) transaction boundary.`,
+    );
+  }
+  const serialized = serializeApplicationCallback({
+    registrar: 'agent',
+    argumentIndex: 1,
+    property: 'tool',
+    label: `Application agent ${agentName} tool ${operationId}`,
+    callback: operation as unknown as (...args: never[]) => unknown,
+    allowDeferredResolution: true,
+  });
+  return {
+    name: operationName,
+    input: declaredSchema(
+      schemas.input as SchemaInput<object>,
+      `${operationId}.input`,
+    ),
+    output: declaredSchema(
+      schemas.output as SchemaInput<object>,
+      `${operationId}.output`,
+    ),
+    handlerSource: serialized.source,
+    ...(serialized.dependencies
+      ? { handlerDependencies: serialized.dependencies }
+      : {}),
+    ...(serialized.location ? { sourceLocation: serialized.location } : {}),
+    functionNativeTransaction,
+  };
+}
+
+function generatedFunctionOperationMetadata(
+  value: unknown,
+): object | undefined {
+  if (typeof value !== 'function') return undefined;
+  const metadata = Reflect.get(
+    value,
+    Symbol.for('applik8s.generatedFunctionOperation'),
+  );
+  return metadata && typeof metadata === 'object' ? metadata : undefined;
 }
 
 function canonicalOperationId(

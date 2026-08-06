@@ -30,6 +30,18 @@ describe('internal operation transport', () => {
         now,
       }),
     ).toEqual(invocation);
+    expect(
+      decodeApplicationInternalOperationInvocation(secret, token, {
+        operationId: invocation.operationId,
+        operationVersion: invocation.operationVersion,
+        inputDigest: invocation.inputDigest,
+        audience: [
+          'https://other.example.test/mcp',
+          invocation.audience,
+        ],
+        now,
+      }),
+    ).toEqual(invocation);
     expect(token).not.toContain('oauth-access-token');
   });
 

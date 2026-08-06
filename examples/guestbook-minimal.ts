@@ -54,7 +54,7 @@ const guestBookController = sdk.operator({
 });
 application.operator(guestBookController, { namespace });
 
-const web = application.http(
+const web = application.server(
   'web',
   {
     resources: { GuestBook, GuestBookEntry },

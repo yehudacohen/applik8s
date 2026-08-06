@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/testing",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Local testing harness for applik8s operators.",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,10 +16,14 @@
     "directory": "packages/testing"
   },
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "dependencies": {
-    "@applik8s/core": "0.6.0",
-    "@applik8s/sdk": "0.6.0"
+    "@applik8s/core": "0.7.0",
+    "@applik8s/sdk": "0.7.0"
   }
 }

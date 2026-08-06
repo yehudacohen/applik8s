@@ -9,7 +9,7 @@ const root = resolve(process.cwd());
 const buildRoot = join(root, '.package-build');
 
 await rm(buildRoot, { recursive: true, force: true });
-await execFileAsync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '--project', join(root, 'tsconfig.json'), '--rootDir', root, '--outDir', buildRoot, '--declaration', '--declarationMap', 'false', '--sourceMap', 'false', '--noEmit', 'false'], {
+await execFileAsync(process.execPath, [join(root, 'node_modules/typescript/bin/tsc'), '--project', join(root, 'tsconfig.publish.json'), '--rootDir', root, '--outDir', buildRoot, '--declaration', '--declarationMap', 'false', '--sourceMap', 'false', '--noEmit', 'false'], {
   cwd: root,
   maxBuffer: 20 * 1024 * 1024,
 });
@@ -21,6 +21,12 @@ for (const packageName of publishablePackageNames) {
   await mkdir(dist, { recursive: true });
   await cp(join(buildRoot, 'packages', packageName, 'src'), dist, { recursive: true });
 }
+
+await cp(
+  join(root, 'packages/start-agentic/src/templates'),
+  join(root, 'packages/start-agentic/dist/templates'),
+  { recursive: true },
+);
 
 await cp(join(root, 'packages/cli/src/node-build-runner.mjs'), join(root, 'packages/cli/dist/node-build-runner.mjs'));
 await cp(join(root, 'packages/cli/src/node-deploy-runner.mjs'), join(root, 'packages/cli/dist/node-deploy-runner.mjs'));

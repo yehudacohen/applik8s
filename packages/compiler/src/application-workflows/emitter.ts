@@ -45,6 +45,7 @@ export async function emitWorkflowWorker(contract: WorkflowContract, outDir: str
     target: 'node22',
     legalComments: 'none',
     minify: true,
+    keepNames: true,
     sourcemap: 'external',
     sourcesContent: false,
     metafile: true,
@@ -87,4 +88,3 @@ export async function emitWorkflowWorker(contract: WorkflowContract, outDir: str
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
   return { name, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
 }
-

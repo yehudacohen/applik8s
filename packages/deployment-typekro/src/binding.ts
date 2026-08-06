@@ -71,7 +71,12 @@ export function typeKroArtifactRequirements(
         descriptor:
           node.kind === "artifact"
             ? node.spec.sourceDescriptor
-            : {
+            : node.kind === "kubernetesDirect"
+              ? {
+                  compositionId: node.spec.compositionId,
+                  configurationDigest: node.configurationDigest,
+                }
+              : {
                 resourceType: node.spec.resourceType,
                 provider: node.provider.implementation,
                 configurationDigest: node.configurationDigest,
@@ -85,8 +90,10 @@ export function typeKroArtifactRequirements(
 function typeKroArtifactKind(
   node:
     | Extract<ApplicationDeploymentNode, { readonly kind: "artifact" }>
-    | Extract<ApplicationDeploymentNode, { readonly kind: "externalProvider" }>,
+    | Extract<ApplicationDeploymentNode, { readonly kind: "externalProvider" }>
+    | Extract<ApplicationDeploymentNode, { readonly kind: "kubernetesDirect" }>,
 ): string {
+  if (node.kind === "kubernetesDirect") return "typekro-composition";
   if (node.kind === "externalProvider") {
     return "kubernetes-secret-reference";
   }
@@ -99,9 +106,11 @@ function isTypeKroArtifactProducer(
   node: ApplicationDeploymentNode,
 ): node is
   | Extract<ApplicationDeploymentNode, { readonly kind: "artifact" }>
-  | Extract<ApplicationDeploymentNode, { readonly kind: "externalProvider" }> {
+  | Extract<ApplicationDeploymentNode, { readonly kind: "externalProvider" }>
+  | Extract<ApplicationDeploymentNode, { readonly kind: "kubernetesDirect" }> {
   return (
     node.kind === "artifact" ||
+    node.kind === "kubernetesDirect" ||
     (node.kind === "externalProvider" &&
       node.provider.interface === "Secret" &&
       node.provider.implementation ===
@@ -151,7 +160,7 @@ export function bindTypeKroComposition<
     inspect() {
       if (!composition.inspect) {
         throw new Error(
-          `TypeKro composition ${composition.name} does not expose semantic inspection. Applik8s requires TypeKro 0.32.0.`,
+          `TypeKro composition ${composition.name} does not expose semantic inspection. Applik8s requires TypeKro 0.33.5.`,
         );
       }
       return composition.inspect();
@@ -159,7 +168,7 @@ export function bindTypeKroComposition<
     plan() {
       if (!composition.plan) {
         throw new Error(
-          `TypeKro composition ${composition.name} does not expose semantic planning. Applik8s requires TypeKro 0.32.0.`,
+          `TypeKro composition ${composition.name} does not expose semantic planning. Applik8s requires TypeKro 0.33.5.`,
         );
       }
       return composition.plan(spec, plan);
@@ -215,7 +224,10 @@ export function bindTypeKroCompositionWithSupportingDeclarations(
       );
       const dependedOn = new Set(
         supporting.flatMap((declaration) =>
-          declaration.dependsOn.filter((id) => supportingIds.has(id)),
+          [
+            ...declaration.dependsOn,
+            ...(declaration.schedulingDependsOn ?? []),
+          ].filter((id) => supportingIds.has(id)),
         ),
       );
       const terminals = supporting

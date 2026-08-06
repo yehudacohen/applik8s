@@ -9,6 +9,7 @@ import type {
   ApplicationProviderQualification,
   ApplicationQualifiedProviderToken,
 } from './application-providers.js';
+import { applicationTypeKroExpressionValue } from './application-typekro-values.js';
 
 export type ApplicationProfileStringKey<T> = Extract<keyof T, string>;
 export type ApplicationProfileVariant<
@@ -21,7 +22,9 @@ type ProfileVariantSpec<
   TDiscriminator extends ApplicationProfileStringKey<TSpec>,
   TVariant extends string,
 > = TSpec extends unknown
-  ? Omit<TSpec, TDiscriminator> & Record<TDiscriminator, TVariant>
+  ? TVariant extends Extract<TSpec[TDiscriminator], string>
+    ? Omit<TSpec, TDiscriminator> & Record<TDiscriminator, TVariant>
+    : never
   : never;
 
 export interface ApplicationProfileBranchOptions {
@@ -406,6 +409,17 @@ function applicationProfilePropertySchema(
   schemaJson: unknown,
   discriminator: string,
 ): unknown {
+  if (Array.isArray(schemaJson)) {
+    const branchValues = schemaJson.map((branch) =>
+      applicationProfilePropertySchema(branch, discriminator),
+    );
+    if (branchValues.some((value) => value === undefined)) {
+      return undefined;
+    }
+    return branchValues.flatMap((value) =>
+      Array.isArray(value) ? value : [value],
+    );
+  }
   if (!schemaJson || typeof schemaJson !== 'object') return undefined;
   for (const collection of ['required', 'optional'] as const) {
     const entries = Reflect.get(schemaJson, collection);
@@ -580,17 +594,80 @@ function providerImplementationIdentity(value: unknown): string {
 
 function providerSafeConfig(value: unknown): JsonObject {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const config: Record<string, string | number | boolean | null> = {};
+  const config: Record<string, import('@applik8s/core').JsonValue> = {};
   for (const [key, candidate] of Object.entries(value)) {
-    if (/secret|credential|password|token|key/i.test(key)) continue;
-    if (
-      candidate === null
-      || typeof candidate === 'string'
-      || typeof candidate === 'number'
-      || typeof candidate === 'boolean'
-    ) {
-      config[key] = candidate;
-    }
+    if (providerProfileSensitiveValueKey(key)) continue;
+    const portable = providerSafeValue(candidate, new WeakSet());
+    if (portable !== undefined) config[key] = portable;
   }
   return config;
+}
+
+/**
+ * Profile branches are the concrete deployment-selection authority. Preserve
+ * recursively portable provider configuration instead of retaining only
+ * top-level scalars; otherwise nested topology/lifecycle/provisioning choices
+ * disappear and the compiler is forced to guess from a CEL-merged alias.
+ *
+ * Secret-bearing keys remain excluded at every depth. Those values travel
+ * through the provider's explicit reference contract and the selected alias,
+ * never this inspectable profile metadata.
+ */
+function providerSafeValue(
+  value: unknown,
+  ancestors: WeakSet<object>,
+): import('@applik8s/core').JsonValue | undefined {
+  if (
+    value === null
+    || typeof value === 'string'
+    || typeof value === 'boolean'
+  ) {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (
+    value === undefined
+    || typeof value === 'function'
+    || typeof value === 'symbol'
+    || typeof value === 'bigint'
+  ) {
+    return undefined;
+  }
+  if (typeof value !== 'object' || ancestors.has(value)) return undefined;
+  // Preserve only the portable expression identity of schema/CEL values.
+  // Serializing the proxy object itself would expose TypeKro internals, while
+  // omitting it loses installation-derived provider configuration whenever a
+  // whole provider object is later merged through CEL. The deployment compiler
+  // resolves this exact marker against the concrete installation spec.
+  const expression = applicationTypeKroExpressionValue(value);
+  if (expression) return `\${${expression}}`;
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((candidate) => {
+        const portable = providerSafeValue(candidate, ancestors);
+        // Match JSON's array semantics: an unsupported value occupies a
+        // stable null slot instead of shifting every later element. Profile
+        // branch overlays are merged by position, so compaction could apply a
+        // later provider option to the wrong authored entry.
+        return portable === undefined ? null : portable;
+      });
+    }
+    const entries: [string, import('@applik8s/core').JsonValue][] = [];
+    for (const [key, candidate] of Object.entries(value)) {
+      if (providerProfileSensitiveValueKey(key)) continue;
+      const portable = providerSafeValue(candidate, ancestors);
+      if (portable !== undefined) entries.push([key, portable]);
+    }
+    return Object.fromEntries(entries);
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function providerProfileSensitiveValueKey(key: string): boolean {
+  return /^(?:password|token|secret|apiKey|privateKey|clientSecret|accessKeyId|secretAccessKey)$/iu
+    .test(key);
 }

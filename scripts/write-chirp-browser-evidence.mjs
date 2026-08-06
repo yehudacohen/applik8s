@@ -29,6 +29,12 @@ const assertionsByTest = new Map([
     'bookmark-create-remove',
     'browser-console-clean',
   ]],
+  ['finds a newly published post through the bounded typed search view', [
+    'typed-search-publication-roundtrip',
+  ]],
+  ['ranks a reacted post through the analytical projection instead of recency fallback', [
+    'clickhouse-ranked-explore-view',
+  ]],
   ['uploads provider-verified media without exposing object-store credentials', [
     'provider-verified-media-roundtrip',
   ]],
@@ -49,6 +55,12 @@ const assertionsByTest = new Map([
   ]],
   ['administratively stops and resumes every automated publication through durable product state', [
     'automation-administrator-stop-resume',
+  ]],
+  ['receives a risky automation signal over SSE and resumes its durable workflow through a typed approval', [
+    'signal-issuance-sse-delivery',
+    'signal-exact-instance-approval',
+    'signal-workflow-resumption',
+    'signal-authoritative-ui-requery',
   ]],
   ['reports, moderates, and removes a post through durable product state', [
     'report-triage-resolution',

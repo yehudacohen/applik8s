@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite dev --port 3010",
     "generate-routes": "tsr generate",
+    "typecheck": "bun run generate-routes && tsc --noEmit -p tsconfig.json",
     "build": "vite build",
     "deploy:local": "bun run --cwd ../.. build:packages && bun run ../../packages/cli/src/bin.ts deploy src/application.ts --context orbstack --instance kubernetes/chirp.example.yaml",
     "preview": "vite preview"
@@ -24,7 +25,7 @@
     "drizzle-orm": "^0.45.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "typekro": "0.32.0"
+    "typekro": "0.33.5"
   },
   "devDependencies": {
     "@applik8s/cli": "workspace:*",

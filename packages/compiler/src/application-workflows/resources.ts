@@ -1,9 +1,10 @@
 // typecast-file-boundary: Workflow resource lowering maps validated contracts and installation expressions into Kubernetes manifest shapes.
-import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphNumberValue, applicationGraphStringValue } from '../application-installation-values.js';
+import { createHash } from 'node:crypto';
+import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphStringValue } from '../application-installation-values.js';
 import { structuredGenerationSelectedScalar, structuredGenerationSelection, type WorkflowContract, type WorkflowTaskProjectionContract } from './contracts.js';
 import { uniqueWorkflowObjectEffects, uniqueWorkflowProjectionEffects } from './source.js';
 import type { GeneratedApplicationWorkflowResource } from './types.js';
-import { kubernetesName, objectConfig, stringConfig, workflowObjectEnabledEnvironment } from './utilities.js';
+import { objectConfig, stringConfig, workflowObjectEnabledEnvironment } from './utilities.js';
 
 const workflowTokenMountPath = '/var/run/secrets/applik8s/workflow-token';
 const workflowTokenFile = `${workflowTokenMountPath}/token`;
@@ -47,19 +48,20 @@ function workflowCapabilityEnvironment(contract: WorkflowContract): readonly Rec
   });
 }
 
-export function workflowResources(contract: WorkflowContract, name: string, image: string, digest: string, ownsProvider: boolean): GeneratedApplicationWorkflowResource[] {
+export function workflowResources(contract: WorkflowContract, name: string, image: string, digest: string, _ownsProvider: boolean): GeneratedApplicationWorkflowResource[] {
   const labels = { 'app.kubernetes.io/name': name, 'app.kubernetes.io/component': 'workflow-worker', 'applik8s.dev/graph': contract.graphName };
+  const gatewayEnabled = contract.gatewayCallers.length > 0;
+  const gatewayPort = contract.worker.deployment.healthPort + 1;
+  const workerServiceAccount = `${name}-runtime`;
+  const gatewayRbacName = `applik8s-workflow-gateway-${createHash('sha256')
+    .update(`${contract.graphName}\0${contract.namespace}\0${name}`)
+    .digest('hex')
+    .slice(0, 16)}`;
   const workflowConnectionEnvironment = [
-    { name: 'HATCHET_CLIENT_HOST_PORT', value: stringConfig(contract.providerConfig.hostPort) || `${contract.engineName}-engine.${contract.namespace}.svc:7070` },
-    { name: 'HATCHET_CLIENT_API_URL', value: stringConfig(contract.providerConfig.apiUrl) || `http://${contract.engineName}-api.${contract.namespace}.svc:8080` },
+    { name: 'HATCHET_CLIENT_HOST_PORT', value: stringConfig(contract.providerConfig.hostPort) || `hatchet-engine.${contract.namespace}.svc:7070` },
+    { name: 'HATCHET_CLIENT_API_URL', value: stringConfig(contract.providerConfig.apiUrl) || `http://hatchet-api.${contract.namespace}.svc:8080` },
     { name: 'HATCHET_CLIENT_TLS_STRATEGY', value: workflowTlsStrategy(contract.providerConfig.tls) },
   ];
-  const providerResources = ownsProvider
-    ? conditionalWorkflowResources(
-        workflowProviderResources(contract),
-        applicationGraphAllConditions(contract.providerConfig.enabled, contract.providerConfig.provision),
-      )
-    : [];
   const workloadResources: GeneratedApplicationWorkflowResource[] = [
     {
       apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name, namespace: contract.namespace, labels }, spec: {
@@ -67,6 +69,7 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
         selector: { matchLabels: labels },
         strategy: { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } },
         template: { metadata: { labels, annotations: { 'applik8s.dev/digest': digest } }, spec: {
+          ...(gatewayEnabled ? { serviceAccountName: workerServiceAccount } : {}),
           terminationGracePeriodSeconds: contract.worker.deployment.gracefulShutdownSeconds,
           initContainers: [{
             name: 'wait-for-workflow-credentials',
@@ -90,8 +93,12 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
               ...workflowQueryEnvironment(contract),
               ...workflowProjectionEnvironment(contract),
 							...workflowObjectEnvironment(contract),
+              ...workflowSignalEnvironment(contract),
             ]),
-            ports: [{ name: 'health', containerPort: contract.worker.deployment.healthPort }],
+            ports: [
+              { name: 'health', containerPort: contract.worker.deployment.healthPort },
+              ...(gatewayEnabled ? [{ name: 'gateway', containerPort: gatewayPort }] : []),
+            ],
             readinessProbe: { httpGet: { path: '/ready', port: 'health' }, periodSeconds: 5, failureThreshold: 6 },
             livenessProbe: { httpGet: { path: '/live', port: 'health' }, periodSeconds: 10, failureThreshold: 6 },
             resources: { requests: { cpu: '100m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } },
@@ -108,11 +115,70 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
     },
     { apiVersion: 'policy/v1', kind: 'PodDisruptionBudget', metadata: { name, namespace: contract.namespace, labels }, spec: { maxUnavailable: workflowWorkerMaxUnavailable(contract.worker.deployment.replicas), selector: { matchLabels: labels } } },
     workflowWorkerNetworkPolicy(contract, name, labels),
+    ...(gatewayEnabled ? [
+      {
+        apiVersion: 'v1',
+        kind: 'ServiceAccount',
+        metadata: { name: workerServiceAccount, namespace: contract.namespace, labels },
+        automountServiceAccountToken: true,
+      },
+      {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRole',
+        metadata: { name: gatewayRbacName, labels },
+        rules: [{
+          apiGroups: ['authentication.k8s.io'],
+          resources: ['tokenreviews'],
+          verbs: ['create'],
+        }],
+      },
+      {
+        apiVersion: 'rbac.authorization.k8s.io/v1',
+        kind: 'ClusterRoleBinding',
+        metadata: { name: gatewayRbacName, labels },
+        roleRef: {
+          apiGroup: 'rbac.authorization.k8s.io',
+          kind: 'ClusterRole',
+          name: gatewayRbacName,
+        },
+        subjects: [{
+          kind: 'ServiceAccount',
+          name: workerServiceAccount,
+          namespace: contract.namespace,
+        }],
+      },
+      {
+        apiVersion: 'v1',
+        kind: 'Service',
+        metadata: { name, namespace: contract.namespace, labels },
+        spec: {
+          selector: labels,
+          ports: [{ name: 'gateway', port: gatewayPort, targetPort: 'gateway' }],
+        },
+      },
+    ] : []),
   ];
   if (contract.worker.deployment.scaling.mode === 'kedaHatchetSlots') workloadResources.push(...workflowScalingResources(contract, name));
   return [
-    ...providerResources,
     ...conditionalWorkflowResources(workloadResources, applicationGraphBooleanCondition(contract.providerConfig.enabled)),
+  ];
+}
+
+function workflowSignalEnvironment(
+  contract: WorkflowContract,
+): readonly Record<string, unknown>[] {
+  const database = contract.signalEffects?.database;
+  if (!database) return [];
+  return [
+    {
+      name: 'APPLIK8S_SIGNAL_DATABASE_URL',
+      valueFrom: {
+        secretKeyRef: {
+          name: database.secretName,
+          key: database.secretKey,
+        },
+      },
+    },
   ];
 }
 
@@ -128,10 +194,14 @@ function workflowObjectEnvironment(contract: WorkflowContract): readonly Record<
 	const credentials = objectConfig(config.credentialsSecret);
 	const credentialsName = applicationGraphStringValue(credentials.name);
 	const optionalCredentials = config.enabled !== true;
+	const provisionedConnection = workflowObjectBucketConnection(config);
 	return uniqueWorkflowEnvironment([
 		{ name: 'APPLIK8S_TASK_OBJECT_BUCKET', value: bucket },
 		{ name: 'APPLIK8S_TASK_OBJECT_REGION', value: region },
 		{ name: 'APPLIK8S_TASK_OBJECT_FORCE_PATH_STYLE', value: workflowEnvironmentScalar(config.forcePathStyle, 'false') },
+		...(provisionedConnection && !applicationGraphStringValue(config.endpoint)
+			? objectBucketConnectionEnvironment('APPLIK8S_TASK_OBJECT', provisionedConnection)
+			: []),
 		...(applicationGraphStringValue(config.endpoint) ? [{ name: 'APPLIK8S_TASK_OBJECT_ENDPOINT', value: applicationGraphStringValue(config.endpoint) }] : []),
 		...(applicationGraphStringValue(config.prefix) ? [{ name: 'APPLIK8S_TASK_OBJECT_PREFIX', value: applicationGraphStringValue(config.prefix) }] : []),
 		...effects.map((effect) => ({
@@ -157,7 +227,9 @@ function workflowOperationEnvironment(contract: WorkflowContract): readonly Reco
   const databases = new Map(effects.operations.map(({ model }) => [model.runtime.connectionEnvName, model.runtime]));
   const environment: Record<string, unknown>[] = [
     { name: 'APPLIK8S_TASK_OPERATION_CONTEXT_SECRET', valueFrom: { secretKeyRef: { name: effects.cursorSecret.name, key: effects.cursorSecret.key } } },
-    { name: 'APPLIK8S_NATS_SERVERS', value: JSON.stringify(workflowEventLogServers(config)) },
+    { name: 'APPLIK8S_NATS_SERVERS', value: applicationGraphJsonStringArray(workflowEventLogServers(config)) },
+    { name: 'APPLIK8S_NATS_STREAM', value: applicationGraphStringValue(config.stream) || 'APPLIK8S_EVENTS' },
+    { name: 'APPLIK8S_NATS_SUBJECT_PREFIX', value: applicationGraphStringValue(config.subjectPrefix) || 'applik8s' },
     ...[...databases.values()].map((database) => ({ name: database.connectionEnvName, valueFrom: { secretKeyRef: { name: database.secretName, key: database.secretKey } } })),
   ];
   if (!connectionSecretName) return environment;
@@ -199,6 +271,7 @@ function workflowProjectionEnvironment(contract: WorkflowContract): readonly Rec
   const credentialsName = applicationGraphStringValue(credentials.name);
   const objectEnabled = workflowEnvironmentScalar(object.enabled, 'true');
   const optionalObjectCredentials = object.enabled !== true;
+  const provisionedConnection = workflowObjectBucketConnection(object);
   return uniqueWorkflowEnvironment([
     ...effects.map((effect) => ({ name: effect.stream.database.connectionEnvName, valueFrom: { secretKeyRef: { name: effect.stream.database.secretName, key: effect.stream.database.secretKey } } })),
     { name: 'APPLIK8S_REBUILD_VALKEY_HOST', value: applicationGraphStringValue(index.host) || `${stringConfig(index.name) || 'valkey'}.${contract.namespace}.svc` },
@@ -208,6 +281,9 @@ function workflowProjectionEnvironment(contract: WorkflowContract): readonly Rec
     { name: 'APPLIK8S_REBUILD_OBJECT_BUCKET', value: bucket },
     { name: 'APPLIK8S_REBUILD_OBJECT_REGION', value: region },
     { name: 'APPLIK8S_REBUILD_OBJECT_FORCE_PATH_STYLE', value: workflowEnvironmentScalar(object.forcePathStyle, 'false') },
+    ...(provisionedConnection && !applicationGraphStringValue(object.endpoint)
+      ? objectBucketConnectionEnvironment('APPLIK8S_REBUILD_OBJECT', provisionedConnection)
+      : []),
     ...(applicationGraphStringValue(object.endpoint) ? [{ name: 'APPLIK8S_REBUILD_OBJECT_ENDPOINT', value: applicationGraphStringValue(object.endpoint) }] : []),
     ...(applicationGraphStringValue(object.prefix) ? [{ name: 'APPLIK8S_REBUILD_OBJECT_PREFIX', value: applicationGraphStringValue(object.prefix) }] : []),
     ...(credentialsName ? [
@@ -216,6 +292,50 @@ function workflowProjectionEnvironment(contract: WorkflowContract): readonly Rec
       ...(stringConfig(object.sessionTokenKey) ? [{ name: 'AWS_SESSION_TOKEN', valueFrom: { secretKeyRef: { name: credentialsName, key: stringConfig(object.sessionTokenKey), optional: true } } }] : []),
     ] : []),
   ]);
+}
+
+function workflowObjectBucketConnection(
+  config: Readonly<Record<string, unknown>>,
+): string | undefined {
+  const provisioning = objectConfig(config.provisioning);
+  const kind = applicationGraphStringValue(provisioning.kind);
+  if (kind && kind !== 'object-bucket-claim') return undefined;
+  return (
+    applicationGraphStringValue(provisioning.claimName)
+    || applicationGraphStringValue(config.name)
+    || applicationGraphStringValue(objectConfig(config.credentialsSecret).name)
+    || applicationGraphStringValue(config.bucket)
+  );
+}
+
+function objectBucketConnectionEnvironment(
+  prefix: string,
+  configMapName: string,
+): readonly Record<string, unknown>[] {
+  return [
+    {
+      name: `${prefix}_HOST`,
+      valueFrom: {
+        configMapKeyRef: {
+          name: configMapName,
+          key: 'BUCKET_HOST',
+        },
+      },
+    },
+    {
+      name: `${prefix}_PORT`,
+      valueFrom: {
+        configMapKeyRef: {
+          name: configMapName,
+          key: 'BUCKET_PORT',
+        },
+      },
+    },
+    {
+      name: `${prefix}_ENDPOINT`,
+      value: `http://$(${prefix}_HOST):$(${prefix}_PORT)`,
+    },
+  ];
 }
 
 function workflowEnvironmentScalar(value: unknown, fallback: string): string {
@@ -240,7 +360,7 @@ function uniqueWorkflowEnvironment(values: readonly Record<string, unknown>[]): 
 function workflowEventLogServers(config: Readonly<Record<string, unknown>>): readonly string[] {
   const configured = Array.isArray(config.servers) ? config.servers.map(applicationGraphStringValue).filter((value): value is string => Boolean(value)) : [];
   if (configured.length > 0) return configured;
-  const name = stringConfig(config.name) || 'applik8s-events';
+  const name = applicationGraphStringValue(config.name) || 'applik8s-events';
   const namespace = applicationGraphStringValue(config.namespace);
   return [`nats://${name}${namespace ? `.${namespace}` : ''}.svc:4222`];
 }
@@ -278,40 +398,25 @@ function workflowWorkerMaxUnavailable(replicas: number | string): number | strin
   return `\${(${match[1]}) > 1 ? 1 : 0}`;
 }
 
-function workflowProviderResources(contract: WorkflowContract): GeneratedApplicationWorkflowResource[] {
-  if (contract.providerConfig.provision === false) return [];
-  const config = contract.providerConfig;
-  const database = objectConfig(config.database);
-  const clusterName = kubernetesName(stringConfig(database.clusterName) || `${contract.engineName}-db`);
-  const instances = applicationGraphNumberValue(database.instances) ?? (stringConfig(config.mode) === 'ha' ? 3 : 1);
-  const chartVersion = stringConfig(config.chartVersion) || '0.13.3';
-  const serverVersion = stringConfig(config.serverVersion) || 'v0.94.10';
-  const databaseSecret = objectConfig(database.connectionSecret);
-  const databaseSecretName = stringConfig(databaseSecret.name) || `${clusterName}-app`;
-  const databaseKey = stringConfig(database.connectionSecretKey) || 'uri';
-  const adminEmailKey = 'adminEmail';
-  const adminPasswordKey = 'adminPassword';
-  const replicas = stringConfig(config.mode) === 'ha' ? 2 : 1;
-  const storageClass = stringConfig(database.storageClass);
-  return [
-    { apiVersion: 'source.toolkit.fluxcd.io/v1', kind: 'HelmRepository', metadata: { name: `${contract.engineName}-repository`, namespace: contract.namespace }, spec: { interval: '1h', url: 'https://hatchet-dev.github.io/hatchet-charts' } },
-    ...(database.provision === false ? [] : [{ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: { name: clusterName, namespace: contract.namespace }, spec: { instances, storage: { size: stringConfig(database.storageSize) || '8Gi', ...(storageClass ? { storageClass } : {}) }, bootstrap: { initdb: { database: stringConfig(database.database) || 'hatchet', owner: 'app' } }, monitoring: { enablePodMonitor: true } } }]),
-    { apiVersion: 'helm.toolkit.fluxcd.io/v2', kind: 'HelmRelease', metadata: { name: contract.engineName, namespace: contract.namespace }, spec: {
-      interval: '10m', timeout: '15m', releaseName: contract.engineName,
-      chart: { spec: { chart: 'hatchet-stack', version: chartVersion, sourceRef: { kind: 'HelmRepository', name: `${contract.engineName}-repository`, namespace: contract.namespace }, interval: '1h' } },
-      valuesFrom: [
-        { kind: 'Secret', name: databaseSecretName, valuesKey: databaseKey, targetPath: 'sharedConfig.env.DATABASE_URL' },
-        { kind: 'Secret', name: contract.adminCredentialsSecret, valuesKey: adminEmailKey, targetPath: 'sharedConfig.defaultAdminEmail' },
-        { kind: 'Secret', name: contract.adminCredentialsSecret, valuesKey: adminPasswordKey, targetPath: 'sharedConfig.defaultAdminPassword' },
-      ],
-      values: { global: { sharedConfigSecretName: `${contract.engineName}-shared-config` }, sharedConfig: { image: { tag: serverVersion }, serverUrl: `http://${contract.engineName}-api.${contract.namespace}.svc:8080`, serverAuthCookieDomain: `${contract.engineName}-api.${contract.namespace}.svc`, serverAuthCookieInsecure: 't', grpcBroadcastAddress: `${contract.engineName}-engine.${contract.namespace}.svc:7070`, grpcInsecure: 't', env: { SERVER_MSGQUEUE_KIND: 'postgres' } }, postgres: { enabled: false }, rabbitmq: { enabled: false }, api: { replicaCount: replicas }, engine: { replicaCount: replicas }, frontend: { enabled: stringConfig(config.dashboard) !== 'disabled' }, caddy: { enabled: false } },
-      install: { remediation: { retries: 3 } }, upgrade: { remediation: { retries: 3, remediateLastFailure: true } },
-    } },
-  ];
-}
-
 function workflowWorkerNetworkPolicy(contract: WorkflowContract, name: string, labels: Readonly<Record<string, string>>): GeneratedApplicationWorkflowResource {
   const sameNamespaceEgress = contract.worker.deployment.egress === 'sameNamespace';
+  if (sameNamespaceEgress && contract.gatewayCallers.length > 0) {
+    throw new Error(
+      `Workflow worker ${contract.worker.id} uses the private workflow gateway and must allow Kubernetes API egress for TokenReview; deployment.egress sameNamespace cannot express that authority without an installation-specific API CIDR.`,
+    );
+  }
+  const gatewayPort = contract.worker.deployment.healthPort + 1;
+  const gatewayIngress = contract.gatewayCallers.map((caller) => ({
+    from: [{
+      namespaceSelector: {
+        matchLabels: { 'kubernetes.io/metadata.name': caller.namespace },
+      },
+      podSelector: {
+        matchLabels: { 'app.kubernetes.io/name': caller.operator },
+      },
+    }],
+    ports: [{ protocol: 'TCP', port: gatewayPort }],
+  }));
   return {
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
@@ -319,7 +424,10 @@ function workflowWorkerNetworkPolicy(contract: WorkflowContract, name: string, l
     spec: {
       podSelector: { matchLabels: labels },
       policyTypes: sameNamespaceEgress ? ['Ingress', 'Egress'] : ['Ingress'],
-      ingress: [{ ports: [{ protocol: 'TCP', port: contract.worker.deployment.healthPort }] }],
+      ingress: [
+        { ports: [{ protocol: 'TCP', port: contract.worker.deployment.healthPort }] },
+        ...gatewayIngress,
+      ],
       ...(sameNamespaceEgress ? {
         egress: [
           { to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': contract.namespace } } }] },

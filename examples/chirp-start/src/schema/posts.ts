@@ -1,43 +1,43 @@
-import { index, pgTable, text } from 'drizzle-orm/pg-core';
+import { field, index, model } from '@applik8s/applik8s/drizzle';
 import { accounts } from './accounts';
 import { authenticatedPrincipalId } from './defaults';
 
-export const posts = pgTable('posts', {
-  id: text('id').primaryKey(),
-  authorId: text('author_id').notNull().default(authenticatedPrincipalId).references(() => accounts.id),
-  authorHandle: text('author_handle').notNull().default(''),
-  body: text('body').notNull(),
-  replyToPostId: text('reply_to_post_id'),
-  quotePostId: text('quote_post_id'),
-  visibility: text('visibility').notNull().default('public'),
-  publicationState: text('publication_state').notNull().default('published'),
-  moderationState: text('moderation_state').notNull().default('visible'),
-  moderationReason: text('moderation_reason'),
-  moderationChangedAt: text('moderation_changed_at'),
-  publishedAt: text('published_at').notNull().default(''),
-  deletedAt: text('deleted_at'),
-  revision: text('revision').notNull().default(''),
+export const posts = model('posts', {
+  id: field.text('id').primaryKey(),
+  authorId: field.text('author_id').notNull().default(authenticatedPrincipalId).references(() => accounts.id),
+  authorHandle: field.text('author_handle').notNull().default(''),
+  body: field.text('body').notNull(),
+  replyToPostId: field.text('reply_to_post_id'),
+  quotePostId: field.text('quote_post_id'),
+  visibility: field.text('visibility').notNull().default('public'),
+  publicationState: field.text('publication_state').notNull().default('published'),
+  moderationState: field.text('moderation_state').notNull().default('visible'),
+  moderationReason: field.text('moderation_reason'),
+  moderationChangedAt: field.text('moderation_changed_at'),
+  publishedAt: field.text('published_at').notNull().default(''),
+  deletedAt: field.text('deleted_at'),
+  revision: field.text('revision').notNull().default(''),
 }, (table) => [
   index('posts_author_published').on(table.authorId, table.publishedAt),
   index('posts_reply_published').on(table.replyToPostId, table.publishedAt),
   index('posts_visibility_state').on(table.visibility, table.publicationState, table.moderationState),
 ]);
 
-export const mediaAttachments = pgTable('media_attachments', {
-  id: text('id').primaryKey(),
-  ownerId: text('owner_id').notNull().default(authenticatedPrincipalId).references(() => accounts.id),
-  postId: text('post_id').references(() => posts.id),
-  objectKey: text('object_key').notNull(),
-  contentType: text('content_type').notNull(),
-  byteLength: text('byte_length').notNull(),
-  sha256: text('sha256').notNull(),
+export const mediaAttachments = model('media_attachments', {
+  id: field.text('id').primaryKey(),
+  ownerId: field.text('owner_id').notNull().default(authenticatedPrincipalId).references(() => accounts.id),
+  postId: field.text('post_id').references(() => posts.id),
+  objectKey: field.text('object_key').notNull(),
+  contentType: field.text('content_type').notNull(),
+  byteLength: field.text('byte_length').notNull(),
+  sha256: field.text('sha256').notNull(),
   /** Short-lived signed completion evidence retained for audit, never an object-store credential. */
-  uploadReceipt: text('upload_receipt').notNull().default(''),
-  altText: text('alt_text').notNull(),
-  processingState: text('processing_state').notNull().default('pending'),
-	processingReason: text('processing_reason').notNull().default(''),
-  createdAt: text('created_at').notNull().default(''),
-  revision: text('revision').notNull().default(''),
+  uploadReceipt: field.text('upload_receipt').notNull().default(''),
+  altText: field.text('alt_text').notNull(),
+  processingState: field.text('processing_state').notNull().default('pending'),
+	processingReason: field.text('processing_reason').notNull().default(''),
+  createdAt: field.text('created_at').notNull().default(''),
+  revision: field.text('revision').notNull().default(''),
 }, (table) => [
   index('media_attachments_owner').on(table.ownerId, table.createdAt),
   index('media_attachments_post').on(table.postId),

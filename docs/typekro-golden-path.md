@@ -1,5 +1,58 @@
 # TypeKro Golden Path
 
+## v0.7 deployment boundary
+
+Applik8s v0.7 pins TypeKro `0.33.5`, Alchemy `2.0.0-beta.58`, and Effect
+`4.0.0-beta.84` as one reviewed deployment cohort. Ordinary application
+authors do not import any of them. The compiler lowers one portable
+`ApplicationDeploymentGraph`; `@applik8s/deployment-typekro` turns its
+Kubernetes nodes into one root composition plus explicit direct-only and
+singleton declarations, and `@applik8s/deployment-alchemy` owns effects,
+state, ordering, retries, and reverse-topological destruction.
+
+Run the released-dependency qualification:
+
+```sh
+bun run check:v07:typekro
+```
+
+The gate imports the installed package exclusively through public exports and
+proves the exact dependency cohort, semantic/artifact planning versions,
+adapter-required provider surfaces, direct and KRO Alchemy declarations,
+typed artifact-output preservation, RGD-before-instance ordering, and the
+schema-stable nested artifact-binding map introduced in TypeKro 0.33. It is a
+deterministic API/provider qualification, not a live-cluster claim. OrbStack
+apply/update/recovery/destroy evidence is tracked separately by the v0.7
+scorecard.
+
+The focused adapter suite provides the graph-specific half of the contract:
+
+```sh
+TYPEKRO_LOG_LEVEL=fatal bunx vitest run \
+  packages/deployment-typekro/test/deployment-typekro.vertical.test.ts \
+  packages/deployment-alchemy/test/deployment-alchemy-backend.vertical.test.ts
+```
+
+That suite proves graph coverage, direct/KRO parity, artifact and generated
+Secret bindings, retained singleton ownership, direct-only provider lowering,
+canonical declaration identity, and Alchemy ordering without rewriting
+TypeKro-owned dependency edges.
+
+TypeKro `0.33.5` resolves the two released upstream seams discovered by the
+External-profile and lifecycle matrices. Singleton-owner graphs now expose a
+scheduling-only barrier without changing a consumer's canonical artifact
+dependencies. Legacy artifact-binding migrations replace the complete
+generated CRD with resource-version concurrency instead of sending an
+incompatible merge-patch object through `KubernetesObjectApi`. The released
+qualification gate exercises both contracts through public APIs. Exact
+direct/KRO lifecycle and External-profile live evidence remains a separate
+release-candidate gate; Applik8s still does not normalize TypeKro dependencies
+or patch Kubernetes around it.
+
+The rest of this document records the earlier operator/CRD integration path.
+It remains useful background, but it is not the v0.7 deployment release
+authority.
+
 The TypeKro adapter and application composition path are the v0.2 proof for this vision phrase:
 
 > Operators install like components. Their CRDs instantiate like resources. Their statuses compose like TypeKro resources.

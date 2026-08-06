@@ -4,8 +4,8 @@ import {
   type ApplicationQueryOperation,
   createApplicationQueryOperation,
 } from '@applik8s/client';
+import type { JsonObject } from '@applik8s/core';
 import type {
-  ApplicationGraphNodeRef,
   ApplicationSearchFieldKind,
   ApplicationSearchFieldPlan,
   ApplicationSearchIndexPlan,
@@ -17,6 +17,8 @@ import {
   getTableColumns,
 } from 'drizzle-orm';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
+import type { Type } from 'arktype';
+import { normalizeSchema } from '@applik8s/sdk';
 import {
   type ApplicationGraphState,
   addApplicationGraphEdge,
@@ -34,6 +36,10 @@ import {
   type ApplicationSearchProvider,
   applicationProviderImplementationName,
 } from './application-providers.js';
+import {
+  bindFrameworkApplicationQueryOperation,
+  type ApplicationQueryBinding,
+} from './application-queries.js';
 import {
   type ApplicationModelRelationshipContract,
   type CommonApplicationModelFacet,
@@ -320,7 +326,7 @@ function registerApplicationSearchIndex<
       `Application search index ${options.name} requires one canonical scalar root identity.`,
     );
   }
-  const queryNodeId = `query.${kubernetesNameSegment(`${options.name}-search`)}`;
+  const queryNodeId = `query.${options.name}.search`;
   const plan = compileSearchIndexPlan({
     application: options.application,
     root,
@@ -341,6 +347,18 @@ function registerApplicationSearchIndex<
     nodeId: providerNodeId,
     implementation: applicationProviderImplementationName(options.provider),
   };
+  const rootNode = options.state.graphNodes.find(
+    (candidate) =>
+      candidate.id === modelNodeId(root.name) && candidate.kind === 'model',
+  );
+  if (
+    rootNode?.kind !== 'model' ||
+    rootNode.runtime?.provider !== 'postgres'
+  ) {
+    throw new Error(
+      `Application search index ${options.name} requires a PostgreSQL root model runtime in v0.7.`,
+    );
+  }
   addApplicationGraphNode(options.state, {
     id: nodeId,
     kind: 'index',
@@ -386,6 +404,11 @@ function registerApplicationSearchIndex<
     snapshotResume: 'resumableInvalidation',
     incremental: 'invalidation-requery',
     cursor: 'opaque-query-version-context-scoped',
+    database: rootNode.runtime,
+    search: {
+      index: { nodeId },
+      provider: providerRef,
+    },
     authorizationSource:
       'async ({ principal, context }) => ({ principal, context, mode: "mandatory-search-filter" })',
     handlerSource:
@@ -436,6 +459,11 @@ function registerApplicationSearchIndex<
     },
   });
 
+  const queryBinding = searchQueryBinding({
+    name: options.name,
+    root: options.root,
+    plan,
+  });
   const searchOperation = createApplicationQueryOperation<
     ApplicationSearchRequest<ApplicationSearchDocument<TFields>>,
     ApplicationSearchResult<ApplicationSearchDocument<TFields>>
@@ -443,12 +471,77 @@ function registerApplicationSearchIndex<
     apiVersion: 'applik8s.operation/v1alpha1',
     kind: 'applicationOperation',
     id: `${options.name}.search`,
-    name: 'search',
-    model: root.name,
+    name: 'read',
+    model: `${options.name}.search`,
     operation: 'query',
     transport: 'query',
+  }, undefined, {
+    input: queryBinding.input,
+    output: queryBinding.output,
   });
+  bindFrameworkApplicationQueryOperation(
+    searchOperation,
+    queryBinding,
+  );
   return searchBinding(options.name, plan, searchOperation);
+}
+
+function searchQueryBinding(options: {
+  readonly name: string;
+  readonly root: object;
+  readonly plan: ApplicationSearchIndexPlan;
+}): ApplicationQueryBinding {
+  const id = `${options.name}.search`;
+  const unsupported = (): never => {
+    throw new Error(
+      `Application search query ${id} requires its generated Search provider runtime.`,
+    );
+  };
+  return {
+    kind: 'applicationQuery',
+    id,
+    name: 'search',
+    version: 'v1',
+    input: jsonSchemaQueryValidator(
+      searchRequestJsonSchema(options.plan),
+      `${id}.input`,
+    ),
+    output: jsonSchemaQueryValidator(
+      searchResultJsonSchema(options.plan),
+      `${id}.output`,
+    ),
+    trustedContext: [],
+    reads: [options.root],
+    budgets: {
+      timeoutMs: 10_000,
+      maxResultBytes: 2 * 1024 * 1024,
+      maxRows: 100,
+    },
+    authorize: async () => unsupported(),
+    run: async () => unsupported(),
+  };
+}
+
+function jsonSchemaQueryValidator<TValue>(
+  schema: JsonObject,
+  name: string,
+): Type<TValue> {
+  const normalized = normalizeSchema(
+    {
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: name },
+      schema,
+    },
+    name,
+  );
+  const validator = (value: unknown): TValue | { readonly summary: string } => {
+    const result = normalized.validate(value as never);
+    return result.ok ? (result.value as TValue) : { summary: result.error.message };
+  };
+  Reflect.set(validator, 'toJsonSchema', () => schema);
+  // typecast-boundary: ApplicationQueryBinding consumes the callable validation
+  // type only; normalizeSchema above is the runtime JSON-Schema authority.
+  return validator as unknown as Type<TValue>;
 }
 
 function compileSearchIndexPlan(options: {

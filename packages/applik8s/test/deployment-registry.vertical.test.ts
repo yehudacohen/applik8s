@@ -137,6 +137,80 @@ describe('deployment registry binding', () => {
       },
     });
   });
+
+  it('resolves the unqualified application default without treating its named profile authority as a second registry', () => {
+    const selected = {
+      kind: 'oci-container-registry' as const,
+      endpoint: {
+        kind: 'origin' as const,
+        origin: 'https://registry.example.test',
+      },
+      repositoryPrefix: 'chirp',
+    };
+    const provider = applicationContainerRegistryFromGraph(graph([
+      {
+        id: 'provider.container-registry.v1alpha1.images',
+        kind: 'provider',
+        name: 'ContainerRegistry',
+        stability: 'stable',
+        interface: 'ContainerRegistry',
+        implementation: 'application-provider-selection',
+        config: {
+          bindingKind: 'provided',
+          qualification: {
+            apiVersion: 'applik8s.providerQualification/v1alpha1',
+            capability: 'ContainerRegistry',
+            compatibilityRevision: 'v1alpha1',
+            key: 'ContainerRegistry@v1alpha1:images',
+            name: 'images',
+          },
+          containerRegistry: selected,
+        },
+      },
+      {
+        id: 'provider.container-registry',
+        kind: 'provider',
+        name: 'ContainerRegistry',
+        stability: 'stable',
+        interface: 'ContainerRegistry',
+        implementation: 'oci-container-registry',
+        config: {
+          bindingKind: 'provided',
+          aliasOf: 'provider.container-registry.v1alpha1.images',
+          containerRegistry: selected,
+        },
+      },
+    ]));
+
+    expect(provider).toEqual(selected);
+  });
+
+  it('fails closed when named registry roles have no application default', () => {
+    expect(() => applicationContainerRegistryFromGraph(graph([{
+      id: 'provider.container-registry.v1alpha1.images',
+      kind: 'provider',
+      name: 'ContainerRegistry',
+      stability: 'stable',
+      interface: 'ContainerRegistry',
+      implementation: 'oci-container-registry',
+      config: {
+        qualification: {
+          apiVersion: 'applik8s.providerQualification/v1alpha1',
+          capability: 'ContainerRegistry',
+          compatibilityRevision: 'v1alpha1',
+          key: 'ContainerRegistry@v1alpha1:images',
+          name: 'images',
+        },
+        containerRegistry: {
+          kind: 'oci-container-registry',
+          endpoint: {
+            kind: 'origin',
+            origin: 'https://registry.example.test',
+          },
+        },
+      },
+    }]))).toThrow(/no unqualified application default/);
+  });
 });
 
 function graph(nodes: ApplicationGraph['nodes']): ApplicationGraph {

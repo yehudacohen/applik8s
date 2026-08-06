@@ -1,28 +1,44 @@
 {
   "name": "@applik8s/tanstack-start",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Thin Nitro request-context and Vite build adapter for Applik8s TanStack Start applications.",
   "license": "Apache-2.0",
   "type": "module",
-  "files": ["dist"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yehudacohen/applik8s.git",
     "directory": "packages/tanstack-start"
   },
   "dependencies": {
-    "@applik8s/client": "0.6.0",
-    "@applik8s/server": "0.6.0",
-    "@applik8s/vite": "0.6.0",
+    "@applik8s/client": "0.7.0",
+    "@applik8s/identity": "0.7.0",
+    "@applik8s/react": "0.7.0",
+    "@applik8s/server": "0.7.0",
+    "@applik8s/vite": "0.7.0",
     "nitro": "npm:nitro-nightly@3.0.1-20260715-190547-7af4fee3"
   },
   "peerDependencies": {
+    "@tanstack/react-router": ">=1.160.0 <2",
     "@tanstack/react-start": ">=1.160.0 <2",
+    "react": ">=18.3.0 <20",
     "vite": ">=7 <9"
   },
   "exports": {
-    "./server": { "types": "./dist/server.d.ts", "import": "./dist/server.js" },
-    "./vite": { "types": "./dist/vite.d.ts", "import": "./dist/vite.js" }
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js",
+      "default": "./dist/server.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js",
+      "default": "./dist/vite.js"
+    }
   }
 }

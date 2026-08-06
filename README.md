@@ -44,7 +44,15 @@ See [`docs/workflows.md`](docs/workflows.md) for workflow semantics, [`docs/kube
 
 ## v0.4 Flagship: Durable Tenant Behavior
 
-v0.4 added typed, durable application behavior to the v0.3 application substrate. The current model API derives `Model.create`, `Model.update`, `Model.delete`, and typed committed lifecycle handlers from a promoted Drizzle table; exceptional domain operations use one `Model.action(...)` declaration. These lower to PostgreSQL inbox/result/history/outbox semantics, generated processors, NATS JetStream resources, retry/dead-letter behavior, and TypeKro-owned lifecycle. The older Tenant Platform evidence retains its compatibility command spelling to reproduce the original v0.4 artifact.
+v0.4 added typed, durable application behavior to the v0.3 application
+substrate. The current model API derives `Model.create`, `Model.update`,
+`Model.delete`, and typed committed lifecycle handlers from one
+Drizzle-compatible model declaration. Exceptional domain behavior is an
+ordinary exported TypeScript function over those handles; the historical
+Tenant Platform keeps its command/action spelling only as compatibility
+evidence for the original v0.4 artifact. Both forms lower to PostgreSQL
+inbox/result/history/outbox semantics, generated processors, NATS JetStream
+resources, retry/dead-letter behavior, and TypeKro-owned lifecycle.
 
 PostgreSQL is authoritative for keyed serialization, idempotency, durable results, model revisions, history, and outboxes. JetStream is acknowledged at-least-once transport; a broker acknowledgement is not a completed command result. Command handlers cannot perform HTTP, object storage, workflow, or other external effects while model locks are held.
 
@@ -107,7 +115,7 @@ tenantPlatform.http('tenant-admin', (http) => {
   }));
 });
 
-tenantPlatform.reconcile(Tenant, async (tenant) => {
+Tenant.on.reconcile(async (tenant) => {
   tenant.status.phase = 'Ready';
 });
 

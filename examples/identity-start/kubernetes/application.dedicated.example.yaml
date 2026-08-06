@@ -1,0 +1,27 @@
+apiVersion: identity-start.applik8s.dev/v1alpha1
+kind: IdentityStart
+metadata:
+  name: identity-start-dedicated
+  namespace: identity-start-control
+spec:
+  name: identity-start-dedicated
+  profile: dedicated
+  providers:
+    inference:
+      endpoint: https://inference.example.test/v1
+      model: identity-reviewer-v1
+      credentialSecretName: identity-start-inference
+      credentialKey: apiKey
+    identity:
+      issuer: https://identity.example.test
+    objects:
+      # Rook OSDs require a real block-capable class; the OrbStack
+      # qualification harness creates this retained development fixture.
+      deviceStorageClassName: applik8s-identity-start-ceph-block
+      # Explicit because this maintained local fixture is loop-backed.
+      # Production profiles must use real block devices and leave this false.
+      allowLoopDevices: true
+    payments:
+      secretName: identity-start-payments
+      apiKeyKey: apiKey
+      webhookSecretKey: webhookSecret

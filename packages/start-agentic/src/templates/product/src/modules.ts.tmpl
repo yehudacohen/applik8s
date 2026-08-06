@@ -1,0 +1,5 @@
+import { operationsOverview } from '@applik8s/operations-ui';
+import { application } from './app';
+
+export const Operations = application.include(operationsOverview);
+export const OperationsSnapshot = Operations.snapshot;

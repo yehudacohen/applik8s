@@ -8,6 +8,7 @@ import {
   ApplicationAuthorityService,
   createApplicationOperationAuthorityRuntime,
   ApplicationOperationCatalogManager,
+  PostgresApplicationOperationalObservationRepository,
   PostgresApplicationAuthorityRepository,
   PostgresApplicationOperationCatalogRepository,
   prepareApplicationAuthorityPostgres,
@@ -38,6 +39,8 @@ describe('PostgreSQL operation authority repositories', () => {
     expect(sql.queries.some(({ query, parameters }) =>
       query.includes('pg_advisory_xact_lock') && parameters?.[0] === 'applik8s.authority:chirp')).toBe(true);
     expect(sql.queries.filter(({ query }) => query.includes('CREATE TABLE IF NOT EXISTS'))).toHaveLength(5);
+    expect(sql.queries.some(({ query }) =>
+      query.includes('applik8s_authority_audit_occurred_at_idx'))).toBe(true);
   });
 
   it('serializes catalog activation and retains explicit durable references', async () => {
@@ -84,6 +87,9 @@ describe('PostgreSQL operation authority repositories', () => {
       envelopeIds: [],
       workflowIds: [],
       sessionIds: ['session-1'],
+      operationIdsByReference: {
+        'session:session-1': [],
+      },
     });
     expect(sql.queries.some(({ query, parameters }) =>
       query.includes('pg_advisory_xact_lock') && parameters?.[0] === 'applik8s.catalog:chirp')).toBe(true);
@@ -153,6 +159,20 @@ describe('PostgreSQL operation authority repositories', () => {
     });
     expect(authorization).toMatchObject({ allowed: true });
     if (!authorization.allowed) throw new Error('runtime fixture authorization unexpectedly failed');
+    await expect(runtime.admitPrincipal({
+      id: 'principal:user-1',
+      identity: {
+        id: 'identity:user-1',
+        kind: 'human',
+        issuer: 'test',
+        subject: 'user-1',
+      },
+      kind: 'human',
+      authenticationMethod: 'session',
+      audience: ['chirp-api'],
+    }, 'sha256:context')).resolves.toMatchObject({
+      authorityRevision: principal.authorityRevision,
+    });
     await expect(runtime.revalidate(
       authorization.receipt,
       'pre-commit',
@@ -160,8 +180,96 @@ describe('PostgreSQL operation authority repositories', () => {
       sql,
     )).resolves.toMatchObject({ allowed: true });
     expect((await new PostgresApplicationOperationCatalogRepository(sql).references('chirp', 'runtime-r1')).envelopeIds).toContain('command-1');
+    expect([...sql.operationalObservations.values()]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          application: 'chirp',
+          id: 'authority:operation-catalog',
+          domain: 'authority',
+          authority: 'canonical',
+          state: 'ready',
+        }),
+        expect.objectContaining({
+          application: 'chirp',
+          domain: 'authority',
+          subject: 'applik8s://models/Post/operations/publish',
+          authority: 'canonical',
+          state: 'succeeded',
+        }),
+      ]),
+    );
     expect(sql.queries.some(({ query, parameters }) =>
       query.includes('pg_advisory_xact_lock') && parameters?.[0] === 'applik8s.authority:chirp')).toBe(true);
+  });
+
+  it('keeps canonical operational observations application-scoped and bounded', async () => {
+    const sql = new AuthoritySqlFixture();
+    const chirp = new PostgresApplicationOperationalObservationRepository(
+      sql,
+      'chirp',
+    );
+    const guestbook = new PostgresApplicationOperationalObservationRepository(
+      sql,
+      'guestbook',
+    );
+    await chirp.prepare();
+    await chirp.upsert({
+      id: 'workflow:publish',
+      domain: 'workflow',
+      subject: 'PublishPost',
+      authority: 'canonical',
+      state: 'running',
+      source: 'workflow-runtime',
+      evidence: { runId: 'run-1', privateInput: 'not-browser-visible' },
+      observedAt: '2026-08-01T00:00:00.000Z',
+    });
+    await guestbook.upsert({
+      id: 'workflow:publish',
+      domain: 'workflow',
+      subject: 'PublishEntry',
+      authority: 'canonical',
+      state: 'ready',
+      source: 'workflow-runtime',
+      evidence: {},
+      observedAt: '2026-08-01T00:00:01.000Z',
+    });
+
+    await expect(chirp.list({ domain: 'workflow', limit: 10 })).resolves.toEqual([
+      expect.objectContaining({
+        application: 'chirp',
+        id: 'workflow:publish',
+        subject: 'PublishPost',
+        state: 'running',
+      }),
+    ]);
+    await expect(chirp.list({ limit: 0 })).rejects.toThrow(
+      'integer from 1 through 1000',
+    );
+  });
+
+  it('retries authority preparation after a transient PostgreSQL failure and caches only success', async () => {
+    const sql = new AuthoritySqlFixture();
+    sql.failuresRemaining = 1;
+    const runtime = createApplicationOperationAuthorityRuntime({
+      sql,
+      application: 'retryable',
+      catalog: {
+        apiVersion: 'applik8s.operationCatalog/v1alpha1',
+        application: 'retryable',
+        revision: 'retryable-r1',
+        digest: 'sha256:retryable-r1',
+        state: 'proposed',
+        operations: [],
+      },
+    });
+
+    await expect(runtime.prepare()).rejects.toThrow('transient PostgreSQL startup failure');
+    const active = await runtime.prepare();
+    const queryCountAfterSuccess = sql.queries.length;
+
+    await expect(runtime.prepare()).resolves.toBe(active);
+    expect(active.state).toBe('active');
+    expect(sql.queries).toHaveLength(queryCountAfterSuccess);
   });
 
   it('admits a distinct execution principal and enforces its workload envelope before authorization', async () => {
@@ -284,8 +392,10 @@ class AuthoritySqlFixture implements ApplicationAuthorityPostgresSql {
   readonly queries: Array<{ readonly query: string; readonly parameters?: readonly unknown[] }> = [];
   readonly authorityRecords = new Map<string, { readonly kind: string; readonly id: string; document: unknown }>();
   readonly catalogs = new Map<string, ApplicationOperationCatalog>();
-  readonly catalogReferences = new Set<string>();
+  readonly catalogReferences = new Map<string, unknown>();
+  readonly operationalObservations = new Map<string, Record<string, unknown>>();
   revision = 0;
+  failuresRemaining = 0;
 
   async begin<T>(work: (transaction: this) => Promise<T>): Promise<T> {
     return work(this);
@@ -298,6 +408,10 @@ class AuthoritySqlFixture implements ApplicationAuthorityPostgresSql {
   async unsafe(query: string, parameters?: readonly unknown[]): Promise<readonly Record<string, unknown>[]> {
     const normalized = query.replace(/\s+/g, ' ').trim();
     this.queries.push({ query: normalized, ...(parameters ? { parameters } : {}) });
+    if (this.failuresRemaining > 0) {
+      this.failuresRemaining -= 1;
+      throw new Error('transient PostgreSQL startup failure');
+    }
     if (normalized.startsWith('SELECT revision FROM applik8s_authority_revisions')) {
       return [{ revision: this.revision }];
     }
@@ -313,7 +427,40 @@ class AuthoritySqlFixture implements ApplicationAuthorityPostgresSql {
       const [application, revision, document] = parameters ?? [];
       this.catalogs.set(`${application}:${revision}`, document as ApplicationOperationCatalog);
     } else if (normalized.startsWith('INSERT INTO applik8s_operation_catalog_references')) {
-      this.catalogReferences.add((parameters ?? []).join(':'));
+      const [application, revision, kind, referenceId, operationIds = []] = parameters ?? [];
+      this.catalogReferences.set(
+        `${application}:${revision}:${kind}:${referenceId}`,
+        operationIds,
+      );
+    } else if (normalized.startsWith('INSERT INTO applik8s_operational_observations')) {
+      const [
+        application,
+        id,
+        domain,
+        subject,
+        authority,
+        state,
+        reason,
+        source,
+        causalId,
+        evidence,
+        observedAt,
+        expiresAt,
+      ] = parameters ?? [];
+      this.operationalObservations.set(`${application}:${id}`, {
+        application,
+        id,
+        domain,
+        subject,
+        authority,
+        state,
+        reason,
+        source,
+        causal_id: causalId,
+        evidence,
+        observed_at: observedAt,
+        expires_at: expiresAt,
+      });
     }
     if (normalized.startsWith('SELECT document FROM applik8s_operation_catalogs WHERE application = $1 AND revision = $2')) {
       const value = this.catalogs.get(`${parameters?.[0]}:${parameters?.[1]}`);
@@ -324,14 +471,22 @@ class AuthoritySqlFixture implements ApplicationAuthorityPostgresSql {
         .filter(([key]) => key.startsWith(`${parameters?.[0]}:`))
         .map(([, document]) => ({ document }));
     }
-    if (normalized.startsWith('SELECT kind, reference_id FROM applik8s_operation_catalog_references')) {
+    if (normalized.startsWith('SELECT kind, reference_id, operation_ids FROM applik8s_operation_catalog_references')) {
       const prefix = `${parameters?.[0]}:${parameters?.[1]}:`;
-      return [...this.catalogReferences]
-        .filter((key) => key.startsWith(prefix))
-        .map((key) => {
+      return [...this.catalogReferences.entries()]
+        .filter(([key]) => key.startsWith(prefix))
+        .map(([key, operationIds]) => {
           const [, , kind, referenceId] = key.split(':');
-          return { kind, reference_id: referenceId };
+          return { kind, reference_id: referenceId, operation_ids: operationIds };
         });
+    }
+    if (normalized.startsWith('SELECT application, id, domain, subject, authority, state, reason, source, causal_id, evidence, observed_at, expires_at FROM applik8s_operational_observations')) {
+      const [application, domain] = parameters ?? [];
+      return [...this.operationalObservations.values()]
+        .filter((row) => row.application === application)
+        .filter((row) => !normalized.includes('AND domain = $2') || row.domain === domain)
+        .sort((left, right) =>
+          String(right.observed_at).localeCompare(String(left.observed_at)));
     }
     return [];
   }

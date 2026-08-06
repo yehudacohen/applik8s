@@ -1,7 +1,16 @@
 // typecast-file-boundary: Provider sessions are validated and normalized into the canonical authority-owned principal.
 import { createHash } from 'node:crypto';
-import { Authorization } from '@applik8s/applik8s';
+import {
+  Authorization,
+  IdentityProvider,
+  type ApplicationIdentityInfrastructure,
+} from '@applik8s/applik8s';
 import type { ApplicationPrincipal, JsonValue } from '@applik8s/core';
+import {
+  app,
+  namespace,
+  requiredInstallationValue,
+} from '../installation';
 
 export interface ChirpRuntimeProfile {
   readonly profile: 'starter' | 'dedicated' | 'external';
@@ -92,7 +101,13 @@ export async function authenticateConfiguredChirpRequest(
   if (identity.mode === 'deterministic-local') {
     if (installation.profile !== 'starter') throw new Error('Deterministic local identity is restricted to the starter profile.');
     const userId = request.headers.get('x-chirp-user')?.trim() || 'demo-user';
-    const trustedContext = {};
+    const roles = userId === 'demo-user'
+      ? ['installation-administrator', 'identity-administrator', 'moderator']
+      : [];
+    const trustedContext = {
+      issuer: 'chirp://deterministic-local',
+      subject: userId,
+    };
     return {
       principal: admittedHumanPrincipal({
         provider: 'deterministic-local',
@@ -101,6 +116,8 @@ export async function authenticateConfiguredChirpRequest(
         authenticationMethod: 'deterministic-starter',
         authorityRevision: identity.authorizationVersion,
         trustedContext,
+        roles,
+        attributes: { handle: userId },
       }),
       trustedContext,
     };
@@ -158,7 +175,10 @@ export const chirpAuthorization = Authorization.from(async ({ principal, action,
     };
   }
 
-  const allowed = resource?.id === undefined
+  const roleAllowed = principal.roles?.includes('moderator') === true
+    && (action === 'Post.moderate' || resource?.kind === 'ModerationCase' || resource?.kind === 'Report');
+  const allowed = roleAllowed
+    || resource?.id === undefined
     || principal.identity.subject === resource.id
     || action.endsWith('.read');
   return {
@@ -167,6 +187,208 @@ export const chirpAuthorization = Authorization.from(async ({ principal, action,
     reason: identity.mode === 'ory' ? 'Ory identity admitted; application policy owns this unscoped decision.' : 'Zitadel identity admitted; product roles require canonical application grants.',
   };
 }, { ready: probeChirpAuthorization });
+
+const identity = app.installation.spec.identity;
+const identityInfrastructure = identity.infrastructure;
+const identityName = app.interpolate`${namespace}-identity`;
+const productionIdentity = {
+  issuer: requiredInstallationValue(
+    identity.issuer,
+    'spec.identity.issuer',
+  ),
+  browserEndpoint: requiredInstallationValue(
+    identity.browserEndpoint,
+    'spec.identity.browserEndpoint',
+  ),
+  hydraDsnSecretName: requiredInstallationValue(
+    identityInfrastructure.hydraDsnSecretName,
+    'spec.identity.infrastructure.hydraDsnSecretName',
+  ),
+  hydraSystemSecretName: requiredInstallationValue(
+    identityInfrastructure.hydraSystemSecretName,
+    'spec.identity.infrastructure.hydraSystemSecretName',
+  ),
+  kratosDsnSecretName: requiredInstallationValue(
+    identityInfrastructure.kratosDsnSecretName,
+    'spec.identity.infrastructure.kratosDsnSecretName',
+  ),
+  kratosSecretsName: requiredInstallationValue(
+    identityInfrastructure.kratosSecretsName,
+    'spec.identity.infrastructure.kratosSecretsName',
+  ),
+  ketoDsnSecretName: requiredInstallationValue(
+    identityInfrastructure.ketoDsnSecretName,
+    'spec.identity.infrastructure.ketoDsnSecretName',
+  ),
+  oathkeeperJwksSecretName: requiredInstallationValue(
+    identityInfrastructure.oathkeeperJwksSecretName,
+    'spec.identity.infrastructure.oathkeeperJwksSecretName',
+  ),
+};
+const productionOryDependencies = {
+  hydra: {
+    database: {
+      dsn: {
+        mode: 'external' as const,
+        value: {
+          secretRef: {
+            name: productionIdentity.hydraDsnSecretName,
+            key: 'uri',
+          },
+        },
+      },
+    },
+    systemSecret: {
+      mode: 'external' as const,
+      value: {
+        secretRef: {
+          name: productionIdentity.hydraSystemSecretName,
+          key: 'system',
+        },
+      },
+    },
+    issuerUrl: {
+      url: {
+        mode: 'external' as const,
+        url: productionIdentity.issuer,
+      },
+    },
+    loginUrl: {
+      url: {
+        mode: 'external' as const,
+        url: productionIdentity.browserEndpoint,
+      },
+    },
+    consentUrl: {
+      url: {
+        mode: 'external' as const,
+        url: productionIdentity.browserEndpoint,
+      },
+    },
+    logoutUrl: {
+      url: {
+        mode: 'external' as const,
+        url: productionIdentity.browserEndpoint,
+      },
+    },
+  },
+  kratos: {
+    database: {
+      dsn: {
+        mode: 'external' as const,
+        value: {
+          secretRef: {
+            name: productionIdentity.kratosDsnSecretName,
+            key: 'uri',
+          },
+        },
+      },
+    },
+    publicBaseUrl: {
+      url: {
+        mode: 'external' as const,
+        url: productionIdentity.browserEndpoint,
+      },
+    },
+    browserBaseUrl: {
+      url: {
+        mode: 'external' as const,
+        url: productionIdentity.browserEndpoint,
+      },
+    },
+    secrets: {
+      cookie: {
+        mode: 'external' as const,
+        value: {
+          secretRef: {
+            name: productionIdentity.kratosSecretsName,
+            key: 'cookie',
+          },
+        },
+      },
+      cipher: {
+        mode: 'external' as const,
+        value: {
+          secretRef: {
+            name: productionIdentity.kratosSecretsName,
+            key: 'cipher',
+          },
+        },
+      },
+    },
+  },
+  keto: {
+    database: {
+      dsn: {
+        mode: 'external' as const,
+        value: {
+          secretRef: {
+            name: productionIdentity.ketoDsnSecretName,
+            key: 'uri',
+          },
+        },
+      },
+    },
+  },
+  oathkeeper: {
+    mutatorIdTokenJwks: {
+      mode: 'external' as const,
+      value: {
+        secretRef: {
+          name: productionIdentity.oathkeeperJwksSecretName,
+          key: 'jwks',
+        },
+      },
+    },
+  },
+};
+const oryInfrastructure: ApplicationIdentityInfrastructure = {
+  kind: 'ory',
+  stack: app.select(identityInfrastructure.mode, {
+    'managed-local': 'platform',
+    default: 'identity',
+  }),
+  provision: app.select(identityInfrastructure.mode, {
+    'managed-local': true,
+    'managed-production': true,
+    default: false,
+  }),
+  spec: {
+    name: identityName,
+    namespace: identityInfrastructure.namespace,
+    managed: app.selectProvider(identityInfrastructure.mode, {
+      'managed-local': {
+        databases: true,
+        secrets: true,
+        routes: false,
+        sampleUpstream: false,
+        courierSes: false,
+      },
+      default: {
+        databases: false,
+        secrets: false,
+        routes: false,
+        sampleUpstream: false,
+        courierSes: false,
+      },
+    }),
+    dependencySources: app.selectProvider(identityInfrastructure.mode, {
+      'managed-production': productionOryDependencies,
+      default: {},
+    }),
+  },
+  deletionPolicy: identityInfrastructure.deletionPolicy,
+  timeoutMs: 15 * 60_000,
+};
+
+app.provide(
+  IdentityProvider,
+  IdentityProvider.from(authenticateChirpRequest, {
+    infrastructure: oryInfrastructure,
+    ready: probeChirpIdentity,
+  }),
+);
+app.provide(Authorization, chirpAuthorization);
 
 async function authenticateOry(
   requestFetch: typeof fetch,
@@ -184,7 +406,13 @@ async function authenticateOry(
   if (!response.ok || value.active === false || !subject) throw new Error('Ory Kratos did not admit an active authenticated session.');
   const sessionId = string(value.id);
   const sessionVersion = string(identity.updated_at) || string(value.authenticated_at) || sessionId || 'active';
-  const trustedContext = {};
+  const traits = record(identity.traits);
+  const publicMetadata = record(identity.metadata_public);
+  const roles = admittedRoles(publicMetadata.roles ?? publicMetadata.role ?? traits.roles ?? traits.role);
+  const trustedContext = {
+    issuer: issuer.href.replace(/\/$/, ''),
+    subject,
+  };
   return {
     principal: admittedHumanPrincipal({
       provider: 'ory',
@@ -193,6 +421,8 @@ async function authenticateOry(
       authenticationMethod: 'ory-kratos-session',
       authorityRevision: `${policyVersion}:${sessionVersion}`,
       trustedContext,
+      roles,
+      attributes: admittedAttributes(traits),
       ...(sessionId ? { sessionId } : {}),
     }),
     trustedContext,
@@ -218,7 +448,10 @@ async function authenticateZitadel(
     throw new Error('Zitadel did not admit a valid subject for the configured issuer.');
   }
   const sessionVersion = string(value.updated_at) || string(value.auth_time) || string(value.iat) || 'active';
-  const trustedContext = {};
+  const roles = admittedRoles(
+    value['urn:zitadel:iam:org:project:roles'] ?? value.roles ?? value.role,
+  );
+  const trustedContext = { issuer: expectedIssuer, subject };
   return {
     principal: admittedHumanPrincipal({
       provider: 'zitadel',
@@ -227,6 +460,8 @@ async function authenticateZitadel(
       authenticationMethod: 'oidc-bearer',
       authorityRevision: `${policyVersion}:${sessionVersion}`,
       trustedContext,
+      roles,
+      attributes: admittedAttributes(value),
     }),
     trustedContext,
   };
@@ -319,11 +554,16 @@ function admittedHumanPrincipal(input: {
   readonly authenticationMethod: string;
   readonly authorityRevision: string;
   readonly trustedContext: Readonly<Record<string, JsonValue>>;
+  readonly roles?: readonly string[];
+  readonly attributes?: Readonly<Record<string, JsonValue>>;
   readonly sessionId?: string;
 }): ApplicationPrincipal {
   const catalogRevision = process.env.APPLIK8S_OPERATION_CATALOG_REVISION?.trim() || 'chirp-catalog-v1';
   return {
-    id: `principal:chirp:${input.provider}:${input.subject}`,
+    // The application principal is the domain account identity. Provider
+    // provenance remains namespaced in principal.identity, so model ownership
+    // and foreign keys never depend on a framework-generated transport ID.
+    id: input.subject,
     identity: {
       id: `identity:${input.provider}:${input.subject}`,
       kind: 'human',
@@ -333,10 +573,34 @@ function admittedHumanPrincipal(input: {
     kind: 'human',
     authenticationMethod: input.authenticationMethod,
     audience: ['chirp'],
+    ...(input.roles && input.roles.length > 0 ? { roles: input.roles } : {}),
+    ...(input.attributes && Object.keys(input.attributes).length > 0 ? { attributes: input.attributes } : {}),
     trustedContextDigest: createHash('sha256').update(JSON.stringify(input.trustedContext)).digest('hex'),
     catalogRevision,
     authorityRevision: input.authorityRevision,
     admittedAt: new Date().toISOString(),
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
   };
+}
+
+function admittedRoles(value: unknown): readonly string[] {
+  const candidates = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object'
+      ? Object.keys(value)
+      : typeof value === 'string'
+        ? value.split(/[,\s]+/)
+        : [];
+  return [...new Set(candidates.filter((candidate): candidate is string =>
+    typeof candidate === 'string' && /^[a-z][a-z0-9-]{0,62}$/.test(candidate),
+  ))].sort();
+}
+
+function admittedAttributes(value: Readonly<Record<string, unknown>>): Readonly<Record<string, JsonValue>> {
+  const attributes: Record<string, JsonValue> = {};
+  for (const name of ['handle', 'preferred_username', 'name'] as const) {
+    const candidate = value[name];
+    if (typeof candidate === 'string' && candidate.trim()) attributes[name] = candidate.trim();
+  }
+  return attributes;
 }

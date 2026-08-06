@@ -913,7 +913,7 @@ function protocolString(
     typeof value !== 'string'
     || !value.trim()
     || value.length > maximumLength
-    || /[\u0000-\u001f\u007f]/u.test(value)
+    || containsControlCharacter(value)
   ) {
     throw new ApplicationMcpError(
       'MCP_EXTERNAL_UNAVAILABLE',
@@ -922,6 +922,13 @@ function protocolString(
     );
   }
   return value;
+}
+
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
 }
 
 function protocolStringOptional(value: unknown): string | undefined {

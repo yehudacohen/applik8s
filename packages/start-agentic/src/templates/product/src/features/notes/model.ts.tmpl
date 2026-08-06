@@ -1,0 +1,89 @@
+import { AI } from '@applik8s/ai';
+import {
+  type ApplicationModelViewContext,
+  module,
+} from '@applik8s/applik8s';
+import { type } from 'arktype';
+import { chat } from '@tanstack/ai';
+import { desc, eq } from 'drizzle-orm';
+import { application } from '../../app';
+import { database, inference } from '../../providers';
+import { Note as NoteTable } from './schema';
+
+async function listNotes(
+  _input: object,
+  context: ApplicationModelViewContext,
+) {
+  return context.database(database)
+    .select({
+      id: NoteTable.id,
+      body: NoteTable.body,
+      createdAt: NoteTable.createdAt,
+    })
+    .from(NoteTable)
+    .where(eq(NoteTable.ownerPrincipalId, context.principal.id))
+    .orderBy(desc(NoteTable.createdAt))
+    .limit(100);
+}
+
+const notes = module(
+  'notes',
+  { schema: { Note: NoteTable } },
+  (application) => {
+    const NoteList = NoteTable.view(
+      {
+        input: type({}),
+        output: type({
+          id: 'string',
+          body: 'string',
+          createdAt: 'string',
+        }).array(),
+        database,
+        authorize: ({ principal }) => principal.id.length > 0,
+      },
+      listNotes,
+    );
+    const Authenticated = application.role('authenticated');
+    const AssistantIdentity = application.serviceIdentity('notes-assistant');
+    const FastModel = AI.model('fast', {
+      inference,
+      capabilities: [AI.chat, AI.tools, AI.streaming],
+    });
+    const NotesAssistant = application.agent(
+      'notes-assistant',
+      {
+        identity: AssistantIdentity,
+        model: FastModel,
+        instructions: 'Help the user organize concise notes.',
+        tools: [NoteTable.create],
+      },
+      async (request, context) => chat({
+        adapter: context.tanstack.adapter,
+        messages: request.messages,
+        threadId: request.threadId,
+        runId: context.runId,
+        tools: context.tanstack.tools,
+        context: context.tanstack.execution,
+      }),
+    );
+
+    Authenticated.can(NoteTable.create, NoteList);
+    AssistantIdentity.can(NoteTable.create);
+
+    return {
+      Note: NoteTable,
+      NoteList,
+      NotesAssistant,
+      Authenticated,
+      AssistantIdentity,
+    };
+  },
+);
+
+export const {
+  Note,
+  NoteList,
+  NotesAssistant,
+  Authenticated,
+  AssistantIdentity,
+} = application.include(notes);

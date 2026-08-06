@@ -1,4 +1,4 @@
-import { Applik8sProvider, ApplicationQueryHydrationBoundary } from '@applik8s/react';
+import { Applik8sProvider } from '@applik8s/react';
 import { HeadContent, Outlet, Scripts, createRootRoute } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 import { currentAccount } from '../session';
@@ -17,8 +17,7 @@ export const Route = createRootRoute({
 });
 
 function Root() {
-  const session = Route.useLoaderData();
-  return <Document><Applik8sProvider><ApplicationQueryHydrationBoundary snapshots={[session]}><Outlet /></ApplicationQueryHydrationBoundary></Applik8sProvider></Document>;
+  return <Document><Applik8sProvider><Outlet /></Applik8sProvider></Document>;
 }
 
 function Document({ children }: { readonly children: ReactNode }) {

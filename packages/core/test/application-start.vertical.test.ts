@@ -1,3 +1,4 @@
+// typecast-file-boundary: Contract tests deliberately construct and inspect protocol fixtures beyond their public generic surface.
 import { describe, expect, it } from 'vitest';
 import {
   applicationStartDefinitionApiVersion,
@@ -42,12 +43,14 @@ function startDefinition(): ApplicationStartDefinition {
       applik8s: '0.7.0',
       tanstackCli: '0.70.1',
       tanstackStart: '1.168.28',
+      tanstackRouter: '1.170.18',
+      tanstackRouterCli: '1.167.19',
       tanstackAI: '0.42.0',
       tanstackAIClient: '0.22.1',
       tanstackAIReact: '0.18.1',
       agUi: '0.0.52',
       tanstackAIPersistence: 'unreleased',
-      typekro: '0.32.0',
+      typekro: '0.33.5',
     },
     packages: [
       {

@@ -2,17 +2,23 @@
 import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { applicationGraphFor } from '@applik8s/applik8s';
+import { gunzipSync } from 'node:zlib';
 import type { ApplicationGraph, ApplicationGraphNode, JsonObject } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import {
   consolidateGeneratedApplicationReactiveResources,
   emitGeneratedApplicationReactive,
 } from '../src/application-reactive/index.js';
-import { compileTypeKroComposition } from '../src/pipeline/index.js';
-import { nativeQueryApplication } from './fixtures/v06-native-query-app.js';
+import {
+  compileTypeKroComposition,
+  discoverApplicationGraph,
+} from '../src/pipeline/index.js';
 
 const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALOG_URL', secretName: 'catalog-app', secretKey: 'uri', secretNamespace: 'catalog' } as const;
+// Preserving authored callback names is part of the function-native runtime
+// contract. The bounded overhead keeps identity inference correct after
+// minification without relaxing the generated-runtime budget materially.
+const reactiveRuntimeBundleBudgetBytes = 560_000;
 
 describe('generated v0.6 reactive workloads', () => {
   it('preserves module-local Drizzle captures through CLI-style discovery and singleton-owns shared ClickHouse infrastructure', async () => {
@@ -87,8 +93,7 @@ describe('generated v0.6 reactive workloads', () => {
   }, 120_000);
 
   it('bundles a normal app-scoped Drizzle query without an example-only graph fixture', async () => {
-    const graph = applicationGraphFor(nativeQueryApplication.composition);
-    if (!graph) throw new Error('Native query fixture did not expose its ApplicationGraph.');
+    const graph = await nativeQueryFixtureGraph();
     const gateway = graph.nodes.find((node) => node.kind === 'gateway');
     if (gateway?.kind !== 'gateway') throw new Error('Native query fixture did not expose its query gateway.');
     const duplicatedGatewayGraph: ApplicationGraph = {
@@ -104,7 +109,7 @@ describe('generated v0.6 reactive workloads', () => {
     const artifact = artifacts.find((entry) => entry.name === 'native-query-fixture-public');
 
     expect(artifact).toMatchObject({ kind: 'queryGateway', name: 'native-query-fixture-public' });
-    expect(artifact?.sizeBytes).toBeLessThan(550_000);
+    expect(artifact?.sizeBytes).toBeLessThan(reactiveRuntimeBundleBudgetBytes);
     const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
     expect(source).toContain('cards');
     expect(source).not.toContain('typekro');
@@ -126,7 +131,336 @@ describe('generated v0.6 reactive workloads', () => {
     expect(JSON.stringify(consolidated)).toContain('"targetPort":"http-1"');
   });
 
-  it('follows fluent view callbacks and their Drizzle dependencies through a thin imported entrypoint', async () => {
+  it('emits a frozen whole-batch processor runtime instead of event-by-event delivery', async () => {
+    const graph = reactiveGraph([
+      {
+        id: 'stream.posts.published.v1',
+        kind: 'stream',
+        name: 'posts.published',
+        version: 'v1',
+        stability: 'stable',
+        payload: schema({
+          type: 'object',
+          properties: { postId: { type: 'string' }, authorId: { type: 'string' } },
+          required: ['postId', 'authorId'],
+        }),
+        authority: 'postgres-outbox',
+        delivery: 'at-least-once',
+        replay: 'supported',
+        retention: { maxAgeSeconds: 86_400 },
+        partitioning: 'declared',
+        compatibility: 'versioned-schema',
+        authorization: 'application-defined',
+        database,
+        partitionSource: '(event) => event.authorId',
+        authorizationSource: '() => true',
+      },
+      {
+        id: 'streamProcessor.bulk-index-posts',
+        kind: 'streamProcessor',
+        name: 'bulk-index-posts',
+        stability: 'stable',
+        source: { nodeId: 'stream.posts.published.v1' },
+        database,
+        handlerSource: 'async function bulkIndexPosts(batch) { globalThis.__batch = batch.id; }',
+        delivery: 'at-least-once',
+        invocation: 'batch',
+        idempotency: 'frozen-batch-id',
+        batch: {
+          maxItems: 500,
+          maxBytes: 4 * 1_024 * 1_024,
+          maxWaitMs: 1_000,
+          ordering: 'partition',
+          acknowledgement: 'wholeBatch',
+          membership: 'durableFrozenManifest',
+        },
+        checkpoint: 'postgres',
+        failure: 'pause',
+        retry: {
+          mode: 'boundedExponentialBackoff',
+          maxAttempts: 5,
+          initialDelayMs: 100,
+          maxDelayMs: 5_000,
+          factor: 2,
+        },
+        deployment: {
+          image: 'node:22-alpine',
+          replicas: 1,
+          concurrency: 8,
+          maxAckPending: 4_000,
+          healthPort: 8_080,
+          gracefulShutdownSeconds: 30,
+          resources: {},
+          scaling: { mode: 'fixed' },
+        },
+        budgets: { timeoutMs: 30_000, maxInputBytes: 4 * 1_024 * 1_024 },
+      },
+    ] as unknown as ApplicationGraphNode[]);
+    const outDir = await mkdtemp(join(tmpdir(), 'applik8s-batch-processor-'));
+    const [artifact] = await emitGeneratedApplicationReactive({
+      graph,
+      outDir,
+      entrypoint: import.meta.filename,
+    });
+
+    expect(artifact).toMatchObject({
+      kind: 'streamProcessorWorker',
+      name: 'reactive-test-bulk-index-posts',
+    });
+    const generated = await readFile(
+      join(dirname(artifact?.sourcePath ?? ''), 'stream-processor.generated.ts'),
+      'utf8',
+    );
+    expect(generated).toContain('runApplicationStreamBatchProcessor');
+    expect(generated).toContain('concurrency: processorConcurrency');
+    expect(generated).toContain('maxItems: 500');
+    expect(generated).toContain('maxBytes: 4194304');
+    expect(generated).toContain('result.exhausted ? 1000 : 10');
+    expect(generated).toContain('const createSource = () => createPostgresApplicationStream');
+    expect(generated).toContain('await source.close().catch(() => undefined)');
+    expect(generated).toContain('lastSuccessfulCycleAt');
+    expect(generated).not.toContain('runApplicationStreamProcessor({');
+  });
+
+  it('lowers inferred Model.edit dependencies into the durable command kernel', async () => {
+    const modelRuntime = (name: string, tableName: string) => ({
+      name,
+      tableName,
+      provider: 'postgres',
+      database: 'catalog',
+      clusterName: 'catalog',
+      secretName: 'catalog-app',
+      secretKey: 'uri',
+      secretNamespace: 'catalog',
+      connectionEnvName: 'APPLIK8S_DATABASE_CATALOG_URL',
+      constraints: [],
+      indexes: [],
+      retention: { mode: 'retain' },
+      storageShape: 'native-relational',
+      nativeRelational: {
+        identity: { property: 'id', column: 'id' },
+        columns: [
+          { property: 'id', column: 'id' },
+          { property: 'state', column: 'state' },
+          { property: 'revision', column: 'revision' },
+        ],
+        revision: { property: 'revision', column: 'revision' },
+      },
+    });
+    const nodes = [
+      {
+        id: 'model.post',
+        kind: 'model',
+        name: 'Post',
+        stability: 'stable',
+        runtime: modelRuntime('Post', 'posts'),
+      },
+      {
+        id: 'model.account',
+        kind: 'model',
+        name: 'Account',
+        stability: 'stable',
+        runtime: modelRuntime('Account', 'accounts'),
+      },
+      {
+        id: 'event.posts.changed.v1',
+        kind: 'event',
+        name: 'posts.changed.v1',
+        stability: 'stable',
+        contract: {
+          name: 'posts.changed',
+          version: 'v1',
+          payload: schema({
+            type: 'object',
+            properties: { postId: { type: 'string' } },
+            required: ['postId'],
+          }),
+        },
+      },
+      {
+        id: 'stream.posts.requested.v1',
+        kind: 'stream',
+        name: 'posts.requested',
+        version: 'v1',
+        stability: 'stable',
+        payload: schema({
+          type: 'object',
+          properties: { postId: { type: 'string' } },
+          required: ['postId'],
+        }),
+        authority: 'postgres-outbox',
+        delivery: 'at-least-once',
+        replay: 'supported',
+        retention: { maxAgeSeconds: 3_600 },
+        partitioning: 'declared',
+        compatibility: 'versioned-schema',
+        authorization: 'application-defined',
+        database,
+        partitionSource: 'event => event.postId',
+        authorizationSource: '() => false',
+      },
+      {
+        id: 'streamProcessor.publish-post',
+        kind: 'streamProcessor',
+        name: 'publish-post',
+        stability: 'stable',
+        source: { nodeId: 'stream.posts.requested.v1' },
+        database,
+        handlerSource: 'async event => Post.edit(event.postId, async post => { const account = await Account.require(post.accountId); await post.update({ state: account.value.state }); PostChanged.emit({ postId: event.postId }); })',
+        functionNativeTransaction: {
+          primaryModel: { nodeId: 'model.post' },
+          models: [{ nodeId: 'model.account' }, { nodeId: 'model.post' }],
+          modelBindings: [
+            { identifier: 'Account.require', model: { nodeId: 'model.account' }, access: 'read' },
+            { identifier: 'Post.edit', model: { nodeId: 'model.post' }, access: 'write' },
+          ],
+          eventBindings: [
+            { identifier: 'PostChanged.emit', event: { nodeId: 'event.posts.changed.v1' } },
+          ],
+          outbox: [{ nodeId: 'event.posts.changed.v1' }],
+          idempotency: 'source-event-id',
+        },
+        delivery: 'at-least-once',
+        invocation: 'event',
+        idempotency: 'source-event-id',
+        checkpoint: 'postgres',
+        failure: 'pause',
+        retry: {
+          mode: 'boundedExponentialBackoff',
+          maxAttempts: 5,
+          initialDelayMs: 100,
+          maxDelayMs: 5_000,
+          factor: 2,
+        },
+        deployment: {
+          image: 'node:22-alpine',
+          replicas: 1,
+          concurrency: 1,
+          maxAckPending: 64,
+          healthPort: 8_080,
+          gracefulShutdownSeconds: 30,
+          resources: {},
+          scaling: { mode: 'fixed' },
+        },
+        budgets: { timeoutMs: 30_000, maxInputBytes: 256_000 },
+      },
+    ] as unknown as ApplicationGraphNode[];
+    const [artifact] = await emitGeneratedApplicationReactive({
+      graph: reactiveGraph(nodes),
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-function-native-model-')),
+      entrypoint: import.meta.filename,
+    });
+    const generated = await readFile(
+      join(dirname(artifact?.sourcePath ?? ''), 'stream-processor.generated.ts'),
+      'utf8',
+    );
+
+    expect(generated).toContain(
+      "from '@applik8s/applik8s/stream-worker-runtime'",
+    );
+    expect(generated).toContain('executeFunctionNativePostgresModelEdit');
+    expect(generated).toContain('withApplicationNativeModelTransactionRuntime');
+    expect(generated).toContain('functionNativeModelHandle');
+    expect(generated).toContain('createApplicationFunctionNativeEventHandle');
+    expect(generated).toContain('createHandleEvent(functionNativeBindings)');
+    expect(generated).toContain('"name":"Post"');
+    expect(generated).toContain('"name":"Account"');
+    expect(generated).toContain('"id":"posts.changed.v1"');
+    expect(generated).toContain('idempotencyKey: context.idempotencyKey');
+  }, 120_000);
+
+  it('lowers profiled identity callbacks into isolated server modules and an installation-bound dispatcher', async () => {
+    const graph = await nativeQueryFixtureGraph();
+    const profiledGraph: ApplicationGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) => {
+        if (node.kind !== 'gateway') return node;
+        const {
+          authenticationSource: _authenticationSource,
+          authenticationDependencies: _authenticationDependencies,
+          authenticationLocation: _authenticationLocation,
+          authenticationUnresolved: _authenticationUnresolved,
+          identityReadinessSource: _identityReadinessSource,
+          identityReadinessDependencies: _identityReadinessDependencies,
+          identityReadinessLocation: _identityReadinessLocation,
+          identityReadinessUnresolved: _identityReadinessUnresolved,
+          ...gateway
+        } = node;
+        return {
+          ...gateway,
+          authenticationProfile: {
+            selector: 'schema.spec.profile',
+            cases: {
+              starter: {
+                source:
+                  'async () => ({ principal: { id: "starter" }, trustedContext: {}, authorizationVersion: "starter-v1" })',
+              },
+              dedicated: {
+                source:
+                  'async () => ({ principal: { id: "dedicated" }, trustedContext: {}, authorizationVersion: "dedicated-v1" })',
+              },
+            },
+            default: {
+              source:
+                'async () => ({ principal: { id: "external" }, trustedContext: {}, authorizationVersion: "external-v1" })',
+            },
+          },
+          identityReadinessProfile: {
+            selector: 'schema.spec.profile',
+            cases: {
+              starter: { source: 'async () => undefined' },
+              dedicated: { source: 'async () => undefined' },
+            },
+            default: { source: 'async () => undefined' },
+          },
+        };
+      }),
+    };
+    const outDir = await mkdtemp(
+      join(tmpdir(), 'applik8s-profiled-identity-gateway-'),
+    );
+
+    const artifacts = await emitGeneratedApplicationReactive({
+      graph: profiledGraph,
+      outDir,
+      entrypoint: new URL(
+        './fixtures/v06-native-query-app.ts',
+        import.meta.url,
+      ).pathname,
+    });
+    const gateway = artifacts.find((artifact) => artifact.kind === 'queryGateway');
+    const artifactDir = dirname(gateway?.sourcePath ?? '');
+    const deployment = gateway?.resources.find(
+      (resource) => resource.kind === 'Deployment',
+    );
+    const authenticationDispatcher = await readFile(
+      join(artifactDir, 'authentication.generated.ts'),
+      'utf8',
+    );
+    const branchSources = await Promise.all(
+      (await readdir(artifactDir, { withFileTypes: true }))
+        .filter(
+          (entry) =>
+            entry.isFile()
+            && entry.name.startsWith('authentication-profile-'),
+        )
+        .map((entry) => readFile(join(artifactDir, entry.name), 'utf8')),
+    );
+
+    expect(authenticationDispatcher).toContain(
+      'APPLIK8S_PROFILE_VARIANT',
+    );
+    expect(authenticationDispatcher).toContain('"starter"');
+    expect(authenticationDispatcher).toContain('"dedicated"');
+    expect(branchSources.join('\n')).toContain('"starter"');
+    expect(branchSources.join('\n')).toContain('"dedicated"');
+    expect(branchSources.join('\n')).toContain('"external"');
+    expect(JSON.stringify(deployment)).toContain(
+      '"name":"APPLIK8S_PROFILE_VARIANT","value":"${schema.spec.profile}"',
+    );
+  });
+
+  it('follows function-native views and direct database handles through a thin imported entrypoint', async () => {
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-modular-view-'));
     const result = await compileTypeKroComposition({
       entrypoint: join(process.cwd(), 'packages/compiler/test/fixtures/v06-modular-view/application.ts'),
@@ -143,12 +477,12 @@ describe('generated v0.6 reactive workloads', () => {
     const source = await readFile(gateway?.sourcePath ?? '', 'utf8');
     expect(source).toContain('Card.owned');
     expect(source).toContain('ownerId');
+    expect(source).toContain('only callable inside a managed query');
     expect(source).not.toContain('handlerUnresolved');
   }, 120_000);
 
   it('fails closed when a generated query captures authoring-only model facet behavior', async () => {
-    const graph = applicationGraphFor(nativeQueryApplication.composition);
-    if (!graph) throw new Error('Native query fixture did not expose its ApplicationGraph.');
+    const graph = await nativeQueryFixtureGraph();
     const query = graph.nodes.find((node) => node.kind === 'query');
     if (query?.kind !== 'query') throw new Error('Native query fixture did not expose its query node.');
     const unsafeGraph: ApplicationGraph = {
@@ -172,7 +506,7 @@ describe('generated v0.6 reactive workloads', () => {
   it('bundles an authenticated HTTP/SSE gateway with Secret-backed PostgreSQL and cursor authority', async () => {
     const graph = reactiveGraph([
       { id: 'provider.event-log', kind: 'provider', name: 'EventLog', stability: 'stable', interface: 'EventLog', implementation: 'nats-jetstream', config: { name: 'events', namespace: 'catalog', stream: 'APPLIK8S_EVENTS', subjectPrefix: 'applik8s', provision: false }, contract: { apiVersion: 'applik8s.provider/v1alpha1', interface: 'EventLog', version: 'v1alpha1', requirements: [], guarantees: [], implementation: { name: 'nats-jetstream' }, surface: 'stablePublicApi', support: 'implemented', diagnostics: [] } },
-      { id: 'model.card', kind: 'model', name: 'Card', stability: 'stable', common: { relationships: [{ source: 'Card', name: 'set', target: 'sets', cardinality: 'one', integrity: 'foreign-key', fields: ['setId'], references: ['id'] }], operations: [{ name: 'rename', operation: 'custom', transport: 'command', publicId: 'cards.rename.v1', input: schema({ type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] }), output: schema({ type: 'object', properties: { changed: { type: 'boolean' } }, required: ['changed'] }), authorization: 'application-defined' }] }, native: { artifact: { name: 'cards' } }, runtime: { name: 'Card', tableName: 'cards', provider: 'postgres', database: 'catalog', clusterName: 'catalog', secretName: 'catalog-app', secretKey: 'uri', secretNamespace: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALOG_URL', constraints: [], indexes: [], retention: { mode: 'retain' } } },
+      { id: 'model.card', kind: 'model', name: 'Card', stability: 'stable', common: { identity: { fields: ['id'], encoding: 'scalar' }, relationships: [{ source: 'Card', name: 'set', target: 'sets', cardinality: 'one', integrity: 'foreign-key', fields: ['setId'], references: ['id'] }], operations: [{ name: 'rename', operation: 'custom', transport: 'command', publicId: 'cards.rename.v1', input: schema({ type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] }), output: schema({ type: 'object', properties: { changed: { type: 'boolean' } }, required: ['changed'] }), authorization: 'application-defined' }] }, native: { artifact: { name: 'cards' } }, runtime: { name: 'Card', tableName: 'cards', provider: 'postgres', database: 'catalog', clusterName: 'catalog', secretName: 'catalog-app', secretKey: 'uri', secretNamespace: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALOG_URL', constraints: [], indexes: [], retention: { mode: 'retain' } } },
       { id: 'model.set', kind: 'model', name: 'Set', stability: 'stable', native: { artifact: { name: 'sets' } }, runtime: { name: 'Set', tableName: 'sets', provider: 'postgres', database: 'catalog', clusterName: 'catalog', secretName: 'catalog-app', secretKey: 'uri', secretNamespace: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALOG_URL', constraints: [], indexes: [], retention: { mode: 'retain' } } },
       { id: 'command.cards.rename.v1', kind: 'command', name: 'cards.rename.v1', stability: 'stable', contract: { name: 'cards.rename', version: 'v1', input: schema({ type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] }), output: schema({ type: 'object', properties: { changed: { type: 'boolean' } }, required: ['changed'] }), errors: [] } },
       { id: 'command-handler.card-rename', kind: 'commandHandler', name: 'Card-cards.rename.v1', stability: 'stable', model: { nodeId: 'model.card' }, command: { nodeId: 'command.cards.rename.v1' }, key: { kind: 'function', source: '(input) => input.cardId' }, ordering: 'serial', missing: 'reject', transaction: { models: [{ nodeId: 'model.card' }], history: [], outbox: [] }, retry: { mode: 'boundedExponentialBackoff', maxAttempts: 3 }, retention: { replayWindowSeconds: 3600, auditWindowSeconds: 7200, publishedOutboxWindowSeconds: 3600, cleanupIntervalSeconds: 60, cleanupBatchSize: 100 }, effectBoundary: 'transactionSafeOnly', effectEnforcement: { sourceAnalysis: 'closedStructuralAllowlist', runtimeMembrane: 'asyncContextAmbientIo', externalEffects: 'outboxOrTaskOnly' }, handlerSource: '() => ({ changed: true })', projectionReadiness: { submissionAcknowledgement: 'transportOnly', durableResultAuthority: 'postgresCommandResults', duplicateRecovery: 'idempotentRedelivery', correlation: 'commandCorrelationCausation', resultRevisionAuthority: 'postgresCommandResults', stateRevisionAuthority: 'modelRevision', reconciliationLink: 'modelRevisionWhenPresent' } },
@@ -180,6 +514,67 @@ describe('generated v0.6 reactive workloads', () => {
       { id: 'stream.cards.changed.v1', kind: 'stream', name: 'cards.changed', version: 'v1', stability: 'stable', payload: schema({ type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] }), authority: 'postgres-outbox', delivery: 'at-least-once', replay: 'supported', retention: { maxAgeSeconds: 3600 }, partitioning: 'declared', compatibility: 'versioned-schema', authorization: 'application-defined', database, partitionSource: '(payload) => payload.cardId', authorizationSource: '() => true' },
       { id: 'subscription.card-events', kind: 'subscription', name: 'card-events', stability: 'stable', source: { nodeId: 'stream.cards.changed.v1' }, delivery: 'sse', cursor: 'opaque-scoped', authorization: 'application-defined', authorizationSource: '({ principal }) => principal.id === "generated-stream-subscription-proof"', retry: { mode: 'boundedExponentialBackoff', maxAttempts: 5, initialDelayMs: 250, maxDelayMs: 30000 }, suspension: 'bounded-failures' },
       { id: 'gateway.public', kind: 'gateway', name: 'public', stability: 'stable', queries: [{ nodeId: 'query.cards.list.v1' }], commands: [{ command: { nodeId: 'command.cards.rename.v1' }, handler: { nodeId: 'command-handler.card-rename' } }], subscriptions: [{ nodeId: 'subscription.card-events' }], transport: 'http-sse', authentication: 'external-provider', trustedContextAdmission: 'server-validated', browserCredentials: 'forbidden', subscriptionLimits: { perPrincipal: 10, total: 100 }, routes: { snapshots: '/queries/:query/snapshot', subscriptions: '/queries/:query/subscribe', streamReplay: '/streams/:subscription/replay', streamSubscriptions: '/streams/:subscription/subscribe', commandSubmission: '/commands/:command/submit', commandProgress: '/commands/:command/progress' }, resume: 'resumableInvalidation', materialization: 'generatedDeployment', authenticationSource: 'async () => ({ principal: { id: "test" }, trustedContext: {}, authorizationVersion: "v1" })', identityReadinessSource: 'async () => undefined', authorizationReadinessSource: 'async () => undefined', commandAuthorizationSource: '({ command }) => command === Card.rename.operation.id', commandAuthorizationDependencies: { source: 'import { Card } from "./authoring-only";', resolveDir: process.cwd() }, cursorSecret: { apiVersion: 'v1', kind: 'Secret', name: 'gateway-cursor', namespace: 'catalog', key: 'secret' }, deployment: { namespace: 'catalog', image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2', replicas: 2, port: 8080 } },
+      {
+        id: 'aiAgent.card-agent',
+        kind: 'aiAgent',
+        name: 'card-agent',
+        stability: 'stable',
+        serviceIdentity: {
+          id: 'identity:reactive-test:service:card-agent',
+          kind: 'service',
+          issuer: 'applik8s://reactive-test',
+          subject: 'card-agent',
+        },
+        model: {
+          apiVersion: 'applik8s.aiModel/v1alpha1',
+          name: 'fast',
+          capabilities: ['chat', 'tools'],
+          constraints: {},
+        },
+        inference: { interface: 'AI', nodeId: 'provider.ai' },
+        state: {
+          interface: 'TransactionalDatabase',
+          nodeId: 'provider.transactional-database',
+        },
+        instructions: { kind: 'static', value: 'Rename admitted cards.' },
+        tools: [{
+          operationId: 'applik8s://models/Card/operations/rename',
+          operationVersion: 'v1',
+          transport: 'command',
+          graphNode: { nodeId: 'model.card' },
+          authority: {
+            classification: 'assigned',
+            permissionIds: [],
+            grantable: false,
+            delegable: false,
+            scope: { kind: 'all' },
+          },
+        }],
+        budgets: { timeoutMs: 120_000 },
+        executionPolicy: {
+          callerDelegation: 'forbidden',
+          uncertainCompletion: 'escalate',
+        },
+        compatibility: {
+          apiVersion: 'applik8s.aiCompatibility/v1alpha1',
+          tanstackAI: '0.42.0',
+          tanstackAIClient: '0.22.1',
+          tanstackAIReact: '0.18.1',
+          tanstackAIPersistence: 'unreleased',
+          agUi: '0.0.52',
+          applik8sAdapter: 'applik8s.ai-tanstack/v1alpha1',
+        },
+        handlerSource: 'async () => ({})',
+        runtime: 'node',
+        lifecycle: 'longLived',
+        deployment: {
+          replicas: 1,
+          port: 3000,
+          healthPort: 8081,
+          gracefulShutdownSeconds: 30,
+          maximumConcurrency: 16,
+        },
+      },
       { id: 'mcpServer.public', kind: 'mcpServer', name: 'public', stability: 'stable', protocol: { preferred: '2025-11-25', supported: ['2025-11-25'], sdk: '@modelcontextprotocol/sdk@1.30.0', extensions: ['io.modelcontextprotocol/oauth-client-credentials/v1'] }, path: '/__applik8s/mcp/public', resource: 'https://reactive.example.test/mcp', audience: 'https://reactive.example.test/mcp', authorizationServers: ['https://identity.example.test'], scopes: ['operations:invoke'], tools: [{ publicName: 'rename-card', operationId: 'applik8s://models/Card/operations/rename', schemaRevision: 'operation' }], sessions: { mode: 'stateful-pinned', catalog: 'operation-catalog-revision', authorization: 'revalidate-every-call', compatibleBindings: 'drain', incompatibleBindings: 'reinitialize', lifetimeMs: 3600000 }, transport: { kind: 'streamable-http', protectedResourceMetadata: true, tokenPassthrough: 'forbidden', maximumRequestBytes: 1048576, maximumResponseBytes: 10485760 } },
     ] as unknown as ApplicationGraphNode[]);
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-reactive-gateway-'));
@@ -208,22 +603,61 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generatedSource).toContain('authenticate: admitRequest');
     expect(generatedSource).toContain('createApplicationOperationAuthorityRuntime');
     expect(generatedSource).toContain('applik8s://models/Card/operations/rename');
+    const compressedCatalog = generatedSource.match(
+      /catalog: JSON\.parse\(gunzipSync\(Buffer\.from\(("(?:[^"\\]|\\.)*"), 'base64'\)/,
+    )?.[1];
+    expect(compressedCatalog).toBeDefined();
+    const hydratedCatalog = JSON.parse(
+      gunzipSync(
+        Buffer.from(JSON.parse(compressedCatalog ?? '""'), 'base64'),
+      ).toString('utf8'),
+    ) as { operations?: readonly { id?: string }[] };
+    expect(hydratedCatalog.operations).toContainEqual(
+      expect.objectContaining({
+        id: 'applik8s://models/Card/operations/rename',
+      }),
+    );
     expect(generatedSource).toContain('authorizeOperation:');
     expect(generatedSource).toContain('revalidateOperation:');
     expect(generatedSource).toContain('createApplicationInternalOperationHandler');
     expect(generatedSource).toContain("requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET')");
-    expect(generatedSource).toContain('commandGateway.invoke({ operationId: operation.id');
+    expect(generatedSource).toContain(
+      'commandGateway.invoke({ operationId: "applik8s://models/Card/operations/rename"',
+    );
+    expect(generatedSource).not.toContain(
+      'commandGateway.invoke({ operationId: operation.id',
+    );
+    expect(generatedSource).toContain(
+      'audiences: ["https://reactive.example.test/mcp","identity:reactive-test:workload:aiAgent.card-agent"]',
+    );
     expect(generatedSource).not.toContain('authorization: request.headers');
     expect(generatedSource).toContain('operationAuthority.admitPrincipal');
     expect(generatedSource).toContain(
       'async function prepareOperationAuthority()',
     );
-    expect(generatedSource).toContain('prepareOperationAuthority(),');
+    expect(generatedSource).toContain(
+      "readinessCheck('operation-authority', () => prepareOperationAuthority())",
+    );
     expect(generatedSource).not.toContain(
       '});\nawait operationAuthority.prepare();',
     );
     expect(generatedSource).toContain('verifyIdentityReadiness()');
     expect(generatedSource).toContain('verifyAuthorizationReadiness()');
+    expect(generatedSource).toContain(
+      "readinessCheck('operation-authority', () => prepareOperationAuthority())",
+    );
+    expect(generatedSource).toContain(
+      "readinessCheck('identity', () => verifyIdentityReadiness())",
+    );
+    expect(generatedSource).toContain(
+      "readinessCheck('authorization', () => verifyAuthorizationReadiness())",
+    );
+    expect(generatedSource).toContain(
+      "async function readinessCheck(boundary, check)",
+    );
+    expect(generatedSource).toContain(
+      "error.message + ' ' + providerReadinessError(cause)",
+    );
     expect(generatedSource).toContain("from './identity-readiness.generated.js'");
     expect(generatedSource).not.toContain('authenticate: admit,');
     expect(JSON.stringify(deployment)).toContain('APPLIK8S_INTERNAL_OPERATION_SECRET');
@@ -234,8 +668,484 @@ describe('generated v0.6 reactive workloads', () => {
     const queryCallbackSources = await Promise.all((await readdir(dirname(artifact?.sourcePath ?? ''), { withFileTypes: true })).filter((entry) => entry.isFile() && entry.name.startsWith('run-')).map((entry) => readFile(join(dirname(artifact?.sourcePath ?? ''), entry.name), 'utf8')));
     expect(queryCallbackSources.join('\n')).not.toContain('authoring-only');
     expect(source).toMatch(/reads:\[\{\$model:\{name:"Card"\}\},\{\$model:\{name:"Set"\}\}\]/);
-    expect(artifact?.sizeBytes).toBeLessThan(550_000);
+    expect(artifact?.sizeBytes).toBeLessThan(reactiveRuntimeBundleBudgetBytes);
   });
+
+  it('generates an exact-instance signal gateway and filters issuance SSE before delivery', async () => {
+    const input = schema({
+      type: 'object',
+      properties: { postId: { type: 'string' } },
+      required: ['postId'],
+      additionalProperties: false,
+    });
+    const approve = schema({
+      type: 'object',
+      properties: { comment: { type: 'string' } },
+      required: ['comment'],
+      additionalProperties: false,
+    });
+    const signal = {
+      id: 'review-decision.v1',
+      name: 'review-decision',
+      version: 'v1',
+      actions: [{ name: 'approve', schema: approve }],
+    } as const;
+    const signalStream = {
+      id: 'stream.review-decision.v1',
+      kind: 'stream',
+      name: 'review-decision',
+      version: 'v1',
+      stability: 'stable',
+      payload: schema({
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          input: input.jsonSchema,
+          signal: {
+            type: 'object',
+            properties: {
+              $type: { const: 'applik8s.signal/v1' },
+              contract: { type: 'object', additionalProperties: true },
+              issuance: { type: 'object', additionalProperties: true },
+              expiresAt: { type: 'string' },
+            },
+            required: ['$type', 'contract', 'issuance', 'expiresAt'],
+          },
+          issuedAt: { type: 'string' },
+          expiresAt: { type: 'string' },
+        },
+        required: ['id', 'input', 'signal', 'issuedAt', 'expiresAt'],
+        additionalProperties: false,
+      }),
+      authority: 'postgres-outbox',
+      delivery: 'at-least-once',
+      replay: 'supported',
+      retention: { maxAgeSeconds: 86_400 },
+      partitioning: 'declared',
+      compatibility: 'versioned-schema',
+      authorization: 'application-defined',
+      database,
+      partitionSource: '(payload) => payload.id',
+      authorizationSource: '() => true',
+      signal,
+    } as const;
+    const workflowHandler = {
+      id: 'workflow-handler.publish-post',
+      kind: 'workflowHandler',
+      name: 'publish-post',
+      stability: 'stable',
+      signalBindings: [{
+        alias: 'ReviewDecision',
+        ...signal,
+        input,
+      }],
+    } as const;
+    const subscription = {
+      id: 'subscription.review-decisions',
+      kind: 'subscription',
+      name: 'review-decisions',
+      stability: 'stable',
+      source: { nodeId: signalStream.id },
+      delivery: 'sse',
+      cursor: 'opaque-scoped',
+      authorization: 'application-defined',
+      authorizationSource: '() => true',
+      retry: {
+        mode: 'boundedExponentialBackoff',
+        maxAttempts: 5,
+        initialDelayMs: 250,
+        maxDelayMs: 30_000,
+      },
+      suspension: 'bounded-failures',
+    } as const;
+    const processor = {
+      id: 'stream-processor.review-decision-audit',
+      kind: 'streamProcessor',
+      name: 'review-decision-audit',
+      stability: 'stable',
+      source: { nodeId: signalStream.id },
+      database,
+      handlerSource: 'async (event) => { if (event.input.postId === "automatic") await event.signal.approve({ comment: "policy" }); }',
+      delivery: 'at-least-once',
+      invocation: 'event',
+      idempotency: 'source-event-id',
+      checkpoint: 'postgres',
+      failure: 'pause',
+      retry: {
+        mode: 'boundedExponentialBackoff',
+        maxAttempts: 3,
+        initialDelayMs: 250,
+        maxDelayMs: 30_000,
+        factor: 2,
+      },
+      deployment: {
+        image: 'node:22-alpine',
+        replicas: 1,
+        concurrency: 1,
+        maxAckPending: 64,
+        healthPort: 8_080,
+        gracefulShutdownSeconds: 30,
+        resources: {},
+        scaling: { mode: 'fixed' },
+      },
+      budgets: { timeoutMs: 30_000, maxInputBytes: 256_000 },
+    } as const;
+    const gateway = {
+      id: 'gateway.public',
+      kind: 'gateway',
+      name: 'public',
+      stability: 'stable',
+      queries: [],
+      commands: [],
+      subscriptions: [{ nodeId: subscription.id }],
+      transport: 'http-sse',
+      authentication: 'external-provider',
+      trustedContextAdmission: 'server-validated',
+      browserCredentials: 'forbidden',
+      subscriptionLimits: { perPrincipal: 10, total: 100 },
+      routes: {
+        snapshots: '/queries/:query/snapshot',
+        subscriptions: '/queries/:query/subscribe',
+        streamReplay: '/streams/:subscription/replay',
+        streamSubscriptions: '/streams/:subscription/subscribe',
+        commandSubmission: '/commands/:command/submit',
+        commandProgress: '/commands/:command/progress',
+      },
+      resume: 'resumableInvalidation',
+      materialization: 'generatedDeployment',
+      authenticationSource: 'async () => ({ principal: { id: "reviewer" }, trustedContext: {}, authorizationVersion: "v1" })',
+      cursorSecret: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        name: 'gateway-cursor',
+        namespace: 'catalog',
+        key: 'secret',
+      },
+      deployment: {
+        namespace: 'catalog',
+        image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2',
+        replicas: 1,
+        port: 8080,
+      },
+    } as const;
+    const artifacts = await emitGeneratedApplicationReactive({
+      graph: reactiveGraph([
+        workflowHandler,
+        signalStream,
+        processor,
+        subscription,
+        gateway,
+      ] as unknown as ApplicationGraphNode[]),
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-signal-gateway-')),
+      entrypoint: import.meta.filename,
+    });
+    const artifact = artifacts.find((candidate) => candidate.kind === 'queryGateway');
+    const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
+    const generated = await readFile(
+      join(dirname(artifact?.sourcePath ?? ''), 'gateway.generated.ts'),
+      'utf8',
+    );
+
+    expect(source).toContain('applik8s://signals/review-decision.v1/operations/issuance.read');
+    expect(source).toContain('applik8s://signals/review-decision.v1/operations/approve');
+    expect(generated).toContain('createApplicationSignalGateway');
+    expect(generated).toContain("basePath: '/signals'");
+    expect(generated).toContain('createApplicationAuthorizedReplayableStream');
+    expect(generated).toContain('authorizeSignalIssuance');
+    expect(generated).toContain('applicationSignalIsActionable(signal)');
+    expect(generated).toContain('signalOperationTarget');
+    expect(generated).toContain('applicationPolicyAllowed: true');
+    expect(generated).toContain('"postId"');
+    expect(generated).not.toContain('streamAuthorize_review_decision');
+
+    const processorArtifact = artifacts.find(
+      (candidate) => candidate.kind === 'streamProcessorWorker',
+    );
+    const processorGenerated = await readFile(
+      join(
+        dirname(processorArtifact?.sourcePath ?? ''),
+        'stream-processor.generated.ts',
+      ),
+      'utf8',
+    );
+    expect(processorGenerated).toContain(
+      'createApplicationSignalIssuanceDecoder',
+    );
+    expect(processorGenerated).toContain(
+      'decodePayload: decodeSignalIssuance',
+    );
+    expect(processorGenerated).toContain("transport: 'event'");
+    expect(processorGenerated).toContain('APPLIK8S_SIGNAL_SUBJECT_DENIED');
+    expect(processorGenerated).toContain('application-signal-runtime');
+    expect(processorGenerated).toContain('terminalStatus');
+  }, 120_000);
+
+  it('guards capability-bearing projection queries without requiring a parallel signal subscription', async () => {
+    const signal = {
+      id: 'review-decision.v1',
+      name: 'review-decision',
+      version: 'v1',
+      actions: [{
+        name: 'approve',
+        schema: schema({
+          type: 'object',
+          properties: { comment: { type: 'string' } },
+          required: [],
+          additionalProperties: false,
+        }),
+      }],
+    } as const;
+    const referenceSchema = {
+      type: 'object',
+      properties: {
+        $type: { const: 'applik8s.signal/v1' },
+        contract: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string' },
+            version: { type: 'string' },
+          },
+          required: ['id', 'name', 'version'],
+        },
+        issuance: {
+          type: 'object',
+          properties: { id: { type: 'string' } },
+          required: ['id'],
+        },
+        expiresAt: { type: 'string' },
+      },
+      required: ['$type', 'contract', 'issuance', 'expiresAt'],
+    } as const;
+    const signalStream = {
+      id: 'stream.review-decision.v1',
+      kind: 'stream',
+      name: 'review-decision',
+      version: 'v1',
+      stability: 'stable',
+      payload: schema({
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          input: {
+            type: 'object',
+            properties: { postId: { type: 'string' } },
+            required: ['postId'],
+          },
+          signal: referenceSchema,
+          issuedAt: { type: 'string' },
+          expiresAt: { type: 'string' },
+        },
+        required: ['id', 'input', 'signal', 'issuedAt', 'expiresAt'],
+      }),
+      authority: 'postgres-outbox',
+      delivery: 'at-least-once',
+      replay: 'supported',
+      retention: { maxAgeSeconds: 86_400 },
+      partitioning: 'declared',
+      compatibility: 'versioned-schema',
+      authorization: 'application-defined',
+      database,
+      partitionSource: '(payload) => payload.id',
+      authorizationSource: '() => true',
+      signal,
+    } as const;
+    const workflowHandler = {
+      id: 'workflow-handler.publish-post-capability-query',
+      kind: 'workflowHandler',
+      name: 'publish-post-capability-query',
+      stability: 'stable',
+      signalBindings: [{
+        alias: 'ReviewDecision',
+        ...signal,
+        input: schema({
+          type: 'object',
+          properties: { postId: { type: 'string' } },
+          required: ['postId'],
+          additionalProperties: false,
+        }),
+      }],
+    } as const;
+    const provider = {
+      id: 'provider.analytical-database',
+      kind: 'provider',
+      name: 'AnalyticalDatabase',
+      stability: 'stable',
+      interface: 'AnalyticalDatabase',
+      implementation: 'clickhouse',
+      config: {
+        name: 'signal-analytics',
+        namespace: 'catalog',
+        database: 'analytics',
+        enabled: false,
+        credentialsSecret: {
+          name: 'signal-clickhouse',
+          namespace: 'catalog',
+        },
+      },
+    } as const;
+    const model = {
+      id: 'model.pending-review',
+      kind: 'model',
+      name: 'PendingReview',
+      stability: 'stable',
+      native: { artifact: { name: 'pending_reviews' } },
+      runtime: {
+        name: 'PendingReview',
+        tableName: 'pending_reviews',
+        provider: 'postgres',
+        database: 'catalog',
+        clusterName: 'catalog',
+        secretName: 'catalog-app',
+        secretKey: 'uri',
+        secretNamespace: 'catalog',
+        connectionEnvName: 'APPLIK8S_DATABASE_CATALOG_URL',
+        constraints: [],
+        indexes: [],
+        retention: { mode: 'retain' },
+      },
+    } as const;
+    const projection = {
+      id: 'projection.pending-review-capabilities',
+      kind: 'projection',
+      name: 'pending-review-capabilities',
+      stability: 'stable',
+      source: { nodeId: signalStream.id },
+      provider: {
+        interface: 'AnalyticalDatabase',
+        nodeId: provider.id,
+      },
+      storage: 'analytical',
+      rebuildable: true,
+      checkpoint: 'idempotent',
+      output: schema({
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          signal: referenceSchema,
+        },
+        required: ['id', 'signal'],
+      }),
+      capabilityFields: [{
+        path: 'signal',
+        kind: 'signalReference',
+        contract: {
+          id: signal.id,
+          name: signal.name,
+          version: signal.version,
+        },
+        visibility: 'same-as-issuance',
+        maxAgeSeconds: 86_400,
+      }],
+      eventIdentity: 'stable-source-event-id',
+      duplicateHandling: 'idempotent',
+      rebuild: 'full-replay',
+      handlerSource: '(event) => ({ id: event.id, signal: event.signal })',
+    } as const;
+    const query = {
+      id: 'query.reviews.pending.v1',
+      kind: 'query',
+      name: 'reviews.pending',
+      version: 'v1',
+      stability: 'stable',
+      input: schema({
+        type: 'object',
+        properties: {},
+        required: [],
+      }),
+      output: schema({
+        type: 'array',
+        items: projection.output.jsonSchema,
+      }),
+      reads: [{ model: { nodeId: model.id } }],
+      authorization: 'application-defined',
+      trustedContext: [],
+      budgets: {
+        timeoutMs: 1_000,
+        maxResultBytes: 10_000,
+        maxRows: 100,
+      },
+      snapshotResume: 'resumableInvalidation',
+      incremental: 'invalidation-requery',
+      cursor: 'opaque-query-version-context-scoped',
+      database,
+      projection: {
+        nodeId: projection.id,
+        storage: 'analytical',
+      },
+      authorizationSource: '() => true',
+      handlerSource: 'async () => []',
+    } as const;
+    const gateway = {
+      id: 'gateway.public',
+      kind: 'gateway',
+      name: 'public',
+      stability: 'stable',
+      queries: [{ nodeId: query.id }],
+      commands: [],
+      subscriptions: [],
+      transport: 'http-sse',
+      authentication: 'external-provider',
+      trustedContextAdmission: 'server-validated',
+      browserCredentials: 'forbidden',
+      subscriptionLimits: { perPrincipal: 10, total: 100 },
+      routes: {
+        snapshots: '/queries/:query/snapshot',
+        subscriptions: '/queries/:query/subscribe',
+        streamReplay: '/streams/:subscription/replay',
+        streamSubscriptions: '/streams/:subscription/subscribe',
+        commandSubmission: '/commands/:command/submit',
+        commandProgress: '/commands/:command/progress',
+      },
+      resume: 'resumableInvalidation',
+      materialization: 'generatedDeployment',
+      authenticationSource: 'async () => ({ principal: { id: "reviewer" }, trustedContext: {}, authorizationVersion: "v1" })',
+      cursorSecret: {
+        apiVersion: 'v1',
+        kind: 'Secret',
+        name: 'gateway-cursor',
+        namespace: 'catalog',
+        key: 'secret',
+      },
+      deployment: {
+        namespace: 'catalog',
+        image: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2',
+        replicas: 1,
+        port: 8080,
+      },
+    } as const;
+    const artifacts = await emitGeneratedApplicationReactive({
+      graph: reactiveGraph([
+        workflowHandler,
+        provider,
+        model,
+        signalStream,
+        projection,
+        query,
+        gateway,
+      ] as unknown as ApplicationGraphNode[]),
+      outDir: await mkdtemp(
+        join(tmpdir(), 'applik8s-signal-projection-query-'),
+      ),
+      entrypoint: import.meta.filename,
+    });
+    const artifact = artifacts.find(
+      (candidate) => candidate.kind === 'queryGateway',
+    );
+    const generated = await readFile(
+      join(dirname(artifact?.sourcePath ?? ''), 'gateway.generated.ts'),
+      'utf8',
+    );
+    expect(generated).toContain('authorizeOutputCapability:');
+    expect(generated).toContain(
+      'signalStore.read(capability.issuance.id)',
+    );
+    expect(generated).toContain('authorizeSignalOperation({');
+    expect(generated).toContain('createApplicationSignalGateway');
+    expect(generated).not.toContain(
+      'createApplicationStreamSubscriptionGateway({',
+    );
+  }, 120_000);
 
   it('executes mixed relational and Kubernetes queries in their bounded gateway with provider-aware multiplexing and least-privilege RBAC', async () => {
     const gatewayDatabase = { ...database, secretNamespace: '${schema.spec.namespace}' } as const;
@@ -294,6 +1204,7 @@ describe('generated v0.6 reactive workloads', () => {
     expect(source).toContain('APPLIK8S_KUBERNETES_QUERY_');
     expect(source).toContain('allowedNamespaces');
     expect(source).toContain('applik8s.task-query/v1alpha1');
+    expect(source).toContain('Applik8s Kubernetes query request failed');
     expect(generatedSource).toContain('proxyApplicationQueryMultiplex');
     expect(generatedSource).toContain('relationalQueryIds');
     expect(generatedSource).toContain('kubernetesQueryIds');
@@ -310,6 +1221,7 @@ describe('generated v0.6 reactive workloads', () => {
       spec: { template: { spec: {
         serviceAccountName: 'reactive-test-administration',
         containers: [expect.objectContaining({ env: expect.arrayContaining([
+          { name: 'APPLIK8S_APPLICATION_NAME', value: 'reactive-test' },
           { name: 'APPLIK8S_NAMESPACE', value: '${schema.spec.namespace}' },
           expect.objectContaining({ name: expect.stringMatching(/^APPLIK8S_KUBERNETES_QUERY_/), value: '${schema.spec.namespace}' }),
         ]) })],
@@ -319,12 +1231,12 @@ describe('generated v0.6 reactive workloads', () => {
 
   it('hydrates admitted context only inside generated server-side stream processors', async () => {
     const stream = { id: 'stream.cards.changed.v1', kind: 'stream', name: 'cards.changed', version: 'v1', stability: 'stable', payload: schema({ type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] }), authority: 'postgres-outbox', delivery: 'at-least-once', replay: 'supported', retention: { maxAgeSeconds: 3600 }, partitioning: 'declared', compatibility: 'versioned-schema', authorization: 'application-defined', database, partitionSource: '(payload) => payload.cardId', authorizationSource: '() => true' } as const;
-		const workflowProvider = { id: 'provider.workflow-engine', kind: 'provider', name: 'WorkflowEngine', stability: 'stable', interface: 'WorkflowEngine', implementation: 'hatchet', config: { namespace: 'catalog', provision: false, workerTokenSecret: { name: 'hatchet-worker', namespace: 'catalog' }, hostPort: 'hatchet.catalog.svc:7070', apiUrl: 'http://hatchet.catalog.svc:8080', tls: false } } as const;
+		const workflowProvider = { id: 'provider.workflow-engine', kind: 'provider', name: 'WorkflowEngine', stability: 'stable', interface: 'WorkflowEngine', implementation: 'hatchet', config: { name: 'logical-workflow-provider', namespace: 'catalog', provision: true, tls: false } } as const;
 		const inspectTask = { id: 'task.cards.inspect.v1', kind: 'task', name: 'cards.inspect.v1', stability: 'stable', contract: { name: 'cards.inspect', version: 'v1', input: schema({ type: 'object', properties: { cardId: { type: 'string' } }, required: ['cardId'] }), output: schema({ type: 'object', properties: { accepted: { type: 'boolean' } }, required: ['accepted'] }), errors: [] } } as const;
     const processor = {
       id: 'streamProcessor.card-timeline', kind: 'streamProcessor', name: 'card-timeline', stability: 'stable',
       enabled: false,
-      source: { nodeId: stream.id }, database, delivery: 'at-least-once', checkpoint: 'postgres', idempotency: 'source-event-id', failure: 'pause',
+      source: { nodeId: stream.id }, database, delivery: 'at-least-once', invocation: 'event', checkpoint: 'postgres', idempotency: 'source-event-id', failure: 'pause',
       retry: { mode: 'boundedExponentialBackoff', maxAttempts: 3, initialDelayMs: 25, maxDelayMs: 1_000, factor: 2 },
       budgets: { timeoutMs: 2_000, maxInputBytes: 64_000 },
       deployment: { replicas: 1, concurrency: 2, maxAckPending: 16, resources: { requests: { cpu: '50m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } }, disruption: { disabled: true } },
@@ -353,7 +1265,8 @@ describe('generated v0.6 reactive workloads', () => {
     expect(source).toContain('.principal?.id');
 		expect(generatedSource).toContain('workflowRuntime.run');
 		expect(generatedSource).toContain('context.idempotencyKey');
-		expect(generatedSource).toContain('causationId: context.event.id');
+		expect(generatedSource).toContain("causationId: event?.id ?? context.batch?.id");
+		expect(generatedSource).toContain("changeScopes: event.changeScopes");
 		expect(generatedSource).toContain('signal: context.signal');
 		expect(generatedSource).toContain('timeoutMs: 2000');
 		expect(generatedSource).not.toContain('result?.signal');
@@ -362,11 +1275,13 @@ describe('generated v0.6 reactive workloads', () => {
 		expect(generatedSource).toContain("return validateWorkflowValue");
 		expect(generatedSource).toContain("output, name, 'output'");
 		expect(artifact?.resources.find((resource) => resource.kind === 'Deployment')).toMatchObject({ spec: { template: { spec: { containers: [expect.objectContaining({ env: expect.arrayContaining([
-			{ name: 'HATCHET_CLIENT_TOKEN', valueFrom: { secretKeyRef: { name: 'hatchet-worker', key: 'HATCHET_CLIENT_TOKEN' } } },
+			{ name: 'HATCHET_CLIENT_TOKEN', valueFrom: { secretKeyRef: { name: 'hatchet-client-config', key: 'HATCHET_CLIENT_TOKEN' } } },
 			{ name: 'APPLIK8S_WORKFLOW_TOKEN_FILE', value: '/var/run/secrets/applik8s/workflow-token/token' },
+			{ name: 'HATCHET_CLIENT_HOST_PORT', value: 'hatchet-engine.catalog.svc:7070' },
+			{ name: 'HATCHET_CLIENT_API_URL', value: 'http://hatchet-api.catalog.svc:8080' },
 		]), volumeMounts: [{ name: 'workflow-token', mountPath: '/var/run/secrets/applik8s/workflow-token', readOnly: true }] })], volumes: [{
 			name: 'workflow-token',
-			secret: { secretName: 'hatchet-worker', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] },
+			secret: { secretName: 'hatchet-client-config', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] },
 		}] } } } });
     const consolidated = consolidateGeneratedApplicationReactiveResources({
       graphName: 'reactive-test',
@@ -395,7 +1310,7 @@ describe('generated v0.6 reactive workloads', () => {
 						],
 						volumes: [{
 							name: 'workflow-token',
-							secret: { secretName: 'hatchet-worker', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] },
+							secret: { secretName: 'hatchet-client-config', items: [{ key: 'HATCHET_CLIENT_TOKEN', path: 'token' }] },
 						}],
 					},
         },
@@ -423,6 +1338,13 @@ describe('generated v0.6 reactive workloads', () => {
     expect(source).toContain('applik8s:projection:cards');
     expect(source).toContain('internalConsumer');
     expect(source).not.toContain('projection-stream-authorization-proof');
+    const generated = await readFile(
+      join(dirname(artifact?.sourcePath ?? ''), 'projection.generated.ts'),
+      'utf8',
+    );
+    expect(generated).toContain('const createSource = () => createPostgresApplicationStream');
+    expect(generated).toContain('await source.close().catch(() => undefined)');
+    expect(generated).toContain('lastSuccessfulCycleAt');
     const consolidated = consolidateGeneratedApplicationReactiveResources({
       graphName: 'reactive-test',
       artifacts,
@@ -469,6 +1391,13 @@ describe('generated v0.6 reactive workloads', () => {
     const source = await readFile(artifact?.sourcePath ?? '', 'utf8');
     expect(source).toContain('APPLIK8S_VALKEY_HOST');
     expect(source).toContain('APPLIK8S_VALKEY_PORT');
+    const generated = await readFile(
+      join(dirname(artifact?.sourcePath ?? ''), 'projection.generated.ts'),
+      'utf8',
+    );
+    expect(generated).toContain('const createSource = () => createPostgresApplicationStream');
+    expect(generated).toContain('await source.close().catch(() => undefined)');
+    expect(generated).toContain('lastSuccessfulCycleAt');
     const serializedResources = JSON.stringify(artifact?.resources);
     expect(serializedResources).toContain('valkey.catalog.svc');
     expect(serializedResources).toContain('APPLIK8S_VALKEY_PORT');
@@ -559,6 +1488,19 @@ describe('generated v0.6 reactive workloads', () => {
     expect(JSON.stringify(selectedDeployment)).toContain('"value":"${schema.spec.providers.analytics.database}"');
   });
 });
+
+async function nativeQueryFixtureGraph(): Promise<ApplicationGraph> {
+  const discovered = await discoverApplicationGraph(
+    new URL('./fixtures/v06-native-query-app.ts', import.meta.url).pathname,
+    'nativeQueryApplication',
+  );
+  if (!discovered.ok) {
+    throw new Error(
+      `Native query fixture did not expose its ApplicationGraph: ${discovered.error.message}`,
+    );
+  }
+  return discovered.value;
+}
 
 function schema(jsonSchema: JsonObject) { return { kind: 'declared' as const, runtime: 'arktype' as const, jsonSchema }; }
 function reactiveGraph(nodes: readonly ApplicationGraphNode[]): ApplicationGraph { return { apiVersion: 'applik8s.appGraph/v1alpha1', kind: 'ApplicationGraph', metadata: { name: 'reactive-test', namespace: 'catalog' }, nodes, edges: [], providerRequirements: [], providerBindings: [], compatibility: { stablePublicApis: [], documentedInternalContracts: [], experimentalSurfaces: [], postV3Surfaces: [], labels: [] } }; }

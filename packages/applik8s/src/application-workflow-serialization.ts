@@ -2,6 +2,7 @@
 import type { ApplicationExpressionContract, ApplicationMessageContractSchema } from '@applik8s/core';
 import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
 import { instrumentedApplicationCallbackSource } from './application-callback.js';
+import { applicationCallbackSourceMatchesRuntime } from './application-callback-source-equivalence.js';
 import {
   analyzeApplicationServerRouteSource,
   applicationRouteSourceDependencies,
@@ -11,7 +12,8 @@ import {
   transpileApplicationCallbackExpression,
   unsupportedRouteFreeIdentifiers,
 } from './application-route-source.js';
-import type { TaskDefinition, WorkflowDefinition } from './dsl.js';
+import type { WorkflowDefinition } from './dsl.js';
+import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
 
 const workflowHandlerSerializationCache = new WeakMap<(...args: never[]) => unknown, Map<string, {
 	readonly source: string;
@@ -56,25 +58,51 @@ export function workflowHandlerSerialization(
   id: string,
   handler: (...args: never[]) => unknown,
   orchestrationOnly: boolean,
+  options: {
+    readonly extractCallsite?: boolean;
+    readonly injectedIdentifiers?: readonly string[];
+    readonly callsiteRegistrar?: 'task' | 'workflow';
+    readonly callsiteArgumentIndexes?: readonly number[];
+  } = {},
 ): {
   readonly source: string;
   readonly dependencies?: { readonly source: string; readonly resolveDir: string };
   readonly location?: { readonly file: string; readonly line: number; readonly column: number };
 } {
-	const cacheKey = `${kind}:${id}:${orchestrationOnly ? 'orchestration' : 'task'}`;
+	const cacheKey = `${kind}:${id}:${orchestrationOnly ? 'orchestration' : 'task'}:${options.extractCallsite === false ? 'generated' : 'authored'}:${[...(options.injectedIdentifiers ?? [])].sort().join(',')}`;
 	const cached = workflowHandlerSerializationCache.get(handler)?.get(cacheKey);
 	if (cached) return cached;
-  const instrumented = instrumentedApplicationCallbackSource(handler);
-  const extracted = instrumented
+  const runtimeSource = Function.prototype.toString.call(handler);
+  const instrumented = options.extractCallsite === false ? undefined : instrumentedApplicationCallbackSource(handler);
+  const extractedCandidates = options.extractCallsite === false || instrumented
+    ? []
+    : (options.callsiteArgumentIndexes ?? [2])
+      .map((argumentIndex) => extractApplicationCallArgumentSource(
+        options.callsiteRegistrar ?? kind,
+        argumentIndex,
+      ))
+      .filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
+  const candidate = instrumented
     ? { source: instrumented.source ? transpileApplicationCallbackExpression(instrumented.source) : Function.prototype.toString.call(handler), location: { file: instrumented.file, line: instrumented.line, column: instrumented.column } }
-    : extractApplicationCallArgumentSource(kind, 2);
-  const source = serializableHandlerSource(kind, id, extracted?.source ?? Function.prototype.toString.call(handler), orchestrationOnly);
-  const unsupported = unsupportedRouteFreeIdentifiers(analyzeApplicationServerRouteSource(source), new Set());
-  const dependencies = applicationRouteSourceDependencies({ id, method: 'POST', path: `/${kind}/${id}`, handlerSource: source, handlerSourceKind: extracted ? 'source' : 'functionToString', ...(extracted ? { handlerSourceLocation: extracted.location } : {}) }, unsupported, new Set());
+    : extractedCandidates.find((candidate) =>
+      applicationCallbackSourceMatchesRuntime(candidate.source, runtimeSource)
+    );
+  const extracted = candidate && (
+    instrumented
+    || applicationCallbackSourceMatchesRuntime(candidate.source, runtimeSource)
+  )
+    ? candidate
+    : undefined;
+  const source = serializableHandlerSource(kind, id, extracted?.source ?? runtimeSource, orchestrationOnly);
+  const injectedIdentifiers = new Set(options.injectedIdentifiers ?? []);
+  const unsupported = unsupportedRouteFreeIdentifiers(analyzeApplicationServerRouteSource(source), injectedIdentifiers);
+  const dependencies = applicationRouteSourceDependencies({ id, method: 'POST', path: `/${kind}/${id}`, handlerSource: source, handlerSourceKind: extracted ? 'source' : 'functionToString', ...(extracted ? { handlerSourceLocation: extracted.location } : {}) }, unsupported, injectedIdentifiers);
   if (unsupported.length > 0 && !dependencies) {
     throw new Error(serializedCallbackClosureMessage({ label: `app.${kind} ${id}`, identifiers: unsupported, ...(extracted ? { sourceLocation: extracted.location } : {}), guidance: 'Move reusable helpers and imports to module scope so Applik8s can include them in the generated worker, or pass dynamic data through the task/workflow input.' }));
   }
-  if (orchestrationOnly && dependencies?.source) assertWorkflowOrchestrationSource(id, dependencies.source);
+  if (orchestrationOnly && dependencies?.analysisSource) {
+    assertWorkflowOrchestrationSource(id, dependencies.analysisSource);
+  }
 	const serialized = { source, ...(dependencies ? { dependencies } : {}), ...(extracted ? { location: extracted.location } : {}) };
 	const entries = workflowHandlerSerializationCache.get(handler) ?? new Map();
 	entries.set(cacheKey, serialized);
@@ -101,7 +129,11 @@ function assertWorkflowOrchestrationSource(id: string, source: string): void {
     ['randomness', /\b(?:Math\.random|crypto\.randomUUID)\s*\(/], ['ambient timers', /\bsetTimeout\s*\(/],
   ] as const;
   const violations = forbidden.filter(([, pattern]) => pattern.test(source)).map(([name]) => name);
-  if (violations.length > 0) throw new Error(`workflow ${id} orchestration uses ${violations.join(', ')}, which is not durable orchestration. Move external effects into declared app.task(...) handlers and use context.now()/context.sleep().`);
+  if (violations.length > 0) throw new Error(
+    `workflow ${id} orchestration uses ${violations.join(', ')}, which is not durable orchestration. `
+    + 'Move external effects into context.step(...) or use the single-step workflow overload, '
+    + 'and use context.now()/context.sleep() for history-backed time.',
+  );
 }
 
 export function functionExpression(fn: (...args: never[]) => unknown, name: string): ApplicationExpressionContract {

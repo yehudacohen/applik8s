@@ -1,5 +1,5 @@
 // typecast-file-boundary: subscription gateway fixtures decode deliberately erased transport events through the validated public protocol boundary.
-import { type ApplicationReplayPage, createApplicationStreamSubscriptionGateway } from '@applik8s/applik8s';
+import { type ApplicationReplayPage, createApplicationAuthorizedReplayableStream, createApplicationStreamSubscriptionGateway } from '@applik8s/applik8s';
 import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
 import { describe, expect, test, vi } from 'vitest';
 import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
@@ -7,6 +7,48 @@ import { testApplicationPrincipal } from '../../../test-support/application-prin
 const cursorSecret = 'stream-subscription-test-secret-with-32-characters';
 
 describe('authenticated public stream subscriptions', () => {
+  test('advances across hidden exact-instance events without leaking or stalling', async () => {
+    const pages = [
+      {
+        items: [
+          event(1, 'hidden-1'),
+          event(2, 'visible-1'),
+        ],
+        nextSequence: 2,
+        exhausted: false,
+        retentionFloor: 0,
+      },
+      {
+        items: [
+          event(3, 'hidden-2'),
+          event(4, 'visible-2'),
+        ],
+        nextSequence: 4,
+        exhausted: true,
+        retentionFloor: 0,
+      },
+    ];
+    let page = 0;
+    const filtered = createApplicationAuthorizedReplayableStream({
+      source: {
+        async read() {
+          return pages[page++]!;
+        },
+      },
+      authorize: async (candidate) =>
+        String(Reflect.get(candidate.payload, 'id')).startsWith('visible'),
+    });
+
+    await expect(filtered.read(0, 2)).resolves.toMatchObject({
+      items: [
+        expect.objectContaining({ sequence: 2, payload: { id: 'visible-1' } }),
+        expect.objectContaining({ sequence: 4, payload: { id: 'visible-2' } }),
+      ],
+      nextSequence: 4,
+      exhausted: true,
+    });
+  });
+
   test('replays through an opaque identity/context-scoped cursor and closes its source', async () => {
     const close = vi.fn(async () => undefined);
     const read = vi.fn(async (): Promise<ApplicationReplayPage<object>> => ({
@@ -58,7 +100,7 @@ describe('authenticated public stream subscriptions', () => {
     await expect(denied.handle(request('/streams/card-events/replay', {}))).resolves.toMatchObject({ status: 403 });
   });
 
-  test('pins canonical operation authority and rejects a cursor after its authority revision changes', async () => {
+  test('pins canonical operation authority and resumes after unrelated global authority advancement', async () => {
     const source = { async read() { return { items: [], nextSequence: 0, exhausted: true, retentionFloor: 0 }; } };
     const first = fixture(source, { authorityRevision: 'authority-1' });
     const response = await first.handle(request('/streams/card-events/replay', {}));
@@ -76,11 +118,32 @@ describe('authenticated public stream subscriptions', () => {
     expect(cursorBody.applicationBinding).toMatch(/^[A-Za-z0-9_-]{43}$/);
 
     const changed = fixture(source, { authorityRevision: 'authority-2' });
+    await expect(changed.handle(request('/streams/card-events/replay', { cursor }))).resolves.toMatchObject({ status: 200 });
+  });
+
+  test('keeps receipt-less cursors fail-closed across principal authority changes', async () => {
+    const source = { async read() { return { items: [], nextSequence: 0, exhausted: true, retentionFloor: 0 }; } };
+    const first = fixture(source, { principalAuthorityRevision: 'membership-1' });
+    const response = await first.handle(request('/streams/card-events/replay', {}));
+    const cursor = (await response?.json() as { readonly cursor: string }).cursor;
+
+    const changed = fixture(source, { principalAuthorityRevision: 'membership-2' });
     await expect(changed.handle(request('/streams/card-events/replay', { cursor }))).resolves.toMatchObject({ status: 400 });
   });
 });
 
-function fixture(source: { read(after: number, limit: number): Promise<ApplicationReplayPage<object>>; close?(): Promise<void> }, options: { readonly principalId?: string; readonly authorize?: boolean; readonly authorityRevision?: string } = {}) {
+function event(sequence: number, id: string) {
+  return {
+    id: `event-${sequence}`,
+    stream: { name: 'signals', version: 'v1' },
+    sequence,
+    partitionKey: id,
+    recordedAt: '2026-07-15T00:00:00.000Z',
+    payload: { id },
+  };
+}
+
+function fixture(source: { read(after: number, limit: number): Promise<ApplicationReplayPage<object>>; close?(): Promise<void> }, options: { readonly principalId?: string; readonly authorize?: boolean; readonly authorityRevision?: string; readonly principalAuthorityRevision?: string } = {}) {
   return createApplicationStreamSubscriptionGateway({
     subscriptions: [{
       name: 'card-events',
@@ -97,12 +160,14 @@ function fixture(source: { read(after: number, limit: number): Promise<Applicati
         authorize: async () => true,
         project: () => { throw new Error('not used by replay fixture'); },
         subscribe: () => { throw new Error('not used by replay fixture'); },
+        onEvent: () => { throw new Error('not used by replay fixture'); },
+        onBatch: () => { throw new Error('not used by replay fixture'); },
         process: () => { throw new Error('not used by replay fixture'); },
       },
       authorize: async () => options.authorize ?? true,
       open: () => source,
     }],
-    authenticate: async () => ({ principal: testApplicationPrincipal(options.principalId ?? 'user-1', { authorityRevision: 'membership-1' }), contextDigest: 'context-private' }),
+    authenticate: async () => ({ principal: testApplicationPrincipal(options.principalId ?? 'user-1', { authorityRevision: options.principalAuthorityRevision ?? 'membership-1' }), contextDigest: 'context-private' }),
     ...(options.authorityRevision ? {
       authorizeOperation: async ({ identity, inputDigest, trustedContextDigest }) => streamReceipt(
         identity.principal.id,

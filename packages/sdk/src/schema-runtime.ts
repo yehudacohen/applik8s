@@ -201,6 +201,16 @@ function toDraft7Subset(schema: JsonObject): JsonObject {
   if (isJsonObject(normalized.additionalProperties)) {
     normalized.additionalProperties = toDraft7Subset(normalized.additionalProperties);
   }
+  for (const keyword of ['anyOf', 'oneOf', 'allOf'] as const) {
+    if (Array.isArray(normalized[keyword])) {
+      normalized[keyword] = normalized[keyword].map((branch) =>
+        isJsonObject(branch) ? toDraft7Subset(branch) : branch
+      );
+    }
+  }
+  if (isJsonObject(normalized.not)) {
+    normalized.not = toDraft7Subset(normalized.not);
+  }
   if (normalized.type === undefined) {
     const enumType = scalarEnumType(normalized.enum);
     if (enumType) {
@@ -269,8 +279,33 @@ function schemaRefName(ref: RuntimeSchemaSource<object>['ref']): string {
 }
 
 function validateJsonValue(value: JsonValue, schema: JsonObject, path: string): readonly string[] {
+  const anyOf = readSchemaArray(schema, 'anyOf');
+  if (anyOf) {
+    const matches = anyOf.filter((branch) => validateJsonValue(value, branch, path).length === 0);
+    if (matches.length === 0) return [`${path} must match at least one anyOf branch.`];
+  }
+
+  const oneOf = readSchemaArray(schema, 'oneOf');
+  if (oneOf) {
+    const matches = oneOf.filter((branch) => validateJsonValue(value, branch, path).length === 0);
+    if (matches.length !== 1) return [`${path} must match exactly one oneOf branch; matched ${matches.length}.`];
+  }
+
+  const allOf = readSchemaArray(schema, 'allOf');
+  if (allOf) {
+    for (const branch of allOf) {
+      const errors = validateJsonValue(value, branch, path);
+      if (errors.length > 0) return errors;
+    }
+  }
+
+  const excluded = readSchema(schema, 'not');
+  if (excluded && validateJsonValue(value, excluded, path).length === 0) {
+    return [`${path} must not match the excluded schema.`];
+  }
+
   if (value === null) {
-    return schema.nullable === true ? [] : [`${path} must not be null.`];
+    return schema.nullable === true || schema.type === 'null' ? [] : [`${path} must not be null.`];
   }
 
   const enumValues = readArray(schema, 'enum');
@@ -388,8 +423,13 @@ function unsupportedJsonSchemaDiagnostics(schema: JsonObject, path: string) {
     }
   }
 
-  if ('oneOf' in schema || 'anyOf' in schema || 'allOf' in schema || 'not' in schema) {
-    diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path} uses composition keywords that this SDK slice does not validate.` });
+  for (const keyword of ['oneOf', 'anyOf', 'allOf'] as const) {
+    if (keyword in schema && readSchemaArray(schema, keyword) === undefined) {
+      diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.${keyword} must be a non-empty array of schema objects.` });
+    }
+  }
+  if ('not' in schema && readSchema(schema, 'not') === undefined) {
+    diagnostics.push({ severity: 'warning', code: 'SCHEMA_UNSUPPORTED', message: `${path}.not must be a schema object.` });
   }
 
   const type = schema.type;
@@ -464,6 +504,18 @@ function unsupportedJsonSchemaDiagnostics(schema: JsonObject, path: string) {
   if (additionalPropertiesSchema) {
     diagnostics.push(...unsupportedJsonSchemaDiagnostics(additionalPropertiesSchema, `${path}.*`));
   }
+  for (const keyword of ['oneOf', 'anyOf', 'allOf'] as const) {
+    const branches = readSchemaArray(schema, keyword);
+    if (branches) {
+      for (const [index, branch] of branches.entries()) {
+        diagnostics.push(...unsupportedJsonSchemaDiagnostics(branch, `${path}.${keyword}[${index}]`));
+      }
+    }
+  }
+  const excluded = readSchema(schema, 'not');
+  if (excluded) {
+    diagnostics.push(...unsupportedJsonSchemaDiagnostics(excluded, `${path}.not`));
+  }
 
   return diagnostics;
 }
@@ -473,6 +525,7 @@ function schemaDiagnostic(message: string): Diagnostic {
 }
 
 function matchesJsonSchemaType(value: JsonValue, type: string): boolean {
+  if (type === 'null') return value === null;
   switch (type) {
     case 'object':
       return isJsonObject(value);
@@ -492,7 +545,7 @@ function matchesJsonSchemaType(value: JsonValue, type: string): boolean {
 }
 
 function isSupportedJsonSchemaType(type: string): boolean {
-  return type === 'object' || type === 'array' || type === 'string' || type === 'number' || type === 'integer' || type === 'boolean';
+  return type === 'object' || type === 'array' || type === 'string' || type === 'number' || type === 'integer' || type === 'boolean' || type === 'null';
 }
 
 function readString(schema: JsonObject, key: string): string | undefined {
@@ -528,6 +581,16 @@ function readStringArray(schema: JsonObject, key: string): readonly string[] | u
 function readSchema(schema: JsonObject, key: string): JsonObject | undefined {
   const value = schema[key];
   return isJsonObject(value) ? value : undefined;
+}
+
+function readSchemaArray(
+  schema: JsonObject,
+  key: 'oneOf' | 'anyOf' | 'allOf',
+): readonly JsonObject[] | undefined {
+  const value = schema[key];
+  return Array.isArray(value) && value.length > 0 && value.every(isJsonObject)
+    ? value
+    : undefined;
 }
 
 function readSchemaMap(schema: JsonObject, key: string): Readonly<Record<string, JsonObject>> | undefined {

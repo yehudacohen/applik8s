@@ -38,16 +38,21 @@ export function createPostgresApplicationConversationStore(
       await prepare();
       const rows = await options.sql.unsafe(
         `INSERT INTO ${tables.conversations}
-          (id, principal_scope, revision, created_at, updated_at)
-         VALUES ($1, $2, $3, $4::timestamptz, $5::timestamptz)
+          (id, principal_scope, title, revision, created_at, updated_at,
+           archived_at, retention_until)
+         VALUES ($1, $2, $3, $4, $5::timestamptz, $6::timestamptz,
+                 $7::timestamptz, $8::timestamptz)
          ON CONFLICT (id) DO NOTHING
          RETURNING *`,
         [
           conversation.id,
           conversation.principalScope,
+          conversation.title ?? null,
           conversation.revision,
           conversation.createdAt,
           conversation.updatedAt,
+          conversation.archivedAt ?? null,
+          conversation.retentionUntil ?? null,
         ],
       );
       const created = conversationRecord(rows[0]);
@@ -67,6 +72,24 @@ export function createPostgresApplicationConversationStore(
             `SELECT * FROM ${tables.conversations}
              WHERE id = $1 AND principal_scope = $2`,
             [id, principalScope],
+          )
+        )[0],
+      );
+    },
+
+    async getMessage(input) {
+      await prepare();
+      return messageRecord(
+        (
+          await options.sql.unsafe(
+            `SELECT message.*, message.content::text AS content_json
+             FROM ${tables.messages} AS message
+             JOIN ${tables.conversations} AS conversation
+               ON conversation.id = message.conversation_id
+             WHERE message.id = $1
+               AND message.conversation_id = $2
+               AND conversation.principal_scope = $3`,
+            [input.id, input.conversationId, input.principalScope],
           )
         )[0],
       );
@@ -99,13 +122,13 @@ export function createPostgresApplicationConversationStore(
              invocation_id, created_at)
            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::timestamptz)
            ON CONFLICT (id) DO NOTHING
-           RETURNING *`,
+           RETURNING *, content::text AS content_json`,
           [
             input.message.id,
             input.conversationId,
             conversation.revision,
             input.message.role,
-            JSON.stringify(input.message.content),
+            transaction.json(input.message.content),
             input.message.state ?? 'committed',
             input.message.invocationId ?? null,
             input.message.createdAt,
@@ -126,7 +149,7 @@ export function createPostgresApplicationConversationStore(
       assertLimit(input.limit);
       return (
         await options.sql.unsafe(
-          `SELECT message.*
+          `SELECT message.*, message.content::text AS content_json
            FROM ${tables.messages} AS message
            JOIN ${tables.conversations} AS conversation
              ON conversation.id = message.conversation_id
@@ -175,12 +198,26 @@ export function createPostgresApplicationConversationStore(
       return created;
     },
 
+    async getRun(id, principalScope) {
+      await prepare();
+      return runRecord(
+        (
+          await options.sql.unsafe(
+            `SELECT * FROM ${tables.runs}
+             WHERE id = $1 AND principal_scope = $2`,
+            [id, principalScope],
+          )
+        )[0],
+      );
+    },
+
     async transitionRun(input) {
       await prepare();
       assertRunTransition(input.from, input.to);
       const rows = await options.sql.unsafe(
         `UPDATE ${tables.runs}
-         SET status = $4, updated_at = $5::timestamptz
+         SET status = $4, updated_at = $5::timestamptz,
+             terminal_reason = $6
          WHERE id = $1 AND principal_scope = $2 AND status = $3
          RETURNING *`,
         [
@@ -189,6 +226,7 @@ export function createPostgresApplicationConversationStore(
           input.from,
           input.to,
           input.updatedAt,
+          input.terminalReason ?? null,
         ],
       );
       const transitioned = runRecord(rows[0]);
@@ -230,19 +268,50 @@ export function createPostgresApplicationConversationStore(
           `INSERT INTO ${tables.events}
             (id, run_id, sequence, type, payload, visibility, created_at)
            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::timestamptz)
-           RETURNING *`,
+           RETURNING *, payload::text AS payload_json`,
           [
             `${input.runId}:${sequence}`,
             input.runId,
             sequence,
             input.event.type,
-            JSON.stringify(input.event.payload),
+            transaction.json(input.event.payload),
             input.event.visibility,
             input.event.createdAt,
           ],
         );
         return required(runEventRecord(rows[0]), 'run event');
       });
+    },
+
+    async getRunEvent(input) {
+      await prepare();
+      return runEventRecord(
+        (
+          await options.sql.unsafe(
+            `SELECT event.*, event.payload::text AS payload_json
+             FROM ${tables.events} AS event
+             JOIN ${tables.runs} AS run ON run.id = event.run_id
+             WHERE event.run_id = $1
+               AND run.principal_scope = $2
+               AND event.sequence = $3`,
+            [input.runId, input.principalScope, input.sequence],
+          )
+        )[0],
+      );
+    },
+
+    async getRunEventFrontier(runId, principalScope) {
+      await prepare();
+      const row = (
+        await options.sql.unsafe(
+          `SELECT COALESCE(MAX(event.sequence), 0) AS sequence
+           FROM ${tables.runs} AS run
+           LEFT JOIN ${tables.events} AS event ON event.run_id = run.id
+           WHERE run.id = $1 AND run.principal_scope = $2`,
+          [runId, principalScope],
+        )
+      )[0];
+      return numberValue(row?.sequence);
     },
 
     async listRunEvents(input) {
@@ -253,7 +322,7 @@ export function createPostgresApplicationConversationStore(
         : '';
       return (
         await options.sql.unsafe(
-          `SELECT event.*
+          `SELECT event.*, event.payload::text AS payload_json
            FROM ${tables.events} AS event
            JOIN ${tables.runs} AS run ON run.id = event.run_id
            WHERE event.run_id = $1
@@ -301,10 +370,19 @@ async function prepareConversationStore(
     `CREATE TABLE IF NOT EXISTS ${tables.conversations} (
       id text PRIMARY KEY,
       principal_scope text NOT NULL,
+      title text,
       revision bigint NOT NULL DEFAULT 0,
       created_at timestamptz NOT NULL,
-      updated_at timestamptz NOT NULL
+      updated_at timestamptz NOT NULL,
+      archived_at timestamptz,
+      retention_until timestamptz
     )`,
+  );
+  await sql.unsafe(
+    `ALTER TABLE ${tables.conversations}
+     ADD COLUMN IF NOT EXISTS title text,
+     ADD COLUMN IF NOT EXISTS archived_at timestamptz,
+     ADD COLUMN IF NOT EXISTS retention_until timestamptz`,
   );
   await sql.unsafe(
     `CREATE TABLE IF NOT EXISTS ${tables.messages} (
@@ -328,8 +406,13 @@ async function prepareConversationStore(
       agent_run_id text,
       invocation_id text,
       started_at timestamptz NOT NULL,
-      updated_at timestamptz NOT NULL
+      updated_at timestamptz NOT NULL,
+      terminal_reason text
     )`,
+  );
+  await sql.unsafe(
+    `ALTER TABLE ${tables.runs}
+     ADD COLUMN IF NOT EXISTS terminal_reason text`,
   );
   await sql.unsafe(
     `CREATE TABLE IF NOT EXISTS ${tables.events} (
@@ -351,9 +434,12 @@ function conversationRecord(
   if (!row) return undefined;
   const id = stringValue(row.id);
   const principalScope = stringValue(row.principal_scope);
+  const title = stringValue(row.title);
   const revision = numberValue(row.revision);
   const createdAt = isoValue(row.created_at);
   const updatedAt = isoValue(row.updated_at);
+  const archivedAt = isoValue(row.archived_at);
+  const retentionUntil = isoValue(row.retention_until);
   if (!id || !principalScope || revision < 0 || !createdAt || !updatedAt) {
     throw new Error('PostgreSQL returned an invalid conversation row.');
   }
@@ -361,9 +447,12 @@ function conversationRecord(
     apiVersion: 'applik8s.aiConversation/v1alpha1',
     id,
     principalScope,
+    ...(title ? { title } : {}),
     revision,
     createdAt,
     updatedAt,
+    ...(archivedAt ? { archivedAt } : {}),
+    ...(retentionUntil ? { retentionUntil } : {}),
   };
 }
 
@@ -377,6 +466,7 @@ function messageRecord(
   const role = row.role;
   const state = row.state;
   const createdAt = isoValue(row.created_at);
+  const content = postgresJsonValue(row.content_json, row.content);
   if (
     !id
     || !conversationId
@@ -384,20 +474,22 @@ function messageRecord(
     || !isRole(role)
     || !isMessageState(state)
     || !createdAt
-    || !isJson(row.content)
+    || !isJson(content)
   ) {
     throw new Error('PostgreSQL returned an invalid conversation message row.');
   }
   const invocationId = stringValue(row.invocation_id);
+  const terminalReason = stringValue(row.terminal_reason);
   return {
     apiVersion: 'applik8s.aiMessage/v1alpha1',
     id,
     conversationId,
     revision,
     role,
-    content: row.content,
+    content,
     state,
     ...(invocationId ? { invocationId } : {}),
+    ...(terminalReason ? { terminalReason } : {}),
     createdAt,
   };
 }
@@ -446,13 +538,14 @@ function runEventRecord(
   const type = stringValue(row.type);
   const visibility = row.visibility;
   const createdAt = isoValue(row.created_at);
+  const payload = postgresJsonValue(row.payload_json, row.payload);
   if (
     !runId
     || sequence < 1
     || !type
     || !isEventVisibility(visibility)
     || !createdAt
-    || !isJsonObject(row.payload)
+    || !isJsonObject(payload)
   ) {
     throw new Error('PostgreSQL returned an invalid conversation run event.');
   }
@@ -461,7 +554,7 @@ function runEventRecord(
     runId,
     sequence,
     type,
-    payload: row.payload,
+    payload,
     visibility,
     createdAt,
   };
@@ -582,4 +675,22 @@ function isJsonObject(
     && !Array.isArray(value)
     && Object.values(value as Record<string, unknown>).every(isJson)
   );
+}
+
+/**
+ * PostgreSQL JSON codecs vary between supported clients and runtimes. Queries
+ * therefore project an unambiguous `jsonb::text` companion and decode it at
+ * this boundary instead of guessing whether the driver's primary column is
+ * already hydrated.
+ */
+function postgresJsonValue(
+  encoded: unknown,
+  hydrated: unknown,
+): unknown {
+  if (typeof encoded !== 'string') return hydrated;
+  try {
+    return JSON.parse(encoded) as unknown;
+  } catch {
+    throw new Error('PostgreSQL returned malformed JSON data.');
+  }
 }

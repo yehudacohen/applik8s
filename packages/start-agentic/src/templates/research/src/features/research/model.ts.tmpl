@@ -1,0 +1,58 @@
+import { AI } from '@applik8s/ai';
+import { module, search } from '@applik8s/applik8s';
+import { chat } from '@tanstack/ai';
+import { application } from '../../app';
+import { inference } from '../../providers';
+import { ResearchNote as ResearchNoteTable } from './schema';
+
+const research = module(
+  'research',
+  {
+    schema: { ResearchNote: ResearchNoteTable },
+  },
+  (application) => {
+      const ResearcherIdentity = application.serviceIdentity('researcher');
+      const FastModel = AI.model('fast', {
+        inference,
+        capabilities: [AI.chat, AI.tools, AI.streaming],
+      });
+      const ResearchNotes = ResearchNoteTable.index(
+        'research-notes',
+        search.text(ResearchNoteTable.body, { boost: 2 }).as('body'),
+        search.filter(ResearchNoteTable.createdAt).as('createdAt'),
+      );
+      const Researcher = application.agent(
+        'researcher',
+        {
+          identity: ResearcherIdentity,
+          model: FastModel,
+          instructions: 'Help the user organize research notes with explicit evidence.',
+          tools: [ResearchNoteTable.create, ResearchNotes.search],
+        },
+        async (request, context) => chat({
+          adapter: context.tanstack.adapter,
+          messages: request.messages,
+          threadId: request.threadId,
+          runId: context.runId,
+          tools: context.tanstack.tools,
+          context: context.tanstack.execution,
+        }),
+      );
+      ResearcherIdentity.can(ResearchNoteTable.create, ResearchNotes.search);
+      return {
+        ResearchNote: ResearchNoteTable,
+        ResearcherIdentity,
+        FastModel,
+        Researcher,
+        ResearchNotes,
+      };
+  },
+);
+
+export const {
+  ResearchNote,
+  ResearcherIdentity,
+  FastModel,
+  Researcher,
+  ResearchNotes,
+} = application.include(research);

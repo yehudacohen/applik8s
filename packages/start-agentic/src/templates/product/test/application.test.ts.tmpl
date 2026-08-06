@@ -1,0 +1,71 @@
+import { applicationGraphFor } from '@applik8s/applik8s';
+import { AgenticStarter } from '@applik8s/start-agentic';
+import { describe, expect, it } from 'vitest';
+import {
+  Note,
+  NoteList,
+  NotesAssistant,
+  application,
+} from '../src/application';
+
+describe('generated application', () => {
+  it('discovers one typed model, view, agent, and explicit authority graph', () => {
+    const graph = applicationGraphFor(application.composition);
+
+    expect(Note.create).toBeTypeOf('function');
+    expect(NoteList).toBeTypeOf('function');
+    expect(NotesAssistant).toMatchObject({
+      kind: 'applicationAgent',
+      name: 'notes-assistant',
+    });
+    expect(NotesAssistant.handler).toBeTypeOf('function');
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'model', id: 'model.note' }),
+      expect.objectContaining({ kind: 'aiAgent', name: 'notes-assistant' }),
+    ]));
+    expect(graph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'authorityManifest',
+        manifest: expect.objectContaining({
+          grants: expect.arrayContaining([expect.any(Object)]),
+        }),
+      }),
+    ]));
+  });
+
+  it('validates model input and the deterministic Starter tool fixture', () => {
+    const fixture = AgenticStarter.inference().fixture;
+    const toolInput = fixture.tool?.input;
+
+    expect(Note.$model.schema.insert({ body: 'A typed note' })).not.toHaveProperty(
+      'problems',
+    );
+    expect(toolInput).toEqual({
+      body: 'Starter tool-created note.',
+    });
+    expect(Note.$model.schema.insert(toolInput ?? {})).not.toHaveProperty(
+      'problems',
+    );
+  });
+
+  it('does not mistake transport reachability for anonymous authority', () => {
+    const graph = applicationGraphFor(application.composition);
+    const manifest = graph?.nodes.find(
+      (node) => node.kind === 'authorityManifest',
+    );
+
+    expect(Note.create.authority).toMatchObject({
+      classification: 'assigned',
+      permissionIds: expect.arrayContaining([expect.any(String)]),
+    });
+    expect(manifest).toMatchObject({
+      kind: 'authorityManifest',
+      manifest: {
+        roles: expect.arrayContaining([
+          expect.objectContaining({ name: 'authenticated' }),
+        ]),
+      },
+    });
+    expect(JSON.stringify(manifest)).not.toContain('"name":"anonymous"');
+  });
+});

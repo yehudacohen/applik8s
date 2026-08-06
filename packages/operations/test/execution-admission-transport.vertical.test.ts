@@ -1,3 +1,4 @@
+// typecast-file-boundary: Admission tests deliberately inspect signed transport fixtures after verification.
 import { createHash } from 'node:crypto';
 import type { ApplicationRequestAdmission } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';

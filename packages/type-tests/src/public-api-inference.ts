@@ -1,5 +1,8 @@
 import type { Applik8sTypeKroAdapterApi as TopLevelTypeKroAdapterApi } from '@applik8s/applik8s';
-import { AnalyticalDatabase, Analytics, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationSecretBinding, type ApplicationTaskBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, applicationModelFacet, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, Database, DnsPublication, app as defineApplication, EventSource, event, HttpExposure, IndexStore, ObjectStorage, Queue, Secret, TransactionalDatabase, task, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { AnalyticalDatabase, Analytics, type ApplicationAnalyticalProjectionOptions, type ApplicationConfigBinding, type ApplicationExposureBinding, type ApplicationJobBinding, type ApplicationModelBinding, type ApplicationModelObject, type ApplicationOAuthClientIdentityBinding, type ApplicationResourceControllerOptions, type ApplicationResourceEventHandler, type ApplicationSecretBinding, type ApplicationTransactionalDatabaseProvider, type ApplicationWorkflowBinding, applicationModelFacet, sdk as appSdk, Certificate, CounterStore, CredentialStore, command, Database, DnsPublication, app as defineApplication, EventSource, event, HttpExposure, IndexStore, ObjectStorage, Queue, Secret, TransactionalDatabase, WorkflowEngine, workflow } from '@applik8s/applik8s';
+// @ts-expect-error The application-centric v0.6 controller-options name was removed rather than aliased.
+import type { ApplicationReconcileOptions } from '@applik8s/applik8s';
+import * as applicationDsl from '@applik8s/applik8s/dsl';
 import { entity as appEntity, type as appSchemaType } from '@applik8s/applik8s/dsl';
 import type {
   ApplicationDurableStatusOwnershipContract,
@@ -95,6 +98,9 @@ declare const imageManifest: OperatorManifest;
 declare const tenantGraph: TypeKroGraph<TenantGraphSpec, TenantGraphStatus>;
 declare const billing: CapabilityClient<ChargeResponse>;
 declare const expectTypeUsage: (...values: readonly unknown[]) => void;
+declare const resourceControllerOptions: ApplicationResourceControllerOptions;
+declare const resourceEventHandler: ApplicationResourceEventHandler<ImageSpec, ImageStatus>;
+expectTypeUsage(resourceControllerOptions, resourceEventHandler);
 
 const ImageJob = sdk.crd({
   apiVersion: 'media.applik8s.dev/v1alpha1',
@@ -118,7 +124,7 @@ const AccountChanged = event('account.changed.v1', {
   payload: appSchemaType({ email: 'string', displayName: 'string' }),
 });
 
-const ProvisionAccount = task('account.provision.v1', {
+const ProvisionAccount = workflow('account.provision.v1', {
   input: appSchemaType({ accountId: 'string', requestId: 'string' }),
   output: appSchemaType({ endpoint: 'string' }),
   errors: { providerUnavailable: appSchemaType({ retryAfterSeconds: 'number' }) },
@@ -128,7 +134,6 @@ const OnboardAccount = workflow('account.onboard.v1', {
   input: appSchemaType({ accountId: 'string', requestId: 'string' }),
   output: appSchemaType({ endpoint: 'string' }),
   errors: { rejected: appSchemaType({ reason: 'string' }) },
-  signals: { approval: appSchemaType({ approved: 'boolean' }) },
 });
 
 const accountTransactionalDatabase = Database.postgres({
@@ -149,6 +154,38 @@ const profileApplication = defineApplication('profile-types', {
   spec: ProfileInstallation,
   status: appSchemaType({ ready: 'boolean' }),
 });
+const releaseAutomation: ApplicationOAuthClientIdentityBinding =
+  profileApplication.oauthClient('release-automation', {
+    issuer: 'https://identity.example.test',
+  });
+expectTypeUsage(releaseAutomation.identity, releaseAutomation.clientId);
+// @ts-expect-error Resource.on.reconcile(...) is the sole v0.7 public reconciliation surface.
+void profileApplication.reconcile;
+// @ts-expect-error Resource.on.* owns resource behavior; Application has no parallel event registrar.
+void profileApplication.on;
+const typedHttp = profileApplication.http('public-api', {
+  namespace: 'application-system',
+  replicas: 2,
+});
+const typedHttpRoute = typedHttp.post(
+  'echo',
+  '/echo',
+  {
+    input: appSchemaType({ message: 'string' }),
+    output: appSchemaType({ message: 'string' }),
+  },
+  async ({ input }, context) => {
+    const principalId: string = context.principal.id;
+    expectTypeUsage(principalId);
+    return { message: input.message };
+  },
+);
+const typedHttpResult: Promise<{ message: string }> = typedHttpRoute({
+  message: 'hello',
+});
+expectTypeUsage(typedHttpResult);
+// @ts-expect-error app.http is function-native and has no wrapping route callback.
+profileApplication.http('legacy-http', (_server) => {});
 const PrimaryDatabase = TransactionalDatabase.named('primary');
 const profileDeployment = profileApplication.profile(
   profileApplication.installation.spec,
@@ -502,54 +539,39 @@ appSdk.kubernetesComposition({
       retention: { mode: 'retain' },
     },
   });
-  const accountModelBinding: ApplicationModelBinding<AccountSpec, AccountStatus> = Account;
-  const provisionAccount: ApplicationTaskBinding<{ accountId: string; requestId: string }, { endpoint: string }> = app.task(ProvisionAccount, { idempotencyKey: (input) => input.requestId }, async (input, context) => {
+const accountModelBinding: ApplicationModelBinding<AccountSpec, AccountStatus> = Account;
+  // @ts-expect-error app.task(...) is intentionally absent from the v0.7 public API.
+  void app.task;
+  // @ts-expect-error task(...) is an internal provider-lowering detail, not a public DSL declaration.
+  void applicationDsl.task;
+  const provisionAccount: ApplicationWorkflowBinding<{ accountId: string; requestId: string }, { endpoint: string }> = app.workflow(ProvisionAccount, { idempotencyKey: (input) => input.requestId }, async (input, context) => {
     if (input.accountId === 'unavailable') context.fail('providerUnavailable', { retryAfterSeconds: 5 });
     if (input.accountId === 'type-test-only') {
-      // @ts-expect-error durable error names come from the task definition.
+      // @ts-expect-error durable error names come from the workflow definition.
       context.fail('missingError', {});
       // @ts-expect-error durable error payloads are schema-directed.
       context.fail('providerUnavailable', { retryAfterSeconds: 'later' });
     }
     return { endpoint: `https://${input.accountId}.example.test` };
   });
-  const onboardAccount: ApplicationWorkflowBinding<{ accountId: string; requestId: string }, { endpoint: string }> = app.workflow(OnboardAccount, { tasks: { provisionAccount } }, async (input, context) => {
-    const result = await context.task('provisionAccount', input, { idempotencyKey: input.requestId });
+  const onboardAccount: ApplicationWorkflowBinding<{ accountId: string; requestId: string }, { endpoint: string }> = app.workflow(OnboardAccount, {}, async (input) => {
+    const result = await provisionAccount(input, { idempotencyKey: input.requestId });
     const endpoint: string = result.endpoint;
-    const approval = await context.waitFor('approval');
-    const approved: boolean = approval.approved;
-    // @ts-expect-error aliases must come from the workflow's declared task map.
-    void context.task('missingTask', input);
-    // @ts-expect-error signal names must come from the workflow contract.
-    void context.waitFor('missingSignal');
-    if (!approval.approved) context.fail('rejected', { reason: 'account onboarding rejected' });
-    expectTypeUsage(endpoint, approved);
+    expectTypeUsage(endpoint);
     return result;
   });
   void onboardAccount.start({ accountId: 'account-1', requestId: 'request-1' }).then(async (run) => {
-    await onboardAccount.signal(run.id, 'approval', { approved: true });
     const result: { endpoint: string } = await run.result();
     expectTypeUsage(result);
   });
-  const renameBinding = Account.on.command(RenameAccount, {
-    key: ({ email }) => email,
-    idempotencyKey: ({ requestId }) => requestId,
-    transaction: { history: [Account], outbox: [AccountChanged] },
-  }, async (account, input, context) => {
-    const priorDisplayName: string = account.spec.displayName;
-    context.emit(AccountChanged, { email: input.email, displayName: input.displayName });
-    expectTypeUsage(priorDisplayName, context.commandId, context.now);
-    return { changed: priorDisplayName !== input.displayName, displayName: input.displayName };
-  });
-  void (async () => {
-    const acknowledgement = await renameBinding.send({ email: 'ada@example.com', displayName: 'Ada Lovelace', requestId: 'request-1' }, { id: 'command-1', expectedRevision: 'revision-1' });
-    const phase: 'transportAcknowledged' = acknowledgement.phase;
-    const commandId: string = acknowledgement.commandId;
-    const correlationId: string = acknowledgement.correlationId;
-    expectTypeUsage(phase, commandId, correlationId);
-  });
+  // @ts-expect-error custom command registries are compiler internals, not model authoring API.
+  Account.on.command;
+  // @ts-expect-error generic operation registries were removed in favor of ordinary managed functions.
+  Account.operation;
+  // @ts-expect-error action registries were removed in favor of ordinary managed functions.
+  Account.action;
   accountModelForScriptExecution = accountModelBinding;
-  expectTypeUsage(modelDefaults, maintenanceJob, maintenanceSchedule, maintenanceJobStatusPath, maintenanceScheduleDiagnostics, maintenanceJobDryRun, maintenanceSchedulePlan, provisionAccount, onboardAccount, renameBinding);
+  expectTypeUsage(modelDefaults, maintenanceJob, maintenanceSchedule, maintenanceJobStatusPath, maintenanceScheduleDiagnostics, maintenanceJobDryRun, maintenanceSchedulePlan, provisionAccount, onboardAccount);
 
   app.server('accounts-web', { namespace: spec.namespace }, (server) => {
     const createAccountRoute = server.post('create-account', '/accounts', async () => {
@@ -1039,23 +1061,26 @@ DirectLifecyclePost.on.delete('type-deleted-post', {}, async (deleted) => {
   expectTypeUsage(tombstone, deleted.previous.body);
 });
 
-const ArchiveDirectLifecyclePost = command('posts.archive.v1', {
-  input: appSchemaType({ postId: 'string' }),
-  output: appSchemaType({ archived: 'boolean' }),
-});
-const DirectLifecyclePostWithArchive = DirectLifecyclePost.operation('archive', ArchiveDirectLifecyclePost, {
-  key: ({ postId }) => postId,
-}, async (post) => ({ archived: post.value.body.length >= 0 }));
-DirectLifecyclePostWithArchive.on.archive('type-archived-post', {}, async (archived, context) => {
-  const operation: 'archive' = archived.operation;
-  const result: boolean = archived.result.archived;
-  const previous: string = archived.previous.body;
-  const current: string = archived.current.body;
-  expectTypeUsage(operation, result, previous, current, context.idempotencyKey);
-});
+async function reviseDirectLifecyclePost(postId: string) {
+  const required = await DirectLifecyclePost.require(postId);
+  const before: string = required.value.body;
+  return DirectLifecyclePost.edit(postId, async post => {
+    const identity: string = post.identity;
+    const body: string = post.body;
+    await post.update({ body: `${body}!` });
+    const revision: string | undefined = post.revision;
+    expectTypeUsage(identity, body, revision);
+    return post.body;
+  });
+}
+expectTypeUsage(reviseDirectLifecyclePost);
 
-// @ts-expect-error exceptional completion registrars are derived only for declared operation names.
-DirectLifecyclePostWithArchive.on.restore('invalid-restore-handler', {}, async () => undefined);
+// @ts-expect-error generic model operation registries are not public API.
+DirectLifecyclePost.operation;
+// @ts-expect-error generic model action registries are not public API.
+DirectLifecyclePost.action;
+// @ts-expect-error lifecycle registrars contain only create/update/delete.
+DirectLifecyclePost.on.archive;
 
 DirectLifecyclePost.create.beforeCommit({}, async (_post, _input, context) => {
   context.send(DirectLifecyclePost.create, {

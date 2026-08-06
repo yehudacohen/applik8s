@@ -24,22 +24,33 @@ describe('framework-neutral Applik8s Vite integration', () => {
     const source = plugin.load('\0applik8s:browser-facade') ?? '';
     expect(source).toContain('GuestBookEntry');
     expect(source).toContain('"create": createApplicationMutationOperation');
+    expect(source).toContain('export const CreateEntry = GuestBookEntry["create"]');
     expect(source).toContain('"published": createApplicationQueryOperation');
+    expect(source).toContain('export const GuestBookEntryPublished = GuestBookEntry["published"]');
+    expect(source).toContain('export const PublishedEntries = GuestBookEntry["published"]');
     expect(source).not.toContain('@applik8s/applik8s');
     const manifest = JSON.parse(await readFile(join(fixtureRoot, '.applik8s/application-facade.json'), 'utf8'));
     expect(manifest.models).toEqual([
       expect.objectContaining({
         name: 'GuestBookEntry',
         operations: [
-          expect.objectContaining({ id: 'GuestBookEntry.create', name: 'create' }),
-          expect.objectContaining({ id: 'GuestBookEntry.published', name: 'published' }),
+          expect.objectContaining({
+            id: 'GuestBookEntry.create',
+            name: 'create',
+            exportNames: ['CreateEntry'],
+          }),
+          expect.objectContaining({
+            id: 'GuestBookEntry.published',
+            name: 'published',
+            exportNames: ['PublishedEntries'],
+          }),
         ],
       }),
     ]);
     const gateway = await readFile(join(fixtureRoot, '.applik8s/generated/gateway.generated.ts'), 'utf8');
     expect(gateway).toContain("from '@applik8s/server/kubernetes-gateway'");
     expect(gateway).toContain('"GuestBookEntry.create"');
-    expect(gateway).toContain('"GuestBookEntry.published"');
+    expect(gateway).toContain('query:GuestBookEntry.published');
     const generatedFiles = await readdir(join(fixtureRoot, '.applik8s/generated'));
     expect(generatedFiles).not.toContain('stale.generated.ts');
     expect(generatedFiles).toContain('adapter-owned.generated.ts');
@@ -83,11 +94,16 @@ describe('framework-neutral Applik8s Vite integration', () => {
   it('configures browser authority before generated operations and defers an absent nested server artifact to application compilation', async () => {
     const plugin = adapter({
       browserBaseUrl: '/internal/applik8s',
+      browserAdapterModule: '@applik8s/react',
       serverArtifact: { outputDirectory: '.missing-output', entrypoint: 'server/index.mjs' },
     });
     plugin.configResolved({ root: fixtureRoot, build: { outDir: 'dist/server', ssr: true } });
     await plugin.buildStart();
     const source = plugin.load('\0applik8s:browser-facade') ?? '';
+    expect(source).toContain("import \"@applik8s/react\";");
+    expect(source.indexOf('import \"@applik8s/react\";')).toBeLessThan(
+      source.indexOf('export const GuestBookEntry'),
+    );
     expect(source.indexOf('configureDefaultApplicationBrowserRuntime')).toBeLessThan(source.indexOf('export const GuestBookEntry'));
     expect(source).toContain("baseUrl: \"/internal/applik8s\"");
     await expect(plugin.closeBundle()).resolves.toBeUndefined();

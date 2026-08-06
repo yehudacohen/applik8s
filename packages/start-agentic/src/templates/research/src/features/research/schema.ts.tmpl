@@ -1,0 +1,7 @@
+import { field, model } from '@applik8s/applik8s/drizzle';
+
+export const ResearchNote = model('research_notes', {
+  id: field.uuid('id').defaultRandom().primaryKey(),
+  body: field.text('body').notNull(),
+  createdAt: field.timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
+});

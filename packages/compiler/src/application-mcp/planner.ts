@@ -1,3 +1,4 @@
+// typecast-file-boundary: MCP graph metadata is validated and normalized at this planner boundary before typed plans are returned.
 import type {
   ApplicationGatewayNode,
   ApplicationGraph,

@@ -17,7 +17,7 @@ export function ChirpShell({ title, status, children, rail }: { readonly title: 
         <Link aria-label="Notifications" to="/notifications">♢ <span>Notifications</span></Link>
         <Link aria-label="Bookmarks" to="/bookmarks">⌑ <span>Bookmarks</span></Link>
         <Link aria-label="Automation" to="/automation">✦ <span>Automation</span></Link>
-        {account?.role === 'moderator' ? <Link aria-label="Moderation" to="/moderation">⚑ <span>Moderation</span></Link> : null}
+        {account?.roles.includes('moderator') ? <Link aria-label="Moderation" to="/moderation">⚑ <span>Moderation</span></Link> : null}
         <Link aria-label="Settings" to="/settings">⚙ <span>Settings</span></Link>
       </nav>
       {profileHandle ? <Link className="profile" to="/profile/$handle" params={{ handle: profileHandle }}>

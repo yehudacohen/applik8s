@@ -1,3 +1,4 @@
+// typecast-file-boundary: MCP client tests use intentionally malformed and partial protocol fixtures to verify runtime rejection.
 import { describe, expect, it, vi } from 'vitest';
 import {
   ApplicationExternalMcpClient,

@@ -1,15 +1,15 @@
-import { execFile } from 'node:child_process';
+// typecast-file-boundary: Generator configuration and package metadata are validated before typed template materialization.
+import { spawn } from 'node:child_process';
 import {
   mkdir,
   readFile,
+  readdir,
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, resolve } from 'node:path';
-import { promisify } from 'node:util';
+import { basename, dirname, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { applicationAgenticStartDefinition } from './definition.js';
-
-const execFileAsync = promisify(execFile);
 
 export interface ApplicationStartCommand {
   readonly executable: string;
@@ -17,17 +17,34 @@ export interface ApplicationStartCommand {
   readonly cwd: string;
 }
 
+export type ApplicationAgenticStartExample = 'product' | 'research';
+
+export interface ApplicationStartProgress {
+  readonly phase:
+    | 'scaffold'
+    | 'templates'
+    | 'dependencies'
+    | 'migrations'
+    | 'routes'
+    | 'validation';
+  readonly message: string;
+}
+
 export interface CreateApplicationAgenticStartOptions {
   readonly targetDirectory: string;
   readonly projectName?: string;
   readonly applik8sVersion?: string;
   readonly install?: boolean;
+  readonly context?: string;
+  readonly example?: ApplicationAgenticStartExample;
+  readonly progress?: (progress: ApplicationStartProgress) => void;
   readonly run?: (command: ApplicationStartCommand) => Promise<void>;
 }
 
 export interface CreatedApplicationAgenticStart {
   readonly targetDirectory: string;
   readonly projectName: string;
+  readonly example: ApplicationAgenticStartExample;
   readonly files: readonly string[];
   readonly upstream: {
     readonly package: '@tanstack/cli';
@@ -44,7 +61,13 @@ export async function createApplicationAgenticStart(
   );
   const parent = dirname(targetDirectory);
   const run = options.run ?? runCommand;
+  const example = options.example ?? 'product';
+  const progress = options.progress ?? (() => undefined);
   const upstream = applicationAgenticStartDefinition.generator.upstream;
+  progress({
+    phase: 'scaffold',
+    message: `Scaffolding the pinned TanStack Start ${upstream.version} application`,
+  });
   await run({
     executable: 'bunx',
     arguments: [
@@ -63,24 +86,46 @@ export async function createApplicationAgenticStart(
     cwd: parent,
   });
   await assertOfficialScaffold(targetDirectory);
+  progress({
+    phase: 'templates',
+    message: `Applying the Applik8s Agentic ${example} templates`,
+  });
   const packageVersion = options.applik8sVersion ?? '^0.7.0';
-  const files = agenticStartFiles(projectName);
+  const files = await agenticStartFiles(projectName, example);
   for (const [path, source] of Object.entries(files)) {
     const output = resolve(targetDirectory, path);
     await mkdir(dirname(output), { recursive: true });
     await writeFile(output, source);
   }
-  await updateGeneratedPackage(targetDirectory, projectName, packageVersion);
+  await updateGeneratedPackage(
+    targetDirectory,
+    projectName,
+    packageVersion,
+    options.context,
+    example,
+  );
   if (options.install !== false) {
+    progress({
+      phase: 'dependencies',
+      message: 'Installing pinned application dependencies',
+    });
     await run({
       executable: 'bun',
       arguments: ['install'],
       cwd: targetDirectory,
     });
+    progress({
+      phase: 'migrations',
+      message: 'Generating the initial Drizzle migration',
+    });
     await run({
       executable: 'bun',
       arguments: ['run', 'db:generate'],
       cwd: targetDirectory,
+    });
+    progress({
+      phase: 'routes',
+      message: 'Generating the TanStack route tree',
     });
     await run({
       executable: 'bun',
@@ -88,9 +133,14 @@ export async function createApplicationAgenticStart(
       cwd: targetDirectory,
     });
   }
+  progress({
+    phase: 'validation',
+    message: 'Validating the generated project contract',
+  });
   return {
     targetDirectory,
     projectName,
+    example,
     files: Object.keys(files),
     upstream: {
       package: upstream.package,
@@ -100,22 +150,43 @@ export async function createApplicationAgenticStart(
 }
 
 async function runCommand(command: ApplicationStartCommand): Promise<void> {
-  await execFileAsync(command.executable, [...command.arguments], {
-    cwd: command.cwd,
-    env: {
-      ...process.env,
-      CI: process.env.CI ?? '1',
-      DO_NOT_TRACK: process.env.DO_NOT_TRACK ?? '1',
-    },
-    maxBuffer: 20 * 1024 * 1024,
+  await new Promise<void>((resolveCommand, rejectCommand) => {
+    const child = spawn(command.executable, [...command.arguments], {
+      cwd: command.cwd,
+      env: {
+        ...process.env,
+        CI: process.env.CI ?? '1',
+        DO_NOT_TRACK: process.env.DO_NOT_TRACK ?? '1',
+      },
+      stdio: 'inherit',
+    });
+    child.once('error', rejectCommand);
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        resolveCommand();
+        return;
+      }
+      rejectCommand(new Error(
+        `${command.executable} ${command.arguments.join(' ')} failed${
+          signal ? ` with signal ${signal}` : ` with exit code ${code ?? 1}`
+        }.`,
+      ));
+    });
   });
 }
 
 async function assertOfficialScaffold(targetDirectory: string): Promise<void> {
   const packagePath = resolve(targetDirectory, 'package.json');
   const routePath = resolve(targetDirectory, 'src/routes/index.tsx');
+  const rootRoutePath = resolve(targetDirectory, 'src/routes/__root.tsx');
+  const routerPath = resolve(targetDirectory, 'src/router.tsx');
   try {
-    await Promise.all([stat(packagePath), stat(routePath)]);
+    await Promise.all([
+      stat(packagePath),
+      stat(routePath),
+      stat(rootRoutePath),
+      stat(routerPath),
+    ]);
   } catch {
     throw new Error(
       'The pinned official TanStack CLI did not produce the expected Start file-router scaffold.',
@@ -135,6 +206,8 @@ async function updateGeneratedPackage(
   targetDirectory: string,
   projectName: string,
   version: string,
+  context: string | undefined,
+  example: ApplicationAgenticStartExample,
 ): Promise<void> {
   const packagePath = resolve(targetDirectory, 'package.json');
   const manifest = JSON.parse(await readFile(packagePath, 'utf8')) as {
@@ -147,9 +220,17 @@ async function updateGeneratedPackage(
   manifest.name = projectName;
   manifest.scripts = {
     ...manifest.scripts,
+    build: manifest.scripts?.build ?? 'vite build',
+    typecheck: 'bun run generate-routes && tsc --noEmit',
+    test: 'vitest run',
+    lint: 'biome lint src test vite.config.ts vitest.config.ts',
+    'app:check': 'applik8s build src/application.ts --typekro --composition-name application --out-dir .applik8s/check',
+    'db:check': 'drizzle-kit check',
+    check: 'bun run typecheck && bun run lint && bun run test && bun run app:check && bun run db:check',
     'db:generate': 'drizzle-kit generate',
-    plan: 'applik8s plan',
-    deploy: 'applik8s deploy',
+    plan: 'bun run build && applik8s plan',
+    deploy: 'bun run build && applik8s deploy',
+    'dev:cluster': 'bun run deploy && vite dev',
     status: 'applik8s status',
     destroy: 'applik8s destroy',
   };
@@ -158,25 +239,36 @@ async function updateGeneratedPackage(
     compositionName: 'application',
     instance: 'kubernetes/application.yaml',
     outDir: '.applik8s/deploy',
+    ...(context?.trim() ? { context: context.trim() } : {}),
   };
   manifest.dependencies = {
     ...manifest.dependencies,
     '@tanstack/react-router':
-      applicationAgenticStartDefinition.compatibility.tanstackStart,
+      applicationAgenticStartDefinition.compatibility.tanstackRouter,
     '@tanstack/react-start':
       applicationAgenticStartDefinition.compatibility.tanstackStart,
     '@applik8s/ai': version,
-    '@applik8s/ai-tanstack': version,
     '@applik8s/applik8s': version,
-    '@applik8s/approvals': version,
-    '@applik8s/artifacts': version,
-    '@applik8s/conversations': version,
-    '@applik8s/evals': version,
     '@applik8s/operations-ui': version,
     '@applik8s/react': version,
     '@applik8s/start-agentic': version,
     '@applik8s/tanstack-start': version,
-    '@applik8s/usage': version,
+    ...(example === 'research'
+      ? {
+          '@applik8s/ai-tanstack': version,
+          '@applik8s/approvals': version,
+          '@applik8s/artifacts': version,
+          '@applik8s/billing': version,
+          '@applik8s/billing-stripe': version,
+          '@applik8s/conversations': version,
+          '@applik8s/evals': version,
+          '@applik8s/identity': version,
+          '@applik8s/runtime-opensearch': version,
+          '@applik8s/runtime-s3': version,
+          '@applik8s/search': version,
+          '@applik8s/usage': version,
+        }
+      : {}),
     '@tanstack/ai': '0.42.0',
     '@tanstack/ai-react':
       applicationAgenticStartDefinition.compatibility.tanstackAIReact,
@@ -186,9 +278,12 @@ async function updateGeneratedPackage(
   manifest.devDependencies = {
     ...manifest.devDependencies,
     '@tanstack/router-cli':
-      applicationAgenticStartDefinition.compatibility.tanstackStart,
+      applicationAgenticStartDefinition.compatibility.tanstackRouterCli,
     '@applik8s/cli': version,
+    '@applik8s/testing': version,
+    '@biomejs/biome': '^2.2.2',
     'drizzle-kit': '0.31.10',
+    vitest: '^3.2.4',
   };
   await writeFile(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
@@ -203,360 +298,55 @@ function normalizedProjectName(value: string): string {
   return normalized;
 }
 
-function agenticStartFiles(
+async function agenticStartFiles(
   projectName: string,
-): Readonly<Record<string, string>> {
-  return {
-    'src/installation.ts': `import { type } from 'arktype';
-
-export const Installation = type({
-  name: 'string',
-  profile: "'starter' | 'dedicated' | 'external'",
-});
-
-export const InstallationStatus = type({
-  ready: 'boolean',
-});
-`,
-    'src/app.ts': `import { app } from '@applik8s/applik8s';
-import { Installation, InstallationStatus } from './installation';
-
-export const application = app(${JSON.stringify(projectName)}, {
-  namespace: applicationNamespace(${JSON.stringify(projectName)}),
-  spec: Installation,
-  status: InstallationStatus,
-});
-
-function applicationNamespace(name: string): string {
-  return name + '-system';
-}
-`,
-    'src/features/research/schema.ts': `import { text, timestamp, pgTable } from 'drizzle-orm/pg-core';
-
-export const researchNotes = pgTable('research_notes', {
-  id: text('id').primaryKey(),
-  body: text('body').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
-});
-`,
-    'src/database-schema.ts': `export * from '@applik8s/approvals';
-export * from '@applik8s/artifacts';
-export * from '@applik8s/conversations';
-export * from '@applik8s/evals';
-export * from '@applik8s/usage';
-export { researchNotes } from './features/research/schema';
-`,
-    'src/providers.ts': `import { AI } from '@applik8s/ai';
-import { IdentityProvider, TransactionalDatabase } from '@applik8s/applik8s';
-import { applicationAgenticModuleSchema } from '@applik8s/start-agentic';
-import { application } from './app';
-import { researchNotes } from './features/research/schema';
-
-const deployment = application.profile(application.installation.spec, 'profile');
-const PrimaryDatabase = TransactionalDatabase.named('primary');
-const Inference = AI.named('inference');
-
-deployment
-  .provide(PrimaryDatabase)
-  .starter(() => TransactionalDatabase.postgres({
-    clusterName: 'application-db',
-    connectionSecret: { apiVersion: 'v1', kind: 'Secret', name: 'application-db-app' },
-    database: 'application',
-    instances: 1,
-  }))
-  .dedicated(() => TransactionalDatabase.postgres({
-    clusterName: 'application-db',
-    connectionSecret: { apiVersion: 'v1', kind: 'Secret', name: 'application-db-app' },
-    database: 'application',
-    instances: 3,
-  }))
-  .external(() => TransactionalDatabase.postgres({
-    clusterName: 'application-db',
-    connectionSecret: { apiVersion: 'v1', kind: 'Secret', name: 'application-db-app' },
-    database: 'application',
-    provision: false,
-    cluster: { apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', name: 'application-db', namespace: 'data' },
-  }))
-  .exhaustive();
-
-deployment
-  .provide(Inference)
-  .starter(() => AI.deterministic({ fixture: { response: 'Ready for research.' } }))
-  .dedicated(() => AI.deterministic({ fixture: { response: 'Configure the reviewed Envoy profile before production.' } }))
-  .external(() => AI.deterministic({ fixture: { response: 'Configure an external inference provider before production.' } }))
-  .exhaustive();
-
-export const database = application.database.bind('application', {
-  provider: application.inject(PrimaryDatabase),
-  schema: { ...applicationAgenticModuleSchema, researchNotes },
-  migrations: { path: '../drizzle' },
-});
-export const inference = application.inject(Inference);
-application.provide(
-  IdentityProvider,
-  IdentityProvider.deterministic({
-    mode: 'starter',
-    application: ${JSON.stringify(projectName)},
-    subject: 'local-developer',
-    audience: [${JSON.stringify(projectName)}],
-    catalogRevision: 'starter-catalog-v1',
-    authorityRevision: 'starter-authority-v1',
-  }),
-);
-`,
-    'src/modules.ts': `import { approvals } from '@applik8s/approvals';
-import { artifacts } from '@applik8s/artifacts';
-import { conversations } from '@applik8s/conversations';
-import { evaluations } from '@applik8s/evals';
-import { operationsControlCenter } from '@applik8s/operations-ui';
-import { usage } from '@applik8s/usage';
-import { application } from './app';
-import { database } from './providers';
-
-const processor = {
-  group: 'agentic-commands',
-  deployment: {
-    replicas: 1,
-    concurrency: 8,
-    maxInFlight: 8,
-  },
-} as const;
-
-export const Conversations = conversations(application, { database, processor });
-export const Approvals = approvals(application, { database, processor });
-export const Artifacts = artifacts(application, { database, processor });
-export const Evaluations = evaluations(application, { database, processor });
-export const Usage = usage(application, { database, processor });
-export const Operations = operationsControlCenter(application, {
-  database,
-  models: {
-    Conversation: Conversations.Conversation,
-    ProtocolRun: Conversations.ProtocolRun,
-    ApprovalReview: Approvals.ApprovalReview,
-    Artifact: Artifacts.Artifact,
-    EvaluationRun: Evaluations.EvaluationRun,
-    UsageFact: Usage.UsageFact,
-  },
-});
-
-const maintainedModels = [
-  ...Object.values(Conversations),
-  ...Object.values(Approvals),
-  ...Object.values(Artifacts),
-  ...Object.values(Evaluations),
-  ...Object.values(Usage),
-] as const;
-
-export const maintainedCommands = maintainedModels.flatMap((model) => [
-  model.create,
-  model.update,
-  model.delete,
-]);
-`,
-    'src/features/research/model.ts': `import { AI } from '@applik8s/ai';
-import { chat } from '@tanstack/ai';
-import { application } from '../../app';
-import { database, inference } from '../../providers';
-import { researchNotes } from './schema';
-
-export const ResearchNote = application.model(researchNotes, {
-  name: 'ResearchNote',
-  database,
-  processor: {
-    group: 'agentic-commands',
-    deployment: {
-      replicas: 1,
-      concurrency: 8,
-      maxInFlight: 8,
-    },
-  },
-  revision: false,
-});
-
-export const ResearcherIdentity = application.serviceIdentity('researcher');
-export const FastModel = AI.model('fast', {
-  inference,
-  capabilities: [AI.chat, AI.tools, AI.streaming],
-});
-
-export const Researcher = application.agent(
-  'researcher',
-  {
-    identity: ResearcherIdentity,
-    model: FastModel,
-    instructions: 'Help the user organize research notes with explicit evidence.',
-    tools: [ResearchNote.create],
-  },
-  async (request, context) => chat({
-    adapter: context.tanstack.adapter,
-    messages: request.messages,
-    threadId: request.threadId,
-    runId: context.runId,
-    tools: context.tanstack.tools,
-    context: context.tanstack.execution,
-  }),
-);
-
-ResearcherIdentity.can(ResearchNote.create);
-`,
-    'src/application.ts': `import { ApplicationHost } from '@applik8s/applik8s';
-import { application } from './app';
-import { ResearchNote } from './features/research/model';
-import { maintainedCommands, Operations } from './modules';
-
-export const gateway = application.gateway('web', {
-  commands: [
-    ResearchNote.create,
-    ResearchNote.update,
-    ResearchNote.delete,
-    ...maintainedCommands,
-  ],
-  queries: [Operations.snapshot],
-  authorizeCommand: ({ principal }) => principal.id.length > 0,
-  deployment: {
-    namespace: ${JSON.stringify(`${projectName}-system`)},
-    cursorSecret: { name: ${JSON.stringify(`${projectName}-gateway-cursor`)}, key: 'key' },
-  },
-});
-
-export const host = application.provide(
-  ApplicationHost,
-  ApplicationHost.kubernetes({
-    name: ${JSON.stringify(`${projectName}-app`)},
-    namespace: ${JSON.stringify(`${projectName}-system`)},
-    replicas: 1,
-    resources: {
-      requests: { cpu: '100m', memory: '192Mi' },
-      limits: { memory: '512Mi' },
-    },
-  }),
-);
-
-export { application };
-`,
-    'src/features/research/view.tsx': `import { createApplicationTanStackConnection } from '@applik8s/ai-tanstack/client';
-import { useChat } from '@tanstack/ai-react';
-import { type FormEvent, useId, useMemo, useState } from 'react';
-
-export function ResearchHome() {
-  const reactId = useId();
-  const threadId = 'research-' + reactId.replaceAll(':', '');
-  const connection = useMemo(
-    () => createApplicationTanStackConnection({
-      forwardedProps: { agent: 'researcher' },
-    }),
-    [],
+  example: ApplicationAgenticStartExample,
+): Promise<Readonly<Record<string, string>>> {
+  const templateRoot = fileURLToPath(
+    new URL(`./templates/${example}/`, import.meta.url),
   );
-  const { messages, sendMessage, isLoading, error, stop } = useChat({
-    connection,
-    threadId,
-  });
-  const [draft, setDraft] = useState('');
+  const files = await readTemplateDirectory(templateRoot);
+  const kind = applicationKind(projectName);
+  const rendered = Object.fromEntries(
+    Object.entries(files).map(([path, source]) => [
+      path,
+      source
+        .replaceAll('Applik8sTemplateProject', kind)
+        .replaceAll('applik8s-template-project', projectName),
+    ]),
+  );
+  rendered['.applik8s/start-lineage.json'] = `${JSON.stringify({
+    apiVersion: 'applik8s.startLineage/v1alpha1',
+    start: applicationAgenticStartDefinition.name,
+    startVersion: applicationAgenticStartDefinition.version,
+    generatorVersion: applicationAgenticStartDefinition.version,
+    example,
+    upstream: {
+      package: applicationAgenticStartDefinition.generator.upstream.package,
+      version: applicationAgenticStartDefinition.generator.upstream.version,
+    },
+    tanstackStart: applicationAgenticStartDefinition.compatibility.tanstackStart,
+  }, null, 2)}\n`;
+  return Object.freeze(rendered);
+}
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const message = draft.trim();
-    if (!message) return;
-    setDraft('');
-    await sendMessage(message);
+async function readTemplateDirectory(
+  root: string,
+  directory = root,
+): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = resolve(directory, entry.name);
+    if (entry.isDirectory()) {
+      Object.assign(files, await readTemplateDirectory(root, path));
+    } else if (entry.isFile()) {
+      files[relative(root, path).replace(/\.tmpl$/u, '')] = await readFile(
+        path,
+        'utf8',
+      );
+    }
   }
-
-  return (
-    <main>
-      <p className="eyebrow">Applik8s Agentic Start</p>
-      <h1>Research workspace</h1>
-      <p>
-        One typed application graph now owns conversations, agents, tools,
-        workflows, reviews, artifacts, evaluations, usage, and deployment.
-      </p>
-      <section aria-label="Research conversation">
-        {messages.map((message) => (
-          <article key={message.id} data-role={message.role}>
-            <strong>{message.role}</strong>
-            {message.parts.map((part, index) =>
-              part.type === 'text'
-                ? <p key={index}>{part.content}</p>
-                : null,
-            )}
-          </article>
-        ))}
-        {error ? <p role="alert">{error.message}</p> : null}
-      </section>
-      <form onSubmit={submit}>
-        <label htmlFor="research-prompt">Research prompt</label>
-        <textarea
-          id="research-prompt"
-          value={draft}
-          onChange={(event) => setDraft(event.currentTarget.value)}
-          disabled={isLoading}
-        />
-        <button type="submit" disabled={isLoading || !draft.trim()}>
-          {isLoading ? 'Researching…' : 'Send'}
-        </button>
-        {isLoading ? <button type="button" onClick={stop}>Stop</button> : null}
-      </form>
-    </main>
-  );
-}
-`,
-    'src/routes/index.tsx': `import { createFileRoute } from '@tanstack/react-router';
-import { ResearchHome } from '../features/research/view';
-
-export const Route = createFileRoute('/')({
-  component: ResearchHome,
-});
-`,
-    'src/routes/operations.tsx': `import { ApplicationOperationsControlCenter } from '@applik8s/operations-ui/react';
-import { createFileRoute } from '@tanstack/react-router';
-import { Operations } from '../modules';
-
-export const Route = createFileRoute('/operations')({
-  component: () => (
-    <ApplicationOperationsControlCenter
-      snapshot={Operations.snapshot}
-      title=${JSON.stringify(`${projectName} operations`)}
-    />
-  ),
-});
-`,
-    'vite.config.ts': `import { applik8sStart } from '@applik8s/tanstack-start/vite';
-import { tanstackStart } from '@tanstack/react-start/plugin/vite';
-import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
-
-export default defineConfig({
-  resolve: { tsconfigPaths: true },
-  oxc: { jsx: { development: false } },
-  plugins: [
-    tanstackStart(),
-    applik8sStart({ application: './src/application.ts' }),
-    react(),
-  ],
-});
-`,
-    'drizzle.config.ts': `import { defineConfig } from 'drizzle-kit';
-
-export default defineConfig({
-  dialect: 'postgresql',
-  schema: './src/database-schema.ts',
-  out: './drizzle',
-});
-`,
-    'kubernetes/application.yaml': `apiVersion: ${projectName}.applik8s.dev/v1alpha1
-kind: ${applicationKind(projectName)}
-metadata:
-  name: ${projectName}
-  namespace: default
-spec:
-  name: ${projectName}
-  profile: starter
-`,
-    '.env.example': `# Starter is credential-free and explicitly non-production.
-APPLIK8S_PROFILE=starter
-# The CLI never adopts kubectl's ambient current context implicitly.
-APPLIK8S_CONTEXT=orbstack
-`,
-  };
+  return files;
 }
 
 function applicationKind(projectName: string): string {

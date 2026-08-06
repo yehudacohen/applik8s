@@ -1,3 +1,4 @@
+// typecast-file-boundary: Ory response payloads are validated by endpoint-specific decoders before typed transport use.
 export type OryFetch = (
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -225,7 +226,8 @@ export function normalizedOryBaseUrl(value: string, field: string): URL {
     && !(url.protocol === 'http:'
       && (url.hostname === 'localhost'
         || url.hostname === '127.0.0.1'
-        || url.hostname.endsWith('.svc')))
+        || url.hostname.endsWith('.svc')
+        || url.hostname.endsWith('.svc.cluster.local')))
   ) {
     throw new Error(`${field} must use HTTPS outside loopback or cluster-local service DNS.`);
   }

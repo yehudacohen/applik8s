@@ -1,6 +1,6 @@
 import { ApplicationHost, Certificate, DnsPublication, HttpExposure } from '@applik8s/applik8s';
 import { app } from './app';
-import { GuestBook, GuestBookEntry } from './models';
+import { GuestBook, GuestBookEntry, PublishedEntries } from './models';
 
 export const host = app.provide(
   ApplicationHost,
@@ -44,4 +44,4 @@ app.expose('web', {
   dns: publicHostname ? { mode: 'managed' } : { mode: 'disabled' },
 });
 
-export { app, GuestBook, GuestBookEntry };
+export { app, GuestBook, GuestBookEntry, PublishedEntries };

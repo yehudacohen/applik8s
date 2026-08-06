@@ -1,5 +1,6 @@
+// typecast-file-boundary: host-protocol fixtures intentionally construct erased and malformed dispatch payloads to verify runtime validation boundaries.
 import type { CapabilityDescriptor, GraphAdapter, JsonSchemaSource, OperationTarget } from '@applik8s/core';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { dispatchOperatorHandler, sdk } from '../src/index.js';
 
 interface ImageSpec {
@@ -180,6 +181,262 @@ describe('generated handler dispatcher', () => {
     });
 
     expect(JSON.parse(output)).toEqual({ operations: [{ kind: 'status', status: { phase: 'Checked' } }] });
+  });
+
+  it('hydrates the private workflow gateway as an execution-scoped runtime', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const workflowGateway = {
+      name: 'applik8s-workflow-media',
+      kind: 'http',
+      endpoint: 'http://media-workflows.media.svc:8001',
+      auth: { type: 'serviceAccount' },
+      workflowGateway: {
+        protocol: 'applik8s.workflow-gateway/v1alpha1',
+        worker: 'media-workflows',
+        contracts: ['media.process.v1'],
+        caller: {
+          operator: 'workflow-gateway-pipeline',
+          namespace: 'media',
+          serviceAccount: 'workflow-gateway-pipeline-controller',
+        },
+      },
+      policy: {
+        failureMode: 'rejectPromiseWithApplik8sError',
+        idempotencyKeyRequired: true,
+      },
+    } satisfies CapabilityDescriptor;
+    const operator = sdk.operator({
+      name: 'workflow-gateway-pipeline',
+      resources: { ImageJob },
+      capabilities: { 'applik8s-workflow-media': workflowGateway },
+      handlers: [
+        ImageJob.on.reconcile(async (job) => {
+          const resolver = Reflect.get(
+            globalThis,
+            Symbol.for('applik8s.workflowRuntimeResolver'),
+          );
+          if (typeof resolver !== 'function') {
+            throw new Error('workflow runtime was not hydrated');
+          }
+          const runtime = resolver() as {
+            start(
+              contract: string,
+              input: object,
+              metadata: object,
+            ): Promise<{
+              observe(): Promise<{ readonly phase: string }>;
+            }>;
+          };
+          const run = await runtime.start(
+            'media.process.v1',
+            { sourceUrl: job.spec.sourceUrl },
+            { idempotencyKey: `${job.metadata.uid}:${job.metadata.generation}` },
+          );
+          job.status.phase = (await run.observe()).phase;
+        }),
+      ],
+    });
+    const requests: object[] = [];
+    const output = await dispatchOperatorHandler(
+      operator.definition,
+      JSON.stringify({
+        handlerId: 'ImageJob.reconcile.0',
+        event: 'reconcile',
+        object: {
+          apiVersion: 'media.applik8s.dev/v1alpha1',
+          kind: 'ImageJob',
+          metadata: {
+            name: 'hero',
+            namespace: 'media',
+            uid: 'uid-hero',
+            generation: 2,
+          },
+          spec: { sourceUrl: 's3://bucket/hero.png' },
+        },
+        capabilities: { 'applik8s-workflow-media': workflowGateway },
+        runtime: { reconcileId: 'ImageJob-hero' },
+      }),
+      {
+        capabilityRequest(requestJson) {
+          const request = JSON.parse(requestJson) as {
+            readonly method: string;
+            readonly path: string;
+          };
+          requests.push(request);
+          return request.method === 'POST'
+            ? JSON.stringify({
+                ok: true,
+                value: {
+                  id: 'opaque-run-reference',
+                  admittedAt: '2026-07-31T12:00:00.000Z',
+                },
+              })
+            : JSON.stringify({
+                ok: true,
+                value: {
+                  phase: 'Running',
+                  admittedAt: '2026-07-31T12:00:00.000Z',
+                },
+              });
+        },
+      },
+    );
+
+    expect(requests).toMatchObject([
+      {
+        capabilityName: 'applik8s-workflow-media',
+        method: 'POST',
+        path: '/v1/workflows/media.process.v1/runs',
+        options: { idempotencyKey: 'uid-hero:2' },
+      },
+      {
+        capabilityName: 'applik8s-workflow-media',
+        method: 'GET',
+        path: '/v1/workflows/media.process.v1/runs/opaque-run-reference?admittedAt=2026-07-31T12%3A00%3A00.000Z',
+      },
+    ]);
+    expect(JSON.parse(output)).toEqual({
+      operations: [{ kind: 'status', status: { phase: 'Running' } }],
+    });
+    expect(
+      Reflect.get(globalThis, Symbol.for('applik8s.workflowRuntimeResolver')),
+    ).toBeUndefined();
+  });
+
+  it('adopts a status-tracked workflow admission before repeating the gateway start', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const workflowGateway = {
+      name: 'applik8s-workflow-media',
+      kind: 'http',
+      endpoint: 'http://media-workflows.media.svc:8001',
+      auth: { type: 'serviceAccount' },
+      workflowGateway: {
+        protocol: 'applik8s.workflow-gateway/v1alpha1',
+        worker: 'media-workflows',
+        contracts: ['media.process.v1'],
+        caller: {
+          operator: 'workflow-gateway-adoption-pipeline',
+          namespace: 'media',
+          serviceAccount: 'workflow-gateway-adoption-pipeline-controller',
+        },
+      },
+      policy: {
+        failureMode: 'rejectPromiseWithApplik8sError',
+        idempotencyKeyRequired: true,
+      },
+    } satisfies CapabilityDescriptor;
+    const operator = sdk.operator({
+      name: 'workflow-gateway-adoption-pipeline',
+      resources: { ImageJob },
+      capabilities: { 'applik8s-workflow-media': workflowGateway },
+      handlers: [
+        ImageJob.on.reconcile(async (job) => {
+          const resolver = Reflect.get(
+            globalThis,
+            Symbol.for('applik8s.workflowRuntimeResolver'),
+          );
+          if (typeof resolver !== 'function') {
+            throw new Error('workflow runtime was not hydrated');
+          }
+          const runtime = resolver() as {
+            start(
+              contract: string,
+              input: object,
+              metadata: object,
+            ): Promise<{
+              observe(): Promise<{ readonly phase: string }>;
+            }>;
+          };
+          const run = await runtime.start(
+            'media.process.v1',
+            { sourceUrl: job.spec.sourceUrl },
+            { idempotencyKey: 'proof-id' },
+          );
+          job.status.phase = (await run.observe()).phase;
+        }),
+      ],
+    });
+    const requests: Array<{ readonly method: string; readonly path: string }> = [];
+
+    const output = await dispatchOperatorHandler(
+      operator.definition,
+      JSON.stringify({
+        handlerId: 'ImageJob.reconcile.0',
+        event: 'reconcile',
+        object: {
+          apiVersion: 'media.applik8s.dev/v1alpha1',
+          kind: 'ImageJob',
+          metadata: {
+            name: 'hero',
+            namespace: 'media',
+            uid: 'uid-hero',
+            generation: 2,
+          },
+          spec: { sourceUrl: 's3://bucket/hero.png' },
+          status: {
+            phase: 'Running',
+            applik8s: {
+              trackedExecutions: {
+                process: {
+                  resourceUid: 'uid-hero',
+                  resourceGeneration: 2,
+                  workflow: 'media.process.v1',
+                  workflowRevision: 'v1',
+                  run: 'opaque-existing-reference',
+                  idempotencyKey: 'proof-id',
+                  phase: 'Running',
+                  admittedAt: '2026-07-31T12:00:00.000Z',
+                  onGenerationChange: 'supersede',
+                  onDelete: { action: 'detach' },
+                },
+              },
+            },
+          },
+        },
+        capabilities: { 'applik8s-workflow-media': workflowGateway },
+        runtime: { reconcileId: 'ImageJob-hero' },
+      }),
+      {
+        capabilityRequest(requestJson) {
+          const request = JSON.parse(requestJson) as {
+            readonly method: string;
+            readonly path: string;
+          };
+          requests.push(request);
+          if (request.method === 'POST') {
+            throw new Error('tracked workflow adoption must not repeat admission');
+          }
+          return JSON.stringify({
+            ok: true,
+            value: {
+              phase: 'Running',
+              admittedAt: '2026-07-31T12:00:00.000Z',
+            },
+          });
+        },
+      },
+    );
+
+    expect(requests).toEqual([
+      {
+        capabilityName: 'applik8s-workflow-media',
+        method: 'GET',
+        options: {},
+        path: '/v1/workflows/media.process.v1/runs/opaque-existing-reference?admittedAt=2026-07-31T12%3A00%3A00.000Z',
+        reconcileId: 'ImageJob-hero',
+      },
+    ]);
+    expect(JSON.parse(output)).toEqual({ operations: [] });
   });
 
   it('lowers operation-target apply through operationTargetArtifacts only', async () => {
@@ -827,6 +1084,527 @@ describe('generated handler dispatcher', () => {
       },
       runtime: { reconcileId: 'ImageJob-hero' },
     }))).rejects.toThrow('graph render failed');
+  });
+
+  it('persists canonical workflow tracking in reserved status and schedules bounded recovery', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const observation = {
+      reference: {
+        provider: 'workflow' as const,
+        workflow: 'media.process.v1',
+        run: 'run-1',
+      },
+      workflowRevision: 'v1',
+      phase: 'Running' as const,
+      admittedAt: '2026-07-31T12:00:00.000Z',
+      startedAt: '2026-07-31T12:00:01.000Z',
+      progress: { completed: 4, total: 10 },
+    };
+    const run = {
+      id: 'run-1',
+      reference: observation.reference,
+      workflowRevision: 'v1',
+      observe: vi.fn(async () => observation),
+      cancel: vi.fn(async () => undefined),
+    };
+    const operator = sdk.operator({
+      name: 'tracked-pipeline',
+      resources: { ImageJob },
+      handlers: [
+        ImageJob.on.reconcile(async (job) => {
+          const process = await job.track('process-image', run, {
+            onDelete: {
+              action: 'cancel',
+              timeout: '2m',
+              onTimeout: 'detach',
+            },
+            onGenerationChange: 'supersede',
+            updates: { minInterval: '5s' },
+          });
+          job.status.phase = process.phase;
+        }),
+      ],
+    });
+
+    const output = await dispatchOperatorHandler(
+      operator.definition,
+      JSON.stringify({
+        handlerId: 'ImageJob.reconcile.0',
+        event: 'reconcile',
+        object: {
+          apiVersion: 'media.applik8s.dev/v1alpha1',
+          kind: 'ImageJob',
+          metadata: {
+            name: 'hero',
+            namespace: 'media',
+            uid: 'uid-hero',
+            generation: 3,
+          },
+          spec: { sourceUrl: 's3://bucket/hero.png' },
+        },
+        runtime: { reconcileId: 'ImageJob-hero' },
+      }),
+    );
+
+    expect(run.observe).toHaveBeenCalledWith({ timeoutMs: 5_000 });
+    expect(JSON.parse(output)).toEqual({
+      operations: [
+        {
+          kind: 'finalizer',
+          operation: 'add',
+          finalizer: 'tracking.applik8s.dev/process-image',
+        },
+        {
+          kind: 'status',
+          status: {
+            phase: 'Running',
+            applik8s: {
+              trackedExecutions: {
+                'process-image': {
+                  resourceUid: 'uid-hero',
+                  resourceGeneration: 3,
+                  workflow: 'media.process.v1',
+                  workflowRevision: 'v1',
+                  run: 'run-1',
+                  phase: 'Running',
+                  admittedAt: '2026-07-31T12:00:00.000Z',
+                  startedAt: '2026-07-31T12:00:01.000Z',
+                  progress: { completed: 4, total: 10 },
+                  onGenerationChange: 'supersede',
+                  onDelete: {
+                    action: 'cancel',
+                    timeoutMs: 120_000,
+                    onTimeout: 'detach',
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          kind: 'requeue',
+          policy: {
+            afterSeconds: 5,
+            reason: 'bounded workflow tracking resync',
+          },
+        },
+      ],
+    });
+  });
+
+  it('does not rewrite semantically unchanged tracking status or an existing finalizer', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const observation = {
+      reference: {
+        provider: 'workflow' as const,
+        workflow: 'media.process.v1',
+        run: 'run-1',
+      },
+      workflowRevision: 'v1',
+      phase: 'Running' as const,
+      admittedAt: '2026-07-31T12:00:00.000Z',
+      startedAt: '2026-07-31T12:00:01.000Z',
+      progress: { completed: 4, total: 10 },
+    };
+    const run = {
+      id: 'run-1',
+      reference: observation.reference,
+      workflowRevision: 'v1',
+      observe: vi.fn(async () => observation),
+      cancel: vi.fn(async () => undefined),
+    };
+    const operator = sdk.operator({
+      name: 'stable-tracked-pipeline',
+      resources: { ImageJob },
+      handlers: [
+        ImageJob.on.reconcile(async (job) => {
+          await job.track('process-image', run, {
+            onDelete: {
+              action: 'cancel',
+              timeout: '2m',
+              onTimeout: 'detach',
+            },
+            onGenerationChange: 'supersede',
+            updates: { minInterval: '5s' },
+          });
+        }),
+      ],
+    });
+
+    const output = await dispatchOperatorHandler(
+      operator.definition,
+      JSON.stringify({
+        handlerId: 'ImageJob.reconcile.0',
+        event: 'reconcile',
+        object: {
+          apiVersion: 'media.applik8s.dev/v1alpha1',
+          kind: 'ImageJob',
+          metadata: {
+            name: 'hero',
+            namespace: 'media',
+            uid: 'uid-hero',
+            generation: 3,
+            finalizers: ['tracking.applik8s.dev/process-image'],
+          },
+          spec: { sourceUrl: 's3://bucket/hero.png' },
+          // Kubernetes does not preserve authored object-key insertion order.
+          // Keep this deliberately different from persistedObservation().
+          status: {
+            applik8s: {
+              trackedExecutions: {
+                'process-image': {
+                  admittedAt: '2026-07-31T12:00:00.000Z',
+                  onDelete: {
+                    action: 'cancel',
+                    onTimeout: 'detach',
+                    timeoutMs: 120_000,
+                  },
+                  onGenerationChange: 'supersede',
+                  phase: 'Running',
+                  progress: { total: 10, completed: 4 },
+                  resourceGeneration: 3,
+                  resourceUid: 'uid-hero',
+                  run: 'run-1',
+                  startedAt: '2026-07-31T12:00:01.000Z',
+                  workflow: 'media.process.v1',
+                  workflowRevision: 'v1',
+                },
+              },
+            },
+          },
+        },
+        runtime: { reconcileId: 'ImageJob-hero' },
+      }),
+    );
+
+    expect(JSON.parse(output)).toEqual({
+      operations: [
+        {
+          kind: 'requeue',
+          policy: {
+            afterSeconds: 5,
+            reason: 'bounded workflow tracking resync',
+          },
+        },
+      ],
+    });
+  });
+
+  it('cancels the canonical prior generation when replacement requests cancellation', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const cancelReference = vi.fn(async () => undefined);
+    const run = {
+      id: 'run-2',
+      reference: {
+        provider: 'workflow' as const,
+        workflow: 'media.process.v1',
+        run: 'run-2',
+      },
+      workflowRevision: 'v2',
+      observe: vi.fn(async () => ({
+        reference: {
+          provider: 'workflow' as const,
+          workflow: 'media.process.v1',
+          run: 'run-2',
+        },
+        workflowRevision: 'v2',
+        phase: 'Admitted' as const,
+        admittedAt: '2026-07-31T12:05:00.000Z',
+      })),
+      cancel: vi.fn(async () => undefined),
+      __cancelReference: cancelReference,
+    };
+    const operator = sdk.operator({
+      name: 'superseding-pipeline',
+      resources: { ImageJob },
+      handlers: [
+        ImageJob.on.reconcile(async (job) => {
+          await job.track('process-image', run, {
+            onGenerationChange: 'cancel',
+          });
+        }),
+      ],
+    });
+
+    await dispatchOperatorHandler(
+      operator.definition,
+      JSON.stringify({
+        handlerId: 'ImageJob.reconcile.0',
+        event: 'reconcile',
+        object: {
+          apiVersion: 'media.applik8s.dev/v1alpha1',
+          kind: 'ImageJob',
+          metadata: {
+            name: 'hero',
+            namespace: 'media',
+            uid: 'uid-hero',
+            generation: 4,
+          },
+          spec: { sourceUrl: 's3://bucket/hero.png' },
+          status: {
+            applik8s: {
+              trackedExecutions: {
+                'process-image': {
+                  resourceUid: 'uid-hero',
+                  resourceGeneration: 3,
+                  workflow: 'media.process.v1',
+                  workflowRevision: 'v1',
+                  run: 'run-1',
+                  phase: 'Running',
+                  admittedAt: '2026-07-31T12:00:00.000Z',
+                  onGenerationChange: 'cancel',
+                  onDelete: { action: 'detach' },
+                },
+              },
+            },
+          },
+        },
+        runtime: { reconcileId: 'ImageJob-hero' },
+      }),
+    );
+
+    expect(cancelReference).toHaveBeenCalledWith('run-1', {
+      timeoutMs: 5_000,
+    });
+  });
+
+  it('supersedes a prior generation without requiring provider cancellation', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const run = {
+      id: 'run-2',
+      reference: {
+        provider: 'workflow' as const,
+        workflow: 'media.process.v1',
+        run: 'run-2',
+      },
+      workflowRevision: 'v2',
+      observe: vi.fn(async () => ({
+        reference: {
+          provider: 'workflow' as const,
+          workflow: 'media.process.v1',
+          run: 'run-2',
+        },
+        workflowRevision: 'v2',
+        phase: 'Admitted' as const,
+        admittedAt: '2026-07-31T12:05:00.000Z',
+      })),
+      cancel: vi.fn(async () => undefined),
+    };
+    const operator = sdk.operator({
+      name: 'non-cancelling-superseding-pipeline',
+      resources: { ImageJob },
+      handlers: [
+        ImageJob.on.reconcile(async (job) => {
+          await job.track('process-image', run, {
+            onGenerationChange: 'supersede',
+          });
+        }),
+      ],
+    });
+
+    const output = await dispatchOperatorHandler(
+      operator.definition,
+      JSON.stringify({
+        handlerId: 'ImageJob.reconcile.0',
+        event: 'reconcile',
+        object: {
+          apiVersion: 'media.applik8s.dev/v1alpha1',
+          kind: 'ImageJob',
+          metadata: {
+            name: 'hero',
+            namespace: 'media',
+            uid: 'uid-hero',
+            generation: 4,
+          },
+          spec: { sourceUrl: 's3://bucket/hero.png' },
+          status: {
+            applik8s: {
+              trackedExecutions: {
+                'process-image': {
+                  resourceUid: 'uid-hero',
+                  resourceGeneration: 3,
+                  workflow: 'media.process.v1',
+                  workflowRevision: 'v1',
+                  run: 'run-1',
+                  phase: 'Running',
+                  admittedAt: '2026-07-31T12:00:00.000Z',
+                  onGenerationChange: 'supersede',
+                  onDelete: { action: 'detach' },
+                },
+              },
+            },
+          },
+        },
+        runtime: { reconcileId: 'ImageJob-hero' },
+      }),
+    );
+    const operations = JSON.parse(output).operations as readonly {
+      readonly kind: string;
+      readonly reason?: string;
+      readonly status?: {
+        readonly applik8s?: {
+          readonly trackedExecutions?: Readonly<
+            Record<string, { readonly superseded?: object }>
+          >;
+        };
+      };
+    }[];
+    expect(operations).toContainEqual(
+      expect.objectContaining({
+        kind: 'event',
+        reason: 'WorkflowGenerationSuperseded',
+      }),
+    );
+    expect(
+      operations.find((operation) => operation.kind === 'status')
+        ?.status?.applik8s?.trackedExecutions?.['process-image']?.superseded,
+    ).toMatchObject({
+      resourceGeneration: 3,
+      run: 'run-1',
+      cancellationRequested: false,
+    });
+  });
+
+  it('cancels a deleting resource run and removes only its scoped tracking finalizer', async () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: specSchema,
+      status: statusSchema,
+    });
+    const reference = {
+      provider: 'workflow' as const,
+      workflow: 'media.process.v1',
+      run: 'run-1',
+    };
+    const observe = vi
+      .fn()
+      .mockResolvedValueOnce({
+        reference,
+        workflowRevision: 'v1',
+        phase: 'Running',
+        admittedAt: '2026-07-31T12:00:00.000Z',
+      })
+      .mockResolvedValueOnce({
+        reference,
+        workflowRevision: 'v1',
+        phase: 'Cancelled',
+        admittedAt: '2026-07-31T12:00:00.000Z',
+        finishedAt: '2026-07-31T12:05:00.000Z',
+      });
+    const cancel = vi.fn(async () => undefined);
+    const operator = sdk.operator({
+      name: 'deleting-tracked-pipeline',
+      resources: { ImageJob },
+      handlers: [
+        ImageJob.on.reconcile(async (job) => {
+          const observation = await job.track(
+            'process-image',
+            {
+              id: 'run-1',
+              reference,
+              workflowRevision: 'v1',
+              observe,
+              cancel,
+            },
+            {
+              onDelete: {
+                action: 'cancel',
+                timeout: '2m',
+                onTimeout: 'block',
+              },
+            },
+          );
+          job.status.phase = observation.phase;
+        }),
+      ],
+    });
+
+    const output = await dispatchOperatorHandler(
+      operator.definition,
+      JSON.stringify({
+        handlerId: 'ImageJob.reconcile.0',
+        event: 'reconcile',
+        object: {
+          apiVersion: 'media.applik8s.dev/v1alpha1',
+          kind: 'ImageJob',
+          metadata: {
+            name: 'hero',
+            namespace: 'media',
+            uid: 'uid-hero',
+            generation: 3,
+            deletionTimestamp: '2026-07-31T12:05:00.000Z',
+            finalizers: [
+              'tracking.applik8s.dev/process-image',
+              'application.example.test/other',
+            ],
+          },
+          spec: { sourceUrl: 's3://bucket/hero.png' },
+          status: {
+            applik8s: {
+              trackedExecutions: {
+                'process-image': {
+                  resourceUid: 'uid-hero',
+                  resourceGeneration: 3,
+                  workflow: 'media.process.v1',
+                  workflowRevision: 'v1',
+                  run: 'run-1',
+                  phase: 'Running',
+                  admittedAt: '2026-07-31T12:00:00.000Z',
+                  onGenerationChange: 'supersede',
+                  onDelete: {
+                    action: 'cancel',
+                    timeoutMs: 120_000,
+                    onTimeout: 'block',
+                  },
+                },
+              },
+            },
+          },
+        },
+        runtime: { reconcileId: 'ImageJob-hero' },
+      }),
+    );
+
+    expect(cancel).toHaveBeenCalledWith({ timeoutMs: 5_000 });
+    const operations = JSON.parse(output).operations as readonly {
+      readonly kind: string;
+      readonly operation?: string;
+      readonly finalizer?: string;
+    }[];
+    expect(operations).toContainEqual({
+      kind: 'finalizer',
+      operation: 'remove',
+      finalizer: 'tracking.applik8s.dev/process-image',
+    });
+    expect(operations).not.toContainEqual({
+      kind: 'finalizer',
+      operation: 'add',
+      finalizer: 'tracking.applik8s.dev/process-image',
+    });
+    expect(operations).not.toContainEqual(
+      expect.objectContaining({ finalizer: 'application.example.test/other' }),
+    );
   });
 });
 

@@ -6,9 +6,18 @@ import type { ApplicationCommandProgress, ApplicationCommandSubmission, Applicat
 import type { JsonObject } from '@applik8s/core';
 
 export interface Applik8sGatewayAdmission {
-  readonly principal: { readonly id: string; readonly claims?: Readonly<Record<string, unknown>> };
+  readonly principal: {
+    readonly id: string;
+    /** Canonical operation-authority revision on framework-admitted principals. */
+    readonly authorityRevision?: string;
+    readonly claims?: Readonly<Record<string, unknown>>;
+  };
   readonly trustedContext: Readonly<Record<string, unknown>>;
-  readonly authorizationVersion: string;
+  /**
+   * Compatibility shape for identity adapters that have not yet promoted the
+   * policy revision onto the canonical principal.
+   */
+  readonly authorizationVersion?: string;
 }
 
 export interface Applik8sKubernetesResourceContract {
@@ -74,6 +83,14 @@ export interface Applik8sKubernetesGatewayOptions {
   readonly objects?: CustomObjectsApi;
   readonly watch?: Watch;
   readonly readiness?: () => void | Promise<void>;
+  /**
+   * Receives the underlying failure after the public HTTP boundary has
+   * classified it. Diagnostics must never alter the protocol response.
+   */
+  readonly onError?: (
+    error: unknown,
+    operation?: { readonly kind: 'command' | 'query'; readonly id?: string; readonly action?: string },
+  ) => void;
   readonly now?: () => Date;
 }
 
@@ -198,6 +215,11 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
         }
         return json({ error: 'not_found' }, 404);
       } catch (error) {
+        notifyError(options, error, {
+          ...(route[0] === 'commands' || route[0] === 'queries' ? { kind: route[0] === 'commands' ? 'command' : 'query' } : {}),
+          ...(route[1] ? { id: route[1] } : {}),
+          ...(route[2] ? { action: route[2] } : {}),
+        });
         const message = error instanceof Error ? error.message : String(error);
         if (/not authorized/i.test(message)) return json({ error: 'forbidden' }, 403);
         if (/validation|cursor|required|placement|namespace|limit/i.test(message)) return json({ error: 'invalid_request' }, 400);
@@ -475,6 +497,27 @@ export function createApplik8sKubernetesGateway(options: Applik8sKubernetesGatew
   }
 }
 
+function notifyError(
+  options: Applik8sKubernetesGatewayOptions,
+  error: unknown,
+  operation: { readonly kind?: 'command' | 'query'; readonly id?: string; readonly action?: string },
+): void {
+  try {
+    options.onError?.(
+      error,
+      operation.kind
+        ? {
+            kind: operation.kind,
+            ...(operation.id ? { id: operation.id } : {}),
+            ...(operation.action ? { action: operation.action } : {}),
+          }
+        : undefined,
+    );
+  } catch {
+    // Diagnostics are deliberately outside the protocol authority.
+  }
+}
+
 async function* ssePayloads(reader: ReadableStreamDefaultReader<Uint8Array>, maxEventBytes: number): AsyncGenerator<string> {
   const decoder = new TextDecoder();
   let buffer = '';
@@ -706,12 +749,14 @@ async function admit(
   authenticate: Applik8sKubernetesGatewayOptions['authenticate'],
   request: Request,
   operation: { readonly kind: 'command' | 'query'; readonly id: string; readonly input: unknown },
-): Promise<Applik8sGatewayAdmission> {
+): Promise<Applik8sGatewayAdmission & { readonly authorizationVersion: string }> {
   const admission = await authenticate(request, operation);
-  if (!admission?.principal?.id || !admission.authorizationVersion || !admission.trustedContext || typeof admission.trustedContext !== 'object') {
+  const authorizationVersion = admission?.authorizationVersion
+    ?? admission?.principal?.authorityRevision;
+  if (!admission?.principal?.id || !authorizationVersion || !admission.trustedContext || typeof admission.trustedContext !== 'object') {
     throw new Error('Applik8s request identity provider returned an incomplete admission.');
   }
-  return admission;
+  return { ...admission, authorizationVersion };
 }
 
 function validateObject(schema: JsonObject, value: unknown, name: string): object {

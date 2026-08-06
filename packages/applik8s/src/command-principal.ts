@@ -77,6 +77,8 @@ function isApplicationPrincipal(value: JsonValue | undefined): value is Applicat
     && nonEmpty(value.kind)
     && nonEmpty(value.authenticationMethod)
     && stringArray(value.audience)
+    && (value.roles === undefined || stringArray(value.roles))
+    && (value.attributes === undefined || isJsonObject(value.attributes))
     && nonEmpty(value.trustedContextDigest)
     && nonEmpty(value.catalogRevision)
     && nonEmpty(value.authorityRevision)

@@ -711,7 +711,17 @@ function memoryObjects() {
 			return values.get(key)?.body;
 		},
 		async head(key) {
-			return values.get(key)?.metadata;
+			const metadata = values.get(key)?.metadata;
+			return metadata
+				? {
+						...metadata,
+						updatedAt: "2026-07-20T00:00:00.000Z",
+						custom: {
+							"applik8s-store": metadata.store,
+							"applik8s-sha256": metadata.sha256,
+						},
+					}
+				: undefined;
 		},
 		async delete(key) {
 			values.delete(key);

@@ -106,20 +106,16 @@ describe('schema runtime', () => {
     }
   });
 
-  it('fails closed for ArkType unions that cannot be represented by the supported structural subset', () => {
+  it('validates ArkType unions through the same structural runtime boundary', () => {
     const mixedUnion = toRuntimeSchema({
       kind: 'arktype',
       ref: { kind: 'arktype', exportName: 'MixedUnionArkSpec' },
       arktype: arkType({ value: 'string | number' }),
     });
 
-    const validation = mixedUnion.validate({ value: 'hero' });
-
-    expect(validation.ok).toBe(false);
-    if (!validation.ok) {
-      expect(validation.error.code).toBe('SCHEMA_UNSUPPORTED');
-      expect(validation.error.message).toContain('composition keywords');
-    }
+    expect(mixedUnion.validate({ value: 'hero' }).ok).toBe(true);
+    expect(mixedUnion.validate({ value: 42 }).ok).toBe(true);
+    expect(mixedUnion.validate({ value: false }).ok).toBe(false);
   });
 
   it('does not erase malformed ArkType-emitted property schemas before diagnostics', () => {
@@ -238,7 +234,7 @@ describe('schema runtime', () => {
     });
   });
 
-  it('fails closed for unsupported composition inside map schemas', () => {
+  it('validates composition recursively inside maps and preserves exact oneOf semantics', () => {
     const schema = toRuntimeSchema<MapSpec>({
       kind: 'jsonSchema',
       ref: { kind: 'jsonSchema', exportName: 'ComposedMapSpec' },
@@ -255,12 +251,41 @@ describe('schema runtime', () => {
       },
     });
 
-    const result = schema.validate({ labels: { env: 'prod' } });
+    expect(schema.validate({ labels: { env: 'prod', replicas: 3 } }).ok).toBe(true);
+    expect(schema.validate({ labels: { enabled: true } }).ok).toBe(false);
+  });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.code).toBe('SCHEMA_UNSUPPORTED');
-      expect(result.error.message).toContain('composition keywords');
-    }
+  it('validates discriminated anyOf results plus allOf and not constraints', () => {
+    const schema = toRuntimeSchema({
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', exportName: 'DiscriminatedResult' },
+      schema: {
+        anyOf: [
+          {
+            type: 'object',
+            required: ['registered', 'id', 'handle'],
+            properties: {
+              registered: { enum: [true] },
+              id: { type: 'string' },
+              handle: { type: 'string' },
+            },
+          },
+          {
+            type: 'object',
+            required: ['registered', 'id'],
+            properties: {
+              registered: { enum: [false] },
+              id: { type: 'string' },
+            },
+          },
+        ],
+        allOf: [{ not: { type: 'object', required: ['secret'] } }],
+      },
+    });
+
+    expect(schema.validate({ registered: true, id: 'account-1', handle: 'ada' }).ok).toBe(true);
+    expect(schema.validate({ registered: false, id: 'account-2' }).ok).toBe(true);
+    expect(schema.validate({ registered: true, id: 'account-3' }).ok).toBe(false);
+    expect(schema.validate({ registered: false, id: 'account-4', secret: 'hidden' }).ok).toBe(false);
   });
 });

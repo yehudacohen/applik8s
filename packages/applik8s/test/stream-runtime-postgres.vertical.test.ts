@@ -21,6 +21,41 @@ describe('PostgreSQL replayable application stream', () => {
     expect(unsafe.mock.calls.find(([query]) => String(query).includes('SELECT id'))?.[0]).not.toContain(', envelope');
   });
 
+  test('normalizes canonical JSON text returned for framework-authored JSONB rows', async () => {
+    const catalog = app('stream-runtime-json-text');
+    const database = catalog.database.postgres('catalog', { schema: {} });
+    const Changed = stream('cards.json-text.v1', {
+      payload: type({ cardId: 'string' }),
+    });
+    const binding = catalog.stream(Changed, {
+      database,
+      retention: { maxAgeSeconds: 3600 },
+      partitionBy: (payload) => payload.cardId,
+      authorize: () => true,
+    });
+    const unsafe = vi.fn(async (query: string) =>
+      query.includes('retention_floors')
+        ? [{ retention_floor: 0 }]
+        : [{
+            id: 'event-json-text',
+            sequence: 8,
+            partition_key: 'card-json-text',
+            recorded_at: '2026-07-15T00:00:00.000Z',
+            context_digest: 'opaque-digest',
+            payload: JSON.stringify({ cardId: 'card-json-text' }),
+          }]);
+    const source = createPostgresApplicationStream({
+      stream: binding,
+      sql: transactionalSql(unsafe),
+      principal: testApplicationPrincipal('allowed'),
+      contextDigest: 'opaque-digest',
+    });
+
+    await expect(source.read(0, 10)).resolves.toMatchObject({
+      items: [{ payload: { cardId: 'card-json-text' } }],
+    });
+  });
+
   test('hydrates admitted identity only for explicitly internal processor reads', async () => {
     const catalog = app('stream-runtime-internal-context');
     const database = catalog.database.postgres('catalog', { schema: {} });
@@ -31,12 +66,22 @@ describe('PostgreSQL replayable application stream', () => {
       'authz-v3',
       { tenantId: 'tenant-1' },
     );
+    const changeScopes = {
+      global: 'a'.repeat(64),
+      'context:tenantId': 'b'.repeat(64),
+    };
     const unsafe = vi.fn(async (query: string, ..._args: unknown[]) => query.includes('retention_floors')
       ? [{ retention_floor: 0 }]
       : [{
           id: 'event-internal-1', sequence: 1, partition_key: 'card-1', recorded_at: '2026-07-15T00:00:00.000Z',
           context_digest: 'internal-digest', payload: { cardId: 'card-1' },
-          envelope: { trustedContext: { values, digest: 'internal-digest' } },
+          envelope: {
+            trustedContext: {
+              values,
+              digest: 'c'.repeat(64),
+              changeScopes,
+            },
+          },
         }]);
     const source = createPostgresApplicationStream({
       stream: binding,
@@ -49,6 +94,7 @@ describe('PostgreSQL replayable application stream', () => {
       items: [{
         principal: expect.objectContaining({ id: 'author-1', authorityRevision: 'authz-v3' }),
         trustedContext: { tenantId: 'tenant-1' },
+        changeScopes,
       }],
     });
     expect(unsafe.mock.calls.find(([query]) => String(query).includes('SELECT id'))?.[0]).toContain(', envelope');

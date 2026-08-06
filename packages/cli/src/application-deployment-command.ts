@@ -17,10 +17,14 @@ import {
 } from './application-deployment-command-contract.js';
 import {
   loadTypeKroCompositionEntrypoint,
-  resolveApplicationBuildPackage,
   resolveGeneratedApplicationDeleteTarget,
   stageExplicitApplicationInstance,
 } from './application-deployment-files.js';
+import {
+  resolveApplicationBuildPackage,
+  resolveApplicationProjectRoot,
+} from './application-build-package.js';
+import { prepareTypeKroCompositionRuntimeEntrypoint } from './application-deployment-runtime-entrypoint.js';
 import {
   applicationInstallationReadiness,
   readApplicationInstanceSpec,
@@ -28,6 +32,7 @@ import {
   readResourceGraphDefinition,
   resourceGraphDefinitionReadiness,
   verifyApplicationRegistryPullSecret,
+  waitForApplicationOwnedNamespaceDeletion,
   waitForApplicationEndpoint,
   waitForApplicationInstanceReadiness,
   waitForResourceGraphDefinitionReadiness,
@@ -37,6 +42,11 @@ import {
   resolveDeploymentContainerRegistry,
 } from './application-deployment-registry.js';
 import { resolveApplicationInstallationValues } from './application-installation-values.js';
+import {
+  applicationDeploymentInstallationSpec,
+  createGeneratedApplicationAlchemyDeployment,
+  readApplicationDeploymentGraph,
+} from './application-alchemy-deployment.js';
 
 export async function runApplicationDeploy(
   entrypoint: string,
@@ -52,8 +62,10 @@ export async function runApplicationDeploy(
     io.stderr(`applik8s deploy --strategy must be "direct" or "kro", received ${JSON.stringify(options.strategy)}.`);
     return 1;
   }
+  const applicationEntrypoint = resolve(io.cwd, entrypoint);
+  const projectRoot = await resolveApplicationProjectRoot(applicationEntrypoint);
   if (!options.skipAppBuild) {
-    const applicationPackage = await resolveApplicationBuildPackage(resolve(io.cwd, entrypoint));
+    const applicationPackage = await resolveApplicationBuildPackage(applicationEntrypoint);
     const buildCode = await runPhase('application-build', io, () =>
       runtime.runChild({ command: 'bun', args: ['run', 'build'], cwd: applicationPackage.directory }));
     if (buildCode !== 0) throw processError('application-build', buildCode);
@@ -71,7 +83,7 @@ export async function runApplicationDeploy(
   if (buildCode !== 0) throw processError('composition-compile', buildCode);
   const bundlePath = resolve(io.cwd, outDir, 'typekro', 'typekro-composition.json');
   const instance = await runPhase('instance-selection', io, () => stageExplicitApplicationInstance(
-    resolve(io.cwd, entrypoint),
+    applicationEntrypoint,
     bundlePath,
     options.instance ? resolve(io.cwd, options.instance) : undefined,
   ));
@@ -85,7 +97,7 @@ export async function runApplicationDeploy(
     bundlePath,
     options.context,
     instance,
-    io.cwd,
+    projectRoot,
     options.strategy ?? 'kro',
     previousInstallationSpec,
     options.acknowledge ?? [],
@@ -99,8 +111,14 @@ export async function runApplicationDeploy(
   }
   const registry = await runPhase('registry-resolution', io, () =>
     resolveDeploymentContainerRegistry(bundlePath, options.context, instance.spec, io));
+  const runtimeEntrypoint = await runPhase('alchemy-plan', io, () =>
+    prepareTypeKroCompositionRuntimeEntrypoint(
+      resolve(io.cwd, options.runtimeEntrypoint ?? entrypoint),
+      bundlePath,
+      projectRoot,
+    ));
   const source = await runPhase('alchemy-plan', io, () => loadTypeKroCompositionEntrypoint(
-    resolve(io.cwd, options.runtimeEntrypoint ?? entrypoint),
+    runtimeEntrypoint,
     options.compositionName ?? 'app',
   ));
   // static-import-exception: keep Alchemy and provider implementations out of the thin CLI/router.
@@ -111,7 +129,10 @@ export async function runApplicationDeploy(
     spec: instance.spec as never,
     context: options.context,
     registry,
-    projectRoot: io.cwd,
+    projectRoot,
+    ...(options.allowBreakingChanges
+      ? { allowBreakingChanges: true }
+      : {}),
   });
   const plan = await runPhase('alchemy-plan', io, () => deployment.plan());
   const effectful = plan.changes.filter((change) => change.action !== 'noop');
@@ -146,6 +167,8 @@ export async function runApplicationDelete(
   options: ApplicationDeleteCommandOptions,
   io: ApplicationDeploymentCommandIo,
 ): Promise<number> {
+  const applicationEntrypoint = resolve(io.cwd, entrypoint);
+  const projectRoot = await resolveApplicationProjectRoot(applicationEntrypoint);
   const outDir = options.outDir ?? '.applik8s/deploy';
   const bundlePath = resolve(io.cwd, outDir, 'typekro', 'typekro-composition.json');
   const graphPath = join(dirname(bundlePath), 'application-deployment-graph.json');
@@ -171,8 +194,13 @@ export async function runApplicationDelete(
     );
   }
   const spec = applicationDeploymentInstallationSpec(graph);
+  const runtimeEntrypoint = await prepareTypeKroCompositionRuntimeEntrypoint(
+    applicationEntrypoint,
+    bundlePath,
+    projectRoot,
+  );
   const source = await loadTypeKroCompositionEntrypoint(
-    resolve(io.cwd, entrypoint),
+    runtimeEntrypoint,
     options.compositionName ?? 'app',
   );
   const registry = await resolveDeploymentContainerRegistry(
@@ -187,10 +215,12 @@ export async function runApplicationDelete(
     spec: spec as never,
     context: options.context,
     registry,
-    projectRoot: io.cwd,
+    projectRoot,
   });
   io.stdout(`Destroying ${target.apiVersion}/${target.kind}/${target.instanceName} through Alchemy and TypeKro in context ${options.context}`);
   await runPhase('alchemy-destroy', io, () => deployment.destroy());
+  await runPhase('alchemy-destroy', io, () =>
+    waitForApplicationOwnedNamespaceDeletion(options.context, graph, io));
   io.stdout(`Application instance ${target.instanceName} deleted; Alchemy and TypeKro finalization completed.`);
   return 0;
 }
@@ -200,6 +230,8 @@ export async function runApplicationStatus(
   options: ApplicationStatusCommandOptions,
   io: ApplicationDeploymentCommandIo,
 ): Promise<number> {
+  const applicationEntrypoint = resolve(io.cwd, entrypoint);
+  const projectRoot = await resolveApplicationProjectRoot(applicationEntrypoint);
   const outDir = options.outDir ?? '.applik8s/deploy';
   const bundlePath = resolve(io.cwd, outDir, 'typekro', 'typekro-composition.json');
   const graphPath = join(dirname(bundlePath), 'application-deployment-graph.json');
@@ -209,11 +241,6 @@ export async function runApplicationStatus(
     );
   }
   const target = await resolveGeneratedApplicationDeleteTarget(bundlePath, options);
-  const {
-    applicationDeploymentInstallationSpec,
-    createGeneratedApplicationAlchemyDeployment,
-    readApplicationDeploymentGraph,
-  } = await import('./application-alchemy-deployment.js');
   const graph = await readApplicationDeploymentGraph(graphPath);
   if (
     graph.metadata.identity.instance !== target.instanceName
@@ -225,8 +252,13 @@ export async function runApplicationStatus(
     );
   }
   const spec = applicationDeploymentInstallationSpec(graph);
+  const runtimeEntrypoint = await prepareTypeKroCompositionRuntimeEntrypoint(
+    applicationEntrypoint,
+    bundlePath,
+    projectRoot,
+  );
   const source = await loadTypeKroCompositionEntrypoint(
-    resolve(io.cwd, entrypoint),
+    runtimeEntrypoint,
     options.compositionName ?? 'app',
   );
   const registry = await resolveDeploymentContainerRegistry(
@@ -241,7 +273,7 @@ export async function runApplicationStatus(
     spec: spec as never,
     context: options.context,
     registry,
-    projectRoot: io.cwd,
+    projectRoot,
   });
   const [alchemy, definitionResource, instanceResource] = await Promise.all([
     deployment.plan(),

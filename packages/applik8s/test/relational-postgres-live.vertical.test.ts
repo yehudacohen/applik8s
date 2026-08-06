@@ -96,7 +96,16 @@ describe.runIf(databaseUrl)('v0.6 real PostgreSQL relational authority', () => {
       await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [applicationModelChangeCommitScope(digest)]);
       await transaction.unsafe('INSERT INTO cards (id, organization_id, name, revision) VALUES ($1::uuid, $2::uuid, $3, $4)', [firstId, org1, 'late-first', 'r1']);
       await transaction.unsafe(
-        'INSERT INTO applik8s_model_changes (model, operation, identity, revision, context_digest, changed_fields, recorded_at) VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb, now())',
+        `WITH next_commit AS (
+          UPDATE applik8s_model_change_commit_frontier
+          SET position = position + 1
+          WHERE singleton = true
+          RETURNING position
+        )
+        INSERT INTO applik8s_model_changes
+          (commit_position, model, operation, identity, revision, context_digest, changed_fields, recorded_at)
+        SELECT position, $1, $2, $3::jsonb, $4, $5, $6::jsonb, now()
+        FROM next_commit`,
         ['Card', 'insert', JSON.stringify(firstId), 'r1', digest, JSON.stringify(['name'])],
       );
       firstAllocated?.();

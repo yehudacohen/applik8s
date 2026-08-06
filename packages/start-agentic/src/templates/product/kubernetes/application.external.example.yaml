@@ -1,0 +1,41 @@
+apiVersion: applik8s-template-project.applik8s.dev/v1alpha1
+kind: Applik8sTemplateProject
+metadata:
+  name: applik8s-template-project-external
+  namespace: applik8s-template-project-control
+spec:
+  name: applik8s-template-project-external
+  profile: external
+  providers:
+    database:
+      clusterName: product-postgres
+      namespace: product-providers
+      database: product
+      connectionSecretName: product-postgres-app
+      connectionSecretKey: uri
+    analytics:
+      endpoint: https://clickhouse.example.test:8443
+    events:
+      server: nats://nats.product-providers.svc:4222
+    objects:
+      endpoint: https://objects.example.test
+      bucket: product
+      region: us-east-1
+      credentialsSecretName: product-objects
+    workflows:
+      hostPort: workflows.example.test:7070
+      apiUrl: https://workflows.example.test
+      tokenSecretName: product-workflows
+    search:
+      endpoint: https://search.example.test
+    inference:
+      endpoint: https://inference.example.test/v1
+      model: product-assistant-v1
+      credentialSecretName: product-inference
+    identity:
+      kind: ory
+      issuer: https://identity.example.test
+      publicUrl: https://identity.example.test
+      adminUrl: https://identity-admin.example.test
+    payments:
+      secretName: product-payments

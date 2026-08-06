@@ -14,10 +14,14 @@ export interface ApplicationAnalyticalDatabaseResourceState {
 export function emitApplicationAnalyticalDatabaseResources(state: ApplicationAnalyticalDatabaseResourceState, provider: unknown): void {
   const projection = applicationClickHouseAnalyticalDatabaseImplementation(provider);
   if (!projection || projection.provision === false) return;
-  const name = projection.name ?? 'applik8s-analytics';
+  const rawName = projection.name ?? 'applik8s-analytics';
+  const graphAwareName = applicationTypeKroExpressionValue(rawName);
+  const name = graphAwareName
+    ? applicationTypeKroString(rawName)
+    : kubernetesNameSegment(rawName);
   const namespace = applicationTypeKroString(projection.namespace ?? 'applik8s-analytics');
   const provisioned = applicationProviderCondition(projection.enabled, projection.provision);
-  const key = `${applicationTypeKroValueIdentity(namespace)}:${name}`;
+  const key = `${applicationTypeKroValueIdentity(namespace)}:${applicationTypeKroValueIdentity(name)}`;
   if (state.emittedAnalyticalDatabases.has(key)) return;
   state.emittedAnalyticalDatabases.add(key);
   // Materialize the nested repository singleton explicitly. Wrapping the
@@ -83,7 +87,9 @@ export function emitApplicationAnalyticalDatabaseResources(state: ApplicationAna
     },
   });
   const installation = clickHouseInstallation({
-    id: graphResourceId(name, 'clickhouseCluster'),
+    id: graphAwareName
+      ? 'applik8sAnalyticalDatabase'
+      : graphResourceId(name, 'clickhouseCluster'),
     name,
     namespace,
     version: projection.version ?? '25.12.5',
@@ -93,10 +99,15 @@ export function emitApplicationAnalyticalDatabaseResources(state: ApplicationAna
   });
   applyApplicationTypeKroIncludeWhen(installation, provisioned);
   const clientAccess = networkPolicy({
-    id: graphResourceId(name, 'clickhouseClientAccess'),
+    id: graphAwareName
+      ? 'applik8sAnalyticalDatabaseClientAccess'
+      : graphResourceId(name, 'clickhouseClientAccess'),
     apiVersion: 'networking.k8s.io/v1',
     kind: 'NetworkPolicy',
-    metadata: { name: `${kubernetesNameSegment(name)}-client-access`, namespace },
+    metadata: {
+      name: applicationTypeKroString(name, '-client-access'),
+      namespace,
+    },
     spec: {
       podSelector: { matchLabels: { 'clickhouse.altinity.com/chi': name } },
       policyTypes: ['Ingress'],

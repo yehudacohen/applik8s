@@ -1,10 +1,9 @@
-import type { FinalizeHandlerOptions, HandlerRegistration, OperatorDefinition, OperatorDeploymentOptions, PermissionRule, ResourceDefinition, ResourceObject } from '@applik8s/core';
+import type { AnyKubernetesReadResourceDefinition, AnyResourceDefinition, FinalizeHandlerOptions, HandlerRegistration, OperatorDefinition, OperatorDeploymentOptions, PermissionRule, ResourceDefinition, ResourceObject, SecondaryWatchRegistration } from '@applik8s/core';
 import type { OperatorDeploymentBindingKind, OperatorDeploymentStatus } from '@applik8s/sdk';
-import { sdk } from '@applik8s/sdk';
-import { kubernetesNameSegment } from './application-identifiers.js';
-import { applicationTypeKroString } from './application-typekro-values.js';
 
-export type ApplicationReconcileHandler<TSpec extends object, TStatus extends object> = Parameters<ResourceDefinition<TSpec, TStatus>['on']['reconcile']>[0];
+export { createApplicationResourceEventOperatorController } from './application-resource-event-controller.js';
+
+export type ApplicationResourceEventHandler<TSpec extends object, TStatus extends object> = Parameters<ResourceDefinition<TSpec, TStatus>['on']['reconcile']>[0];
 export type ApplicationResourceObject<TResource> = TResource extends ResourceDefinition<infer TSpec, infer TStatus> ? ResourceObject<TSpec, TStatus> : never;
 
 export interface ApplicationFinalizeEventHandler<TSpec extends object, TStatus extends object> extends FinalizeHandlerOptions {
@@ -21,8 +20,14 @@ export interface ApplicationResourceEventHandlers<TSpec extends object, TStatus 
   readonly finalize?: ApplicationFinalizeEventHandler<TSpec, TStatus>;
 }
 
-export interface ApplicationReconcileOptions extends OperatorDeploymentOptions {
+export interface ApplicationResourceControllerOptions extends OperatorDeploymentOptions {
   readonly name?: string;
+  /** Additional Kubernetes kinds available through `resource.read`. */
+  readonly reads?: Readonly<Record<string, AnyKubernetesReadResourceDefinition>>;
+  /** Exact secondary-resource wakeups lowered into the generated operator. */
+  readonly secondaryWatches?:
+    | readonly SecondaryWatchRegistration[]
+    | ((resource: AnyResourceDefinition) => readonly SecondaryWatchRegistration[]);
   /** Explicit RBAC required by direct Kubernetes SDK calls in this handler. */
   readonly permissions?: readonly PermissionRule[];
 }
@@ -34,32 +39,11 @@ export interface ApplicationResourceControllerBinding {
   readonly status: OperatorDeploymentStatus;
 }
 
-export function createApplicationResourceEventOperator<TSpec extends object, TStatus extends object>(
-  resource: ResourceDefinition<TSpec, TStatus>,
-  handlers: ApplicationResourceEventHandlers<TSpec, TStatus>,
-  options: ApplicationReconcileOptions,
-) {
-  const { name, permissions, ...authoredDeployment } = options;
-  const deployment = authoredDeployment.namespace
-    ? { ...authoredDeployment, namespace: applicationTypeKroString(authoredDeployment.namespace) }
-    : authoredDeployment;
-  const registrations: HandlerRegistration<TSpec, TStatus>[] = [];
-  if (handlers.reconcile) registrations.push(resource.on.reconcile(handlers.reconcile));
-  if (handlers.created) registrations.push(resource.on.created(handlers.created));
-  if (handlers.updated) registrations.push(resource.on.updated(handlers.updated));
-  if (handlers.deleted) registrations.push(resource.on.deleted(handlers.deleted));
-  if (handlers.statusChanged) registrations.push(resource.on.statusChanged(handlers.statusChanged));
-  if (handlers.finalize) {
-    const { handler, ...finalizerOptions } = handlers.finalize;
-    registrations.push(resource.on.finalize(handler, finalizerOptions));
-  }
-  if (registrations.length === 0) throw new Error(`Application controller for ${resource.kind} requires at least one lifecycle handler.`);
-  const operator = sdk.operator({
-    name: name ?? `${kubernetesNameSegment(resource.kind)}-controller`,
-    resources: { [resource.kind]: resource },
-    handlers: registrations,
-    ...(permissions && permissions.length > 0 ? { permissions } : {}),
-    ...(Object.keys(deployment).length > 0 ? { deployment } : {}),
-  });
-  return { operator, deployed: operator(deployment) };
+export interface ApplicationResourceEventOperatorController {
+  readonly operator: { readonly definition: OperatorDefinition };
+  readonly deployed: ApplicationResourceControllerBinding;
+  add(
+    registration: HandlerRegistration<object, object>,
+    callback: unknown,
+  ): void;
 }

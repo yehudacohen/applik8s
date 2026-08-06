@@ -1,4 +1,3 @@
-import { createHash, randomBytes } from "node:crypto";
 import * as Provider from "alchemy/Provider";
 import {
   type Resource as AlchemyResource,
@@ -6,38 +5,16 @@ import {
 } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
+import { generatedSecretClient, readGeneratedSecret } from "./generated-secret-client.js";
+import {
+  type ApplicationGeneratedSecretAttributes,
+  type ApplicationGeneratedSecretProps,
+  applicationGeneratedSecretDeploymentNodeLabel,
+  materializeApplicationGeneratedSecretValues,
+  validateApplicationGeneratedSecretProps,
+} from "./generated-secret-contract.js";
 
-export type ApplicationGeneratedSecretValue =
-  | {
-      readonly kind: "random";
-      readonly bytes: number;
-      readonly encoding: "base64url";
-    }
-  | {
-      readonly kind: "publicLiteral";
-      readonly value: string;
-    };
-
-export interface ApplicationGeneratedSecretProps {
-  readonly deploymentNodeId: string;
-  readonly context: string;
-  readonly namespace: string;
-  readonly name: string;
-  readonly values: Readonly<Record<string, ApplicationGeneratedSecretValue>>;
-  readonly consumers: readonly string[];
-  readonly deletionPolicy: "delete" | "retain";
-  /** Alchemy dependency handles; values contain no credential material. */
-  readonly prerequisites?: readonly unknown[];
-}
-
-export interface ApplicationGeneratedSecretAttributes {
-  readonly deploymentNodeId: string;
-  readonly namespace: string;
-  readonly name: string;
-  readonly keys: readonly string[];
-  readonly ownership: "managed" | "external";
-  readonly ready: true;
-}
+export * from "./generated-secret-contract.js";
 
 type ApplicationGeneratedSecretResource = AlchemyResource<
   "Applik8s.GeneratedSecret",
@@ -58,8 +35,20 @@ export function applicationGeneratedSecretProvider(): Layer.Layer<
 > {
   return Provider.succeed(ApplicationGeneratedSecret, {
     version: 1,
-    read: ({ output }) => Effect.succeed(output),
+    read: ({ olds }) =>
+      Effect.tryPromise({
+        try: async () => observeGeneratedSecret(olds),
+        catch: toError,
+      }),
     list: () => Effect.succeed([]),
+    diff: ({ olds }) =>
+      Effect.tryPromise({
+        try: async (): Promise<{ action: "update" } | undefined> =>
+          (await observeGeneratedSecret(olds))
+            ? undefined
+            : { action: "update" },
+        catch: toError,
+      }),
     reconcile: ({ news }) =>
       Effect.tryPromise({
         try: async () => reconcileGeneratedSecret(news),
@@ -75,48 +64,41 @@ export function applicationGeneratedSecretProvider(): Layer.Layer<
   });
 }
 
+async function observeGeneratedSecret(
+  props: ApplicationGeneratedSecretProps,
+): Promise<ApplicationGeneratedSecretAttributes | undefined> {
+  validateApplicationGeneratedSecretProps(props);
+  const core = await generatedSecretClient(props.context);
+  const existing = await readGeneratedSecret(core, props.namespace, props.name);
+  if (!existing) return undefined;
+  const keys = Object.keys(props.values).sort();
+  const secretType = props.secretType ?? "Opaque";
+  assertGeneratedSecretShape(existing, props, keys, secretType);
+  return attributes(
+    props,
+    keys,
+    isManagedGeneratedSecret(existing, props) ? "managed" : "external",
+  );
+}
+
 async function reconcileGeneratedSecret(
   props: ApplicationGeneratedSecretProps,
 ): Promise<ApplicationGeneratedSecretAttributes> {
   validateApplicationGeneratedSecretProps(props);
-  // Load the SDK only inside the effectful operation host.
-  // static-import-exception: keep the provider declaration/state surface portable.
-  const kubernetes = await import("@kubernetes/client-node");
-  const config = new kubernetes.KubeConfig();
-  config.loadFromDefault();
-  config.setCurrentContext(props.context);
-  const core = config.makeApiClient(kubernetes.CoreV1Api);
-  const existing = await core
-    .readNamespacedSecret({
-      namespace: props.namespace,
-      name: props.name,
-    })
-    .catch((cause: unknown) => {
-      if (statusCode(cause) === 404) return undefined;
-      throw cause;
-    });
+  const core = await generatedSecretClient(props.context);
+  const existing = await readGeneratedSecret(core, props.namespace, props.name);
   const keys = Object.keys(props.values).sort();
+  const secretType = props.secretType ?? "Opaque";
   if (existing) {
-    if (
-      existing.type !== "Opaque" ||
-      keys.some((key) => !existing.data?.[key])
-    ) {
-      throw new Error(
-        `Existing generated Secret ${props.namespace}/${props.name} must be Opaque and contain ${keys.join(", ")}.`,
-      );
-    }
-    const labels = existing.metadata?.labels ?? {};
-    const annotations = existing.metadata?.annotations ?? {};
-    const managed =
-      labels["applik8s.dev/deployment-node"] ===
-        applicationGeneratedSecretDeploymentNodeLabel(props.deploymentNodeId) ||
-      annotations["applik8s.dev/deployment-node"] === props.deploymentNodeId;
+    assertGeneratedSecretShape(existing, props, keys, secretType);
+    const managed = isManagedGeneratedSecret(existing, props);
     return attributes(props, keys, managed ? "managed" : "external");
   }
+  const generated = materializeApplicationGeneratedSecretValues(props.values);
   const data = Object.fromEntries(
-    Object.entries(props.values).map(([key, contract]) => [
+    Object.entries(generated).map(([key, value]) => [
       key,
-      Buffer.from(generatedValue(contract), "utf8").toString("base64"),
+      Buffer.from(value, "utf8").toString("base64"),
     ]),
   );
   await core.createNamespacedSecret({
@@ -138,42 +120,40 @@ async function reconcileGeneratedSecret(
         annotations: {
           "applik8s.dev/consumers": props.consumers.join(","),
           "applik8s.dev/deployment-node": props.deploymentNodeId,
+          "applik8s.dev/deployment-owner": props.deploymentOwnerId,
         },
       },
-      type: "Opaque",
+      type: secretType,
       data,
     },
   });
   return attributes(props, keys, "managed");
 }
 
+function assertGeneratedSecretShape(
+  existing: NonNullable<Awaited<ReturnType<typeof readGeneratedSecret>>>,
+  props: ApplicationGeneratedSecretProps,
+  keys: readonly string[],
+  secretType: string,
+): void {
+  if (
+    existing.type !== secretType ||
+    keys.some((key) => !existing.data?.[key])
+  ) {
+    throw new Error(
+      `Existing generated Secret ${props.namespace}/${props.name} must be ${secretType} and contain ${keys.join(", ")}.`,
+    );
+  }
+}
+
 async function deleteGeneratedSecret(
   props: ApplicationGeneratedSecretProps,
   output: ApplicationGeneratedSecretAttributes,
 ): Promise<void> {
-  // static-import-exception: load the Kubernetes SDK only for effectful delete.
-  const kubernetes = await import("@kubernetes/client-node");
-  const config = new kubernetes.KubeConfig();
-  config.loadFromDefault();
-  config.setCurrentContext(props.context);
-  const core = config.makeApiClient(kubernetes.CoreV1Api);
-  const existing = await core
-    .readNamespacedSecret({
-      namespace: output.namespace,
-      name: output.name,
-    })
-    .catch((cause: unknown) => {
-      if (statusCode(cause) === 404) return undefined;
-      throw cause;
-    });
+  const core = await generatedSecretClient(props.context);
+  const existing = await readGeneratedSecret(core, output.namespace, output.name);
   if (!existing) return;
-  const labels = existing.metadata?.labels ?? {};
-  const annotations = existing.metadata?.annotations ?? {};
-  if (
-    labels["applik8s.dev/deployment-node"] !==
-      applicationGeneratedSecretDeploymentNodeLabel(props.deploymentNodeId) &&
-    annotations["applik8s.dev/deployment-node"] !== props.deploymentNodeId
-  ) {
+  if (!isManagedGeneratedSecret(existing, props)) {
     throw new Error(
       `Refusing to delete externally owned Secret ${output.namespace}/${output.name}.`,
     );
@@ -184,30 +164,18 @@ async function deleteGeneratedSecret(
   });
 }
 
-/** Stable Kubernetes-label projection; the full graph identity remains in an annotation and Alchemy state. */
-export function applicationGeneratedSecretDeploymentNodeLabel(
-  deploymentNodeId: string,
-): string {
-  const value = deploymentNodeId.trim();
-  if (
-    value.length <= 63 &&
-    /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/.test(value)
-  ) {
-    return value;
-  }
-  const digest = createHash("sha256").update(value).digest("hex").slice(0, 12);
-  const readable = value
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "")
-    .slice(0, 50)
-    .replace(/[^a-z0-9]+$/g, "");
-  return `${readable || "deployment-node"}-${digest}`;
-}
-
-function generatedValue(contract: ApplicationGeneratedSecretValue): string {
-  if (contract.kind === "publicLiteral") return contract.value;
-  return randomBytes(contract.bytes).toString(contract.encoding);
+function isManagedGeneratedSecret(
+  secret: NonNullable<Awaited<ReturnType<typeof readGeneratedSecret>>>,
+  props: ApplicationGeneratedSecretProps,
+): boolean {
+  const labels = secret.metadata?.labels ?? {};
+  const annotations = secret.metadata?.annotations ?? {};
+  return (
+    (labels["applik8s.dev/deployment-node"] ===
+      applicationGeneratedSecretDeploymentNodeLabel(props.deploymentNodeId) ||
+      annotations["applik8s.dev/deployment-node"] === props.deploymentNodeId) &&
+    annotations["applik8s.dev/deployment-owner"] === props.deploymentOwnerId
+  );
 }
 
 function attributes(
@@ -223,55 +191,6 @@ function attributes(
     ownership,
     ready: true,
   };
-}
-
-export function validateApplicationGeneratedSecretProps(
-  props: ApplicationGeneratedSecretProps,
-): void {
-  if (
-    !props.deploymentNodeId.trim() ||
-    !props.context.trim() ||
-    !props.namespace.trim() ||
-    !props.name.trim() ||
-    Object.keys(props.values).length === 0
-  ) {
-    throw new Error("Generated Secret requires node, context, namespace, name, and value contracts.");
-  }
-  for (const [key, contract] of Object.entries(props.values)) {
-    if (!key.trim()) throw new Error("Generated Secret keys must not be empty.");
-    if (
-      contract.kind === "publicLiteral" &&
-      (!contract.value.trim() ||
-        /(?:password|passwd|token|private[-_]?key|client[-_]?secret|credential)/i.test(
-          key,
-        ))
-    ) {
-      throw new Error(
-        `Generated Secret ${props.namespace}/${props.name} key ${key} cannot persist sensitive or empty literal material; use a random value contract.`,
-      );
-    }
-    if (
-      contract.kind === "random" &&
-      (!Number.isInteger(contract.bytes) ||
-        contract.bytes < 32 ||
-        contract.bytes > 4096 ||
-        contract.encoding !== "base64url")
-    ) {
-      throw new Error(
-        `Generated Secret ${props.namespace}/${props.name} key ${key} has an unsafe random value contract.`,
-      );
-    }
-  }
-}
-
-function statusCode(cause: unknown): number | undefined {
-  if (!cause || typeof cause !== "object") return undefined;
-  const direct = Reflect.get(cause, "statusCode") ?? Reflect.get(cause, "code");
-  if (typeof direct === "number") return direct;
-  const response = Reflect.get(cause, "response");
-  if (!response || typeof response !== "object") return undefined;
-  const responseStatus = Reflect.get(response, "statusCode");
-  return typeof responseStatus === "number" ? responseStatus : undefined;
 }
 
 function toError(cause: unknown): Error {

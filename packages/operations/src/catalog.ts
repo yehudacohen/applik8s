@@ -14,6 +14,12 @@ export interface ApplicationCatalogReferenceSnapshot {
   readonly envelopeIds: readonly string[];
   readonly workflowIds: readonly string[];
   readonly sessionIds: readonly string[];
+  /**
+   * Exact operation identities carried by a durable reference. Missing or
+   * empty entries remain fail-closed because their compatibility cannot be
+   * proven.
+   */
+  readonly operationIdsByReference?: Readonly<Record<string, readonly ApplicationOperationId[]>>;
 }
 
 export interface ApplicationOperationCatalogRepository {
@@ -26,6 +32,7 @@ export interface ApplicationOperationCatalogRepository {
     revision: ApplicationCatalogRevisionId,
     kind: 'grant' | 'envelope' | 'workflow' | 'session',
     referenceId: string,
+    operationIds?: readonly ApplicationOperationId[],
   ): Promise<void>;
   removeReference(
     application: string,
@@ -68,7 +75,18 @@ export class ApplicationOperationCatalogManager {
         if (existing.digest !== catalog.digest) {
           throw new ApplicationCatalogError('CATALOG_REVISION_CONFLICT', `Catalog revision ${catalog.revision} already exists with digest ${existing.digest}.`);
         }
-        return { catalog: existing };
+        const catalogs = await this.#repository.list(catalog.application);
+        const active = catalogs.find((candidate) => candidate.state === 'active');
+        const predecessor = existing.predecessor
+          ? await this.#repository.get(catalog.application, existing.predecessor)
+          : active;
+        return {
+          catalog: existing,
+          ...(predecessor ? { predecessor } : {}),
+          ...(predecessor
+            ? { compatibility: compareApplicationOperationCatalogs(predecessor, existing) }
+            : {}),
+        };
       }
       const catalogs = await this.#repository.list(catalog.application);
       const active = catalogs.find((candidate) => candidate.state === 'active');
@@ -215,6 +233,7 @@ export class InMemoryApplicationOperationCatalogRepository implements Applicatio
       envelopeIds: [],
       workflowIds: [],
       sessionIds: [],
+      operationIdsByReference: {},
     });
   }
 
@@ -227,6 +246,7 @@ export class InMemoryApplicationOperationCatalogRepository implements Applicatio
     revision: ApplicationCatalogRevisionId,
     kind: 'grant' | 'envelope' | 'workflow' | 'session',
     referenceId: string,
+    operationIds: readonly ApplicationOperationId[] = [],
   ): Promise<void> {
     const key = catalogKey(application, revision);
     const current = await this.references(application, revision);
@@ -234,6 +254,10 @@ export class InMemoryApplicationOperationCatalogRepository implements Applicatio
     this.#references.set(key, {
       ...current,
       [field]: [...new Set([...current[field], referenceId])].sort(),
+      operationIdsByReference: {
+        ...(current.operationIdsByReference ?? {}),
+        [referenceOperationKey(kind, referenceId)]: [...new Set(operationIds)].sort(),
+      },
     });
   }
 
@@ -249,6 +273,10 @@ export class InMemoryApplicationOperationCatalogRepository implements Applicatio
     this.#references.set(key, {
       ...current,
       [field]: current[field].filter((candidate) => candidate !== referenceId),
+      operationIdsByReference: Object.fromEntries(
+        Object.entries(current.operationIdsByReference ?? {})
+          .filter(([key]) => key !== referenceOperationKey(kind, referenceId)),
+      ),
     });
   }
 
@@ -295,6 +323,7 @@ export function compareApplicationOperationCatalogs(
     readonly envelopeIds?: readonly string[];
     readonly workflowIds?: readonly string[];
     readonly sessionIds?: readonly string[];
+    readonly operationIdsByReference?: Readonly<Record<string, readonly ApplicationOperationId[]>>;
   } = {},
 ): ApplicationOperationCompatibilityReport {
   const changes: ApplicationOperationCompatibilityChange[] = [];
@@ -338,17 +367,39 @@ export function compareApplicationOperationCatalogs(
       changes.push({ operationId: operation.id, kind: 'added', message: `Operation ${operation.id} was added.` });
     }
   }
-  const incompatible = changes.some((change) => change.kind === 'removed' || change.kind === 'incompatible');
+  const incompatibleOperationIds = new Set(
+    changes
+      .filter((change) => change.kind === 'removed' || change.kind === 'incompatible')
+      .map((change) => change.operationId),
+  );
+  const incompatible = incompatibleOperationIds.size > 0;
+  const blocking = (
+    kind: 'grant' | 'envelope' | 'workflow' | 'session',
+    ids: readonly string[] | undefined,
+  ) => incompatible
+    ? [...(ids ?? [])].filter((id) => {
+        const operationIds = references.operationIdsByReference?.[referenceOperationKey(kind, id)];
+        return !operationIds || operationIds.length === 0
+          || operationIds.some((operationId) => incompatibleOperationIds.has(operationId));
+      })
+    : [];
   return {
     fromRevision: from.revision,
     toRevision: to.revision,
     compatible: !incompatible,
     changes,
-    blockingGrantIds: incompatible ? [...(references.grantIds ?? [])] : [],
-    blockingEnvelopeIds: incompatible ? [...(references.envelopeIds ?? [])] : [],
-    blockingWorkflowIds: incompatible ? [...(references.workflowIds ?? [])] : [],
-    blockingSessionIds: incompatible ? [...(references.sessionIds ?? [])] : [],
+    blockingGrantIds: blocking('grant', references.grantIds),
+    blockingEnvelopeIds: blocking('envelope', references.envelopeIds),
+    blockingWorkflowIds: blocking('workflow', references.workflowIds),
+    blockingSessionIds: blocking('session', references.sessionIds),
   };
+}
+
+function referenceOperationKey(
+  kind: 'grant' | 'envelope' | 'workflow' | 'session',
+  referenceId: string,
+): string {
+  return `${kind}:${referenceId}`;
 }
 
 function compareOperation(
@@ -385,7 +436,7 @@ function catalogKey(application: string, revision: ApplicationCatalogRevisionId)
 
 function referenceKindField(
   kind: 'grant' | 'envelope' | 'workflow' | 'session',
-): keyof ApplicationCatalogReferenceSnapshot {
+): 'grantIds' | 'envelopeIds' | 'workflowIds' | 'sessionIds' {
   switch (kind) {
     case 'grant': return 'grantIds';
     case 'envelope': return 'envelopeIds';

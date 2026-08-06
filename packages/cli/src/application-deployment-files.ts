@@ -36,6 +36,8 @@ export interface TypeKroApplicationComposition {
   };
 }
 
+const typeKroArtifactBindingsSpecField = 'typekroArtifactBindings';
+
 export async function stageExplicitApplicationInstance(
   entrypoint: string,
   bundlePath: string,
@@ -102,6 +104,10 @@ export async function stageExplicitApplicationInstance(
   if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
     throw new Error(`Explicit Application instance ${candidate.sourcePath} requires a concrete object spec for deployment lowering.`);
   }
+  const authoredSpec = applicationAuthoredSpec(
+    spec as Readonly<Record<string, unknown>>,
+    candidate.sourcePath,
+  );
   const instancesDirectory = join(dirname(bundlePath), 'instances');
   await mkdir(instancesDirectory, { recursive: true });
   for (const file of (await readdir(instancesDirectory)).filter((file) => /\.ya?ml$/.test(file))) {
@@ -130,7 +136,7 @@ export async function stageExplicitApplicationInstance(
       throw new Error(`Generated prerequisite instance ${path} has an invalid applik8s.dev/include-when contract.`);
     }
     const active = conditions.every((condition) => {
-      const resolved = resolveApplicationInstallationValues(condition, spec as Readonly<Record<string, unknown>>);
+      const resolved = resolveApplicationInstallationValues(condition, authoredSpec);
       if (typeof resolved !== 'boolean') {
         throw new Error(`Generated prerequisite condition ${condition} must resolve to a boolean installation value.`);
       }
@@ -154,10 +160,44 @@ export async function stageExplicitApplicationInstance(
     kind,
     name,
     namespace,
-    spec: spec as Readonly<Record<string, unknown>>,
+    spec: authoredSpec,
     path: stagedPath,
     resourceGraphDefinitionName: graph.metadata.name,
   };
+}
+
+/**
+ * Separate authored installation input from TypeKro's persisted provider
+ * projection. Generated/GitOps instances carry an empty, schema-invariant
+ * artifact-binding map before TypeKro materializes provider outputs. That map
+ * must remain in the staged YAML, but it is not application input and passing
+ * it back through planning would violate TypeKro's reserved-field contract.
+ *
+ * A populated map is never accepted from a deployment input. Its values are
+ * provider-owned immutable artifact references; accepting them here would let
+ * an authored manifest bypass Alchemy materialization or replay stale live
+ * state into a new deployment.
+ */
+function applicationAuthoredSpec(
+  spec: Readonly<Record<string, unknown>>,
+  sourcePath: string,
+): Readonly<Record<string, unknown>> {
+  if (!Object.hasOwn(spec, typeKroArtifactBindingsSpecField)) return spec;
+  const bindings = spec[typeKroArtifactBindingsSpecField];
+  if (
+    !bindings
+    || typeof bindings !== 'object'
+    || Array.isArray(bindings)
+    || Object.keys(bindings).length > 0
+  ) {
+    throw new Error(
+      `Explicit Application instance ${sourcePath} cannot supply provider-managed spec.${typeKroArtifactBindingsSpecField}. `
+      + 'Use an authored installation manifest rather than a previously materialized live instance.',
+    );
+  }
+  const authored = { ...spec };
+  delete authored[typeKroArtifactBindingsSpecField];
+  return authored;
 }
 
 export async function resolveGeneratedApplicationDeleteTarget(
@@ -193,9 +233,18 @@ export async function resolveGeneratedApplicationDeleteTarget(
   }));
   const instances = candidates.filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
   const applicationInstances = instances.filter((candidate) => candidate.applicationInstance);
+  const rootInstances = rootIdentity
+    ? instances.filter(
+      (candidate) =>
+        candidate.apiVersion === rootIdentity.apiVersion
+        && candidate.kind === rootIdentity.kind,
+    )
+    : [];
   const selected = options.instanceName
     ? instances.find((candidate) => candidate.instanceName === options.instanceName)
-    : applicationInstances.length === 1
+    : rootInstances.length === 1
+      ? rootInstances[0]
+      : applicationInstances.length === 1
       ? applicationInstances[0]
       : instances.length === 1
         ? instances[0]
@@ -232,35 +281,6 @@ export async function loadTypeKroCompositionEntrypoint(
     throw new Error(`Entrypoint ${entrypoint} does not export TypeKro composition ${exportName}.`);
   }
   return composition as TypeKroApplicationComposition;
-}
-
-export async function resolveApplicationBuildPackage(entrypoint: string): Promise<{
-  readonly directory: string;
-  readonly name?: string;
-}> {
-  const directory = await findAncestorContaining(dirname(resolve(entrypoint)), 'package.json');
-  if (!directory) {
-    throw new Error(`Application entrypoint ${entrypoint} is not contained by a package.json. Add an application package with a build script, or pass --skip-app-build for an operator-only application.`);
-  }
-  const path = resolve(directory, 'package.json');
-  let manifest: { readonly name?: unknown; readonly scripts?: unknown };
-  try {
-    manifest = JSON.parse(await readFile(path, 'utf8')) as { readonly name?: unknown; readonly scripts?: unknown };
-  } catch (cause) {
-    throw new Error(`Application package manifest ${path} is invalid JSON: ${cause instanceof Error ? cause.message : String(cause)}`);
-  }
-  const scripts = manifest.scripts && typeof manifest.scripts === 'object' && !Array.isArray(manifest.scripts)
-    ? manifest.scripts
-    : undefined;
-  const build = scripts ? Reflect.get(scripts, 'build') : undefined;
-  if (typeof build !== 'string' || !build.trim()) {
-    const label = typeof manifest.name === 'string' && manifest.name.trim() ? manifest.name : directory;
-    throw new Error(`Application package ${label} containing ${entrypoint} has no non-empty build script. Add scripts.build, or pass --skip-app-build only when the application has no build-time host assets.`);
-  }
-  return {
-    directory,
-    ...(typeof manifest.name === 'string' && manifest.name.trim() ? { name: manifest.name } : {}),
-  };
 }
 
 async function generatedApplicationRootIdentity(

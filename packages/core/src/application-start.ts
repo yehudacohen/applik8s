@@ -1,3 +1,4 @@
+// typecast-file-boundary: Start definitions use one frozen protocol literal whose exported generic surface is verified by contract tests.
 export const applicationStartDefinitionApiVersion =
   'applik8s.startDefinition/v1alpha1' as const;
 
@@ -5,6 +6,8 @@ export interface ApplicationStartCompatibility {
   readonly applik8s: string;
   readonly tanstackCli: string;
   readonly tanstackStart: string;
+  readonly tanstackRouter: string;
+  readonly tanstackRouterCli: string;
   readonly tanstackAI: string;
   readonly tanstackAIClient: string;
   readonly tanstackAIReact: string;

@@ -4,4 +4,10 @@ export type { ApplicationQueryMultiplexProxyOptions, ApplicationQueryMultiplexPr
 export { proxyApplicationQueryMultiplex } from './application-query-multiplex-proxy.js';
 export { applicationRequestContextValues } from './command-principal.js';
 export { createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationSubscriptionLimiter } from './query-gateway.js';
-export { applicationAdmittedContextDigest, createApplicationRelationalContext } from './relational-runtime.js';
+export type { ApplicationGatewayIdentity, ApplicationQueryGateway, ApplicationQueryGatewayOptions, ApplicationQuerySignalCapability } from './query-gateway.js';
+export {
+  applicationAdmittedContextDigest,
+  applicationDatabaseHandle,
+  createApplicationRelationalContext,
+  withApplicationDatabaseRuntimeResolver,
+} from './relational-runtime.js';

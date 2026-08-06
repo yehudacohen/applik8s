@@ -5,7 +5,7 @@ import {
 } from '../src/index.js';
 
 describe('Ory Kratos identity adapter', () => {
-  it('admits one canonical human principal from a server-side session cookie', async () => {
+  it('admits one canonical human principal and provider-derived roles from a server-side session cookie', async () => {
     const requests: Request[] = [];
     const adapter = new OryKratosIdentityAdapter({
       publicUrl: 'http://kratos-public.identity.svc/',
@@ -43,6 +43,7 @@ describe('Ory Kratos identity adapter', () => {
       sessionId: 'session-1',
       authenticationMethod: 'ory:password+totp',
       authorityRevision: 'authority-1',
+      roles: ['administrator', 'moderator'],
     });
     expect(requests).toHaveLength(1);
     expect(requests[0]?.url).toBe(
@@ -123,6 +124,35 @@ describe('Ory Kratos identity adapter', () => {
         }),
       ),
     ).rejects.toBeInstanceOf(OryAdapterError);
+  });
+
+  it('rejects malformed provider role claims instead of trusting or ignoring them', async () => {
+    const fixture = sessionFixture();
+    const adapter = new OryKratosIdentityAdapter({
+      publicUrl: 'http://kratos-public.identity.svc/',
+      adminUrl: 'http://kratos-admin.identity.svc/',
+      issuer: 'https://identity.example.test',
+      fetch: async () => Response.json({
+        ...fixture,
+        identity: {
+          ...fixture.identity,
+          metadata_public: { roles: ['administrator', 'not a role'] },
+        },
+      }),
+    });
+
+    await expect(adapter.authenticate(
+      new Request('https://application.example.test', {
+        headers: { cookie: 'ory_kratos_session=session-cookie' },
+      }),
+      {
+        application: 'identity-test',
+        catalogRevision: 'catalog-1',
+        authorityRevision: 'authority-1',
+        trustedContextDigest: 'context-1',
+        audience: ['https://application.example.test'],
+      },
+    )).rejects.toMatchObject({ code: 'ORY_RESPONSE_INVALID' });
   });
 
   it('starts, reads, and completes a bound browser flow', async () => {
@@ -223,6 +253,7 @@ function sessionFixture() {
       schema_id: 'human',
       schema_url: 'https://identity.example.test/schemas/human',
       traits: { email: 'hidden@example.test' },
+      metadata_public: { roles: ['moderator', 'administrator'] },
     },
   };
 }

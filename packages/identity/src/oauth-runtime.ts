@@ -1,3 +1,4 @@
+// typecast-file-boundary: OAuth persistence and token payloads are schema-checked before typed runtime use.
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import type {
   ApplicationOAuthAuthorizationFlowPrincipal,

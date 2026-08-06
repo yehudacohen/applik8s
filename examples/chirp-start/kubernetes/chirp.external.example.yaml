@@ -76,3 +76,8 @@ spec:
       credentialKey: apiKey
       authorization: bearer
       defaultProfile: chirp-safe-v1
+    events:
+      server: nats://events.example.com:4222
+      stream: chirp-events
+      subjectPrefix: chirp
+      connectionSecretName: chirp-events

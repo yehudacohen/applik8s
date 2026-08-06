@@ -1,0 +1,5 @@
+import { loadApplicationIdentitySession } from '@applik8s/tanstack-start/server';
+import { createServerFn } from '@tanstack/react-start';
+
+export const getApplicationIdentitySession = createServerFn({ method: 'GET' })
+  .handler(() => loadApplicationIdentitySession());

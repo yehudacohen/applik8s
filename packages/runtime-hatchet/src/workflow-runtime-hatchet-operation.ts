@@ -1,4 +1,4 @@
-import { ApplicationWorkflowObservationError, type ApplicationWorkflowResultOptions } from '@applik8s/applik8s';
+import { ApplicationWorkflowObservationError, type ApplicationWorkflowResultOptions } from '@applik8s/applik8s/workflow-runtime';
 
 export const defaultHatchetOperationTimeoutMs = 30_000;
 

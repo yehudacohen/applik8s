@@ -14,6 +14,13 @@ export interface ApplicationDeployCommandOptions {
   readonly skipAppBuild?: boolean;
   readonly skipImageBuild?: boolean;
   readonly planOnly?: boolean;
+  /**
+   * Permit one reviewed TypeKro root-schema migration during this deployment.
+   *
+   * This is deliberately invocation-scoped rather than a project default:
+   * subsequent deployments return to fail-closed compatibility.
+   */
+  readonly allowBreakingChanges?: boolean;
   readonly runtimeEntrypoint?: string;
   readonly acknowledge?: readonly string[];
 }

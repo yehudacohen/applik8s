@@ -1,7 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { OryHttpTransport } from '../src/index.js';
+import { normalizedOryBaseUrl, OryHttpTransport } from '../src/index.js';
 
 describe('Ory HTTP transport', () => {
+  it('accepts both Kubernetes service DNS spellings for in-cluster HTTP', () => {
+    expect(
+      normalizedOryBaseUrl(
+        'http://kratos.identity.svc',
+        'Kratos',
+      ).href,
+    ).toBe('http://kratos.identity.svc/');
+    expect(
+      normalizedOryBaseUrl(
+        'http://kratos.identity.svc.cluster.local:4433',
+        'Kratos',
+      ).href,
+    ).toBe('http://kratos.identity.svc.cluster.local:4433/');
+    expect(() =>
+      normalizedOryBaseUrl('http://identity.example.test', 'Kratos'),
+    ).toThrow('must use HTTPS');
+  });
+
   it('bounds streaming response bodies before buffering them', async () => {
     const transport = new OryHttpTransport({
       maximumResponseBytes: 1024,

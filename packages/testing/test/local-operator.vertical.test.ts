@@ -76,7 +76,7 @@ describe('local operator vertical slice', () => {
         ref: { kind: 'jsonSchema', exportName: 'UnsupportedImageSpec' },
         schema: {
           type: 'object',
-          oneOf: [imageSpecSchema.schema],
+          if: imageSpecSchema.schema,
         },
       },
       status: imageStatusSchema,
@@ -95,7 +95,7 @@ describe('local operator vertical slice', () => {
         {
           severity: 'warning',
           code: 'SCHEMA_UNSUPPORTED',
-          message: '$ uses composition keywords that this SDK slice does not validate.',
+          message: '$ uses unsupported JSON Schema keyword if.',
         },
       ]);
     }

@@ -15,13 +15,12 @@ export const AutomationScheduleChanges = app.stream(AutomationScheduleChanged, {
   authorize: () => false,
 });
 
-export const AutomationScheduleReconciler = AutomationScheduleChanges.process('reconcile-automation-schedules', {
+export const AutomationScheduleReconciler = AutomationScheduleChanges.onEvent({
   enabled: app.installation.spec.features.automatedAccounts,
-  schedules: { execute: executeAutomationRun },
   retry: { maxAttempts: 12, initialDelayMs: 500, maxDelayMs: 60_000, deadLetter: false },
   budgets: { timeoutMs: 30_000, maxInputBytes: 64 * 1_024 },
-}, async (changed, context) => {
-  await context.schedules.execute.reconcile({
+}, async function reconcileAutomationSchedules(changed, context) {
+  await executeAutomationRun.reconcile({
     id: `chirp-automation-${changed.automationId}`,
     expression: changed.schedule,
     revision: String(context.event.sequence),

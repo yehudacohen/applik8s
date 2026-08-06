@@ -76,7 +76,7 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/runtime-hatchet/src'],
-    forbidden: [/^@applik8s\/(?!applik8s$)/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
+    forbidden: [/^@applik8s\/(?!applik8s(?:\/|$))/, /^@kubernetes\//, /^typekro(?:\/|$)/, /^alchemy(?:\/|$)/],
     rationale: 'The Hatchet runtime may implement the provider-neutral Applik8s workflow contract but must not depend on compiler, deployment, Kubernetes, TypeKro, or Alchemy packages.',
   },
   {
@@ -121,8 +121,8 @@ const rules: readonly BoundaryRule[] = [
   },
   {
     roots: ['packages/tanstack-start/src'],
-    forbidden: [/^@kubernetes\/client-node$/, /^@applik8s\/(?!client(?:\/|$)|server(?:\/|$)|vite(?:\/|$)|tanstack-start(?:\/|$))/, /^typekro(?:\/|$)/],
-    rationale: 'TanStack Start is a thin framework adapter over client, server, and Vite; generic UI and application capabilities belong in their own packages.',
+    forbidden: [/^@kubernetes\/client-node$/, /^@applik8s\/(?!client(?:\/|$)|identity\/client$|react(?:\/|$)|server(?:\/|$)|vite(?:\/|$)|tanstack-start(?:\/|$))/, /^typekro(?:\/|$)/],
+    rationale: 'TanStack Start is a thin framework adapter over client, focused identity-client, router-neutral React, server, and Vite; generic UI and application capabilities remain owned by their focused packages.',
   },
 ];
 

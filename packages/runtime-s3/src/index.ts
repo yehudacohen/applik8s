@@ -46,21 +46,53 @@ export function createS3ApplicationObjectStorageRuntime(options: S3ApplicationOb
     ...(response.ETag ? { etag: response.ETag.replace(/^"|"$/g, '') } : {}),
     ...(response.VersionId ? { version: response.VersionId } : {}),
   });
+  const head = async (key: string): Promise<ApplicationObjectMetadata | undefined> => {
+    try {
+      const response = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: keyFor(key) }));
+      const sha256 = response.Metadata?.['applik8s-sha256'];
+      if (!sha256) throw new Error(`Object ${key} is missing required applik8s-sha256 metadata.`);
+      return {
+        ...reference(key, response.ContentLength ?? 0, response.ContentType ?? 'application/octet-stream', sha256, response),
+        ...(response.LastModified ? { updatedAt: response.LastModified.toISOString() } : {}),
+        ...(response.Metadata ? { custom: response.Metadata } : {}),
+      };
+    } catch (error) {
+      if (isS3NotFound(error)) return undefined;
+      throw error;
+    }
+  };
   return {
     async put(request) {
       const body = typeof request.body === 'string' ? new TextEncoder().encode(request.body) : request.body;
       const sha256 = createHash('sha256').update(body).digest('hex');
       if (request.sha256 && request.sha256.replace(/^sha256:/, '').toLowerCase() !== sha256) throw new Error(`Object ${request.key} SHA-256 does not match its declared digest.`);
-      const response = await client.send(new PutObjectCommand({
-        Bucket: bucket,
-        Key: keyFor(request.key),
-        Body: body,
-        ContentLength: body.byteLength,
-        ContentType: request.contentType,
-        Metadata: { ...request.metadata, 'applik8s-store': options.store, 'applik8s-sha256': sha256 },
-        ...(request.ifAbsent ? { IfNoneMatch: '*' } : {}),
-      }));
-      return reference(request.key, body.byteLength, request.contentType, sha256, response);
+      try {
+        const response = await client.send(new PutObjectCommand({
+          Bucket: bucket,
+          Key: keyFor(request.key),
+          Body: body,
+          ContentLength: body.byteLength,
+          ContentType: request.contentType,
+          Metadata: { ...request.metadata, 'applik8s-store': options.store, 'applik8s-sha256': sha256 },
+          ...(request.ifAbsent ? { IfNoneMatch: '*' } : {}),
+        }));
+        return reference(request.key, body.byteLength, request.contentType, sha256, response);
+      } catch (error) {
+        if (!request.ifAbsent || !isS3PreconditionFailed(error)) throw error;
+        const existing = await head(request.key);
+        if (
+          existing
+          && existing.size === body.byteLength
+          && existing.contentType.toLowerCase() === request.contentType.toLowerCase()
+          && existing.sha256.toLowerCase() === sha256
+        ) {
+          return existing;
+        }
+        throw new Error(
+          `Immutable object ${request.key} already exists with different content or unverifiable metadata.`,
+          { cause: error },
+        );
+      }
     },
     async get(key) {
       try {
@@ -71,22 +103,7 @@ export function createS3ApplicationObjectStorageRuntime(options: S3ApplicationOb
         throw error;
       }
     },
-    async head(key) {
-      try {
-        const response = await client.send(new HeadObjectCommand({ Bucket: bucket, Key: keyFor(key) }));
-        const sha256 = response.Metadata?.['applik8s-sha256'];
-        if (!sha256) throw new Error(`Object ${key} is missing required applik8s-sha256 metadata.`);
-        const metadata: ApplicationObjectMetadata = {
-          ...reference(key, response.ContentLength ?? 0, response.ContentType ?? 'application/octet-stream', sha256, response),
-          ...(response.LastModified ? { updatedAt: response.LastModified.toISOString() } : {}),
-          ...(response.Metadata ? { custom: response.Metadata } : {}),
-        };
-        return metadata;
-      } catch (error) {
-        if (isS3NotFound(error)) return undefined;
-        throw error;
-      }
-    },
+    head,
     async delete(key, deleteOptions) {
       await client.send(new DeleteObjectCommand({ Bucket: bucket, Key: keyFor(key), ...(deleteOptions?.ifVersion ? { VersionId: deleteOptions.ifVersion } : {}) }));
     },
@@ -130,4 +147,16 @@ function isS3NotFound(error: unknown): boolean {
   const name = Reflect.get(error, 'name');
   const metadata = Reflect.get(error, '$metadata');
   return name === 'NoSuchKey' || name === 'NotFound' || Boolean(metadata && typeof metadata === 'object' && Reflect.get(metadata, 'httpStatusCode') === 404);
+}
+
+function isS3PreconditionFailed(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const name = Reflect.get(error, 'name');
+  const metadata = Reflect.get(error, '$metadata');
+  return name === 'PreconditionFailed'
+    || Boolean(
+      metadata
+      && typeof metadata === 'object'
+      && Reflect.get(metadata, 'httpStatusCode') === 412,
+    );
 }

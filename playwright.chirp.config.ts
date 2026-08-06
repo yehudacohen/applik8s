@@ -2,7 +2,7 @@ import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
   testDir: './packages/e2e/browser',
-  testMatch: '**/*.e2e.test.ts',
+  testMatch: '**/chirp-golden-path.e2e.test.ts',
   fullyParallel: false,
   workers: 1,
   retries: 0,

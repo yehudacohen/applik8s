@@ -493,6 +493,36 @@ describe('Kubernetes YAML generation', () => {
       expect(statusSchema.properties.conditions['x-kubernetes-list-map-keys']).toEqual(['type']);
       expect(statusSchema.properties.conditions.items.properties.status.enum).toEqual(['True', 'False', 'Unknown']);
       expect(statusSchema.properties.conditions.items.properties.lastTransitionTime).toEqual({ type: 'string', format: 'date-time' });
+      expect(
+        statusSchema.properties.applik8s.properties.trackedExecutions
+          .additionalProperties,
+      ).toMatchObject({
+        type: 'object',
+        required: [
+          'resourceUid',
+          'resourceGeneration',
+          'workflow',
+          'workflowRevision',
+          'run',
+          'phase',
+          'admittedAt',
+          'onGenerationChange',
+          'onDelete',
+        ],
+        properties: {
+          phase: {
+            type: 'string',
+            enum: [
+              'Admitted',
+              'Running',
+              'Succeeded',
+              'Failed',
+              'Cancelled',
+              'TimedOut',
+            ],
+          },
+        },
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

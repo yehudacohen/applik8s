@@ -1,3 +1,4 @@
+// typecast-file-boundary: Agent gateway request and response records are validated before typed routing and audit use.
 import { createHash } from 'node:crypto';
 import type { ApplicationRequestAdmission } from '@applik8s/core';
 import {
@@ -36,6 +37,8 @@ export interface ApplicationAIAgentGatewayOptions {
   readonly now?: () => Date;
   readonly maximumRequestBytes?: number;
   readonly maximumAdmissionLifetimeMs?: number;
+  /** Server-side diagnostic sink; responses remain deliberately sanitized. */
+  readonly onError?: (error: unknown) => void;
 }
 
 export interface ApplicationAIAgentGateway {
@@ -176,6 +179,7 @@ export function createApplicationAIAgentGateway(
         if (error instanceof ApplicationAIAgentGatewayError) {
           return json({ error: error.code }, error.status);
         }
+        options.onError?.(error);
         return json({ error: 'unauthorized' }, 401);
       }
     },
@@ -197,7 +201,9 @@ function validatedTargets(
     if (value.audience.length === 0) {
       throw new Error(`Application AI agent gateway target ${name} has no audience.`);
     }
-    value.audience.forEach((audience) => stable(audience, 'target.audience'));
+    value.audience.forEach((audience) => {
+      stable(audience, 'target.audience');
+    });
     boundedInteger(value.timeoutMs, 1, 30 * 60_000, 'target.timeoutMs');
     let baseUrl: URL;
     try {
@@ -339,7 +345,7 @@ function stable(value: unknown, label: string): string {
     typeof value !== 'string'
     || !value.trim()
     || value.length > 2_048
-    || /[\u0000-\u001f\u007f]/u.test(value)
+    || containsControlCharacter(value)
   ) {
     throw gatewayError(
       'invalid_request',
@@ -348,6 +354,13 @@ function stable(value: unknown, label: string): string {
     );
   }
   return value;
+}
+
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
 }
 
 function boundedInteger(

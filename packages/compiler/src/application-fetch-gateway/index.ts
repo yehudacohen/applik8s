@@ -1,13 +1,17 @@
+// typecast-file-boundary: Generated graph nodes are discriminated by kind before compiler-specific fields are materialized.
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { applicationOperationId } from "@applik8s/core";
 import type {
 	ApplicationAIAgentNode,
 	ApplicationCrdNode,
 	ApplicationGatewayNode,
 	ApplicationGraph,
 	ApplicationObjectStoreNode,
+	ApplicationProfiledCallbackContract,
 	ApplicationProviderNode,
 	ApplicationQueryNode,
+	ApplicationServerNode,
 	ApplicationSerializedCallbackContract,
 	ApplicationWorkloadAuthorityEnvelope,
 } from "@applik8s/core";
@@ -33,10 +37,42 @@ export interface GeneratedApplicationFetchGatewayModules {
  */
 export function generatedApplicationFetchGatewayModules(
 	graph: ApplicationGraph,
+	options: {
+		readonly modelExports?: readonly {
+			readonly name: string;
+			readonly modelName: string;
+		}[];
+	} = {},
 ): GeneratedApplicationFetchGatewayModules | undefined {
+	const exportedModels = new Set(
+		(options.modelExports ?? []).map((model) => model.modelName),
+	);
+	const publishedCommandIds = new Set(
+		graph.nodes.flatMap((node) =>
+			(node.kind === "model" || node.kind === "crd") &&
+			exportedModels.has(node.name)
+				? (node.common?.operations ?? [])
+						.filter((operation) => operation.transport === "command")
+						.map((operation) => operation.publicId)
+				: [],
+		),
+	);
+	const commandNodes = new Map(
+		graph.nodes.flatMap((node) =>
+			node.kind === "command" ? [[node.id, node] as const] : [],
+		),
+	);
 	const remoteGateways = graph.nodes.filter(
 		(node): node is ApplicationGatewayNode =>
-			node.kind === "gateway" && node.materialization === "generatedDeployment",
+			node.kind === "gateway" &&
+			node.materialization === "generatedDeployment" &&
+			(node.visibility !== "internal" ||
+				node.commands.some((command) => {
+					const commandNode = commandNodes.get(command.command.nodeId);
+					return commandNode
+						? publishedCommandIds.has(commandNode.name)
+						: false;
+				})),
 	);
 	const objectStores = graph.nodes.filter(
 		(node): node is ApplicationObjectStoreNode => node.kind === "objectStore",
@@ -45,7 +81,10 @@ export function generatedApplicationFetchGatewayModules(
 		(node): node is ApplicationAIAgentNode => node.kind === "aiAgent",
 	);
 	const agentTargets = applicationAgentGatewayTargets(graph, agents);
-	const remoteRoutes = applicationRemoteGatewayRoutes(graph, remoteGateways);
+	const remoteRoutes = mergeRemoteRouteContracts(
+		applicationRemoteGatewayRoutes(graph, remoteGateways),
+		applicationPublishedHttpRoutes(graph),
+	);
 	const hasRemoteQueries = remoteRoutes.routes.some(([route]) =>
 		route.startsWith("query:"),
 	);
@@ -66,23 +105,34 @@ export function generatedApplicationFetchGatewayModules(
 			Boolean(node.create) &&
 			!routed.has(`command:${node.name}.create`),
 	);
-	if (
-		queries.length === 0 &&
-		commands.length === 0 &&
-		remoteGateways.length === 0 &&
-		objectStores.length === 0 &&
-		agents.length === 0
-	)
-		return undefined;
-	const identity = graph.nodes.filter(
+	const identityCandidates = graph.nodes.filter(
 		(node): node is ApplicationProviderNode =>
 			node.kind === "provider" && node.interface === "IdentityProvider",
 	);
+	// Qualified providers remain in the graph as selectable profile/catalog
+	// entries. The Fetch gateway consumes the one unqualified application
+	// binding, which may itself be a profile-selection proxy. Counting both the
+	// binding and its named source makes ordinary `inject(named)` wiring appear
+	// ambiguous even though the application has one effective identity.
+	const identity = identityCandidates.filter(
+		(node) => !node.config?.qualification,
+	);
+	const hasApplicationSurface =
+		queries.length > 0 ||
+		commands.length > 0 ||
+		remoteGateways.length > 0 ||
+		remoteRoutes.routes.some(([route]) => route.startsWith("runtime:")) ||
+		objectStores.length > 0 ||
+		agents.length > 0;
+	const requiresApplicationIdentity =
+		queries.length > 0 ||
+		commands.length > 0 ||
+		remoteRoutes.routes.some(([route]) => route.startsWith("runtime:")) ||
+		objectStores.length > 0 ||
+		agents.length > 0;
+	if (!hasApplicationSurface && identity.length === 0) return undefined;
 	if (
-		(queries.length > 0 ||
-			commands.length > 0 ||
-			objectStores.length > 0 ||
-			agents.length > 0) &&
+		(requiresApplicationIdentity || identityCandidates.length > 0) &&
 		identity.length !== 1
 	)
 		throw new Error(
@@ -108,22 +158,37 @@ export function generatedApplicationFetchGatewayModules(
 		imports.push(
 			"import { createApplicationAIAgentGateway } from '@applik8s/runtime-ai';",
 		);
+	if (identity.length === 1)
+		imports.push(
+			"import { createApplicationIdentitySessionHandler } from '@applik8s/identity/server';",
+		);
+	const identityConfig = objectConfig(
+		objectConfig(identity[0]?.config).identity,
+	);
+	const authenticationProfile = profiledCallbackConfig(
+		identityConfig.authenticationProfile,
+		"authentication",
+	);
 	const authenticate =
-		(queries.length > 0 ||
-			commands.length > 0 ||
-			objectStores.length > 0 ||
-			agents.length > 0) &&
 		identity.length === 1
-			? graphCallback(
-					files,
-					imports,
-					identity[0]?.id ?? "IdentityProvider",
-					"identity",
-					serializedCallbackConfig(
-						objectConfig(objectConfig(identity[0]?.config).identity),
-						"authentication",
-					),
-				)
+			? authenticationProfile
+				? graphProfiledCallback(
+						files,
+						imports,
+						identity[0]?.id ?? "IdentityProvider",
+						"identity",
+						authenticationProfile,
+					)
+				: graphCallback(
+						files,
+						imports,
+						identity[0]?.id ?? "IdentityProvider",
+						"identity",
+						serializedCallbackConfig(
+							identityConfig,
+							"authentication",
+						),
+					)
 			: undefined;
 	const querySources = queries.map((query) => {
 		if (!query.kubernetes)
@@ -206,6 +271,20 @@ export function generatedApplicationFetchGatewayModules(
 				: undefined,
 		};
 		const model = requiredCrd(graph, query.kubernetes.model.nodeId, query.id);
+		const modelNative = query.kubernetes.invocation === "model-native";
+		const requestCallback = (callback: string) => `${callback}(request)`;
+		const inputCallback = (callback: string) =>
+			modelNative
+				? `${callback}(request.input, { input: request.input, context: request.context })`
+				: requestCallback(callback);
+		const valueCallback = (callback: string) =>
+			modelNative
+				? `${callback}(request.value, { input: request.input, context: request.context })`
+				: requestCallback(callback);
+		const compareCallback = (callback: string) =>
+			modelNative
+				? `${callback}(request.left, request.right, { input: request.input, context: request.context })`
+				: requestCallback(callback);
 		const fixedNamespace = query.kubernetes.namespace
 			? applicationFetchGatewayNamespaceSource(query.kubernetes.namespace)
 			: undefined;
@@ -230,13 +309,13 @@ export function generatedApplicationFetchGatewayModules(
       ${allowedNamespace ? `allowedNamespaces: [${allowedNamespace}],` : ""}
       authorize: (request) => ${callbacks.authorize}(request),
       ${fixedNamespace ? `fixedNamespace: ${fixedNamespace},` : ""}
-      ${callbacks.namespace ? `namespace: (request) => ${callbacks.namespace}(request),` : ""}
-      ${callbacks.labelSelector ? `labelSelector: (request) => ${callbacks.labelSelector}(request),` : ""}
-      ${callbacks.fieldSelector ? `fieldSelector: (request) => ${callbacks.fieldSelector}(request),` : ""}
-      ${callbacks.filter ? `filter: (request) => ${callbacks.filter}(request),` : ""}
-      ${callbacks.compare ? `compare: (request) => ${callbacks.compare}(request),` : ""}
-      project: (request) => ${callbacks.project}(request),
-      ${callbacks.limit ? `limit: (request) => ${callbacks.limit}(request),` : ""}
+      ${callbacks.namespace ? `namespace: (request) => ${inputCallback(callbacks.namespace)},` : ""}
+      ${callbacks.labelSelector ? `labelSelector: (request) => ${inputCallback(callbacks.labelSelector)},` : ""}
+      ${callbacks.fieldSelector ? `fieldSelector: (request) => ${inputCallback(callbacks.fieldSelector)},` : ""}
+      ${callbacks.filter ? `filter: (request) => ${valueCallback(callbacks.filter)},` : ""}
+      ${callbacks.compare ? `compare: (request) => ${compareCallback(callbacks.compare)},` : ""}
+      project: (request) => ${valueCallback(callbacks.project)},
+      ${callbacks.limit ? `limit: (request) => ${inputCallback(callbacks.limit)},` : ""}
     }`;
 	});
 	const commandSources = commands.map((model) => {
@@ -275,6 +354,10 @@ export function generatedApplicationFetchGatewayModules(
   cursorSecret: requiredEnv('APPLIK8S_CURSOR_SECRET'),
   commands: [${commandSources.join(",\n")}],
   queries: [${querySources.join(",\n")}],
+  onError: (error, operation) => console.error('Applik8s Kubernetes application-host request failed', {
+    ...operation,
+    error,
+  }),
 })`
 			: "undefined";
 	const objectGateway =
@@ -285,17 +368,24 @@ export function generatedApplicationFetchGatewayModules(
   objects: [${objectStores.map(objectStoreGatewaySource).join(",\n")}],
 })`
 			: "undefined";
-	const agentGateway =
+const agentGateway =
 		agents.length > 0 && authenticate
 			? `createApplicationAIAgentGateway({
   application: ${JSON.stringify(graph.metadata.name)},
   secret: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
   targets: ${JSON.stringify(agentTargets)}.map((target) => ({ ...target, baseUrl: materializeRemoteBaseUrl(target.baseUrl) })),
-  authenticate: (request) => ${authenticate}(request),
+  authenticate: async (request) => {
+    const admission = await ${authenticate}(request);
+    return { ...admission, trustedContext: admission.trustedContext ?? {} };
+  },
   // Agent invocation is an authenticated application surface. Tool execution
   // remains independently constrained by service grants, workload envelopes,
   // and the per-run ExecutionPrincipal admitted by the agent runtime.
   authorize: ({ admission }) => admission.principal.audience.includes(${JSON.stringify(graph.metadata.name)}),
+  onError: (error) => console.error('Applik8s AI agent gateway admission failed', {
+    name: error instanceof Error ? error.name : 'Error',
+    message: error instanceof Error ? error.message : String(error),
+  }),
 })`
 			: "undefined";
 	files["gateway.generated.ts"] = `${imports.join("\n")}
@@ -343,6 +433,10 @@ function requiredRuntimeNamespace() {
   return runtimeNamespace;
 }
 
+${authenticate ? `const applicationIdentitySession = createApplicationIdentitySessionHandler({
+  authenticate: (request) => ${authenticate}(request),
+});` : ""}
+
 const localGateway = ${localGateway};
 const objectGateway = ${objectGateway};
 const materializeRemoteBaseUrl = (baseUrl) => {
@@ -351,7 +445,7 @@ const materializeRemoteBaseUrl = (baseUrl) => {
   return baseUrl.replaceAll(${JSON.stringify(applicationRuntimeNamespaceMarker)}, runtimeNamespace);
 };
 const remoteRoutes = new Map(${JSON.stringify(remoteRoutes.routes)}.map(([route, baseUrl]) => [route, materializeRemoteBaseUrl(baseUrl)]));
-const remoteHealth = ${JSON.stringify(remoteRoutes.health)}.map(({ name, baseUrl }) => ({ name, baseUrl: materializeRemoteBaseUrl(baseUrl) }));
+const remoteHealth = ${JSON.stringify(remoteRoutes.health)}.map(({ name, baseUrl, path }) => ({ name, baseUrl: materializeRemoteBaseUrl(baseUrl), path }));
 const agentGateway = ${agentGateway};
 const agentHealth = ${JSON.stringify(agentTargets)}.map(({ name, baseUrl }) => ({ name: \`agent:\${name}\`, baseUrl: materializeRemoteBaseUrl(baseUrl) }));
 
@@ -366,7 +460,7 @@ export const gateway = {
     }
     if (url.pathname === '/__applik8s/v1/readyz') {
       const remoteResults = await Promise.all([
-        ...remoteHealth.map(({ name, baseUrl }) => ({ name, baseUrl, path: '/ready' })),
+        ...remoteHealth,
         ...agentHealth.map(({ name, baseUrl }) => ({ name, baseUrl, path: '/readyz' })),
       ].map(async ({ name, baseUrl, path }) => {
         try {
@@ -386,6 +480,9 @@ export const gateway = {
       const ready = localReady && remoteResults.every((dependency) => dependency.ready);
       return new Response(JSON.stringify({ ready, dependencies: remoteResults }), { status: ready ? 200 : 503, headers: { 'content-type': 'application/json' } });
     }
+    ${authenticate ? `if (url.pathname === '/__applik8s/v1/identity/session' && request.method === 'GET') {
+      return applicationIdentitySession(request);
+    }` : ""}
     ${
 			hasRemoteQueries
 				? `const multiplexResponse = await proxyApplicationQueryMultiplex(request, {
@@ -419,7 +516,9 @@ function applicationGatewayRoute(pathname) {
   if (parts[0] === 'queries' && parts[1]) return \`query:\${decodeURIComponent(parts[1])}\`;
   if (parts[0] === 'commands' && parts[1]) return \`command:\${decodeURIComponent(parts[1])}\`;
   if (parts[0] === 'streams' && parts[1]) return \`stream:\${decodeURIComponent(parts[1])}\`;
+  if (parts[0] === 'signals' && parts[1]) return \`signal:\${decodeURIComponent(parts[1])}\`;
   if (parts[0] === 'runtime' && parts[1]?.startsWith('objectStore.')) return \`object:\${decodeURIComponent(parts[1])}\`;
+  if (parts[0] === 'runtime' && parts[1]) return \`runtime:\${decodeURIComponent(parts[1])}\`;
   if (parts[0] === 'objects' && parts[1]) return \`object:\${decodeURIComponent(parts[1])}\`;
   return undefined;
 }
@@ -440,14 +539,11 @@ function applicationRemoteGatewayRoutes(
 	gateways: readonly ApplicationGatewayNode[],
 ): {
 	readonly routes: readonly (readonly [string, string])[];
-	readonly health: readonly {
-		readonly name: string;
-		readonly baseUrl: string;
-	}[];
+	readonly health: readonly ApplicationRemoteHealthContract[];
 } {
 	const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
 	const routes = new Map<string, string>();
-	const health: { readonly name: string; readonly baseUrl: string }[] = [];
+	const health: ApplicationRemoteHealthContract[] = [];
 	for (const gateway of gateways) {
 		if (!gateway.deployment)
 			throw new Error(
@@ -459,7 +555,7 @@ function applicationRemoteGatewayRoutes(
 			gateway.id,
 		);
 		const baseUrl = `http://${service}.${namespace}.svc:${gateway.deployment.port}`;
-		health.push({ name: gateway.name, baseUrl });
+		health.push({ name: gateway.name, baseUrl, path: "/ready" });
 		for (const query of gateway.queries) {
 			const node = nodes.get(query.nodeId);
 			if (node?.kind !== "query")
@@ -487,40 +583,13 @@ function applicationRemoteGatewayRoutes(
 					`Generated application gateway ${gateway.id} references missing subscription ${subscription.nodeId}.`,
 				);
 			add(`stream:${node.name}`, baseUrl, gateway.id);
-		}
-	}
-	for (const node of graph.nodes) {
-		if (node.kind !== "query" || !node.modelOperation || node.kubernetes)
-			continue;
-		const publicId = node.publicId ?? `${node.name}.${node.version}`;
-		if (!routes.has(`query:${publicId}`)) {
-			const model = graph.nodes.find(
-				(candidate) => candidate.id === node.modelOperation?.model.nodeId,
-			);
-			const operation = `${model?.kind === "model" || model?.kind === "crd" ? model.name : node.modelOperation.model.nodeId}.${node.modelOperation.name}`;
-			throw new Error(
-				`Generated application facade query ${publicId} is not exposed by a generated gateway. Add ${operation} to exactly one app.gateway(...).queries list.`,
-			);
-		}
-	}
-	for (const node of graph.nodes) {
-		if (node.kind !== "model" && node.kind !== "crd") continue;
-		for (const operation of node.common?.operations ?? []) {
-			if (
-				operation.transport !== "command" ||
-				operation.authorization === "undeclared"
-			)
-				continue;
-			if (
-				node.kind === "crd" &&
-				operation.operation === "create" &&
-				node.create
-			)
-				continue;
-			if (!routes.has(`command:${operation.publicId}`)) {
+			const stream = nodes.get(node.source.nodeId);
+			if (stream?.kind !== "stream")
 				throw new Error(
-					`Generated application facade command ${operation.publicId} is not exposed by a generated gateway. Add ${node.name}.${operation.name} to exactly one app.gateway(...).commands list.`,
+					`Generated application gateway ${gateway.id} subscription ${node.id} references missing stream ${node.source.nodeId}.`,
 				);
+			if (stream.signal) {
+				add(`signal:${stream.signal.id}`, baseUrl, gateway.id);
 			}
 		}
 	}
@@ -539,6 +608,111 @@ function applicationRemoteGatewayRoutes(
 			);
 		routes.set(route, baseUrl);
 	}
+}
+
+function applicationPublishedHttpRoutes(
+	graph: ApplicationGraph,
+): {
+	readonly routes: readonly (readonly [string, string])[];
+	readonly health: readonly ApplicationRemoteHealthContract[];
+} {
+	const routes: (readonly [string, string])[] = [];
+	const health = new Map<
+		string,
+		ApplicationRemoteHealthContract
+	>();
+	for (const server of graph.nodes.filter(
+		(node): node is ApplicationServerNode => node.kind === "server",
+	)) {
+		const published = server.routes.filter(
+			(route) =>
+				route.functionNative?.publication?.boundary === "entrypoint-export",
+		);
+		if (published.length === 0) continue;
+		const namespace = applicationGatewayRuntimeNamespace(
+			server.deployment?.namespace ??
+				graph.metadata.namespace ??
+				applicationFetchServerNamespace(server) ??
+				"default",
+			server.id,
+		);
+		const baseUrl = `http://${kubernetesName(server.name)}.${namespace}.svc:${server.deployment?.port ?? 80}`;
+		health.set(server.id, {
+			name: `http:${server.name}`,
+			baseUrl,
+			path: "/readyz",
+		});
+		for (const route of published) {
+			const id = applicationOperationId({
+				domain: "http",
+				owner: server.name,
+				operation: route.id,
+			});
+			routes.push([`runtime:${id}`, baseUrl]);
+		}
+	}
+	return {
+		routes: routes.sort(([left], [right]) => left.localeCompare(right)),
+		health: [...health.values()].sort((left, right) =>
+			left.name.localeCompare(right.name),
+		),
+	};
+}
+
+function mergeRemoteRouteContracts(
+	...contracts: readonly {
+		readonly routes: readonly (readonly [string, string])[];
+		readonly health: readonly ApplicationRemoteHealthContract[];
+	}[]
+): {
+	readonly routes: readonly (readonly [string, string])[];
+	readonly health: readonly ApplicationRemoteHealthContract[];
+} {
+	const routes = new Map<string, string>();
+	const health = new Map<string, ApplicationRemoteHealthContract>();
+	for (const contract of contracts) {
+		for (const [route, baseUrl] of contract.routes) {
+			const existing = routes.get(route);
+			if (existing && existing !== baseUrl) {
+				throw new Error(
+					`Generated application route ${route} resolves to both ${existing} and ${baseUrl}.`,
+				);
+			}
+			routes.set(route, baseUrl);
+		}
+		for (const dependency of contract.health) {
+			health.set(`${dependency.name}\0${dependency.baseUrl}`, dependency);
+		}
+	}
+	return {
+		routes: [...routes.entries()].sort(([left], [right]) =>
+			left.localeCompare(right),
+		),
+		health: [...health.values()].sort((left, right) =>
+			`${left.name}\0${left.baseUrl}`.localeCompare(
+				`${right.name}\0${right.baseUrl}`,
+			),
+		),
+	};
+}
+
+interface ApplicationRemoteHealthContract {
+	readonly name: string;
+	readonly baseUrl: string;
+	readonly path: "/ready" | "/readyz";
+}
+
+function applicationFetchServerNamespace(
+	server: ApplicationServerNode,
+): string | undefined {
+	const workload = server.generatedResources?.find(
+		(candidate) => candidate.role === "workload",
+	)?.resource;
+	return workload &&
+		"namespace" in workload &&
+		typeof workload.namespace === "string"
+		? workload.namespace
+		: undefined;
 }
 
 function applicationGatewayRuntimeNamespace(
@@ -684,6 +858,40 @@ function graphCallback(
 	return variable;
 }
 
+function graphProfiledCallback(
+	files: Record<string, string>,
+	imports: string[],
+	owner: string,
+	role: string,
+	profile: ApplicationProfiledCallbackContract,
+): string {
+	const branches = Object.entries(profile.cases).map(
+		([variant, callback]) =>
+			[
+				variant,
+				graphCallback(
+					files,
+					imports,
+					owner,
+					`${role}-${variant}`,
+					callback,
+				),
+			] as const,
+	);
+	const fallback = graphCallback(
+		files,
+		imports,
+		owner,
+		`${role}-default`,
+		profile.default,
+	);
+	return branches.reduceRight(
+		(otherwise, [variant, callback]) =>
+			`(process.env.APPLIK8S_PROFILE_VARIANT === ${JSON.stringify(variant)} ? ${callback} : ${otherwise})`,
+		fallback,
+	);
+}
+
 function requiredCrd(
 	graph: ApplicationGraph,
 	id: string,
@@ -768,5 +976,34 @@ function serializedCallbackConfig(
 		unresolved.every((value) => typeof value === "string")
 			? { unresolved }
 			: {}),
+	};
+}
+
+function profiledCallbackConfig(
+	value: unknown,
+	prefix: string,
+): ApplicationProfiledCallbackContract | undefined {
+	const profile = objectConfig(value);
+	if (Object.keys(profile).length === 0) return undefined;
+	const selector = stringConfig(profile.selector);
+	const cases = objectConfig(profile.cases);
+	const fallback = objectConfig(profile.default);
+	if (!selector || Object.keys(cases).length === 0 || Object.keys(fallback).length === 0) {
+		throw new Error(
+			`Generated application Fetch gateway ${prefix} profile is incomplete.`,
+		);
+	}
+	return {
+		selector,
+		cases: Object.fromEntries(
+			Object.entries(cases).map(([variant, callback]) => [
+				variant,
+				serializedCallbackConfig(
+					objectConfig(callback),
+					prefix,
+				),
+			]),
+		),
+		default: serializedCallbackConfig(fallback, prefix),
 	};
 }

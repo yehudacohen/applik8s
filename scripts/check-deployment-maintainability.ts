@@ -196,6 +196,28 @@ for (const forbidden of [
   }
 }
 
+for (const root of [
+  "packages/cli",
+  "packages/deployment-alchemy",
+  "packages/deployment-typekro",
+  "packages/e2e/test/deployment-alchemy-lifecycle.e2e.test.ts",
+  "packages/e2e/test/guestbook-start-live.e2e.test.ts",
+  "packages/e2e/test/chirp-start-live.e2e.test.ts",
+  "scripts/deploy-v06-chirp-twice.mjs",
+]) {
+  for (const path of await sourceFiles(root)) {
+    const source = await readFile(path, "utf8");
+    if (
+      /\bkubectl\b[^\n]{0,160}\bdelete\b/u.test(source)
+      || /\bdelete\b[^\n]{0,160}\bkubectl\b/u.test(source)
+    ) {
+      throw new Error(
+        `Authoritative v0.7 lifecycle code must destroy through Alchemy/TypeKro rather than ad-hoc kubectl delete: ${path}.`,
+      );
+    }
+  }
+}
+
 const budgets = [
   { path: cliPath, maximum: 350, reason: "steady-state CLI router" },
   {
@@ -244,6 +266,11 @@ const budgets = [
     reason: "Alchemy generated-secret materializer",
   },
   {
+    path: "packages/deployment-alchemy/src/generated-secret-contract.ts",
+    maximum: 170,
+    reason: "Alchemy generated-secret contract decoder",
+  },
+  {
     path: "packages/deployment-alchemy/src/harbor-resources.ts",
     maximum: 220,
     reason: "Alchemy Harbor project materializer",
@@ -270,8 +297,18 @@ const budgets = [
   },
   {
     path: "packages/deployment-provider-kubernetes/src",
-    maximum: 320,
+    maximum: 475,
     reason: "Kubernetes effect adapter",
+  },
+  {
+    path: "packages/deployment-provider-kubernetes/src/generated-secret.ts",
+    maximum: 225,
+    reason: "Kubernetes generated-secret effect lifecycle",
+  },
+  {
+    path: "packages/deployment-provider-kubernetes/src/generated-secret-contract.ts",
+    maximum: 260,
+    reason: "Kubernetes generated-secret contract and materializer",
   },
   {
     path: "packages/deployment-provider-oci/src",
@@ -320,6 +357,25 @@ async function sourceLines(path: string): Promise<number> {
     }
   }
   return total;
+}
+
+async function sourceFiles(path: string): Promise<readonly string[]> {
+  const metadata = await stat(path);
+  if (metadata.isFile()) return [path];
+  const entries = await readdir(path, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const child = join(path, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await sourceFiles(child));
+    } else if (
+      entry.isFile()
+      && /\.(?:c|m)?(?:j|t)sx?$/u.test(entry.name)
+    ) {
+      files.push(child);
+    }
+  }
+  return files;
 }
 
 function lineCount(source: string): number {

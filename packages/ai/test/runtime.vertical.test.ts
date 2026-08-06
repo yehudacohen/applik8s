@@ -74,6 +74,31 @@ describe('provider-neutral AI contracts', () => {
     ).toThrow(/explicit pinned revision/);
   });
 
+  it('validates deterministic typed-tool fixtures at the provider boundary', () => {
+    expect(
+      AI.deterministic({
+        fixture: {
+          response: 'completed',
+          tool: { index: 0, input: { text: 'bounded fixture' } },
+        },
+      }),
+    ).toMatchObject({
+      kind: 'ai-deterministic',
+      production: false,
+      fixture: {
+        response: 'completed',
+        tool: { index: 0, input: { text: 'bounded fixture' } },
+      },
+    });
+    expect(() =>
+      AI.deterministic({
+        fixture: {
+          tool: { index: -1, input: {} },
+        },
+      }),
+    ).toThrow(/non-negative integer/);
+  });
+
   it('requires executable agents and preserves service identity separately', () => {
     const serviceIdentity = principal.serviceIdentity;
     if (!serviceIdentity) throw new Error('Agent test principal requires a service identity.');
@@ -260,6 +285,8 @@ describe('durable AI attempts', () => {
     const first = await runtime.reserveToolProposal(input);
     const replay = await runtime.reserveToolProposal(input);
     expect(replay).toEqual(first);
+    expect(first.id).toMatch(/^proposal_[a-f0-9]{64}$/u);
+    expect(first.id).not.toContain('\u0000');
     await expect(runtime.reserveToolProposal({
       ...input,
       arguments: { query: 'different' },

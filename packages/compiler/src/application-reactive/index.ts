@@ -3,15 +3,17 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
-import type { ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode } from '@applik8s/core';
+import { gzipSync } from 'node:zlib';
+import type { ApplicationAIAgentNode, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
 import { build } from 'esbuild';
 import ts from 'typescript';
 import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
+import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
-import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphNumberValue, applicationGraphServiceHost, applicationGraphStringValue } from '../application-installation-values.js';
-import type { ApplicationMcpPlacementRoute } from '../application-mcp/index.js';
-import { compileApplicationMcpPlacementRoutes } from '../application-mcp/index.js';
-import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog } from '../application-operations/index.js';
+import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphNumberValue, applicationGraphServiceHost, applicationGraphStringValue } from '../application-installation-values.js';
+import type { ApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
+import { compileApplicationMcpPlacementRoutes, compileApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
+import { applicationStaticAuthorityManifest, compileApplicationOperationCatalog, compileApplicationWorkloadAuthority } from '../application-operations/index.js';
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
 const DEFAULT_NODE_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
@@ -30,7 +32,11 @@ export interface GeneratedApplicationReactiveResource {
 
 export interface GeneratedApplicationReactiveArtifact {
   readonly name: string;
-  readonly kind: 'queryGateway' | 'projectionWorker' | 'streamProcessorWorker';
+  readonly kind:
+    | 'queryGateway'
+    | 'projectionWorker'
+    | 'searchProjectionWorker'
+    | 'streamProcessorWorker';
   readonly sourcePath: string;
   readonly sourceMapPath: string;
   readonly manifestPath: string;
@@ -138,11 +144,42 @@ interface GatewayAnalyticalProjectionContract {
   readonly config: Readonly<Record<string, unknown>>;
 }
 
+interface GatewaySearchContract {
+  readonly query: ApplicationQueryNode;
+  readonly index: ApplicationIndexNode & {
+    readonly search: ApplicationSearchIndexPlan;
+  };
+  readonly provider: ApplicationProviderNode;
+  readonly providerConfig: Readonly<Record<string, unknown>>;
+  readonly models: readonly (ApplicationModelNode & {
+    readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+    readonly common: NonNullable<ApplicationModelNode['common']>;
+  })[];
+}
+
+interface SearchProjectionWorkItem {
+  readonly contract: GatewaySearchContract;
+  readonly namespace: string;
+  readonly cursorSecret: NonNullable<ApplicationGatewayNode['cursorSecret']>;
+  readonly profileSelector?: string;
+}
+
 interface GatewayKubernetesPermission {
   readonly apiGroup: string;
   readonly resource: string;
   readonly scope: 'Namespaced' | 'Cluster';
   readonly namespace?: string;
+}
+
+interface ReactiveCaCertificate {
+  readonly name: string;
+  readonly key: string;
+}
+
+interface ApplicationInternalPlacementRoute {
+  readonly operationId: ApplicationOperationCatalog['operations'][number]['id'];
+  readonly audience: string;
+  readonly receiver: ApplicationOperationPlacementReceiver;
 }
 
 /** Lowers deployable v0.6 query gateways and analytical/online projections into immutable Node workloads. */
@@ -152,35 +189,155 @@ export async function emitGeneratedApplicationReactive(options: { readonly graph
     options.graph,
     operationCatalog,
   );
+  const internalPlacementRoutes = [
+    ...mcpRoutes,
+    ...compileApplicationAgentPlacementRoutes(
+      options.graph,
+      operationCatalog,
+      compileApplicationWorkloadAuthority(options.graph, operationCatalog),
+    ),
+  ];
   const gateways = options.graph.nodes.filter((node): node is ApplicationGatewayNode => node.kind === 'gateway' && node.materialization === 'generatedDeployment');
   const projections = options.graph.nodes.filter((node): node is ApplicationProjectionNode => node.kind === 'projection');
   const streamProcessors = options.graph.nodes.filter((node): node is ApplicationStreamProcessorNode => node.kind === 'streamProcessor');
-  if (gateways.length === 0 && projections.length === 0 && streamProcessors.length === 0) return [];
+  const searchProjections = searchProjectionWorkItems(options.graph, gateways);
+  if (gateways.length === 0 && projections.length === 0 && streamProcessors.length === 0 && searchProjections.length === 0) return [];
   await mkdir(options.outDir, { recursive: true });
   return [
     ...await Promise.all(gateways.map((gateway) => emitGateway(
       options.graph,
       gateway,
       operationCatalog,
-      mcpRoutes.filter((route) => route.receiver.nodeId === gateway.id),
+      internalPlacementRoutes.filter(
+        (route) => route.receiver.nodeId === gateway.id,
+      ),
       options.outDir,
     ))),
     ...await Promise.all(projections.map((projection) => emitProjection(options.graph, projection, options.outDir))),
+    ...await Promise.all(searchProjections.map((projection) => emitSearchProjection(options.graph, projection, options.outDir))),
     ...await Promise.all(streamProcessors.map((processor) => emitStreamProcessor(options.graph, processor, options.outDir))),
   ].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function compileApplicationAgentPlacementRoutes(
+  graph: ApplicationGraph,
+  catalog: ApplicationOperationCatalog,
+  workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[],
+): readonly ApplicationInternalPlacementRoute[] {
+  const operations = new Map(
+    catalog.operations.map((operation) => [operation.id, operation]),
+  );
+  return graph.nodes
+    .filter((node): node is ApplicationAIAgentNode => node.kind === 'aiAgent')
+    .flatMap((agent) =>
+      agent.tools.flatMap((tool) => {
+        if (tool.local) return [];
+        const operation = operations.get(tool.operationId);
+        if (!operation) {
+          throw new Error(
+            `Application agent ${agent.name} exposes unavailable operation ${tool.operationId}.`,
+          );
+        }
+        const envelope = workloadAuthority.find(
+          (candidate) =>
+            candidate.workloadIdentity.subject === agent.id
+            && candidate.serviceIdentity?.id === agent.serviceIdentity.id
+            && candidate.operationId === tool.operationId,
+        );
+        if (!envelope || envelope.audiences.length === 0) {
+          throw new Error(
+            `Application agent ${agent.name} tool ${tool.operationId} has no compiler-proven internal audience.`,
+          );
+        }
+        const receiver = compileApplicationOperationPlacementReceiver(
+          graph,
+          operation,
+          `Application agent ${agent.name} tool ${operation.id}`,
+        );
+        return envelope.audiences.map((audience) => ({
+          operationId: operation.id,
+          audience,
+          receiver,
+        }));
+      })
+    )
+    .sort((left, right) =>
+      `${left.receiver.nodeId}:${left.operationId}:${left.audience}`.localeCompare(
+        `${right.receiver.nodeId}:${right.operationId}:${right.audience}`,
+      ),
+    );
+}
+
+function searchProjectionWorkItems(
+  graph: ApplicationGraph,
+  gateways: readonly ApplicationGatewayNode[],
+): readonly SearchProjectionWorkItem[] {
+  const nodes = graphNodes(graph);
+  const work = new Map<string, SearchProjectionWorkItem>();
+  for (const gateway of gateways) {
+    if (!gateway.deployment || !gateway.cursorSecret) continue;
+    const namespace = applicationGraphStringValue(gateway.deployment.namespace) ?? 'default';
+    const profileSelector = applicationGatewayProfileSelector(gateway, graph);
+    for (const reference of gateway.queries) {
+      const query = requiredNode(nodes, reference.nodeId, 'query', gateway.id);
+      if (!query.search) continue;
+      const contract = gatewaySearchContract(graph, query);
+      const key = contract.index.id;
+      const existing = work.get(key);
+      if (existing) {
+        if (
+          existing.namespace !== namespace
+          || existing.cursorSecret.name !== gateway.cursorSecret.name
+          || existing.cursorSecret.key !== gateway.cursorSecret.key
+          || existing.profileSelector !== profileSelector
+        ) {
+          throw new Error(
+            `Search projection ${contract.index.id} is exposed by gateways with incompatible namespace, cursor, or profile authority.`,
+          );
+        }
+        continue;
+      }
+      work.set(key, {
+        contract,
+        namespace,
+        cursorSecret: gateway.cursorSecret,
+        ...(profileSelector ? { profileSelector } : {}),
+      });
+    }
+  }
+  return [...work.values()].sort((left, right) =>
+    left.contract.index.id.localeCompare(right.contract.index.id));
 }
 
 async function emitGateway(
   graph: ApplicationGraph,
   gateway: ApplicationGatewayNode,
   operationCatalog: ApplicationOperationCatalog,
-  mcpRoutes: readonly ApplicationMcpPlacementRoute[],
+  internalPlacementRoutes: readonly ApplicationInternalPlacementRoute[],
   outDir: string,
 ): Promise<GeneratedApplicationReactiveArtifact> {
-  if (!gateway.deployment || !gateway.cursorSecret || !gateway.authenticationSource) throw new Error(`Generated application gateway ${gateway.id} is missing deployment, cursor Secret, or authentication source.`);
+  if (
+    !gateway.deployment
+    || !gateway.cursorSecret
+    || (!gateway.authenticationSource && !gateway.authenticationProfile)
+  ) {
+    throw new Error(
+      `Generated application gateway ${gateway.id} is missing deployment, cursor Secret, or authentication source.`,
+    );
+  }
   const gatewayNamespace = applicationGraphStringValue(gateway.deployment.namespace) ?? 'default';
-  assertResolved(gateway.id, 'authentication', gateway.authenticationUnresolved);
-  assertResolved(gateway.id, 'identity readiness', gateway.identityReadinessUnresolved);
+  assertGatewayCallbackResolved(
+    gateway.id,
+    'authentication',
+    gateway.authenticationProfile,
+    gateway.authenticationUnresolved,
+  );
+  assertGatewayCallbackResolved(
+    gateway.id,
+    'identity readiness',
+    gateway.identityReadinessProfile,
+    gateway.identityReadinessUnresolved,
+  );
   assertResolved(gateway.id, 'authorization readiness', gateway.authorizationReadinessUnresolved);
   const nodes = graphNodes(graph);
   const queries = gateway.queries.map((reference) => requiredNode(nodes, reference.nodeId, 'query', gateway.id));
@@ -210,16 +367,16 @@ async function emitGateway(
   if (commandAuthorityDatabases.size > 1) {
     throw new Error(`Generated application gateway ${gateway.id} commands span multiple transactional authority databases. Bind one explicit AuthorizationAuthority database before exposing a cross-database command gateway.`);
   }
-  const eventLog = commands.length > 0 ? gatewayEventLog(nodes, gateway.id) : undefined;
+  const eventLog = commands.length > 0 ? gatewayEventLog(nodes, gateway.id, commands) : undefined;
   if (commands.length > 0 && !operationCatalog) {
     throw new Error(`Generated application gateway ${gateway.id} requires its compiled operation catalog.`);
   }
   if (
-    mcpRoutes.length > 0
+    internalPlacementRoutes.length > 0
     && !gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions)
   ) {
     throw new Error(
-      `Generated application gateway ${gateway.id} requires one transactional operation-authority database before it can receive MCP placement invocations.`,
+      `Generated application gateway ${gateway.id} requires one transactional operation-authority database before it can receive internal placement invocations.`,
     );
   }
   if (eventLog) {
@@ -230,6 +387,14 @@ async function emitGateway(
     assertResolved(query.id, 'authorization', query.authorizationUnresolved);
     if (query.kubernetes) {
       for (const [property, callback] of kubernetesQueryCallbacks(query)) assertResolved(query.id, `Kubernetes ${property}`, callback.unresolved);
+    } else if (query.search) {
+      if (!query.database) {
+        throw new Error(
+          `Generated application gateway ${gateway.id} search ${query.id} has no committed-change database.`,
+        );
+      }
+      gatewaySearchContract(graph, query);
+      assertSecretNamespace(query.database, gatewayNamespace, `gateway ${gateway.id}`);
     } else {
       assertResolved(query.id, 'handler', query.handlerUnresolved);
       if (!query.database) throw new Error(`Generated application gateway ${gateway.id} query ${query.id} has no PostgreSQL or Kubernetes snapshot authority.`);
@@ -252,21 +417,51 @@ async function emitGateway(
   const name = kubernetesName(`${graph.metadata.name}-${gateway.name}`);
   const artifactDir = join(outDir, name);
   await mkdir(artifactDir, { recursive: true });
-  await writeCallbackModule(artifactDir, 'authentication', gateway.authenticationSource, gateway.authenticationDependencies);
-  if (gateway.identityReadinessSource) await writeCallbackModule(artifactDir, 'identity-readiness', gateway.identityReadinessSource, gateway.identityReadinessDependencies);
+  if (gateway.authenticationProfile) {
+    await writeProfiledCallbackModule(
+      artifactDir,
+      'authentication',
+      gateway.authenticationProfile,
+    );
+  } else if (gateway.authenticationSource) {
+    await writeCallbackModule(
+      artifactDir,
+      'authentication',
+      gateway.authenticationSource,
+      gateway.authenticationDependencies,
+    );
+  }
+  if (gateway.identityReadinessProfile) {
+    await writeProfiledCallbackModule(
+      artifactDir,
+      'identity-readiness',
+      gateway.identityReadinessProfile,
+    );
+  } else if (gateway.identityReadinessSource) {
+    await writeCallbackModule(
+      artifactDir,
+      'identity-readiness',
+      gateway.identityReadinessSource,
+      gateway.identityReadinessDependencies,
+    );
+  }
   if (gateway.authorizationReadinessSource) await writeCallbackModule(artifactDir, 'authorization-readiness', gateway.authorizationReadinessSource, gateway.authorizationReadinessDependencies);
   if (commands.length > 0 && gateway.commandAuthorizationSource) await writeGatewayCommandAuthorizationModule(artifactDir, gateway.commandAuthorizationSource, gateway.commandAuthorizationDependencies, graph);
   for (const { subscription, stream } of subscriptions) {
     await writeCallbackModule(artifactDir, callbackName(subscription.id, 'authorize'), subscription.authorizationSource, subscription.authorizationDependencies);
-    await writeCallbackModule(artifactDir, callbackName(stream.id, 'authorize-stream'), stream.authorizationSource, stream.authorizationDependencies);
+    if (!stream.signal) {
+      await writeCallbackModule(artifactDir, callbackName(stream.id, 'authorize-stream'), stream.authorizationSource, stream.authorizationDependencies);
+    }
   }
   for (const query of queries) {
-    await writeQueryCallbackModule(artifactDir, callbackName(query.id, 'authorize'), query.authorizationSource, query.authorizationDependencies, query, graph);
+    if (!query.search) {
+      await writeQueryCallbackModule(artifactDir, callbackName(query.id, 'authorize'), query.authorizationSource, query.authorizationDependencies, query, graph);
+    }
     if (query.kubernetes) {
       for (const [property, callback] of kubernetesQueryCallbacks(query)) {
         await writeQueryCallbackModule(artifactDir, callbackName(query.id, kubernetesCallbackRole(property)), callback.source, callback.dependencies, query, graph);
       }
-    } else {
+    } else if (!query.search) {
       await writeQueryCallbackModule(artifactDir, callbackName(query.id, 'run'), query.handlerSource, query.handlerDependencies, query, graph);
     }
   }
@@ -279,7 +474,7 @@ async function emitGateway(
     subscriptions,
     operationCatalog,
     eventLog,
-    mcpRoutes,
+    internalPlacementRoutes,
   ));
   return bundleReactive({
     graphName: graph.metadata.name, name, kind: 'queryGateway', namespace: gatewayNamespace,
@@ -293,7 +488,12 @@ async function emitGateway(
       commands,
       subscriptions,
       eventLog,
-      mcpRoutes.length > 0,
+      internalPlacementRoutes.length > 0,
+    ),
+    caCertificates: gatewaySearchCaCertificates(
+      graph,
+      queries,
+      gatewayNamespace,
     ),
     permissions: gatewayKubernetesPermissions(queries, gatewayNamespace),
   });
@@ -307,8 +507,13 @@ async function emitProjection(graph: ApplicationGraph, projection: ApplicationPr
   assertResolved(stream.id, 'authorization', stream.authorizationUnresolved);
   const provider = requiredProvider(nodes, projection.provider.nodeId, projection.id);
   if (projection.storage === 'online' || projection.online) return emitOnlineProjection(graph, projection, stream, provider, outDir);
-  if (provider.interface !== 'AnalyticalDatabase' || provider.implementation !== 'clickhouse') throw new Error(`Generated analytical projection ${projection.id} requires one ClickHouse AnalyticalDatabase provider.`);
-  const config = provider.config ?? {};
+  const config = clickHouseAnalyticalProviderConfig(
+    provider,
+    applicationGraphStringValue(stream.database.secretNamespace)
+      || applicationGraphStringValue(graph.metadata.namespace)
+      || 'default',
+    `Generated analytical projection ${projection.id}`,
+  );
   const namespace = applicationGraphStringValue(config.namespace) || applicationGraphStringValue(stream.database.secretNamespace) || applicationGraphStringValue(graph.metadata.namespace) || 'default';
   assertSecretNamespace(stream.database, namespace, `projection ${projection.id}`);
   const credentials = objectConfig(config.credentialsSecret);
@@ -371,6 +576,47 @@ async function emitOnlineProjection(
   return bundleReactive({ graphName: graph.metadata.name, name, kind: 'projectionWorker', namespace, image: DEFAULT_NODE_IMAGE, replicas: 1, port: 8080, entrypoint, artifactDir, env: environment });
 }
 
+async function emitSearchProjection(
+  graph: ApplicationGraph,
+  work: SearchProjectionWorkItem,
+  outDir: string,
+): Promise<GeneratedApplicationReactiveArtifact> {
+  const database = work.contract.query.database;
+  if (!database) {
+    throw new Error(
+      `Generated search projection ${work.contract.index.id} has no committed-change database.`,
+    );
+  }
+  assertSecretNamespace(
+    database,
+    work.namespace,
+    `search projection ${work.contract.index.id}`,
+  );
+  const name = kubernetesName(
+    `${graph.metadata.name}-${work.contract.index.name}-search`,
+  );
+  const artifactDir = join(outDir, name);
+  await mkdir(artifactDir, { recursive: true });
+  const entrypoint = join(artifactDir, 'search-projection.generated.ts');
+  await writeFile(entrypoint, generatedSearchProjectionSource(work.contract));
+  return bundleReactive({
+    graphName: graph.metadata.name,
+    name,
+    kind: 'searchProjectionWorker',
+    namespace: work.namespace,
+    image: DEFAULT_NODE_IMAGE,
+    replicas: 1,
+    port: 8080,
+    entrypoint,
+    artifactDir,
+    env: searchProjectionEnvironment(work),
+    caCertificates: searchCaCertificates(
+      work.contract,
+      work.namespace,
+    ),
+  });
+}
+
 async function emitStreamProcessor(graph: ApplicationGraph, processor: ApplicationStreamProcessorNode, outDir: string): Promise<GeneratedApplicationReactiveArtifact> {
   assertResolved(processor.id, 'handler', processor.handlerUnresolved);
   const nodes = graphNodes(graph);
@@ -383,9 +629,18 @@ async function emitStreamProcessor(graph: ApplicationGraph, processor: Applicati
   const name = kubernetesName(`${graph.metadata.name}-${processor.name}`);
   const artifactDir = join(outDir, name);
   await mkdir(artifactDir, { recursive: true });
-  await writeCallbackModule(artifactDir, 'handle', processor.handlerSource, processor.handlerDependencies);
+  await writeStreamHandlerModule(artifactDir, processor);
   const entrypoint = join(artifactDir, 'stream-processor.generated.ts');
-  await writeFile(entrypoint, generatedStreamProcessorSource(processor, stream, workflow));
+  await writeFile(
+    entrypoint,
+    generatedStreamProcessorSource(
+      graph,
+      processor,
+      stream,
+      workflow,
+      compileApplicationOperationCatalog(graph),
+    ),
+  );
   const includeWhen = applicationGraphAllConditions(processor.enabled, workflow?.provider.config?.enabled);
   return bundleReactive({
     graphName: graph.metadata.name,
@@ -429,21 +684,21 @@ function streamProcessorWorkflowContract(graph: ApplicationGraph, processor: App
   }
 	for (const binding of tasks) {
 		const target = nodes.get(binding.target.nodeId);
-		if (target?.kind !== 'task') throw new Error(`Generated stream processor ${processor.id} task ${binding.alias} references missing task ${binding.target.nodeId}.`);
-		if (target.contract.name !== binding.contract.name || target.contract.version !== binding.contract.version || JSON.stringify(target.contract.input) !== JSON.stringify(binding.contract.input) || JSON.stringify(target.contract.output) !== JSON.stringify(binding.contract.output)) throw new Error(`Generated stream processor ${processor.id} task ${binding.alias} contract drifted from ${binding.target.nodeId}.`);
+		if (target?.kind !== 'task' && target?.kind !== 'workflow') throw new Error(`Generated stream processor ${processor.id} workflow ${binding.alias} references missing task/workflow ${binding.target.nodeId}.`);
+		if (target.contract.name !== binding.contract.name || target.contract.version !== binding.contract.version || JSON.stringify(target.contract.input) !== JSON.stringify(binding.contract.input) || JSON.stringify(target.contract.output) !== JSON.stringify(binding.contract.output)) throw new Error(`Generated stream processor ${processor.id} workflow ${binding.alias} contract drifted from ${binding.target.nodeId}.`);
 	}
   const worker = objectConfig(config.workerTokenSecret);
   assertResourceNamespace(worker.namespace, namespace, `Stream processor ${processor.id} WorkflowEngine worker Secret`);
   return { provider, schedules, tasks };
 }
 
-async function bundleReactive(options: { readonly graphName: string; readonly name: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly entrypoint: string; readonly artifactDir: string; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[]; readonly workflowToken?: { readonly secretName: string; readonly key: string } }): Promise<GeneratedApplicationReactiveArtifact> {
+async function bundleReactive(options: { readonly graphName: string; readonly name: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly entrypoint: string; readonly artifactDir: string; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[]; readonly workflowToken?: { readonly secretName: string; readonly key: string }; readonly caCertificates?: readonly ReactiveCaCertificate[] }): Promise<GeneratedApplicationReactiveArtifact> {
   const sourcePath = join(options.artifactDir, 'runtime.mjs');
   const sourceMapPath = `${sourcePath}.map`;
   const metafilePath = join(options.artifactDir, 'runtime.esbuild-meta.json');
   const manifestPath = join(options.artifactDir, 'runtime.manifest.json');
   const result = await build({
-    entryPoints: [options.entrypoint], outfile: sourcePath, bundle: true, format: 'esm', platform: 'node', target: 'node22', minify: true,
+    entryPoints: [options.entrypoint], outfile: sourcePath, bundle: true, format: 'esm', platform: 'node', target: 'node22', minify: true, keepNames: true,
     legalComments: 'none', sourcemap: 'external', sourcesContent: false, metafile: true, nodePaths: [join(process.cwd(), 'node_modules')], plugins: [applik8sWorkspaceSourcePlugin()],
     banner: { js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);" },
   });
@@ -462,7 +717,13 @@ async function bundleReactive(options: { readonly graphName: string; readonly na
     sourceDigest: digest,
   });
   const resources = reactiveResources(options, container.image, digest);
-  const manifestKind = options.kind === 'queryGateway' ? 'GeneratedQueryGateway' : options.kind === 'projectionWorker' ? 'GeneratedProjectionWorker' : 'GeneratedStreamProcessorWorker';
+  const manifestKind = options.kind === 'queryGateway'
+    ? 'GeneratedQueryGateway'
+    : options.kind === 'projectionWorker'
+      ? 'GeneratedProjectionWorker'
+      : options.kind === 'searchProjectionWorker'
+        ? 'GeneratedSearchProjectionWorker'
+        : 'GeneratedStreamProcessorWorker';
   await writeFile(manifestPath, `${JSON.stringify({ apiVersion: 'applik8s.reactive/v1alpha1', kind: manifestKind, metadata: { name: options.name }, spec: { graph: options.graphName, digest, sizeBytes, distribution: 'ociImage', image: container.image, baseImage: container.baseImage, container, namespace: options.namespace, resources: resources.map((resource) => ({ apiVersion: resource.apiVersion, kind: resource.kind, metadata: resource.metadata })) } }, null, 2)}\n`);
   await writeFile(metafilePath, `${JSON.stringify(result.metafile, null, 2)}\n`);
   return { name: options.name, kind: options.kind, sourcePath, sourceMapPath, manifestPath, metafilePath, digest, sizeBytes, container, resources };
@@ -476,37 +737,67 @@ function generatedGatewaySource(
   subscriptions: readonly GatewayStreamSubscriptionContract[],
   operationCatalog: ApplicationOperationCatalog,
   eventLog: ApplicationProviderNode | undefined,
-  mcpRoutes: readonly ApplicationMcpPlacementRoute[],
+  internalPlacementRoutes: readonly ApplicationInternalPlacementRoute[],
 ): string {
   const gatewayNamespace = applicationGraphStringValue(gateway.deployment?.namespace) ?? 'default';
   const relationalQueries = queries.filter((query) => !query.kubernetes);
   const kubernetesQueries = queries.filter((query) => Boolean(query.kubernetes));
+  const searchContracts = relationalQueries
+    .filter((query) => Boolean(query.search))
+    .map((query) => gatewaySearchContract(graph, query));
   const onlineSources = relationalQueries.flatMap((query) => query.projection?.storage === 'online' ? [gatewayOnlineProjectionContract(graph, query)] : []);
   const analyticalSources = relationalQueries.flatMap((query) => query.projection?.storage === 'analytical' ? [gatewayAnalyticalProjectionContract(graph, query)] : []);
+  const capabilityProjectionStreams = [...onlineSources, ...analyticalSources]
+    .filter(({ projection }) => (projection.capabilityFields?.length ?? 0) > 0)
+    .map(({ stream }) => ({ stream }));
+  const signalStreams = uniqueSignalStreams([
+    ...subscriptions,
+    ...capabilityProjectionStreams,
+  ]);
   const imports = [
     "import { createServer } from 'node:http';",
     "import postgres from 'postgres';",
     "import { drizzle } from 'drizzle-orm/postgres-js';",
     "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';",
-    `import { applicationRequestContextValues, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationRelationalContext, createApplicationSubscriptionLimiter${relationalQueries.length > 0 && kubernetesQueries.length > 0 ? ', proxyApplicationQueryMultiplex' : ''} } from '@applik8s/applik8s/query-runtime';`,
+    `import { applicationAdmittedContextDigest, applicationRequestContextValues, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationRelationalContext, createApplicationSubscriptionLimiter, withApplicationDatabaseRuntimeResolver${relationalQueries.length > 0 && kubernetesQueries.length > 0 ? ', proxyApplicationQueryMultiplex' : ''} } from '@applik8s/applik8s/query-runtime';`,
     "import { verifyApplicationTaskQueryAdmission } from '@applik8s/applik8s/task-query-runtime';",
     ...(onlineSources.length > 0 ? ["import { createValkeyOnlineProjectionReader } from '@applik8s/applik8s/projection-worker-runtime';"] : []),
     ...(analyticalSources.length > 0 ? ["import { createClickHouseAnalyticalProjectionReader } from '@applik8s/applik8s/projection-worker-runtime';"] : []),
+    ...(searchContracts.length > 0
+      ? [
+          "import { createPostgresApplicationSearchRuntime } from '@applik8s/applik8s';",
+          "import { createApplicationRelationalSearchSources } from '@applik8s/search';",
+          "import { createOpenSearchApplicationSearchRuntime } from '@applik8s/runtime-opensearch';",
+        ]
+      : []),
     ...(commands.length > 0 ? ["import { createApplicationCommandGateway } from '@applik8s/applik8s/command-gateway-runtime';", "import { createJetStreamEventLog } from '@applik8s/runtime-nats/event-log';"] : []),
     ...(gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions)
-      ? ["import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';"]
+      ? [
+          "import { gunzipSync } from 'node:zlib';",
+          "import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';",
+        ]
       : []),
-    ...(mcpRoutes.length > 0
+    ...(internalPlacementRoutes.length > 0
       ? ["import { createApplicationInternalOperationHandler } from '@applik8s/operations';"]
       : []),
-    ...(subscriptions.length > 0 ? ["import { applicationAdmittedContextDigest, createApplicationStreamSubscriptionGateway, createPostgresApplicationStream } from '@applik8s/applik8s/subscription-runtime';"] : []),
+    ...(subscriptions.length > 0 ? ["import { createApplicationStreamSubscriptionGateway, createPostgresApplicationStream } from '@applik8s/applik8s/subscription-runtime';"] : []),
+    ...(signalStreams.length > 0
+      ? [
+          "import { createApplicationSignalGateway } from '@applik8s/applik8s/signal-gateway';",
+          "import { applicationSignalAccessAllows, applicationSignalIsActionable, createPostgresApplicationSignalStore } from '@applik8s/applik8s/signal-runtime';",
+          "import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';",
+          "import { createApplicationAuthorizedReplayableStream } from '@applik8s/applik8s/subscription-runtime';",
+        ]
+      : []),
     ...(kubernetesQueries.length > 0 ? ["import { createApplik8sKubernetesGateway } from '@applik8s/server/kubernetes-gateway';"] : []),
     "import { callback as authenticateRequest } from './authentication.generated.js';",
-    ...(gateway.identityReadinessSource ? ["import { callback as verifyIdentityReadiness } from './identity-readiness.generated.js';"] : []),
+    ...(gateway.identityReadinessSource || gateway.identityReadinessProfile
+      ? ["import { callback as verifyIdentityReadiness } from './identity-readiness.generated.js';"]
+      : []),
     ...(gateway.authorizationReadinessSource ? ["import { callback as verifyAuthorizationReadiness } from './authorization-readiness.generated.js';"] : []),
     ...queries.flatMap((query) => [
-      `import { callback as ${callbackVariable(query.id, 'authorize')} } from './${callbackName(query.id, 'authorize')}.generated.js';`,
-      ...(!query.kubernetes ? [`import { callback as ${callbackVariable(query.id, 'run')} } from './${callbackName(query.id, 'run')}.generated.js';`] : []),
+      ...(!query.search ? [`import { callback as ${callbackVariable(query.id, 'authorize')} } from './${callbackName(query.id, 'authorize')}.generated.js';`] : []),
+      ...(!query.kubernetes && !query.search ? [`import { callback as ${callbackVariable(query.id, 'run')} } from './${callbackName(query.id, 'run')}.generated.js';`] : []),
       ...kubernetesQueryCallbacks(query).map(([property]) => {
         const role = kubernetesCallbackRole(property);
         return `import { callback as ${callbackVariable(query.id, role)} } from './${callbackName(query.id, role)}.generated.js';`;
@@ -515,7 +806,9 @@ function generatedGatewaySource(
     ...(commands.length > 0 ? ["import { callback as authorizeCommand } from './command-authorization.generated.js';"] : []),
     ...subscriptions.flatMap(({ subscription, stream }) => [
       `import { callback as ${callbackVariable(subscription.id, 'authorize')} } from './${callbackName(subscription.id, 'authorize')}.generated.js';`,
-      `import { callback as ${callbackVariable(stream.id, 'streamAuthorize')} } from './${callbackName(stream.id, 'authorize-stream')}.generated.js';`,
+      ...(!stream.signal
+        ? [`import { callback as ${callbackVariable(stream.id, 'streamAuthorize')} } from './${callbackName(stream.id, 'authorize-stream')}.generated.js';`]
+        : []),
     ]),
   ].join('\n');
   const databases = uniqueDatabaseRuntimes([
@@ -525,11 +818,30 @@ function generatedGatewaySource(
   const databaseDeclarations = databases.map((database) => `const ${databaseVariable(database.name)}Binding = ${databaseBindingSource(database)};\nconst ${databaseVariable(database.name)}Sql = postgres(requiredEnv(${JSON.stringify(database.connectionEnvName)}), { max: 10, idle_timeout: 20, connect_timeout: 10, prepare: false });\nconst ${databaseVariable(database.name)}Db = drizzle(${databaseVariable(database.name)}Sql);`).join('\n');
   const onlineSourceDeclarations = onlineSources.map((contract) => generatedGatewayOnlineProjectionSource(graph.metadata.name, contract)).join('\n');
   const analyticalSourceDeclarations = analyticalSources.map(generatedGatewayAnalyticalProjectionSource).join('\n');
+  const searchSourceDeclarations = searchContracts
+    .map(generatedGatewaySearchSource)
+    .join('\n');
   const projectionSourceByQuery = new Map([
     ...onlineSources.map((contract) => [contract.query.id, projectionQuerySourceVariable(contract.query.id)] as const),
     ...analyticalSources.map((contract) => [contract.query.id, projectionQuerySourceVariable(contract.query.id)] as const),
+    ...searchContracts.map((contract) => [
+      contract.query.id,
+      searchQuerySourceVariable(contract.query.id),
+    ] as const),
   ]);
-  const queryDeclarations = relationalQueries.map((query) => generatedQueryBinding(query, graphReadNames(graph, query), projectionSourceByQuery.get(query.id))).join(',\n');
+  const queryDeclarations = relationalQueries.map((query) =>
+    query.search
+      ? generatedSearchQueryBinding(
+          query,
+          graphReadNames(graph, query),
+          projectionSourceByQuery.get(query.id),
+          gatewaySearchContract(graph, query),
+        )
+      : generatedQueryBinding(
+          query,
+          graphReadNames(graph, query),
+          projectionSourceByQuery.get(query.id),
+        )).join(',\n');
   const kubernetesQueryDeclarations = kubernetesQueries.map((query) => generatedKubernetesQueryBinding(query, graph, gatewayNamespace)).join(',\n');
   const authorityDatabaseEnvironment = gatewayAuthorityDatabaseEnvironment(queries, commands, subscriptions);
   const operationAuthority = authorityDatabaseEnvironment
@@ -545,14 +857,45 @@ function generatedGatewaySource(
     operationCatalog,
     Boolean(authorityDatabaseEnvironment),
   );
+  const signalGateway = generatedSignalGateway(
+    graph,
+    gateway,
+    signalStreams,
+    operationCatalog,
+    Boolean(authorityDatabaseEnvironment),
+  );
   const internalOperationHandler = generatedGatewayInternalOperationHandler(
     graph,
     gateway,
     queries,
     commands,
     operationCatalog,
-    mcpRoutes,
+    internalPlacementRoutes,
     Boolean(authorityDatabaseEnvironment),
+  );
+  const providerReadinessChecks = [
+    ...(authorityDatabaseEnvironment
+      ? ["readinessCheck('operation-authority', () => prepareOperationAuthority())"]
+      : []),
+    ...databases.map(
+      (database) =>
+        `readinessCheck(${JSON.stringify(`database:${database.name}`)}, () => ${databaseVariable(database.name)}Sql.unsafe('SELECT 1 AS applik8s_ready'))`,
+    ),
+    ...(signalStreams.length > 0
+      ? ["readinessCheck('signal-store', () => signalStore.read('__applik8s_readiness__'))"]
+      : []),
+    "readinessCheck('command-gateway', () => commandGateway?.ready())",
+    "readinessCheck('kubernetes-gateway', () => kubernetesGateway?.ready())",
+    gateway.identityReadinessSource || gateway.identityReadinessProfile
+      ? "readinessCheck('identity', () => verifyIdentityReadiness())"
+      : "readinessCheck('identity', () => undefined)",
+    gateway.authorizationReadinessSource
+      ? "readinessCheck('authorization', () => verifyAuthorizationReadiness())"
+      : "readinessCheck('authorization', () => undefined)",
+  ];
+  const searchReadinessChecks = searchContracts.map(
+    (contract) =>
+      `readinessCheck(${JSON.stringify(`search:${contract.query.id}`)}, () => ${searchRuntimeVariable(contract.query.id)}.refresh())`,
   );
   const mixedQueryMultiplex = relationalQueries.length > 0 && kubernetesQueries.length > 0
     ? `const relationalQueryIds = new Set(${JSON.stringify(relationalQueries.map((query) => query.publicId ?? `${query.name}.${query.version}`))});
@@ -574,9 +917,12 @@ function requiredEnv(name) { const value = process.env[name]; if (!value) throw 
 function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(name + ' must be an integer between ' + minimum + ' and ' + maximum + '.'); return value; }
 function schema(json, name) { const normalized = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema: json }, name); const validate = (value) => { const result = normalized.validate(value); return result.ok ? result.value : { summary: result.error.message }; }; validate.toJsonSchema = () => json; return validate; }
 function strictSchema(json, name) { const normalized = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema: json }, name); return (value) => { const result = normalized.validate(value); if (!result.ok) throw new Error(name + ' validation failed.'); return result.value; }; }
+const cursorSecret = requiredEnv('APPLIK8S_CURSOR_SECRET');
+const contextSecret = requiredEnv('APPLIK8S_CONTEXT_SECRET');
 ${databaseDeclarations}
 ${onlineSourceDeclarations}
 ${analyticalSourceDeclarations}
+${searchSourceDeclarations}
 ${operationAuthority}
 ${authorityDatabaseEnvironment ? `async function admitGatewayPrincipal(admission, trustedContextDigest) {
   return operationAuthority.admitPrincipal({
@@ -589,10 +935,11 @@ ${authorityDatabaseEnvironment ? `async function admitGatewayPrincipal(admission
     ...(admission.principal.sessionId ? { sessionId: admission.principal.sessionId } : {}),
     ...(admission.principal.clientId ? { clientId: admission.principal.clientId } : {}),
     ...(admission.principal.flowId ? { flowId: admission.principal.flowId } : {}),
+    ...(admission.principal.roles ? { roles: admission.principal.roles } : {}),
+    ...(admission.principal.attributes ? { attributes: admission.principal.attributes } : {}),
   }, trustedContextDigest);
 }` : ''}
 const queries = [${queryDeclarations}];
-const cursorSecret = requiredEnv('APPLIK8S_CURSOR_SECRET');
 const subscriptionLimiter = createApplicationSubscriptionLimiter(${JSON.stringify(gateway.subscriptionLimits)});
 async function admitRequest(request) { const admitted = await authenticateRequest(request); if (!admitted || typeof admitted !== 'object') throw new Error('Gateway authentication returned no admission.'); return admitted; }
 async function admitQuery(request, query, input) { const internal = verifyApplicationTaskQueryAdmission({ request, cursorSecret, audience: ${JSON.stringify(gateway.id)}, query: query.id, input }); return internal ?? admitRequest(request); }
@@ -604,17 +951,30 @@ const gateway = queries.length > 0 ? createApplicationQueryGateway({
   authenticate: async (request, query, input) => {
     const admitted = await admitQuery(request, query, input);
     const trustedContext = admitted.trustedContext ?? {};
-    const trustedContextDigest = applicationAdmittedContextDigest({ values: trustedContext, digestSecret: cursorSecret });
+    const trustedContextDigest = applicationAdmittedContextDigest({ values: trustedContext, digestSecret: contextSecret });
     const principal = ${authorityDatabaseEnvironment ? 'await admitGatewayPrincipal(admitted, trustedContextDigest)' : 'admitted.principal'};
     return {
       principal,
       admittedContext: {
         values: applicationRequestContextValues(principal, principal.authorityRevision, trustedContext),
-        digestSecret: cursorSecret,
+        digestSecret: contextSecret,
       },
     };
   },
   ${authorityDatabaseEnvironment ? generatedQueryAuthority(graph, gateway, relationalQueries, operationCatalog) : ''}
+  ${signalStreams.length > 0 ? `authorizeOutputCapability: async ({ identity, capability }) => {
+    const signal = await signalStore.read(capability.issuance.id);
+    if (
+      !signal
+      || signal.contract.id !== capability.contract.id
+      || signal.contract.name !== capability.contract.name
+      || signal.contract.version !== capability.contract.version
+    ) return false;
+    return Boolean(await authorizeSignalOperation({
+      principal: identity.principal,
+      contextDigest: applicationAdmittedContextDigest(identity.admittedContext),
+    }, signal, undefined, { signalId: signal.id }));
+  },` : ''}
   context: (identity) => createApplicationRelationalContext({ databases: [${databases.map((database) => `{ binding: ${databaseVariable(database.name)}Binding, db: ${databaseVariable(database.name)}Db }`).join(', ')}], admittedContext: identity.admittedContext }),
 }) : undefined;
 const kubernetesGateway = ${kubernetesQueries.length > 0 ? `createApplik8sKubernetesGateway({
@@ -622,27 +982,135 @@ const kubernetesGateway = ${kubernetesQueries.length > 0 ? `createApplik8sKubern
   cursorSecret,
   queries: [${kubernetesQueryDeclarations}],
   subscriptionLimits: ${JSON.stringify(gateway.subscriptionLimits)},
+  onError: (error, operation) => console.error('Applik8s Kubernetes query request failed', {
+    ...operation,
+    error,
+  }),
 })` : 'undefined'};
 ${commandGateway}
+${signalGateway}
 ${streamGateway}
 ${internalOperationHandler}
-const handle = gateway ? createApplicationQueryGatewayHttpHandler(gateway, { basePath: ${JSON.stringify(gateway.routes.snapshots.split('/:query/')[0]?.replace(/^\//, '') || 'queries')} }) : undefined;
+const handle = gateway ? createApplicationQueryGatewayHttpHandler(gateway, {
+  basePath: ${JSON.stringify(gateway.routes.snapshots.split('/:query/')[0]?.replace(/^\//, '') || 'queries')},
+  onError: (error, context) => console.error('Applik8s query request failed', {
+    ...context,
+    error: error instanceof Error ? error.message : String(error),
+  }),
+}) : undefined;
 ${mixedQueryMultiplex}
 let ready = false; let stopping = false; let lastDependencyError; let degradedDependencyError;
 const dependencyMonitor = new AbortController();
-const server = createServer(async (incoming, outgoing) => { const requestController = new AbortController(); const abortRequest = () => requestController.abort(); incoming.once('aborted', abortRequest); outgoing.once('close', abortRequest); try { if (incoming.url === '/live' || incoming.url === '/ready') { const ok = incoming.url === '/live' || (ready && !stopping); outgoing.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ ready, stopping, lastDependencyError, degradedDependencyError })); return; } const request = await webRequest(incoming, requestController.signal); const internalResponse = internalOperationHandler ? await internalOperationHandler(request.clone()) : undefined; const multiplexResponse = internalResponse || await handleMixedQueryMultiplex(request.clone()); const commandResponse = multiplexResponse || !commandGateway ? undefined : await commandGateway.handle(request.clone()); const streamResponse = multiplexResponse || commandResponse || !streamGateway ? undefined : await streamGateway.handle(request.clone()); const kubernetesResponse = multiplexResponse || commandResponse || streamResponse || !kubernetesGateway ? undefined : await kubernetesGateway.handle(prefixKubernetesRequest(request.clone())); const relationalResponse = multiplexResponse || commandResponse || streamResponse || (kubernetesResponse && kubernetesResponse.status !== 404) || !handle ? undefined : await handle(request); await writeResponse(outgoing, internalResponse ?? multiplexResponse ?? commandResponse ?? streamResponse ?? (kubernetesResponse?.status !== 404 ? kubernetesResponse : undefined) ?? relationalResponse ?? new Response(JSON.stringify({ error: 'not_found' }), { status: 404, headers: { 'content-type': 'application/json' } })); } catch (error) { if (!requestController.signal.aborted) { console.error(error); if (!outgoing.headersSent) outgoing.writeHead(500, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ error: 'internal_error' })); } } finally { incoming.removeListener('aborted', abortRequest); outgoing.removeListener('close', abortRequest); } });
+const server = createServer(async (incoming, outgoing) => { const requestController = new AbortController(); const abortRequest = () => requestController.abort(); incoming.once('aborted', abortRequest); outgoing.once('close', abortRequest); try { if (incoming.url === '/live' || incoming.url === '/ready') { const ok = incoming.url === '/live' || (ready && !stopping); outgoing.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ ready, stopping, lastDependencyError, degradedDependencyError })); return; } const request = await webRequest(incoming, requestController.signal); const internalResponse = internalOperationHandler ? await internalOperationHandler(request.clone()) : undefined; const multiplexResponse = internalResponse || await handleMixedQueryMultiplex(request.clone()); const commandResponse = multiplexResponse || !commandGateway ? undefined : await commandGateway.handle(request.clone()); const signalResponse = multiplexResponse || commandResponse || !signalGateway ? undefined : await signalGateway.handle(request.clone()); const streamResponse = multiplexResponse || commandResponse || signalResponse || !streamGateway ? undefined : await streamGateway.handle(request.clone()); const kubernetesResponse = multiplexResponse || commandResponse || signalResponse || streamResponse || !kubernetesGateway ? undefined : await kubernetesGateway.handle(prefixKubernetesRequest(request.clone())); const relationalResponse = multiplexResponse || commandResponse || signalResponse || streamResponse || (kubernetesResponse && kubernetesResponse.status !== 404) || !handle ? undefined : await handle(request); await writeResponse(outgoing, internalResponse ?? multiplexResponse ?? commandResponse ?? signalResponse ?? streamResponse ?? (kubernetesResponse?.status !== 404 ? kubernetesResponse : undefined) ?? relationalResponse ?? new Response(JSON.stringify({ error: 'not_found' }), { status: 404, headers: { 'content-type': 'application/json' } })); } catch (error) { if (!requestController.signal.aborted) { console.error(error); if (!outgoing.headersSent) outgoing.writeHead(500, { 'content-type': 'application/json' }); outgoing.end(JSON.stringify({ error: 'internal_error' })); } } finally { incoming.removeListener('aborted', abortRequest); outgoing.removeListener('close', abortRequest); } });
 server.listen(Number(process.env.APPLIK8S_HTTP_PORT ?? '${gateway.deployment?.port ?? 8080}'), '0.0.0.0');
-async function monitorDependencies() { while (!stopping) { try { await Promise.all([${authorityDatabaseEnvironment ? 'prepareOperationAuthority(),' : ''}${databases.map((database) => `${databaseVariable(database.name)}Sql.unsafe('SELECT 1 AS applik8s_ready')`).join(', ')}, ...(commandGateway ? [commandGateway.ready()] : []), ...(kubernetesGateway ? [kubernetesGateway.ready()] : []), ${gateway.identityReadinessSource ? 'verifyIdentityReadiness()' : 'Promise.resolve()'}, ${gateway.authorizationReadinessSource ? 'verifyAuthorizationReadiness()' : 'Promise.resolve()'}]); const degraded = (await Promise.all([${[...onlineSources, ...analyticalSources].map((contract) => `recoverableProjectionReadiness(() => ${projectionQuerySourceVariable(contract.query.id)}.revision())`).join(', ')}])).filter(Boolean); ready = true; lastDependencyError = undefined; degradedDependencyError = degraded[0]; } catch (error) { ready = false; lastDependencyError = providerReadinessError(error); degradedDependencyError = undefined; if (!stopping) console.error(lastDependencyError); } await abortableSleep(5000, dependencyMonitor.signal); } }
+async function monitorDependencies() { while (!stopping) { try { await Promise.all([${providerReadinessChecks.join(', ')}]); const degraded = (await Promise.all([${[...onlineSources, ...analyticalSources].map((contract) => `recoverableProjectionReadiness(() => ${projectionQuerySourceVariable(contract.query.id)}.revision())`).join(', ')}])).filter(Boolean); await Promise.all([${searchReadinessChecks.join(', ')}]); ready = true; lastDependencyError = undefined; degradedDependencyError = degraded[0]; } catch (error) { ready = false; lastDependencyError = providerReadinessError(error); degradedDependencyError = undefined; if (!stopping) console.error(lastDependencyError); } await abortableSleep(5000, dependencyMonitor.signal); } }
 const dependencyMonitorTask = monitorDependencies();
-function providerReadinessError(error) { return error instanceof Error ? error.message : 'Application provider readiness failed closed.'; }
+async function readinessCheck(boundary, check) { try { return await check(); } catch (error) { throw new Error('Application provider ' + boundary + ' readiness failed.', { cause: error }); } }
+function providerReadinessError(error) { if (!(error instanceof Error)) return 'Application provider readiness failed closed.'; const cause = error.cause; return cause === undefined || cause === error ? error.message : error.message + ' ' + providerReadinessError(cause); }
 async function recoverableProjectionReadiness(check) { try { await check(); } catch (error) { if (!isRecoverableProjectionReadinessError(error)) throw error; return error instanceof Error ? error.message : String(error); } }
 function isRecoverableProjectionReadinessError(error) { if (!error || typeof error !== 'object') return false; const code = Reflect.get(error, 'code'); return code === 'APPLIK8S_ONLINE_PROJECTION_UNAVAILABLE' || code === 'APPLIK8S_ANALYTICAL_PROJECTION_NOT_CONFIGURED'; }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
 async function webRequest(request, signal) { const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await new Promise((resolve, reject) => { const chunks = []; request.on('data', (chunk) => chunks.push(chunk)); request.on('end', () => resolve(Buffer.concat(chunks))); request.on('error', reject); }); return new Request('http://' + (request.headers.host ?? 'localhost') + (request.url ?? '/'), { method: request.method, headers: Object.entries(request.headers).flatMap(([key, value]) => Array.isArray(value) ? value.map((item) => [key, item]) : value === undefined ? [] : [[key, value]]), signal, ...(body ? { body, duplex: 'half' } : {}) }); }
 function prefixKubernetesRequest(request) { const url = new URL(request.url); url.pathname = '/__applik8s/v1' + (url.pathname.startsWith('/') ? url.pathname : '/' + url.pathname); return new Request(url, request); }
 async function writeResponse(response, web) { response.writeHead(web.status, Object.fromEntries(web.headers)); if (!web.body) { response.end(); return; } const reader = web.body.getReader(); while (true) { const { done, value } = await reader.read(); if (done) break; if (!response.write(Buffer.from(value))) await new Promise((resolve) => response.once('drain', resolve)); } response.end(); }
-async function shutdown() { if (stopping) return; stopping = true; ready = false; dependencyMonitor.abort(); await new Promise((resolve) => server.close(resolve)); await dependencyMonitorTask; await Promise.all([${databases.map((database) => `${databaseVariable(database.name)}Sql.end({ timeout: 5 })`).join(', ')}${operationAuthority ? ', operationAuthoritySql.end({ timeout: 5 })' : ''}, ...(commandGateway ? [commandGateway.close()] : []), ...(kubernetesGateway ? [kubernetesGateway.close()] : [])]); }
+async function shutdown() { if (stopping) return; stopping = true; ready = false; dependencyMonitor.abort(); await new Promise((resolve) => server.close(resolve)); await dependencyMonitorTask; ${signalStreams.length > 0 ? 'await signalStore.close();' : ''} await Promise.all([${searchContracts.flatMap((contract) => [`${searchRuntimeVariable(contract.query.id)}.close()`, `${searchSourcesVariable(contract.query.id)}.close()`]).join(', ')}${searchContracts.length > 0 && databases.length > 0 ? ', ' : ''}${databases.map((database) => `${databaseVariable(database.name)}Sql.end({ timeout: 5 })`).join(', ')}${operationAuthority ? ', operationAuthoritySql.end({ timeout: 5 })' : ''}, ...(commandGateway ? [commandGateway.close()] : []), ...(kubernetesGateway ? [kubernetesGateway.close()] : [])]); }
 process.once('SIGTERM', () => { void shutdown(); }); process.once('SIGINT', () => { void shutdown(); });
+`;
+}
+
+function generatedSearchProjectionSource(
+  contract: GatewaySearchContract,
+): string {
+  const database = contract.query.database;
+  if (!database) {
+    throw new Error(
+      `Generated search projection ${contract.index.id} has no committed-change database.`,
+    );
+  }
+  return `import { createServer } from 'node:http';
+import postgres from 'postgres';
+import { ApplicationSearchHistoryLossError, createPostgresApplicationSearchRuntime } from '@applik8s/applik8s';
+import { createApplicationRelationalSearchSources } from '@applik8s/search';
+import { createOpenSearchApplicationSearchRuntime } from '@applik8s/runtime-opensearch';
+
+function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
+const cursorSecret = requiredEnv('APPLIK8S_CURSOR_SECRET');
+const ${databaseVariable(database.name)}Sql = postgres(requiredEnv(${JSON.stringify(database.connectionEnvName)}), { max: 10, idle_timeout: 20, connect_timeout: 10, prepare: false });
+${generatedGatewaySearchSource(contract)}
+let ready = false;
+let stopping = false;
+let lastError;
+let checkpoint = 0;
+let processed = 0;
+let generation = ${searchRuntimeVariable(contract.query.id)}.state().activeGeneration;
+const loopController = new AbortController();
+const server = createServer((request, response) => {
+  const live = request.url === '/live';
+  const health = live || request.url === '/ready';
+  if (!health) { response.writeHead(404); response.end(); return; }
+  const ok = live || (ready && !stopping);
+  response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' });
+  response.end(JSON.stringify({ ready, stopping, checkpoint, processed, generation, lastError }));
+});
+server.listen(Number(process.env.APPLIK8S_HEALTH_PORT ?? '8080'), '0.0.0.0');
+async function synchronize() {
+  while (!stopping) {
+    try {
+      const result = await ${searchRuntimeVariable(contract.query.id)}.synchronize({ batchSize: 250, maximumBatches: 100 });
+      const state = await ${searchRuntimeVariable(contract.query.id)}.refresh();
+      checkpoint = state.checkpoint;
+      generation = state.activeGeneration;
+      processed += result.applied;
+      ready = state.state === 'current' && result.exhausted;
+      lastError = undefined;
+      await abortableSleep(result.exhausted ? 1000 : 10, loopController.signal);
+    } catch (error) {
+      if (error instanceof ApplicationSearchHistoryLossError) {
+        try {
+          const replacement = 'rebuild-' + Date.now().toString(36);
+          const rebuilt = await ${searchRuntimeVariable(contract.query.id)}.rebuild({ generation: replacement, batchSize: 500, maximumSnapshotPages: 10000, maximumCatchupBatches: 10000 });
+          checkpoint = rebuilt.publishedCheckpoint;
+          generation = rebuilt.generation;
+          lastError = undefined;
+          ready = true;
+          continue;
+        } catch (rebuildError) {
+          error = rebuildError;
+        }
+      }
+      lastError = error instanceof Error ? error.message : String(error);
+      ready = false;
+      if (!stopping) console.error(error);
+      await abortableSleep(5000, loopController.signal);
+    }
+  }
+}
+function abortableSleep(ms, signal) {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timeout = setTimeout(done, ms);
+    const abort = () => done();
+    function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); }
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+const loopTask = synchronize();
+async function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  ready = false;
+  loopController.abort();
+  await new Promise((resolve) => server.close(resolve));
+  await loopTask;
+  await Promise.all([
+    ${searchRuntimeVariable(contract.query.id)}.close(),
+    ${searchSourcesVariable(contract.query.id)}.close(),
+    ${databaseVariable(database.name)}Sql.end({ timeout: 5 }),
+  ]);
+}
+process.once('SIGTERM', () => { void shutdown(); });
+process.once('SIGINT', () => { void shutdown(); });
+await loopTask;
 `;
 }
 
@@ -655,7 +1123,239 @@ function generatedQueryBinding(query: ApplicationQueryNode, modelNames: readonly
     if (!access) throw new Error(`Generated query ${query.id} trusted context ${name} has no serializable database access schema.`);
     return `{ kind: 'applicationTrustedContext', name: ${JSON.stringify(name)}, schema: schema(${JSON.stringify(access.contextSchema)}, ${JSON.stringify(name)}), contract: { source: 'identity-provider', trust: 'server-admitted', jsonSchema: ${JSON.stringify(access.contextSchema)} } }`;
   });
-  return `{ kind: 'applicationQuery', id: ${JSON.stringify(id)}, name: ${JSON.stringify(query.name)}, version: ${JSON.stringify(query.version)}, input: schema(${JSON.stringify(query.input.jsonSchema)}, ${JSON.stringify(`${id}.input`)}), output: schema(${JSON.stringify(query.output.jsonSchema)}, ${JSON.stringify(`${id}.output`)}), database: ${databaseVariable(database.name)}Binding, ${projectionSource ? `sourceRuntime: ${projectionSource},` : ''} trustedContext: [${contexts.join(', ')}], reads: ${JSON.stringify(modelNames.map((name) => ({ $model: { name } })))}, budgets: ${JSON.stringify(query.budgets)}, authorize: async (principal, input, context = {}) => ${callbackVariable(query.id, 'authorize')}({ principal, context, input }), run: async (context, principal, input, source) => ${callbackVariable(query.id, 'run')}({ context, principal, input${projectionSource ? ', source' : ''} }) }`;
+  const callbackInvocation = query.handlerInvocation === 'input-context'
+    ? `${callbackVariable(query.id, 'run')}(input, Object.assign(context, { principal${projectionSource ? ', source' : ''} }))`
+    : `${callbackVariable(query.id, 'run')}({ context, principal, input, database: ${databaseVariable(database.name)}Binding${projectionSource ? ', source' : ''} })`;
+  const invocation = `withApplicationDatabaseRuntimeResolver((binding) => context.database(binding), () => ${callbackInvocation})`;
+  return `{ kind: 'applicationQuery', id: ${JSON.stringify(id)}, name: ${JSON.stringify(query.name)}, version: ${JSON.stringify(query.version)}, input: schema(${JSON.stringify(query.input.jsonSchema)}, ${JSON.stringify(`${id}.input`)}), output: schema(${JSON.stringify(query.output.jsonSchema)}, ${JSON.stringify(`${id}.output`)}), database: ${databaseVariable(database.name)}Binding, ${projectionSource ? `sourceRuntime: ${projectionSource},` : ''} trustedContext: [${contexts.join(', ')}], reads: ${JSON.stringify(modelNames.map((name) => ({ $model: { name } })))}, budgets: ${JSON.stringify(query.budgets)}, authorize: async (principal, input, context = {}) => ${callbackVariable(query.id, 'authorize')}({ principal, context, input }), run: async (context, principal, input, source) => ${invocation} }`;
+}
+
+function gatewaySearchContract(
+  graph: ApplicationGraph,
+  query: ApplicationQueryNode,
+): GatewaySearchContract {
+  if (!query.search) {
+    throw new Error(`Generated query ${query.id} has no Search authority.`);
+  }
+  const nodes = graphNodes(graph);
+  const index = requiredNode(
+    nodes,
+    query.search.index.nodeId,
+    'index',
+    query.id,
+  );
+  if (index.purpose !== 'searchProjection' || !index.search) {
+    throw new Error(
+      `Generated query ${query.id} references index ${index.id} without a search projection plan.`,
+    );
+  }
+  const provider = requiredProvider(
+    nodes,
+    query.search.provider.nodeId,
+    query.id,
+  );
+  if (provider.interface !== 'Search') {
+    throw new Error(
+      `Generated query ${query.id} references non-Search provider ${provider.id}.`,
+    );
+  }
+  const providerConfig = objectConfig(provider.config?.search);
+  if (Object.keys(providerConfig).length === 0) {
+    throw new Error(
+      `Generated query ${query.id} Search provider ${provider.id} has no portable runtime configuration.`,
+    );
+  }
+  const sourceNames = new Set(index.search.sourceFrontiers.map(({ model }) => model));
+  const models = [...nodes.values()].filter(
+    (node): node is ApplicationModelNode & {
+      readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+      readonly common: NonNullable<ApplicationModelNode['common']>;
+    } =>
+      node.kind === 'model'
+      && sourceNames.has(node.name)
+      && Boolean(node.runtime)
+      && Boolean(node.common),
+  );
+  if (models.length !== sourceNames.size) {
+    const present = new Set(models.map(({ name }) => name));
+    const missing = [...sourceNames].filter((name) => !present.has(name));
+    throw new Error(
+      `Generated query ${query.id} is missing relational search source model(s): ${missing.join(', ')}.`,
+    );
+  }
+  for (const model of models) {
+    if (
+      model.runtime.provider !== 'postgres'
+      || model.runtime.storageShape !== 'native-relational'
+      || !model.runtime.nativeRelational
+    ) {
+      throw new Error(
+        `Generated query ${query.id} search source ${model.name} must use native relational PostgreSQL storage.`,
+      );
+    }
+    if (
+      query.database
+      && model.runtime.connectionEnvName !== query.database.connectionEnvName
+    ) {
+      throw new Error(
+        `Generated query ${query.id} search sources must share its committed-change PostgreSQL authority.`,
+      );
+    }
+  }
+  return {
+    query,
+    index: {
+      ...index,
+      search: index.search,
+    },
+    provider,
+    providerConfig,
+    models: models.sort((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+function generatedGatewaySearchSource(
+  contract: GatewaySearchContract,
+): string {
+  const database = contract.query.database;
+  if (!database) {
+    throw new Error(
+      `Generated search query ${contract.query.id} has no committed-change database.`,
+    );
+  }
+  const plan = contract.index.search;
+  const fields = Object.fromEntries(
+    plan.fields.map((field) => [
+      field.alias,
+      {
+        kind: field.kind,
+        valueType: field.valueType,
+        nullable: field.nullable,
+        ...(field.boost === undefined ? {} : { boost: field.boost }),
+      },
+    ]),
+  );
+  const models = contract.models.map((model) => ({
+    nodeId: model.id,
+    name: model.name,
+    tableName: model.runtime.tableName,
+    ...(model.runtime.nativeRelational?.schema
+      ? { schema: model.runtime.nativeRelational.schema }
+      : {}),
+    identity: model.runtime.nativeRelational!.identity,
+    columns: model.runtime.nativeRelational!.columns,
+    relationships: model.common.relationships,
+  }));
+  const digest = createHash('sha256')
+    .update(contract.query.id)
+    .digest('hex')
+    .slice(0, 12);
+  const providerVariable = `search_provider_${digest}`;
+  const configurationVariable = `search_provider_configuration_${digest}`;
+  const credentialsUser = `APPLIK8S_SEARCH_USERNAME_${digest.toUpperCase()}`;
+  const credentialsPassword = `APPLIK8S_SEARCH_PASSWORD_${digest.toUpperCase()}`;
+  return `
+const ${configurationVariable} = ${JSON.stringify(contract.providerConfig)};
+const ${providerVariable} = (() => {
+  const configured = ${configurationVariable};
+  if (configured.kind !== 'application-provider-selection') return configured;
+  const variant = requiredEnv('APPLIK8S_PROFILE_VARIANT');
+  return configured.cases?.[variant] ?? configured.default;
+})();
+const ${searchSourcesVariable(contract.query.id)} = createApplicationRelationalSearchSources({
+  sql: ${databaseVariable(database.name)}Sql,
+  plan: ${JSON.stringify(plan)},
+  models: ${JSON.stringify(models)},
+});
+const ${searchRuntimeVariable(contract.query.id)} = ${providerVariable}.kind === 'postgres-search'
+  ? await createPostgresApplicationSearchRuntime({
+      logicalIndex: ${JSON.stringify(plan.logicalIdentity.name)},
+      indexRevision: ${JSON.stringify(plan.revision.digest)},
+      sql: ${databaseVariable(database.name)}Sql,
+      schema: ${providerVariable}.schema,
+      cursorSecret,
+      fields: ${JSON.stringify(fields)},
+      hydration: ${searchSourcesVariable(contract.query.id)}.hydration,
+      changes: ${searchSourcesVariable(contract.query.id)}.changes,
+      snapshot: ${searchSourcesVariable(contract.query.id)}.snapshot,
+      fanOutCeiling: ${Math.max(...plan.inverseInvalidation.map(({ fanOutCeiling }) => fanOutCeiling), 1)},
+      maximumCandidateRows: ${providerVariable}.maximumCandidateRows,
+    })
+  : ${providerVariable}.kind === 'opensearch'
+    ? await createOpenSearchApplicationSearchRuntime({
+        logicalIndex: ${JSON.stringify(plan.logicalIdentity.name)},
+        indexRevision: ${JSON.stringify(plan.revision.digest)},
+        endpoint: ${providerVariable}.endpoint ?? ('https://' + (${providerVariable}.name ?? ${JSON.stringify(`${plan.logicalIdentity.name}-search`)}) + '.' + (${providerVariable}.namespace ?? ${JSON.stringify(applicationGraphStringValue(database.secretNamespace) ?? 'default')}) + '.svc:9200'),
+        ...(process.env[${JSON.stringify(credentialsPassword)}]
+          ? { authentication: { username: process.env[${JSON.stringify(credentialsUser)}] ?? 'admin', password: process.env[${JSON.stringify(credentialsPassword)}] } }
+          : {}),
+        cursorSecret,
+        fields: ${JSON.stringify(fields)},
+        hydration: ${searchSourcesVariable(contract.query.id)}.hydration,
+        changes: ${searchSourcesVariable(contract.query.id)}.changes,
+        snapshot: ${searchSourcesVariable(contract.query.id)}.snapshot,
+        fanOutCeiling: ${Math.max(...plan.inverseInvalidation.map(({ fanOutCeiling }) => fanOutCeiling), 1)},
+      })
+    : Promise.reject(new Error('Unsupported Search provider ' + String(${providerVariable}.kind)));
+const ${searchQuerySourceVariable(contract.query.id)} = {
+  async revision() {
+    const state = await ${searchRuntimeVariable(contract.query.id)}.refresh();
+    return state.indexRevision + ':' + state.activeGeneration + ':' + state.checkpoint;
+  },
+  async snapshot(operation) {
+    const state = await ${searchRuntimeVariable(contract.query.id)}.refresh();
+    const revision = state.indexRevision + ':' + state.activeGeneration + ':' + state.checkpoint;
+    return {
+      value: await operation({
+        execute: (input, admission) => ${searchRuntimeVariable(contract.query.id)}.search(input, admission),
+      }),
+      revision,
+    };
+  },
+};`;
+}
+
+function generatedSearchQueryBinding(
+  query: ApplicationQueryNode,
+  modelNames: readonly string[],
+  sourceRuntime: string | undefined,
+  contract: GatewaySearchContract,
+): string {
+  const database = query.database;
+  if (!database || !sourceRuntime) {
+    throw new Error(
+      `Generated search query ${query.id} is missing its database or Search runtime.`,
+    );
+  }
+  const id = query.publicId ?? `${query.name}.${query.version}`;
+  const authorizationWhere = searchAuthorizationWhere(contract);
+  return `{ kind: 'applicationQuery', id: ${JSON.stringify(id)}, name: ${JSON.stringify(query.name)}, version: ${JSON.stringify(query.version)}, input: schema(${JSON.stringify(query.input.jsonSchema)}, ${JSON.stringify(`${id}.input`)}), output: schema(${JSON.stringify(query.output.jsonSchema)}, ${JSON.stringify(`${id}.output`)}), database: ${databaseVariable(database.name)}Binding, sourceRuntime: ${sourceRuntime}, trustedContext: [], reads: ${JSON.stringify(modelNames.map((name) => ({ $model: { name } })))}, budgets: ${JSON.stringify(query.budgets)}, authorize: async () => true, run: async (context, principal, input, source) => source.execute(input, { principalId: principal.id, contextDigest: applicationAdmittedContextDigest(context.admittedContext), authorizationVersion: principal.authorityRevision, where: ${authorizationWhere} }) }`;
+}
+
+function searchAuthorizationWhere(contract: GatewaySearchContract): string {
+  const fields = contract.index.search.fields.filter(
+    ({ authorizationRelevant }) => authorizationRelevant,
+  );
+  if (fields.length === 0) return '{}';
+  const root = contract.models.find(
+    ({ id }) => id === contract.index.search.root.model.nodeId,
+  );
+  const access = root?.common.access;
+  if (!access) {
+    throw new Error(
+      `Generated search query ${contract.query.id} marks authorization fields but its root model has no trusted access context.`,
+    );
+  }
+  const field = fields.find(({ path }) => {
+    const terminal = path.at(-1);
+    return terminal?.model === root.name && terminal.field === access.providerField;
+  });
+  if (!field) {
+    throw new Error(
+      `Generated search query ${contract.query.id} must index root access field ${access.providerField} as an authorization-relevant filter.`,
+    );
+  }
+  return `{ ${JSON.stringify(field.alias)}: context.admittedContext.values[${JSON.stringify(access.context)}] }`;
 }
 
 function generatedKubernetesQueryBinding(query: ApplicationQueryNode, graph: ApplicationGraph, gatewayNamespace: string): string {
@@ -664,6 +1364,17 @@ function generatedKubernetesQueryBinding(query: ApplicationQueryNode, graph: App
   const model = requiredNode(graphNodes(graph), authority.model.nodeId, 'crd', query.id);
   const id = query.publicId ?? `${query.name}.${query.version}`;
   const callback = (property: string) => callbackVariable(query.id, kubernetesCallbackRole(property));
+  const modelNative = authority.invocation === 'model-native';
+  const requestCallback = (property: string) => `${callback(property)}(request)`;
+  const inputCallback = (property: string) => modelNative
+    ? `${callback(property)}(request.input, { input: request.input, context: request.context })`
+    : requestCallback(property);
+  const valueCallback = (property: string) => modelNative
+    ? `${callback(property)}(request.value, { input: request.input, context: request.context })`
+    : requestCallback(property);
+  const compareCallback = modelNative
+    ? `${callback('compare')}(request.left, request.right, { input: request.input, context: request.context })`
+    : requestCallback('compare');
   const fixedNamespace = authority.namespace
     ? serializedInstallationExpression(authority.namespace)
       ? `requiredEnv(${JSON.stringify(kubernetesQueryNamespaceEnvironmentName(query.id))})`
@@ -686,13 +1397,13 @@ function generatedKubernetesQueryBinding(query: ApplicationQueryNode, graph: App
     ${allowedNamespace ? `allowedNamespaces: [${allowedNamespace}],` : ''}
     authorize: (request) => ${callbackVariable(query.id, 'authorize')}(request),
     ${fixedNamespace ? `fixedNamespace: ${fixedNamespace},` : ''}
-    ${authority.namespaceResolver ? `namespace: (request) => ${callback('namespaceResolver')}(request),` : ''}
-    ${authority.labelSelector ? `labelSelector: (request) => ${callback('labelSelector')}(request),` : ''}
-    ${authority.fieldSelector ? `fieldSelector: (request) => ${callback('fieldSelector')}(request),` : ''}
-    ${authority.filter ? `filter: (request) => ${callback('filter')}(request),` : ''}
-    ${authority.compare ? `compare: (request) => ${callback('compare')}(request),` : ''}
-    project: (request) => ${callback('project')}(request),
-    ${authority.limit ? `limit: (request) => ${callback('limit')}(request),` : ''}
+    ${authority.namespaceResolver ? `namespace: (request) => ${inputCallback('namespaceResolver')},` : ''}
+    ${authority.labelSelector ? `labelSelector: (request) => ${inputCallback('labelSelector')},` : ''}
+    ${authority.fieldSelector ? `fieldSelector: (request) => ${inputCallback('fieldSelector')},` : ''}
+    ${authority.filter ? `filter: (request) => ${valueCallback('filter')},` : ''}
+    ${authority.compare ? `compare: (request) => ${compareCallback},` : ''}
+    project: (request) => ${valueCallback('project')},
+    ${authority.limit ? `limit: (request) => ${inputCallback('limit')},` : ''}
   }`;
 }
 
@@ -747,8 +1458,15 @@ function gatewayOnlineProjectionContract(graph: ApplicationGraph, query: Applica
   if (projection.storage !== 'online' || !projection.online) throw new Error(`Generated query ${query.id} projection authority ${projection.id} is not an online projection.`);
   const stream = requiredNode(nodes, projection.source.nodeId, 'stream', projection.id);
   const provider = requiredProvider(nodes, projection.provider.nodeId, projection.id);
-  if (provider.interface !== 'IndexStore' || provider.implementation !== 'valkey') throw new Error(`Generated query ${query.id} online authority requires a Valkey-compatible IndexStore provider.`);
   const config = objectConfig(provider.config?.indexStore);
+  if (
+    provider.interface !== 'IndexStore'
+    || stringConfig(config.kind) !== 'valkey'
+  ) {
+    throw new Error(
+      `Generated query ${query.id} online authority requires a Valkey-compatible IndexStore provider; observed ${provider.interface}/${provider.implementation}.`,
+    );
+  }
   return {
     query,
     // typecast: the explicit online guard establishes the required online contract.
@@ -777,8 +1495,183 @@ function gatewayAnalyticalProjectionContract(graph: ApplicationGraph, query: App
   if (projection.storage !== 'analytical') throw new Error(`Generated query ${query.id} projection authority ${projection.id} is not analytical.`);
   const stream = requiredNode(nodes, projection.source.nodeId, 'stream', projection.id);
   const provider = requiredProvider(nodes, projection.provider.nodeId, projection.id);
-  if (provider.interface !== 'AnalyticalDatabase' || provider.implementation !== 'clickhouse') throw new Error(`Generated query ${query.id} analytical authority requires a ClickHouse-compatible AnalyticalDatabase provider.`);
-  return { query, projection, stream, provider, config: provider.config ?? {} };
+  return {
+    query,
+    projection,
+    stream,
+    provider,
+    config: clickHouseAnalyticalProviderConfig(
+      provider,
+      applicationGraphStringValue(stream.database.secretNamespace)
+        || applicationGraphStringValue(graph.metadata.namespace)
+        || 'default',
+      `Generated query ${query.id}`,
+    ),
+  };
+}
+
+function clickHouseAnalyticalProviderConfig(
+  provider: ApplicationProviderNode,
+  defaultNamespace: string,
+  subject: string,
+): Readonly<Record<string, unknown>> {
+  if (provider.interface !== 'AnalyticalDatabase') {
+    throw new Error(
+      `${subject} analytical authority requires an AnalyticalDatabase provider.`,
+    );
+  }
+  const configured = objectConfig(
+    provider.config?.analyticalDatabase ?? provider.config,
+  );
+  if (configured.kind !== 'application-provider-selection') {
+    if (
+      provider.implementation !== 'clickhouse'
+      && configured.kind !== 'clickhouse'
+    ) {
+      throw new Error(
+        `${subject} analytical authority requires a ClickHouse-compatible AnalyticalDatabase provider.`,
+      );
+    }
+    return configured;
+  }
+  const selector = stringConfig(configured.selector);
+  const cases = objectConfig(configured.cases);
+  const fallback = objectConfig(configured.default);
+  if (
+    !/^schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/u.test(selector)
+    || Object.keys(fallback).length === 0
+  ) {
+    throw new Error(
+      `${subject} AnalyticalDatabase selection must use one direct schema.spec discriminator and declare a default provider.`,
+    );
+  }
+  const branches = Object.fromEntries(
+    Object.entries(cases).map(([name, candidate]) => [
+      name,
+      normalizeSelectedClickHouseCandidate(
+        objectConfig(candidate),
+        defaultNamespace,
+        `${subject} AnalyticalDatabase branch ${name}`,
+      ),
+    ]),
+  );
+  const normalizedFallback = normalizeSelectedClickHouseCandidate(
+    fallback,
+    defaultNamespace,
+    `${subject} AnalyticalDatabase default`,
+  );
+  const selection = { selector, cases: branches, default: normalizedFallback };
+  const credentials = [
+    ...Object.values(branches),
+    normalizedFallback,
+  ].map((candidate) => objectConfig(candidate.credentialsSecret));
+  const hasCredentials = credentials.some(
+    (reference) => typeof reference.name === 'string' && reference.name.length > 0,
+  );
+  return {
+    kind: 'clickhouse',
+    enabled: selectedAnalyticalScalar(selection, (candidate) => candidate.enabled, true),
+    name: selectedAnalyticalScalar(selection, (candidate) => candidate.name, 'applik8s-analytics'),
+    namespace: selectedAnalyticalScalar(selection, (candidate) => candidate.namespace, defaultNamespace),
+    provision: selectedAnalyticalScalar(selection, (candidate) => candidate.provision, true),
+    endpoint: selectedAnalyticalScalar(selection, (candidate) => candidate.endpoint, ''),
+    database: selectedAnalyticalScalar(selection, (candidate) => candidate.database, 'default'),
+    ...(hasCredentials
+      ? {
+          credentialsSecret: {
+            apiVersion: 'v1',
+            kind: 'Secret',
+            name: selectedAnalyticalScalar(
+              selection,
+              (candidate) => objectConfig(candidate.credentialsSecret).name,
+              'applik8s-analytical-credentials-unused',
+            ),
+            namespace: selectedAnalyticalScalar(
+              selection,
+              (candidate) =>
+                objectConfig(candidate.credentialsSecret).namespace
+                ?? candidate.namespace,
+              defaultNamespace,
+            ),
+            optional: credentials.some(
+              (reference) =>
+                typeof reference.name !== 'string' || reference.name.length === 0,
+            ),
+          },
+          usernameKey: selectedAnalyticalScalar(
+            selection,
+            (candidate) => candidate.usernameKey,
+            'username',
+          ),
+          passwordKey: selectedAnalyticalScalar(
+            selection,
+            (candidate) => candidate.passwordKey,
+            'password',
+          ),
+        }
+      : {}),
+  };
+}
+
+function normalizeSelectedClickHouseCandidate(
+  candidate: Readonly<Record<string, unknown>>,
+  defaultNamespace: string,
+  subject: string,
+): Readonly<Record<string, unknown>> {
+  if (candidate.kind !== 'clickhouse') {
+    throw new Error(`${subject} must be a ClickHouse provider.`);
+  }
+  const name = candidate.name ?? 'applik8s-analytics';
+  const namespace = candidate.namespace ?? defaultNamespace;
+  return {
+    ...candidate,
+    enabled: candidate.enabled ?? true,
+    name,
+    namespace,
+    provision: candidate.provision ?? true,
+    endpoint:
+      candidate.endpoint
+      ?? `http://clickhouse-${String(name)}.${String(namespace)}.svc.cluster.local:8123`,
+    database: candidate.database ?? 'default',
+  };
+}
+
+function selectedAnalyticalScalar(
+  selection: {
+    readonly selector: string;
+    readonly cases: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+    readonly default: Readonly<Record<string, unknown>>;
+  },
+  select: (candidate: Readonly<Record<string, unknown>>) => unknown,
+  fallback: string | number | boolean,
+): string | number | boolean {
+  const branches = Object.entries(selection.cases).map(
+    ([name, candidate]) => [name, select(candidate) ?? fallback] as const,
+  );
+  const otherwise = select(selection.default) ?? fallback;
+  const serialized = [...branches.map(([, value]) => value), otherwise].map(
+    analyticalScalarExpression,
+  );
+  if (serialized.every((value) => value === serialized[0])) {
+    return otherwise as string | number | boolean;
+  }
+  const expression = branches.reduceRight(
+    (current, [name, value]) =>
+      `${selection.selector} == ${JSON.stringify(name)} ? ${analyticalScalarExpression(value)} : (${current})`,
+    analyticalScalarExpression(otherwise),
+  );
+  return `\${${expression}}`;
+}
+
+function analyticalScalarExpression(value: unknown): string {
+  if (typeof value === 'string') {
+    return /^\$\{(.+)\}$/u.exec(value)?.[1] ?? JSON.stringify(value);
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return String(value);
+  throw new Error(
+    'Profile-selected AnalyticalDatabase runtime fields must be scalar installation values.',
+  );
 }
 
 function generatedGatewayAnalyticalProjectionSource(contract: GatewayAnalyticalProjectionContract): string {
@@ -798,7 +1691,6 @@ function generatedCommandGateway(
   operationCatalog: ApplicationOperationCatalog,
   eventLog: ApplicationProviderNode,
 ): string {
-  const config = eventLog.config ?? {};
   const commandContracts = commands.map(({ handler, command, model }) => {
     const transportId = `${command.contract.name}.${command.contract.version}`;
     const operation = operationCatalog.operations.find((candidate) =>
@@ -837,8 +1729,11 @@ function generatedCommandGateway(
   },
   revalidateOperation: ({ receipt, boundary, trustedContextDigest }) =>
     operationAuthority.revalidate(receipt, boundary, trustedContextDigest),
+  releaseOperation: ({ receipt, commandId }) =>
+    operationAuthority.releaseEnvelope(receipt, commandId),
   cursorSecret,
-  eventLogPublisher: createJetStreamEventLog({ servers: JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS')), stream: ${JSON.stringify(stringConfig(config.stream) || 'APPLIK8S_EVENTS')}, subjectPrefix: ${JSON.stringify(stringConfig(config.subjectPrefix) || 'applik8s')}, connectionName: ${JSON.stringify('applik8s-query-command-gateway')}, ...(process.env.APPLIK8S_NATS_TOKEN ? { token: process.env.APPLIK8S_NATS_TOKEN } : {}), ...(process.env.APPLIK8S_NATS_USER ? { user: process.env.APPLIK8S_NATS_USER, pass: process.env.APPLIK8S_NATS_PASSWORD ?? '' } : {}) }),
+  contextSecret,
+  eventLogPublisher: createJetStreamEventLog({ servers: JSON.parse(requiredEnv('APPLIK8S_NATS_SERVERS')), stream: requiredEnv('APPLIK8S_NATS_STREAM'), subjectPrefix: requiredEnv('APPLIK8S_NATS_SUBJECT_PREFIX'), connectionName: ${JSON.stringify('applik8s-query-command-gateway')}, ...(process.env.APPLIK8S_NATS_TOKEN ? { token: process.env.APPLIK8S_NATS_TOKEN } : {}), ...(process.env.APPLIK8S_NATS_USER ? { user: process.env.APPLIK8S_NATS_USER, pass: process.env.APPLIK8S_NATS_PASSWORD ?? '' } : {}) }),
 });`;
 }
 
@@ -848,7 +1743,7 @@ function generatedGatewayInternalOperationHandler(
   queries: readonly ApplicationQueryNode[],
   commands: readonly GatewayCommandContract[],
   operationCatalog: ApplicationOperationCatalog,
-  routes: readonly ApplicationMcpPlacementRoute[],
+  routes: readonly ApplicationInternalPlacementRoute[],
   hasOperationAuthority: boolean,
 ): string {
   if (routes.length === 0) {
@@ -856,14 +1751,14 @@ function generatedGatewayInternalOperationHandler(
   }
   if (!hasOperationAuthority) {
     throw new Error(
-      `Generated gateway ${gateway.id} cannot receive MCP operations without canonical operation authority.`,
+      `Generated gateway ${gateway.id} cannot receive internal operations without canonical operation authority.`,
     );
   }
   const byOperation = new Map<
     string,
     {
       readonly operation: ApplicationOperationCatalog['operations'][number];
-      readonly audience: string;
+      readonly audiences: Set<string>;
       readonly invoke: string;
     }
   >();
@@ -873,16 +1768,12 @@ function generatedGatewayInternalOperationHandler(
     );
     if (!operation) {
       throw new Error(
-        `Generated gateway ${gateway.id} MCP route references unavailable operation ${route.operationId}.`,
+        `Generated gateway ${gateway.id} internal route references unavailable operation ${route.operationId}.`,
       );
     }
     const existing = byOperation.get(operation.id);
     if (existing) {
-      if (existing.audience !== route.audience) {
-        throw new Error(
-          `Generated gateway ${gateway.id} cannot receive ${operation.id} from multiple MCP audiences (${existing.audience}, ${route.audience}) through one placement binding.`,
-        );
-      }
+      existing.audiences.add(route.audience);
       continue;
     }
     const command = commands.find(
@@ -900,23 +1791,23 @@ function generatedGatewayInternalOperationHandler(
     );
     if (!command && !query) {
       throw new Error(
-        `Generated gateway ${gateway.id} has no existing runtime binding for MCP operation ${operation.id}.`,
+        `Generated gateway ${gateway.id} has no existing runtime binding for internal operation ${operation.id}.`,
       );
     }
     const invoke = command
-      ? `commandGateway.invoke({ operationId: operation.id, input, invocation, ...(signal ? { signal } : {}) })`
+      ? `commandGateway.invoke({ operationId: ${JSON.stringify(operation.id)}, input, invocation, ...(signal ? { signal } : {}) })`
       : `gateway.invoke({ query: ${JSON.stringify(query!.publicId ?? `${query!.name}.${query!.version}`)}, input, invocation })`;
     byOperation.set(operation.id, {
       operation,
-      audience: route.audience,
+      audiences: new Set([route.audience]),
       invoke,
     });
   }
   const bindings = [...byOperation.values()]
     .sort((left, right) => left.operation.id.localeCompare(right.operation.id))
-    .map(({ operation, audience, invoke }) => `{
+    .map(({ operation, audiences, invoke }) => `{
       operation: ${JSON.stringify(operation)},
-      audience: ${JSON.stringify(audience)},
+      audiences: ${JSON.stringify([...audiences].sort())},
       validateInput: strictSchema(${JSON.stringify(operation.input.schema)}, ${JSON.stringify(`${operation.id}.input`)}),
       validateOutput: strictSchema(${JSON.stringify(operation.output.schema)}, ${JSON.stringify(`${operation.id}.output`)}),
       invoke: (input, { invocation, signal }) => ${invoke},
@@ -941,12 +1832,13 @@ function generatedGatewayOperationAuthority(
   databaseEnvironment: string,
   operationCatalog: ApplicationOperationCatalog,
 ): string {
+  const authorityManifest = applicationStaticAuthorityManifest(graph);
   return `const operationAuthoritySql = postgres(requiredEnv(${JSON.stringify(databaseEnvironment)}), { max: 6, idle_timeout: 20, connect_timeout: 10, prepare: false });
 const operationAuthority = createApplicationOperationAuthorityRuntime({
   sql: operationAuthoritySql,
   application: ${JSON.stringify(graph.metadata.name)},
-  catalog: ${JSON.stringify(operationCatalog)},
-  ${applicationStaticAuthorityManifest(graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(graph))},` : ''}
+  catalog: ${compressedGeneratedJson(operationCatalog)},
+  ${authorityManifest ? `authorityManifest: ${compressedGeneratedJson(authorityManifest)},` : ''}
 });
 let operationAuthorityPrepared = false;
 async function prepareOperationAuthority() {
@@ -954,6 +1846,19 @@ async function prepareOperationAuthority() {
   await operationAuthority.prepare();
   operationAuthorityPrepared = true;
 }`;
+}
+
+/**
+ * Canonical catalogs are application-wide and can be substantially larger
+ * than a focused gateway's executable code. Keep the exact declarative
+ * document in every independently deployable authority runtime without
+ * replaying its verbose JSON in the generated bundle.
+ */
+function compressedGeneratedJson(value: unknown): string {
+  const encoded = gzipSync(Buffer.from(JSON.stringify(value)), {
+    level: 9,
+  }).toString('base64');
+  return `JSON.parse(gunzipSync(Buffer.from(${JSON.stringify(encoded)}, 'base64')).toString('utf8'))`;
 }
 
 function gatewayAuthorityDatabaseEnvironment(
@@ -1014,7 +1919,14 @@ function generatedStreamSubscriptionGateway(
   if (subscriptions.length === 0) return 'const streamGateway = undefined;';
   const bindings = subscriptions.map(({ subscription, stream }) => {
     const streamId = `${stream.name}.${stream.version}`;
-    return `{ name: ${JSON.stringify(subscription.name)}, stream: { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(streamId)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}, ${JSON.stringify(`${streamId}.payload`)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database: ${databaseBindingSource(stream.database)}, partition: () => { throw new Error('Subscription replay never repartitions persisted events.'); }, authorize: async (principal, action) => ${callbackVariable(stream.id, 'streamAuthorize')}({ principal, action }) }, authorize: async (principal) => ${callbackVariable(subscription.id, 'authorize')}({ principal }), open: (identity) => createPostgresApplicationStream({ stream: streamSubscriptions[${JSON.stringify(subscription.name)}].stream, databaseUrl: requiredEnv(${JSON.stringify(stream.database.connectionEnvName)}), principal: identity.principal, contextDigest: identity.contextDigest }) }`;
+    const streamAuthorize = stream.signal
+      ? 'async () => true'
+      : `async (principal, action) => ${callbackVariable(stream.id, 'streamAuthorize')}({ principal, action })`;
+    const source = `createPostgresApplicationStream({ stream: streamSubscriptions[${JSON.stringify(subscription.name)}].stream, databaseUrl: requiredEnv(${JSON.stringify(stream.database.connectionEnvName)}), principal: identity.principal${stream.signal ? '' : ', contextDigest: identity.contextDigest'} })`;
+    const open = stream.signal
+      ? `createApplicationAuthorizedReplayableStream({ source: ${source}, authorize: (event) => authorizeSignalIssuance(identity, event) })`
+      : source;
+    return `{ name: ${JSON.stringify(subscription.name)}, stream: { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(streamId)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}, ${JSON.stringify(`${streamId}.payload`)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database: ${databaseBindingSource(stream.database)}, partition: () => { throw new Error('Subscription replay never repartitions persisted events.'); }, authorize: ${streamAuthorize} }, authorize: async (principal) => ${callbackVariable(subscription.id, 'authorize')}({ principal }), open: (identity) => ${open} }`;
   }).join(',\n');
   const index = subscriptions.map(({ subscription }, position) => `${JSON.stringify(subscription.name)}: streamSubscriptionBindings[${position}]`).join(', ');
   const operationContracts = operationCatalog && hasOperationAuthority
@@ -1036,7 +1948,7 @@ const streamGateway = createApplicationStreamSubscriptionGateway({
   authenticate: async (request) => {
     const admitted = await admitRequest(request);
     const trustedContext = admitted.trustedContext ?? {};
-    const contextDigest = applicationAdmittedContextDigest({ values: trustedContext, digestSecret: cursorSecret });
+    const contextDigest = applicationAdmittedContextDigest({ values: trustedContext, digestSecret: contextSecret });
     const principal = ${operationCatalog && hasOperationAuthority ? 'await admitGatewayPrincipal(admitted, contextDigest)' : 'admitted.principal'};
     return { principal, contextDigest };
   },
@@ -1058,6 +1970,232 @@ const streamGateway = createApplicationStreamSubscriptionGateway({
 });`;
 }
 
+function uniqueSignalStreams(
+  sources: readonly {
+    readonly stream: ApplicationStreamNode;
+  }[],
+): readonly (ApplicationStreamNode & {
+  readonly signal: NonNullable<ApplicationStreamNode['signal']>;
+})[] {
+  const streams = new Map<
+    string,
+    ApplicationStreamNode & {
+      readonly signal: NonNullable<ApplicationStreamNode['signal']>;
+    }
+  >();
+  for (const { stream } of sources) {
+    if (!stream.signal) continue;
+    const previous = streams.get(stream.signal.id);
+    if (
+      previous
+      && JSON.stringify(previous.signal) !== JSON.stringify(stream.signal)
+    ) {
+      throw new Error(
+        `Generated gateway receives incompatible signal contracts for ${stream.signal.id}.`,
+      );
+    }
+    streams.set(
+      stream.signal.id,
+      stream as ApplicationStreamNode & {
+        readonly signal: NonNullable<ApplicationStreamNode['signal']>;
+      },
+    );
+  }
+  return [...streams.values()].sort((left, right) =>
+    left.signal.id.localeCompare(right.signal.id));
+}
+
+function generatedSignalGateway(
+  graph: ApplicationGraph,
+  gateway: ApplicationGatewayNode,
+  streams: readonly (ApplicationStreamNode & {
+    readonly signal: NonNullable<ApplicationStreamNode['signal']>;
+  })[],
+  operationCatalog: ApplicationOperationCatalog,
+  hasOperationAuthority: boolean,
+): string {
+  if (streams.length === 0) {
+    return `const signalStore = undefined;
+const signalGateway = undefined;
+async function authorizeSignalIssuance() { return false; }`;
+  }
+  if (!hasOperationAuthority) {
+    throw new Error(
+      `Generated gateway ${gateway.id} exposes signals without a transactional operation-authority database.`,
+    );
+  }
+  const databaseNames = new Set(streams.map((stream) => stream.database.name));
+  if (databaseNames.size !== 1) {
+    throw new Error(
+      `Generated gateway ${gateway.id} exposes signals from multiple canonical stores.`,
+    );
+  }
+  const databaseName = [...databaseNames][0]!;
+  const definitions = streams.map(({ signal }) => {
+    const actions = Object.fromEntries(
+      signal.actions.map((action) => [
+        action.name,
+        {
+          kind: 'jsonSchema',
+          ref: {
+            kind: 'jsonSchema',
+            exportName: `${signal.id}.actions.${action.name}`,
+          },
+          schema: action.schema.jsonSchema,
+        },
+      ]),
+    );
+    return `${JSON.stringify(signal.id)}: Object.freeze({
+  kind: 'applicationSignalDefinition',
+  id: ${JSON.stringify(signal.id)},
+  name: ${JSON.stringify(signal.name)},
+  version: ${JSON.stringify(signal.version)},
+  input: { kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: ${JSON.stringify(`${signal.id}.input`)} }, schema: ${JSON.stringify(signalInputSchema(streams.find((stream) => stream.signal.id === signal.id)!))} },
+  actions: Object.freeze(${JSON.stringify(actions)}),
+})`;
+  }).join(',\n');
+  const operationIds = Object.fromEntries(
+    streams.map(({ signal }) => [
+      signal.id,
+      {
+        read: operationCatalog.operations.find((operation) =>
+          operation.id === `applik8s://signals/${signal.id}/operations/issuance.read`)?.id,
+        actions: Object.fromEntries(signal.actions.map((action) => [
+          action.name,
+          operationCatalog.operations.find((operation) =>
+            operation.id === `applik8s://signals/${signal.id}/operations/${action.name}`)?.id,
+        ])),
+      },
+    ]),
+  );
+  for (const [signalId, contract] of Object.entries(operationIds)) {
+    if (!contract.read || Object.values(contract.actions).some((id) => !id)) {
+      throw new Error(
+        `Generated gateway ${gateway.id} signal ${signalId} has an incomplete operation catalog.`,
+      );
+    }
+  }
+  return `const signalStore = createPostgresApplicationSignalStore({
+  sql: ${databaseVariable(databaseName)}Sql,
+});
+const signalDefinitions = Object.freeze({
+${definitions}
+});
+const signalOperations = Object.freeze(${JSON.stringify(operationIds)});
+function signalOperationTarget(signal) {
+  return {
+    kind: 'target',
+    model: signal.contract.id,
+    identity: { ...signal.target, signalId: signal.id },
+  };
+}
+async function authorizeSignalOperation(identity, signal, action, input, transaction) {
+  const contract = signalOperations[signal.contract.id];
+  const operationId = action ? contract?.actions?.[action] : contract?.read;
+  if (!operationId) return false;
+  const actor = {
+    id: identity.principal.identity.id,
+    ...(identity.principal.roles ? { roles: identity.principal.roles } : {}),
+    ...(identity.principal.attributes ? { attributes: identity.principal.attributes } : {}),
+  };
+  if (!applicationSignalAccessAllows(signal, actor)) return false;
+  const authorize = () => operationAuthority.authorize({
+      principal: identity.principal,
+      operationId,
+      target: signalOperationTarget(signal),
+      audience: ${JSON.stringify(gateway.id)},
+      transport: 'http',
+      inputDigest: applicationOperationInputDigest(input),
+      trustedContextDigest: identity.contextDigest,
+      applicationPolicyAllowed: true,
+    });
+  const result = transaction
+    ? await operationAuthority.withinTransaction(transaction, authorize)
+    : await authorize();
+  return result.allowed ? { id: result.receipt.id } : false;
+}
+function signalGrantIds(signal) {
+  if (signal.access.mode !== 'grant') return [];
+  const subjects = Array.isArray(signal.access.subject)
+    ? signal.access.subject
+    : [signal.access.subject];
+  return subjects.map((subject) =>
+    'grant:signal:' + signal.id + ':' + subject.id);
+}
+async function revokeSignalGrants(signal, transaction) {
+  for (const grantId of signalGrantIds(signal)) {
+    await operationAuthority.revokeGrant(
+      grantId,
+      'Signal ' + signal.id + ' reached terminal state.',
+      transaction,
+    );
+  }
+}
+const signalGateway = createApplicationSignalGateway({
+  basePath: '/signals',
+  store: signalStore,
+  definitions: Object.values(signalDefinitions),
+  authenticate: async (request) => {
+    const admitted = await admitRequest(request);
+    const trustedContext = admitted.trustedContext ?? {};
+    const contextDigest = applicationAdmittedContextDigest({
+      values: trustedContext,
+      digestSecret: contextSecret,
+    });
+    const principal = await admitGatewayPrincipal(admitted, contextDigest);
+    return {
+      actor: {
+        id: principal.identity.id,
+        ...(principal.roles ? { roles: principal.roles } : {}),
+        ...(principal.attributes ? { attributes: principal.attributes } : {}),
+      },
+      principal: { principal, contextDigest },
+    };
+  },
+  authorizeRead: ({ identity, signal }) =>
+    authorizeSignalOperation(identity.principal, signal, undefined, {
+      signalId: signal.id,
+    }),
+  authorizeAction: ({ identity, signal, action, input, transaction }) =>
+    authorizeSignalOperation(identity.principal, signal, action, input, transaction),
+  finalizeAction: ({ signal }, { transaction }) =>
+    revokeSignalGrants(signal, transaction),
+});
+async function authorizeSignalIssuance(identity, event) {
+  const reference = event?.payload?.signal;
+  const signalId = reference?.issuance?.id;
+  const contractId = reference?.contract?.id;
+  if (typeof signalId !== 'string' || typeof contractId !== 'string') return false;
+  const signal = await signalStore.read(signalId);
+  if (
+    !signal
+    || signal.contract.id !== contractId
+    || !applicationSignalIsActionable(signal)
+  ) return false;
+  return Boolean(await authorizeSignalOperation(identity, signal, undefined, {
+    signalId,
+  }));
+}`;
+}
+
+function signalInputSchema(
+  stream: ApplicationStreamNode & {
+    readonly signal: NonNullable<ApplicationStreamNode['signal']>;
+  },
+): JsonObject {
+  const payload = stream.payload.jsonSchema;
+  const properties = payload.properties;
+  const input = properties && typeof properties === 'object'
+    ? (properties as JsonObject).input
+    : undefined;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error(
+      `Signal stream ${stream.id} does not expose its authored input schema at payload.input.`,
+    );
+  }
+  return input as JsonObject;
+}
+
 function generatedProjectionSource(projection: ApplicationProjectionNode, stream: ApplicationStreamNode, _provider: ApplicationProviderNode): string {
   const table = kubernetesName(projection.name).replace(/-/g, '_');
   return `import { createServer } from 'node:http';
@@ -1067,13 +2205,15 @@ function requiredEnv(name) { const value = process.env[name]; if (!value) throw 
 function schema(json) { return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:projection' }, schema: json }; }
 const database = ${databaseBindingSource(stream.database)};
 const stream = { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(`${stream.name}.${stream.version}`)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database, partition: () => { throw new Error('Projection replay never repartitions persisted events.'); }, authorize: async () => false };
-const source = createPostgresApplicationStream({ stream, databaseUrl: requiredEnv(${JSON.stringify(stream.database.connectionEnvName)}), principal: { id: ${JSON.stringify(`applik8s:projection:${projection.name}`)} }, internalConsumer: { kind: 'projection', name: ${JSON.stringify(projection.name)} } });
+const databaseUrl = requiredEnv(${JSON.stringify(stream.database.connectionEnvName)});
+const createSource = () => createPostgresApplicationStream({ stream, databaseUrl, principal: { id: ${JSON.stringify(`applik8s:projection:${projection.name}`)} }, internalConsumer: { kind: 'projection', name: ${JSON.stringify(projection.name)} } });
+let source = createSource();
 const store = createClickHouseAnalyticalProjectionWriter({ endpoint: requiredEnv('APPLIK8S_CLICKHOUSE_ENDPOINT'), database: requiredEnv('APPLIK8S_CLICKHOUSE_DATABASE'), table: ${JSON.stringify(table)}, projection: ${JSON.stringify(projection.name)}, stream: ${JSON.stringify(`${stream.name}.${stream.version}`)}, schema: schema(${JSON.stringify(projection.output.jsonSchema)}), ...(process.env.APPLIK8S_CLICKHOUSE_USERNAME ? { username: process.env.APPLIK8S_CLICKHOUSE_USERNAME, password: process.env.APPLIK8S_CLICKHOUSE_PASSWORD ?? '' } : {}) });
-let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0;
+let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0; let lastSuccessfulCycleAt = 0;
 const loopController = new AbortController();
-const server = createServer((request, response) => { const live = request.url === '/live'; const health = live || request.url === '/ready'; if (!health) { response.writeHead(404); response.end(); return; } const ok = live || (ready && !stopping); response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ ready, stopping, checkpoint, processed, lastError })); });
+const server = createServer((request, response) => { const live = request.url === '/live'; const health = live || request.url === '/ready'; if (!health) { response.writeHead(404); response.end(); return; } const fresh = lastSuccessfulCycleAt > 0 && Date.now() - lastSuccessfulCycleAt < 60_000; const ok = live || (ready && fresh && !stopping); response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ ready: ready && fresh, stopping, checkpoint, processed, lastError, lastSuccessfulCycleAt })); });
 server.listen(Number(process.env.APPLIK8S_HEALTH_PORT ?? '8080'), '0.0.0.0');
-async function loop() { let prepared = false; while (!stopping) { try { if (!prepared) { await store.prepare(); prepared = true; } const result = await runApplicationProjection({ projection: ${JSON.stringify(projection.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, project, batchSize: 250, maxBatches: 20 }); checkpoint = result.checkpoint; processed += result.processed; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl: requiredEnv(${JSON.stringify(stream.database.connectionEnvName)}), batchSize: 1000 }); lastError = undefined; ready = true; await abortableSleep(result.exhausted ? 1000 : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; if (!stopping) console.error(error); await abortableSleep(5000, loopController.signal); } } }
+async function loop() { let prepared = false; while (!stopping) { try { if (!prepared) { await store.prepare(); prepared = true; } const result = await runApplicationProjection({ projection: ${JSON.stringify(projection.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, project, batchSize: 250, maxBatches: 20 }); checkpoint = result.checkpoint; processed += result.processed; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; lastSuccessfulCycleAt = Date.now(); await abortableSleep(result.exhausted ? 1000 : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; await source.close().catch(() => undefined); if (!stopping) { source = createSource(); console.error(error); } await abortableSleep(5000, loopController.signal); } } }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
 const loopTask = loop();
 async function shutdown() { if (stopping) return; stopping = true; ready = false; loopController.abort(); await new Promise((resolve) => server.close(resolve)); await loopTask; await source.close(); }
@@ -1097,13 +2237,14 @@ function schema(json) { return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', 
 const database = ${databaseBindingSource(stream.database)};
 const stream = { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(`${stream.name}.${stream.version}`)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database, partition: () => { throw new Error('Projection replay never repartitions persisted events.'); }, authorize: async () => false };
 const databaseUrl = requiredEnv(${JSON.stringify(stream.database.connectionEnvName)});
-const source = createPostgresApplicationStream({ stream, databaseUrl, principal: { id: ${JSON.stringify(`applik8s:projection:${projection.name}`)} }, internalConsumer: { kind: 'projection', name: ${JSON.stringify(projection.name)} } });
+const createSource = () => createPostgresApplicationStream({ stream, databaseUrl, principal: { id: ${JSON.stringify(`applik8s:projection:${projection.name}`)} }, internalConsumer: { kind: 'projection', name: ${JSON.stringify(projection.name)} } });
+let source = createSource();
 const store = createValkeyOnlineProjectionWriter({ host: requiredEnv('APPLIK8S_VALKEY_HOST'), port: Number(requiredEnv('APPLIK8S_VALKEY_PORT')), ...(process.env.APPLIK8S_VALKEY_PASSWORD ? { password: process.env.APPLIK8S_VALKEY_PASSWORD } : {}), prefix: ${JSON.stringify(kubernetesName(graphName))}, projection: ${JSON.stringify(projection.name)}, stream: ${JSON.stringify(`${stream.name}.${stream.version}`)}, valueSchema: schema(${JSON.stringify(projection.output.jsonSchema)}), partitionBy, key, score, scoreUnit: ${JSON.stringify(projection.online.scoreUnit)}, value, ...(removeWhen ? { removeWhen } : {}), retention: ${JSON.stringify(projection.online.retention)}, initialGeneration: 'live' });
-let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0; let generation = 'unknown';
+let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0; let generation = 'unknown'; let lastSuccessfulCycleAt = 0;
 const loopController = new AbortController();
-const server = createServer((request, response) => { const live = request.url === '/live'; const health = live || request.url === '/ready'; if (!health) { response.writeHead(404); response.end(); return; } const ok = live || (ready && !stopping); response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ ready, stopping, checkpoint, processed, generation, lastError })); });
+const server = createServer((request, response) => { const live = request.url === '/live'; const health = live || request.url === '/ready'; if (!health) { response.writeHead(404); response.end(); return; } const fresh = lastSuccessfulCycleAt > 0 && Date.now() - lastSuccessfulCycleAt < 60_000; const ok = live || (ready && fresh && !stopping); response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ ready: ready && fresh, stopping, checkpoint, processed, generation, lastError, lastSuccessfulCycleAt })); });
 server.listen(Number(process.env.APPLIK8S_HEALTH_PORT ?? '8080'), '0.0.0.0');
-async function loop() { let prepared = false; while (!stopping) { try { if (!prepared) { await store.prepare(); prepared = true; } const result = await runApplicationProjection({ projection: ${JSON.stringify(projection.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, project, batchSize: 250, maxBatches: 20 }); checkpoint = result.checkpoint; processed += result.processed; generation = await store.activeGeneration(); await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; await abortableSleep(result.exhausted ? 1000 : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; if (!stopping) console.error(error); await abortableSleep(5000, loopController.signal); } } }
+async function loop() { let prepared = false; while (!stopping) { try { if (!prepared) { await store.prepare(); prepared = true; } const result = await runApplicationProjection({ projection: ${JSON.stringify(projection.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, project, batchSize: 250, maxBatches: 20 }); checkpoint = result.checkpoint; processed += result.processed; generation = await store.activeGeneration(); await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; lastSuccessfulCycleAt = Date.now(); await abortableSleep(result.exhausted ? 1000 : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; await source.close().catch(() => undefined); if (!stopping) { source = createSource(); console.error(error); } await abortableSleep(5000, loopController.signal); } } }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
 const loopTask = loop();
 async function shutdown() { if (stopping) return; stopping = true; ready = false; loopController.abort(); await new Promise((resolve) => server.close(resolve)); await loopTask; await source.close(); }
@@ -1112,49 +2253,594 @@ await loopTask;
 `;
 }
 
-function generatedStreamProcessorSource(processor: ApplicationStreamProcessorNode, stream: ApplicationStreamNode, workflow: StreamProcessorWorkflowContract | undefined): string {
-  const workflowImport = workflow ? "import { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
+function generatedStreamProcessorSource(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+  stream: ApplicationStreamNode,
+  workflow: StreamProcessorWorkflowContract | undefined,
+  operationCatalog: ApplicationOperationCatalog,
+): string {
+  const workflowImport = workflow ? "import { AsyncLocalStorage } from 'node:async_hooks';\nimport { installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
+  const functionNativeImport = processor.functionNativeTransaction
+    ? "import { createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
+    : '';
   const workflowDeclarations = workflow ? `
 const workflowRuntime = createHatchetWorkflowRuntime({ kind: 'hatchet', tls: process.env.HATCHET_CLIENT_TLS_STRATEGY === 'tls' });
+const directWorkflowScope = new AsyncLocalStorage();
+installApplicationWorkflowRuntimeResolver(() => directWorkflowScope.getStore());
 function validateWorkflowValue(schema, value, name, role) { const normalized = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name + ':' + role }, schema }, name + '.' + role); const result = normalized.validate(value); if (!result.ok) throw new Error('applik8s-workflow-' + role + '-invalid: ' + name + ': ' + result.error.message); return result.value; }
 const schedules = Object.freeze({
 ${workflow.schedules.map((binding) => `  ${JSON.stringify(binding.alias)}: Object.freeze({ reconcile: (schedule, metadata) => workflowRuntime.reconcileSchedule(${JSON.stringify(`${binding.contract.name}.${binding.contract.version}`)}, { ...schedule, input: validateWorkflowValue(${JSON.stringify(binding.contract.input.jsonSchema)}, schedule?.input, ${JSON.stringify(`${binding.contract.name}.${binding.contract.version}`)}, 'input') }, metadata) }),`).join('\n')}
 });
-function processorTasks(context) { return Object.freeze({
-${workflow.tasks.map((binding) => `  ${JSON.stringify(binding.alias)}: async (input, metadata) => { const name = ${JSON.stringify(`${binding.contract.name}.${binding.contract.version}`)}; const callerKey = metadata?.idempotencyKey; const invocationMetadata = { ...metadata, idempotencyKey: context.idempotencyKey + ${JSON.stringify(`:${binding.alias}`)} + (callerKey ? ':' + callerKey : ''), causationId: context.event.id, ...(!context.event.contextDigest ? {} : { trustedContext: { values: context.trustedContext, digest: context.event.contextDigest } }) }; const output = await workflowRuntime.run(name, validateWorkflowValue(${JSON.stringify(binding.contract.input.jsonSchema)}, input, name, 'input'), invocationMetadata, { signal: context.signal, timeoutMs: ${processor.budgets.timeoutMs} }); return validateWorkflowValue(${JSON.stringify(binding.contract.output.jsonSchema)}, output, name, 'output'); },`).join('\n')}
+function processorWorkflows(context) { return Object.freeze({
+${workflow.tasks.map((binding) => `  ${JSON.stringify(binding.alias)}: Object.assign(async (input, metadata) => { const name = ${JSON.stringify(`${binding.contract.name}.${binding.contract.version}`)}; const output = await workflowRuntime.run(name, validateWorkflowValue(${JSON.stringify(binding.contract.input.jsonSchema)}, input, name, 'input'), directWorkflowMetadata(context, ${JSON.stringify(`${binding.contract.name}.${binding.contract.version}`)}, metadata), { signal: context.signal, timeoutMs: ${processor.budgets.timeoutMs} }); return validateWorkflowValue(${JSON.stringify(binding.contract.output.jsonSchema)}, output, name, 'output'); }, {
+    start: (input, metadata) => directWorkflowRuntime(context).start(${JSON.stringify(`${binding.contract.name}.${binding.contract.version}`)}, input, metadata),
+    schedule: (input, at, metadata) => directWorkflowRuntime(context).schedule(${JSON.stringify(`${binding.contract.name}.${binding.contract.version}`)}, input, at, metadata),
+    reconcile: (schedule, metadata) => workflowRuntime.reconcileSchedule(${JSON.stringify(`${binding.contract.name}.${binding.contract.version}`)}, schedule, directWorkflowMetadata(context, ${JSON.stringify(`${binding.contract.name}.${binding.contract.version}`)}, metadata)),
+  }),`).join('\n')}
 }); }
-const invokeHandler = (payload, context) => handleEvent(payload, { ...context, schedules, tasks: processorTasks(context) });` : 'const invokeHandler = handleEvent;';
+const directWorkflowContracts = new Set(${JSON.stringify(workflow.tasks.map((binding) => `${binding.contract.name}.${binding.contract.version}`))});
+function directWorkflowMetadata(context, contract, metadata) { const callerKey = metadata?.idempotencyKey; const event = context.event; return { ...metadata, idempotencyKey: context.idempotencyKey + ':' + contract + (callerKey ? ':' + callerKey : ''), causationId: event?.id ?? context.batch?.id, ...(!event?.contextDigest ? {} : { trustedContext: { values: context.trustedContext, digest: event.contextDigest, ...(event.changeScopes ? { changeScopes: event.changeScopes } : {}) } }) }; }
+function directWorkflowRuntime(context) { const requireContract = (contract) => { if (!directWorkflowContracts.has(contract)) throw new Error('Stream processor attempted to call undeclared workflow ' + JSON.stringify(contract)); return contract; }; return {
+  run: (contract, input, metadata, result) => workflowRuntime.run(requireContract(contract), input, directWorkflowMetadata(context, contract, metadata), { signal: context.signal, timeoutMs: ${processor.budgets.timeoutMs}, ...result }),
+  start: (contract, input, metadata) => workflowRuntime.start(requireContract(contract), input, directWorkflowMetadata(context, contract, metadata)),
+  schedule: (contract, input, at, metadata) => workflowRuntime.schedule(requireContract(contract), input, at, directWorkflowMetadata(context, contract, metadata)),
+  reconcileSchedule: (contract, schedule, metadata) => workflowRuntime.reconcileSchedule(requireContract(contract), schedule, directWorkflowMetadata(context, contract, metadata)),
+  signal: (contract, runId, name, payload, metadata) => workflowRuntime.signal(requireContract(contract), runId, name, payload, directWorkflowMetadata(context, contract, metadata)),
+}; }
+` : '';
+  const functionNativeDeclarations = generatedFunctionNativeStreamTransaction(
+    graph,
+    processor,
+  );
+  const authoredHandlerInvocation =
+    generatedStreamProcessorAuthoredHandlerInvocation(
+      Boolean(workflow),
+      Boolean(processor.functionNativeTransaction),
+    );
+  const runtimeFunction = processor.invocation === 'batch'
+    ? 'runApplicationStreamBatchProcessor'
+    : 'runApplicationStreamProcessor';
+  const runtimeOptions = processor.invocation === 'batch'
+    ? `concurrency: processorConcurrency, maxItems: ${processor.batch?.maxItems}, maxBytes: ${processor.batch?.maxBytes}, maxBatches: 20`
+    : 'concurrency: processorConcurrency, batchSize: Math.min(1000, processorMaxAckPending), maxBatches: 20';
+  const exhaustedWaitMs = processor.invocation === 'batch'
+    ? processor.batch?.maxWaitMs ?? 1_000
+    : 1_000;
+  const signalImports = stream.signal
+    ? `import postgres from 'postgres';
+import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
+import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';
+import { applicationSignalAccessAllows, createApplicationSignalIssuanceDecoder, createPostgresApplicationSignalStore } from '@applik8s/applik8s/signal-runtime';`
+    : '';
+  const signalRuntime = generatedStreamProcessorSignalRuntime(
+    graph,
+    processor,
+    stream,
+    operationCatalog,
+  );
   return `import { createServer } from 'node:http';
-import { createPostgresApplicationStream, createPostgresApplicationStreamProcessorStore, enforcePostgresApplicationStreamRetention, runApplicationStreamProcessor } from '@applik8s/applik8s/stream-worker-runtime';
+import { createPostgresApplicationStream, createPostgresApplicationStreamProcessorStore, enforcePostgresApplicationStreamRetention, ${runtimeFunction} } from '@applik8s/applik8s/stream-worker-runtime';
 ${workflowImport}
-import { callback as handleEvent } from './handle.generated.js';
+${functionNativeImport}
+${signalImports}
+import { createCallback as createHandleEvent } from './handle.generated.js';
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
 function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(name + ' must be an integer between ' + minimum + ' and ' + maximum + '.'); return value; }
 function schema(json) { return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:stream-processor' }, schema: json }; }
 const database = ${databaseBindingSource(stream.database)};
 const stream = { kind: 'applicationStream', definition: { kind: 'stream', id: ${JSON.stringify(`${stream.name}.${stream.version}`)}, name: ${JSON.stringify(stream.name)}, version: ${JSON.stringify(stream.version)}, payload: schema(${JSON.stringify(stream.payload.jsonSchema)}) }, retention: ${JSON.stringify(stream.retention)}, authority: 'postgres-outbox', replay: 'supported', database, partition: () => { throw new Error('Processor replay never repartitions persisted events.'); }, authorize: async () => false };
 const databaseUrl = requiredEnv(${JSON.stringify(stream.database.connectionEnvName)});
-const source = createPostgresApplicationStream({ stream, databaseUrl, principal: { id: ${JSON.stringify(`applik8s:processor:${processor.name}`)} }, includeTrustedContext: true, internalConsumer: { kind: 'processor', name: ${JSON.stringify(processor.name)} } });
+const createSource = () => createPostgresApplicationStream({ stream, databaseUrl, principal: { id: ${JSON.stringify(`applik8s:processor:${processor.name}`)} }, includeTrustedContext: true, internalConsumer: { kind: 'processor', name: ${JSON.stringify(processor.name)} } });
+let source = createSource();
 const store = createPostgresApplicationStreamProcessorStore({ databaseUrl });
+${signalRuntime.declarations}
 const processorConcurrency = requiredIntegerEnv('APPLIK8S_PROCESSOR_CONCURRENCY', 1, 64);
 const processorMaxAckPending = requiredIntegerEnv('APPLIK8S_PROCESSOR_MAX_ACK_PENDING', processorConcurrency, 65536);
 ${workflowDeclarations}
-let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0; let deadLettered = 0;
+${functionNativeDeclarations}
+${authoredHandlerInvocation}
+let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0; let deadLettered = 0; let lastSuccessfulCycleAt = 0;
 const loopController = new AbortController();
-const server = createServer((request, response) => { const live = request.url === '/live'; const health = live || request.url === '/ready'; if (!health) { response.writeHead(404); response.end(); return; } const ok = live || (ready && !stopping); response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ ready, stopping, checkpoint, processed, deadLettered, lastError })); });
+const server = createServer((request, response) => { const live = request.url === '/live'; const health = live || request.url === '/ready'; if (!health) { response.writeHead(404); response.end(); return; } const fresh = lastSuccessfulCycleAt > 0 && Date.now() - lastSuccessfulCycleAt < 60_000; const ok = live || (ready && fresh && !stopping); response.writeHead(ok ? 200 : 503, { 'content-type': 'application/json' }); response.end(JSON.stringify({ ready: ready && fresh, stopping, checkpoint, processed, deadLettered, lastError, lastSuccessfulCycleAt })); });
 server.listen(Number(process.env.APPLIK8S_HEALTH_PORT ?? '8080'), '0.0.0.0');
-async function loop() { while (!stopping) { try { const result = await runApplicationStreamProcessor({ processor: ${JSON.stringify(processor.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, handle: invokeHandler, concurrency: processorConcurrency, retry: ${JSON.stringify(processor.retry)}, failure: ${JSON.stringify(processor.failure)}, timeoutMs: ${processor.budgets.timeoutMs}, maxInputBytes: ${processor.budgets.maxInputBytes}, batchSize: Math.min(1000, processorMaxAckPending), maxBatches: 20 }); checkpoint = result.checkpoint; processed += result.processed; deadLettered += result.deadLettered; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; await abortableSleep(result.exhausted ? 1000 : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; if (!stopping) console.error(error); await abortableSleep(5000, loopController.signal); } } }
+async function loop() { while (!stopping) { try { const result = await ${runtimeFunction}({ processor: ${JSON.stringify(processor.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, handle: invokeHandler, ${signalRuntime.runtimeOption}${runtimeOptions}, retry: ${JSON.stringify(processor.retry)}, failure: ${JSON.stringify(processor.failure)}, timeoutMs: ${processor.budgets.timeoutMs}, maxInputBytes: ${processor.budgets.maxInputBytes} }); checkpoint = result.checkpoint; processed += result.processed; deadLettered += result.deadLettered; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; lastSuccessfulCycleAt = Date.now(); await abortableSleep(result.exhausted ? ${exhaustedWaitMs} : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; await source.close().catch(() => undefined); if (!stopping) { source = createSource(); console.error(error); } await abortableSleep(5000, loopController.signal); } } }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
 const loopTask = loop();
-async function shutdown() { if (stopping) return; stopping = true; ready = false; loopController.abort(); await new Promise((resolve) => server.close(resolve)); await loopTask; await Promise.all([source.close(), store.close()]); }
+async function shutdown() { if (stopping) return; stopping = true; ready = false; loopController.abort(); await new Promise((resolve) => server.close(resolve)); await loopTask; await Promise.all([source.close(), store.close()${signalRuntime.shutdown}]); }
 process.once('SIGTERM', () => { void shutdown(); }); process.once('SIGINT', () => { void shutdown(); });
 await loopTask;
 `;
 }
 
+function generatedFunctionNativeStreamTransaction(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+): string {
+  const transaction = processor.functionNativeTransaction;
+  if (!transaction) return 'const functionNativeBindings = Object.freeze({});';
+  const nodes = graphNodes(graph);
+  const primary = requiredNode(
+    nodes,
+    transaction.primaryModel.nodeId,
+    'model',
+    processor.id,
+  );
+  if (!primary.runtime) {
+    throw new Error(
+      `Function-native stream processor ${processor.id} primary model ${primary.id} has no PostgreSQL runtime contract.`,
+    );
+  }
+  const models = transaction.models.map((reference) => {
+    const model = requiredNode(nodes, reference.nodeId, 'model', processor.id);
+    if (!model.runtime) {
+      throw new Error(
+        `Function-native stream processor ${processor.id} participant ${model.id} has no PostgreSQL runtime contract.`,
+      );
+    }
+    return model.runtime;
+  });
+  const outbox = transaction.outbox.map((reference) => {
+    const event = requiredNode(nodes, reference.nodeId, 'event', processor.id);
+    return {
+      kind: 'applik8sEvent',
+      id: event.name,
+      name: event.contract.name,
+      version: event.contract.version,
+      payload: {
+        kind: 'jsonSchema',
+        ref: {
+          kind: 'jsonSchema',
+          uri: `generated:${event.name}.payload`,
+        },
+        schema: event.contract.payload.jsonSchema,
+      },
+    };
+  });
+  const modelBindings = functionNativeModelRuntimeBindings(
+    graph,
+    processor,
+  );
+  const eventBindings = functionNativeEventRuntimeBindings(
+    graph,
+    processor,
+  );
+  return `
+const functionNativePrimaryModel = Object.freeze(${JSON.stringify(primary.runtime)});
+const functionNativeModels = Object.freeze(${JSON.stringify(models)});
+const functionNativeOutbox = Object.freeze(${JSON.stringify(outbox)});
+function functionNativeModelSnapshot(value) { return value ? { identity: value.id, value: value.spec, ...(value.revision ? { revision: value.revision } : {}) } : undefined; }
+function functionNativeModelHandle(name) { return Object.freeze({
+  get: async identity => functionNativeModelSnapshot(await getApplicationNativeModelObject(name, identity)),
+  find: async options => (await findApplicationNativeModelObjects(name, options)).items.map(functionNativeModelSnapshot),
+  require: async identity => functionNativeModelSnapshot(await requireApplicationNativeModelObject(name, identity)),
+  edit: (identity, handler) => editApplicationNativeModelObject(name, identity, handler),
+}); }
+const functionNativeBindings = Object.freeze({
+${modelBindings.map(({ identifier, model }) => `  ${JSON.stringify(identifier)}: functionNativeModelHandle(${JSON.stringify(model.name)}),`).join('\n')}
+${eventBindings.map(({ identifier, event }) => `  ${JSON.stringify(identifier)}: createApplicationFunctionNativeEventHandle(${JSON.stringify(`${event.contract.name}.${event.contract.version}`)}, { payload: schema(${JSON.stringify(event.contract.payload.jsonSchema)}) }),`).join('\n')}
+});
+function functionNativeRuntime(context) {
+  const sourceId = context.event?.id ?? context.batch?.id;
+  if (!sourceId) throw new Error('Function-native transaction requires a durable source event or frozen batch identity.');
+  return Object.freeze({
+    edit: request => executeFunctionNativePostgresModelEdit({
+      bindingId: ${JSON.stringify(processor.id)},
+      model: functionNativePrimaryModel,
+      models: functionNativeModels,
+      outbox: functionNativeOutbox,
+      databaseUrl,
+      delivery: {
+        id: sourceId,
+        idempotencyKey: context.idempotencyKey,
+        correlationId: sourceId,
+        causationId: sourceId,
+        recordedAt: context.event?.recordedAt ?? context.batch?.recordedAt,
+        ...(context.event?.contextDigest ? {
+          context: {
+            values: context.trustedContext ?? {},
+            digest: context.event.contextDigest,
+          },
+        } : {}),
+      },
+    }, request),
+  });
+}
+const invokeHandler = (input, context) =>
+  withApplicationNativeModelTransactionRuntime(
+    functionNativeRuntime(context),
+    () => invokeAuthoredHandler(input, context),
+  );`;
+}
+
+function generatedStreamProcessorAuthoredHandlerInvocation(
+  workflow: boolean,
+  functionNative: boolean,
+): string {
+  const bindings = functionNative
+    ? 'functionNativeBindings'
+    : 'Object.freeze({})';
+  if (!workflow) {
+    return `const invokeAuthoredHandler = createHandleEvent(${bindings});
+${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
+  }
+  return `const invokeAuthoredHandler = (input, context) => {
+  const workflows = processorWorkflows(context);
+  const handleEvent = createHandleEvent({ ...${bindings}, ...workflows });
+  return directWorkflowScope.run(
+    directWorkflowRuntime(context),
+    () => handleEvent(input, { ...context, schedules, workflows, tasks: workflows }),
+  );
+};
+${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
+}
+
+function functionNativeModelRuntimeBindings(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+): readonly {
+  readonly identifier: string;
+  readonly model: ApplicationModelNode;
+}[] {
+  const transaction = processor.functionNativeTransaction;
+  if (!transaction) return [];
+  const nodes = graphNodes(graph);
+  const bindings = new Map<string, ApplicationModelNode>();
+  for (const binding of transaction.modelBindings) {
+    const identifier = functionNativeCallbackBindingRoot(
+      binding.identifier,
+      processor.id,
+    );
+    const model = requiredNode(
+      nodes,
+      binding.model.nodeId,
+      'model',
+      processor.id,
+    );
+    const existing = bindings.get(identifier);
+    if (existing && existing.id !== model.id) {
+      throw new Error(
+        `Function-native stream processor ${processor.id} callback identifier ${identifier} is ambiguous between ${existing.id} and ${model.id}.`,
+      );
+    }
+    bindings.set(identifier, model);
+  }
+  return [...bindings.entries()]
+    .map(([identifier, model]) => ({ identifier, model }))
+    .sort((left, right) => left.identifier.localeCompare(right.identifier));
+}
+
+function functionNativeEventRuntimeBindings(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+): readonly {
+  readonly identifier: string;
+  readonly event: Extract<ApplicationGraph['nodes'][number], { readonly kind: 'event' }>;
+}[] {
+  const transaction = processor.functionNativeTransaction;
+  if (!transaction) return [];
+  const nodes = graphNodes(graph);
+  const bindings = new Map<
+    string,
+    Extract<ApplicationGraph['nodes'][number], { readonly kind: 'event' }>
+  >();
+  const modelIdentifiers = new Set(
+    functionNativeModelRuntimeBindings(graph, processor).map(
+      (binding) => binding.identifier,
+    ),
+  );
+  for (const binding of transaction.eventBindings ?? []) {
+    const identifier = functionNativeCallbackBindingRoot(
+      binding.identifier,
+      processor.id,
+    );
+    if (modelIdentifiers.has(identifier)) {
+      throw new Error(
+        `Function-native stream processor ${processor.id} callback identifier ${identifier} cannot hydrate as both a model and an event.`,
+      );
+    }
+    const event = requiredNode(
+      nodes,
+      binding.event.nodeId,
+      'event',
+      processor.id,
+    );
+    const existing = bindings.get(identifier);
+    if (existing && existing.id !== event.id) {
+      throw new Error(
+        `Function-native stream processor ${processor.id} callback identifier ${identifier} is ambiguous between ${existing.id} and ${event.id}.`,
+      );
+    }
+    bindings.set(identifier, event);
+  }
+  return [...bindings.entries()]
+    .map(([identifier, event]) => ({ identifier, event }))
+    .sort((left, right) => left.identifier.localeCompare(right.identifier));
+}
+
+function functionNativeCallbackBindingRoot(
+  identifier: string,
+  owner: string,
+): string {
+  const root = identifier.split('.')[0]?.trim();
+  if (!root || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(root)) {
+    throw new Error(
+      `Function-native callback ${owner} binding ${JSON.stringify(identifier)} does not have a serializable root identifier.`,
+    );
+  }
+  return root;
+}
+
+function generatedStreamProcessorSignalRuntime(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+  stream: ApplicationStreamNode,
+  operationCatalog: ApplicationOperationCatalog,
+): {
+  readonly declarations: string;
+  readonly runtimeOption: string;
+  readonly shutdown: string;
+} {
+  if (!stream.signal) {
+    return { declarations: '', runtimeOption: '', shutdown: '' };
+  }
+  const input = signalInputSchema(
+    stream as ApplicationStreamNode & {
+      readonly signal: NonNullable<ApplicationStreamNode['signal']>;
+    },
+  );
+  const actionOperations = Object.fromEntries(
+    stream.signal.actions.map((action) => {
+      const id = `applik8s://signals/${stream.signal?.id}/operations/${action.name}`;
+      if (!operationCatalog.operations.some((operation) => operation.id === id)) {
+        throw new Error(
+          `Signal processor ${processor.id} action ${action.name} has no canonical operation.`,
+        );
+      }
+      return [action.name, id];
+    }),
+  );
+  const workloadIdentity = {
+    id: `identity:${graph.metadata.name}:workload:${processor.id}`,
+    kind: 'workload',
+    issuer: `applik8s://${graph.metadata.name}`,
+    subject: processor.id,
+  };
+  return {
+    declarations: `const signalSql = postgres(databaseUrl, { max: 4, idle_timeout: 20, connect_timeout: 10, prepare: false });
+const signalStore = createPostgresApplicationSignalStore({ sql: signalSql });
+const signalOperationAuthority = createApplicationOperationAuthorityRuntime({
+  sql: signalSql,
+  application: ${JSON.stringify(graph.metadata.name)},
+  catalog: ${JSON.stringify(operationCatalog)},
+  ${applicationStaticAuthorityManifest(graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(graph))},` : ''}
+});
+const signalDefinition = Object.freeze({
+  kind: 'applicationSignalDefinition',
+  id: ${JSON.stringify(stream.signal.id)},
+  name: ${JSON.stringify(stream.signal.name)},
+  version: ${JSON.stringify(stream.signal.version)},
+  input: schema(${JSON.stringify(input)}),
+  actions: Object.freeze(${JSON.stringify(Object.fromEntries(
+    stream.signal.actions.map((action) => [
+      action.name,
+      {
+        kind: 'jsonSchema',
+        ref: {
+          kind: 'jsonSchema',
+          uri: `generated:${stream.signal?.id}.actions.${action.name}`,
+        },
+        schema: action.schema.jsonSchema,
+      },
+    ]),
+  ))}),
+});
+const signalActionOperations = Object.freeze(${JSON.stringify(actionOperations)});
+const signalWorkloadIdentity = Object.freeze(${JSON.stringify(workloadIdentity)});
+function signalGrantIds(signal) {
+  if (signal.access.mode !== 'grant') return [];
+  const subjects = Array.isArray(signal.access.subject)
+    ? signal.access.subject
+    : [signal.access.subject];
+  return subjects.map((subject) =>
+    'grant:signal:' + signal.id + ':' + subject.id);
+}
+async function revokeSignalGrants(signal, transaction) {
+  for (const grantId of signalGrantIds(signal)) {
+    await signalOperationAuthority.revokeGrant(
+      grantId,
+      'Signal ' + signal.id + ' reached terminal state.',
+      transaction,
+    );
+  }
+}
+const decodeSignalIssuance = createApplicationSignalIssuanceDecoder({
+  store: signalStore,
+  definition: signalDefinition,
+  admit: async (issuance, context) => {
+    const durablePrincipal = context.principal;
+    const actor = durablePrincipal
+      ? {
+          id: durablePrincipal.identity.id,
+          ...(durablePrincipal.roles ? { roles: durablePrincipal.roles } : {}),
+          ...(durablePrincipal.attributes ? { attributes: durablePrincipal.attributes } : {}),
+        }
+      : { id: signalWorkloadIdentity.id };
+    return {
+      actor,
+      authorizeAction: async ({ signal, action, input, transaction }) => {
+        if (!applicationSignalAccessAllows(signal, actor)) {
+          throw new Error('APPLIK8S_SIGNAL_SUBJECT_DENIED');
+        }
+        if (!durablePrincipal) {
+          throw new Error('APPLIK8S_SIGNAL_EXECUTION_IDENTITY_REQUIRED');
+        }
+        const operationId = signalActionOperations[action];
+        if (!operationId) throw new Error('APPLIK8S_SIGNAL_ACTION_UNDECLARED');
+        const authorize = () => signalOperationAuthority.authorize({
+            principal: durablePrincipal,
+            operationId,
+            target: {
+              kind: 'target',
+              model: signal.contract.id,
+              identity: { ...signal.target, signalId: signal.id },
+            },
+            audience: ${JSON.stringify(processor.id)},
+            transport: 'event',
+            inputDigest: applicationOperationInputDigest(input),
+            trustedContextDigest: context.event.contextDigest ?? durablePrincipal.trustedContextDigest,
+          });
+        const result = transaction
+          ? await signalOperationAuthority.withinTransaction(transaction, authorize)
+          : await authorize();
+        if (!result.allowed) throw new Error(result.code + ': ' + result.message);
+        return { id: result.receipt.id };
+      },
+      finalizeAction: async ({ signal, terminal }, { transaction }) => {
+        await revokeSignalGrants(signal, transaction);
+        await signalOperationAuthority.observe({
+          id: 'signal:' + signal.id,
+          domain: 'workflow',
+          subject: signal.contract.id,
+          authority: 'canonical',
+          state: terminal.status === 'resolved' ? 'succeeded' : 'cancelled',
+          reason: terminal.status === 'resolved' ? terminal.action : 'expired',
+          source: 'application-signal-runtime',
+          causalId: signal.id,
+          evidence: {
+            signalId: signal.id,
+            contractId: signal.contract.id,
+            terminalStatus: terminal.status,
+            ...(terminal.status === 'resolved' ? { action: terminal.action } : {}),
+          },
+          observedAt: terminal.status === 'resolved' ? terminal.decidedAt : terminal.expiredAt,
+        }, transaction);
+      },
+    };
+  },
+});`,
+    runtimeOption: 'decodePayload: decodeSignalIssuance, ',
+    shutdown: ', signalStore.close(), signalSql.end({ timeout: 5 })',
+  };
+}
+
+async function writeStreamHandlerModule(
+  directory: string,
+  processor: ApplicationStreamProcessorNode,
+): Promise<void> {
+  const identifiers = [
+    ...(processor.tasks ?? []).map((binding) => binding.alias),
+    ...(processor.functionNativeTransaction?.modelBindings ?? []).map(
+      (binding) => binding.identifier,
+    ),
+    ...(processor.functionNativeTransaction?.eventBindings ?? []).map(
+      (binding) => binding.identifier,
+    ),
+  ]
+    .map((identifier) => identifier.split('.')[0] ?? identifier)
+    .filter(
+      (identifier, index, values) =>
+        /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(identifier)
+        && values.indexOf(identifier) === index,
+    );
+  await writeFile(
+    join(directory, 'handle.generated.ts'),
+    generatedCallbackFactoryModule({
+      source: processor.handlerSource,
+      ...(processor.handlerDependencies
+        ? { dependencies: processor.handlerDependencies }
+        : {}),
+      injectedIdentifiers: identifiers,
+      exportName: 'createCallback',
+    }),
+  );
+}
+
 async function writeCallbackModule(directory: string, name: string, source: string, dependencies?: ApplicationHandlerDependencies): Promise<void> {
   const dependencySource = dependencies?.source ? absoluteDependencyImports(dependencies.source, dependencies.resolveDir) : '';
   await writeFile(join(directory, `${name}.generated.ts`), `${dependencySource}${dependencySource ? '\n\n' : ''}export const callback = (${source});\n`);
+}
+
+async function writeProfiledCallbackModule(
+  directory: string,
+  name: string,
+  profile: ApplicationProfiledCallbackContract,
+): Promise<void> {
+  const entries = Object.entries(profile.cases);
+  const modules = entries.map(([variant, callback]) => {
+    const suffix = createHash('sha256').update(variant).digest('hex').slice(0, 12);
+    return {
+      variant,
+      callback,
+      moduleName: `${name}-profile-${suffix}`,
+      variable: `profile_${suffix}`,
+    };
+  });
+  await Promise.all([
+    ...modules.map((entry) =>
+      writeCallbackModule(
+        directory,
+        entry.moduleName,
+        entry.callback.source,
+        entry.callback.dependencies,
+      ),
+    ),
+    writeCallbackModule(
+      directory,
+      `${name}-profile-default`,
+      profile.default.source,
+      profile.default.dependencies,
+    ),
+  ]);
+  const imports = [
+    ...modules.map(
+      (entry) =>
+        `import { callback as ${entry.variable} } from './${entry.moduleName}.generated.js';`,
+    ),
+    `import { callback as profile_default } from './${name}-profile-default.generated.js';`,
+  ].join('\n');
+  const cases = modules
+    .map(
+      (entry) => `${JSON.stringify(entry.variant)}: ${entry.variable}`,
+    )
+    .join(',\n');
+  await writeFile(
+    join(directory, `${name}.generated.ts`),
+    `${imports}
+
+const callbacks = {
+${cases}
+};
+
+export const callback = (...args) => {
+  const variant = process.env.APPLIK8S_PROFILE_VARIANT;
+  if (!variant) {
+    throw new Error('Missing required environment variable APPLIK8S_PROFILE_VARIANT.');
+  }
+  return (callbacks[variant] ?? profile_default)(...args);
+};
+`,
+  );
+}
+
+function assertGatewayCallbackResolved(
+  gatewayId: string,
+  label: string,
+  profile: ApplicationProfiledCallbackContract | undefined,
+  unresolved: readonly string[] | undefined,
+): void {
+  assertResolved(gatewayId, label, unresolved);
+  if (!profile) return;
+  for (const [variant, callback] of [
+    ...Object.entries(profile.cases),
+    ['default', profile.default] as const,
+  ]) {
+    assertResolved(
+      gatewayId,
+      `${label} profile ${variant}`,
+      callback.unresolved,
+    );
+  }
 }
 
 async function writeQueryCallbackModule(directory: string, name: string, source: string, dependencies: ApplicationHandlerDependencies | undefined, query: ApplicationQueryNode, graph: ApplicationGraph): Promise<void> {
@@ -1286,7 +2972,7 @@ function rewriteQueryRuntimeDependencies(source: string, query: ApplicationQuery
       edits.push({ start: statement.getFullStart(), end: statement.getEnd(), replacement: '' });
       continue;
     }
-    if (/\.database\.postgres$/.test(callee)) {
+    if (/\.database\.(?:postgres|bind)$/.test(callee)) {
       edits.push({ start: initializer.getStart(file), end: initializer.getEnd(), replacement: queryDatabaseCaptureSource(query.database) });
       continue;
     }
@@ -1302,7 +2988,10 @@ function rewriteQueryRuntimeDependencies(source: string, query: ApplicationQuery
   }
   let rewritten = importedModelsRewritten;
   for (const edit of edits.sort((left, right) => right.start - left.start)) rewritten = `${rewritten.slice(0, edit.start)}${edit.replacement}${rewritten.slice(edit.end)}`;
-  return rewritten.trim();
+  const focused = rewritten.trim();
+  return focused.includes('applicationDatabaseHandle(')
+    ? `import { applicationDatabaseHandle } from '@applik8s/applik8s/query-runtime';\n${focused}`
+    : focused;
 }
 
 interface ImportedQueryModelExport {
@@ -1439,7 +3128,13 @@ function queryDatabaseExports(source: string, databaseName: string): ReadonlySet
     if (!ts.isVariableStatement(statement) || !statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
     for (const declaration of statement.declarationList.declarations) {
       if (!ts.isIdentifier(declaration.name) || !declaration.initializer || !ts.isCallExpression(declaration.initializer)) continue;
-      if (!/\.database\.postgres$/.test(declaration.initializer.expression.getText(file))) continue;
+      if (
+        !/\.database\.(?:postgres|bind)$/.test(
+          declaration.initializer.expression.getText(file),
+        )
+      ) {
+        continue;
+      }
       const name = declaration.initializer.arguments[0];
       if (name && ts.isStringLiteral(name) && name.text === databaseName) names.add(declaration.name.text);
     }
@@ -1465,7 +3160,7 @@ function assertSupportedQueryRuntimeFacetCapture(source: string, queryId: string
 }
 
 function queryDatabaseCaptureSource(database: ApplicationReactiveDatabaseRuntimeContract): string {
-  return `{ kind: 'applicationDatabase', name: ${JSON.stringify(database.name)}, provider: { kind: 'postgres' }, schema: {} }`;
+  return `applicationDatabaseHandle({ kind: 'applicationDatabase', name: ${JSON.stringify(database.name)}, provider: { kind: 'postgres' }, schema: {} })`;
 }
 
 function objectLiteralStringProperty(node: ts.Expression | undefined, name: string): string | undefined {
@@ -1507,6 +3202,7 @@ function consolidatedReactiveGatewayResources(
   const annotations = reactiveEnvelopeAnnotations(rolloutDigest, memberNames);
   const metadata = reactiveEnvelopeMetadata(name, namespace, labels, includeWhen);
   const ports = artifacts.map((_artifact, index) => 8080 + index);
+  const volumes = consolidatedReactivePodVolumes(artifacts);
   const containers = artifacts.map((artifact, index) => {
     const original = reactiveArtifactContainer(artifact);
     const portName = `http-${index}`;
@@ -1536,6 +3232,7 @@ function consolidatedReactiveGatewayResources(
           spec: {
             terminationGracePeriodSeconds: firstPodSpec.terminationGracePeriodSeconds ?? 30,
             containers,
+            ...(volumes.length > 0 ? { volumes } : {}),
           },
         },
       },
@@ -1785,8 +3482,14 @@ function arrayValue(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function reactiveResources(options: { readonly graphName: string; readonly name: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[]; readonly workflowToken?: { readonly secretName: string; readonly key: string } }, image: string, digest: string): GeneratedApplicationReactiveResource[] {
-  const component = options.kind === 'queryGateway' ? 'query-gateway' : options.kind === 'projectionWorker' ? 'projection-worker' : 'stream-processor';
+function reactiveResources(options: { readonly graphName: string; readonly name: string; readonly kind: GeneratedApplicationReactiveArtifact['kind']; readonly namespace: string; readonly image: string; readonly replicas: number | string; readonly port: number; readonly env: readonly Record<string, unknown>[]; readonly includeWhen?: string; readonly permissions?: readonly GatewayKubernetesPermission[]; readonly workflowToken?: { readonly secretName: string; readonly key: string }; readonly caCertificates?: readonly ReactiveCaCertificate[] }, image: string, digest: string): GeneratedApplicationReactiveResource[] {
+  const component = options.kind === 'queryGateway'
+    ? 'query-gateway'
+    : options.kind === 'projectionWorker'
+      ? 'projection-worker'
+      : options.kind === 'searchProjectionWorker'
+        ? 'search-projection-worker'
+        : 'stream-processor';
   const labels = { 'app.kubernetes.io/name': options.name, 'app.kubernetes.io/component': component, 'applik8s.dev/graph': options.graphName };
   const metadata = (name: string) => ({
     name,
@@ -1801,9 +3504,51 @@ function reactiveResources(options: { readonly graphName: string; readonly name:
     ? { type: 'RollingUpdate', rollingUpdate: { maxUnavailable: 1, maxSurge: 0 } }
     : { type: 'Recreate' };
   const permissions = options.permissions ?? [];
+  const certificates = uniqueCaCertificates(options.caCertificates ?? []);
+  if (certificates.length > 1) {
+    throw new Error(
+      `Generated reactive artifact ${options.name} currently supports one trust bundle; project multiple authorities into one Secret before compilation.`,
+    );
+  }
+  const certificate = certificates[0];
+  const caVolumeName = certificate
+    ? `search-ca-${createHash('sha256').update(`${certificate.name}/${certificate.key}`).digest('hex').slice(0, 8)}`
+    : undefined;
+  const volumeMounts = [
+    ...(options.workflowToken
+      ? [{ name: 'workflow-token', mountPath: '/var/run/secrets/applik8s/workflow-token', readOnly: true }]
+      : []),
+    ...(certificate && caVolumeName
+      ? [{ name: caVolumeName, mountPath: '/var/run/secrets/applik8s/search-ca', readOnly: true }]
+      : []),
+  ];
+  const volumes = [
+    ...(options.workflowToken
+      ? [{ name: 'workflow-token', secret: { secretName: options.workflowToken.secretName, items: [{ key: options.workflowToken.key, path: 'token' }] } }]
+      : []),
+    ...(certificate && caVolumeName
+      ? [{
+          name: caVolumeName,
+          secret: {
+            secretName: certificate.name,
+            optional: true,
+            items: [{ key: certificate.key, path: 'ca.crt' }],
+          },
+        }]
+      : []),
+  ];
+  const environment = [
+    ...options.env,
+    ...(certificate
+      ? [{
+          name: 'NODE_EXTRA_CA_CERTS',
+          value: '/var/run/secrets/applik8s/search-ca/ca.crt',
+        }]
+      : []),
+  ];
   const resources: GeneratedApplicationReactiveResource[] = [
     ...(permissions.length > 0 ? [{ apiVersion: 'v1', kind: 'ServiceAccount', metadata: metadata(options.name) }] : []),
-    { apiVersion: 'apps/v1', kind: 'Deployment', metadata: metadata(options.name), spec: { replicas: options.replicas, selector: { matchLabels: labels }, strategy, template: { metadata: { labels, annotations: { 'applik8s.dev/digest': digest } }, spec: { ...(permissions.length > 0 ? { serviceAccountName: options.name } : {}), terminationGracePeriodSeconds: 30, containers: [{ name: 'runtime', image, imagePullPolicy: 'IfNotPresent', command: ['node', '/app/runtime.mjs'], env: options.env, ...(options.workflowToken ? { volumeMounts: [{ name: 'workflow-token', mountPath: '/var/run/secrets/applik8s/workflow-token', readOnly: true }] } : {}), ports: [{ name: 'http', containerPort: options.port }], readinessProbe: { httpGet: { path: '/ready', port: 'http' }, periodSeconds: 5, failureThreshold: 6 }, livenessProbe: { httpGet: { path: '/live', port: 'http' }, periodSeconds: 10, failureThreshold: 6 }, resources: { requests: { cpu: '100m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } } }], ...(options.workflowToken ? { volumes: [{ name: 'workflow-token', secret: { secretName: options.workflowToken.secretName, items: [{ key: options.workflowToken.key, path: 'token' }] } }] } : {}) } } } },
+    { apiVersion: 'apps/v1', kind: 'Deployment', metadata: metadata(options.name), spec: { replicas: options.replicas, selector: { matchLabels: labels }, strategy, template: { metadata: { labels, annotations: { 'applik8s.dev/digest': digest } }, spec: { ...(permissions.length > 0 ? { serviceAccountName: options.name } : {}), terminationGracePeriodSeconds: 30, containers: [{ name: 'runtime', image, imagePullPolicy: 'IfNotPresent', command: ['node', '/app/runtime.mjs'], env: environment, ...(volumeMounts.length > 0 ? { volumeMounts } : {}), ports: [{ name: 'http', containerPort: options.port }], readinessProbe: { httpGet: { path: '/ready', port: 'http' }, periodSeconds: 5, failureThreshold: 6 }, livenessProbe: { httpGet: { path: '/live', port: 'http' }, periodSeconds: 10, failureThreshold: 6 }, resources: { requests: { cpu: '100m', memory: '128Mi' }, limits: { cpu: '1', memory: '512Mi' } } }], ...(volumes.length > 0 ? { volumes } : {}) } } } },
     { apiVersion: 'networking.k8s.io/v1', kind: 'NetworkPolicy', metadata: metadata(options.name), spec: { podSelector: { matchLabels: labels }, policyTypes: ['Ingress'], ingress: [{ ports: [{ protocol: 'TCP', port: options.port }] }] } },
   ];
   resources.push(...gatewayKubernetesRbacResources(options, permissions, labels));
@@ -1811,6 +3556,17 @@ function reactiveResources(options: { readonly graphName: string; readonly name:
   if (typeof options.replicas === 'number' && options.replicas > 1) resources.push({ apiVersion: 'policy/v1', kind: 'PodDisruptionBudget', metadata: metadata(options.name), spec: { minAvailable: 1, selector: { matchLabels: labels } } });
   if (typeof options.replicas === 'string') resources.push({ apiVersion: 'policy/v1', kind: 'PodDisruptionBudget', metadata: metadata(options.name), spec: { maxUnavailable: reactiveMaxUnavailable(options.replicas), selector: { matchLabels: labels } } });
   return resources;
+}
+
+function uniqueCaCertificates(
+  certificates: readonly ReactiveCaCertificate[],
+): readonly ReactiveCaCertificate[] {
+  const values = new Map<string, ReactiveCaCertificate>();
+  for (const certificate of certificates) {
+    values.set(`${certificate.name}/${certificate.key}`, certificate);
+  }
+  return [...values.values()].sort((left, right) =>
+    `${left.name}/${left.key}`.localeCompare(`${right.name}/${right.key}`));
 }
 
 function gatewayKubernetesRbacResources(
@@ -1895,10 +3651,25 @@ function gatewayEnvironment(
   receivesInternalOperations: boolean,
 ): readonly Record<string, unknown>[] {
   if (!gateway.cursorSecret) return [];
+  const profileSelector = applicationGatewayProfileSelector(gateway, graph);
   const onlineProviders = queries.flatMap((query) => query.projection?.storage === 'online' ? [gatewayOnlineProjectionContract(graph, query)] : []);
   const analyticalProviders = queries.flatMap((query) => query.projection?.storage === 'analytical' ? [gatewayAnalyticalProjectionContract(graph, query)] : []);
+  const searchProviders = queries.flatMap((query) =>
+    query.search ? [gatewaySearchContract(graph, query)] : []);
   return uniqueEnvironment([
     { name: 'APPLIK8S_CURSOR_SECRET', valueFrom: { secretKeyRef: { name: gateway.cursorSecret.name, key: gateway.cursorSecret.key } } },
+    {
+      name: 'APPLIK8S_CONTEXT_SECRET',
+      valueFrom: {
+        secretKeyRef: {
+          name: `${kubernetesName(graph.metadata.name)}-context`,
+          key: 'key',
+        },
+      },
+    },
+    ...(profileSelector
+      ? [{ name: 'APPLIK8S_PROFILE_VARIANT', value: profileSelector }]
+      : []),
     ...(receivesInternalOperations
       ? [{
           name: 'APPLIK8S_INTERNAL_OPERATION_SECRET',
@@ -1910,6 +3681,7 @@ function gatewayEnvironment(
           },
         }]
       : []),
+    { name: 'APPLIK8S_APPLICATION_NAME', value: graph.metadata.name },
     { name: 'APPLIK8S_NAMESPACE', value: applicationGraphStringValue(gateway.deployment?.namespace) ?? 'default' },
     ...queries.flatMap((query) => query.kubernetes?.namespace && serializedInstallationExpression(query.kubernetes.namespace)
       ? [{ name: kubernetesQueryNamespaceEnvironmentName(query.id), value: query.kubernetes.namespace }]
@@ -1919,8 +3691,297 @@ function gatewayEnvironment(
     ...uniqueDatabaseRuntimes(subscriptions.map(({ stream }) => stream.database)).map((database) => ({ name: database.connectionEnvName, valueFrom: { secretKeyRef: { name: database.secretName, key: database.secretKey } } })),
     ...onlineProviders.flatMap((contract) => gatewayOnlineProjectionEnvironment(contract)),
     ...analyticalProviders.flatMap((contract) => gatewayAnalyticalProjectionEnvironment(contract)),
+    ...searchProviders.flatMap((contract) =>
+      searchProviderCredentialEnvironment(contract, gateway.deployment?.namespace ?? 'default')),
     ...eventLogEnvironment(eventLog),
   ]);
+}
+
+function applicationGatewayProfileSelector(
+  gateway: ApplicationGatewayNode,
+  graph?: ApplicationGraph,
+): string | undefined {
+  const selectors = [
+    gateway.authenticationProfile?.selector,
+    gateway.identityReadinessProfile?.selector,
+    ...(graph
+      ? gateway.queries.flatMap((reference) => {
+          const query = graphNodes(graph).get(reference.nodeId);
+          if (query?.kind !== 'query' || !query.search) return [];
+          const selection = objectConfig(
+            gatewaySearchContract(graph, query).providerConfig,
+          );
+          return selection.kind === 'application-provider-selection'
+            && typeof selection.selector === 'string'
+            ? [selection.selector]
+            : [];
+        })
+      : []),
+  ].filter((selector): selector is string => Boolean(selector));
+  if (selectors.length === 0) return undefined;
+  if (!selectors.every((selector) => selector === selectors[0])) {
+    throw new Error(
+      `Generated application gateway ${gateway.id} has incompatible profiled identity selectors.`,
+    );
+  }
+  const selector = selectors[0]!;
+  const match = /^schema\.spec\.([A-Za-z_][A-Za-z0-9_.]*)$/u.exec(selector);
+  if (!match?.[1]) {
+    throw new Error(
+      `Generated application gateway ${gateway.id} identity selector ${JSON.stringify(selector)} cannot be lowered to a workload profile binding.`,
+    );
+  }
+  return `\${schema.spec.${match[1]}}`;
+}
+
+function searchProjectionEnvironment(
+  work: SearchProjectionWorkItem,
+): readonly Record<string, unknown>[] {
+  const database = work.contract.query.database;
+  if (!database) return [];
+  return uniqueEnvironment([
+    {
+      name: 'APPLIK8S_CURSOR_SECRET',
+      valueFrom: {
+        secretKeyRef: {
+          name: work.cursorSecret.name,
+          key: work.cursorSecret.key,
+        },
+      },
+    },
+    {
+      name: database.connectionEnvName,
+      valueFrom: {
+        secretKeyRef: {
+          name: database.secretName,
+          key: database.secretKey,
+        },
+      },
+    },
+    ...(work.profileSelector
+      ? [{ name: 'APPLIK8S_PROFILE_VARIANT', value: work.profileSelector }]
+      : []),
+    ...searchProviderCredentialEnvironment(
+      work.contract,
+      work.namespace,
+    ),
+  ]);
+}
+
+function gatewaySearchCaCertificates(
+  graph: ApplicationGraph,
+  queries: readonly ApplicationQueryNode[],
+  workloadNamespace: string,
+): readonly ReactiveCaCertificate[] {
+  return uniqueCaCertificates(
+    queries.flatMap((query) =>
+      query.search
+        ? searchCaCertificates(
+            gatewaySearchContract(graph, query),
+            workloadNamespace,
+          )
+        : []),
+  );
+}
+
+function searchCaCertificates(
+  contract: GatewaySearchContract,
+  workloadNamespace: string,
+): readonly ReactiveCaCertificate[] {
+  const reference = selectedSearchCaReference(
+    contract.providerConfig,
+    contract.index.search.logicalIdentity.name,
+  );
+  if (!reference) return [];
+  if (
+    reference.namespace
+    && applicationGraphStringValue(reference.namespace)
+      !== applicationGraphStringValue(workloadNamespace)
+  ) {
+    throw new Error(
+      `Generated search ${contract.query.id} cannot mount OpenSearch CA Secret ${reference.name} from namespace ${reference.namespace}; project trust into the workload namespace.`,
+    );
+  }
+  return [{ name: reference.name, key: reference.key }];
+}
+
+function searchProviderCredentialEnvironment(
+  contract: GatewaySearchContract,
+  workloadNamespace: string,
+): readonly Record<string, unknown>[] {
+  const digest = createHash('sha256')
+    .update(contract.query.id)
+    .digest('hex')
+    .slice(0, 12)
+    .toUpperCase();
+  const reference = selectedSearchCredentialReference(
+    contract.providerConfig,
+    contract.index.search.logicalIdentity.name,
+  );
+  if (!reference) return [];
+  if (
+    reference.namespace
+    && applicationGraphStringValue(reference.namespace) !== applicationGraphStringValue(workloadNamespace)
+  ) {
+    throw new Error(
+      `Generated search ${contract.query.id} cannot mount OpenSearch credential Secret ${reference.name} from namespace ${reference.namespace}; deploy the gateway/worker there or project an application-owned Secret.`,
+    );
+  }
+  return [
+    {
+      name: `APPLIK8S_SEARCH_USERNAME_${digest}`,
+      valueFrom: {
+        secretKeyRef: {
+          name: reference.name,
+          key: 'username',
+          optional: true,
+        },
+      },
+    },
+    {
+      name: `APPLIK8S_SEARCH_PASSWORD_${digest}`,
+      valueFrom: {
+        secretKeyRef: {
+          name: reference.name,
+          key: 'password',
+          optional: true,
+        },
+      },
+    },
+  ];
+}
+
+function selectedSearchCaReference(
+  configuration: Readonly<Record<string, unknown>>,
+  fallbackName: string,
+): { readonly name: string; readonly key: string; readonly namespace?: string } | undefined {
+  if (configuration.kind !== 'application-provider-selection') {
+    return searchCaReference(configuration, fallbackName);
+  }
+  const selector = typeof configuration.selector === 'string'
+    ? configuration.selector
+    : undefined;
+  const cases = objectConfig(configuration.cases);
+  const fallback = objectConfig(configuration.default);
+  if (!selector) {
+    throw new Error('Profiled Search provider is missing its selector.');
+  }
+  const branches = Object.entries(cases).map(([variant, value]) => [
+    variant,
+    searchCaReference(objectConfig(value), fallbackName),
+  ] as const);
+  const fallbackReference = searchCaReference(fallback, fallbackName);
+  const references = [
+    ...branches.map(([, reference]) => reference),
+    fallbackReference,
+  ].filter((reference): reference is { readonly name: string; readonly key: string; readonly namespace?: string } => Boolean(reference));
+  if (references.length === 0) return undefined;
+  const fallbackSecret = fallbackReference?.name ?? 'applik8s-search-ca-unused';
+  const nameExpression = branches.reduceRight(
+    (otherwise, [variant, reference]) =>
+      `${selector} == ${JSON.stringify(variant)} ? ${installationCelStringOperand(reference?.name ?? 'applik8s-search-ca-unused')} : (${otherwise})`,
+    installationCelStringOperand(fallbackSecret),
+  );
+  const keys = new Set(references.map((reference) => reference.key));
+  const namespaces = new Set(
+    references.map((reference) => reference.namespace).filter(Boolean),
+  );
+  if (keys.size > 1 || namespaces.size > 1) {
+    throw new Error(
+      'Profiled Search CA Secrets must use one key and be projected into one workload namespace.',
+    );
+  }
+  return {
+    name: `\${${nameExpression}}`,
+    key: [...keys][0] ?? 'ca.crt',
+    ...([...namespaces][0] ? { namespace: [...namespaces][0] } : {}),
+  };
+}
+
+function searchCaReference(
+  configuration: Readonly<Record<string, unknown>>,
+  fallbackName: string,
+): { readonly name: string; readonly key: string; readonly namespace?: string } | undefined {
+  if (configuration.kind !== 'opensearch') return undefined;
+  const tls = objectConfig(configuration.tls);
+  const source = stringConfig(tls.source)
+    || (configuration.provision === false ? undefined : 'generated');
+  if (!source) return undefined;
+  const name = source === 'generated'
+    ? `${stringConfig(configuration.name) || fallbackName}-http-cert`
+    : stringConfig(tls.secretName);
+  if (!name) {
+    throw new Error(
+      `OpenSearch ${source} TLS requires a concrete CA-bearing Secret.`,
+    );
+  }
+  const namespace = stringConfig(configuration.namespace);
+  return {
+    name,
+    key: 'ca.crt',
+    ...(namespace ? { namespace } : {}),
+  };
+}
+
+function selectedSearchCredentialReference(
+  configuration: Readonly<Record<string, unknown>>,
+  fallbackName: string,
+): { readonly name: string; readonly namespace?: string } | undefined {
+  if (configuration.kind !== 'application-provider-selection') {
+    return searchCredentialReference(configuration, fallbackName);
+  }
+  const selector = typeof configuration.selector === 'string'
+    ? configuration.selector
+    : undefined;
+  const cases = objectConfig(configuration.cases);
+  const fallback = objectConfig(configuration.default);
+  if (!selector) {
+    throw new Error('Profiled Search provider is missing its selector.');
+  }
+  const branches = Object.entries(cases).map(([variant, value]) => [
+    variant,
+    searchCredentialReference(objectConfig(value), fallbackName),
+  ] as const);
+  const fallbackReference = searchCredentialReference(fallback, fallbackName);
+  const references = [
+    ...branches.map(([, reference]) => reference),
+    fallbackReference,
+  ].filter((reference): reference is { readonly name: string; readonly namespace?: string } => Boolean(reference));
+  if (references.length === 0) return undefined;
+  const fallbackSecret = fallbackReference?.name ?? 'applik8s-search-credentials-unused';
+  const nameExpression = branches.reduceRight(
+    (otherwise, [variant, reference]) =>
+      `${selector} == ${JSON.stringify(variant)} ? ${installationCelStringOperand(reference?.name ?? 'applik8s-search-credentials-unused')} : (${otherwise})`,
+    installationCelStringOperand(fallbackSecret),
+  );
+  const namespaces = new Set(
+    references.map((reference) => reference.namespace).filter(Boolean),
+  );
+  if (namespaces.size > 1) {
+    throw new Error(
+      'Profiled Search credential Secrets must be projected into one workload namespace.',
+    );
+  }
+  return {
+    name: `\${${nameExpression}}`,
+    ...([...namespaces][0] ? { namespace: [...namespaces][0] } : {}),
+  };
+}
+
+function searchCredentialReference(
+  configuration: Readonly<Record<string, unknown>>,
+  fallbackName: string,
+): { readonly name: string; readonly namespace?: string } | undefined {
+  if (configuration.kind !== 'opensearch') return undefined;
+  const explicit = objectConfig(configuration.adminCredentialsSecret);
+  const name = stringConfig(explicit.name)
+    || (configuration.provision === false
+      ? undefined
+      : `${stringConfig(configuration.name) || fallbackName}-admin-password`);
+  if (!name) return undefined;
+  const namespace = stringConfig(explicit.namespace)
+    || stringConfig(configuration.namespace);
+  return { name, ...(namespace ? { namespace } : {}) };
 }
 
 function kubernetesQueryNamespaceEnvironmentName(queryId: string): string {
@@ -1931,16 +3992,23 @@ function serializedInstallationExpression(value: string): boolean {
   return value.startsWith('${') && value.endsWith('}');
 }
 
+function installationCelStringOperand(value: string): string {
+  return serializedInstallationExpression(value)
+    ? `(${value.slice(2, -1)})`
+    : JSON.stringify(value);
+}
+
 function projectionEnvironment(stream: ApplicationStreamNode, config: Readonly<Record<string, unknown>>): readonly Record<string, unknown>[] {
   const credentials = objectConfig(config.credentialsSecret);
   const credentialName = stringConfig(credentials.name);
+  const optionalCredentials = credentials.optional === true;
   return [
     { name: stream.database.connectionEnvName, valueFrom: { secretKeyRef: { name: stream.database.secretName, key: stream.database.secretKey } } },
     { name: 'APPLIK8S_CLICKHOUSE_ENDPOINT', value: clickHouseEndpoint(config) },
     { name: 'APPLIK8S_CLICKHOUSE_DATABASE', value: applicationGraphStringValue(config.database) || 'default' },
     ...(credentialName ? [
-      { name: 'APPLIK8S_CLICKHOUSE_USERNAME', valueFrom: { secretKeyRef: { name: credentialName, key: stringConfig(config.usernameKey) || 'username' } } },
-      { name: 'APPLIK8S_CLICKHOUSE_PASSWORD', valueFrom: { secretKeyRef: { name: credentialName, key: stringConfig(config.passwordKey) || 'password' } } },
+      { name: 'APPLIK8S_CLICKHOUSE_USERNAME', valueFrom: { secretKeyRef: { name: credentialName, key: stringConfig(config.usernameKey) || 'username', ...(optionalCredentials ? { optional: true } : {}) } } },
+      { name: 'APPLIK8S_CLICKHOUSE_PASSWORD', valueFrom: { secretKeyRef: { name: credentialName, key: stringConfig(config.passwordKey) || 'password', ...(optionalCredentials ? { optional: true } : {}) } } },
     ] : []),
   ];
 }
@@ -1977,6 +4045,7 @@ function gatewayOnlineProjectionEnvironment(contract: GatewayOnlineProjectionCon
 function gatewayAnalyticalProjectionEnvironment(contract: GatewayAnalyticalProjectionContract): readonly Record<string, unknown>[] {
   const credentials = objectConfig(contract.config.credentialsSecret);
   const name = stringConfig(credentials.name);
+  const optionalCredentials = credentials.optional === true;
   const enabled = applicationGraphBooleanCondition(contract.config.enabled);
   const enabledValue = enabled?.startsWith('${') && enabled.endsWith('}')
     ? `\${string(${enabled.slice(2, -1)})}`
@@ -1986,8 +4055,8 @@ function gatewayAnalyticalProjectionEnvironment(contract: GatewayAnalyticalProje
     { name: clickHouseGatewayEnvironmentName(contract.provider.id, 'DATABASE'), value: applicationGraphStringValue(contract.config.database) || 'default' },
     { name: clickHouseGatewayEnvironmentName(contract.provider.id, 'ENABLED'), value: enabledValue },
     ...(name ? [
-      { name: clickHouseGatewayEnvironmentName(contract.provider.id, 'USERNAME'), valueFrom: { secretKeyRef: { name, key: stringConfig(contract.config.usernameKey) || 'username' } } },
-      { name: clickHouseGatewayEnvironmentName(contract.provider.id, 'PASSWORD'), valueFrom: { secretKeyRef: { name, key: stringConfig(contract.config.passwordKey) || 'password' } } },
+      { name: clickHouseGatewayEnvironmentName(contract.provider.id, 'USERNAME'), valueFrom: { secretKeyRef: { name, key: stringConfig(contract.config.usernameKey) || 'username', ...(optionalCredentials ? { optional: true } : {}) } } },
+      { name: clickHouseGatewayEnvironmentName(contract.provider.id, 'PASSWORD'), valueFrom: { secretKeyRef: { name, key: stringConfig(contract.config.passwordKey) || 'password', ...(optionalCredentials ? { optional: true } : {}) } } },
     ] : []),
   ];
 }
@@ -2030,23 +4099,228 @@ function requiredNode<TKind extends ApplicationGraph['nodes'][number]['kind']>(n
 function requiredProvider(nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>, id: string, owner: string): ApplicationProviderNode { const node = nodes.get(id); if (node?.kind !== 'provider') throw new Error(`${owner} references missing provider ${id}.`); return node; }
 function assertResolved(owner: string, callback: string, unresolved?: readonly string[]): void { if (unresolved?.length) throw new Error(`${owner} ${callback} callback cannot be emitted because it captures unresolved local identifier(s): ${unresolved.map((identifier) => JSON.stringify(identifier)).join(', ')}. Move them to module scope or keep this declaration runtime-only.`); }
 function assertSecretNamespace(database: ApplicationReactiveDatabaseRuntimeContract, namespace: string, owner: string): void { assertResourceNamespace(database.secretNamespace, namespace, `${owner} PostgreSQL Secret ${database.secretName}`); }
-function assertResourceNamespace(resourceNamespace: unknown, workloadNamespace: unknown, owner: string): void { const resource = applicationGraphStringValue(resourceNamespace); const workload = applicationGraphStringValue(workloadNamespace); if (resource && workload && resource !== workload) throw new Error(`${owner} is in namespace ${resource}, but its generated workload is in ${workload}. Kubernetes cannot mount cross-namespace Secrets.`); }
+function assertResourceNamespace(resourceNamespace: unknown, workloadNamespace: unknown, owner: string): void {
+  const resource = applicationGraphStringValue(resourceNamespace);
+  const workload = applicationGraphStringValue(workloadNamespace);
+  if (!resource || !workload || resource === workload) return;
+  const possible = serializedInstallationLiteralResults(resource);
+  if (possible && possible.every((candidate) => candidate === null || candidate === workload)) return;
+  throw new Error(`${owner} is in namespace ${resource}, but its generated workload is in ${workload}. Kubernetes cannot mount cross-namespace Secrets.`);
+}
+
+/**
+ * Proves the result set of the narrow conditional form emitted by profiled
+ * provider selection. Conditions are deliberately ignored; only terminal
+ * JSON-string/null branches are admitted. Any reference, function, malformed
+ * expression, or other value fails closed at the mount boundary.
+ */
+function serializedInstallationLiteralResults(value: string): readonly (string | null)[] | undefined {
+  if (!serializedInstallationExpression(value)) return undefined;
+  return conditionalLiteralResults(value.slice(2, -1).trim());
+}
+
+function conditionalLiteralResults(source: string): readonly (string | null)[] | undefined {
+  const expression = stripBalancedParentheses(source);
+  const conditional = topLevelConditional(expression);
+  if (conditional) {
+    const consequent = conditionalLiteralResults(conditional.consequent);
+    const alternate = conditionalLiteralResults(conditional.alternate);
+    return consequent && alternate ? [...consequent, ...alternate] : undefined;
+  }
+  if (expression === 'null') return [null];
+  if (expression.startsWith('"') && expression.endsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(expression);
+      return typeof parsed === 'string' ? [parsed] : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function stripBalancedParentheses(source: string): string {
+  let result = source.trim();
+  while (result.startsWith('(') && result.endsWith(')') && matchingClosingParenthesis(result, 0) === result.length - 1) {
+    result = result.slice(1, -1).trim();
+  }
+  return result;
+}
+
+function topLevelConditional(source: string): { readonly consequent: string; readonly alternate: string } | undefined {
+  let depth = 0;
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  let question = -1;
+  let nestedQuestions = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '(' || character === '[' || character === '{') {
+      depth += 1;
+      continue;
+    }
+    if (character === ')' || character === ']' || character === '}') {
+      depth -= 1;
+      if (depth < 0) return undefined;
+      continue;
+    }
+    if (depth !== 0) continue;
+    if (character === '?') {
+      if (question < 0) question = index;
+      else nestedQuestions += 1;
+      continue;
+    }
+    if (character === ':' && question >= 0) {
+      if (nestedQuestions > 0) {
+        nestedQuestions -= 1;
+        continue;
+      }
+      return {
+        consequent: source.slice(question + 1, index).trim(),
+        alternate: source.slice(index + 1).trim(),
+      };
+    }
+  }
+  return undefined;
+}
+
+function matchingClosingParenthesis(source: string, start: number): number {
+  let depth = 0;
+  let quote: '"' | "'" | undefined;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '(') depth += 1;
+    else if (character === ')') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
 function uniqueDatabaseRuntimes(databases: readonly ApplicationReactiveDatabaseRuntimeContract[]): readonly ApplicationReactiveDatabaseRuntimeContract[] { const result = new Map<string, ApplicationReactiveDatabaseRuntimeContract>(); for (const database of databases) { const previous = result.get(database.name); if (previous && JSON.stringify(previous) !== JSON.stringify(database)) throw new Error(`Generated reactive runtimes contain conflicting database contracts named ${database.name}.`); result.set(database.name, database); } return [...result.values()].sort((left, right) => left.name.localeCompare(right.name)); }
 function uniqueCommandDatabases(commands: readonly GatewayCommandContract[]): readonly NonNullable<ApplicationModelNode['runtime']>[] { const result = new Map<string, NonNullable<ApplicationModelNode['runtime']>>(); for (const command of commands) result.set(command.model.runtime.connectionEnvName, command.model.runtime); return [...result.values()]; }
 // typecast: the exact-one guard and provider type predicate establish a present EventLog provider.
-function gatewayEventLog(nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>, owner: string): ApplicationProviderNode { const providers = [...nodes.values()].filter((node): node is ApplicationProviderNode => node.kind === 'provider' && node.interface === 'EventLog'); if (providers.length !== 1) throw new Error(`Generated gateway ${owner} commands require exactly one EventLog provider.`); return providers[0] as ApplicationProviderNode; }
-function eventLogEnvironment(provider?: ApplicationProviderNode): readonly Record<string, unknown>[] { if (!provider) return []; const config = provider.config ?? {}; const secret = objectConfig(config.connectionSecret); const name = stringConfig(secret.name); const connection = [{ name: 'APPLIK8S_NATS_SERVERS', value: JSON.stringify(eventLogServers(config)) }]; if (!name) return connection; const mode = stringConfig(config.authMode) || 'token'; return mode === 'userPassword' ? [...connection, { name: 'APPLIK8S_NATS_USER', valueFrom: { secretKeyRef: { name, key: stringConfig(config.userKey) || 'user' } } }, { name: 'APPLIK8S_NATS_PASSWORD', valueFrom: { secretKeyRef: { name, key: stringConfig(config.passwordKey) || 'password' } } }] : [...connection, { name: 'APPLIK8S_NATS_TOKEN', valueFrom: { secretKeyRef: { name, key: stringConfig(config.tokenKey) || 'token' } } }]; }
+function gatewayEventLog(
+  nodes: ReadonlyMap<string, ApplicationGraph['nodes'][number]>,
+  owner: string,
+  commands: readonly GatewayCommandContract[],
+): ApplicationProviderNode {
+  const handlerIds = new Set(commands.map(({ handler }) => handler.id));
+  const selectedIds = new Set(
+    [...nodes.values()].flatMap((node) =>
+      node.kind === 'processor'
+      && node.handlers.some((handler) => handlerIds.has(handler.nodeId))
+      && node.eventLog
+        ? [node.eventLog.nodeId]
+        : []),
+  );
+  if (selectedIds.size === 0) {
+    const providers = [...nodes.values()].filter(
+      (node): node is ApplicationProviderNode =>
+        node.kind === 'provider' && node.interface === 'EventLog',
+    );
+    if (providers.length === 1) return providers[0]!;
+  }
+  if (selectedIds.size !== 1) {
+    throw new Error(`Generated gateway ${owner} commands require exactly one EventLog authority; found ${selectedIds.size}.`);
+  }
+  const provider = nodes.get([...selectedIds][0]!);
+  if (provider?.kind !== 'provider' || provider.interface !== 'EventLog') {
+    throw new Error(`Generated gateway ${owner} references missing EventLog provider ${[...selectedIds][0]}.`);
+  }
+  return provider;
+}
+function eventLogEnvironment(provider?: ApplicationProviderNode): readonly Record<string, unknown>[] {
+  if (!provider) return [];
+  const config = provider.config ?? {};
+  const secret = objectConfig(config.connectionSecret);
+  const name = stringConfig(secret.name);
+  const connection = [
+    {
+      name: 'APPLIK8S_NATS_SERVERS',
+      value: applicationGraphJsonStringArray(eventLogServers(config)),
+    },
+    {
+      name: 'APPLIK8S_NATS_STREAM',
+      value: applicationGraphStringValue(config.stream) || 'APPLIK8S_EVENTS',
+    },
+    {
+      name: 'APPLIK8S_NATS_SUBJECT_PREFIX',
+      value: applicationGraphStringValue(config.subjectPrefix) || 'applik8s',
+    },
+  ];
+  if (!name) return connection;
+  const mode = stringConfig(config.authMode) || 'token';
+  return mode === 'userPassword'
+    ? [
+        ...connection,
+        {
+          name: 'APPLIK8S_NATS_USER',
+          valueFrom: {
+            secretKeyRef: {
+              name,
+              key: stringConfig(config.userKey) || 'user',
+            },
+          },
+        },
+        {
+          name: 'APPLIK8S_NATS_PASSWORD',
+          valueFrom: {
+            secretKeyRef: {
+              name,
+              key: stringConfig(config.passwordKey) || 'password',
+            },
+          },
+        },
+      ]
+    : [
+        ...connection,
+        {
+          name: 'APPLIK8S_NATS_TOKEN',
+          valueFrom: {
+            secretKeyRef: {
+              name,
+              key: stringConfig(config.tokenKey) || 'token',
+            },
+          },
+        },
+      ];
+}
 function streamProcessorScheduleEnvironment(contract: StreamProcessorWorkflowContract | undefined): readonly Record<string, unknown>[] {
   if (!contract) return [];
   const config = contract.provider.config ?? {};
   const namespace = applicationGraphStringValue(config.namespace) || 'default';
-  const engineName = kubernetesName(stringConfig(config.name) || 'applik8s-hatchet');
   const { secretName, key: tokenKey } = streamProcessorWorkflowCredential(contract);
   return [
     { name: 'HATCHET_CLIENT_TOKEN', valueFrom: { secretKeyRef: { name: secretName, key: tokenKey } } },
     { name: 'APPLIK8S_WORKFLOW_TOKEN_FILE', value: '/var/run/secrets/applik8s/workflow-token/token' },
-    { name: 'HATCHET_CLIENT_HOST_PORT', value: applicationGraphStringValue(config.hostPort) || `${engineName}-engine.${namespace}.svc:7070` },
-    { name: 'HATCHET_CLIENT_API_URL', value: applicationGraphStringValue(config.apiUrl) || `http://${engineName}-api.${namespace}.svc:8080` },
+    // The provider name is a logical application identity. The TypeKro Hatchet
+    // composition intentionally gives its chart services stable names, so
+    // deriving a DNS name from config.name points consumers at a Service that
+    // does not exist. External providers supply both endpoints explicitly.
+    { name: 'HATCHET_CLIENT_HOST_PORT', value: applicationGraphStringValue(config.hostPort) || `hatchet-engine.${namespace}.svc:7070` },
+    { name: 'HATCHET_CLIENT_API_URL', value: applicationGraphStringValue(config.apiUrl) || `http://hatchet-api.${namespace}.svc:8080` },
     { name: 'HATCHET_CLIENT_TLS_STRATEGY', value: reactiveWorkflowTlsStrategy(config.tls) },
   ];
 }
@@ -2072,13 +4346,16 @@ function callbackName(id: string, role: string): string { return `${role}-${crea
 function callbackVariable(id: string, role: string): string { return `callback_${role}_${createHash('sha256').update(id).digest('hex').slice(0, 12)}`; }
 function databaseVariable(name: string): string { return `database_${createHash('sha256').update(name).digest('hex').slice(0, 12)}`; }
 function projectionQuerySourceVariable(id: string): string { return `projection_source_${createHash('sha256').update(id).digest('hex').slice(0, 12)}`; }
+function searchRuntimeVariable(id: string): string { return `search_runtime_${createHash('sha256').update(id).digest('hex').slice(0, 12)}`; }
+function searchSourcesVariable(id: string): string { return `search_sources_${createHash('sha256').update(id).digest('hex').slice(0, 12)}`; }
+function searchQuerySourceVariable(id: string): string { return `search_query_source_${createHash('sha256').update(id).digest('hex').slice(0, 12)}`; }
 function valkeyHostEnvironmentName(providerId: string): string { return `APPLIK8S_VALKEY_HOST_${createHash('sha256').update(providerId).digest('hex').slice(0, 12).toUpperCase()}`; }
 function valkeyPortEnvironmentName(providerId: string): string { return `APPLIK8S_VALKEY_PORT_${createHash('sha256').update(providerId).digest('hex').slice(0, 12).toUpperCase()}`; }
 function valkeyPasswordEnvironmentName(providerId: string): string { return `APPLIK8S_VALKEY_PASSWORD_${createHash('sha256').update(providerId).digest('hex').slice(0, 12).toUpperCase()}`; }
 function clickHouseGatewayEnvironmentName(providerId: string, suffix: 'ENDPOINT' | 'DATABASE' | 'USERNAME' | 'PASSWORD' | 'ENABLED'): string { return `APPLIK8S_CLICKHOUSE_${suffix}_${createHash('sha256').update(providerId).digest('hex').slice(0, 12).toUpperCase()}`; }
 function clickHouseEndpoint(config: Readonly<Record<string, unknown>>): string { const explicit = applicationGraphStringValue(config.endpoint); if (explicit) return explicit; const name = stringConfig(config.name) || 'applik8s-analytics'; return `http://${applicationGraphServiceHost(`clickhouse-${name}`, config.namespace)}:8123`; }
 function valkeyHost(config: Readonly<Record<string, unknown>>, graphName: string, stream: ApplicationStreamNode): string { const explicit = applicationGraphStringValue(config.host); if (explicit) return explicit; const name = stringConfig(config.name) || `${kubernetesName(graphName)}-index`; return applicationGraphServiceHost(name, applicationGraphStringValue(config.namespace) || applicationGraphStringValue(stream.database.secretNamespace) || 'default'); }
-function eventLogServers(config: Readonly<Record<string, unknown>>): readonly string[] { const configured = Array.isArray(config.servers) ? config.servers.map(applicationGraphStringValue).filter((value): value is string => Boolean(value)) : []; if (configured.length > 0) return configured; const name = stringConfig(config.name) || 'applik8s-events'; const namespace = applicationGraphStringValue(config.namespace); return [`nats://${name}${namespace ? `.${namespace}` : ''}.svc:4222`]; }
+function eventLogServers(config: Readonly<Record<string, unknown>>): readonly string[] { const configured = Array.isArray(config.servers) ? config.servers.map(applicationGraphStringValue).filter((value): value is string => Boolean(value)) : []; if (configured.length > 0) return configured; const name = applicationGraphStringValue(config.name) || 'applik8s-events'; const namespace = applicationGraphStringValue(config.namespace); return [`nats://${name}${namespace ? `.${namespace}` : ''}.svc:4222`]; }
 function absoluteDependencyImports(source: string, resolveDir: string): string { return source.replace(/(\bfrom\s+['"])(\.[^'"]+)(['"])/g, (_match, prefix: string, specifier: string, suffix: string) => `${prefix}${resolve(resolveDir, specifier)}${suffix}`).replace(/(^|\n)(\s*import\s+['"])(\.[^'"]+)(['"])/g, (_match, line: string, prefix: string, specifier: string, suffix: string) => `${line}${prefix}${resolve(resolveDir, specifier)}${suffix}`); }
 // typecast: the object and non-array guards establish the read-only configuration record boundary.
 function objectConfig(value: unknown): Readonly<Record<string, unknown>> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Readonly<Record<string, unknown>> : {}; }

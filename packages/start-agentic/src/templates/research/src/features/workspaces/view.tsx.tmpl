@@ -1,0 +1,232 @@
+import { selectAgenticWorkspace } from '@applik8s/start-agentic/react';
+import { Link, useNavigate } from '@tanstack/react-router';
+import { type FormEvent, useEffect, useState } from 'react';
+import {
+  Invitation,
+  Membership,
+  Workspace,
+  WorkspaceDashboard,
+  WorkspaceList,
+} from '../../application';
+
+export function WorkspaceHome() {
+  const workspaces = WorkspaceList({}).useQuery();
+  const createWorkspace = Workspace.create.useMutation();
+  const navigate = useNavigate();
+  const [name, setName] = useState('');
+  const [slug, setSlug] = useState('');
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const created = await createWorkspace({ name, slug });
+    setName('');
+    setSlug('');
+    const workspaceId = String(created.value.id);
+    selectAgenticWorkspace(workspaceId);
+    await navigate({
+      to: '/workspaces/$workspaceId',
+      params: { workspaceId },
+    });
+  }
+
+  return (
+    <main>
+      <p className="eyebrow">Trusted workspace context</p>
+      <h1>Workspaces</h1>
+      <p>
+        Membership filtering uses the authenticated framework principal. The
+        browser never submits an actor, role, or trusted workspace claim.
+      </p>
+      <section aria-label="Available workspaces">
+        {workspaces.data?.map((workspace) => (
+          <article key={workspace.id}>
+            <strong>{workspace.name}</strong>
+            <p>{workspace.slug} · {workspace.role}</p>
+            <Link
+              to="/workspaces/$workspaceId"
+              params={{ workspaceId: workspace.id }}
+              onClick={() => selectAgenticWorkspace(workspace.id)}
+            >
+              Open workspace
+            </Link>
+          </article>
+        ))}
+      </section>
+      <form onSubmit={submit}>
+        <label htmlFor="workspace-name">Workspace name</label>
+        <input id="workspace-name" value={name} onChange={(event) => setName(event.currentTarget.value)} />
+        <label htmlFor="workspace-slug">Workspace slug</label>
+        <input id="workspace-slug" value={slug} onChange={(event) => setSlug(event.currentTarget.value)} />
+        <button type="submit" disabled={!name.trim() || !slug.trim() || createWorkspace.pending}>
+          {createWorkspace.pending ? 'Creating…' : 'Create workspace'}
+        </button>
+      </form>
+    </main>
+  );
+}
+
+export function WorkspaceDashboardView({ workspaceId }: { readonly workspaceId: string }) {
+  useEffect(() => {
+    selectAgenticWorkspace(workspaceId);
+  }, [workspaceId]);
+  const dashboard = WorkspaceDashboard({ workspaceId }).useQuery();
+  const createInvitation = Invitation.create.useMutation();
+  const createMembership = Membership.create.useMutation();
+  const updateMembership = Membership.update.useMutation();
+  const [invitationEmail, setInvitationEmail] = useState('');
+  const [invitationRole, setInvitationRole] = useState<'workspace-administrator' | 'workspace-member'>('workspace-member');
+  const [memberIdentity, setMemberIdentity] = useState('');
+
+  async function invite(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await createInvitation({
+      workspaceId,
+      email: invitationEmail.trim(),
+      role: invitationRole,
+      state: 'pending',
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000).toISOString(),
+    });
+    setInvitationEmail('');
+    await dashboard.refresh();
+  }
+
+  async function addMember(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await createMembership({
+      workspaceId,
+      identityId: memberIdentity.trim(),
+      role: 'workspace-member',
+    });
+    setMemberIdentity('');
+    await dashboard.refresh();
+  }
+
+  async function changeRole(
+    membershipId: string,
+    role: 'workspace-administrator' | 'workspace-member',
+  ) {
+    await updateMembership({
+      identity: membershipId,
+      patch: { role },
+    });
+    await dashboard.refresh();
+  }
+  if (dashboard.phase === 'loading') return <main>Loading workspace…</main>;
+  if (dashboard.phase === 'error') {
+    return <main><p role="alert">{dashboard.error?.message ?? 'Workspace unavailable.'}</p></main>;
+  }
+  if (!dashboard.data) {
+    return (
+      <main>
+        <h1>Workspace unavailable</h1>
+        <p>This workspace does not exist or your authenticated identity is not a member.</p>
+      </main>
+    );
+  }
+  const workspaceRole = dashboard.data.workspace.role;
+  return (
+    <main>
+      <p className="eyebrow">{workspaceRole}</p>
+      <h1>{dashboard.data.workspace.name}</h1>
+      <p>{dashboard.data.workspace.slug}</p>
+      <Link
+        to="/workspaces/$workspaceId/reviews"
+        params={{ workspaceId }}
+      >
+        Open durable reviews
+      </Link>
+      <section aria-label="Workspace members">
+        <h2>Members</h2>
+        {dashboard.data.members.map(member => (
+          <article key={member.identityId}>
+            <strong>{member.identityId}</strong>
+            <p>{member.role}</p>
+            {member.role !== 'workspace-owner'
+              && ['workspace-owner', 'workspace-administrator'].includes(
+                workspaceRole,
+              ) ? (
+                <label>
+                  Member role
+                  <select
+                    aria-label={`Role for ${member.identityId}`}
+                    value={member.role}
+                    disabled={updateMembership.pending}
+                    onChange={event => changeRole(
+                      member.id,
+                      event.currentTarget.value as
+                        | 'workspace-administrator'
+                        | 'workspace-member',
+                    )}
+                  >
+                    <option value="workspace-member">Member</option>
+                    <option value="workspace-administrator">Administrator</option>
+                  </select>
+                </label>
+              ) : null}
+          </article>
+        ))}
+      </section>
+      {['workspace-owner', 'workspace-administrator'].includes(
+        workspaceRole,
+      ) ? (
+        <>
+          <form onSubmit={invite}>
+            <h2>Invite a member</h2>
+            <label htmlFor="invitation-email">Email</label>
+            <input
+              id="invitation-email"
+              type="email"
+              value={invitationEmail}
+              onChange={event => setInvitationEmail(event.currentTarget.value)}
+            />
+            <label htmlFor="invitation-role">Role</label>
+            <select
+              id="invitation-role"
+              value={invitationRole}
+              onChange={event => setInvitationRole(
+                event.currentTarget.value as
+                  | 'workspace-administrator'
+                  | 'workspace-member',
+              )}
+            >
+              <option value="workspace-member">Member</option>
+              <option value="workspace-administrator">Administrator</option>
+            </select>
+            <button
+              type="submit"
+              disabled={!invitationEmail.trim() || createInvitation.pending}
+            >
+              Send invitation
+            </button>
+          </form>
+          <form onSubmit={addMember}>
+            <h2>Add an admitted identity</h2>
+            <label htmlFor="member-identity">Identity</label>
+            <input
+              id="member-identity"
+              value={memberIdentity}
+              onChange={event => setMemberIdentity(event.currentTarget.value)}
+            />
+            <button
+              type="submit"
+              disabled={!memberIdentity.trim() || createMembership.pending}
+            >
+              Add member
+            </button>
+          </form>
+        </>
+      ) : null}
+      {dashboard.data.invitations.length > 0 ? (
+        <section aria-label="Workspace invitations">
+          <h2>Invitations</h2>
+          {dashboard.data.invitations.map(invitation => (
+            <article key={invitation.id}>
+              <strong>{invitation.email}</strong>
+              <p>{invitation.role} · {invitation.state}</p>
+            </article>
+          ))}
+        </section>
+      ) : null}
+    </main>
+  );
+}

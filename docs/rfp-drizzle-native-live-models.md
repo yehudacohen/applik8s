@@ -2,14 +2,15 @@
 
 > Historical proposal. The accepted model lifecycle and action vocabulary is documented in
 > [`native-models-and-live-queries.md`](native-models-and-live-queries.md) and [`commands.md`](commands.md).
-> Code sketches below that use `Model.on.command(...)` describe the superseded compatibility surface, not
-> the ordinary API.
+> Code sketches below that use `Model.on.command(...)` are historical and no longer compile; the registry
+> was removed from the v0.7 public API.
 
 **Status:** Proposed
 
 **Audience:** Applik8s maintainers and implementing agents
 
-**Requested by:** The future batteries-included TanStack Start framework, with CollectorBills and Vasco as tenant-zero applications
+**Requested by:** The future batteries-included TanStack Start framework, with Chirp and GuestBook as
+public acceptance applications
 
 **Revised:** 2026-07-15
 
@@ -22,16 +23,16 @@ outbox, workflow, Kubernetes-resource, and application-graph capabilities. Its c
 stores `id`, `spec jsonb`, `status jsonb`, `revision`, and timestamps. That shape is appropriate for
 control-plane-style records, but it must not evolve into a homegrown general-purpose ORM.
 
-Applications such as CollectorBills and Vasco need normal relational data modeling, relations, joins,
+Applications such as Chirp need normal relational data modeling, relations, joins,
 aggregates, provider-specific SQL, generated migrations, and the complete Drizzle type experience. They
 also need capabilities that Drizzle alone does not supply: durable commands, observable transaction
 boundaries, change records, application-graph visibility, provider provisioning, authenticated live
 queries, resumable clients, and Kubernetes-native deployment.
 
-This RFP adopts a native-first boundary:
+This RFP adopts a model-first, native-compatible boundary:
 
-> Applik8s promotes native Drizzle tables and Kubernetes resources into a common distributed application
-> model without replacing their native APIs, duplicating their schemas, or obscuring their
+> Authors declare an Applik8s `model()` once. Qualified bindings derive the native Drizzle,
+> Kubernetes, analytical, index, or document representation without duplicating schemas or obscuring
 > provider-specific guarantees.
 
 A promoted Drizzle table remains usable anywhere a Drizzle table is accepted. A promoted Kubernetes
@@ -42,9 +43,11 @@ relational queries and SQL transactions; Kubernetes owns watches, status, metada
 
 The developer defines each field once:
 
-- relational fields, constraints, indexes, foreign keys, and relations are defined in Drizzle
-- ArkType select, insert, and update schemas are derived from the Drizzle table
-- Kubernetes/CRD fields are defined in ArkType and lowered to CRD OpenAPI
+- relational fields, constraints, indexes, foreign keys, and relations are defined through the
+  Drizzle-compatible Applik8s `model()`/`field` API
+- ArkType select, insert, and update schemas are derived from the resulting native table facet
+- Kubernetes/CRD OpenAPI is derived from the same logical model plus its Kubernetes status/resource
+  binding
 - public input and output schemas compose from those model schemas at explicit trust boundaries
 - no field-by-field Drizzle-to-ArkType or ArkType-to-Drizzle map is required
 
@@ -67,25 +70,26 @@ existing JSONB model data.
 The implementation must preserve these decisions unless a reviewed ADR proves that another design
 satisfies the same developer experience and semantic guarantees more safely.
 
-1. **Native objects remain native.** Promoted Drizzle tables remain assignable to Drizzle table APIs.
-   Promoted Kubernetes resources retain their resource API, reconcile registration, status, and metadata
+1. **Models expose native facets.** PostgreSQL-bound models remain assignable to Drizzle table APIs.
+   Kubernetes-bound models retain their resource API, reconcile registration, status, and metadata
    capabilities.
 2. **One common model contract exists.** Database models and Kubernetes models are not separate
    developer-facing species. They share identity, schema, snapshot, revision, reference, command, change,
    and query-dependency semantics.
 3. **Provider capabilities are additive.** The common contract is intentionally small. It does not
    pretend that PostgreSQL transactions and Kubernetes reconciliation have identical guarantees.
-4. **Fields are defined once.** Drizzle is authoritative for relational persistence. ArkType is
-   authoritative for ArkType-backed resources and public runtime boundaries. Generated schema views do
-   not become independent sources of truth.
-5. **Promotion is explicit.** Registering a database schema does not make every table an application
-   model. `app.model(table)` deliberately opts a table into distributed model semantics.
+4. **Fields are defined once.** `model()` is authoritative for logical fields and public boundaries;
+   qualified providers derive their native representation. Generated ArkType, Drizzle, and OpenAPI
+   views do not become independent sources of truth.
+5. **Binding is explicit, promotion ceremony is not.** Registering a database does not bind every model
+   automatically. Application assembly selects model/provider membership without asking authors to
+   redeclare fields or wrap `pgTable()`.
 6. **Conventions remove ceremony but fail closed.** Primary keys, a conventional `revision` column,
    registered database membership, derived ArkType schemas, and provider-wide access policy may be
    inferred. Ambiguity requires an explicit declaration.
-7. **Relationships remain native.** Drizzle relations remain the relational source of truth.
-   ArkType-backed models express cross-model identity through an ArkType-compatible typed `Model.ref()`.
-   Applik8s normalizes both for graph semantics without creating a competing query language.
+7. **Relationships are declared once.** Model references and relations derive Drizzle relationship
+   metadata for relational bindings and typed identity metadata elsewhere. Applik8s normalizes them for
+   graph semantics without creating a competing query language.
 8. **Applications own authorization.** Identity providers establish principal attributes; applications
    decide permissions and membership. Applik8s owns typed propagation and declared provider enforcement,
    not tenancy semantics.
@@ -168,12 +172,11 @@ schema would turn Applik8s into a second ORM.
 
 Conversely, Kubernetes schemas and controller status semantics should not require Drizzle.
 
-The correct promise is therefore one field definition per native authority, with derived common runtime
-schemas:
+The correct promise is one logical field definition with native-compatible derived facets:
 
-- Drizzle-first for relational persistence
-- ArkType-first for Kubernetes and nonrelational model definitions
-- common Applik8s model semantics layered on both
+- `model()` first for domain authoring
+- native Drizzle and Kubernetes facets where the selected provider requires them
+- provider-specific escape hatches for features the common declaration cannot express
 
 ## Target developer experience
 
@@ -181,26 +184,28 @@ The following API is illustrative. Exact names may change after the prototype ga
 manual field mapping, native assignability, common model semantics, provider-wide access enforcement,
 and explicit trust boundaries are normative.
 
-### Native Drizzle schema and relations
+### Model-first relational schema and relations
 
 ```ts
-export const sets = pgTable('sets', {
-  id: uuid('id').primaryKey(),
-  organizationId: uuid('organization_id').notNull(),
-  name: text('name').notNull(),
-  revision: text('revision').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+import { field, index, model, relations } from "@applik8s/applik8s/drizzle";
+
+export const sets = model('sets', {
+  id: field.uuid('id').primaryKey(),
+  organizationId: field.uuid('organization_id').notNull(),
+  name: field.text('name').notNull(),
+  revision: field.text('revision').notNull(),
+  createdAt: field.timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: field.timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const cards = pgTable('cards', {
-  id: uuid('id').primaryKey(),
-  organizationId: uuid('organization_id').notNull(),
-  setId: uuid('set_id').notNull().references(() => sets.id),
-  name: text('name').notNull(),
-  revision: text('revision').notNull(),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+export const cards = model('cards', {
+  id: field.uuid('id').primaryKey(),
+  organizationId: field.uuid('organization_id').notNull(),
+  setId: field.uuid('set_id').notNull().references(() => sets.id),
+  name: field.text('name').notNull(),
+  revision: field.text('revision').notNull(),
+  createdAt: field.timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: field.timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const setsRelations = relations(sets, ({ many }) => ({
@@ -252,14 +257,21 @@ Applik8s propagates `OrganizationId` and installs it through transaction-local P
 does not create organizations, decide membership, or decide whether the principal may read a particular
 set.
 
-### Promote native tables
+### Bind models through the typed database schema
 
 ```ts
-const Set = catalog.model(sets);
-const Card = catalog.model(cards);
+const Database = catalog.database.postgres('catalog', {
+  schema: { sets, cards, setsRelations, cardsRelations },
+  migrations: './drizzle',
+});
+
+const Set = sets;
+const Card = cards;
 ```
 
-The promoted values remain usable by Drizzle:
+Applik8s-authored `model()` tables in the schema are registered automatically.
+Provider-native `pgTable()` remains an advanced explicit-promotion lane. The
+bound values remain usable by Drizzle:
 
 ```ts
 const db = context.database(Database);
@@ -316,12 +328,37 @@ const CatalogImport = catalog.crd(
 operations. It also implements the common model contract:
 
 ```ts
-CatalogImport.on.reconcile(...);
-CatalogImport.on.command(...);
+CatalogImport.on.create({ namespace }, initializeImport);
+CatalogImport.on.update({ namespace }, continueImport);
 CatalogImport.relations.set;
 
 await context.get(CatalogImport, name);
 await context.get(Set, setId);
+```
+
+Persistent views retain the same function-native outer shape as relational models while expressing
+the Kubernetes authority's real bounded selection semantics explicitly:
+
+```ts
+export const ActiveImports = CatalogImport.view(
+  {
+    input: type({ setId: "string" }),
+    output: ImportSummary.array(),
+    authorize: canReadSet,
+    select: {
+      namespace: (_input, { context }) => String(context.namespace),
+      labelSelector: input => `catalog.example/set-id=${input.setId}`,
+      where: item => item.status.phase === "Importing",
+      bounds: { pageSize: 100, maxPages: 10, maxItems: 1_000 },
+    },
+  },
+  function active(item) {
+    return {
+      name: item.metadata.name,
+      importedCards: item.status.importedCards,
+    };
+  },
+);
 ```
 
 `Set.ref()` is an ArkType-compatible identity schema carrying target-model metadata. It validates the
@@ -1044,7 +1081,7 @@ change to every client, or loading unbounded query results.
 ### Phase 5: Hardening and adoption
 
 - run CollectorBills-shaped relational/context pressure tests
-- run Vasco-shaped cross-provider/reference pressure tests
+- run Chirp-shaped cross-provider/reference pressure tests
 - capture performance and failure evidence
 - publish migration, access, relationship, and troubleshooting guides
 - update API reference, v0.6 scorecard, release evidence, and package-consumer gates
@@ -1063,7 +1100,7 @@ This RFP does not require:
 - an Applik8s-owned tenant, organization, membership, role, or billing system
 - an Applik8s-owned frontend router, bundler, component library, or full-stack framework
 - the future seeded TanStack application framework itself
-- product-specific CollectorBills or Vasco behavior
+- product-specific Chirp or GuestBook behavior
 - non-PostgreSQL relational providers in the first release
 - cross-database transactions
 - cross-provider exactly-once delivery
@@ -1094,8 +1131,9 @@ The implementation is incomplete without:
 
 This RFP is complete only when:
 
-1. An application defines relational fields and relations once in Drizzle.
-2. Selected tables are promoted without wrappers, casts, or loss of native Drizzle behavior.
+1. An application defines relational fields and relations once through the Applik8s `model()` API.
+2. Bound relational models retain native Drizzle identity and inference without wrappers, casts, or
+   a second field map.
 3. ArkType select, insert, and update schemas derive without manual field mapping.
 4. A CRD defined once in ArkType exposes the same common model semantics while retaining native resource
    behavior.

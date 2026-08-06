@@ -23,9 +23,19 @@ import {
 } from './live-e2e-helpers';
 
 const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
-const namespace = process.env.APPLIK8S_E2E_NAMESPACE ?? `applik8s-v06-generated-${process.pid}`;
-const controlPlaneNamespace = `${namespace}-control`;
-const stackName = process.env.APPLIK8S_E2E_STACK_NAME ?? `v06-generated-proof-${process.pid}`;
+// Process IDs are reused, especially across persistent local clusters. Include
+// run entropy so an abandoned definition from an interrupted historical run
+// cannot be mistaken for the current candidate's deployment graph.
+const liveRunSuffix = `${process.pid}-${randomUUID().slice(0, 8)}`;
+const namespace = process.env.APPLIK8S_E2E_NAMESPACE ?? `applik8s-v06-generated-${liveRunSuffix}`;
+// Production deployments keep the root Application CR in a shared, retained
+// control-plane namespace and give the workload its own lifecycle. The
+// deployment lifecycle suite separately proves same-namespace instance-first
+// teardown; this fixture proves that deleting an application removes its owned
+// workload namespace without trying to remove the shared control plane.
+const controlPlaneNamespace =
+  process.env.APPLIK8S_E2E_CONTROL_NAMESPACE ?? 'typekro-system';
+const stackName = process.env.APPLIK8S_E2E_STACK_NAME ?? `v06-generated-proof-${liveRunSuffix}`;
 const fixture = join(process.cwd(), 'packages/e2e/test/fixtures/v06-generated-app/app.ts');
 const org1 = '00000000-0000-0000-0000-000000000001';
 const org2 = '00000000-0000-0000-0000-000000000002';
@@ -88,10 +98,7 @@ spec: {}
           '--control-plane-namespace', controlPlaneNamespace,
         ], process.cwd());
         await expect(kubectl(['get', `${applicationResource}/${stackName}`, '--namespace', controlPlaneNamespace])).rejects.toThrow();
-        await Promise.all([
-          waitForKubernetesResourceDeleted(`namespace/${namespace}`, 900_000),
-          waitForKubernetesResourceDeleted(`namespace/${controlPlaneNamespace}`, 900_000),
-        ]);
+        await waitForKubernetesResourceDeleted(`namespace/${namespace}`, 900_000);
         await expect(kubectl(['get', `resourcegraphdefinition/${stackName}`])).rejects.toThrow();
         if (proofComplete) await writeEvidenceReceipt();
       }
@@ -403,6 +410,7 @@ async function waitForSseEvent(
   const deadline = Date.now() + 60_000;
   let pending = '';
   const observedEvents = new Set<string>();
+  const observedFrames: string[] = [];
   try {
     while (Date.now() < deadline) {
       const remainingMs = deadline - Date.now();
@@ -419,6 +427,7 @@ async function waitForSseEvent(
       const frames = pending.split('\n\n');
       pending = frames.pop() ?? '';
       for (const frame of frames) {
+        observedFrames.push(frame);
         for (const line of frame.split('\n')) {
           if (line.startsWith('event: ')) observedEvents.add(line.slice('event: '.length));
         }
@@ -426,7 +435,10 @@ async function waitForSseEvent(
       const match = frames.find((frame) => frame.split('\n').some((line) => line === `event: ${event}`));
       if (match !== undefined) return `${match}\n\n`;
     }
-    throw new Error(`SSE stream from ${url} ended before event ${event}; observed ${JSON.stringify([...observedEvents])}.`);
+    throw new Error(
+      `SSE stream from ${url} ended before event ${event}; observed events `
+      + `${JSON.stringify([...observedEvents])} and frames ${JSON.stringify(observedFrames)}.`,
+    );
   } finally {
     controller.abort();
     await reader.cancel().catch(() => undefined);

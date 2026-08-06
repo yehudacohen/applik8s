@@ -1,0 +1,56 @@
+apiVersion: identity-start.applik8s.dev/v1alpha1
+kind: IdentityStart
+metadata:
+  name: identity-start-external
+  namespace: identity-start-control
+spec:
+  name: identity-start-external
+  profile: external
+  # External profiles require this application's workload namespace
+  # (identity-start-system) and provider credential Secrets to pre-exist.
+  # Applik8s never adopts or deletes that namespace.
+  providers:
+    database:
+      clusterName: identity-postgres
+      namespace: identity-providers
+      database: identity_start
+      connectionSecretName: identity-postgres-app
+      connectionSecretKey: uri
+    analytics:
+      endpoint: https://clickhouse.example.test:8443
+      database: identity_start
+      credentialsSecretName: identity-clickhouse
+    events:
+      server: nats://nats.identity-providers.svc:4222
+      stream: identity_start
+      subjectPrefix: identity-start
+      connectionSecretName: identity-nats
+    objects:
+      endpoint: https://objects.example.test
+      bucket: identity-start
+      region: us-east-1
+      credentialsSecretName: identity-objects
+      forcePathStyle: false
+    workflows:
+      hostPort: workflows.example.test:7070
+      apiUrl: https://workflows.example.test
+      tokenSecretName: identity-workflows
+      tokenKey: token
+    search:
+      endpoint: https://search.example.test
+      namespace: identity-start
+      credentialsSecretName: identity-search
+    inference:
+      endpoint: https://inference.example.test/v1
+      model: identity-reviewer-v1
+      credentialSecretName: identity-inference
+      credentialKey: apiKey
+    identity:
+      kind: ory
+      issuer: https://identity.example.test
+      publicUrl: https://identity.example.test
+      adminUrl: https://identity-admin.example.test
+    payments:
+      secretName: identity-payments
+      apiKeyKey: apiKey
+      webhookSecretKey: webhookSecret

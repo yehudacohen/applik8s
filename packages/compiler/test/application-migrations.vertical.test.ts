@@ -26,7 +26,11 @@ describe('native relational migration lowering', () => {
     expect(source).toContain(
       'revision bigint NOT NULL DEFAULT 0\n  );\n\nCREATE TABLE IF NOT EXISTS applik8s_authority_records',
     );
+    expect(source).toContain('CREATE TABLE IF NOT EXISTS applik8s_model_change_commit_frontier');
     expect(source).toContain('CREATE TABLE IF NOT EXISTS applik8s_model_changes');
+    expect(source).toContain('ALTER TABLE applik8s_model_changes ADD COLUMN IF NOT EXISTS commit_position bigint');
+    expect(source).toContain('ALTER TABLE applik8s_model_changes ALTER COLUMN commit_position SET NOT NULL');
+    expect(source).toContain('CREATE UNIQUE INDEX IF NOT EXISTS applik8s_model_changes_commit_position');
     expect(source).toContain('CREATE TABLE IF NOT EXISTS applik8s_public_stream_retention_floors');
     expect(source).toContain('ALTER TABLE "cards" FORCE ROW LEVEL SECURITY');
     expect(source).toContain('"organization_id"::text = current_setting(\'applik8s.context.organizationId\', true)');

@@ -10,10 +10,13 @@ function Settings() {
   const account = currentAccount.useQuery();
   const create = Account.create.useMutation();
   const update = Account.update.useMutation();
-  const [handle, setHandle] = useState(account.data?.handle ?? account.data?.suggestedHandle ?? '');
-  const [displayName, setDisplayName] = useState(account.data?.displayName ?? '');
-  const [bio, setBio] = useState(account.data?.bio ?? 'Building a real social application from one typed graph.');
-  const [visibility, setVisibility] = useState<'public' | 'followers'>((account.data?.visibility as 'public' | 'followers' | undefined) ?? 'public');
+  const registeredAccount = account.data?.registered ? account.data : undefined;
+  const [handle, setHandle] = useState(registeredAccount?.handle ?? account.data?.suggestedHandle ?? '');
+  const [displayName, setDisplayName] = useState(registeredAccount?.displayName ?? '');
+  const [bio, setBio] = useState(registeredAccount?.bio ?? 'Building a real social application from one typed graph.');
+  const [visibility, setVisibility] = useState<'public' | 'followers'>(
+    registeredAccount?.visibility === 'followers' ? 'followers' : 'public',
+  );
   const registered = account.data?.registered === true;
   const pending = create.pending || update.pending;
   const error = create.error ?? update.error;

@@ -38,6 +38,8 @@ export interface OryKratosSessionEvidence {
   readonly active: true;
   readonly authenticationMethod: string;
   readonly assurance: readonly string[];
+  /** Roles derived only from the provider-verified Kratos identity. */
+  readonly roles: readonly string[];
   readonly authenticatedAt?: string;
   readonly issuedAt?: string;
   readonly expiresAt?: string;
@@ -113,6 +115,7 @@ export class OryKratosIdentityAdapter
       catalogRevision: context.catalogRevision,
       authorityRevision: context.authorityRevision,
       admittedAt: now.toISOString(),
+      ...(evidence.roles.length > 0 ? { roles: evidence.roles } : {}),
       ...(evidence.expiresAt ? { expiresAt: evidence.expiresAt } : {}),
       sessionId: evidence.sessionId,
     };
@@ -401,6 +404,7 @@ function normalizedKratosSession(
   );
   const issuedAt = optionalOryString(value.issued_at, 'session.issued_at');
   const expiresAt = optionalOryString(value.expires_at, 'session.expires_at');
+  const roles = normalizedKratosRoles(identity);
   return {
     sessionId: requiredOryString(value.id, 'session.id'),
     identity: {
@@ -413,10 +417,45 @@ function normalizedKratosSession(
     authenticationMethod:
       methods.length > 0 ? `ory:${methods.join('+')}` : 'ory:session',
     assurance: [aal, ...methods.map((method) => `amr:${method}`)],
+    roles,
     ...(authenticatedAt ? { authenticatedAt } : {}),
     ...(issuedAt ? { issuedAt } : {}),
     ...(expiresAt ? { expiresAt } : {}),
   };
+}
+
+function normalizedKratosRoles(
+  identity: Readonly<Record<string, unknown>>,
+): readonly string[] {
+  const sources = [identity.metadata_public, identity.traits];
+  const roles: string[] = [];
+  for (const source of sources) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) continue;
+    const value = Reflect.get(source, 'roles') ?? Reflect.get(source, 'role');
+    if (value === undefined) continue;
+    const candidates = typeof value === 'string' ? [value] : value;
+    if (!Array.isArray(candidates)) {
+      throw new OryAdapterError(
+        'ORY_RESPONSE_INVALID',
+        'Ory identity roles must be a string or string array.',
+      );
+    }
+    for (const candidate of candidates) {
+      if (
+        typeof candidate !== 'string'
+        || !candidate.trim()
+        || candidate.length > 128
+        || /[\s?#]/u.test(candidate)
+      ) {
+        throw new OryAdapterError(
+          'ORY_RESPONSE_INVALID',
+          'Ory identity contains an invalid application role.',
+        );
+      }
+      roles.push(candidate.trim());
+    }
+  }
+  return [...new Set(roles)].sort();
 }
 
 function normalizedIssuer(value: string): string {

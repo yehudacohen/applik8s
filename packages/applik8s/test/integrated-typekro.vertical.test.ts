@@ -261,7 +261,16 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     });
     expect(applicationGraphFor(exposureDefaultComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.http-exposure', kind: 'provider', name: 'HttpExposure', implementation: 'ingress', config: { bindingKind: 'default', provider: 'ingress' } }),
+      expect.objectContaining({
+        id: 'provider.http-exposure',
+        kind: 'provider',
+        name: 'HttpExposure',
+        implementation: 'ingress',
+        config: expect.objectContaining({
+          bindingKind: 'default',
+          provider: 'ingress',
+        }),
+      }),
     ]));
 
     expect(() => sdk.kubernetesComposition({
@@ -332,7 +341,15 @@ describe('integrated TypeKro package surface', () => {
     ]));
     expect(plainValue(appInfraComposition.resources)).not.toContainEqual(expect.objectContaining({ kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }));
     expect(applicationGraphFor(appInfraComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.http-exposure', kind: 'provider', implementation: 'ingress', config: { bindingKind: 'provided', provider: 'ingress' } }),
+      expect.objectContaining({
+        id: 'provider.http-exposure',
+        kind: 'provider',
+        implementation: 'ingress',
+        config: expect.objectContaining({
+          bindingKind: 'provided',
+          provider: 'ingress',
+        }),
+      }),
       expect.objectContaining({ id: 'config.database-url', kind: 'config', provider: 'ConfigMap', key: 'database-url' }),
       expect.objectContaining({ id: 'secret.database-password', kind: 'secret', provider: 'Secret', ownership: 'external', redaction: 'required', generatedResources: [] }),
       expect.objectContaining({ id: 'secret.session-key', kind: 'secret', provider: 'Secret', ownership: 'generated', generatedResources: [expect.objectContaining({ role: 'secret' })] }),
@@ -459,7 +476,7 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     });
     expect(applicationGraphFor(defaultProviderModelComposition)?.nodes).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'provider.transactional-database', kind: 'provider', implementation: 'postgres', config: expect.objectContaining({ bindingKind: 'transactionalDatabase', provider: 'postgres', transactionalDatabase: expect.objectContaining({ kind: 'postgres', name: 'notes-db', database: 'notes' }) }) }),
+      expect.objectContaining({ id: 'provider.transactional-database', kind: 'provider', implementation: 'postgres', config: expect.objectContaining({ bindingKind: 'default', provider: 'postgres', transactionalDatabase: expect.objectContaining({ kind: 'postgres', name: 'notes-db', database: 'notes' }) }) }),
       expect.objectContaining({
         id: 'model.note',
         schema: expect.objectContaining({
@@ -782,15 +799,15 @@ describe('integrated TypeKro package surface', () => {
         indexes: { byTenant: ['tenant', 'email'] },
       });
 
-      app.http('admin', { namespace: 'platform', resources: { Tenant }, models: { Account } }, (http) => {
+      app.server('admin', { namespace: 'platform', resources: { Tenant }, models: { Account } }, (http) => {
         http.post('/tenants/:tenant/accounts', async () => Account.create({
           spec: { tenant: 'main', email: 'owner@example.com', role: 'owner' },
         }));
       });
 
-      app.reconcile(Tenant, async (tenant) => {
+      Tenant.on.reconcile(async (tenant) => {
         tenant.status.phase = 'Ready';
-      }, { namespace: 'platform' });
+      });
 
       return { ready: true };
     });
@@ -811,7 +828,7 @@ describe('integrated TypeKro package surface', () => {
     expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining([
       'app.resource',
       'app.http',
-      'app.reconcile',
+      'Resource.on.reconcile',
       'app.database.postgres',
     ]));
   });
@@ -838,7 +855,7 @@ describe('integrated TypeKro package surface', () => {
       indexes: { byTenant: ['tenant', 'email'] },
     });
 
-    tenantPlatform.http('admin', (http) => {
+    tenantPlatform.server('admin', (http) => {
       http.post('/tenants/:tenant/accounts', async ({ params, form }) => Account.create({
         tenant: params.tenant ?? 'main',
         email: form.string('email'),
@@ -846,10 +863,11 @@ describe('integrated TypeKro package surface', () => {
       }));
     });
 
-    tenantPlatform.reconcile(Tenant, async (tenant) => {
+    Tenant.on.reconcile(async (tenant) => {
       tenant.status.phase = 'Ready';
     });
 
+    expect(tenantPlatform).not.toHaveProperty('reconcile');
     expect(tenantPlatform.operatorInstalls).toHaveLength(1);
     expect(tenantPlatform.resources).toContainEqual(expect.objectContaining({ kind: 'Deployment', metadata: expect.objectContaining({ name: 'admin', namespace: 'platform' }) }));
     expect(tenantPlatform.resources).toContainEqual(expect.objectContaining({ kind: 'Job', metadata: expect.objectContaining({ name: 'account-migration', namespace: 'platform' }) }));
@@ -870,6 +888,40 @@ describe('integrated TypeKro package surface', () => {
     ]));
   });
 
+  it('coalesces resource-native reconcile and finalization into one inferred operator install', () => {
+    const application = app('resource-owned-controller', {
+      namespace: 'platform',
+      apiVersion: 'controllers.applik8s.dev/v1alpha1',
+      kind: 'ResourceOwnedController',
+    });
+    const Work = application.resource('Work', {
+      spec: type({ value: 'string' }),
+      status: type({ 'phase?': 'string' }),
+    });
+
+    Work.on.reconcile((work) => {
+      work.status.phase = 'Ready';
+    });
+    Work.on.finalize((work) => {
+      work.status.phase = 'Deleting';
+    }, { finalizer: 'controllers.applik8s.dev/work' });
+
+    expect(application).not.toHaveProperty('reconcile');
+    expect(application.operatorInstalls).toHaveLength(1);
+    expect(application.operatorInstalls[0]).toMatchObject({
+      operatorName: 'work-controller',
+      deployment: {
+        namespace: 'platform',
+      },
+      operator: {
+        handlers: [
+          expect.objectContaining({ event: 'reconcile' }),
+          expect.objectContaining({ event: 'finalize' }),
+        ],
+      },
+    });
+  });
+
   it('emits Postgres TransactionalDatabase backing resources as concrete TypeKro/Kubernetes resources', () => {
     const NoteEntity = entity('Note', {
       spec: type({ message: 'string' }),
@@ -888,7 +940,9 @@ describe('integrated TypeKro package surface', () => {
 
     expect(plainValue(composition.resources)).toEqual(expect.arrayContaining([
       expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'notes-db', namespace: 'notes' }) }),
-      expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'note-transactional-database', namespace: 'notes' }) }),
+    ]));
+    expect(plainValue(composition.resources)).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'note-transactional-database' }) }),
     ]));
     expect(composition.resources).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ apiVersion: 'v1', kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }),
@@ -936,6 +990,48 @@ describe('integrated TypeKro package surface', () => {
     ]));
   });
 
+  it('preserves profile-selected PostgreSQL ownership as mutually exclusive graph and direct lifecycle resources', () => {
+    const application = app('notes-profile-model-app', {
+      namespace: 'notes',
+      apiVersion: 'notes.applik8s.dev/v1alpha1',
+      kind: 'NotesProfileModelApp',
+      spec: type({ profile: "'managed' | 'external'" }),
+      status: type({ ready: 'boolean' }),
+    });
+    application.database.postgres('notes', {
+      clusterName: 'notes-authority',
+      database: 'notes',
+      schema: {},
+      ownership: application.select(application.installation.spec.profile, {
+        external: 'external',
+        default: 'direct-provisioned',
+      }),
+      provision: application.select(application.installation.spec.profile, {
+        external: false,
+        default: true,
+      }),
+      lifecycle: { deletionPolicy: 'retain' },
+      connectionSecret: { apiVersion: 'v1', kind: 'Secret', name: 'notes-authority-app', namespace: 'notes' },
+      storage: { size: '20Gi' },
+    });
+    application.model('ProfileNote', { spec: type({ message: 'string' }) });
+
+    const clusters = application.resources.filter(
+      (resource): resource is object => {
+        if (!resource || typeof resource !== 'object') return false;
+        return Reflect.get(resource, 'apiVersion') === 'postgresql.cnpg.io/v1'
+          && Reflect.get(resource, 'kind') === 'Cluster';
+      },
+    );
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0]).toMatchObject({ metadata: { name: 'notes-authority', namespace: 'notes' } });
+    expect(Reflect.get(clusters[0] ?? {}, '__externalRef')).toBe(true);
+    const yaml = application.composition.factory('kro').toYaml();
+    expect(yaml).toContain('schema.spec.profile) == "external"');
+    expect(yaml).toContain('== "direct-provisioned"');
+    expect(yaml).not.toContain('GraphOwned');
+  });
+
   it('records model schema constraints, indexes, retention, and external provider ownership in the app graph', () => {
     const NoteEntity = entity('Note', {
       spec: type({ message: 'string', author: 'string' }),
@@ -967,9 +1063,11 @@ describe('integrated TypeKro package surface', () => {
       return { ready: true };
     });
 
-    const externalCluster = composition.resources.find((resource) => resource.apiVersion === 'postgresql.cnpg.io/v1' && resource.kind === 'Cluster');
-    expect(externalCluster).toMatchObject({ metadata: { name: 'shared-db', namespace: 'data' } });
-    expect(Reflect.get(externalCluster ?? {}, '__externalRef')).toBe(true);
+    // The supplied connection Secret is the runtime authority. Do not broaden
+    // the graph with an unused observed Cluster dependency.
+    expect(composition.resources).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster' }),
+    ]));
     expect(applicationGraphFor(composition)?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: 'model.entry',
@@ -1877,7 +1975,7 @@ describe('integrated TypeKro package surface', () => {
     }, (spec, app) => {
       const install = app.operator(notes, { namespace: spec.namespace, replicas: 1 });
       const defaults = app.defaults({ indexes: 'valkey' });
-      const provider = app.provide({ name: 'IndexStore' }, 'valkey');
+      const provider = app.provide(IndexStore, 'valkey');
       const web = app.api('web', {
         service: { port: 80 },
         resources: { Note },
@@ -1893,7 +1991,11 @@ describe('integrated TypeKro package surface', () => {
       });
       install.note({ name: 'hello', namespace: spec.namespace, spec: { message: 'hi' } });
       expect(defaults).toEqual({ kind: 'applicationDefaults', defaults: { indexes: 'valkey' } });
-      expect(provider).toEqual({ kind: 'applicationProvider', token: { name: 'IndexStore' }, implementation: 'valkey' });
+      expect(provider).toEqual({
+        kind: 'applicationProvider',
+        token: IndexStore,
+        implementation: { kind: 'valkey' },
+      });
       expect(app.api.web).toBe(web);
       expect(app.server.web).toBe(web);
       expect(web.routes).toEqual([
@@ -2152,7 +2254,7 @@ describe('integrated TypeKro package surface', () => {
     expect(graph?.compatibility.stablePublicApis).toEqual(expect.arrayContaining(['provider.Secret', 'provider.Queue', 'provider.ObjectStorage', 'provider.HttpExposure', 'provider.CredentialStore']));
   });
 
-  it('keeps the emitted v0.3 app graph IR versioned and golden-stable for public substrate nodes', () => {
+  it('keeps the emitted app graph versioned while pruning unused framework-default providers', () => {
     const AccountEntity = entity('Account', {
       spec: type({ email: 'string', displayName: 'string' }),
       status: type({ phase: 'string?' }),
@@ -2188,19 +2290,7 @@ describe('integrated TypeKro package surface', () => {
       'job.cleanup-accounts',
       'job.repair-accounts',
       'model.account',
-      'provider.certificate',
-      'provider.counter-store',
-      'provider.credential-store',
-      'provider.dns-publication',
-      'provider.event-source',
-      'provider.http-exposure',
-      'provider.index-store',
-      'provider.object-storage',
-      'provider.queue',
-      'provider.search',
-      'provider.secret',
       'provider.transactional-database',
-      'provider.workflow-engine',
       'server.admin',
     ]);
     expect(nodesById.get('job.cleanup-accounts')).toMatchObject({ id: 'job.cleanup-accounts', kind: 'job', schedule: expect.objectContaining({ cron: '0 3 * * *' }) });
@@ -2213,21 +2303,18 @@ describe('integrated TypeKro package surface', () => {
       'provider.transactional-database:provides:model.account',
     ]);
     expect(graph?.compatibility.stablePublicApis).toEqual([
-      'Model.action',
-      'Model.command',
       'Model.create',
       'Model.delete',
-      'Model.on.action',
-      'Model.on.command',
+      'Model.edit',
       'Model.on.create',
       'Model.on.delete',
-      'Model.on.operation',
       'Model.on.update',
-      'Model.operation',
+      'Model.require',
       'Model.update',
       'Provider.named',
       'Resource.increment',
       'Resource.index',
+      'Resource.on.reconcile',
       'Stream.process',
       'Stream.project',
       'Stream.subscribe',
@@ -2250,12 +2337,10 @@ describe('integrated TypeKro package surface', () => {
       'app.mcp.client',
       'app.model',
       'app.objectStore',
-      'app.on',
       'app.profile',
       'app.projection',
       'app.provide',
       'app.query',
-      'app.reconcile',
       'app.resource',
       'app.schedule',
       'app.secret',
@@ -2264,7 +2349,6 @@ describe('integrated TypeKro package surface', () => {
       'app.server',
       'app.stream',
       'app.subscription',
-      'app.task',
       'app.when',
       'app.workflow',
       'command',
@@ -2288,7 +2372,6 @@ describe('integrated TypeKro package surface', () => {
       'provider.WorkflowEngine',
       'sdk.kubernetesComposition',
       'stream',
-      'task',
       'workflow',
     ]);
   });
@@ -2905,14 +2988,14 @@ describe('integrated TypeKro package surface', () => {
     const adapterPackage = JSON.parse(await readFile('packages/typekro-adapter/package.json', 'utf8'));
     const installedPackage = JSON.parse(await readFile('node_modules/typekro/package.json', 'utf8'));
 
-    expect(workspacePackage.dependencies.typekro).toBe('0.32.0');
-    expect(applik8sPackage.dependencies.typekro).toBe('0.32.0');
-    expect(adapterPackage.dependencies.typekro).toBe('0.32.0');
-    expect(installedPackage.version).toBe('0.32.0');
+    expect(workspacePackage.dependencies.typekro).toBe('0.33.5');
+    expect(applik8sPackage.dependencies.typekro).toBe('0.33.5');
+    expect(adapterPackage.dependencies.typekro).toBe('0.33.5');
+    expect(installedPackage.version).toBe('0.33.5');
   });
 
   it('builds generated app infrastructure on existing TypeKro Kubernetes factories', async () => {
-    const source = await readFile(new URL('../src/application.ts', import.meta.url), 'utf8');
+    const source = await readFile(new URL('../src/application-builder.ts', import.meta.url), 'utf8');
 
     expect(source).toContain("from 'typekro/kubernetes'");
     expect(source).toContain('deployment as typeKroDeployment');

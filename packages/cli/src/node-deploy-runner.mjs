@@ -35,6 +35,7 @@ const deployArgs = [
   ...(options.skipAppBuild ? ['--skip-app-build'] : []),
   ...(options.skipImageBuild ? ['--skip-image-build'] : []),
   ...(options.planOnly ? ['--plan-only'] : []),
+  ...(options.allowBreakingChanges ? ['--allow-breaking-changes'] : []),
 ];
 const deleteArgs = [
   '--enable-source-maps',
@@ -74,6 +75,10 @@ async function resolveNodeCliEntrypoint() {
   const runnerDirectory = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     join(runnerDirectory, 'bin.js'),
+    // A workspace invocation starts from src/node-deploy-runner.mjs. Use the
+    // registered TypeScript loader to execute that same source tree instead
+    // of silently falling back to a potentially stale package build.
+    join(runnerDirectory, 'bin.ts'),
     join(runnerDirectory, '..', 'dist', 'bin.js'),
   ];
   for (const candidate of candidates) {

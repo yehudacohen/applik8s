@@ -1,0 +1,206 @@
+import {
+  createApplicationTanStackConnection,
+  hydrateApplicationConversationMessage,
+} from '@applik8s/ai-tanstack/client';
+import { AgenticStartOnboarding } from '@applik8s/start-agentic/react';
+import { useChat } from '@tanstack/ai-react';
+import { Link, useNavigate } from '@tanstack/react-router';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import {
+  Conversation,
+  ConversationDetail,
+  ConversationInbox,
+  Researcher,
+} from '../../application';
+import type { ConversationSummaryValue } from '../conversations/model';
+
+export function ResearchInbox() {
+  const inbox = ConversationInbox({}).useQuery();
+  const updateConversation = Conversation.update.useMutation();
+  const navigate = useNavigate();
+
+  async function beginConversation() {
+    await navigate({
+      to: '/conversations/$conversationId',
+      params: { conversationId: crypto.randomUUID() },
+    });
+  }
+
+  async function archiveConversation(conversationId: string) {
+    await updateConversation({
+      identity: conversationId,
+      patch: { archivedAt: new Date().toISOString() },
+    });
+    await inbox.refresh();
+  }
+
+  return (
+    <main>
+      <AgenticStartOnboarding
+        application="applik8s-template-project"
+        operationsHref="/operations"
+      />
+      <p className="eyebrow">Applik8s Agentic Start</p>
+      <h1>Research inbox</h1>
+      <p>
+        Conversations, messages, protocol runs, and stream events are durable
+        application models scoped by authenticated identity and trusted context.
+      </p>
+      <button type="button" onClick={beginConversation}>
+        New conversation
+      </button>
+      <section aria-label="Research conversations">
+        {inbox.data?.map((conversation: ConversationSummaryValue) => (
+          <article key={conversation.id}>
+            <strong>{conversation.title ?? 'Untitled conversation'}</strong>
+            <p>Updated {conversation.updatedAt}</p>
+            <Link
+              to="/conversations/$conversationId"
+              params={{ conversationId: conversation.id }}
+            >
+              Open conversation
+            </Link>
+            <button
+              type="button"
+              disabled={updateConversation.pending}
+              onClick={() => archiveConversation(conversation.id)}
+            >
+              Archive
+            </button>
+          </article>
+        ))}
+      </section>
+    </main>
+  );
+}
+
+export function ResearchConversation({
+  conversationId,
+}: {
+  readonly conversationId: string;
+}) {
+  const detail = ConversationDetail({ conversationId }).useQuery();
+  const updateConversation = Conversation.update.useMutation();
+  const navigate = useNavigate();
+  const connection = useMemo(
+    () => createApplicationTanStackConnection({
+      agent: Researcher,
+    }),
+    [],
+  );
+  const initialMessages = useMemo(
+    () => detail.data?.messages.map(hydrateApplicationConversationMessage) ?? [],
+    [detail.data],
+  );
+  const {
+    messages,
+    sendMessage,
+    isLoading,
+    error,
+    stop,
+    setMessages,
+  } = useChat({
+    connection,
+    threadId: conversationId,
+    initialMessages,
+  });
+  const [draft, setDraft] = useState('');
+  const [title, setTitle] = useState('');
+
+  useEffect(() => {
+    setTitle(detail.data?.conversation.title ?? '');
+  }, [detail.data?.conversation.title]);
+
+  useEffect(() => {
+    if (!detail.data || isLoading) return;
+    setMessages(initialMessages);
+  }, [detail.data, initialMessages, isLoading, setMessages]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = draft.trim();
+    if (!message) return;
+    setDraft('');
+    await sendMessage(message);
+  }
+
+  async function rename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const next = title.trim();
+    if (!next) return;
+    await updateConversation({
+      identity: conversationId,
+      patch: { title: next },
+    });
+    await detail.refresh();
+  }
+
+  async function archive() {
+    await updateConversation({
+      identity: conversationId,
+      patch: { archivedAt: new Date().toISOString() },
+    });
+    await navigate({ to: '/' });
+  }
+
+  return (
+    <main>
+      <Link to="/">Back to inbox</Link>
+      <p className="eyebrow">Durable conversation</p>
+      <h1>{detail.data?.conversation.title ?? 'New research conversation'}</h1>
+      <p>
+        The URL carries only the conversation selector. Server-side principal
+        scope determines whether existing history can be read.
+      </p>
+      {detail.data ? (
+        <form onSubmit={rename}>
+          <label htmlFor="conversation-title">Conversation title</label>
+          <input
+            id="conversation-title"
+            value={title}
+            onChange={(event) => setTitle(event.currentTarget.value)}
+          />
+          <button
+            type="submit"
+            disabled={updateConversation.pending || !title.trim()}
+          >
+            Rename
+          </button>
+          <button
+            type="button"
+            disabled={updateConversation.pending}
+            onClick={archive}
+          >
+            Archive
+          </button>
+        </form>
+      ) : null}
+      <section aria-label="Research conversation">
+        {messages.map((message) => (
+          <article key={message.id} data-role={message.role}>
+            <strong>{message.role}</strong>
+            {message.parts.map((part, index) =>
+              part.type === 'text'
+                ? <p key={index}>{part.content}</p>
+                : null,
+            )}
+          </article>
+        ))}
+        {error ? <p role="alert">{error.message}</p> : null}
+      </section>
+      <form onSubmit={submit}>
+        <label htmlFor="research-prompt">Research prompt</label>
+        <textarea
+          id="research-prompt"
+          value={draft}
+          onChange={(event) => setDraft(event.currentTarget.value)}
+          disabled={isLoading}
+        />
+        <button type="submit" disabled={isLoading || !draft.trim()}>
+          {isLoading ? 'Researching…' : 'Send'}
+        </button>
+        {isLoading ? <button type="button" onClick={stop}>Stop</button> : null}
+      </form>
+    </main>
+  );
+}

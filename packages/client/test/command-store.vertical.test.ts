@@ -1,8 +1,21 @@
 // typecast-file-boundary: protocol doubles construct narrowed command states to exercise client transitions.
-import { ApplicationCommandClient, ApplicationCommandFailedError, ApplicationCommandRejectedError, createHttpApplicationCommandTransport, type ApplicationCommandProgress, type ApplicationCommandTransport } from '@applik8s/client';
+import { ApplicationCommandClient, ApplicationCommandFailedError, ApplicationCommandRejectedError, createApplicationClientId, createHttpApplicationCommandTransport, type ApplicationCommandProgress, type ApplicationCommandTransport } from '@applik8s/client';
 import { describe, expect, it, vi } from 'vitest';
 
 describe('browser-safe durable command client', () => {
+  it('generates a UUID from getRandomValues when randomUUID is unavailable on local HTTP', () => {
+    const id = createApplicationClientId({
+      getRandomValues(value) {
+        const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+        bytes.forEach((_, index) => {
+          bytes[index] = index;
+        });
+        return value;
+      },
+    });
+    expect(id).toBe('00010203-0405-4607-8809-0a0b0c0d0e0f');
+  });
+
   it('keeps transport acknowledgement, durable result, model revision, workflow, and reconciliation independent', async () => {
     let observations = 0;
     const transport: ApplicationCommandTransport = {

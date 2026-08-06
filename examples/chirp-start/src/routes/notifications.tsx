@@ -1,18 +1,12 @@
-import { ApplicationQueryHydrationBoundary } from '@applik8s/react';
 import { createFileRoute } from '@tanstack/react-router';
-import { Notification } from '../application';
+import { Notification, NotificationInbox } from '../application';
 import { ChirpShell, PageIntro } from '../components/chirp-shell';
 import { QueryState } from '../components/post-list';
 import { formatUtcTimestamp } from '../format';
 
-const inbox = Notification.inbox({ limit: 50 });
+const inbox = NotificationInbox({ limit: 50 });
 
-export const Route = createFileRoute('/notifications')({ loader: () => inbox.snapshot(), component: NotificationsPage });
-
-function NotificationsPage() {
-  const snapshot = Route.useLoaderData();
-  return <ApplicationQueryHydrationBoundary snapshots={[snapshot]}><Notifications /></ApplicationQueryHydrationBoundary>;
-}
+export const Route = createFileRoute('/notifications')({ loader: () => inbox.snapshot(), component: Notifications });
 
 function Notifications() {
   const notifications = inbox.useQuery();

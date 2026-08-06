@@ -142,6 +142,10 @@ describe('generated JetStream command processor runtime', () => {
           expect(delivery.authorizationReceipt).toEqual(receipt);
           return { allowed: false, code: 'AUTHORIZATION_GRANT_REVOKED', message: 'revoked' };
         },
+        releaseAuthorization: async (receipt, envelopeId) => {
+          expect(receipt.id).toBe('receipt-1');
+          calls.push(`release:${envelopeId}`);
+        },
         recordTerminalFailure: async (_input, _delivery, failure) => {
           calls.push(`record:${failure.code}:${failure.attempts}`);
         },
@@ -150,7 +154,7 @@ describe('generated JetStream command processor runtime', () => {
     })).resolves.toBe('acked');
 
     expect(execute).not.toHaveBeenCalled();
-    expect(calls).toEqual(['record:authorization_denied:1', 'ack']);
+    expect(calls).toEqual(['record:authorization_denied:1', 'release:message-1', 'ack']);
   });
 
   it('runs different deliveries with bounded concurrency and waits for every in-flight commit', async () => {

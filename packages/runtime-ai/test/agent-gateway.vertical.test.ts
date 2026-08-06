@@ -1,3 +1,4 @@
+// typecast-file-boundary: Gateway tests deliberately inspect signed and untrusted protocol fixtures after validation.
 import { createHash } from 'node:crypto';
 import type { ApplicationRequestAdmission } from '@applik8s/core';
 import { decodeApplicationExecutionAdmission } from '@applik8s/operations';
@@ -149,6 +150,25 @@ describe('application AI agent gateway', () => {
     ).toBeUndefined();
   });
 
+  it('reports internal admission failures while keeping the public response sanitized', async () => {
+    const failure = new Error('identity provider detail');
+    const onError = vi.fn();
+    const gateway = createApplicationAIAgentGateway({
+      application: 'research',
+      secret,
+      targets: [target],
+      authenticate: async () => {
+        throw failure;
+      },
+      authorize: async () => true,
+      onError,
+    });
+    const response = await gateway.handle(agentRequest());
+    expect(response?.status).toBe(401);
+    expect(await response?.json()).toEqual({ error: 'unauthorized' });
+    expect(onError).toHaveBeenCalledWith(failure);
+  });
+
   it('bounds agent dispatch and distinguishes timeout from provider failure', async () => {
     const timedOut = createApplicationAIAgentGateway({
       application: 'research',
@@ -156,6 +176,7 @@ describe('application AI agent gateway', () => {
       targets: [{ ...target, timeoutMs: 10 }],
       authenticate: async () => admission(),
       authorize: async () => true,
+      now: () => new Date('2026-07-30T12:00:00.000Z'),
       fetch: Object.assign(async (
         input: RequestInfo | URL,
         init?: RequestInit,
@@ -183,6 +204,7 @@ describe('application AI agent gateway', () => {
       targets: [target],
       authenticate: async () => admission(),
       authorize: async () => true,
+      now: () => new Date('2026-07-30T12:00:00.000Z'),
       fetch: Object.assign(async () => {
         throw new Error('connection refused');
       }, { preconnect: vi.fn() }),

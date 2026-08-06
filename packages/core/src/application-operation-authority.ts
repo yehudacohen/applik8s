@@ -29,7 +29,11 @@ export type ApplicationOperationKind =
   | 'workflow.signal'
   | 'workflow.cancel'
   | 'workflow.result'
+  | 'signal.issue'
+  | 'signal.issuance.read'
+  | 'signal.action'
   | 'task'
+  | 'http.route'
   | 'http.raw'
   | 'mcp.tool';
 
@@ -110,7 +114,7 @@ export interface ApplicationOperationDescriptor {
   readonly transports: readonly ApplicationOperationTransportBinding[];
   readonly placement: {
     readonly nodeId: string;
-    readonly runtime: 'server' | 'command-processor' | 'workflow-worker' | 'event-processor' | 'operator';
+    readonly runtime: 'server' | 'command-processor' | 'workflow-worker' | 'event-processor' | 'agent-worker' | 'operator';
   };
   readonly effects?: readonly string[];
   readonly emittedEvents?: readonly string[];
@@ -182,6 +186,10 @@ export interface ApplicationPrincipal {
   readonly kind: ApplicationIdentityKind;
   readonly authenticationMethod: string;
   readonly audience: readonly string[];
+  /** Provider-neutral application roles admitted and revision-bound by the identity boundary. */
+  readonly roles?: readonly string[];
+  /** Bounded trusted identity attributes; never raw provider claims. */
+  readonly attributes?: JsonObject;
   readonly trustedContextDigest: string;
   readonly catalogRevision: ApplicationCatalogRevisionId;
   readonly authorityRevision: ApplicationAuthorityRevisionId;
@@ -337,6 +345,18 @@ export interface ApplicationWorkloadAuthorityEnvelope {
   readonly inputSchemaDigest: string;
   readonly audiences: readonly string[];
   readonly transports: readonly ApplicationOperationTransport[];
+  /**
+   * Optional compiler-bound authority to derive a narrower runtime grant.
+   * This is carried only by the exact protected operation that performs the
+   * derivation; ordinary invocation authority never implies delegation.
+   */
+  readonly grantAuthority?: {
+    readonly operationIds: readonly ApplicationOperationId[];
+    readonly scope: ApplicationScopeExpression;
+    readonly audiences?: readonly string[];
+    readonly transports?: readonly ApplicationOperationTransport[];
+    readonly expiresAt: string;
+  };
   readonly delegation: 'forbidden';
   readonly impersonation: 'forbidden';
 }
@@ -410,6 +430,8 @@ export interface ApplicationGrantRecord {
   readonly audiences?: readonly string[];
   readonly transports?: readonly ApplicationOperationTransport[];
   readonly issuedBy: ApplicationIdentityReference;
+  /** Explicit delegation authority; ordinary invocation grants cannot mint grants. */
+  readonly canGrant?: boolean;
   readonly delegationId?: string;
   readonly lifecycleOwner?: string;
   readonly reason?: string;
@@ -628,6 +650,8 @@ export interface ApplicationStaticGrantDefinition {
   readonly audiences?: readonly string[];
   readonly transports?: readonly ApplicationOperationTransport[];
   readonly issuedBy: ApplicationIdentityReference;
+  /** Explicitly permits this identity to derive narrower runtime grants. */
+  readonly canGrant?: boolean;
   readonly lifecycleOwner?: string;
   readonly reason?: string;
   readonly maximumUses?: number;
@@ -656,7 +680,7 @@ export function intersectApplicationScopes(...expressions: readonly ApplicationS
 }
 
 export function applicationOperationId(parts: {
-  readonly domain: 'models' | 'resources' | 'queries' | 'search' | 'workflows' | 'tasks' | 'http' | 'mcp';
+  readonly domain: 'models' | 'resources' | 'queries' | 'search' | 'workflows' | 'tasks' | 'signals' | 'http' | 'mcp';
   readonly owner: string;
   readonly operation: string;
 }): ApplicationOperationId {

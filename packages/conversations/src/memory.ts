@@ -34,6 +34,19 @@ export function createMemoryApplicationConversationStore(): ApplicationConversat
         : undefined;
     },
 
+    async getMessage(input) {
+      if (
+        conversations.get(input.conversationId)?.principalScope
+        !== input.principalScope
+      ) {
+        return undefined;
+      }
+      const message = (messages.get(input.conversationId) ?? []).find(
+        (candidate) => candidate.id === input.id,
+      );
+      return message ? clone(message) : undefined;
+    },
+
     async appendMessage(input) {
       const conversation = conversations.get(input.conversationId);
       if (
@@ -112,6 +125,11 @@ export function createMemoryApplicationConversationStore(): ApplicationConversat
       return clone(run);
     },
 
+    async getRun(id, principalScope) {
+      const run = runs.get(id);
+      return run?.principalScope === principalScope ? clone(run) : undefined;
+    },
+
     async transitionRun(input) {
       const run = runs.get(input.runId);
       if (
@@ -127,6 +145,9 @@ export function createMemoryApplicationConversationStore(): ApplicationConversat
       const transitioned = {
         ...run,
         status: input.to,
+        ...(input.terminalReason
+          ? { terminalReason: input.terminalReason }
+          : {}),
         updatedAt: input.updatedAt,
       };
       runs.set(run.id, transitioned);
@@ -151,6 +172,21 @@ export function createMemoryApplicationConversationStore(): ApplicationConversat
       };
       events.set(input.runId, [...existing, event]);
       return clone(event);
+    },
+
+    async getRunEvent(input) {
+      if (runs.get(input.runId)?.principalScope !== input.principalScope) {
+        return undefined;
+      }
+      const event = (events.get(input.runId) ?? []).find(
+        (candidate) => candidate.sequence === input.sequence,
+      );
+      return event ? clone(event) : undefined;
+    },
+
+    async getRunEventFrontier(runId, principalScope) {
+      if (runs.get(runId)?.principalScope !== principalScope) return 0;
+      return events.get(runId)?.at(-1)?.sequence ?? 0;
     },
 
     async listRunEvents(input) {

@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/deployment-typekro",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Version-pinned TypeKro deployment adapter for Applik8s.",
   "license": "Apache-2.0",
   "type": "module",
@@ -18,12 +18,13 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "dependencies": {
-    "@applik8s/deployment-contract": "0.6.0",
+    "@applik8s/deployment-contract": "0.7.0",
     "arktype": "^2.1.20",
-    "typekro": "0.32.0"
+    "typekro": "0.33.5"
   }
 }

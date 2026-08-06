@@ -1,0 +1,15 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { WorkspaceDashboard } from '../application';
+import { WorkspaceDashboardView } from '../features/workspaces/view';
+
+export const Route = createFileRoute('/workspaces/$workspaceId')({
+  loader: ({ params }) => WorkspaceDashboard({
+    workspaceId: params.workspaceId,
+  }).preload(),
+  component: WorkspaceRoute,
+});
+
+function WorkspaceRoute() {
+  const { workspaceId } = Route.useParams();
+  return <WorkspaceDashboardView workspaceId={workspaceId} />;
+}

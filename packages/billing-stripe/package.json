@@ -1,0 +1,24 @@
+{
+  "name": "@applik8s/billing-stripe",
+  "version": "0.7.0",
+  "description": "Server-only Stripe payment provider adapter for Applik8s billing.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/billing-stripe"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/billing": "0.7.0"
+  }
+}

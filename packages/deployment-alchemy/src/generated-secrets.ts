@@ -1,14 +1,11 @@
-// typecast-file-boundary: Portable deployment JSON is validated at this provider adapter boundary.
 import type {
   ApplicationDeploymentGraph,
   ApplicationExternalProviderDeploymentNode,
-  DeploymentJsonObject,
 } from "@applik8s/deployment-contract";
-import type {
-  ApplicationGeneratedSecretProps,
-  ApplicationGeneratedSecretValue,
-} from "@applik8s/deployment-provider-kubernetes";
+import type { ApplicationGeneratedSecretProps } from "@applik8s/deployment-provider-kubernetes";
 import * as Output from "alchemy/Output";
+import { decodeGeneratedSecretConfiguration } from "./generated-secret-contract.js";
+import { applicationAlchemyStackIdentity } from "./identity.js";
 
 export function generatedSecretNodes(
   graph: ApplicationDeploymentGraph,
@@ -35,89 +32,35 @@ export function generatedSecretProps(
   graph: ApplicationDeploymentGraph,
   namespaceHandles: readonly unknown[],
 ): ApplicationGeneratedSecretProps {
-  const configuration = requiredObject(
+  const configuration = decodeGeneratedSecretConfiguration(
     node.spec.configuration,
-    `${node.id}.configuration`,
+    node.id,
   );
-  const values = requiredObject(
-    configuration.values,
-    `${node.id}.configuration.values`,
-  );
-  const valueContracts = Object.fromEntries(
-    Object.entries(values).map(([key, value]) => [
-      key,
-      generatedSecretValue(value, `${node.id}.configuration.values.${key}`),
-    ]),
-  );
-  const consumers = Array.isArray(configuration.consumers)
-    ? configuration.consumers.map((value, index) =>
-        requiredString(value, `${node.id}.configuration.consumers.${index}`),
-      )
-    : [];
   return {
     deploymentNodeId: node.id,
+    deploymentOwnerId: applicationAlchemyStackIdentity(
+      graph.metadata.identity,
+      graph.metadata.strategy,
+    ).digest,
     context: graph.metadata.identity.connection.cluster,
-    namespace: requiredString(
-      configuration.namespace,
-      `${node.id}.configuration.namespace`,
-    ),
-    name: requiredString(
-      configuration.name,
-      `${node.id}.configuration.name`,
-    ),
-    values: valueContracts,
-    consumers,
+    namespace: configuration.namespace,
+    name: configuration.name,
+    ...(configuration.secretType
+      ? { secretType: configuration.secretType }
+      : {}),
+    values: configuration.values,
+    consumers: configuration.consumers,
     deletionPolicy:
       node.lifecycle.deletion === "delete" ? "delete" : "retain",
     ...(namespaceHandles.length > 0
       ? {
+          // typecast: erase heterogeneous namespace handles only at Alchemy's scheduling boundary.
           prerequisites: Output.all(
+            // typecast: each opaque provider handle becomes an ordering-only Alchemy Output.
             ...namespaceHandles.map((handle) => Output.of(handle as never)),
+            // typecast: collapse Alchemy's heterogeneous Output tuple to the provider-neutral prerequisite input.
           ) as never,
         }
       : {}),
   };
-}
-
-function generatedSecretValue(
-  value: unknown,
-  label: string,
-): ApplicationGeneratedSecretValue {
-  const contract = requiredObject(value, label);
-  if (contract.kind === "publicLiteral") {
-    return {
-      kind: "publicLiteral",
-      value: requiredString(contract.value, `${label}.value`),
-    };
-  }
-  if (
-    contract.kind === "random" &&
-    contract.encoding === "base64url" &&
-    typeof contract.bytes === "number" &&
-    Number.isInteger(contract.bytes)
-  ) {
-    return {
-      kind: "random",
-      bytes: contract.bytes,
-      encoding: "base64url",
-    };
-  }
-  throw new Error(`${label} has an unsupported generated value contract.`);
-}
-
-function requiredObject(
-  value: unknown,
-  label: string,
-): DeploymentJsonObject {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object.`);
-  }
-  return value as DeploymentJsonObject;
-}
-
-function requiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || !value.trim()) {
-    throw new Error(`${label} must be a non-empty string.`);
-  }
-  return value;
 }

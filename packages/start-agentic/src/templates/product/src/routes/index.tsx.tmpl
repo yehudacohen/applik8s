@@ -1,0 +1,51 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { type FormEvent, useState } from 'react';
+import { Note, NoteList } from '../application';
+
+export const Route = createFileRoute('/')({
+  loader: () => NoteList({}).preload(),
+  component: NotesHome,
+});
+
+function NotesHome() {
+  const notes = NoteList({}).useQuery();
+  const createNote = Note.create.useMutation();
+  const [body, setBody] = useState('');
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await createNote({ body });
+    setBody('');
+    await notes.refresh();
+  }
+
+  return (
+    <main>
+      <p className="eyebrow">Applik8s Agentic Start</p>
+      <h1>Notes</h1>
+      <p>
+        This authenticated model, reactive view, typed command, and agent tool
+        share one application declaration.
+      </p>
+      <form onSubmit={submit}>
+        <label htmlFor="note-body">Note</label>
+        <textarea
+          id="note-body"
+          value={body}
+          onChange={(event) => setBody(event.currentTarget.value)}
+        />
+        <button type="submit" disabled={!body.trim() || createNote.pending}>
+          {createNote.pending ? 'Saving…' : 'Save note'}
+        </button>
+      </form>
+      <section aria-label="Notes">
+        {notes.data?.map((note) => (
+          <article key={note.id}>
+            <p>{note.body}</p>
+            <small>{note.createdAt}</small>
+          </article>
+        ))}
+      </section>
+    </main>
+  );
+}

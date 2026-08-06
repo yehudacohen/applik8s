@@ -1,3 +1,4 @@
+// typecast-file-boundary: provider-neutral workflow runs preserve output/error generics across runtime registration and validated reference hydration.
 import type { ApplicationWorkflowEngineProvider } from './application-providers.js';
 
 export interface ApplicationWorkflowInvocationMetadata {
@@ -58,14 +59,88 @@ export class ApplicationWorkflowObservationError extends Error {
   }
 }
 
-export interface ApplicationWorkflowRun<
+export type ApplicationWorkflowPhase =
+  | 'Admitted'
+  | 'Running'
+  | 'Succeeded'
+  | 'Failed'
+  | 'Cancelled'
+  | 'TimedOut';
+
+export interface ApplicationWorkflowExecutionReference {
+  readonly provider: 'workflow';
+  readonly workflow: string;
+  readonly run: string;
+}
+
+export interface ApplicationWorkflowExecutionFailure {
+  readonly code: string;
+  readonly message: string;
+  readonly retryable: boolean;
+}
+
+export interface ApplicationWorkflowExecutionObservation<
+  TResult extends object,
+  TProgress = unknown,
+> {
+  readonly reference: ApplicationWorkflowExecutionReference;
+  readonly workflowRevision: string;
+  readonly phase: ApplicationWorkflowPhase;
+  readonly progress?: TProgress;
+  readonly result?: TResult;
+  readonly error?: ApplicationWorkflowExecutionFailure;
+  readonly admittedAt: string;
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
+}
+
+export interface ApplicationWorkflowProviderObservation<
+  TResult extends object,
+  TProgress = unknown,
+> {
+  readonly phase: ApplicationWorkflowPhase;
+  readonly progress?: TProgress;
+  readonly result?: TResult;
+  readonly error?: ApplicationWorkflowExecutionFailure;
+  readonly admittedAt: string;
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
+}
+
+export interface ApplicationWorkflowProviderRun<
   TOutput extends object,
   TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
 > {
   readonly id: string;
   readonly __errors?: TErrors;
+  /** @internal Enables resource tracking to adopt an admitted run after restart. */
+  readonly __idempotencyKey?: string;
   result(options?: ApplicationWorkflowResultOptions): Promise<TOutput>;
+  observe?(
+    options?: ApplicationWorkflowResultOptions,
+  ): Promise<ApplicationWorkflowProviderObservation<TOutput>>;
   cancel(options?: Omit<ApplicationWorkflowResultOptions, 'pollIntervalMs'>): Promise<void>;
+  /** Internal tracking bridge for superseding a previously persisted run. */
+  __cancelReference?(
+    runId: string,
+    options?: Omit<ApplicationWorkflowResultOptions, 'pollIntervalMs'>,
+  ): Promise<void>;
+}
+
+export interface ApplicationWorkflowRun<
+  TOutput extends object,
+  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
+> extends ApplicationWorkflowProviderRun<TOutput, TErrors> {
+  readonly reference: ApplicationWorkflowExecutionReference;
+  readonly workflowRevision: string;
+  observe(
+    options?: ApplicationWorkflowResultOptions,
+  ): Promise<ApplicationWorkflowExecutionObservation<TOutput>>;
+  /** @internal Used by job.track(..., { onGenerationChange: "cancel" }). */
+  readonly __cancelReference?: (
+    runId: string,
+    options?: Omit<ApplicationWorkflowResultOptions, 'pollIntervalMs'>,
+  ) => Promise<void>;
 }
 
 export interface ApplicationWorkflowScheduleSpec<TInput extends object> {
@@ -86,7 +161,7 @@ export interface ApplicationWorkflowScheduleResult {
 
 export interface ApplicationWorkflowRuntime {
   run<TInput extends object, TOutput extends object>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
-  start<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput, TErrors>>;
+  start<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>>(contract: string, input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowProviderRun<TOutput, TErrors>>;
   schedule<TInput extends object>(contract: string, input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata): Promise<{ readonly id: string }>;
   /** Converges one application-owned recurring schedule without exposing provider APIs to domain code. */
   reconcileSchedule<TInput extends object>(contract: string, schedule: ApplicationWorkflowScheduleSpec<TInput>, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowScheduleResult>;
@@ -97,13 +172,41 @@ export type ApplicationWorkflowRuntimeFactory = (provider: ApplicationWorkflowEn
 
 let workflowRuntimeFactory: ApplicationWorkflowRuntimeFactory = async (provider) => {
   if (provider.kind !== 'hatchet') throw new Error(`Unsupported WorkflowEngine provider ${String(Reflect.get(provider, 'kind'))}.`);
-  // static-import-exception: keep the optional Hatchet SDK adapter outside applications that never invoke workflows.
-  const runtime = await import('@applik8s/runtime-hatchet');
+  // Composition evaluation bundles the application graph, and a literal
+  // dynamic import makes esbuild eagerly include the optional Hatchet adapter
+  // and SDK even for applications with no workflows.
+  // static-import-exception: computed provider import preserves that runtime-only boundary.
+  const importProvider = (specifier: string) => import(specifier);
+  const runtime = await importProvider('@applik8s/runtime-hatchet') as typeof import('@applik8s/runtime-hatchet');
   return runtime.createHatchetWorkflowRuntime(provider);
 };
+const workflowRuntimeResolvers: Array<() => ApplicationWorkflowRuntime | undefined> = [];
 
 export function applicationWorkflowRuntime(provider: ApplicationWorkflowEngineProvider): Promise<ApplicationWorkflowRuntime> {
+  for (let index = workflowRuntimeResolvers.length - 1; index >= 0; index -= 1) {
+    const runtime = workflowRuntimeResolvers[index]?.();
+    if (runtime) return Promise.resolve(runtime);
+  }
+  const injected = Reflect.get(
+    globalThis,
+    Symbol.for('applik8s.workflowRuntimeResolver'),
+  );
+  if (typeof injected === 'function') {
+    const runtime = injected();
+    if (runtime) return Promise.resolve(runtime as ApplicationWorkflowRuntime);
+  }
   return workflowRuntimeFactory(provider);
+}
+
+/** Installs an execution-scoped workflow runtime resolver for generated durable workers. */
+export function installApplicationWorkflowRuntimeResolver(
+  resolver: () => ApplicationWorkflowRuntime | undefined,
+): () => void {
+  workflowRuntimeResolvers.push(resolver);
+  return () => {
+    const index = workflowRuntimeResolvers.lastIndexOf(resolver);
+    if (index >= 0) workflowRuntimeResolvers.splice(index, 1);
+  };
 }
 
 /** Testing/integration seam; production applications use the selected WorkflowEngine provider. */

@@ -1,0 +1,39 @@
+import { type } from 'arktype';
+import { application } from '../app';
+
+const PublicAssistantInput = type({
+  question: 'string > 0',
+});
+const PublicAssistantOutput = type({
+  answer: 'string',
+  source: "'public-onboarding'",
+});
+
+const publicApi = application.http('public-assistant', {
+  replicas: 1,
+  maxRequestBodyBytes: 8_192,
+  mutationRateLimit: { maxRequests: 20, windowSeconds: 60 },
+});
+
+/**
+ * Deliberately public and deliberately capability-free. It cannot see the
+ * authenticated session, trusted workspace, private models, memory, or tools.
+ */
+export const PublicAssistant = publicApi.post(
+  'ask',
+  '/ask',
+  {
+    input: PublicAssistantInput,
+    output: PublicAssistantOutput,
+  },
+  async function answerPublicQuestion(request) {
+    const question = request.input.question.trim().toLowerCase();
+    const answer = question.includes('deploy')
+      ? 'Use bun run plan first, then bun run deploy. Starter is explicitly non-production.'
+      : question.includes('workspace')
+        ? 'Sign in before creating or selecting a private workspace.'
+        : 'This public assistant explains onboarding only. Sign in for private research, tools, and durable memory.';
+    return { answer, source: 'public-onboarding' };
+  },
+);
+PublicAssistant.public();

@@ -8,6 +8,7 @@ import type {
   ApplicationGrantRequestRecord,
   ApplicationGrantReservation,
   ApplicationOperationCatalog,
+  ApplicationOperationId,
   ApplicationOutcomeDefinition,
   ApplicationPermissionRecord,
   ApplicationRevocationTombstone,
@@ -62,6 +63,8 @@ export const applicationAuthorityPostgresSchemaStatements = [
     occurred_at timestamptz NOT NULL,
     PRIMARY KEY (application, id)
   )`,
+  `CREATE INDEX IF NOT EXISTS applik8s_authority_audit_occurred_at_idx
+   ON applik8s_authority_audit (application, occurred_at)`,
   `CREATE TABLE IF NOT EXISTS applik8s_operation_catalogs (
     application text NOT NULL,
     revision text NOT NULL,
@@ -74,8 +77,11 @@ export const applicationAuthorityPostgresSchemaStatements = [
     revision text NOT NULL,
     kind text NOT NULL,
     reference_id text NOT NULL,
+    operation_ids jsonb NOT NULL DEFAULT '[]'::jsonb,
     PRIMARY KEY (application, revision, kind, reference_id)
   )`,
+  `ALTER TABLE applik8s_operation_catalog_references
+   ADD COLUMN IF NOT EXISTS operation_ids jsonb NOT NULL DEFAULT '[]'::jsonb`,
 ] as const;
 
 export async function prepareApplicationAuthorityPostgres(sql: ApplicationAuthorityPostgresSql): Promise<void> {
@@ -166,13 +172,15 @@ export class PostgresApplicationAuthorityRepository implements ApplicationAuthor
     revision: string,
     kind: 'grant' | 'envelope' | 'workflow' | 'session',
     referenceId: string,
+    operationIds: readonly ApplicationOperationId[] = [],
   ): Promise<void> {
     await this.#mutate(async (sql) => {
       await sql.unsafe(
-        `INSERT INTO applik8s_operation_catalog_references (application, revision, kind, reference_id)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT DO NOTHING`,
-        [this.#application, revision, kind, referenceId],
+        `INSERT INTO applik8s_operation_catalog_references (application, revision, kind, reference_id, operation_ids)
+         VALUES ($1, $2, $3, $4, $5::text::jsonb)
+         ON CONFLICT (application, revision, kind, reference_id)
+         DO UPDATE SET operation_ids = EXCLUDED.operation_ids`,
+        [this.#application, revision, kind, referenceId, jsonParameter(sql, [...new Set(operationIds)].sort())],
       );
     });
   }
@@ -195,11 +203,10 @@ export class PostgresApplicationAuthorityRepository implements ApplicationAuthor
     await this.#mutate(async (sql) => {
       await sql.unsafe(
         `INSERT INTO applik8s_authority_audit (application, id, document, occurred_at)
-         VALUES ($1, $2, $3::jsonb, $4::timestamptz)
+         VALUES ($1, $2, $3::text::jsonb, $4::timestamptz)
          ON CONFLICT (application, id) DO NOTHING`,
         [this.#application, event.id, jsonParameter(sql, event), event.occurredAt],
       );
-      await bumpRevision(sql, this.#application);
     });
   }
 
@@ -216,7 +223,7 @@ export class PostgresApplicationAuthorityRepository implements ApplicationAuthor
     await this.#mutate(async (sql) => {
       await sql.unsafe(
         `INSERT INTO applik8s_authority_records (application, kind, id, document, updated_at)
-         VALUES ($1, $2, $3, $4::jsonb, now())
+         VALUES ($1, $2, $3, $4::text::jsonb, now())
          ON CONFLICT (application, kind, id)
          DO UPDATE SET document = EXCLUDED.document, updated_at = now()`,
         [this.#application, kind, record.id, jsonParameter(sql, record)],
@@ -279,7 +286,7 @@ export class PostgresApplicationOperationCatalogRepository implements Applicatio
     await this.#mutate(catalog.application, async (sql) => {
       await sql.unsafe(
         `INSERT INTO applik8s_operation_catalogs (application, revision, document, updated_at)
-         VALUES ($1, $2, $3::jsonb, now())
+         VALUES ($1, $2, $3::text::jsonb, now())
          ON CONFLICT (application, revision)
          DO UPDATE SET document = EXCLUDED.document, updated_at = now()`,
         [catalog.application, catalog.revision, jsonParameter(sql, catalog)],
@@ -289,19 +296,117 @@ export class PostgresApplicationOperationCatalogRepository implements Applicatio
 
   async references(application: string, revision: string): Promise<ApplicationCatalogReferenceSnapshot> {
     const rows = await this.#current().unsafe(
-      `SELECT kind, reference_id
+      `SELECT kind, reference_id, operation_ids
        FROM applik8s_operation_catalog_references
        WHERE application = $1 AND revision = $2
        ORDER BY kind, reference_id`,
       [application, revision],
     );
     const values = (kind: string) => rows.filter((row) => row.kind === kind).map((row) => String(row.reference_id));
+    const operationIdsByReference = Object.fromEntries(rows.map((row) => [
+      `${String(row.kind)}:${String(row.reference_id)}`,
+      stringArrayDocument(row.operation_ids),
+    ]));
     return {
       grantIds: values('grant'),
       envelopeIds: values('envelope'),
       workflowIds: values('workflow'),
       sessionIds: values('session'),
+      operationIdsByReference,
     };
+  }
+
+  /**
+   * Repairs references written by command runtimes released before terminal
+   * catalog pins were explicitly discharged. A terminal command result is the
+   * durable proof that its envelope can no longer resume execution.
+   */
+  async pruneTerminalCommandEnvelopeReferences(
+    application: string,
+    revision: string,
+  ): Promise<readonly string[]> {
+    await this.#current().unsafe(
+      `UPDATE applik8s_operation_catalog_references AS reference
+       SET operation_ids = authority.document->'operationIds'
+       FROM applik8s_authority_records AS authority
+       WHERE reference.application = $1
+         AND reference.revision = $2
+         AND reference.kind = 'grant'
+         AND reference.operation_ids = '[]'::jsonb
+         AND authority.application = reference.application
+         AND authority.kind = 'grant'
+         AND authority.id = reference.reference_id
+         AND jsonb_typeof(authority.document->'operationIds') = 'array'`,
+      [application, revision],
+    );
+    const tables = await this.#current().unsafe(
+      `SELECT
+         to_regclass('applik8s_command_admissions') AS admissions,
+         to_regclass('applik8s_command_results') AS results`,
+    );
+    if (!tables[0]?.admissions) return [];
+    await this.#current().unsafe(
+      `UPDATE applik8s_operation_catalog_references AS reference
+       SET operation_ids = jsonb_build_array(
+         (
+           CASE
+             WHEN jsonb_typeof(admission.authorization_receipt) = 'object'
+               THEN admission.authorization_receipt
+             WHEN jsonb_typeof(admission.authorization_receipt) = 'string'
+               THEN (admission.authorization_receipt #>> '{}')::jsonb
+             ELSE '{}'::jsonb
+           END
+         )->>'operationId'
+       )
+       FROM applik8s_command_admissions AS admission
+       WHERE reference.application = $1
+         AND reference.revision = $2
+         AND reference.kind = 'envelope'
+         AND reference.operation_ids = '[]'::jsonb
+         AND admission.command_id = reference.reference_id
+         AND (
+           CASE
+             WHEN jsonb_typeof(admission.authorization_receipt) = 'object'
+               THEN admission.authorization_receipt
+             WHEN jsonb_typeof(admission.authorization_receipt) = 'string'
+               THEN (admission.authorization_receipt #>> '{}')::jsonb
+             ELSE '{}'::jsonb
+           END
+         )->>'application' = reference.application
+         AND (
+           CASE
+             WHEN jsonb_typeof(admission.authorization_receipt) = 'object'
+               THEN admission.authorization_receipt
+             WHEN jsonb_typeof(admission.authorization_receipt) = 'string'
+               THEN (admission.authorization_receipt #>> '{}')::jsonb
+             ELSE '{}'::jsonb
+           END
+         )->>'operationId' IS NOT NULL`,
+      [application, revision],
+    );
+    if (!tables[0]?.results) return [];
+    const rows = await this.#current().unsafe(
+      `DELETE FROM applik8s_operation_catalog_references AS reference
+       USING applik8s_command_admissions AS admission,
+             applik8s_command_results AS result
+       WHERE reference.application = $1
+         AND reference.revision = $2
+         AND reference.kind = 'envelope'
+         AND admission.command_id = reference.reference_id
+         AND (
+           CASE
+             WHEN jsonb_typeof(admission.authorization_receipt) = 'object'
+               THEN admission.authorization_receipt
+             WHEN jsonb_typeof(admission.authorization_receipt) = 'string'
+               THEN (admission.authorization_receipt #>> '{}')::jsonb
+             ELSE '{}'::jsonb
+           END
+         )->>'application' = reference.application
+         AND result.scope = admission.scope
+       RETURNING reference.reference_id`,
+      [application, revision],
+    );
+    return rows.map((row) => String(row.reference_id));
   }
 
   async putReference(
@@ -309,13 +414,15 @@ export class PostgresApplicationOperationCatalogRepository implements Applicatio
     revision: string,
     kind: 'grant' | 'envelope' | 'workflow' | 'session',
     referenceId: string,
+    operationIds: readonly ApplicationOperationId[] = [],
   ): Promise<void> {
     await this.#mutate(application, async (sql) => {
       await sql.unsafe(
-        `INSERT INTO applik8s_operation_catalog_references (application, revision, kind, reference_id)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT DO NOTHING`,
-        [application, revision, kind, referenceId],
+        `INSERT INTO applik8s_operation_catalog_references (application, revision, kind, reference_id, operation_ids)
+         VALUES ($1, $2, $3, $4, $5::text::jsonb)
+         ON CONFLICT (application, revision, kind, reference_id)
+         DO UPDATE SET operation_ids = EXCLUDED.operation_ids`,
+        [application, revision, kind, referenceId, jsonParameter(sql, [...new Set(operationIds)].sort())],
       );
     });
   }
@@ -383,10 +490,25 @@ function records<T extends AuthorityRecord>(values: ReadonlyMap<string, Authorit
   return (values.get(kind) ?? []) as unknown as readonly T[];
 }
 
-function jsonParameter(sql: ApplicationAuthorityPostgresTransaction, value: unknown): unknown {
-  return sql.json ? sql.json(value) : JSON.stringify(value);
+function jsonParameter(
+  _sql: ApplicationAuthorityPostgresTransaction,
+  value: unknown,
+): string {
+  // Every call site forces this canonical JSON text through text before
+  // jsonb. That avoids driver-side double encoding while keeping the
+  // repository boundary free of adapter-branded parameter wrappers across
+  // separately bundled application transaction modules.
+  return JSON.stringify(value);
 }
 
 function jsonDocument<T>(value: unknown): T {
   return (typeof value === 'string' ? JSON.parse(value) : value) as T;
+}
+
+function stringArrayDocument(value: unknown): readonly ApplicationOperationId[] {
+  const parsed: unknown = typeof value === 'string' ? JSON.parse(value) : value;
+  if (!Array.isArray(parsed) || parsed.some((entry) => typeof entry !== 'string')) {
+    throw new Error('PostgreSQL catalog reference operation_ids must be a JSON string array.');
+  }
+  return parsed as ApplicationOperationId[];
 }

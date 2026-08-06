@@ -1,3 +1,4 @@
+// typecast-file-boundary: Signed operation envelopes are parsed and validated before their typed fields are consumed.
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export function internalTransportSecret(value: string): string {

@@ -1,21 +1,50 @@
+// typecast-file-boundary: compiler-discovered module exports and serialized composition metadata are discriminator-checked before typed planning.
 import { rmSync } from 'node:fs';
-import { mkdir, readFile } from 'node:fs/promises';
-import { dirname, extname, join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { inspect } from 'node:util';
 
 import type { Diagnostic, OperatorDefinition, Result } from '@applik8s/core';
-import type { Plugin } from 'esbuild';
 import { build } from 'esbuild';
-import ts from 'typescript';
 
 import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import type { CompileResult } from '../interfaces.js';
-import { decorateApplicationCallbackArguments } from './entrypoint-application-callbacks.js';
+import { handlerSourceMetadataPlugin } from './entrypoint-handler-instrumentation.js';
+
+export {
+  applicationCallbackModuleIsInstrumentable,
+  applicationPackageOwnsModule,
+  instrumentApplicationCallbackRegistrations,
+} from './entrypoint-handler-instrumentation.js';
 
 export interface EntrypointExports {
   readonly operators: readonly OperatorDefinition[];
   readonly typeKroCompositions: readonly TypeKroCompositionExport[];
+  readonly applicationOperations: readonly EntrypointApplicationOperationExport[];
+  readonly applicationModels: readonly EntrypointApplicationModelExport[];
+  readonly applicationSignals: readonly EntrypointApplicationSignalExport[];
+  readonly applicationAgents: readonly EntrypointApplicationAgentExport[];
+}
+
+export interface EntrypointApplicationOperationExport {
+  readonly name: string;
+  readonly operationId: string;
+}
+
+export interface EntrypointApplicationModelExport {
+  readonly name: string;
+  readonly modelName: string;
+}
+
+export interface EntrypointApplicationSignalExport {
+  readonly name: string;
+  readonly signalId: string;
+}
+
+export interface EntrypointApplicationAgentExport {
+  readonly name: string;
+  readonly agentName: string;
 }
 
 export interface TypeKroCompositionExport {
@@ -47,7 +76,10 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
         js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);",
       },
       external: ['applik8s:handler/capabilities', 'applik8s:handler/kubernetes', '@applik8s/compiler', '@applik8s/compiler/*', 'esbuild', 'typekro', 'typekro/*', '@napi-rs/lzma-*', '@oxc-parser/binding-*'],
-      plugins: [handlerSourceMetadataPlugin(), applik8sWorkspaceSourcePlugin()],
+      plugins: [
+        handlerSourceMetadataPlugin(entrypoint),
+        applik8sWorkspaceSourcePlugin(),
+      ],
     });
     const discoverySpecifier = `${pathToFileURL(discoveryBundle).href}?applik8s=${Date.now()}`;
     const discoveryEntrypointKey = Symbol.for('applik8s.discovery.entrypoint');
@@ -68,7 +100,41 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
     for (const [name, value] of Object.entries(imported)) {
       if (isExportedTypeKroComposition(value)) typeKroCompositions.push(Object.assign(value, { name }));
     }
-    return { ok: true, value: { operators, typeKroCompositions } };
+    const applicationOperations = Object.entries(imported)
+      .flatMap(([name, value]) => {
+        const operationId = exportedApplicationOperationId(value);
+        return operationId ? [{ name, operationId }] : [];
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const applicationModels = Object.entries(imported)
+      .flatMap(([name, value]) => {
+        const modelName = exportedApplicationModelName(value);
+        return modelName ? [{ name, modelName }] : [];
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const applicationSignals = Object.entries(imported)
+      .flatMap(([name, value]) => {
+        const signalId = exportedApplicationSignalId(value);
+        return signalId ? [{ name, signalId }] : [];
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    const applicationAgents = Object.entries(imported)
+      .flatMap(([name, value]) => {
+        const agentName = exportedApplicationAgentName(value);
+        return agentName ? [{ name, agentName }] : [];
+      })
+      .sort((left, right) => left.name.localeCompare(right.name));
+    return {
+      ok: true,
+      value: {
+        operators,
+        typeKroCompositions,
+        applicationOperations,
+        applicationModels,
+        applicationSignals,
+        applicationAgents,
+      },
+    };
   } catch (cause) {
     return error('BUNDLE_INVALID', cause instanceof Error ? cause.message : `Failed to discover exported entrypoint exports: ${inspect(cause)}`);
   } finally {
@@ -76,106 +142,48 @@ export async function discoverEntrypointExports(entrypoint: string): Promise<Res
   }
 }
 
-function handlerSourceMetadataPlugin(): Plugin {
-  return {
-    name: 'applik8s-handler-source-metadata',
-    setup(buildContext) {
-      buildContext.onLoad({ filter: /\.[cm]?[jt]sx?$/ }, async (args) => {
-        if (args.namespace !== 'file' || args.path.includes('/node_modules/')) return undefined;
-        const source = await readFile(args.path, 'utf8');
-        const instrumented = instrumentApplicationCallbackRegistrations(source, args.path);
-        if (instrumented === source) return undefined;
-        const extension = extname(args.path);
-        const loader = extension === '.tsx' ? 'tsx' : extension === '.jsx' ? 'jsx' : extension === '.js' || extension === '.mjs' || extension === '.cjs' ? 'js' : 'ts';
-        return { contents: instrumented, loader, resolveDir: dirname(args.path) };
-      });
-    },
-  };
+function exportedApplicationOperationId(value: unknown): string | undefined {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) return undefined;
+  const operation = Reflect.get(value, 'operation');
+  if (typeof operation !== 'object' || operation === null) return undefined;
+  const id = Reflect.get(operation, 'id');
+  const kind = Reflect.get(operation, 'kind');
+  return typeof id === 'string' && kind === 'applicationOperation' ? id : undefined;
 }
 
-/**
- * Instruments every callback-bearing authoring registrar before discovery
- * evaluates the entrypoint. Exported for a focused compiler regression test;
- * this remains an internal pipeline contract rather than public API.
- */
-export function instrumentApplicationCallbackRegistrations(source: string, sourceFile: string): string {
-  const file = ts.createSourceFile(sourceFile, source, ts.ScriptTarget.Latest, true, sourceFile.endsWith('.tsx') ? ts.ScriptKind.TSX : sourceFile.endsWith('.jsx') ? ts.ScriptKind.JSX : sourceFile.endsWith('.js') || sourceFile.endsWith('.mjs') || sourceFile.endsWith('.cjs') ? ts.ScriptKind.JS : ts.ScriptKind.TS);
-  let changed = false;
-  const transformer: ts.TransformerFactory<ts.SourceFile> = (context) => {
-    const visit: ts.Visitor = (node) => {
-      if (ts.isCallExpression(node) && isHandlerRegistrationCall(node) && node.arguments.length > 0) {
-        const decoratedArguments = node.arguments.map((argument) => decorateHandlerCandidate(argument, file, sourceFile, visit));
-        changed = true;
-        // typecast: visiting an existing call expression cannot remove its callee, but the TypeScript visitor result is Node | undefined.
-        return ts.factory.updateCallExpression(node, ts.visitNode(node.expression, visit) as ts.Expression, node.typeArguments, decoratedArguments);
-      }
-      if (ts.isCallExpression(node)) {
-        const decoratedArguments = decorateApplicationCallbackArguments(node, file, sourceFile, visit);
-        if (decoratedArguments) {
-          changed = true;
-          // typecast: visiting an existing call expression cannot remove its callee, but the TypeScript visitor result is Node | undefined.
-          return ts.factory.updateCallExpression(node, ts.visitNode(node.expression, visit) as ts.Expression, node.typeArguments, decoratedArguments);
-        }
-      }
-      return ts.visitEachChild(node, visit, context);
-    };
-    // typecast: the transformer is rooted at a SourceFile and this visitor never replaces or removes that root.
-    return (root) => ts.visitNode(root, visit) as ts.SourceFile;
-  };
-  const transformed = ts.transform(file, [transformer]);
-  try {
-    // typecast: a SourceFile transformer produces a SourceFile at index zero when given one SourceFile input.
-    return changed ? ts.createPrinter({ newLine: ts.NewLineKind.LineFeed }).printFile(transformed.transformed[0] as ts.SourceFile) : source;
-  } finally {
-    transformed.dispose();
+function exportedApplicationModelName(value: unknown): string | undefined {
+  if ((typeof value !== 'object' && typeof value !== 'function') || value === null) {
+    return undefined;
   }
+  const facet = Reflect.get(value, Symbol.for('@applik8s/model-facet'));
+  if (
+    !facet
+    || typeof facet !== 'object'
+    || Reflect.get(facet, 'kind') !== 'applicationModelFacet'
+  ) {
+    return undefined;
+  }
+  const name = Reflect.get(facet, 'name');
+  return typeof name === 'string' && name.trim() ? name : undefined;
 }
 
-function decorateHandlerCandidate(argument: ts.Expression, file: ts.SourceFile, sourceFile: string, visit: ts.Visitor): ts.Expression {
-  const position = file.getLineAndCharacterOfPosition(argument.getStart(file));
-  const candidate = ts.factory.createIdentifier('__applik8sHandlerCandidate');
-  const metadata = ts.factory.createObjectLiteralExpression([
-    ts.factory.createPropertyAssignment('file', ts.factory.createStringLiteral(sourceFile)),
-    ts.factory.createPropertyAssignment('line', ts.factory.createNumericLiteral(position.line + 1)),
-    ts.factory.createPropertyAssignment('column', ts.factory.createNumericLiteral(position.character + 1)),
-  ]);
-  const decorated = ts.factory.createCallExpression(
-    ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier('Object'), 'defineProperty'),
-    undefined,
-    [
-      candidate,
-      ts.factory.createCallExpression(ts.factory.createPropertyAccessExpression(ts.factory.createIdentifier('Symbol'), 'for'), undefined, [ts.factory.createStringLiteral('applik8s.handlerSourceModule')]),
-      ts.factory.createObjectLiteralExpression([
-        ts.factory.createPropertyAssignment('configurable', ts.factory.createTrue()),
-        ts.factory.createPropertyAssignment('value', metadata),
-      ]),
-    ],
-  );
-  const decorateIfFunction = ts.factory.createArrowFunction(
-    undefined,
-    undefined,
-    [ts.factory.createParameterDeclaration(undefined, undefined, candidate)],
-    undefined,
-    ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
-    ts.factory.createConditionalExpression(
-      ts.factory.createBinaryExpression(
-        ts.factory.createTypeOfExpression(candidate),
-        ts.factory.createToken(ts.SyntaxKind.EqualsEqualsEqualsToken),
-        ts.factory.createStringLiteral('function'),
-      ),
-      ts.factory.createToken(ts.SyntaxKind.QuestionToken),
-      decorated,
-      ts.factory.createToken(ts.SyntaxKind.ColonToken),
-      candidate,
-    ),
-  );
-  // typecast: visitNode preserves each existing call argument as an Expression; this visitor does not remove arguments.
-  return ts.factory.createCallExpression(ts.factory.createParenthesizedExpression(decorateIfFunction), undefined, [ts.visitNode(argument, visit) as ts.Expression]);
+function exportedApplicationSignalId(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  if (Reflect.get(value, 'signalKind') !== 'applicationSignal') return undefined;
+  const signal = Reflect.get(value, 'signal');
+  if (typeof signal !== 'object' || signal === null) return undefined;
+  const id = Reflect.get(signal, 'id');
+  const kind = Reflect.get(signal, 'kind');
+  return typeof id === 'string' && kind === 'applicationSignalDefinition'
+    ? id
+    : undefined;
 }
 
-function isHandlerRegistrationCall(node: ts.CallExpression): boolean {
-  if (!ts.isPropertyAccessExpression(node.expression)) return false;
-  return ['reconcile', 'created', 'updated', 'deleted', 'finalize', 'statusChanged'].includes(node.expression.name.text);
+function exportedApplicationAgentName(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  if (Reflect.get(value, 'kind') !== 'applicationAgent') return undefined;
+  const name = Reflect.get(value, 'name');
+  return typeof name === 'string' && name.trim() ? name : undefined;
 }
 
 const deferredTemporaryDirectoryCleanups = new Set<string>();

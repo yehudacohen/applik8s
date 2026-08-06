@@ -37,6 +37,11 @@ export interface ApplicationConversationStore {
     id: string,
     principalScope: string,
   ): Promise<ApplicationAIConversationRecord | undefined>;
+  getMessage(input: {
+    readonly id: string;
+    readonly conversationId: string;
+    readonly principalScope: string;
+  }): Promise<ApplicationAIMessageRecord | undefined>;
   appendMessage(input: {
     readonly conversationId: string;
     readonly principalScope: string;
@@ -55,12 +60,17 @@ export interface ApplicationConversationStore {
   startRun(
     run: ApplicationConversationRunInput,
   ): Promise<ApplicationAIProtocolRunRecord>;
+  getRun(
+    id: string,
+    principalScope: string,
+  ): Promise<ApplicationAIProtocolRunRecord | undefined>;
   transitionRun(input: {
     readonly runId: string;
     readonly principalScope: string;
     readonly from: ApplicationAIProtocolRunRecord['status'];
     readonly to: ApplicationAIProtocolRunRecord['status'];
     readonly updatedAt: string;
+    readonly terminalReason?: string;
   }): Promise<ApplicationAIProtocolRunRecord>;
   appendRunEvent(input: {
     readonly runId: string;
@@ -68,6 +78,15 @@ export interface ApplicationConversationStore {
     readonly expectedSequence: number;
     readonly event: Omit<ApplicationAIRunEventRecord, 'runId' | 'sequence'>;
   }): Promise<ApplicationAIRunEventRecord>;
+  getRunEvent(input: {
+    readonly runId: string;
+    readonly principalScope: string;
+    readonly sequence: number;
+  }): Promise<ApplicationAIRunEventRecord | undefined>;
+  getRunEventFrontier(
+    runId: string,
+    principalScope: string,
+  ): Promise<number>;
   listRunEvents(input: {
     readonly runId: string;
     readonly principalScope: string;

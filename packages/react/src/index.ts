@@ -1,4 +1,4 @@
-import type { ApplicationCommandHandle, ApplicationCommandState, ApplicationMutationHookOptions, ApplicationMutationState, ApplicationOperationContract, ApplicationQueryExternalStore, ApplicationQueryOperationState, ApplicationQuerySnapshot, ApplicationQueryState, ApplicationQuerySuspenseResult } from '@applik8s/client';
+import type { ApplicationCommandHandle, ApplicationCommandState, ApplicationMutationHookOptions, ApplicationMutationState, ApplicationOperationArguments, ApplicationOperationContract, ApplicationQueryExternalStore, ApplicationQueryOperationState, ApplicationQuerySnapshot, ApplicationQueryState, ApplicationQuerySuspenseResult } from '@applik8s/client';
 import { ApplicationCommandClient, ApplicationQueryClient, createHttpApplicationCommandTransport, createHttpApplicationQueryTransport, createHttpApplicationRuntimeTransport, installApplicationMutationHook, installApplicationOperationRuntime, installApplicationQueryHook, queryInputKey, waitForApplicationCommand } from '@applik8s/client';
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 
@@ -210,7 +210,10 @@ export function useApplicationMutation<TInput, TOutput>(
     handle ? handle.getSnapshot : () => idle,
     handle ? handle.getSnapshot : () => idle,
   );
-  const invoke = useCallback(async (input: TInput): Promise<TOutput> => {
+  const invoke = useCallback(async (...args: ApplicationOperationArguments<TInput>): Promise<TOutput> => {
+    // The conditional tuple guarantees a supplied TInput or an empty-input operation.
+    // typecast: normalize the latter to the protocol's empty object.
+    const input = (args[0] ?? {}) as TInput;
     handle?.dispose();
     const submittedAt = Date.now();
     setSubmission({ active: true, at: submittedAt });

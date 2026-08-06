@@ -26,6 +26,53 @@ export function applicationGraphStringValue(value: unknown): string | undefined 
   return undefined;
 }
 
+/** Compose literals and serialized ApplicationGraph expressions as one KRO string. */
+export function applicationGraphInterpolate(
+  ...parts: readonly unknown[]
+): string {
+  const values = parts.map(applicationGraphStringValue);
+  const expressions = values.map(applicationGraphExpression);
+  if (expressions.every((expression) => expression === undefined)) {
+    return values.map((value) => value ?? '').join('');
+  }
+  const expression = values
+    .map((value, index) => {
+      const dynamic = expressions[index];
+      return dynamic ? `string(${dynamic})` : JSON.stringify(value ?? '');
+    })
+    .join(' + ');
+  return `\${${expression}}`;
+}
+
+/**
+ * Encode graph-aware endpoint values as one JSON string expression suitable
+ * for Kubernetes environment variables. This prevents `${...}` references
+ * from becoming nested marker text after JSON serialization.
+ */
+export function applicationGraphJsonStringArray(
+  values: readonly unknown[],
+): string {
+  const strings = values.map(applicationGraphStringValue);
+  const expressions = strings.map(applicationGraphExpression);
+  if (expressions.every((expression) => expression === undefined)) {
+    return JSON.stringify(strings.map((value) => value ?? ''));
+  }
+  const parts: string[] = [JSON.stringify('["')];
+  strings.forEach((value, index) => {
+    if (index > 0) parts.push(JSON.stringify('","'));
+    const dynamic = expressions[index];
+    parts.push(dynamic ? `string(${dynamic})` : JSON.stringify(value ?? ''));
+  });
+  parts.push(JSON.stringify('"]'));
+  return `\${${parts.join(' + ')}}`;
+}
+
+function applicationGraphExpression(value: string | undefined): string | undefined {
+  return value?.startsWith('${') && value.endsWith('}')
+    ? value.slice(2, -1)
+    : undefined;
+}
+
 export function applicationGraphServiceHost(name: string, namespace: unknown): string {
   return `${name}.${applicationGraphStringValue(namespace) ?? 'default'}.svc.cluster.local`;
 }

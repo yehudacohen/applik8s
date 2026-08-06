@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-07-28",
+  "reviewedAt": "2026-08-01",
   "scope": "Nested production dependency graph of all publishable @applik8s/* packages",
   "advisories": {
     "GHSA-pw8r-6689-xvf4": {
@@ -15,6 +15,13 @@
       "severity": "critical",
       "path": "@bytecodealliance/componentize-js > @bytecodealliance/weval",
       "disposition": "No patched ComponentizeJS release exists; compile only trusted source in an isolated build environment and track the upstream archive dependency.",
+      "expires": "2026-08-31"
+    },
+    "GHSA-h39j-r5qq-r9mm": {
+      "dependency": "decompress",
+      "severity": "moderate",
+      "path": "@bytecodealliance/componentize-js > @bytecodealliance/weval",
+      "disposition": "No patched decompress, weval, or ComponentizeJS release exists. Weval downloads only its fixed Bytecode Alliance release asset, but the archive is not integrity-pinned; keep compiler builds isolated, never accept an untrusted archive source, and replace this dependency path when upstream publishes a fix.",
       "expires": "2026-08-31"
     },
     "GHSA-mh29-5h37-fv8m": {

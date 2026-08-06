@@ -9,6 +9,13 @@
 **Target:** The post-v0.6 flagship and the pressure test for the next Applik8s application-composition phase.
 Version assignment follows API review; this RFP does not authorize a release tag.
 
+> **v0.7 syntax authority:** The product, topology, scaling, recovery, and acceptance requirements in
+> this document remain active. Public execution examples using `Stream.process(...)`, dependency maps,
+> callback-valued query `run`, or split projection options are historical sketches. The accepted
+> authoring grammar is owned by
+> [`rfp-v07-function-native-execution.md`](rfp-v07-function-native-execution.md), and the executable
+> `examples/chirp-start` source is the current conformance target.
+
 ### Implementation snapshot
 
 The first executable increment now lives in `examples/chirp-start`. It proves the architecture rather than
@@ -210,13 +217,12 @@ The source-level naming rules are:
 - committed lifecycle work uses `Model.on.create(...)`, `Model.on.update(...)`, and `Model.on.delete(...)`;
 - publishing, following, liking, reporting, and similar CRUD-shaped facts use the corresponding model
   lifecycle rather than a parallel custom action;
-- a genuinely non-CRUD operation uses a direct domain method or a task/workflow and is declared exactly once;
-- that exceptional declaration derives both `Model.<verb>(...)` and the typed committed
-  `Model.on.<verb>(...)` completion event; completion is not a second event path;
+- genuinely non-CRUD atomic behavior is an ordinary function containing `Model.edit(...)`, referenced
+  by the route, workflow step, tool, or reactive trigger that supplies its execution metadata;
 - direct methods are the ordinary API; `$model`, command identifiers, and transport receipts are advanced
   compatibility and observability surfaces;
-- `$model.on.action(...)`, `$model.on.command(...)`, and stringly `Model.action('create', ...)` do not appear
-  in ordinary application code; existing command/action APIs remain migration-only compatibility surfaces;
+- `$model.on.action(...)`, `$model.on.command(...)`, and stringly `Model.action(...)` are absent from
+  public types and runtime objects rather than retained as compatibility surfaces;
 - `Stream.process(...)` declares backend work;
 - `Stream.project(...)` or `app.projection(...)` declares derived state;
 - `Model.view(...)` and `app.query(...)` declare reads;
@@ -1236,13 +1242,18 @@ authorization and audit contracts still evaluate that principal.
 ### Generic structured generation
 
 ```ts
-const GeneratePost = chirp.task('generate-post', {
-  input: GeneratePostInput,
-  output: GeneratedPost,
-  requires: [StructuredGeneration],
-  retry: { maxAttempts: 3 },
-  timeout: '45s',
-}, async (input, context) => {
+const GeneratePost = chirp.workflow(
+  'generate-post',
+  {
+    input: GeneratePostInput,
+    output: GeneratedPost,
+  },
+  {
+    requires: [StructuredGeneration],
+    retries: 3,
+    executionTimeoutSeconds: 45,
+  },
+  async (input, context) => {
   const generated = await context.use(StructuredGeneration).generate({
     profile: input.profile,
     input: input.context,
@@ -1252,7 +1263,8 @@ const GeneratePost = chirp.task('generate-post', {
   });
   // The calling workflow records generated.usage in its durable run model.
   return generated.value;
-});
+  },
+);
 ```
 
 The interface includes schema-bound output, model/profile selection, timeout, retry classification,
@@ -1602,7 +1614,7 @@ profile:
 - prototype `Stream.process(...)`, `Stream.project(...)`, and provider-selected query authority;
 - prototype `app.objectStore(...)` against a fake S3 provider;
 - prototype `IdentityProvider` plus `Authorization` with two interchangeable adapters;
-- decide compatibility aliases for `Model.command(...)` and current `app.subscription(...)` behavior;
+- remove `Model.command(...)` and decide only the remaining `app.subscription(...)` compatibility behavior;
 - run module-boundary and browser-bundle review.
 
 Gate: one minimal fixture demonstrates every proposed call shape without hidden globals, raw CEL, vendor

@@ -1,3 +1,4 @@
+// typecast-file-boundary: Test fixtures intentionally inspect generated manifests after asserting their structural shape.
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -23,6 +24,7 @@ function fixture(options: {
     kind: 'gateway' as const,
     name,
     stability: 'stable' as const,
+    visibility: 'public' as const,
     queries: [],
     commands: options.exposeCommand === false
       ? []
@@ -345,8 +347,10 @@ describe('application MCP placement routing', () => {
     ]);
     expect(generated).toContain('createPostgresApplicationMcpStores');
     expect(generated).toContain('createApplicationOAuthResourceAdmission');
+    expect(generated).toContain('applicationOAuthIdentityReference');
     expect(generated).toContain('OryHydraOAuthAdapter');
     expect(generated).toContain('createApplicationMcpPlacementExecutor');
+    expect(generated).toContain('path: "/__applik8s/mcp/public"');
     expect(generated).toContain('x-applik8s-internal-invocation');
     expect(generated).not.toContain('created: true');
     expect(generated).not.toContain('Authorization:');
@@ -355,6 +359,66 @@ describe('application MCP placement routing', () => {
     );
     expect(JSON.stringify(deployment)).toContain(
       'http://chirp-identity-hydra-admin.chirp-system.svc:4445',
+    );
+  });
+
+  it('materializes MCP only for profile branches with OAuth-capable identity infrastructure', async () => {
+    const { graph, catalog } = fixture();
+    const profiledGraph: ApplicationGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) =>
+        node.kind === 'provider' && node.interface === 'IdentityProvider'
+          ? {
+              ...node,
+              implementation: 'application-provider-selection',
+              config: {
+                ...node.config,
+                identityInfrastructure: {
+                  kind: 'application-provider-selection',
+                  selector: 'schema.spec.profile',
+                  cases: {
+                    starter: null,
+                    dedicated: {
+                      kind: 'ory',
+                      stack: 'platform',
+                      provision: true,
+                      spec: {
+                        name: 'chirp-identity',
+                        namespace: 'chirp-system',
+                      },
+                      deletionPolicy: 'retain',
+                    },
+                    external: null,
+                  },
+                  default: null,
+                },
+              },
+            }
+          : node,
+      ),
+    };
+    const [artifact] = await emitGeneratedApplicationMcpServers({
+      graph: profiledGraph,
+      operationCatalog: catalog,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-profiled-mcp-')),
+    });
+    if (!artifact) throw new Error('Expected one generated MCP artifact.');
+    for (const resource of artifact.resources) {
+      expect(resource.metadata).toMatchObject({
+        annotations: {
+          'applik8s.dev/include-when':
+            '${schema.spec.profile == "dedicated"}',
+        },
+      });
+    }
+    const deployment = artifact.resources.find(
+      (resource) => resource.kind === 'Deployment',
+    );
+    expect(JSON.stringify(deployment)).toContain(
+      'http://chirp-identity-hydra-admin.chirp-system.svc:4445',
+    );
+    expect(JSON.stringify(deployment)).toContain(
+      'http://chirp-identity-hydra-public.chirp-system.svc:4444',
     );
   });
 });

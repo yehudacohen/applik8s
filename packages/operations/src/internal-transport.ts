@@ -41,7 +41,7 @@ export interface ApplicationInternalOperationVerification {
   readonly operationId: ApplicationOperationId;
   readonly operationVersion?: string;
   readonly inputDigest: string;
-  readonly audience: string;
+  readonly audience: string | readonly string[];
   readonly now?: Date;
   readonly maximumLifetimeMs?: number;
   readonly maximumTokenBytes?: number;
@@ -165,7 +165,7 @@ function validateInvocation(
     || (expected.operationVersion
       && invocation.operationVersion !== expected.operationVersion)
     || invocation.inputDigest !== expected.inputDigest
-    || invocation.audience !== expected.audience
+    || !expectedAudiences(expected.audience).includes(invocation.audience)
     || !stable(invocation.source?.workloadId)
     || !['mcp', 'http', 'workflow', 'event', 'control-plane'].includes(
       invocation.source?.transport,
@@ -203,6 +203,12 @@ function validateInvocation(
       'The internal operation invocation does not match its authority evidence.',
     );
   }
+}
+
+function expectedAudiences(
+  audience: string | readonly string[],
+): readonly string[] {
+  return typeof audience === 'string' ? [audience] : audience;
 }
 
 export function assertApplicationInternalContextHasNoCredentials(

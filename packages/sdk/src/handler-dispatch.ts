@@ -1,3 +1,4 @@
+// typecast-file-boundary: untrusted host requests, normalized schemas, and heterogeneous handler registrations are validated before restoring authored handler generics.
 import type {
   AnyKubernetesObject,
   AnyResourceDefinition,
@@ -43,6 +44,9 @@ import type {
   ResourceReadClient,
   ResourceReadQuery,
   Result,
+  TrackableExecutionRun,
+  TrackExecutionOptions,
+  TrackedExecutionObservation,
 } from '@applik8s/core';
 import { isRunnableHandlerRegistration, type RunnableHandlerRegistration } from './runtime.js';
 
@@ -111,6 +115,7 @@ interface InvocationResult {
 
 async function invokeRunnableHandler(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport): Promise<Result<InvocationResult>> {
   const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, capabilityDescriptors, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
+  const restoreWorkflowRuntime = installWorkflowGatewayRuntime(capabilities, object);
   try {
     if (registration.handlerStyle === 'context') {
       const returned = await registration.handler(toResourceObject(object), createContext(recorder, object));
@@ -131,11 +136,14 @@ async function invokeRunnableHandler(registration: RunnableHandlerRegistration, 
     return ok({ result, plan: normalizeHandlerResult(result) });
   } catch (cause) {
     return err('HANDLER_TRAP', handlerFailureMessage(cause));
+  } finally {
+    restoreWorkflowRuntime();
   }
 }
 
 function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, object: AnyKubernetesObject, event: HandlerEventType, reconcileId: string, capabilities: CapabilityClientSet, capabilityDescriptors: Readonly<Record<string, CapabilityDescriptor>>, resources: Readonly<Record<string, Pick<AnyResourceDefinition, 'apiVersion' | 'kind' | 'plural' | 'scope'>>>, kubernetesRead?: KubernetesReadImport): Result<InvocationResult> {
   const recorder = createRecorder(toResourceObject(object), { event, reconcileId, capabilities, capabilityDescriptors, resources, ...(kubernetesRead ? { kubernetesRead } : {}) });
+  const restoreWorkflowRuntime = installWorkflowGatewayRuntime(capabilities, object);
   try {
     if (registration.handlerStyle === 'context') {
       const returned = registration.handler(toResourceObject(object), createContext(recorder, object));
@@ -162,7 +170,305 @@ function invokeRunnableHandlerSync(registration: RunnableHandlerRegistration, ob
     return ok({ result, plan: normalizeHandlerResult(result) });
   } catch (cause) {
     return err('HANDLER_TRAP', handlerFailureMessage(cause));
+  } finally {
+    restoreWorkflowRuntime();
   }
+}
+
+const applicationWorkflowRuntimeResolverSymbol = Symbol.for(
+  'applik8s.workflowRuntimeResolver',
+);
+
+interface WorkflowGatewayReference {
+  readonly id: string;
+  readonly admittedAt: string;
+}
+
+interface WorkflowGatewayObservation {
+  readonly phase: 'Admitted' | 'Running' | 'Succeeded' | 'Failed' | 'Cancelled' | 'TimedOut';
+  readonly progress?: unknown;
+  readonly result?: object;
+  readonly error?: { readonly code: string; readonly message: string; readonly retryable: boolean };
+  readonly admittedAt: string;
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
+}
+
+interface WorkflowGatewayResultOptions {
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+  readonly pollIntervalMs?: number;
+}
+
+function installWorkflowGatewayRuntime(
+  capabilities: CapabilityClientSet,
+  object: AnyKubernetesObject,
+): () => void {
+  const runtime = workflowGatewayRuntime(capabilities, object);
+  if (!runtime) return () => undefined;
+  const previous = Reflect.get(globalThis, applicationWorkflowRuntimeResolverSymbol);
+  Reflect.set(globalThis, applicationWorkflowRuntimeResolverSymbol, () => runtime);
+  return () => {
+    if (previous === undefined) {
+      Reflect.deleteProperty(globalThis, applicationWorkflowRuntimeResolverSymbol);
+    } else {
+      Reflect.set(globalThis, applicationWorkflowRuntimeResolverSymbol, previous);
+    }
+  };
+}
+
+function workflowGatewayRuntime(
+  capabilities: CapabilityClientSet,
+  object: AnyKubernetesObject,
+) {
+  const contracts = new Map<string, CapabilityClient>();
+  for (const capability of Object.values(capabilities)) {
+    const gateway = capability.descriptor.workflowGateway;
+    if (gateway?.protocol !== 'applik8s.workflow-gateway/v1alpha1') continue;
+    for (const contract of gateway.contracts) {
+      const existing = contracts.get(contract);
+      if (existing && existing !== capability) {
+        throw new Error(
+          `Workflow contract ${contract} is exposed by more than one generated workflow gateway.`,
+        );
+      }
+      contracts.set(contract, capability);
+    }
+  }
+  if (contracts.size === 0) return undefined;
+  const capabilityFor = (contract: string): CapabilityClient => {
+    const capability = contracts.get(contract);
+    if (!capability) {
+      throw new Error(
+        `Workflow ${contract} is not declared in this operator's generated workflow gateway authority.`,
+      );
+    }
+    return capability;
+  };
+  const observe = async (
+    contract: string,
+    id: string,
+    admittedAt: string,
+    options: WorkflowGatewayResultOptions = {},
+  ): Promise<WorkflowGatewayObservation> => {
+    throwIfWorkflowGatewayAborted(options.signal, id);
+    const capability = capabilityFor(contract);
+    const value = await capability.get(
+      `/v1/workflows/${encodeURIComponent(contract)}/runs/${encodeURIComponent(id)}?admittedAt=${encodeURIComponent(admittedAt)}`,
+      { ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) },
+    );
+    return workflowGatewayObservation(value, id);
+  };
+  const start = async (
+    contract: string,
+    input: object,
+    metadata?: object,
+  ) => {
+    const capability = capabilityFor(contract);
+    const idempotencyKey = typeof Reflect.get(metadata ?? {}, 'idempotencyKey') === 'string'
+      ? String(Reflect.get(metadata ?? {}, 'idempotencyKey'))
+      : undefined;
+    if (!idempotencyKey) {
+      throw new Error(
+        `Workflow ${contract}.start(...) from a resource handler requires metadata.idempotencyKey so retries adopt the same durable run.`,
+      );
+    }
+    const adopted = trackedWorkflowGatewayReference(
+      object,
+      contract,
+      idempotencyKey,
+    );
+    if (adopted) {
+      return workflowGatewayProviderRun(
+        contract,
+        adopted,
+        idempotencyKey,
+        observe,
+        capability,
+      );
+    }
+    const value = await capability.post(
+      `/v1/workflows/${encodeURIComponent(contract)}/runs`,
+      { input, metadata },
+      { idempotencyKey },
+    );
+    const reference = workflowGatewayReference(value, contract);
+    return workflowGatewayProviderRun(
+      contract,
+      reference,
+      idempotencyKey,
+      observe,
+      capability,
+    );
+  };
+  return {
+    async run(contract: string, input: object, metadata?: object, options?: WorkflowGatewayResultOptions) {
+      const run = await start(contract, input, metadata);
+      return run.result(options);
+    },
+    start,
+    async schedule(contract: string) {
+      throw new Error(
+        `Workflow ${contract}.schedule(...) is not available from a Kubernetes reconcile handler; declare its schedule in the application graph.`,
+      );
+    },
+    async reconcileSchedule(contract: string) {
+      throw new Error(
+        `Workflow ${contract}.reconcile(...) is not available from a Kubernetes reconcile handler; declare its schedule in the application graph.`,
+      );
+    },
+    async signal(contract: string) {
+      throw new Error(
+        `Legacy workflow-run signals for ${contract} are not exposed through the resource tracking gateway; use typed signal events.`,
+      );
+    },
+  };
+}
+
+function workflowGatewayProviderRun(
+  contract: string,
+  reference: WorkflowGatewayReference,
+  idempotencyKey: string,
+  observe: (
+    contract: string,
+    id: string,
+    admittedAt: string,
+    options?: WorkflowGatewayResultOptions,
+  ) => Promise<WorkflowGatewayObservation>,
+  capability: CapabilityClient,
+) {
+  return {
+    id: reference.id,
+    __idempotencyKey: idempotencyKey,
+    result: (options?: WorkflowGatewayResultOptions) =>
+      waitForWorkflowGatewayResult(
+        () => observe(contract, reference.id, reference.admittedAt, options),
+        reference.id,
+        options,
+      ),
+    observe: (options?: WorkflowGatewayResultOptions) =>
+      observe(contract, reference.id, reference.admittedAt, options),
+    cancel: async (
+      options?: Omit<WorkflowGatewayResultOptions, 'pollIntervalMs'>,
+    ) => {
+      throwIfWorkflowGatewayAborted(options?.signal, reference.id);
+      await capability.delete(
+        `/v1/workflows/${encodeURIComponent(contract)}/runs/${encodeURIComponent(reference.id)}`,
+        {
+          idempotencyKey: `cancel:${reference.id}`,
+          ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+        },
+      );
+    },
+    __cancelReference: async (
+      runId: string,
+      options?: Omit<WorkflowGatewayResultOptions, 'pollIntervalMs'>,
+    ) => {
+      throwIfWorkflowGatewayAborted(options?.signal, runId);
+      await capability.delete(
+        `/v1/workflows/${encodeURIComponent(contract)}/runs/${encodeURIComponent(runId)}`,
+        {
+          idempotencyKey: `cancel:${runId}`,
+          ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
+        },
+      );
+    },
+  };
+}
+
+function trackedWorkflowGatewayReference(
+  object: AnyKubernetesObject,
+  contract: string,
+  idempotencyKey: string,
+): WorkflowGatewayReference | undefined {
+  const framework = object.status && typeof object.status === 'object'
+    ? Reflect.get(object.status, 'applik8s')
+    : undefined;
+  const records = framework && typeof framework === 'object'
+    ? Reflect.get(framework, 'trackedExecutions')
+    : undefined;
+  if (!records || typeof records !== 'object' || Array.isArray(records)) {
+    return undefined;
+  }
+  const matches = Object.values(records).filter((candidate) =>
+    candidate
+    && typeof candidate === 'object'
+    && Reflect.get(candidate, 'resourceUid') === object.metadata.uid
+    && Reflect.get(candidate, 'workflow') === contract
+    && Reflect.get(candidate, 'idempotencyKey') === idempotencyKey
+    && typeof Reflect.get(candidate, 'run') === 'string'
+    && typeof Reflect.get(candidate, 'admittedAt') === 'string'
+  );
+  if (matches.length > 1) {
+    throw new Error(
+      `Workflow ${contract}.start(...) found multiple tracked runs for idempotency key ${JSON.stringify(idempotencyKey)}.`,
+    );
+  }
+  const match = matches[0];
+  return match
+    ? {
+        id: String(Reflect.get(match, 'run')),
+        admittedAt: String(Reflect.get(match, 'admittedAt')),
+      }
+    : undefined;
+}
+
+function workflowGatewayReference(value: unknown, contract: string): WorkflowGatewayReference {
+  if (!value || typeof value !== 'object') {
+    throw new Error(`Workflow gateway returned an invalid start response for ${contract}.`);
+  }
+  const id = Reflect.get(value, 'id');
+  const admittedAt = Reflect.get(value, 'admittedAt');
+  if (typeof id !== 'string' || id.length === 0 || typeof admittedAt !== 'string') {
+    throw new Error(`Workflow gateway returned an invalid start response for ${contract}.`);
+  }
+  return { id, admittedAt };
+}
+
+function workflowGatewayObservation(value: unknown, runId: string): WorkflowGatewayObservation {
+  if (!value || typeof value !== 'object') {
+    throw new Error(`Workflow gateway returned an invalid observation for ${runId}.`);
+  }
+  const phase = Reflect.get(value, 'phase');
+  const admittedAt = Reflect.get(value, 'admittedAt');
+  if (
+    !new Set(['Admitted', 'Running', 'Succeeded', 'Failed', 'Cancelled', 'TimedOut']).has(String(phase))
+    || typeof admittedAt !== 'string'
+  ) {
+    throw new Error(`Workflow gateway returned an invalid observation for ${runId}.`);
+  }
+  // typecast: phase and required timestamps are checked above; the private
+  // gateway emits the remaining bounded JSON observation fields.
+  return value as WorkflowGatewayObservation;
+}
+
+async function waitForWorkflowGatewayResult(
+  read: () => Promise<WorkflowGatewayObservation>,
+  runId: string,
+  options: WorkflowGatewayResultOptions = {},
+): Promise<object> {
+  const startedAt = Date.now();
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const pollIntervalMs = options.pollIntervalMs ?? 250;
+  while (true) {
+    throwIfWorkflowGatewayAborted(options.signal, runId);
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new Error(`Timed out observing workflow run ${runId}.`);
+    }
+    const observation = await read();
+    if (observation.phase === 'Succeeded') return observation.result ?? {};
+    if (observation.phase === 'Failed') {
+      throw new Error(observation.error?.message ?? `Workflow run ${runId} failed.`);
+    }
+    if (observation.phase === 'Cancelled' || observation.phase === 'TimedOut') {
+      throw new Error(`Workflow run ${runId} ended in phase ${observation.phase}.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+}
+
+function throwIfWorkflowGatewayAborted(signal: AbortSignal | undefined, runId: string): void {
+  if (signal?.aborted) throw new Error(`Workflow observation for ${runId} was cancelled.`);
 }
 
 function handlerFailureMessage(cause: unknown): string {
@@ -373,7 +679,7 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
   let requeue: RequeuePolicy | undefined;
   // typecast: an absent Kubernetes status is represented as an empty draft for the resource-specific status type.
   const status = cloneJson((object.status ?? {}) as TStatus);
-  let statusSnapshot = JSON.stringify(status);
+  let statusSnapshot = canonicalJson(status);
 
   const k8s = {
     Job: (config: KubernetesFactoryConfig) => kubernetesFactory('batch/v1', 'Job', config),
@@ -461,6 +767,24 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
       remove(finalizer: string) {
         finalizers.push({ kind: 'finalizer', operation: 'remove', finalizer });
       },
+    },
+    async track<TResult extends object, TProgress = unknown>(
+      key: string,
+      run: TrackableExecutionRun<TResult, TProgress>,
+      trackOptions: TrackExecutionOptions = {},
+    ): Promise<TrackedExecutionObservation<TResult, TProgress>> {
+      return trackExecution({
+        key,
+        run,
+        options: trackOptions,
+        object,
+        status,
+        finalizers,
+        events,
+        setRequeue(policy) {
+          requeue = policy;
+        },
+      });
     },
     apply(value: OperationPlanInput<TStatus> | OperationTarget<TStatus> | readonly OperationTarget<TStatus>[] | AnyKubernetesObject, targetOptions?: ApplyTargetOptions | OperationPlanInput<TStatus>) {
       if (isReadonlyArray(value)) {
@@ -628,9 +952,9 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
       if (deletes.length > 0) {
         result.delete = deletes;
       }
-      if (JSON.stringify(status) !== statusSnapshot) {
+      if (canonicalJson(status) !== statusSnapshot) {
         result.status = cloneJson(status);
-        statusSnapshot = JSON.stringify(status);
+        statusSnapshot = canonicalJson(status);
       }
       if (events.length > 0) {
         result.events = events;
@@ -644,6 +968,423 @@ function createRecorder<TSpec extends object, TStatus extends object>(object: Re
       return result;
     },
   };
+}
+
+const maximumTrackedResultBytes = 32 * 1_024;
+const maximumTrackedProgressBytes = 8 * 1_024;
+
+interface PersistedTrackedExecution {
+  readonly resourceUid: string;
+  readonly resourceGeneration: number;
+  readonly workflow: string;
+  readonly workflowRevision: string;
+  readonly run: string;
+  readonly idempotencyKey?: string;
+  readonly phase: TrackedExecutionObservation<object>['phase'];
+  readonly admittedAt: string;
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
+  readonly progress?: unknown;
+  readonly result?: object;
+  readonly error?: {
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: boolean;
+  };
+  readonly onGenerationChange: 'supersede' | 'cancel';
+  readonly onDelete:
+    | { readonly action: 'detach' }
+    | {
+        readonly action: 'cancel';
+        readonly timeoutMs: number;
+        readonly onTimeout: 'detach' | 'block';
+      };
+  readonly cancellationRequestedAt?: string;
+  readonly detached?: boolean;
+  readonly superseded?: {
+    readonly resourceGeneration: number;
+    readonly workflow: string;
+    readonly workflowRevision: string;
+    readonly run: string;
+    readonly phase: TrackedExecutionObservation<object>['phase'];
+    readonly supersededAt: string;
+    readonly cancellationRequested: boolean;
+  };
+}
+
+async function trackExecution<
+  TSpec extends object,
+  TStatus extends object,
+  TResult extends object,
+  TProgress,
+>(input: {
+  readonly key: string;
+  readonly run: TrackableExecutionRun<TResult, TProgress>;
+  readonly options: TrackExecutionOptions;
+  readonly object: ResourceObject<TSpec, TStatus>;
+  readonly status: TStatus;
+  readonly finalizers: FinalizerOperation[];
+  readonly events: EventOperation[];
+  readonly setRequeue: (policy: RequeuePolicy) => void;
+}): Promise<TrackedExecutionObservation<TResult, TProgress>> {
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(input.key)) {
+    throw new Error(
+      `job.track(...) key ${JSON.stringify(input.key)} must be a lowercase DNS label.`,
+    );
+  }
+  const uid = input.object.metadata.uid;
+  const generation = input.object.metadata.generation;
+  if (
+    typeof uid !== 'string'
+    || uid.length === 0
+    || !Number.isSafeInteger(generation)
+    || (generation ?? 0) < 1
+  ) {
+    throw new Error(
+      'job.track(...) requires a live Kubernetes object UID and generation.',
+    );
+  }
+  const onGenerationChange =
+    input.options.onGenerationChange ?? 'supersede';
+  const onDelete = normalizeTrackDeletePolicy(input.options.onDelete);
+  const records = trackedExecutionRecords(input.status);
+  const existing = persistedTrackedExecution(records[input.key]);
+  if (
+    existing
+    && existing.resourceUid !== uid
+  ) {
+    throw new Error(
+      `job.track(${JSON.stringify(input.key)}) status belongs to a different Kubernetes resource UID.`,
+    );
+  }
+  let superseded: PersistedTrackedExecution['superseded'];
+  if (
+    existing
+    && existing.resourceGeneration !== generation
+    && existing.run !== input.run.reference.run
+    && !terminalTrackedExecutionPhase(existing.phase)
+  ) {
+    if (onGenerationChange === 'cancel') {
+      if (!input.run.__cancelReference) {
+        throw new Error(
+          `job.track(${JSON.stringify(input.key)}) cannot cancel prior run ${existing.run}; the selected WorkflowEngine does not implement reference cancellation.`,
+        );
+      }
+      await input.run.__cancelReference(existing.run, { timeoutMs: 5_000 });
+    }
+    superseded = {
+      resourceGeneration: existing.resourceGeneration,
+      workflow: existing.workflow,
+      workflowRevision: existing.workflowRevision,
+      run: existing.run,
+      phase: existing.phase,
+      supersededAt: new Date().toISOString(),
+      cancellationRequested: onGenerationChange === 'cancel',
+    };
+    input.events.push({
+      kind: 'event',
+      type: 'Normal',
+      reason: onGenerationChange === 'cancel'
+        ? 'WorkflowGenerationCancelled'
+        : 'WorkflowGenerationSuperseded',
+      message: onGenerationChange === 'cancel'
+        ? `Workflow run ${existing.run} for generation ${existing.resourceGeneration} was asked to cancel before tracking generation ${generation}.`
+        : `Workflow run ${existing.run} for generation ${existing.resourceGeneration} was superseded by generation ${generation} and continues under workflow retention.`,
+    });
+  }
+
+  let observation = await input.run.observe({ timeoutMs: 5_000 });
+  assertTrackedObservation(input.run, observation);
+  let cancellationRequestedAt = existing?.cancellationRequestedAt;
+  let detached = false;
+  const deleting = typeof input.object.metadata.deletionTimestamp === 'string';
+  const finalizer = `tracking.applik8s.dev/${input.key}`;
+  const activeFinalizers = new Set(input.object.metadata.finalizers ?? []);
+  const addTrackingFinalizer = (): void => {
+    if (activeFinalizers.has(finalizer)) return;
+    input.finalizers.push({
+      kind: 'finalizer',
+      operation: 'add',
+      finalizer,
+    });
+    activeFinalizers.add(finalizer);
+  };
+  const removeTrackingFinalizer = (): void => {
+    if (!activeFinalizers.has(finalizer)) return;
+    input.finalizers.push({
+      kind: 'finalizer',
+      operation: 'remove',
+      finalizer,
+    });
+    activeFinalizers.delete(finalizer);
+  };
+  if (
+    onDelete.action === 'cancel'
+    && !deleting
+    && !terminalTrackedExecutionPhase(observation.phase)
+  ) {
+    addTrackingFinalizer();
+  }
+  if (
+    deleting
+    && onDelete.action === 'cancel'
+    && !terminalTrackedExecutionPhase(observation.phase)
+  ) {
+    cancellationRequestedAt ??= new Date().toISOString();
+    await input.run.cancel({ timeoutMs: Math.min(5_000, onDelete.timeoutMs) });
+    observation = await input.run.observe({ timeoutMs: 5_000 });
+    assertTrackedObservation(input.run, observation);
+    const elapsed = Date.now() - Date.parse(cancellationRequestedAt);
+    if (
+      !terminalTrackedExecutionPhase(observation.phase)
+      && elapsed >= onDelete.timeoutMs
+    ) {
+      if (onDelete.onTimeout === 'detach') {
+        detached = true;
+        removeTrackingFinalizer();
+        input.events.push({
+          kind: 'event',
+          type: 'Warning',
+          reason: 'WorkflowCancellationTimedOut',
+          message: `Workflow run ${observation.reference.run} did not cancel within ${onDelete.timeoutMs}ms and was detached.`,
+        });
+      } else {
+        input.setRequeue({
+          afterSeconds: 5,
+          reason: 'workflow cancellation is still pending',
+        });
+      }
+    }
+  }
+  if (
+    onDelete.action === 'cancel'
+    && terminalTrackedExecutionPhase(observation.phase)
+  ) {
+    removeTrackingFinalizer();
+  }
+
+  records[input.key] = persistedObservation({
+    observation,
+    resourceUid: uid,
+    resourceGeneration: generation as number,
+    ...(input.run.__idempotencyKey
+      ? { runIdempotencyKey: input.run.__idempotencyKey }
+      : {}),
+    onGenerationChange,
+    onDelete,
+    ...(cancellationRequestedAt ? { cancellationRequestedAt } : {}),
+    ...(detached ? { detached: true } : {}),
+    ...(superseded ? { superseded } : {}),
+  });
+  if (
+    !deleting
+    && !terminalTrackedExecutionPhase(observation.phase)
+  ) {
+    input.setRequeue({
+      afterSeconds: Math.max(
+        1,
+        Math.ceil(
+          parseTrackedDuration(
+            input.options.updates?.minInterval ?? '30s',
+            'updates.minInterval',
+          ) / 1_000,
+        ),
+      ),
+      reason: 'bounded workflow tracking resync',
+    });
+  }
+  return observation;
+}
+
+function normalizeTrackDeletePolicy(
+  policy: TrackExecutionOptions['onDelete'],
+): PersistedTrackedExecution['onDelete'] {
+  if (policy === undefined || policy === 'detach') {
+    return { action: 'detach' };
+  }
+  return {
+    action: 'cancel',
+    timeoutMs: parseTrackedDuration(policy.timeout, 'onDelete.timeout'),
+    onTimeout: policy.onTimeout,
+  };
+}
+
+function parseTrackedDuration(value: string, field: string): number {
+  const match = /^([1-9][0-9]*)(ms|s|m|h)$/.exec(value.trim());
+  const multiplier = match
+    ? { ms: 1, s: 1_000, m: 60_000, h: 3_600_000 }[
+        match[2] as 'ms' | 's' | 'm' | 'h'
+      ]
+    : undefined;
+  const result = match && multiplier
+    ? Number(match[1]) * multiplier
+    : Number.NaN;
+  if (!Number.isSafeInteger(result) || result < 1 || result > 24 * 3_600_000) {
+    throw new Error(
+      `job.track(...) ${field} must be a positive bounded duration no greater than 24h.`,
+    );
+  }
+  return result;
+}
+
+function trackedExecutionRecords(
+  status: object,
+): Record<string, unknown> {
+  let framework = Reflect.get(status, 'applik8s');
+  if (framework === undefined) {
+    framework = {};
+    Reflect.set(status, 'applik8s', framework);
+  }
+  if (!framework || typeof framework !== 'object' || Array.isArray(framework)) {
+    throw new Error('status.applik8s is reserved for framework state.');
+  }
+  let records = Reflect.get(framework, 'trackedExecutions');
+  if (records === undefined) {
+    records = {};
+    Reflect.set(framework, 'trackedExecutions', records);
+  }
+  if (!records || typeof records !== 'object' || Array.isArray(records)) {
+    throw new Error(
+      'status.applik8s.trackedExecutions is reserved for framework state.',
+    );
+  }
+  return records as Record<string, unknown>;
+}
+
+function persistedTrackedExecution(
+  value: unknown,
+): PersistedTrackedExecution | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const resourceUid = Reflect.get(value, 'resourceUid');
+  const resourceGeneration = Reflect.get(value, 'resourceGeneration');
+  const workflow = Reflect.get(value, 'workflow');
+  const workflowRevision = Reflect.get(value, 'workflowRevision');
+  const run = Reflect.get(value, 'run');
+  const phase = Reflect.get(value, 'phase');
+  const onGenerationChange = Reflect.get(value, 'onGenerationChange');
+  if (
+    typeof resourceUid !== 'string'
+    || !Number.isSafeInteger(resourceGeneration)
+    || typeof workflow !== 'string'
+    || typeof workflowRevision !== 'string'
+    || typeof run !== 'string'
+    || !trackedExecutionPhase(phase)
+    || (
+      onGenerationChange !== 'supersede'
+      && onGenerationChange !== 'cancel'
+    )
+  ) {
+    throw new Error(
+      'status.applik8s.trackedExecutions contains invalid canonical tracking state.',
+    );
+  }
+  return value as PersistedTrackedExecution;
+}
+
+function persistedObservation<
+  TResult extends object,
+  TProgress,
+>(input: {
+  readonly observation: TrackedExecutionObservation<TResult, TProgress>;
+  readonly resourceUid: string;
+  readonly resourceGeneration: number;
+  readonly runIdempotencyKey?: string;
+  readonly onGenerationChange: 'supersede' | 'cancel';
+  readonly onDelete: PersistedTrackedExecution['onDelete'];
+  readonly cancellationRequestedAt?: string;
+  readonly detached?: boolean;
+  readonly superseded?: PersistedTrackedExecution['superseded'];
+}): PersistedTrackedExecution {
+  const progress = boundedTrackedValue(
+    input.observation.progress,
+    maximumTrackedProgressBytes,
+    'progress',
+  );
+  const result = boundedTrackedValue(
+    input.observation.result,
+    maximumTrackedResultBytes,
+    'result',
+  );
+  return {
+    resourceUid: input.resourceUid,
+    resourceGeneration: input.resourceGeneration,
+    workflow: input.observation.reference.workflow,
+    workflowRevision: input.observation.workflowRevision,
+    run: input.observation.reference.run,
+    ...(input.runIdempotencyKey
+      ? { idempotencyKey: input.runIdempotencyKey }
+      : {}),
+    phase: input.observation.phase,
+    admittedAt: input.observation.admittedAt,
+    ...(input.observation.startedAt
+      ? { startedAt: input.observation.startedAt }
+      : {}),
+    ...(input.observation.finishedAt
+      ? { finishedAt: input.observation.finishedAt }
+      : {}),
+    ...(progress !== undefined ? { progress } : {}),
+    ...(result !== undefined ? { result: result as object } : {}),
+    ...(input.observation.error ? { error: input.observation.error } : {}),
+    onGenerationChange: input.onGenerationChange,
+    onDelete: input.onDelete,
+    ...(input.cancellationRequestedAt
+      ? { cancellationRequestedAt: input.cancellationRequestedAt }
+      : {}),
+    ...(input.detached ? { detached: true } : {}),
+    ...(input.superseded ? { superseded: input.superseded } : {}),
+  };
+}
+
+function boundedTrackedValue(
+  value: unknown,
+  maximumBytes: number,
+  field: string,
+): unknown {
+  if (value === undefined) return undefined;
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined || new TextEncoder().encode(encoded).byteLength > maximumBytes) {
+    throw new Error(
+      `job.track(...) ${field} exceeds its ${maximumBytes}-byte status bound; persist an artifact reference instead.`,
+    );
+  }
+  return cloneJson(value);
+}
+
+function assertTrackedObservation<TResult extends object, TProgress>(
+  run: TrackableExecutionRun<TResult, TProgress>,
+  observation: TrackedExecutionObservation<TResult, TProgress>,
+): void {
+  if (
+    observation.reference.provider !== 'workflow'
+    || observation.reference.workflow !== run.reference.workflow
+    || observation.reference.run !== run.reference.run
+    || observation.workflowRevision !== run.workflowRevision
+  ) {
+    throw new Error(
+      'WorkflowEngine returned an observation for a different tracked execution.',
+    );
+  }
+}
+
+function trackedExecutionPhase(
+  value: unknown,
+): value is TrackedExecutionObservation<object>['phase'] {
+  return [
+    'Admitted',
+    'Running',
+    'Succeeded',
+    'Failed',
+    'Cancelled',
+    'TimedOut',
+  ].includes(String(value));
+}
+
+function terminalTrackedExecutionPhase(
+  phase: TrackedExecutionObservation<object>['phase'],
+): boolean {
+  return ['Succeeded', 'Failed', 'Cancelled', 'TimedOut'].includes(phase);
 }
 
 type MutableHandlerResult<TStatus extends object> = {
@@ -1029,6 +1770,20 @@ function stableHash(input: string): string {
 
 function uncapitalize(value: string): string {
   return `${value.slice(0, 1).toLowerCase()}${value.slice(1)}`;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value) ?? 'null';
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalJson(entry)).join(',')}]`;
+  }
+  return `{${Object.entries(value)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
+    .join(',')}}`;
 }
 
 function cloneJson<T>(value: T): T {

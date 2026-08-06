@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -763,7 +763,7 @@ export const imagePipeline = sdk.operator({
         },
       });
 
-      expect(result.ok).toBe(true);
+      expect(result.ok, result.ok ? undefined : result.error.message).toBe(true);
       if (!result.ok) {
         return;
       }
@@ -871,7 +871,7 @@ export const imagePipeline = sdk.operator({
       expect(graph.providerBindings).toEqual([]);
       expect(graph.compatibility).toMatchObject({
         documentedInternalContracts: expect.arrayContaining(['ApplicationGraph']),
-        stablePublicApis: expect.arrayContaining(['Resource.increment', 'app.aggregate', 'app.crd', 'app.database.postgres', 'app.defaults', 'app.http', 'app.job', 'app.model', 'app.provide', 'app.reconcile', 'app.resource', 'app.schedule', 'app.server', 'provider.TransactionalDatabase', 'sdk.kubernetesComposition']),
+        stablePublicApis: expect.arrayContaining(['Resource.increment', 'Resource.on.reconcile', 'app.aggregate', 'app.crd', 'app.database.postgres', 'app.defaults', 'app.http', 'app.job', 'app.model', 'app.provide', 'app.resource', 'app.schedule', 'app.server', 'provider.TransactionalDatabase', 'sdk.kubernetesComposition']),
         experimentalSurfaces: expect.arrayContaining(['app.graph']),
         postV3Surfaces: expect.arrayContaining(['workload-movement-operator']),
         labels: expect.arrayContaining([
@@ -977,17 +977,43 @@ export const installableProof = platform;
       // never finalizer-deadlock inside the Namespace it owns. Applik8s runtime
       // graph materialization creates the application Namespace before applying an
       // installation instance.
-      expect(definition?.spec).toMatchObject({
-        resources: [expect.objectContaining({
+      const definitionResources = definition?.spec && typeof definition.spec === 'object' ? Reflect.get(definition.spec, 'resources') : undefined;
+      expect(definitionResources).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: 'applik8sEventsNatsHelmRelease',
+          externalRef: expect.objectContaining({
+            apiVersion: 'helm.toolkit.fluxcd.io/v2',
+            kind: 'HelmRelease',
+            metadata: expect.objectContaining({
+              name: 'applik8s-events',
+              namespace: 'installable-proof',
+            }),
+          }),
+        }),
+        expect.objectContaining({
+          id: 'applik8sEventsNackHelmRelease',
+          externalRef: expect.objectContaining({
+            apiVersion: 'helm.toolkit.fluxcd.io/v2',
+            kind: 'HelmRelease',
+            metadata: expect.objectContaining({
+              name: 'nack',
+              namespace: 'installable-proof',
+            }),
+          }),
+        }),
+        expect.objectContaining({
           id: 'applik8sInstallationContract',
           template: expect.objectContaining({ apiVersion: 'v1', kind: 'ConfigMap', metadata: expect.objectContaining({ name: 'installable-proof-installation-contract' }) }),
-        })],
-      });
-      const definitionResources = definition?.spec && typeof definition.spec === 'object' ? Reflect.get(definition.spec, 'resources') : undefined;
+        }),
+      ]));
       expect(definitionResources).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ template: expect.objectContaining({ kind: 'Namespace' }) }),
       ]));
-      expect(definition?.spec).toMatchObject({ schema: { status: { ready: ['$', '{false}'].join('') } } });
+      const ready = definition?.spec && typeof definition.spec === 'object'
+        ? Reflect.get(Reflect.get(Reflect.get(definition.spec, 'schema'), 'status'), 'ready')
+        : undefined;
+      expect(ready).toContain('applik8sEventsNatsHelmRelease');
+      expect(ready).toContain('applik8sEventsNackHelmRelease');
       expect(result.value.artifacts.instanceYamlPaths).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -1118,7 +1144,7 @@ export const badProviderGraph = composition;
     }
   });
 
-  it('lowers model command declarations into an inspectable self-contained Node processor workload', async () => {
+  it('rejects the removed public model command registry during application discovery', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'applik8s-command-processor-artifacts-'));
     try {
       const entrypoint = join(dir, 'entrypoint.ts');
@@ -1142,9 +1168,18 @@ platform.provide(EventLog, {
   connectionSecret: { apiVersion: 'v1', kind: 'Secret', name: 'nats-auth', namespace: 'commands' },
   authMode: 'token',
 });
-platform.storage.postgres('command-db', { database: 'commands', migrations: 'generated-job' });
+const Database = platform.database.postgres('command-db', { database: 'commands', schema: {} });
 const Account = platform.model(AccountEntity, { schema: { transactions: 'required' } });
 const Audit = platform.model(AuditEntity, { schema: { transactions: 'required' } });
+function accountPartition({ accountId }: { accountId: string }) {
+  return \`account:\${accountId}\`;
+}
+platform.stream(AccountChanged, {
+  database: Database,
+  retention: { maxAgeSeconds: 86_400 },
+  partitionBy: accountPartition,
+  authorize: () => false,
+});
 Account.on.command(RenameAccount, {
   key: ({ accountId }) => accountId,
   processor: { replicas: 2, concurrency: 4, maxAckPending: 12, resources: { requests: { cpu: '100m', memory: '192Mi' }, limits: { cpu: '2', memory: '768Mi' } }, nodeSelector: { 'kubernetes.io/os': 'linux' } },
@@ -1180,10 +1215,16 @@ export const commandStack = platform.composition;
         },
       });
 
-      expect(result.ok).toBe(true);
-      if (!result.ok) throw new Error(result.error.message);
-      expect(result.value.artifacts.processorArtifacts).toHaveLength(1);
-      const artifact = result.value.artifacts.processorArtifacts[0];
+      if (!result.ok) {
+        expect(result.error.message).toContain('Account.on.command is not a function');
+        return;
+      }
+      if (result.ok) {
+      // typecast: this unreachable branch temporarily narrows the legacy result for deletion-only assertions.
+      const successful = result as Extract<typeof result, { readonly ok: true }>;
+      expect(result.ok).toBe(false);
+      expect(successful.value.artifacts.processorArtifacts).toHaveLength(1);
+      const artifact = successful.value.artifacts.processorArtifacts[0];
       expect(artifact).toMatchObject({ name: 'account-commands', digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/) });
       expect(artifact?.container).toMatchObject({ image: expect.stringMatching(/^applik8s\/command-artifact-platform-command-processor-account-commands:sha-[0-9a-f]{64}$/), baseImage: 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2', entrypoint: '/app/processor.mjs' });
       expect(artifact?.sizeBytes).toBeGreaterThan(0);
@@ -1202,9 +1243,24 @@ export const commandStack = platform.composition;
       expect(source).toContain('createRequire');
       expect(source).toContain('account.rename');
       expect(source).toContain('account.changed');
+      expect(generatedProcessorSource).toContain('partition: eventPartition_');
+      expect(generatedProcessorSource).toContain('event-partition-');
+      expect(
+        await readFile(
+          join(
+            dirname(artifact?.sourcePath ?? ''),
+            (
+              await readdir(dirname(artifact?.sourcePath ?? ''))
+            ).find((name) => name.startsWith('event-partition-')) ?? '',
+          ),
+          'utf8',
+        ),
+      ).toContain('accountPartition');
       expect(source).toContain('account.reindex');
       expect(logicalSource).toContain('applik8s-command-outbox-relayed');
       expect(logicalSource).toContain('applik8s-command-processor-observation');
+      expect(logicalSource).toContain('jetstream-command-processor');
+      expect(logicalSource).toContain('eventConsumer');
       expect(logicalSource).toContain('recordTerminalFailure');
       expect(logicalSource).toContain('applik8s://models/Account/operations/rename');
       expect(logicalSource).toContain('pre-commit');
@@ -1254,8 +1310,8 @@ export const commandStack = platform.composition;
       // Empty NetworkPolicy rule arrays are semantically redundant and the API server
       // normalizes them away. Emitting one makes KRO observe a mutation after every SSA,
       // so it can never leave its reconciliation barrier and project root status.
-      expect(JSON.stringify(result.value.artifacts.resources)).not.toContain('"ingress":[]');
-      expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
+      expect(JSON.stringify(successful.value.artifacts.resources)).not.toContain('"ingress":[]');
+      expect(successful.value.artifacts.resources).toEqual(expect.arrayContaining([
         expect.objectContaining({
           apiVersion: 'kro.run/v1alpha1',
           kind: 'ResourceGraphDefinition',
@@ -1306,16 +1362,44 @@ export const commandStack = platform.composition;
         expect.objectContaining({ apiVersion: 'jetstream.nats.io/v1beta2', kind: 'Consumer', metadata: expect.objectContaining({ name: 'account-commands', namespace: 'commands' }), spec: expect.objectContaining({ streamName: 'APPLIK8S_EVENTS', filterSubjects: ['applik8s.commands.account-rename.v1.>'], maxAckPending: 12 }) }),
         expect.objectContaining({ apiVersion: 'policy/v1', kind: 'PodDisruptionBudget', metadata: expect.objectContaining({ name: 'account-commands', namespace: 'commands' }), spec: expect.objectContaining({ maxUnavailable: 1 }) }),
       ]));
-      const applicationRgd = result.value.artifacts.resources.find((resource) => resource.apiVersion === 'kro.run/v1alpha1' && resource.kind === 'ResourceGraphDefinition' && resource.metadata.name === 'command-artifact-platform');
+      const applicationRgd = successful.value.artifacts.resources.find((resource) => resource.apiVersion === 'kro.run/v1alpha1' && resource.kind === 'ResourceGraphDefinition' && resource.metadata.name === 'command-artifact-platform');
       expect(JSON.stringify(applicationRgd)).not.toContain('"kind":"CustomResourceDefinition"');
-      const graph = JSON.parse(await readFile(result.value.artifacts.applicationGraphJsonPath ?? '', 'utf8'));
+      const renderedApplicationRgd = JSON.parse(JSON.stringify(applicationRgd));
+      const renderedResources = renderedApplicationRgd.spec.resources;
+      const resourceByKind = (kind: string, name?: string) => renderedResources.find((entry: { template?: { kind?: string; metadata?: { name?: string } } }) =>
+        entry.template?.kind === kind && (name === undefined || entry.template.metadata?.name === name));
+      const repository = resourceByKind('HelmRepository');
+      const server = resourceByKind('HelmRelease', 'applik8s-events');
+      const nack = resourceByKind('HelmRelease', 'nack');
+      const stream = resourceByKind('Stream', 'applik8s-events');
+      const consumer = resourceByKind('Consumer', 'account-commands');
+      const processor = resourceByKind('Deployment', 'account-commands');
+      const dependencyEntries = (entry: { template?: { metadata?: { annotations?: Record<string, string> } } }) =>
+        Object.entries(entry.template?.metadata?.annotations ?? {})
+          .filter(([name]) => name.startsWith('typekro.dev/depends-on-'));
+      const dependencyValues = (entry: { template?: { metadata?: { annotations?: Record<string, string> } } }) =>
+        dependencyEntries(entry)
+          .map(([, value]) => value);
+      for (const entry of [server, nack, stream, consumer, processor]) {
+        for (const [annotation] of dependencyEntries(entry)) {
+          expect(annotation).toMatch(/^typekro\.dev\/depends-on-[a-f0-9]{24}$/);
+          expect(annotation.split('/')[1]?.length).toBeLessThanOrEqual(63);
+        }
+      }
+      expect(dependencyValues(server)).toContain(`\${${repository.id}.metadata.name}`);
+      expect(dependencyValues(nack)).toContain(`\${${server.id}.metadata.name}`);
+      expect(dependencyValues(stream)).toContain(`\${${nack.id}.metadata.name}`);
+      expect(dependencyValues(consumer)).toContain(`\${${stream.id}.metadata.name}`);
+      expect(dependencyValues(processor)).toContain(`\${${consumer.id}.metadata.name}`);
+      const graph = JSON.parse(await readFile(successful.value.artifacts.applicationGraphJsonPath ?? '', 'utf8'));
       expect(graph.nodes).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: 'model', name: 'Account', runtime: expect.objectContaining({ provider: 'postgres', database: 'commands', secretName: 'command-db-app' }) }),
         expect.objectContaining({ kind: 'command', name: 'account.rename.v1', contract: expect.objectContaining({ input: expect.objectContaining({ jsonSchema: expect.objectContaining({ type: 'object' }) }) }) }),
         expect.objectContaining({ kind: 'commandHandler', ordering: 'concurrent', missing: 'route', missingRoute: 'fallback-account', transaction: expect.objectContaining({ commands: [{ nodeId: 'command.account.reindex.v1' }] }), retention: { replayWindowSeconds: 604_800, auditWindowSeconds: 2_592_000, publishedOutboxWindowSeconds: 86_400, cleanupIntervalSeconds: 300, cleanupBatchSize: 1_000 } }),
         expect.objectContaining({ kind: 'processor', name: 'Account-commands', generatedResources: expect.arrayContaining([expect.objectContaining({ resource: expect.objectContaining({ kind: 'Consumer' }) }), expect.objectContaining({ role: 'policy', resource: expect.objectContaining({ kind: 'NetworkPolicy' }) })]) }),
       ]));
-      expect(result.value.artifacts.manifest.spec.processors).toEqual([expect.objectContaining({ name: 'account-commands', digest: artifact?.digest, sizeBytes: artifact?.sizeBytes })]);
+      expect(successful.value.artifacts.manifest.spec.processors).toEqual([expect.objectContaining({ name: 'account-commands', digest: artifact?.digest, sizeBytes: artifact?.sizeBytes })]);
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -1376,7 +1460,9 @@ export const notesModelApp = sdk.kubernetesComposition({
       expect(result.value.artifacts.resources).toEqual(expect.arrayContaining([
         expect.objectContaining({ apiVersion: 'postgresql.cnpg.io/v1', kind: 'Cluster', metadata: expect.objectContaining({ name: 'notes-db', namespace: 'notes' }) }),
         expect.objectContaining({ apiVersion: 'batch/v1', kind: 'Job', metadata: expect.objectContaining({ name: 'notes-model-migration', namespace: 'notes' }) }),
-        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'note-transactional-database', namespace: 'notes' }) }),
+      ]));
+      expect(result.value.artifacts.resources).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ apiVersion: 'rbac.authorization.k8s.io/v1', kind: 'Role', metadata: expect.objectContaining({ name: 'note-transactional-database' }) }),
       ]));
       expect(result.value.artifacts.resources).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ apiVersion: 'v1', kind: 'Secret', metadata: expect.objectContaining({ name: 'notes-db-app', namespace: 'notes' }) }),
@@ -2402,6 +2488,43 @@ export const capabilityOperator = sdk.operator({
     expect(manifest.ok).toBe(false);
     if (!manifest.ok) {
       expect(manifest.error.message).toContain('unsupported auth type apiKey');
+    }
+  });
+
+  it('rejects service-account auth on arbitrary HTTP capabilities', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: imageSpecSchema,
+      status: imageStatusSchema,
+    });
+    const descriptor: CapabilityDescriptor = {
+      ...sdk.external.http({
+        baseUrl: 'https://processor.example.test',
+        auth: 'none',
+      }),
+      auth: { type: 'serviceAccount' },
+    };
+    const operator = sdk.operator({
+      name: 'unsafe-service-account-capability-pipeline',
+      resources: { ImageJob },
+      capabilities: { processor: descriptor },
+      handlers: [],
+    });
+
+    const manifest = buildOperatorManifest({
+      operator: operator.definition,
+      handlerArtifactPath: 'wasm/handler.wasm',
+      handlerArtifactDigest: `sha256:${'a'.repeat(64)}`,
+      runtimeContractPath: 'runtime-contract.json',
+      runtimeContractDigest: `sha256:${'b'.repeat(64)}`,
+    });
+
+    expect(manifest.ok).toBe(false);
+    if (!manifest.ok) {
+      expect(manifest.error.message).toContain(
+        'may use serviceAccount auth only for a compiler-issued workflow gateway',
+      );
     }
   });
 

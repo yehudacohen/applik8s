@@ -9,6 +9,7 @@ import { createDeterministicApplicationAdmission } from '@applik8s/identity';
 import { Cel } from 'typekro';
 import type { OryIdentityStackConfig, OryPlatformStackConfig } from 'typekro/ory';
 import { applicationTypeKroExpressionValue, applicationTypeKroString } from './application-typekro-values.js';
+import { applicationQualifiableProviderToken } from './application-provider-qualification.js';
 import { isApplicationStructuredGenerationProvider, StructuredGeneration } from './structured-generation.js';
 
 export type { ApplicationStructuredGenerationDeterministicProvider, ApplicationStructuredGenerationHttpProvider, ApplicationStructuredGenerationProvider, ApplicationStructuredGenerationProviderToken } from './structured-generation.js';
@@ -51,15 +52,54 @@ export interface ApplicationS3ObjectStorageProvider {
   readonly sessionTokenKey?: string;
   /** External providers are referenced; direct provisioners may prepare a bucket before the Application instance exists. */
   readonly ownership?: 'external' | 'direct-provisioned';
-  readonly provisioning?: {
-    /** Typed desired-state switch for the app-owned OBC provisioning boundary. */
-    readonly enabled?: boolean;
-    readonly claimName?: string;
-    readonly storageClassName: string;
-    readonly timeoutMs?: number;
-    /** OBC deletion removes credentials and the claim; retained bucket data follows the StorageClass reclaim policy. */
-    readonly claimLifecycle?: 'application';
-  };
+  readonly provisioning?:
+    | {
+        /**
+         * Controller-backed ObjectBucketClaim. This remains the production
+         * path for Rook/Ceph and other compatible provisioners.
+         */
+        readonly kind?: 'object-bucket-claim';
+        /** Typed desired-state switch for the app-owned OBC provisioning boundary. */
+        readonly enabled?: boolean;
+        readonly claimName?: string;
+        readonly storageClassName: string;
+        readonly timeoutMs?: number;
+        /** OBC deletion removes credentials and the claim; retained bucket data follows the StorageClass reclaim policy. */
+        readonly claimLifecycle?: 'application';
+        /**
+         * Optional shared Rook/Ceph platform managed before this claim. The
+         * single-node profile is explicitly a development/qualification
+         * topology, never a production-availability claim.
+         */
+        readonly platform?: {
+          readonly kind: 'rook-ceph-single-node-development';
+          readonly name?: string;
+          readonly namespace?: string;
+          readonly operatorNamespace?: string;
+          /** StorageClass used for the Ceph OSD PVC, not for application bucket claims. */
+          readonly deviceStorageClassName: string;
+          /**
+           * Development-only Rook escape hatch for explicitly loop-backed
+           * block fixtures. Defaults to false and must never be inferred.
+           */
+          readonly allowLoopDevices?: boolean;
+          readonly storageSize?: string;
+          readonly objectStoreName?: string;
+        };
+      }
+    | {
+        /**
+         * Framework-owned single-node S3 service for maintained local/Starter
+         * profiles. Applications select the profile; this implementation
+         * detail stays inside the Start and deployment adapter.
+         */
+        readonly kind: 'local-s3';
+        readonly enabled?: boolean;
+        readonly name?: string;
+        readonly image?: string;
+        readonly storageSize?: string;
+        readonly storageClassName?: string;
+      };
   readonly publicBaseUrl?: string;
 }
 export interface ApplicationKubernetesCredentialStoreProvider { readonly kind: 'kubernetes-secret-credentials'; readonly defaultOwnership?: 'external' | 'generated' }
@@ -74,6 +114,11 @@ export interface ApplicationNatsJetStreamEventLogProvider {
   readonly replicas?: number;
   readonly storageSize?: string;
   readonly storageClassName?: string;
+  /**
+   * StatefulSet deletion/scaling policy for JetStream PVCs. Application-owned
+   * Namespace deletion still follows Kubernetes Namespace semantics.
+   */
+  readonly pvcRetentionPolicy?: 'retain' | 'delete';
   readonly connectionSecret?: ApplicationResourceRef;
   readonly authMode?: 'token' | 'userPassword';
   readonly tokenKey?: string;
@@ -111,7 +156,7 @@ export interface ApplicationHatchetWorkflowEngineProvider {
     readonly connectionSecret?: ApplicationResourceRef;
     readonly connectionSecretKey?: string;
   };
-  /** External bootstrap credentials containing adminEmail and adminPassword. */
+  /** External bootstrap credentials containing ADMIN_EMAIL and ADMIN_PASSWORD. */
   readonly adminCredentialsSecret?: ApplicationResourceRef;
   /** Hatchet client-token Secret. Defaults to the chart-generated hatchet-client-config Secret when provisioned. */
   readonly workerTokenSecret?: ApplicationResourceRef;
@@ -323,6 +368,17 @@ export interface ApplicationIdentityProvider {
   authenticate(request: Request): ApplicationRequestAdmission | Promise<ApplicationRequestAdmission>;
   /** Bounded credential-free capability probe used by generated workload readiness. */
   ready?(): void | Promise<void>;
+}
+
+export interface ApplicationIdentityProviderDependencies {
+  /**
+   * Server-side admission may consult authoritative application state (for
+   * example, to promote an untrusted workspace selector into trusted
+   * context). The dependency remains compiler metadata: credentials are
+   * projected only into the generated server workload that executes
+   * `authenticate`.
+   */
+  readonly database?: ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
 }
 
 export interface ApplicationOAuthAuthorizationServerProvider {
@@ -662,7 +718,7 @@ export interface ApplicationDefaults {
   readonly eventLog?: ApplicationEventLogProvider | ApplicationProviderBinding<ApplicationEventLogProvider>;
   readonly secrets?: ApplicationSecretProvider;
   readonly queues?: ApplicationQueueProvider;
-  readonly objects?: ApplicationObjectStorageProvider;
+  readonly objects?: ApplicationObjectStorageProvider | ApplicationProviderBinding<ApplicationObjectStorageProvider>;
   readonly credentials?: ApplicationCredentialStoreProvider;
   readonly expose?: ApplicationHttpExposureProvider | ApplicationProviderBinding<ApplicationHttpExposureProvider>;
   readonly certificates?: ApplicationCertificateProvider | ApplicationProviderBinding<ApplicationCertificateProvider>;
@@ -715,57 +771,10 @@ export interface ApplicationTypedProviderContract {
   readonly guarantees: readonly string[];
 }
 
-type ApplicationProviderImplementation<TToken> =
+export type ApplicationProviderImplementation<TToken> =
   TToken extends ApplicationProviderToken<infer TImplementation>
     ? TImplementation
     : never;
-
-function applicationQualifiableProviderToken<
-  TToken extends ApplicationQualifiableProviderToken<unknown>,
->(token: Omit<TToken, 'named'>): TToken {
-  const compatibilityRevision = token.contract?.version ?? 'v1alpha1';
-  const qualified = Object.defineProperty(token, 'named', {
-    value: <const TName extends string>(
-      name: TName,
-    ): ApplicationQualifiedProviderToken<ApplicationProviderImplementation<TToken>, TName> => {
-      if (!/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/.test(name)) {
-        throw new Error(
-          `Application provider qualifier ${JSON.stringify(name)} must be a stable lower-case identifier.`,
-        );
-      }
-      const key = `${token.name}@${compatibilityRevision}:${name}` as const;
-      const result: ApplicationQualifiedProviderToken<ApplicationProviderImplementation<TToken>, TName> = {
-        kind: 'applicationQualifiedProvider',
-        name: token.name,
-        ...(token.description ? { description: token.description } : {}),
-        ...(token.contract ? { contract: token.contract } : {}),
-        ...(token.accepts
-          ? {
-              accepts: (
-                implementation: unknown,
-              ): implementation is ApplicationProviderImplementation<TToken> =>
-                token.accepts!(implementation),
-            }
-          : {}),
-        // typecast: the input is exactly the public token with only named() omitted.
-        base: token as unknown as ApplicationProviderToken<ApplicationProviderImplementation<TToken>>,
-        qualification: {
-          apiVersion: 'applik8s.providerQualification/v1alpha1',
-          capability: token.name,
-          name,
-          compatibilityRevision,
-          key,
-        },
-      };
-      return Object.freeze(result);
-    },
-    enumerable: false,
-    configurable: false,
-    writable: false,
-  });
-  // typecast: defineProperty installs the one method omitted from the input token.
-  return qualified as unknown as TToken;
-}
 
 export function defineApplicationProvider<TImplementation>(options: {
   readonly interface: string;
@@ -838,6 +847,22 @@ export interface ApplicationContainerRegistryProviderToken extends ApplicationQu
 export interface ApplicationObjectStorageProviderToken extends ApplicationQualifiableProviderToken<ApplicationObjectStorageProvider> {
   s3(options: Omit<ApplicationS3ObjectStorageProvider, 'kind'>): ApplicationS3ObjectStorageProvider;
   configMap(options?: Omit<ApplicationKubernetesConfigMapObjectStorageProvider, 'kind'>): ApplicationKubernetesConfigMapObjectStorageProvider;
+  /**
+   * Bind a database backup destination to one declared object-storage
+   * capability. Bucket, endpoint, region, and Secret coordinates follow the
+   * selected provider profile without being repeated by application code.
+   */
+  backup(
+    provider:
+      | ApplicationObjectStorageProvider
+      | ApplicationProviderBinding<ApplicationObjectStorageProvider>,
+    options: {
+      readonly prefix: string;
+      readonly accessKeyIdKey?: string;
+      readonly secretAccessKeyKey?: string;
+      readonly regionKey?: string;
+    },
+  ): Extract<ApplicationPostgresBackupPolicy['destination'], { readonly kind: 's3' }>;
 }
 
 export interface ApplicationHostProviderToken extends ApplicationQualifiableProviderToken<ApplicationHostProvider> {
@@ -847,7 +872,11 @@ export interface ApplicationHostProviderToken extends ApplicationQualifiableProv
 export interface ApplicationIdentityProviderToken extends ApplicationQualifiableProviderToken<ApplicationIdentityProvider> {
   from(
     authenticate: ApplicationIdentityProvider['authenticate'],
-    options?: { readonly infrastructure?: ApplicationIdentityInfrastructure; readonly ready?: NonNullable<ApplicationIdentityProvider['ready']> },
+    options?: {
+      readonly infrastructure?: ApplicationIdentityInfrastructure;
+      readonly ready?: NonNullable<ApplicationIdentityProvider['ready']>;
+      readonly dependencies?: ApplicationIdentityProviderDependencies;
+    },
   ): ApplicationIdentityProvider;
   deterministic(options: ApplicationDeterministicIdentityOptions): ApplicationIdentityProvider;
 }
@@ -974,7 +1003,7 @@ export const Search: ApplicationSearchProviderToken =
       };
     },
     externalOpenSearch(options) {
-      if (!options.endpoint.trim()) {
+      if (!applicationProviderRequiredString(options.endpoint)) {
         throw new Error(
           'Search.externalOpenSearch(...) requires a non-empty endpoint.',
         );
@@ -1032,7 +1061,7 @@ export const Database: ApplicationDatabaseConstructors = Object.freeze({
         'Database.externalPostgres(...) requires connection or an external CNPG cluster reference.',
       );
     }
-    if (connection && !connection.secretName.trim()) {
+    if (connection && !applicationProviderRequiredString(connection.secretName)) {
       throw new Error(
         'Database.externalPostgres(...) connection.secretName must not be empty.',
       );
@@ -1101,8 +1130,18 @@ export const ObjectStorage: ApplicationObjectStorageProviderToken = applicationQ
     if (!dynamicOwnership && options.ownership === 'direct-provisioned' && !options.credentialsSecret) {
       throw new Error('ObjectStorage.s3({ ownership: "direct-provisioned" }) requires the Secret reference produced by the direct provisioning boundary.');
     }
-    if (!dynamicOwnership && options.ownership === 'direct-provisioned' && !options.provisioning?.storageClassName.trim()) {
-      throw new Error('ObjectStorage.s3({ ownership: "direct-provisioned" }) requires provisioning.storageClassName.');
+    if (
+      !dynamicOwnership
+      && options.ownership === 'direct-provisioned'
+      && options.provisioning?.kind !== 'local-s3'
+      && !applicationTypeKroExpressionValue(
+        options.provisioning?.storageClassName,
+      )
+      && !applicationProviderRequiredString(
+        options.provisioning?.storageClassName,
+      )
+    ) {
+      throw new Error('ObjectStorage.s3({ ownership: "direct-provisioned" }) requires provisioning.storageClassName for an ObjectBucketClaim.');
     }
     if (!dynamicOwnership && options.ownership !== 'direct-provisioned' && options.provisioning) {
       throw new Error('ObjectStorage.s3({ provisioning }) is valid only with ownership: "direct-provisioned".');
@@ -1111,6 +1150,42 @@ export const ObjectStorage: ApplicationObjectStorageProviderToken = applicationQ
   },
   configMap(options = {}) {
     return { kind: 'kubernetes-configmap-objects', ...options };
+  },
+  backup(provider, options) {
+    const storage = applicationObjectStorageImplementation(provider);
+    if (!storage || storage.kind !== 's3') {
+      throw new Error(
+        'ObjectStorage.backup(provider, ...) requires an S3 object-storage provider.',
+      );
+    }
+    if (!applicationProviderRequiredString(options.prefix)) {
+      throw new Error('ObjectStorage.backup(..., { prefix }) must not be empty.');
+    }
+    if (!storage.credentialsSecret?.name) {
+      throw new Error(
+        'ObjectStorage.backup(provider, ...) requires provider credentialsSecret.',
+      );
+    }
+    return {
+      kind: 's3',
+      destinationPath: applicationTypeKroString(
+        's3://',
+        storage.bucket,
+        '/',
+        options.prefix.replace(/^\/+|\/+$/g, ''),
+      ),
+      ...(storage.endpoint ? { endpoint: storage.endpoint } : {}),
+      credentialsSecret: storage.credentialsSecret,
+      accessKeyIdKey:
+        options.accessKeyIdKey
+        ?? storage.accessKeyIdKey
+        ?? 'AWS_ACCESS_KEY_ID',
+      secretAccessKeyKey:
+        options.secretAccessKeyKey
+        ?? storage.secretAccessKeyKey
+        ?? 'AWS_SECRET_ACCESS_KEY',
+      ...(options.regionKey ? { regionKey: options.regionKey } : {}),
+    };
   },
 });
 
@@ -1198,7 +1273,7 @@ export const Analytics: ApplicationAnalyticsConstructors = Object.freeze({
   externalClickHouse(options: ApplicationExternalClickHouseOptions) {
     const connection =
       'connection' in options ? options.connection : options;
-    if (typeof connection.endpoint !== 'string' || !connection.endpoint.trim()) {
+    if (!applicationProviderRequiredString(connection.endpoint)) {
       throw new Error(
         'Analytics.externalClickHouse(...) requires a non-empty endpoint.',
       );
@@ -1213,7 +1288,7 @@ export const Analytics: ApplicationAnalyticsConstructors = Object.freeze({
         : options.credentialsSecretNamespace;
     if (
       credentialsSecretName !== undefined
-      && !credentialsSecretName.trim()
+      && !applicationProviderRequiredString(credentialsSecretName)
     ) {
       throw new Error(
         'Analytics.externalClickHouse(...) credentialsSecretName must not be empty.',
@@ -1357,7 +1432,32 @@ export const IdentityProvider: ApplicationIdentityProviderToken = applicationQua
   from(authenticate, options) {
     if (options?.infrastructure) assertApplicationIdentityInfrastructure(options.infrastructure);
     if (options?.ready !== undefined && typeof options.ready !== 'function') throw new Error('IdentityProvider.from({ ready }) must be a function.');
-    return { kind: 'identity-provider', authenticate, ...(options?.infrastructure ? { infrastructure: options.infrastructure } : {}), ...(options?.ready ? { ready: options.ready } : {}) };
+    if (
+      options?.dependencies?.database
+      && (
+        !isApplicationProviderBinding(options.dependencies.database)
+        || applicationProviderTokenName(
+          applicationProviderBaseToken(options.dependencies.database.token),
+        ) !== 'TransactionalDatabase'
+      )
+    ) {
+      throw new Error(
+        'IdentityProvider.from({ dependencies.database }) requires an injected TransactionalDatabase binding.',
+      );
+    }
+    const provider: ApplicationIdentityProvider = {
+      kind: 'identity-provider',
+      authenticate,
+      ...(options?.infrastructure ? { infrastructure: options.infrastructure } : {}),
+      ...(options?.ready ? { ready: options.ready } : {}),
+    };
+    if (options?.dependencies) {
+      applicationIdentityProviderDependencies.set(
+        provider,
+        options.dependencies,
+      );
+    }
+    return provider;
   },
   deterministic(options) {
     const admission = createDeterministicApplicationAdmission(options);
@@ -1369,6 +1469,74 @@ export const IdentityProvider: ApplicationIdentityProviderToken = applicationQua
     };
   },
 });
+
+const applicationIdentityProviderDependencies =
+  new WeakMap<object, ApplicationIdentityProviderDependencies>();
+
+export interface ApplicationIdentityProviderDatabaseDependency {
+  readonly interface: 'TransactionalDatabase';
+  readonly qualification?: ApplicationProviderQualification;
+}
+
+/**
+ * Compiler-only dependency metadata for server-side identity admission. It is
+ * deliberately kept out of serialized provider values so injected bindings
+ * and token implementations never leak into the ApplicationGraph.
+ */
+export function applicationIdentityProviderDatabaseDependency(
+  implementation: unknown,
+): ApplicationIdentityProviderDatabaseDependency | undefined {
+  const selection = applicationProviderSelectionFor<ApplicationIdentityProvider>(
+    implementation,
+  );
+  const candidates = selection
+    ? [...Object.values(selection.cases), selection.default]
+    : [implementation];
+  const dependencies = candidates.map((candidate) =>
+    candidate && typeof candidate === 'object'
+      ? applicationIdentityProviderDependencies.get(candidate)
+      : undefined);
+  const databases = dependencies.map((dependency) => dependency?.database);
+  if (databases.every((database) => database === undefined)) return undefined;
+  if (databases.some((database) => database === undefined)) {
+    throw new Error(
+      'Application profile IdentityProvider branches must declare the same TransactionalDatabase admission dependency.',
+    );
+  }
+  const identities = databases.map((database) => {
+    if (!database || !isApplicationProviderBinding(database)) {
+      throw new Error(
+        'IdentityProvider database dependency is not an injected provider binding.',
+      );
+    }
+    const token = applicationProviderBaseToken(database.token);
+    if (applicationProviderTokenName(token) !== 'TransactionalDatabase') {
+      throw new Error(
+        'IdentityProvider database dependency must reference TransactionalDatabase.',
+      );
+    }
+    return {
+      interface: 'TransactionalDatabase' as const,
+      ...(applicationProviderQualificationFor(database.token)
+        ? {
+            qualification:
+              applicationProviderQualificationFor(database.token)!,
+          }
+        : {}),
+    };
+  });
+  const first = identities[0]!;
+  if (
+    identities.some(
+      (identity) => JSON.stringify(identity) !== JSON.stringify(first),
+    )
+  ) {
+    throw new Error(
+      'Application profile IdentityProvider branches resolve different TransactionalDatabase admission dependencies.',
+    );
+  }
+  return first;
+}
 
 export const OAuthAuthorizationServer: ApplicationOAuthAuthorizationServerProviderToken = applicationQualifiableProviderToken({
   name: 'OAuthAuthorizationServer',
@@ -1529,7 +1697,10 @@ export function applicationSearchProviderImplementation(
 function assertApplicationOpenSearchProvider(
   value: Omit<ApplicationOpenSearchProvider, 'kind'>,
 ): void {
-  if (value.endpoint !== undefined && !value.endpoint.trim()) {
+  if (
+    value.endpoint !== undefined
+    && !applicationProviderRequiredString(value.endpoint)
+  ) {
     throw new Error('Search OpenSearch endpoint must not be empty.');
   }
   if (value.topology) {
@@ -1571,7 +1742,7 @@ function assertApplicationOpenSearchProvider(
       ['dashboardCredentialsSecret', value.dashboardCredentialsSecret],
     ] as const
   ) {
-    if (secret && !secret.name?.trim()) {
+    if (secret && !applicationProviderRequiredString(secret.name)) {
       throw new Error(
         `Search OpenSearch ${label} must reference a named Secret.`,
       );
@@ -1627,7 +1798,7 @@ export function isApplicationAnalyticalDatabaseProvider(value: unknown): value i
 export function applicationAnalyticalDatabaseImplementation(value: unknown): ApplicationAnalyticalDatabaseProvider | undefined {
   if (isApplicationAnalyticalDatabaseProvider(value)) return value;
   const implementation = isApplicationProviderBinding(value)
-    && applicationProviderBaseToken(value.token) === AnalyticalDatabase
+    && applicationProviderTokensMatch(value.token, AnalyticalDatabase)
     ? value.implementation
     : value;
   if (isApplicationAnalyticalDatabaseProvider(implementation)) return implementation;
@@ -1708,17 +1879,16 @@ export function applicationClickHouseAnalyticalDatabaseImplementation(
 export function applicationWorkflowEngineImplementation(state: ApplicationProviderState): ApplicationWorkflowEngineProvider {
   const selected = state.providers.extensions?.['WorkflowEngine@v1alpha1'];
   if (isHatchetWorkflowEngineProvider(selected)) {
-    const scaling = selected.worker?.scaling ?? defaultApplicationWorkflowEngineProvider.worker?.scaling;
-    return {
-      ...defaultApplicationWorkflowEngineProvider,
-      ...selected,
-      database: { ...defaultApplicationWorkflowEngineProvider.database, ...selected.database },
-      worker: {
-        ...defaultApplicationWorkflowEngineProvider.worker,
-        ...selected.worker,
-        ...(scaling ? { scaling } : {}),
-      },
-    };
+    return normalizedApplicationHatchetProvider(selected);
+  }
+  const selection = applicationProviderSelectionFor<ApplicationWorkflowEngineProvider>(selected);
+  if (
+    selection
+    && [...Object.values(selection.cases), selection.default].every(
+      isHatchetWorkflowEngineProvider,
+    )
+  ) {
+    return applicationSelectedHatchetProvider(selection);
   }
   return defaultApplicationWorkflowEngineProvider;
 }
@@ -1743,6 +1913,29 @@ export function applicationIndexBackend(value: unknown): ApplicationIndexBackend
     // typecast: app.provide/defaults accept structurally typed provider values; this narrows the supported v0.2 IndexStore provider slice.
     return value as ApplicationIndexBackend;
   }
+  const selection =
+    applicationProviderSelectionFor<ApplicationIndexBackend | 'valkey'>(value);
+  if (
+    selection
+    && [...Object.values(selection.cases), selection.default].every(
+      isValkeyIndexDefault,
+    )
+  ) {
+    const normalized: ApplicationProviderSelectionValue<ApplicationIndexBackend> = {
+      ...selection,
+      cases: Object.fromEntries(
+        Object.entries(selection.cases).map(([variant, provider]) => [
+          variant,
+          provider === 'valkey' ? { kind: 'valkey' as const } : provider,
+        ]),
+      ),
+      default:
+        selection.default === 'valkey'
+          ? { kind: 'valkey' }
+          : selection.default,
+    };
+    return applicationSelectedValkeyIndexProvider(normalized);
+  }
   return undefined;
 }
 
@@ -1752,8 +1945,31 @@ export function isValkeyIndexDefault(value: unknown): boolean {
 
 // typecast-boundary: provider tokens are identity-based and compared only after their public name and implementation contract are validated.
 export function applyApplicationProvider<TImplementation>(state: ApplicationProviderState, token: ApplicationProviderToken<TImplementation>, implementation: TImplementation): void {
+  if (isApplicationProviderBinding(implementation)) {
+    const boundToken = applicationProviderBaseToken(implementation.token);
+    if (!applicationProviderTokensMatch(boundToken, token)) {
+      throw new Error(
+        `app.provide(${applicationProviderTokenName(token)}, binding) received a binding for ${applicationProviderTokenName(implementation.token)}.`,
+      );
+    }
+    applyApplicationProvider(
+      state,
+      token,
+      implementation.implementation as TImplementation,
+    );
+    return;
+  }
   if (isApplicationProviderSelection(implementation)) {
     const candidates = [...Object.values(implementation.cases), implementation.default];
+    if (applicationProviderTokenName(token) === 'IndexStore') {
+      if (candidates.some((candidate) => !isValkeyIndexDefault(candidate))) {
+        throw new Error(
+          'Application profile IndexStore branches must each satisfy the Valkey index provider contract.',
+        );
+      }
+      state.providers.indexes = implementation;
+      return;
+    }
     if (applicationProviderTokenName(token) === 'Search') {
       if (candidates.some((candidate) => !isApplicationSearchProvider(candidate))) {
         throw new Error(
@@ -1777,7 +1993,39 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
       state.providers.analytics = implementation;
       return;
     }
-    if ((token as unknown) === ContainerRegistry) {
+    if (applicationProviderTokenName(token) === 'EventLog') {
+      if (candidates.some((candidate) => !isApplicationEventLogProvider(candidate))) {
+        throw new Error('Application profile EventLog branches must each satisfy the NATS JetStream event-log contract.');
+      }
+      state.providers.eventLogs = implementation;
+      return;
+    }
+    if (applicationProviderTokenName(token) === 'ObjectStorage') {
+      if (candidates.some((candidate) => !isApplicationObjectStorageProvider(candidate))) {
+        throw new Error('Application profile ObjectStorage branches must each satisfy the object-storage contract.');
+      }
+      state.providers.objects = implementation;
+      return;
+    }
+    if (applicationProviderTokensMatch(token, WorkflowEngine)) {
+      if (candidates.some((candidate) => !isHatchetWorkflowEngineProvider(candidate))) {
+        throw new Error('Application profile WorkflowEngine branches must each satisfy the Hatchet workflow contract.');
+      }
+      if (!state.providers.extensions) state.providers.extensions = {};
+      state.providers.extensions['WorkflowEngine@v1alpha1'] = implementation;
+      return;
+    }
+    if (applicationProviderTokensMatch(token, IdentityProvider)) {
+      if (candidates.some((candidate) => !isApplicationIdentityProvider(candidate))) {
+        throw new Error(
+          'Application profile IdentityProvider branches must each satisfy the identity provider contract.',
+        );
+      }
+      if (!state.providers.extensions) state.providers.extensions = {};
+      state.providers.extensions['IdentityProvider@v1alpha1'] = implementation;
+      return;
+    }
+    if (applicationProviderTokensMatch(token, ContainerRegistry)) {
       if (candidates.some((candidate) => !isApplicationContainerRegistryProvider(candidate))) {
         throw new Error('app.selectProvider(...) ContainerRegistry branches must each be a valid registry provider.');
       }
@@ -1785,7 +2033,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
       state.providers.extensions['ContainerRegistry@v1alpha1'] = implementation;
       return;
     }
-    if ((token as unknown) === StructuredGeneration) {
+    if (applicationProviderTokensMatch(token, StructuredGeneration)) {
       if (candidates.some((candidate) => !isApplicationStructuredGenerationProvider(candidate))) {
         throw new Error('app.selectProvider(...) StructuredGeneration branches must each be StructuredGeneration.http(...) or .deterministic(...).');
       }
@@ -1846,7 +2094,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.analytics = implementation;
     return;
   }
-  if ((token as unknown) === WorkflowEngine) {
+  if (applicationProviderTokensMatch(token, WorkflowEngine)) {
     if (!isHatchetWorkflowEngineProvider(implementation)) {
       throw new Error('app.provide(WorkflowEngine, ...) currently supports the Hatchet workflow provider. Use WorkflowEngine.hatchet(...).');
     }
@@ -1854,7 +2102,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.extensions['WorkflowEngine@v1alpha1'] = implementation;
     return;
   }
-  if ((token as unknown) === ApplicationHost) {
+  if (applicationProviderTokensMatch(token, ApplicationHost)) {
     if (!isKubernetesApplicationHostProvider(implementation)) {
       throw new Error('app.provide(ApplicationHost, ...) currently supports ApplicationHost.kubernetes(...).');
     }
@@ -1862,7 +2110,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.extensions['ApplicationHost@v1alpha1'] = implementation;
     return;
   }
-  if ((token as unknown) === ContainerRegistry) {
+  if (applicationProviderTokensMatch(token, ContainerRegistry)) {
     if (!isApplicationContainerRegistryProvider(implementation)) {
       throw new Error('app.provide(ContainerRegistry, ...) requires ContainerRegistry.orbstack(), .oci(...), or .harbor(...).');
     }
@@ -1870,7 +2118,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.extensions['ContainerRegistry@v1alpha1'] = implementation;
     return;
   }
-  if ((token as unknown) === IdentityProvider) {
+  if (applicationProviderTokensMatch(token, IdentityProvider)) {
     if (!isApplicationIdentityProvider(implementation)) {
       throw new Error('app.provide(IdentityProvider, ...) requires IdentityProvider.from(authenticate).');
     }
@@ -1878,7 +2126,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.extensions['IdentityProvider@v1alpha1'] = implementation;
     return;
   }
-  if ((token as unknown) === OAuthAuthorizationServer) {
+  if (applicationProviderTokensMatch(token, OAuthAuthorizationServer)) {
     if (!isApplicationOAuthAuthorizationServerProvider(implementation)) {
       throw new Error('app.provide(OAuthAuthorizationServer, ...) requires OAuthAuthorizationServer.from(name, decide).');
     }
@@ -1886,7 +2134,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.extensions['OAuthAuthorizationServer@v1alpha1'] = implementation;
     return;
   }
-  if ((token as unknown) === Authorization) {
+  if (applicationProviderTokensMatch(token, Authorization)) {
     if (!isApplicationAuthorizationProvider(implementation)) {
       throw new Error('app.provide(Authorization, ...) requires Authorization.from(decide).');
     }
@@ -1894,7 +2142,7 @@ export function applyApplicationProvider<TImplementation>(state: ApplicationProv
     state.providers.extensions['Authorization@v1alpha1'] = implementation;
     return;
   }
-  if ((token as unknown) === StructuredGeneration) {
+  if (applicationProviderTokensMatch(token, StructuredGeneration)) {
     if (!isApplicationStructuredGenerationProvider(implementation)) {
       throw new Error('app.provide(StructuredGeneration, ...) requires StructuredGeneration.http(...) or .deterministic(...).');
     }
@@ -2112,7 +2360,7 @@ export function applicationTransactionalDatabaseImplementation(store: unknown): 
   }
   if (
     isApplicationProviderBinding(store)
-    && applicationProviderBaseToken(store.token) === TransactionalDatabase
+    && applicationProviderTokensMatch(store.token, TransactionalDatabase)
   ) {
     if (isPostgresTransactionalDatabaseProvider(store.implementation)) {
       assertApplicationPostgresTransactionalDatabaseLifecycle(store.implementation);
@@ -2144,21 +2392,69 @@ function applicationProviderBaseToken(
     : token;
 }
 
+/**
+ * Provider tokens cross generated package and bundle boundaries. Compare their
+ * versioned public contract rather than JavaScript object identity so a
+ * workspace package and the generated application cannot fork one capability.
+ */
+function applicationProviderTokensMatch(
+  left: ApplicationProviderToken<unknown>,
+  right: ApplicationProviderToken<unknown>,
+): boolean {
+  const leftBase = applicationProviderBaseToken(left);
+  const rightBase = applicationProviderBaseToken(right);
+  const leftContract = leftBase.contract;
+  const rightContract = rightBase.contract;
+  return applicationProviderTokenName(leftBase)
+      === applicationProviderTokenName(rightBase)
+    && leftContract?.apiVersion === rightContract?.apiVersion
+    && leftContract?.interface === rightContract?.interface
+    && leftContract?.version === rightContract?.version
+    && applicationProviderContractMembersMatch(
+      leftContract?.requirements,
+      rightContract?.requirements,
+    )
+    && applicationProviderContractMembersMatch(
+      leftContract?.guarantees,
+      rightContract?.guarantees,
+    );
+}
+
+function applicationProviderContractMembersMatch(
+  left: readonly string[] | undefined,
+  right: readonly string[] | undefined,
+): boolean {
+  if (!left || !right) return left === right;
+  if (left.length !== right.length) return false;
+  const rightMembers = new Set(right);
+  return left.every((member) => rightMembers.has(member));
+}
+
 function applicationSelectedPostgresProvider(
   selection: ApplicationProviderSelectionValue<ApplicationPostgresTransactionalDatabaseProvider>,
 ): ApplicationPostgresTransactionalDatabaseProvider {
-  const fallback = selection.default;
+  const normalizedSelection = {
+    ...selection,
+    cases: Object.fromEntries(
+      Object.entries(selection.cases).map(([variant, provider]) => [
+        variant,
+        normalizedPostgresSelectionBranch(provider),
+      ]),
+    ),
+    default: normalizedPostgresSelectionBranch(selection.default),
+  };
+  const fallback = normalizedSelection.default;
   const selected = {
     ...fallback,
     kind: 'postgres' as const,
-    ...applicationSelectedProviderStringField(selection, 'name'),
-    ...applicationSelectedProviderStringField(selection, 'clusterName'),
-    ...applicationSelectedProviderStringField(selection, 'namespace'),
-    ...applicationSelectedProviderStringField(selection, 'database'),
-    ...applicationSelectedProviderStringField(selection, 'connectionSecretKey'),
+    ...applicationSelectedProviderStringField(normalizedSelection, 'name'),
+    ...applicationSelectedProviderStringField(normalizedSelection, 'clusterName'),
+    ...applicationSelectedProviderStringField(normalizedSelection, 'namespace'),
+    ...applicationSelectedProviderStringField(normalizedSelection, 'database'),
+    ...applicationSelectedProviderStringField(normalizedSelection, 'connectionSecretKey'),
   };
   const connectionSecret = applicationSelectedProviderResourceReference(
-    selection,
+    normalizedSelection,
     'connectionSecret',
   );
   const provider = {
@@ -2175,10 +2471,47 @@ function applicationSelectedPostgresProvider(
   return provider;
 }
 
+/**
+ * Preserve the connection contract of each profile branch before fields are
+ * combined into CEL selections. A Secret declared by only one branch must not
+ * turn the managed branches' CloudNativePG-generated Secret into `null`.
+ */
+function normalizedPostgresSelectionBranch(
+  provider: ApplicationPostgresTransactionalDatabaseProvider,
+): ApplicationPostgresTransactionalDatabaseProvider {
+  const clusterName = provider.clusterName ?? provider.name;
+  if (provider.connectionSecret || !clusterName) {
+    return {
+      ...provider,
+      connectionSecretKey: provider.connectionSecretKey ?? 'uri',
+    };
+  }
+  return {
+    ...provider,
+    connectionSecret: {
+      apiVersion: 'v1',
+      kind: 'Secret',
+      name: applicationTypeKroString(clusterName, '-app'),
+      ...(provider.namespace ? { namespace: provider.namespace } : {}),
+    },
+    connectionSecretKey: provider.connectionSecretKey ?? 'uri',
+  };
+}
+
 function applicationSelectedClickHouseProvider(
   selection: ApplicationProviderSelectionValue<ApplicationClickHouseAnalyticalDatabaseProvider>,
 ): ApplicationClickHouseAnalyticalDatabaseProvider {
-  const fallback = selection.default;
+  const normalizedSelection = {
+    ...selection,
+    cases: Object.fromEntries(
+      Object.entries(selection.cases).map(([variant, provider]) => [
+        variant,
+        normalizedClickHouseSelectionBranch(provider),
+      ]),
+    ),
+    default: normalizedClickHouseSelectionBranch(selection.default),
+  };
+  const fallback = normalizedSelection.default;
   const stringFields = [
     'name',
     'namespace',
@@ -2196,7 +2529,7 @@ function applicationSelectedClickHouseProvider(
     ...Object.fromEntries(
       stringFields.flatMap((field) => {
         const value = applicationSelectedProviderValue(
-          selection,
+          normalizedSelection,
           (provider) => provider[field],
         );
         return value === undefined ? [] : [[field, value]];
@@ -2204,15 +2537,15 @@ function applicationSelectedClickHouseProvider(
     ),
   } as ApplicationClickHouseAnalyticalDatabaseProvider;
   const enabled = applicationSelectedProviderValue(
-    selection,
+    normalizedSelection,
     (provider) => provider.enabled,
   );
   const provision = applicationSelectedProviderValue(
-    selection,
+    normalizedSelection,
     (provider) => provider.provision,
   );
   const credentialsSecret = applicationSelectedClickHouseResourceReference(
-    selection,
+    normalizedSelection,
   );
   const provider: ApplicationClickHouseAnalyticalDatabaseProvider = {
     ...selected,
@@ -2227,6 +2560,39 @@ function applicationSelectedClickHouseProvider(
     writable: false,
   });
   return provider;
+}
+
+function normalizedClickHouseSelectionBranch(
+  provider: ApplicationClickHouseAnalyticalDatabaseProvider,
+): ApplicationClickHouseAnalyticalDatabaseProvider {
+  const name = provider.name ?? 'applik8s-analytics';
+  const namespace = provider.namespace ?? 'applik8s-analytics';
+  return {
+    ...provider,
+    kind: 'clickhouse',
+    enabled: provider.enabled ?? true,
+    name,
+    namespace,
+    provision: provider.provision ?? true,
+    version: provider.version ?? '25.12.5',
+    storageSize: provider.storageSize ?? '10Gi',
+    // Empty is Kubernetes' explicit "no storage class" spelling. It keeps
+    // inactive profile branches CEL type-correct without selecting a cluster
+    // default that the author did not request.
+    storageClassName: provider.storageClassName ?? '',
+    endpoint:
+      provider.endpoint
+      ?? applicationTypeKroString(
+        'http://clickhouse-',
+        name,
+        '.',
+        namespace,
+        '.svc.cluster.local:8123',
+      ),
+    database: provider.database ?? 'default',
+    usernameKey: provider.usernameKey ?? 'username',
+    passwordKey: provider.passwordKey ?? 'password',
+  };
 }
 
 function applicationSelectedPostgresAnalyticsProvider(
@@ -2346,22 +2712,361 @@ function applicationSelectedProviderValue<TProvider, TValue>(
     ([variant, provider]) => [variant, read(provider)] as const,
   );
   const fallback = read(selection.default);
-  const serialized = [...branches.map(([, value]) => value), fallback].map(
-    applicationProviderSelectionValueExpression,
-  );
+  const values = [...branches.map(([, value]) => value), fallback];
+  const omitAbsent = values.some((value) => value === undefined);
+  const serialize = (value: TValue | undefined): string => {
+    if (value === undefined) return 'omit()';
+    const expression = applicationProviderSelectionValueExpression(value);
+    // KRO types omit() as a map. dyn() widens a present scalar or structured
+    // branch so a conditional field can remain well typed while preserving
+    // JavaScript's distinction between an absent field and a null value.
+    return omitAbsent ? `dyn(${expression})` : expression;
+  };
+  const serialized = values.map(serialize);
   if (serialized.every((value) => value === serialized[0])) return fallback;
   const expression = branches.reduceRight(
     (otherwise, [variant, value]) =>
-      `${selection.selector} == ${JSON.stringify(variant)} ? ${applicationProviderSelectionValueExpression(value)} : (${otherwise})`,
-    applicationProviderSelectionValueExpression(fallback),
+      `(${selection.selector}) == ${JSON.stringify(variant)} ? (${serialize(value)}) : (${otherwise})`,
+    serialize(fallback),
   );
   return Cel.expr<TValue>(expression) as TValue;
+}
+
+function applicationSelectedField<
+  TProvider,
+  TKey extends keyof TProvider,
+>(
+  selection: ApplicationProviderSelectionValue<TProvider>,
+  field: TKey,
+): Partial<Pick<TProvider, TKey>> {
+  const value = applicationSelectedProviderValue(
+    selection,
+    (provider) => provider[field],
+  );
+  return value === undefined
+    ? {}
+    : { [field]: value } as Partial<Pick<TProvider, TKey>>;
+}
+
+function applicationSelectedValkeyIndexProvider(
+  selection: ApplicationProviderSelectionValue<ApplicationIndexBackend>,
+): ApplicationIndexBackend {
+  return {
+    kind: 'valkey',
+    ...applicationSelectedField(selection, 'provisioner'),
+    ...applicationSelectedField(selection, 'name'),
+    ...applicationSelectedField(selection, 'namespace'),
+    ...applicationSelectedField(selection, 'host'),
+    ...applicationSelectedField(selection, 'port'),
+    ...applicationSelectedField(selection, 'image'),
+    ...applicationSelectedField(selection, 'provision'),
+    ...applicationSelectedField(selection, 'operator'),
+    ...applicationSelectedField(selection, 'topology'),
+    ...applicationSelectedField(selection, 'authentication'),
+    ...applicationSelectedField(selection, 'storage'),
+    ...applicationSelectedField(selection, 'resources'),
+    ...applicationSelectedField(selection, 'spec'),
+  };
+}
+
+function applicationSelectedEventLogProvider(
+  selection: ApplicationProviderSelectionValue<ApplicationEventLogProvider>,
+): ApplicationEventLogProvider {
+  const normalize = (
+    provider: ApplicationEventLogProvider,
+  ): ApplicationEventLogProvider => {
+    const name = provider.name ?? 'applik8s-events';
+    // Inactive external branches still participate in the KRO expression
+    // graph. Give their non-authoritative installation fields concrete values
+    // so omitted resources remain CEL type-correct without inventing external
+    // ownership.
+    const namespace =
+      provider.namespace
+      ?? selection.default.namespace
+      ?? 'default';
+    return {
+      ...provider,
+      name,
+      namespace,
+      provision: provider.provision ?? true,
+      servers: provider.servers ?? [
+        applicationTypeKroString(
+          'nats://',
+          name,
+          namespace ? '.' : '',
+          namespace,
+          '.svc:4222',
+        ),
+      ],
+      stream: provider.stream ?? 'APPLIK8S_EVENTS',
+      subjectPrefix: provider.subjectPrefix ?? 'applik8s',
+      replicas: provider.replicas ?? 1,
+      authMode: provider.authMode ?? 'token',
+      tokenKey: provider.tokenKey ?? 'token',
+      userKey: provider.userKey ?? 'user',
+      passwordKey: provider.passwordKey ?? 'password',
+    };
+  };
+  const normalizedSelection: ApplicationProviderSelectionValue<ApplicationEventLogProvider> = {
+    ...selection,
+    cases: Object.fromEntries(
+      Object.entries(selection.cases).map(([variant, provider]) => [
+        variant,
+        normalize(provider),
+      ]),
+    ),
+    default: normalize(selection.default),
+  };
+  const servers = applicationSelectedArrayField(
+    normalizedSelection,
+    'servers',
+  );
+  return {
+    kind: 'nats-jetstream',
+    ...applicationSelectedField(normalizedSelection, 'name'),
+    ...applicationSelectedField(normalizedSelection, 'namespace'),
+    ...applicationSelectedField(normalizedSelection, 'provision'),
+    ...(servers ? { servers: servers as readonly string[] } : {}),
+    ...applicationSelectedField(normalizedSelection, 'stream'),
+    ...applicationSelectedField(normalizedSelection, 'subjectPrefix'),
+    ...applicationSelectedField(normalizedSelection, 'replicas'),
+    ...applicationSelectedField(normalizedSelection, 'storageSize'),
+    ...applicationSelectedField(normalizedSelection, 'storageClassName'),
+    ...applicationSelectedField(normalizedSelection, 'pvcRetentionPolicy'),
+    ...applicationSelectedField(normalizedSelection, 'connectionSecret'),
+    ...applicationSelectedField(normalizedSelection, 'authMode'),
+    ...applicationSelectedField(normalizedSelection, 'tokenKey'),
+    ...applicationSelectedField(normalizedSelection, 'tenantId'),
+    ...applicationSelectedField(normalizedSelection, 'userKey'),
+    ...applicationSelectedField(normalizedSelection, 'passwordKey'),
+  };
+}
+
+function applicationSelectedArrayField<
+  TProvider,
+  TKey extends keyof TProvider,
+>(
+  selection: ApplicationProviderSelectionValue<TProvider>,
+  field: TKey,
+): readonly unknown[] | undefined {
+  const candidates = [...Object.values(selection.cases), selection.default];
+  const values = candidates.map((provider) => provider[field]);
+  if (values.every((value) => value === undefined)) return undefined;
+  if (!values.every(Array.isArray)) return undefined;
+  const arrays = values as readonly (readonly unknown[])[];
+  const lengths = new Set(arrays.map((value) => value.length));
+  if (lengths.size !== 1) return undefined;
+  return Array.from({ length: arrays[0]?.length ?? 0 }, (_, index) =>
+    applicationSelectedProviderValue(
+      selection,
+      (provider) => {
+        const value = provider[field];
+        return Array.isArray(value) ? value[index] : undefined;
+      },
+    ),
+  );
+}
+
+function applicationSelectedS3ObjectStorageProvider(
+  selection: ApplicationProviderSelectionValue<ApplicationS3ObjectStorageProvider>,
+): ApplicationS3ObjectStorageProvider {
+  const bucket = applicationSelectedProviderValue(
+    selection,
+    (provider) => provider.bucket,
+  );
+  const region = applicationSelectedProviderValue(
+    selection,
+    (provider) => provider.region,
+  );
+  if (bucket === undefined || region === undefined) {
+    throw new Error(
+      'Every profile-selected S3 ObjectStorage branch must declare bucket and region.',
+    );
+  }
+  const credentialsSecret = applicationSelectedS3ResourceReference(selection);
+  const provisioning = applicationSelectedS3Provisioning(selection);
+  return {
+    kind: 's3',
+    bucket,
+    region,
+    ...applicationSelectedField(selection, 'enabled'),
+    ...applicationSelectedField(selection, 'name'),
+    ...applicationSelectedField(selection, 'prefix'),
+    ...applicationSelectedField(selection, 'endpoint'),
+    ...applicationSelectedField(selection, 'forcePathStyle'),
+    ...(credentialsSecret ? { credentialsSecret } : {}),
+    ...applicationSelectedField(selection, 'accessKeyIdKey'),
+    ...applicationSelectedField(selection, 'secretAccessKeyKey'),
+    ...applicationSelectedField(selection, 'sessionTokenKey'),
+    ...applicationSelectedField(selection, 'ownership'),
+    ...(provisioning ? { provisioning } : {}),
+    ...applicationSelectedField(selection, 'publicBaseUrl'),
+  };
+}
+
+function applicationSelectedS3ResourceReference(
+  selection: ApplicationProviderSelectionValue<ApplicationS3ObjectStorageProvider>,
+): ApplicationResourceRef | undefined {
+  const references = [
+    ...Object.values(selection.cases),
+    selection.default,
+  ].map((provider) => provider.credentialsSecret);
+  if (references.every((reference) => reference === undefined)) return undefined;
+  const value = <TKey extends keyof ApplicationResourceRef>(
+    key: TKey,
+  ): ApplicationResourceRef[TKey] | undefined =>
+    applicationSelectedProviderValue(
+      selection,
+      (provider) => provider.credentialsSecret?.[key],
+    ) as ApplicationResourceRef[TKey] | undefined;
+  const apiVersion = value('apiVersion');
+  const kind = value('kind');
+  const name = value('name');
+  const namespace = value('namespace');
+  if (!apiVersion || !kind) return undefined;
+  return {
+    apiVersion,
+    kind,
+    ...(name ? { name } : {}),
+    ...(namespace ? { namespace } : {}),
+  };
+}
+
+function applicationSelectedS3Provisioning(
+  selection: ApplicationProviderSelectionValue<ApplicationS3ObjectStorageProvider>,
+): ApplicationS3ObjectStorageProvider['provisioning'] | undefined {
+  const candidates = [
+    ...Object.values(selection.cases),
+    selection.default,
+  ];
+  if (candidates.every((provider) => provider.provisioning === undefined)) {
+    return undefined;
+  }
+  const field = (name: string) =>
+    applicationSelectedProviderValue(
+      selection,
+      (provider) => {
+        const provisioning = provider.provisioning;
+        if (!provisioning) return undefined;
+        if (name === 'kind') {
+          return provisioning.kind ?? 'object-bucket-claim';
+        }
+        return Reflect.get(provisioning, name);
+      },
+    );
+  const provisioning = Object.fromEntries(
+    [
+      'kind',
+      'enabled',
+      'claimName',
+      'storageClassName',
+      'timeoutMs',
+      'claimLifecycle',
+      'name',
+      'image',
+      'storageSize',
+      'platform',
+    ]
+      .map((name) => [name, field(name)] as const)
+      .filter((entry) => entry[1] !== undefined),
+  );
+  // typecast: each concrete profile branch was validated by ObjectStorage.s3;
+  // typecast: the selection record carries those discriminated fields through
+  // typecast: TypeKro until the installation profile becomes concrete.
+  return provisioning as ApplicationS3ObjectStorageProvider['provisioning'];
+}
+
+function applicationSelectedHatchetProvider(
+  selection: ApplicationProviderSelectionValue<ApplicationWorkflowEngineProvider>,
+): ApplicationWorkflowEngineProvider {
+  const normalizedSelection: ApplicationProviderSelectionValue<ApplicationWorkflowEngineProvider> = {
+    ...selection,
+    cases: Object.fromEntries(
+      Object.entries(selection.cases).map(([variant, provider]) => [
+        variant,
+        normalizedApplicationHatchetProvider(provider),
+      ]),
+    ),
+    default: normalizedApplicationHatchetProvider(selection.default),
+  };
+  return {
+    kind: 'hatchet',
+    ...applicationSelectedField(normalizedSelection, 'enabled'),
+    ...applicationSelectedField(normalizedSelection, 'name'),
+    ...applicationSelectedField(normalizedSelection, 'namespace'),
+    ...applicationSelectedField(normalizedSelection, 'provision'),
+    ...applicationSelectedField(normalizedSelection, 'chartVersion'),
+    ...applicationSelectedField(normalizedSelection, 'serverVersion'),
+    ...applicationSelectedField(normalizedSelection, 'mode'),
+    ...applicationSelectedField(normalizedSelection, 'database'),
+    ...applicationSelectedField(normalizedSelection, 'adminCredentialsSecret'),
+    ...applicationSelectedField(normalizedSelection, 'workerTokenSecret'),
+    ...applicationSelectedField(normalizedSelection, 'tokenKey'),
+    ...applicationSelectedField(normalizedSelection, 'hostPort'),
+    ...applicationSelectedField(normalizedSelection, 'apiUrl'),
+    ...applicationSelectedField(normalizedSelection, 'tls'),
+    ...applicationSelectedField(normalizedSelection, 'dashboard'),
+    ...applicationSelectedField(normalizedSelection, 'worker'),
+  };
+}
+
+function normalizedApplicationHatchetProvider(
+  provider: ApplicationWorkflowEngineProvider,
+): ApplicationWorkflowEngineProvider {
+  const scaling =
+    provider.worker?.scaling
+    ?? defaultApplicationWorkflowEngineProvider.worker?.scaling;
+  const normalized = {
+    ...defaultApplicationWorkflowEngineProvider,
+    ...provider,
+    database: {
+      ...defaultApplicationWorkflowEngineProvider.database,
+      ...provider.database,
+    },
+    worker: {
+      ...defaultApplicationWorkflowEngineProvider.worker,
+      ...provider.worker,
+      ...(scaling ? { scaling } : {}),
+    },
+  };
+  const managedNamespace = normalized.provision === false
+    ? undefined
+    : normalized.namespace;
+  return {
+    ...normalized,
+    ...(provider.hostPort
+      ? { hostPort: provider.hostPort }
+      : managedNamespace
+        ? {
+            hostPort: applicationTypeKroString(
+              'hatchet-engine.',
+              managedNamespace,
+              '.svc:7070',
+            ),
+          }
+        : {}),
+    ...(provider.apiUrl
+      ? { apiUrl: provider.apiUrl }
+      : managedNamespace
+        ? {
+            apiUrl: applicationTypeKroString(
+              'http://hatchet-api.',
+              managedNamespace,
+              '.svc:8080',
+            ),
+          }
+        : {}),
+  };
 }
 
 function applicationProviderSelectionValueExpression(value: unknown): string {
   const expression = applicationTypeKroExpressionValue(value);
   if (expression) return expression;
-  if (value === undefined) return 'null';
+  if (value === undefined) {
+    throw new Error(
+      'Application provider selection must serialize absent branches with omit().',
+    );
+  }
   return JSON.stringify(value);
 }
 
@@ -2404,7 +3109,14 @@ function assertApplicationPostgresBackupPolicy(policy: ApplicationPostgresBackup
     if (!applicationTypeKroExpressionValue(policy.destination.destinationPath) && !/^s3:\/\/[A-Za-z0-9]/.test(policy.destination.destinationPath)) {
       throw new Error('TransactionalDatabase.postgres S3 backup.destinationPath must be an s3:// URL.');
     }
-    if (!policy.destination.credentialsSecret.name?.trim()) {
+    const secretName = policy.destination.credentialsSecret.name;
+    if (
+      !applicationTypeKroExpressionValue(secretName)
+      && (
+        typeof secretName !== 'string'
+        || !secretName.trim()
+      )
+    ) {
       throw new Error('TransactionalDatabase.postgres S3 backup credentialsSecret must reference a named Secret.');
     }
   }
@@ -2462,13 +3174,62 @@ function applicationPostgresClusterBackupSpec(policy: ApplicationPostgresBackupP
 }
 
 export function applicationEventLogImplementation(value: unknown): ApplicationEventLogProvider | undefined {
-  if (value && typeof value === 'object' && Reflect.get(value, 'kind') === 'nats-jetstream') {
+  if (isApplicationEventLogProvider(value)) {
     // typecast: the provider kind discriminant narrows the supported JetStream EventLog provider.
     return value as ApplicationEventLogProvider;
   }
-  if (isApplicationProviderBinding(value) && value.token === EventLog && value.implementation && typeof value.implementation === 'object' && Reflect.get(value.implementation, 'kind') === 'nats-jetstream') {
-    // typecast: the EventLog token plus provider kind narrows the bound implementation.
-    return value.implementation as ApplicationEventLogProvider;
+  if (
+    isApplicationProviderBinding(value)
+    && applicationProviderTokensMatch(value.token, EventLog)
+  ) {
+    return applicationEventLogImplementation(value.implementation);
+  }
+  const selection = applicationProviderSelectionFor<ApplicationEventLogProvider>(value);
+  if (
+    selection
+    && [...Object.values(selection.cases), selection.default].every(
+      isApplicationEventLogProvider,
+    )
+  ) return applicationSelectedEventLogProvider(selection);
+  return undefined;
+}
+
+function isApplicationEventLogProvider(
+  value: unknown,
+): value is ApplicationEventLogProvider {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, 'kind') === 'nats-jetstream',
+  );
+}
+
+export function applicationObjectStorageImplementation(
+  value: unknown,
+): ApplicationObjectStorageProvider | undefined {
+  if (isApplicationObjectStorageProvider(value)) return value;
+  if (
+    isApplicationProviderBinding(value)
+    && applicationProviderTokensMatch(value.token, ObjectStorage)
+  ) {
+    return applicationObjectStorageImplementation(value.implementation);
+  }
+  const selection =
+    applicationProviderSelectionFor<ApplicationObjectStorageProvider>(value);
+  if (!selection) return undefined;
+  const candidates = [...Object.values(selection.cases), selection.default];
+  if (candidates.every(isApplicationS3ObjectStorageProvider)) {
+    return applicationSelectedS3ObjectStorageProvider(
+      selection as ApplicationProviderSelectionValue<ApplicationS3ObjectStorageProvider>,
+    );
+  }
+  if (candidates.every(isApplicationConfigMapObjectStorageProvider)) {
+    const configMapSelection =
+      selection as ApplicationProviderSelectionValue<ApplicationKubernetesConfigMapObjectStorageProvider>;
+    return {
+      kind: 'kubernetes-configmap-objects',
+      ...applicationSelectedField(configMapSelection, 'maxObjectBytes'),
+    };
   }
   return undefined;
 }
@@ -2550,6 +3311,24 @@ export function isApplicationObjectStorageProvider(value: unknown): value is App
   return Reflect.get(value, 'kind') === 's3'
     && applicationProviderRequiredString(Reflect.get(value, 'bucket'))
     && applicationProviderRequiredString(Reflect.get(value, 'region'));
+}
+
+function isApplicationS3ObjectStorageProvider(
+  value: unknown,
+): value is ApplicationS3ObjectStorageProvider {
+  return Boolean(
+    isApplicationObjectStorageProvider(value)
+    && Reflect.get(value, 'kind') === 's3',
+  );
+}
+
+function isApplicationConfigMapObjectStorageProvider(
+  value: unknown,
+): value is ApplicationKubernetesConfigMapObjectStorageProvider {
+  return Boolean(
+    isApplicationObjectStorageProvider(value)
+    && Reflect.get(value, 'kind') === 'kubernetes-configmap-objects',
+  );
 }
 
 export function isApplicationAuthorizationProvider(value: unknown): value is ApplicationAuthorizationProvider {

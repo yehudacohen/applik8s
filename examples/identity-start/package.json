@@ -1,0 +1,72 @@
+{
+  "name": "@applik8s/example-identity-start",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*"
+  },
+  "scripts": {
+    "predev": "bun run --cwd ../.. build:packages",
+    "dev": "vite dev --port 3000",
+    "generate-routes": "tsr generate",
+    "typecheck": "bun run generate-routes && tsc --noEmit -p tsconfig.json",
+    "prebuild": "bun run --cwd ../.. build:packages",
+    "build": "vite build",
+    "build:prepared": "vite build",
+    "preview": "vite preview",
+    "db:generate": "drizzle-kit generate",
+    "plan": "bun run build && applik8s plan",
+    "deploy": "bun run build && applik8s deploy",
+    "dev:cluster": "bun run deploy && vite dev",
+    "status": "applik8s status",
+    "destroy": "applik8s destroy"
+  },
+  "dependencies": {
+    "@tanstack/react-router": "1.170.18",
+    "@tanstack/react-start": "1.168.28",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "@applik8s/ai": "workspace:*",
+    "@applik8s/ai-tanstack": "workspace:*",
+    "@applik8s/applik8s": "workspace:*",
+    "@applik8s/approvals": "workspace:*",
+    "@applik8s/artifacts": "workspace:*",
+    "@applik8s/conversations": "workspace:*",
+    "@applik8s/evals": "workspace:*",
+    "@applik8s/operations-ui": "workspace:*",
+    "@applik8s/react": "workspace:*",
+    "@applik8s/runtime-opensearch": "workspace:*",
+    "@applik8s/runtime-s3": "workspace:*",
+    "@applik8s/search": "workspace:*",
+    "@applik8s/start-agentic": "workspace:*",
+    "@applik8s/tanstack-start": "workspace:*",
+    "@applik8s/usage": "workspace:*",
+    "@tanstack/ai": "0.42.0",
+    "@tanstack/ai-react": "0.18.1",
+    "arktype": "^2.1.20",
+    "drizzle-orm": "^0.45.1"
+  },
+  "devDependencies": {
+    "@tanstack/router-cli": "1.167.19",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.0.1",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.0",
+    "@applik8s/cli": "workspace:*",
+    "drizzle-kit": "0.31.10"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "lightningcss"
+    ]
+  },
+  "applik8s": {
+    "entrypoint": "src/application.ts",
+    "compositionName": "application",
+    "instance": "kubernetes/application.yaml",
+    "outDir": ".applik8s/deploy"
+  }
+}

@@ -1,6 +1,7 @@
 import {
 	app,
 	applicationGraphFor,
+	installApplicationObjectStorageRuntimeResolver,
 	ObjectStorage,
 	setApplicationObjectStorageRuntimeFactory,
 } from "@applik8s/applik8s";
@@ -8,6 +9,71 @@ import { afterEach, describe, expect, it } from "vitest";
 
 describe("provider-neutral application object stores", () => {
 	afterEach(() => setApplicationObjectStorageRuntimeFactory(undefined));
+
+	it("derives database backup coordinates from one typed object-storage binding", () => {
+		const application = app("backup-binding");
+		const media = application.provide(
+			ObjectStorage,
+			ObjectStorage.s3({
+				bucket: "application-media",
+				prefix: "site",
+				region: "us-east-1",
+				endpoint: "https://objects.example.test",
+				ownership: "external",
+				credentialsSecret: {
+					apiVersion: "v1",
+					kind: "Secret",
+					name: "application-media",
+					namespace: "application",
+				},
+				accessKeyIdKey: "ACCESS_KEY",
+				secretAccessKeyKey: "SECRET_KEY",
+			}),
+		);
+
+		expect(
+			ObjectStorage.backup(media, { prefix: "/database-backups/" }),
+		).toEqual({
+			kind: "s3",
+			destinationPath: "s3://application-media/database-backups",
+			endpoint: "https://objects.example.test",
+			credentialsSecret: {
+				apiVersion: "v1",
+				kind: "Secret",
+				name: "application-media",
+				namespace: "application",
+			},
+			accessKeyIdKey: "ACCESS_KEY",
+			secretAccessKeyKey: "SECRET_KEY",
+		});
+	});
+
+	it("prefers an execution-scoped runtime for direct store handles", async () => {
+		const application = app("scoped-objects");
+		application.provide(ObjectStorage, ObjectStorage.configMap());
+		const records = application.objectStore("records", {
+			mode: "immutable",
+			maxObjectBytes: 1_000,
+			contentTypes: ["application/json"],
+		});
+		const uninstall = installApplicationObjectStorageRuntimeResolver((binding) =>
+			binding.name === "records"
+				? {
+					async put() { throw new Error("unused"); },
+					async get() { return new Uint8Array([4, 2]); },
+					async head() { return undefined; },
+					async delete() {},
+					async signUpload() { throw new Error("unused"); },
+					async signDownload() { throw new Error("unused"); },
+				}
+				: undefined,
+		);
+		try {
+			await expect(records.get("proof.json")).resolves.toEqual(new Uint8Array([4, 2]));
+		} finally {
+			uninstall();
+		}
+	});
 
 	it("records a bounded S3-compatible logical store and hydrates runtime I/O without exposing credentials", async () => {
 		const chirp = app("chirp-objects");

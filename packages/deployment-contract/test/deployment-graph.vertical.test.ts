@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  applicationDeploymentOutputReference,
+  applicationOptionalDeploymentOutputReference,
   type ApplicationDeploymentGraph,
   ApplicationDeploymentGraphDecodeError,
   type ApplicationDeploymentNode,
   decodeApplicationDeploymentGraph,
   digestApplicationDeploymentGraph,
   normalizeApplicationDeploymentGraph,
+  parseApplicationDeploymentOutputReference,
   serializeApplicationDeploymentGraph,
   validateApplicationDeploymentGraph,
 } from "../src/index.js";
@@ -14,6 +17,35 @@ const digest = `sha256:${"a".repeat(64)}`;
 const connectionDigest = `sha256:${"b".repeat(64)}`;
 
 describe("ApplicationDeploymentGraph", () => {
+  it("round-trips required and profile-optional deployment output references", () => {
+    const required = applicationDeploymentOutputReference(
+      "direct.provider.ai/envoy",
+      "status.endpoint",
+    );
+    const optional = applicationOptionalDeploymentOutputReference(
+      "direct.provider.ai/envoy",
+      "status.endpoint",
+    );
+    expect(parseApplicationDeploymentOutputReference(required)).toEqual({
+      nodeId: "direct.provider.ai/envoy",
+      output: "status.endpoint",
+      optional: false,
+    });
+    expect(parseApplicationDeploymentOutputReference(optional)).toEqual({
+      nodeId: "direct.provider.ai/envoy",
+      output: "status.endpoint",
+      optional: true,
+    });
+    expect(parseApplicationDeploymentOutputReference("https://example.test")).toBe(
+      undefined,
+    );
+    expect(() =>
+      parseApplicationDeploymentOutputReference(
+        "applik8s.deployment-output/v1:missing-output:",
+      ),
+    ).toThrow(/Malformed deployment output reference/);
+  });
+
   it("normalizes, serializes, and digests deterministically", () => {
     const graph = validGraph();
     const reversed: ApplicationDeploymentGraph = {

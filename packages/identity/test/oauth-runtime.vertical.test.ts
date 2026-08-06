@@ -1,3 +1,4 @@
+// typecast-file-boundary: OAuth tests deliberately decode signed fixtures after exercising the runtime validation boundary.
 import type { ApplicationPrincipal } from '@applik8s/core';
 import { describe, expect, it } from 'vitest';
 import {

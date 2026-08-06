@@ -44,5 +44,16 @@ describe('v0.6 release evidence identity', () => {
     const authored = await collectV06GitIdentity(root);
     expect(authored.dirty).toBe(true);
     expect(authored.workingTreeDigest).not.toBe(initial.workingTreeDigest);
+
+    await writeFile(join(root, 'new-authored-module.ts'), 'export const added = true;\n');
+    const withUntrackedSource = await collectV06GitIdentity(root);
+    expect(withUntrackedSource.workingTreeDigest).not.toBe(
+      authored.workingTreeDigest,
+    );
+
+    const withoutDerivedReceipt = await collectV06GitIdentity(root, {
+      exclude: ['new-authored-module.ts'],
+    });
+    expect(withoutDerivedReceipt).toEqual(authored);
   });
 });

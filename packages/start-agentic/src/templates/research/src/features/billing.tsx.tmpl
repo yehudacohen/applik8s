@@ -1,0 +1,185 @@
+import {
+  type ApplicationModelViewContext,
+} from '@applik8s/applik8s';
+import {
+  applicationAIConversationPrincipalScope,
+} from '@applik8s/conversations';
+import { type } from 'arktype';
+import { desc, eq, sql } from 'drizzle-orm';
+import { application } from '../app';
+import { Billing, Usage } from '../modules';
+import { database } from '../providers';
+
+const BillingDashboardResult = type({
+  plans: type({
+    id: 'string',
+    name: 'string',
+    description: 'string',
+    interval: 'string',
+    priceMicrounits: 'number',
+    currency: 'string',
+  }).array(),
+  subscription: type({
+    planId: 'string',
+    provider: 'string',
+    status: "'active' | 'past_due' | 'cancelled'",
+    periodEnd: 'string',
+  }).or('null'),
+  usage: {
+    inputTokens: 'number',
+    outputTokens: 'number',
+    costMicrounits: 'number',
+  },
+  entitlements: type({
+    capability: 'string',
+    'limit?': 'number | null',
+    'period?': 'string | null',
+    validFrom: 'string',
+    'validUntil?': 'string | null',
+  }).array(),
+});
+
+async function loadBillingDashboard(
+  _input: object,
+  context: ApplicationModelViewContext,
+) {
+  const client = context.database(database);
+  const principalScope = applicationAIConversationPrincipalScope(
+    context.principal,
+    context.trustedContext,
+  );
+  const [plans, subscriptions, usageRows, entitlements] = await Promise.all([
+    client.select({
+      id: Billing.BillingPlan.id,
+      name: Billing.BillingPlan.name,
+      description: Billing.BillingPlan.description,
+      interval: Billing.BillingPlan.interval,
+      priceMicrounits: Billing.BillingPlan.priceMicrounits,
+      currency: Billing.BillingPlan.currency,
+    })
+      .from(Billing.BillingPlan)
+      .where(eq(Billing.BillingPlan.active, true))
+      .limit(25),
+    client.select({
+      planId: Billing.Subscription.planId,
+      provider: Billing.Subscription.provider,
+      status: Billing.Subscription.status,
+      periodEnd: Billing.Subscription.periodEnd,
+    })
+      .from(Billing.Subscription)
+      .where(eq(Billing.Subscription.principalScope, principalScope))
+      .orderBy(desc(Billing.Subscription.updatedAt))
+      .limit(1),
+    client.select({
+      inputTokens: sql<number>`coalesce(sum(${Usage.UsageFact.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${Usage.UsageFact.outputTokens}), 0)`,
+      costMicrounits: sql<number>`coalesce(sum(${Usage.UsageFact.costMicrounits}), 0)`,
+    })
+      .from(Usage.UsageFact)
+      .where(eq(Usage.UsageFact.principalScope, principalScope)),
+    client.select({
+      capability: Usage.Entitlement.capability,
+      limit: Usage.Entitlement.limit,
+      period: Usage.Entitlement.period,
+      validFrom: Usage.Entitlement.validFrom,
+      validUntil: Usage.Entitlement.validUntil,
+    })
+      .from(Usage.Entitlement)
+      .where(eq(Usage.Entitlement.principalScope, principalScope))
+      .limit(100),
+  ]);
+  const usage = usageRows[0];
+  return {
+    plans,
+    subscription: subscriptions[0] ?? null,
+    usage: {
+      inputTokens: Number(usage?.inputTokens ?? 0),
+      outputTokens: Number(usage?.outputTokens ?? 0),
+      costMicrounits: Number(usage?.costMicrounits ?? 0),
+    },
+    entitlements,
+  };
+}
+
+export const BillingDashboard = Billing.BillingPlan.view(
+  {
+    input: type({}),
+    output: BillingDashboardResult,
+    database,
+    reads: [
+      Billing.Subscription,
+      Usage.UsageFact,
+      Usage.Entitlement,
+    ],
+    authorize: ({ principal }) => principal.id.length > 0,
+    budgets: {
+      timeoutMs: 2_000,
+      maxRows: 250,
+      maxResultBytes: 256_000,
+    },
+  },
+  loadBillingDashboard,
+);
+
+const CheckoutInput = type({
+  plan: 'string > 0',
+  returnTo: 'string > 0',
+});
+const CheckoutOutput = type({
+  provider: 'string',
+  providerCustomerId: 'string',
+  providerCheckoutId: 'string',
+  url: 'string',
+  mode: "'simulated' | 'live'",
+  'expiresAt?': 'string',
+});
+const PortalInput = type({
+  returnTo: 'string > 0',
+});
+const PortalOutput = type({
+  provider: 'string',
+  url: 'string',
+  mode: "'simulated' | 'live'",
+});
+const billingApi = application.http('billing');
+
+export const StartCheckout = billingApi.post(
+  'start-checkout',
+  '/checkout',
+  {
+    input: CheckoutInput,
+    output: CheckoutOutput,
+    authorize: (_request, context) => context.principal.id.length > 0,
+  },
+  async function startCheckout(request, context) {
+    return Billing.startCheckout({
+      principalScope: applicationAIConversationPrincipalScope(
+        context.principal,
+        context.trustedContext,
+      ),
+      plan: request.input.plan,
+      returnTo: request.input.returnTo,
+      idempotencyKey: `${context.principal.id}:${request.input.plan}`,
+    });
+  },
+);
+
+export const OpenBillingPortal = billingApi.post(
+  'open-portal',
+  '/portal',
+  {
+    input: PortalInput,
+    output: PortalOutput,
+    authorize: (_request, context) => context.principal.id.length > 0,
+  },
+  async function openBillingPortal(request, context) {
+    return Billing.openBillingPortal({
+      principalScope: applicationAIConversationPrincipalScope(
+        context.principal,
+        context.trustedContext,
+      ),
+      returnTo: request.input.returnTo,
+      idempotencyKey: `${context.principal.id}:portal`,
+    });
+  },
+);

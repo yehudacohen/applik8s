@@ -1,6 +1,6 @@
 // typecast-file-boundary: the compiler validates graph discriminators and generated artifact shapes before projecting erased node unions into emitters.
 import { chmod, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type {
   ApplicationGraph,
   ApplicationGraphArtifactReference,
@@ -16,7 +16,10 @@ import { applicationGraphArtifactFileName, applicationOperationCatalogArtifactFi
 import { parseAllDocuments, stringify } from 'yaml';
 import type { GeneratedApplicationAgentArtifact } from '../application-agents/index.js';
 import { emitGeneratedApplicationAgents } from '../application-agents/index.js';
-import { applicationGraphStringValue } from '../application-installation-values.js';
+import { applicationGraphWithEntrypointPublicSurface } from '../application-facade/public-surface.js';
+import { applicationGraphWithInferredApplicationHost } from '../application-host/index.js';
+import type { GeneratedApplicationHttpArtifact } from '../application-http/index.js';
+import { emitGeneratedApplicationHttpServers } from '../application-http/index.js';
 import type { GeneratedApplicationMcpArtifact } from '../application-mcp/index.js';
 import { emitGeneratedApplicationMcpServers } from '../application-mcp/index.js';
 import type { GeneratedApplicationMigrationArtifact } from '../application-migrations/index.js';
@@ -50,6 +53,7 @@ import {
   applicationGraphForComposition,
   applicationInstallationForComposition,
   injectGeneratedResourcesIntoApplicationRgd,
+  filterReplacedFunctionNativeServerResources,
   type TypeKroFactoryArtifactsProjection,
   typeKroContainerArtifactReference,
 } from './application-artifacts.js';
@@ -57,9 +61,25 @@ import { generatedApplicationHostResources } from './application-support.js';
 import { emitRuntimeImageDockerfile, emitStandaloneApplyScript, emitTypeKroApplyScript } from './artifact-scripts.js';
 import type { TypeKroCompositionExport } from './entrypoint-discovery.js';
 import { discoverEntrypointExports, discoverExportedOperators } from './entrypoint-discovery.js';
+import {
+  artifactsFromPaths,
+  discoverAndSelectOperator,
+  isOperatorDefinitionLike,
+  outputDirectory,
+  selectProvidedOperator,
+  selectTypeKroComposition,
+} from './pipeline-selection.js';
+import {
+  compiledTypeKroComposition,
+  compositionResources,
+  portableOperatorDefinition,
+} from './pipeline-shapes.js';
 import { generatedDispatcherEntrypoint } from './static-dispatcher.js';
 import { planTypeKroEmission, typeKroResourceFingerprint } from './typekro-emission-plan.js';
+import { typeKroSingletonOwnerInstances } from './typekro-singleton-instances.js';
 import { digestFile, safePathSegment, unique } from './utilities.js';
+
+export { bundleApplicationCompositionRuntimeEntrypoint } from './runtime-entrypoint.js';
 
 const DEFAULT_OUT_DIR = 'dist/applik8s';
 
@@ -125,12 +145,50 @@ export interface CompileTypeKroCompositionResult {
 }
 
 export async function discoverApplicationGraph(entrypoint: string, compositionName?: string): Promise<Result<ApplicationGraph>> {
+  const discovered = await discoverApplicationGraphWithExports(entrypoint, compositionName);
+  return discovered.ok ? { ok: true, value: discovered.value.graph } : discovered;
+}
+
+export interface DiscoveredApplicationGraph {
+  readonly graph: ApplicationGraph;
+  readonly operationExports: readonly { readonly name: string; readonly operationId: string }[];
+  readonly modelExports: readonly { readonly name: string; readonly modelName: string }[];
+  readonly signalExports: readonly { readonly name: string; readonly signalId: string }[];
+  readonly agentExports: readonly { readonly name: string; readonly agentName: string }[];
+}
+
+export async function discoverApplicationGraphWithExports(
+  entrypoint: string,
+  compositionName?: string,
+): Promise<Result<DiscoveredApplicationGraph>> {
   const discovered = await discoverEntrypointExports(entrypoint);
   if (!discovered.ok) return discovered;
   const selected = selectTypeKroComposition(discovered.value.typeKroCompositions, compositionName);
   if (!selected.ok) return selected;
   const graph = applicationGraphForComposition(selected.value);
-  if (graph) return { ok: true, value: graph };
+  if (graph) {
+    const publicGraph = applicationGraphWithEntrypointPublicSurface(graph, {
+      operationIds: discovered.value.applicationOperations.map(
+        (operation) => operation.operationId,
+      ),
+      modelNames: discovered.value.applicationModels.map(
+        (model) => model.modelName,
+      ),
+      signalIds: discovered.value.applicationSignals.map(
+        (signal) => signal.signalId,
+      ),
+    });
+    return {
+      ok: true,
+      value: {
+        graph: publicGraph,
+        operationExports: discovered.value.applicationOperations,
+        modelExports: discovered.value.applicationModels,
+        signalExports: discovered.value.applicationSignals,
+        agentExports: discovered.value.applicationAgents,
+      },
+    };
+  }
   return error('BUNDLE_INVALID', `TypeKro composition ${compositionName ?? selected.value.name ?? '<selected>'} does not expose an Applik8s ApplicationGraph.`);
 }
 export interface CompiledTypeKroComposition {
@@ -174,6 +232,7 @@ export interface TypeKroCompositionBundleManifest extends JsonObject {
     readonly reactive?: readonly TypeKroCompositionReactiveArtifactReference[];
     readonly mcp?: readonly TypeKroCompositionMcpArtifactReference[];
     readonly agents?: readonly TypeKroCompositionAgentArtifactReference[];
+    readonly http?: readonly TypeKroCompositionHttpArtifactReference[];
   };
 }
 
@@ -203,7 +262,11 @@ export interface TypeKroCompositionWorkflowArtifactReference extends JsonObject 
 
 export interface TypeKroCompositionReactiveArtifactReference extends JsonObject {
   readonly name: string;
-  readonly kind: 'queryGateway' | 'projectionWorker' | 'streamProcessorWorker';
+  readonly kind:
+    | 'queryGateway'
+    | 'projectionWorker'
+    | 'searchProjectionWorker'
+    | 'streamProcessorWorker';
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
@@ -213,6 +276,16 @@ export interface TypeKroCompositionReactiveArtifactReference extends JsonObject 
 
 export interface TypeKroCompositionAgentArtifactReference extends JsonObject {
   readonly name: string;
+  readonly manifest: string;
+  readonly source: string;
+  readonly digest: string;
+  readonly sizeBytes: number;
+  readonly container: TypeKroCompositionContainerArtifactReference;
+}
+
+export interface TypeKroCompositionHttpArtifactReference extends JsonObject {
+  readonly name: string;
+  readonly serverId: string;
   readonly manifest: string;
   readonly source: string;
   readonly digest: string;
@@ -264,6 +337,7 @@ export interface TypeKroCompositionArtifacts {
   readonly workloadAuthorityJsonPath?: string;
   readonly workloadAuthority: readonly ApplicationWorkloadAuthorityEnvelope[];
   readonly agentArtifacts: readonly GeneratedApplicationAgentArtifact[];
+  readonly httpArtifacts: readonly GeneratedApplicationHttpArtifact[];
   readonly mcpArtifacts: readonly GeneratedApplicationMcpArtifact[];
   readonly migrationArtifacts: readonly GeneratedApplicationMigrationArtifact[];
   readonly processorArtifacts: readonly GeneratedApplicationProcessorArtifact[];
@@ -379,11 +453,31 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
   if (!resolved.ok) {
     return resolved;
   }
-  const resolvedComposition = compiledTypeKroComposition(resolved.value);
+  const resolvedComposition = compiledTypeKroComposition(resolved.value, serializeCompositionResource);
   if (!resolvedComposition.ok) {
     return resolvedComposition;
   }
-  const applicationGraph = applicationGraphForComposition(composition.value);
+  const authoredApplicationGraph =
+    applicationGraphForComposition(composition.value);
+  const applicationGraph = authoredApplicationGraph
+    ? await applicationGraphWithInferredApplicationHost(
+        applicationGraphWithEntrypointPublicSurface(
+          authoredApplicationGraph,
+          {
+            operationIds: discovered.value.applicationOperations.map(
+              (operation) => operation.operationId,
+            ),
+            modelNames: discovered.value.applicationModels.map(
+              (model) => model.modelName,
+            ),
+            signalIds: discovered.value.applicationSignals.map(
+              (signal) => signal.signalId,
+            ),
+          },
+        ),
+        request.entrypoint,
+      )
+    : undefined;
   const applicationInstallation = applicationInstallationForComposition(composition.value);
   if (applicationGraph) {
     const graphDiagnostics = validateApplicationGraph(applicationGraph);
@@ -415,18 +509,6 @@ export async function compileTypeKroComposition(request: CompileTypeKroCompositi
   };
 }
 
-function portableOperatorDefinition(definition: OperatorDefinition): OperatorDefinition {
-  const namespace = applicationGraphStringValue(definition.deployment?.namespace);
-  if (!namespace) return definition;
-  return {
-    ...definition,
-    deployment: {
-      ...definition.deployment,
-      namespace,
-    },
-  };
-}
-
 async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionArtifactsRequest): Promise<Result<TypeKroCompositionArtifacts>> {
   try {
     const operationCatalog = request.applicationGraph
@@ -444,6 +526,13 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           workloadAuthority,
           outDir: join(request.outDir, 'agents'),
           entrypoint: request.entrypoint,
+        })
+      : [];
+    const httpArtifacts = request.applicationGraph
+      ? await emitGeneratedApplicationHttpServers({
+          graph: request.applicationGraph,
+          ...(operationCatalog ? { operationCatalog } : {}),
+          outDir: join(request.outDir, 'http'),
         })
       : [];
     const migrationArtifacts = request.applicationGraph
@@ -464,6 +553,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
           graph: request.applicationGraph,
           ...(operationCatalog ? { operationCatalog } : {}),
           workloadAuthority,
+          operatorManifests: request.operatorCompiles.map((compiled) => compiled.manifest),
           outDir: join(request.outDir, 'workflows'),
           entrypoint: request.entrypoint,
         })
@@ -492,26 +582,39 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
     const agentResources = agentArtifacts.flatMap(
       (artifact) => artifact.resources,
     ) as unknown as readonly TypeKroCompositionResource[];
+    const httpResources = httpArtifacts.flatMap(
+      (artifact) => artifact.resources,
+    ) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated MCP resources are concrete Kubernetes JSON objects
     // and pass through the shared TypeKro serialization path.
     const mcpResources = mcpArtifacts.flatMap(
       (artifact) => artifact.resources,
     ) as unknown as readonly TypeKroCompositionResource[];
     // typecast: generated host resources are concrete Kubernetes JSON objects and share the TypeKro emission contract.
-    const generatedResources = [...migrationResources, ...processorResources, ...workflowResources, ...reactiveResources, ...mcpResources, ...agentResources, ...hostResources as unknown as readonly TypeKroCompositionResource[]];
+    const generatedResources = [...migrationResources, ...processorResources, ...workflowResources, ...reactiveResources, ...mcpResources, ...agentResources, ...httpResources, ...hostResources as unknown as readonly TypeKroCompositionResource[]];
     const baseFactoryArtifacts = typeKroFactoryArtifacts(request.composition, request.applicationGraph?.metadata, request.applicationInstallation);
     const factoryArtifacts = request.applicationGraph
       ? injectGeneratedResourcesIntoApplicationRgd(baseFactoryArtifacts, generatedResources, request.applicationGraph.metadata.name, request.applicationInstallation, request.applicationGraph)
       : baseFactoryArtifacts;
+    const compositionEmissionResources = compositionResources(
+      request.composition,
+      serializeCompositionResource,
+    );
     const emissionPlan = planTypeKroEmission({
       factory: factoryArtifacts.resources,
-      composition: compositionResources(request.composition),
+      composition: request.applicationGraph
+        ? filterReplacedFunctionNativeServerResources(
+            compositionEmissionResources,
+            request.applicationGraph,
+          )
+        : compositionEmissionResources,
       migrations: migrationResources,
       processors: processorResources,
       workflows: workflowResources,
       reactive: reactiveResources,
       mcp: mcpResources,
       agents: agentResources,
+      http: httpResources,
     });
     const resources = emissionPlan.resources;
     const resourcesDir = join(request.outDir, 'resources');
@@ -595,6 +698,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         ...(reactiveArtifacts.length > 0 ? { reactive: reactiveArtifacts.map((artifact) => ({ name: artifact.name, kind: artifact.kind, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
         ...(mcpArtifacts.length > 0 ? { mcp: mcpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
         ...(agentArtifacts.length > 0 ? { agents: agentArtifacts.map((artifact) => ({ name: artifact.name, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
+        ...(httpArtifacts.length > 0 ? { http: httpArtifacts.map((artifact) => ({ name: artifact.name, serverId: artifact.serverId, manifest: artifact.manifestPath, source: artifact.sourcePath, digest: artifact.digest, sizeBytes: artifact.sizeBytes, container: typeKroContainerArtifactReference(artifact.container) })) } : {}),
       },
     };
 
@@ -644,6 +748,7 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
         ...(workloadAuthorityJsonPath ? { workloadAuthorityJsonPath } : {}),
         workloadAuthority,
         agentArtifacts,
+        httpArtifacts,
         mcpArtifacts,
         migrationArtifacts,
         processorArtifacts,
@@ -659,25 +764,6 @@ async function emitTypeKroCompositionArtifacts(request: EmitTypeKroCompositionAr
   } catch (cause) {
     return error('BUNDLE_INVALID', cause instanceof Error ? cause.message : 'Failed to emit TypeKro composition artifacts.');
   }
-}
-
-function compiledTypeKroComposition(value: unknown): Result<CompiledTypeKroComposition> {
-  if (!value || (typeof value !== 'object' && typeof value !== 'function')) {
-    return error('BUNDLE_INVALID', 'Resolved TypeKro composition is not an object and cannot emit composition artifacts.');
-  }
-  const resources = compositionResources(value);
-  return { ok: true, value: Object.assign(value, { resources }) };
-}
-
-function compositionResources(composition: object | ((...args: never[]) => unknown)): readonly TypeKroCompositionResource[] {
-  if (!composition || (typeof composition !== 'object' && typeof composition !== 'function')) {
-    throw new Error('Resolved TypeKro composition is not an object and cannot emit composition artifacts.');
-  }
-  const resources = Reflect.get(composition, 'resources');
-  if (!Array.isArray(resources)) {
-    throw new Error('Resolved TypeKro composition does not expose a resources array for artifact emission.');
-  }
-  return resources.map((resource, index) => serializeCompositionResource(resource, index));
 }
 
 function typeKroFactoryArtifacts(
@@ -701,7 +787,20 @@ function typeKroFactoryArtifacts(
   }
 
   const resources = parseTypeKroYamlResources(toYaml.call(kroFactory));
-  const singletonInstances = typeKroSingletonOwnerInstances(kroFactory);
+  if (process.env.APPLIK8S_DEBUG_TYPEKRO_FACTORY === '1') {
+    console.error(JSON.stringify({
+      component: 'typekro-factory-artifacts',
+      compositionType: typeof composition,
+      factoryType: typeof kroFactory,
+      resourceCount: resources.length,
+      resourceIdentities: resources.map((resource) => ({
+        apiVersion: resource.apiVersion,
+        kind: resource.kind,
+        name: resource.metadata.name,
+      })),
+    }));
+  }
+  const singletonInstances = typeKroSingletonOwnerInstances(kroFactory, serializeCompositionResource);
   try {
     const generatedInstances = parseTypeKroYamlResources(toYaml.call(kroFactory, {}));
     const requestedInstances = installation?.emitDefaultInstance === false
@@ -728,66 +827,6 @@ function typeKroFactoryArtifacts(
     // prerequisites; preserve them without inventing root desired state.
     return { resources, instances: singletonInstances, instancesAreAuthoritative: true };
   }
-}
-
-function typeKroSingletonOwnerInstances(factory: object): readonly TypeKroCompositionResource[] {
-  const definitions = Reflect.get(factory, 'singletonDefinitions');
-  if (!Array.isArray(definitions)) return [];
-  const instances: TypeKroCompositionResource[] = [];
-  const seen = new Set<string>();
-  for (const [index, definition] of definitions.entries()) {
-    if (!definition || typeof definition !== 'object') continue;
-    const key = Reflect.get(definition, 'key');
-    const id = Reflect.get(definition, 'id');
-    const namespace = Reflect.get(definition, 'registryNamespace');
-    const spec = Reflect.get(definition, 'spec');
-    const specFingerprint = Reflect.get(definition, 'specFingerprint');
-    const identity = typeof key === 'string' ? /^(.+)\/([^/]+):/.exec(key) : undefined;
-    if (!identity?.[1] || !identity[2] || typeof id !== 'string' || typeof namespace !== 'string'
-      || !isJsonObject(spec) || typeof specFingerprint !== 'string') {
-      throw new Error(`TypeKro singleton definition ${index + 1} does not expose a concrete API identity, owner, spec, and fingerprint.`);
-    }
-    if (seen.has(key)) continue;
-    seen.add(key);
-    instances.push(serializeCompositionResource({
-      apiVersion: identity[1],
-      kind: identity[2],
-      metadata: {
-        name: typeKroSingletonInstanceName(id),
-        namespace,
-        annotations: {
-          'typekro.io/singleton-spec-fingerprint': typeKroSingletonSpecFingerprint(specFingerprint),
-        },
-      },
-      spec,
-    }, index));
-  }
-  return instances;
-}
-
-function typeKroSingletonInstanceName(id: string): string {
-  const normalized = id.trim()
-    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
-    .replace(/[^a-zA-Z0-9-]+/g, '-')
-    .replace(/-{2,}/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .toLowerCase();
-  if (!normalized) throw new Error(`TypeKro singleton id ${JSON.stringify(id)} cannot form a Kubernetes resource name.`);
-  return normalized.length <= 253 ? normalized : `${normalized.slice(0, 236).replace(/-+$/g, '')}-${typeKroFNV64(id).slice(0, 16)}`;
-}
-
-function typeKroSingletonSpecFingerprint(specFingerprint: string): string {
-  return `fnv64:${typeKroFNV64(specFingerprint)}`;
-}
-
-function typeKroFNV64(value: string): string {
-  let hash = 0xcbf29ce484222325n;
-  const prime = 0x100000001b3n;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= BigInt(value.charCodeAt(index));
-    hash = BigInt.asUintN(64, hash * prime);
-  }
-  return hash.toString(16).padStart(16, '0');
 }
 
 function uniqueTypeKroResources(resources: readonly TypeKroCompositionResource[]): readonly TypeKroCompositionResource[] {
@@ -1242,81 +1281,6 @@ class MinimalCompileOperatorPipeline implements CompileOperatorPipeline {
     return defaultStages;
   }
 }
-
-
-
-function outputDirectory(request: CompileOperatorRequest): string {
-  return request.outDir ?? join(process.cwd(), DEFAULT_OUT_DIR);
-}
-
-function selectTypeKroComposition(compositions: readonly TypeKroCompositionExport[], name: string | undefined): Result<TypeKroCompositionExport> {
-  if (compositions.length === 0) {
-    return error('BUNDLE_INVALID', 'Entrypoint does not export an applik8s-wrapped TypeKro composition.');
-  }
-  if (name) {
-    const composition = compositions.find((candidate) => candidate.name === name);
-    return composition ? { ok: true, value: composition } : error('BUNDLE_INVALID', `Entrypoint does not export a TypeKro composition named ${name}.`);
-  }
-  if (compositions.length > 1) {
-    return error('BUNDLE_INVALID', 'Entrypoint exports multiple TypeKro compositions; set compositionName to choose one.');
-  }
-  const [composition] = compositions;
-  return composition ? { ok: true, value: composition } : error('BUNDLE_INVALID', 'Entrypoint does not export an applik8s-wrapped TypeKro composition.');
-}
-
-function selectOperator(operators: readonly OperatorDefinition[], name: string | undefined): Result<OperatorDefinition> {
-  if (operators.length === 0) {
-    return error('BUNDLE_INVALID', 'Entrypoint does not export an applik8s operator.');
-  }
-  if (name) {
-    const operator = operators.find((candidate) => candidate.name === name);
-    return operator ? { ok: true, value: operator } : error('BUNDLE_INVALID', `Entrypoint does not export an operator named ${name}.`);
-  }
-  if (operators.length > 1) {
-    return error('BUNDLE_INVALID', 'Entrypoint exports multiple operators; set operatorName to choose one.');
-  }
-  const [operator] = operators;
-  return operator ? { ok: true, value: operator } : error('BUNDLE_INVALID', 'Entrypoint does not export an applik8s operator.');
-}
-
-async function discoverAndSelectOperator(entrypoint: string, name: string | undefined): Promise<Result<OperatorDefinition>> {
-  const discovered = await discoverExportedOperators(entrypoint);
-  return discovered.ok ? selectOperator(discovered.value.operators, name) : discovered;
-}
-
-function selectProvidedOperator(operator: OperatorDefinition, name: string | undefined): Result<OperatorDefinition> {
-  if (name && operator.name !== name) {
-    return error('BUNDLE_INVALID', `Provided operator definition is named ${operator.name}, but compile requested operator ${name}.`);
-  }
-  return { ok: true, value: operator };
-}
-
-function isOperatorDefinitionLike(value: unknown): value is OperatorDefinition {
-  return Boolean(
-    value &&
-      (typeof value === 'object' || typeof value === 'function') &&
-      typeof Reflect.get(value, 'name') === 'string' &&
-      isJsonObject(Reflect.get(value, 'resources')) &&
-      Array.isArray(Reflect.get(value, 'handlers'))
-  );
-}
-
-function artifactsFromPaths(manifestJsonPath: string, handlerWasmPath: string, handlerWitPath: string, yamlPaths: readonly string[], imageDockerfilePath?: string, applyScriptPath?: string, sourceMapPath?: string): OperatorArtifacts {
-  return {
-    manifestJsonPath,
-    handlerWasmPath,
-    handlerWitPath,
-    generatedCrdYamlPaths: yamlPaths.filter((path) => basename(path).startsWith('customresourcedefinition-')),
-    generatedRbacYamlPath: yamlPaths.find((path) => basename(path).startsWith('role-') || basename(path).startsWith('clusterrole-')) ?? '',
-    generatedServiceAccountYamlPath: yamlPaths.find((path) => basename(path).startsWith('serviceaccount-')) ?? '',
-    generatedDeploymentYamlPath: yamlPaths.find((path) => basename(path).startsWith('deployment-')) ?? '',
-    generatedConfigMapYamlPath: yamlPaths.find((path) => basename(path).startsWith('configmap-')) ?? '',
-    ...(imageDockerfilePath ? { generatedImageDockerfilePath: imageDockerfilePath } : {}),
-    ...(applyScriptPath ? { generatedApplyScriptPath: applyScriptPath } : {}),
-    ...(sourceMapPath ? { sourceMapPath } : {}),
-  };
-}
-
 function error<T = never>(code: Diagnostic['code'], message: string): Result<T> {
   return { ok: false, error: { code, message, severity: 'error', context: {}, recovery: { summary: message } } };
 }

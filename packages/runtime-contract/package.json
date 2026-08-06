@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/runtime-contract",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Canonical runtime contract schemas and WIT for applik8s handlers.",
   "license": "Apache-2.0",
   "type": "module",
@@ -16,7 +16,11 @@
     "directory": "packages/runtime-contract"
   },
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "dependencies": {
     "arktype": "^2.1.20"

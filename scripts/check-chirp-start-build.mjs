@@ -1,19 +1,20 @@
 import { execFile, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { cpus, platform } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 import { gzipSync } from 'node:zlib';
+import { collectV06GitIdentity } from './v06-evidence.ts';
 
 const execFileAsync = promisify(execFile);
 const root = process.cwd();
 const example = join(root, 'examples/chirp-start');
 const output = join(root, 'dist/examples/chirp');
 const record = process.argv.includes('--record');
+const reuseBuild = process.argv.includes('--reuse-build');
 
 const webBuildStarted = performance.now();
-await run('bun', ['run', 'build'], example, { TYPEKRO_LOG_LEVEL: 'fatal' });
+if (!reuseBuild) await run('bun', ['run', 'build'], example, { TYPEKRO_LOG_LEVEL: 'fatal' });
 const webBuildDurationMs = performance.now() - webBuildStarted;
 
 const browser = await json(join(example, '.applik8s/web-artifacts/browser.json'));
@@ -36,20 +37,30 @@ assert(!serverFiles.some((path) => path.includes('@kubernetes/client-node')), 'R
 const serverOutputBytes = await totalFileBytes(serverFiles);
 assert(serverOutputBytes <= budgets.chirp.maximumServerOutputBytes, `Chirp server output is ${serverOutputBytes} bytes; budget is ${budgets.chirp.maximumServerOutputBytes}.`);
 
-await rm(output, { recursive: true, force: true });
+if (!reuseBuild) await rm(output, { recursive: true, force: true });
 const compilerBuildStarted = performance.now();
-await run('bun', [
-  'run', 'applik8s', 'build', 'examples/chirp-start/src/application.ts',
-  '--typekro', '--composition-name', 'app', '--out-dir', 'dist/examples/chirp',
-], root, { TYPEKRO_LOG_LEVEL: 'fatal' });
+if (!reuseBuild) {
+  await run('bun', [
+    'run', 'applik8s', 'build', 'examples/chirp-start/src/application.ts',
+    '--typekro', '--composition-name', 'app', '--out-dir', 'dist/examples/chirp',
+  ], root, { TYPEKRO_LOG_LEVEL: 'fatal' });
+}
 const compilerBuildDurationMs = performance.now() - compilerBuildStarted;
 
 const graph = await json(join(output, 'typekro/application-graph.json'));
 assert(!JSON.stringify(graph).includes('[object Object]'), 'Chirp ApplicationGraph must preserve installation-derived values instead of coercing TypeKro references to [object Object].');
+const qualifiedProvider = (providerInterface, qualifier) =>
+  graph.nodes.find(
+    (node) =>
+      node.kind === 'provider'
+      && node.interface === providerInterface
+      && node.config?.qualification?.name === qualifier,
+  );
+const profileBranch = (provider, variant) =>
+  provider?.config?.profile?.branches?.find((branch) => branch.variant === variant);
 const installationNamespace = ['$', '{schema.spec.name}'].join('');
 const installationFeatureValue = (feature) => ['$', `{schema.spec.features.${feature}}`].join('');
 const installationBackupValue = ['$', '{schema.spec.backup.enabled}'].join('');
-const installationManagedBackupValue = ['$', '{(schema.spec.profile == "external" ? false : (true)) && (schema.spec.backup.enabled)}'].join('');
 const installationProfileValue = (value) => typeof value === 'string' && value.startsWith('${') && value.includes('schema.spec.profile');
 const commandProcessors = graph.nodes.filter((node) => node.kind === 'processor');
 assert(commandProcessors.length === 1, `Chirp must consolidate its transactional model commands into one bounded pool; found ${commandProcessors.length}.`);
@@ -101,9 +112,42 @@ assert(
     && moderationPolicyQuery.budgets?.maxRows === 1,
   'ModerationPolicy.current must use one installation-scoped, bounded Kubernetes snapshot/watch authority.',
 );
-for (const processor of ['publish-created-post', 'project-updated-post', 'retire-deleted-post']) {
+for (const processor of ['validate-published-post-create', 'validate-updated-post-update', 'validate-deleted-post-delete']) {
   assert(graph.nodes.some((node) => node.kind === 'streamProcessor' && node.name === processor), `Post.${processor} must lower through the canonical typed lifecycle-event processor path.`);
 }
+for (const processor of ['reconcile-automation-schedules', 'verify-uploaded-media']) {
+  const node = graph.nodes.find((candidate) => candidate.kind === 'streamProcessor' && candidate.name === processor);
+  assert(node?.tasks?.length === 1, `${processor} must retain its compiler-captured direct durable dependency.`);
+}
+const engagementBatchProcessor = graph.nodes.find(
+  (node) => node.kind === 'streamProcessor' && node.name === 'persist-engagement-batch',
+);
+assert(
+  engagementBatchProcessor?.invocation === 'batch'
+    && engagementBatchProcessor.idempotency === 'frozen-batch-id'
+    && engagementBatchProcessor.batch?.membership === 'durableFrozenManifest'
+    && engagementBatchProcessor.batch?.acknowledgement === 'wholeBatch'
+    && engagementBatchProcessor.batch?.ordering === 'partition'
+    && engagementBatchProcessor.batch?.maxItems === 100
+    && engagementBatchProcessor.batch?.maxBytes === 262_144
+    && engagementBatchProcessor.batch?.maxWaitMs === 1_000
+    && engagementBatchProcessor.tasks?.length === 1
+    && engagementBatchProcessor.tasks[0]?.target?.nodeId
+      === 'workflow.engagement.record-batch.v1',
+  'ReactionChanges.onBatch(...) must freeze bounded partition-ordered membership, acknowledge atomically, and invoke one compiler-captured durable receipt workflow.',
+);
+assert(
+  graph.nodes.some((node) => node.kind === 'model' && node.name === 'EngagementBatch')
+    && graph.nodes.some((node) => node.kind === 'query' && node.name === 'EngagementBatch.recentEngagementBatches')
+    && graph.nodes.some((node) => node.kind === 'gateway' && node.name === 'system' && node.visibility === 'internal')
+    && !graph.nodes.some(
+      (node) =>
+        node.kind === 'gateway'
+        && node.visibility !== 'internal'
+        && node.commands?.some((command) => command.command?.nodeId === 'command.models.engagement-batch.create.v1'),
+    ),
+  'Chirp batch receipts must be inspectable through a bounded moderator view while their write authority stays behind an internal generated gateway.',
+);
 assert(graph.nodes.some((node) => node.kind === 'provider' && node.interface === 'WorkflowEngine' && node.config?.namespace === installationNamespace), 'Chirp Hatchet provider must be scoped by ChirpInstallation.spec.name.');
 assert(graph.nodes.some((node) => node.kind === 'provider' && node.interface === 'ApplicationHost'), 'Chirp must include its immutable ApplicationHost.');
 const containerRegistry = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'ContainerRegistry')?.config?.containerRegistry;
@@ -120,47 +164,111 @@ assert(indexStore?.config?.indexStore?.kind === 'valkey' && indexStore.config.in
 assert(installationProfileValue(indexStore?.config?.indexStore?.host) && indexStore.config.indexStore.host.includes('schema.spec.providers.index.host'), 'The external profile must select its online index endpoint from typed provider coordinates.');
 assert(installationProfileValue(indexStore?.config?.indexStore?.provision) && indexStore.config.indexStore.provision.includes('false') && indexStore.config.indexStore.provision.includes('true'), 'Managed profiles must own Valkey directly while the external profile references it.');
 const objectStoreProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'ObjectStorage');
-assert(installationProfileValue(objectStoreProvider?.config?.objectStorage?.ownership) && objectStoreProvider.config.objectStorage.ownership.includes('"external"') && objectStoreProvider.config.objectStorage.ownership.includes('"direct-provisioned"') && objectStoreProvider.config.objectStorage.provisioning?.storageClassName === 'typekro-harbor-bucket-retain', 'Managed profiles must declare automatic direct Rook bucket provisioning while the external profile retains external ownership.');
+const qualifiedObjectStore = qualifiedProvider('ObjectStorage', 'media');
+const starterObjects = profileBranch(qualifiedObjectStore, 'starter')?.config;
+const dedicatedObjects = profileBranch(qualifiedObjectStore, 'dedicated')?.config;
+const externalObjects = profileBranch(qualifiedObjectStore, 'external')?.config;
+assert(
+  starterObjects?.ownership === 'direct-provisioned'
+    && starterObjects.provisioning?.storageClassName === 'typekro-harbor-bucket-retain'
+    && dedicatedObjects?.ownership === 'direct-provisioned'
+    && dedicatedObjects.provisioning?.storageClassName === 'typekro-harbor-bucket-retain'
+    && externalObjects?.ownership === 'external'
+    && externalObjects.provisioning === undefined,
+  'Managed profiles must declare automatic direct Rook bucket provisioning while the external profile retains external ownership.',
+);
 assert(objectStoreProvider?.config?.objectStorage?.enabled === true, 'Chirp must retain ObjectStorage as a core projection-recovery dependency.');
-const transactionalDatabaseProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'TransactionalDatabase')?.config?.transactionalDatabase;
-assert(installationProfileValue(transactionalDatabaseProvider?.ownership) && transactionalDatabaseProvider.ownership.includes('"external"') && transactionalDatabaseProvider.ownership.includes('"direct-provisioned"') && transactionalDatabaseProvider.lifecycle?.deletionPolicy === '${schema.spec.lifecycle.databaseDeletion}', 'Chirp PostgreSQL must select external or explicit direct ownership from typed profile and lifecycle desired state.');
-assert(installationProfileValue(transactionalDatabaseProvider?.connectionSecret?.name) && transactionalDatabaseProvider.connectionSecret.name.includes('schema.spec.providers.database.connectionSecretName'), 'The external profile must select its PostgreSQL connection Secret from typed provider coordinates.');
-assert(transactionalDatabaseProvider?.backup?.enabled === installationManagedBackupValue && transactionalDatabaseProvider.backup?.destination?.kind === 's3', 'Chirp backup desired state must lower only to the managed PostgreSQL provider without embedding credentials.');
+const qualifiedDatabase = qualifiedProvider('TransactionalDatabase', 'primary');
+const starterDatabase = profileBranch(qualifiedDatabase, 'starter')?.config;
+const dedicatedDatabase = profileBranch(qualifiedDatabase, 'dedicated')?.config;
+const externalDatabase = profileBranch(qualifiedDatabase, 'external')?.config;
+assert(
+  starterDatabase?.ownership === 'direct-provisioned'
+    && dedicatedDatabase?.ownership === 'direct-provisioned'
+    && externalDatabase?.ownership === 'external'
+    && externalDatabase?.lifecycle?.deletionPolicy === '${schema.spec.lifecycle.databaseDeletion}',
+  'Chirp PostgreSQL must select external or explicit direct ownership from typed profile and lifecycle desired state.',
+);
+assert(
+  externalDatabase?.connectionSecret?.name === '${schema.spec.providers.database.connectionSecretName}',
+  'The external profile must select its PostgreSQL connection Secret from typed provider coordinates.',
+);
+for (const managedDatabase of [starterDatabase, dedicatedDatabase]) {
+  assert(
+    managedDatabase?.backup?.enabled === installationBackupValue
+      && managedDatabase.backup?.destination?.kind === 's3',
+    'Managed Chirp PostgreSQL branches must retain typed S3 backup desired state without embedding credentials.',
+  );
+}
+assert(
+  externalDatabase?.backup === undefined,
+  'The external PostgreSQL branch must not acquire managed backup resources.',
+);
 const workflowProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'WorkflowEngine');
 assert(workflowProvider?.config?.enabled === true, 'Chirp must retain its WorkflowEngine as a core projection-recovery dependency.');
 const generationProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'StructuredGeneration');
 assert(generationProvider?.implementation === 'application-provider-selection' && generationProvider.config?.selector === 'schema.spec.profile', 'StructuredGeneration must be selected from typed installation desired state without changing task code.');
-assert(generationProvider.config.default?.kind === 'structured-generation-deterministic' && !generationProvider.config.default?.credentialSecret, 'The starter StructuredGeneration branch must be deterministic and credential-free.');
+const starterGeneration = generationProvider.config.cases?.starter;
+assert(starterGeneration?.kind === 'structured-generation-deterministic' && !starterGeneration?.credentialSecret, 'The starter StructuredGeneration branch must be deterministic and credential-free.');
 for (const profile of ['dedicated', 'external']) {
   const selected = generationProvider.config.cases?.[profile];
   assert(selected?.kind === 'structured-generation-http' && selected.endpoint === '${schema.spec.providers.generation.endpoint}', `${profile} StructuredGeneration must use the provider-neutral HTTP adapter.`);
   assert(selected?.credentialSecret?.name === '${schema.spec.providers.generation.credentialsSecretName}' && selected.credentialSecret.namespace === installationNamespace, `${profile} StructuredGeneration credentials must remain a namespace-scoped Secret reference.`);
 }
-const generationTask = graph.nodes.find((node) => node.kind === 'taskHandler' && node.name === 'automation.generate-post.v1');
+const generationTask = graph.nodes.find((node) => node.kind === 'taskHandler' && node.name === 'automation.generate-post.v1.step');
 assert(generationTask?.capabilities?.some((capability) => capability.interface === 'StructuredGeneration'), 'Automation generation must declare StructuredGeneration as an explicit injected task capability.');
-const automationExecutionTask = graph.nodes.find((node) => node.kind === 'taskHandler' && node.name === 'automation.execute-run.effects.v1');
+const automationPreparationTask = graph.nodes.find((node) => node.kind === 'taskHandler' && node.name === 'automation.prepare-run.v1.step');
+const automationPublicationTask = graph.nodes.find((node) => node.kind === 'taskHandler' && node.name === 'automation.publish-run.v1.step');
+const automationRejectionTask = graph.nodes.find((node) => node.kind === 'taskHandler' && node.name === 'automation.reject-run.v1.step');
 const automationExecutionWorkflow = graph.nodes.find((node) => node.kind === 'workflowHandler' && node.name === 'automation.execute-run.v1');
+const automationReviewStream = graph.nodes.find((node) => node.kind === 'stream' && node.signal?.id === 'automation.post-review.v1');
+const automationReviewSubscription = graph.nodes.find((node) => node.kind === 'subscription' && node.name === 'automation-post-review-requests');
 assert(
-  automationExecutionTask?.capabilities?.some((capability) => capability.interface === 'StructuredGeneration')
-    && automationExecutionTask.operations?.map((operation) => operation.alias).sort().join(',') === 'createRun,publish,updateRun'
-    && automationExecutionTask.operations?.some((operation) => operation.command?.nodeId === 'command.models.post.create.v1')
-    && automationExecutionTask.queries?.map((query) => query.alias).sort().join(',') === 'automationControl,context'
-    && automationExecutionTask.queries?.some((query) => query.alias === 'context' && query.query?.nodeId === 'query.Post.homeTimeline')
-    && automationExecutionTask.operationPrincipalSource?.includes('automation-worker')
-    && automationExecutionWorkflow?.taskBindings?.some((binding) => binding.alias === 'execute' && binding.task?.nodeId === 'task.automation.execute-run.effects.v1')
+  automationPreparationTask?.capabilities?.some((capability) => capability.interface === 'StructuredGeneration')
+    && automationPreparationTask.operations?.map((operation) => operation.alias).sort().join(',') === 'AutomationRun.create,AutomationRun.update'
+    && automationPreparationTask.queries?.map((query) => query.alias).sort().join(',') === 'AutomationControlCurrent,PostHomeTimeline'
+    && automationPreparationTask.queries?.some((query) => query.alias === 'PostHomeTimeline' && query.query?.nodeId === 'query.Post.homeTimeline')
+    && automationPreparationTask.operationPrincipalSource?.includes('automation-worker')
+    && automationPublicationTask?.operations?.map((operation) => operation.alias).sort().join(',') === 'AutomationRun.update,Post.create'
+    && automationPublicationTask.operations?.some((operation) => operation.command?.nodeId === 'command.models.post.create.v1')
+    && automationRejectionTask?.operations?.map((operation) => operation.alias).join(',') === 'AutomationRun.update'
+    && automationExecutionWorkflow?.childWorkflowBindings?.map((binding) => binding.workflow?.nodeId).sort().join(',') === [
+      'workflow.automation.prepare-run.v1',
+      'workflow.automation.publish-run.v1',
+      'workflow.automation.reject-run.v1',
+    ].sort().join(',')
+    && automationExecutionWorkflow.signalBindings?.some((binding) => binding.id === 'automation.post-review.v1')
     && automationExecutionWorkflow.handlerSource?.includes('context.now()'),
-  'Automation execution must obtain one history-backed schedule instant in a durable workflow, then combine typed generation, its bounded context view, and only its declared durable model operations under a compiler-bound service principal.',
+  'Automation execution must keep history-backed time and signal decisions in one durable coordinator while compiler-owned callable steps isolate typed generation, bounded reads, and declared model operations under a service principal.',
+);
+assert(
+  automationReviewStream?.signal?.actions?.map((action) => action.name).sort().join(',') === 'approve,reject'
+    && automationReviewSubscription?.source?.nodeId === automationReviewStream.id
+    && graph.nodes.some((node) => node.kind === 'gateway' && node.name === 'administration' && node.subscriptions?.some((subscription) => subscription.nodeId === automationReviewSubscription.id)),
+  'Risky automation must publish one typed, exact-authority signal issuance through the moderator SSE gateway.',
 );
 const automationScheduleProcessor = graph.nodes.find((node) => node.kind === 'streamProcessor' && node.name === 'reconcile-automation-schedules');
 assert(
-  automationScheduleProcessor?.schedules?.length === 1
-    && automationScheduleProcessor.schedules[0]?.alias === 'execute'
-    && automationScheduleProcessor.schedules[0]?.target?.nodeId === 'workflow.automation.execute-run.v1'
+  automationScheduleProcessor?.tasks?.length === 1
+    && automationScheduleProcessor.tasks[0]?.target?.nodeId === 'workflow.automation.execute-run.v1'
     && automationScheduleProcessor.workflowEngine?.nodeId === 'provider.workflow-engine',
   'Committed automation desired state must converge its one typed recurring workflow through the provider-neutral WorkflowEngine boundary.',
 );
 const analyticalProvider = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'AnalyticalDatabase');
-assert(analyticalProvider?.config?.enabled === installationFeatureValue('analytics'), 'ChirpInstallation.spec.features.analytics must drive the analytical AnalyticalDatabase provider.');
+const analyticalConfiguration = analyticalProvider?.config?.analyticalDatabase;
+const analyticalBranches = analyticalConfiguration?.kind === 'application-provider-selection'
+  ? [
+      analyticalConfiguration.default,
+      ...Object.values(analyticalConfiguration.cases ?? {}),
+    ]
+  : [analyticalConfiguration];
+assert(
+  analyticalBranches.length > 0
+    && analyticalBranches.every(
+      (branch) => branch?.enabled === installationFeatureValue('analytics'),
+    ),
+  'ChirpInstallation.spec.features.analytics must drive every selectable AnalyticalDatabase provider.',
+);
 
 const resources = await json(join(output, 'typekro/resources.json'));
 const chirpRgd = resources.find((resource) => resource.apiVersion === 'kro.run/v1alpha1' && resource.kind === 'ResourceGraphDefinition' && resource.metadata?.name === 'chirp');
@@ -219,11 +327,39 @@ const applicationClusters = chirpRgd.spec.resources
 assert(applicationClusters.length === 1, `Chirp must observe exactly one direct-lifecycle authoritative application database cluster, found ${applicationClusters.length}.`);
 assert(applicationClusters[0]?.externalRef?.metadata?.namespace === installationNamespace, 'ChirpInstallation.spec.name must scope the authoritative application database.');
 assert(!chirpRgd.spec.resources.some((resource) => resource.template?.apiVersion === 'postgresql.cnpg.io/v1' && resource.template?.kind === 'Cluster' && resource.template.metadata?.name === 'chirp-models'), 'The retained Chirp database must never be a KRO-owned graph child.');
-assert(installationProfileValue(transactionalDatabaseProvider?.instances) && installationProfileValue(transactionalDatabaseProvider?.storage?.size), 'ChirpInstallation.spec.profile must drive the direct PostgreSQL provisioning contract.');
-const natsRelease = chirpRgd.spec.resources.map((resource) => resource.template).find((resource) => resource?.kind === 'HelmRelease' && resource.metadata?.name === 'applik8s-events');
-assert(installationProfileValue(natsRelease?.spec?.values?.config?.cluster?.replicas) && installationProfileValue(natsRelease?.spec?.values?.config?.jetstream?.fileStore?.pvc?.size), 'ChirpInstallation.spec.profile must drive JetStream replicas and durable storage.');
-const workflowDatabase = chirpRgd.spec.resources.map((resource) => resource.template).find((resource) => resource?.apiVersion === 'postgresql.cnpg.io/v1' && resource?.kind === 'Cluster' && resource.metadata?.name === 'chirp-workflows-db');
-assert(installationProfileValue(workflowDatabase?.spec?.instances) && installationProfileValue(workflowDatabase?.spec?.storage?.size), 'ChirpInstallation.spec.profile must drive workflow database replicas and storage.');
+assert(
+  [starterDatabase, dedicatedDatabase].every(
+    (provider) =>
+      installationProfileValue(provider?.instances)
+      && installationProfileValue(provider?.storage?.size),
+  ),
+  'ChirpInstallation.spec.profile must drive every managed PostgreSQL provisioning branch.',
+);
+const eventLogProvider = graph.nodes.find((node) =>
+  node.kind === 'provider'
+  && node.interface === 'EventLog'
+  && node.implementation === 'nats-jetstream');
+assert(
+  installationProfileValue(eventLogProvider?.config?.replicas)
+    && installationProfileValue(eventLogProvider?.config?.storageSize),
+  'ChirpInstallation.spec.profile must drive the direct TypeKro JetStream replicas and durable-storage contract.',
+);
+assert(
+  installationProfileValue(workflowProvider?.config?.database?.instances)
+    && installationProfileValue(workflowProvider?.config?.database?.storageSize),
+  'ChirpInstallation.spec.profile must drive the direct TypeKro Hatchet database replicas and storage.',
+);
+assert(
+  !chirpRgd.spec.resources
+    .map((resource) => resource.template)
+    .some(
+      (resource) =>
+        resource?.apiVersion === 'postgresql.cnpg.io/v1'
+        && resource?.kind === 'Cluster'
+        && resource.metadata?.name === 'chirp-workflows-db',
+    ),
+  'The Hatchet database belongs to its direct TypeKro provider graph and must not be embedded in the root Chirp RGD.',
+);
 const workflowWorker = chirpRgd.spec.resources.map((resource) => resource.template).find((resource) => resource?.kind === 'Deployment' && resource.metadata?.name === 'chirp-workflows');
 assert(installationProfileValue(workflowWorker?.spec?.replicas), 'ChirpInstallation.spec.profile must drive workflow worker replicas.');
 const workflowWorkerEnvironment = workflowWorker?.spec?.template?.spec?.containers?.[0]?.env ?? [];
@@ -237,7 +373,7 @@ assert(
   workflowWorkerEnvironment.find((entry) => entry.name === 'APPLIK8S_TASK_OPERATION_CONTEXT_SECRET')?.valueFrom?.secretKeyRef?.name === 'chirp-gateway-cursor',
   'Workflow-issued commands must reuse the application gateway context authority without embedding its secret.',
 );
-const timelineRebuildHandler = graph.nodes.find((node) => node.kind === 'taskHandler' && node.name === 'timeline.build-generation.v1');
+const timelineRebuildHandler = graph.nodes.find((node) => node.kind === 'taskHandler' && node.name === 'timeline.rebuild.v1.step');
 const homeTimelineProjection = graph.nodes.find((node) => node.kind === 'projection' && node.name === 'home-timeline');
 assert(
   homeTimelineProjection?.online?.rebuild?.source?.nodeId === 'model.post'
@@ -247,10 +383,10 @@ assert(
 );
 assert(
   timelineRebuildHandler?.projections?.length === 1
-    && timelineRebuildHandler.projections[0]?.alias === 'homeTimeline'
+    && timelineRebuildHandler.projections[0]?.alias === 'HomeTimeline'
     && timelineRebuildHandler.projections[0]?.projection?.nodeId === 'projection.home-timeline'
-    && timelineRebuildHandler.projections[0]?.artifacts?.nodeId === 'objectStore.projection-artifacts',
-  'Chirp timeline recovery must bind the generation-scoped online projection and its immutable artifact store into one typed task effect.',
+    && timelineRebuildHandler.projections[0]?.artifacts?.nodeId === 'objectStore.home-timeline-rebuild-artifacts',
+  'Chirp timeline recovery must infer the generation-scoped projection and framework-owned immutable evidence store from HomeTimeline.rebuild(...).',
 );
 const workflowSource = await readFile(join(output, 'typekro/workflows/chirp-workflows/workflow-worker.generated.ts'), 'utf8');
 for (const marker of [
@@ -260,6 +396,10 @@ for (const marker of [
 ]) {
   assert(workflowSource.includes(marker), `Chirp generated workflow worker is missing projection-recovery runtime marker ${marker}.`);
 }
+assert(
+  workflowSource.match(/applicationPolicyAllowed: true/g)?.length >= 2,
+  'Workflow signal issuance and compiler-bounded task operations must both reach their authoritative transactional policy boundary.',
+);
 const automationScheduleWorker = chirpRgd.spec.resources.find((resource) =>
   resource.template?.kind === 'Deployment'
   && resource.template?.metadata?.name === 'chirp-reconcile-automation-schedules');
@@ -306,19 +446,27 @@ const analyticsResources = chirpRgd.spec.resources.filter((resource) =>
   || (resource.template?.kind === 'Deployment'
     && resource.template?.spec?.template?.spec?.containers?.some((container) => /analytics-hourly$/.test(container.name ?? ''))));
 const analyticsWorkers = analyticsResources.filter((resource) => resource.template?.kind === 'Deployment');
+const analyticsInstallationResources = analyticsResources.filter((resource) =>
+  resource.template?.kind === 'ClickHouseInstallation'
+  || resource.template?.kind === 'Deployment');
+const analyticsSharedPrerequisites = analyticsResources.filter((resource) =>
+  resource.externalRef?.kind === 'ClickHouseHelmRepository'
+  || resource.externalRef?.kind === 'ClickHouseOperatorBootstrap');
 assert(
   analyticsResources.length === 4
     && analyticsWorkers.length === 1
     && analyticsWorkers[0]?.template?.spec?.template?.spec?.containers?.filter((container) => /analytics-hourly$/.test(container.name ?? '')).length === 3
-    && analyticsResources.every((resource) => resource.includeWhen?.some((condition) => condition.includes('schema.spec.features.analytics'))),
-  'Analytics feature selection must omit the ClickHouse control/data plane and the co-located three-projection worker envelope as one RGD branch.',
+    && analyticsInstallationResources.every((resource) => resource.includeWhen?.some((condition) => condition.includes('schema.spec.features.analytics')))
+    && analyticsSharedPrerequisites.length === 2,
+  'Analytics feature selection must omit the installation-owned ClickHouse data plane and co-located three-projection worker while retaining the singleton-owned shared operator prerequisites.',
 );
 const workflowResources = chirpRgd.spec.resources.filter((resource) =>
   ['chirp-workflows', 'chirp-workflows-db', 'chirp-workflows-repository'].includes(resource.template?.metadata?.name));
 assert(
-  workflowResources.length >= 6
+  workflowProvider?.config?.enabled === true
+    && workflowResources.length === 3
     && workflowResources.every((resource) => !JSON.stringify(resource.includeWhen ?? []).includes('features.automatedAccounts')),
-  'Hatchet, its database, and its worker must remain available for core projection recovery independently of automated accounts.',
+  'The direct TypeKro Hatchet provider and root worker resources must remain available for core projection recovery independently of automated accounts.',
 );
 const graphOwnedWorkloadNamespaces = chirpRgd.spec.resources
   .map((resource) => resource.template)
@@ -353,7 +501,11 @@ assert(
 );
 const scheduledBackup = chirpRgd.spec.resources.find((resource) => resource.template?.kind === 'ScheduledBackup');
 assert(
-  scheduledBackup?.includeWhen?.includes(installationManagedBackupValue)
+  scheduledBackup?.includeWhen?.length === 1
+    && scheduledBackup.includeWhen[0].includes('schema.spec.profile == "starter"')
+    && scheduledBackup.includeWhen[0].includes('schema.spec.profile == "dedicated"')
+    && !scheduledBackup.includeWhen[0].includes('schema.spec.profile == "external"')
+    && scheduledBackup.includeWhen[0].includes('schema.spec.backup.enabled')
     && scheduledBackup.template.spec?.cluster?.name === 'chirp-models'
     && scheduledBackup.template.spec?.method === 'barmanObjectStore',
   'Chirp backup desired state must emit one condition-aware CNPG ScheduledBackup for the externally observed direct cluster.',
@@ -387,7 +539,18 @@ assert(
   'Every Applik8s-authored runtime container must receive the KRO-owned installation desired-state document.',
 );
 assert(!JSON.stringify(chirpRgd.spec.schema.status).includes('omit()'), 'KRO instance status expressions must not use resource-template-only omit().');
-assert(chirpRgd.spec.resources.some((resource) => resource.template?.kind === 'HelmRelease' && resource.template?.metadata?.name === 'nack'), 'Chirp must materialize the NATS controller prerequisite rather than emit only Streams and Consumers.');
+const nackReference = chirpRgd.spec.resources.find((resource) =>
+  resource.externalRef?.kind === 'HelmRelease'
+  && resource.externalRef?.metadata?.name === 'nack');
+assert(
+  nackReference?.externalRef?.metadata?.namespace === installationNamespace
+    && jetStreamResources
+      .filter((resource) => resource.template?.kind === 'Stream')
+      .every((resource) =>
+      Object.values(resource.template?.metadata?.annotations ?? {})
+        .includes('${applik8sEventsNackHelmRelease.metadata.name}')),
+  'Chirp must observe the direct NACK prerequisite and order every KRO-owned JetStream resource behind it.',
+);
 const embeddedRuntimeBundle = chirpRgd.spec.resources.find((resource) => resource.template?.kind === 'ConfigMap' && Object.keys({ ...resource.template.data, ...resource.template.binaryData }).some((key) => /\.(?:mjs|cjs|js)(?:\.gz)?$/.test(key)));
 assert(!embeddedRuntimeBundle, 'Chirp must not transport executable JavaScript through ConfigMaps.');
 const bundleManifest = await json(join(output, 'typekro/typekro-composition.json'));
@@ -436,7 +599,7 @@ for (const path of instanceFiles) {
 }
 assert(instanceFiles.length >= 2, 'Installable applications must retain TypeKro singleton owner instances even though the compiler never fabricates the root Application instance.');
 const singletonInstances = await Promise.all(instanceFiles.map(async (path) => ({ path, source: await readFile(path, 'utf8') })));
-assert(singletonInstances.some(({ source }) => source.includes('kind: ClickHouseHelmRepository') && source.includes('applik8s.dev/include-when')), 'The ClickHouse repository singleton must carry its deployment-time analytics feature condition.');
+assert(singletonInstances.some(({ source }) => source.includes('kind: ClickHouseHelmRepository') && source.includes('typekro.io/singleton-spec-fingerprint')), 'The shared ClickHouse repository singleton must retain TypeKro drift identity in the installable bundle.');
 assert(singletonInstances.some(({ source }) => source.includes('kind: ClickHouseOperatorBootstrap') && source.includes('typekro.io/singleton-spec-fingerprint')), 'The ClickHouse operator singleton must retain TypeKro drift identity in the installable bundle.');
 const exampleInstallation = await readFile(join(example, 'kubernetes/chirp.example.yaml'), 'utf8');
 assert(exampleInstallation.includes('kind: ChirpInstallation') && exampleInstallation.includes('namespace: chirp-control'), 'Chirp must ship an explicit control-plane installation example.');
@@ -454,7 +617,7 @@ const accountSchemaSource = await readFile(join(example, 'src/schema/accounts.ts
 const baselineAccounts = sqlTableDefinition(baselineMigration, 'accounts');
 assert(baselineAccounts.includes("state text DEFAULT 'saved' NOT NULL"), 'The historically applied Chirp baseline migration must remain immutable; account-state repair belongs in a forward migration.');
 assert(accountDefaultRepair.includes("ALTER COLUMN state SET DEFAULT 'active'"), 'Existing Chirp installations must repair the historical account-state default before registration is qualified.');
-assert(accountSchemaSource.includes("id: text('id').default(authenticatedPrincipalId).primaryKey()") && accountSchemaSource.includes("state: text('state').notNull().default('active')"), 'The Drizzle authority must declare principal-derived account identity and active registration state.');
+assert(accountSchemaSource.includes("id: field.text('id').default(authenticatedPrincipalId).primaryKey()") && accountSchemaSource.includes("state: field.text('state').notNull().default('active')"), 'The Applik8s model authority must declare principal-derived account identity and active registration state.');
 assert(baselineAccounts.includes('id text PRIMARY KEY'), 'The historically applied baseline must retain its original account identity column; trusted identity repair belongs in a forward migration.');
 assert(accountIdentityRepair.includes("ALTER COLUMN id SET DEFAULT nullif(current_setting('applik8s.principal.id', true), '')"), 'Existing Chirp installations must receive the trusted-principal account identity default.');
 assert(notificationCreatedAtRepair.includes("ALTER COLUMN \"created_at\" SET DEFAULT ''"), 'Existing Chirp installations must let the server stamp notification creation time without browser-authored timestamps.');
@@ -464,9 +627,11 @@ for (const fragment of [
   'reactive/chirp-social/runtime.mjs',
   'reactive/chirp-account/runtime.mjs',
   'reactive/chirp-administration/runtime.mjs',
-  'reactive/chirp-publish-created-post/runtime.mjs',
-  'reactive/chirp-project-updated-post/runtime.mjs',
-  'reactive/chirp-retire-deleted-post/runtime.mjs',
+  'reactive/chirp-validate-created-account-create/runtime.mjs',
+  'reactive/chirp-validate-published-post-create/runtime.mjs',
+  'reactive/chirp-validate-updated-post-update/runtime.mjs',
+  'reactive/chirp-validate-deleted-post-delete/runtime.mjs',
+  'reactive/chirp-verify-uploaded-media/runtime.mjs',
   'reactive/chirp-reconcile-automation-schedules/runtime.mjs',
   'reactive/chirp-post-analytics-hourly/runtime.mjs',
   'workflows/chirp-workflows/workflow-worker.mjs',
@@ -474,17 +639,40 @@ for (const fragment of [
 ]) {
   assert(generated.some((path) => path.endsWith(fragment)), `Chirp build did not emit ${fragment}.`);
 }
-const workflowWorkerSource = await readFile(join(output, 'typekro/workflows/chirp-workflows/workflow-worker.mjs'), 'utf8');
+const commandProcessorSource = await readFile(join(output, 'typekro/processors/chirp-commands/processor.generated.ts'), 'utf8');
+const commandProcessorRuntimePath = join(output, 'typekro/processors/chirp-commands/processor.mjs');
+const workflowWorkerRuntimePath = join(output, 'typekro/workflows/chirp-workflows/workflow-worker.mjs');
+const workflowCallingStreamRuntimePath = join(output, 'typekro/reactive/chirp-reconcile-automation-schedules/runtime.mjs');
+const commandProcessorBytes = (await stat(commandProcessorRuntimePath)).size;
+const workflowWorkerBytes = (await stat(workflowWorkerRuntimePath)).size;
+const workflowCallingStreamProcessorBytes = (await stat(workflowCallingStreamRuntimePath)).size;
+assert(commandProcessorBytes <= budgets.chirp.maximumCommandProcessorBytes, `Chirp command processor is ${commandProcessorBytes} bytes; budget is ${budgets.chirp.maximumCommandProcessorBytes}.`);
+assert(workflowWorkerBytes <= budgets.chirp.maximumWorkflowWorkerBytes, `Chirp workflow worker is ${workflowWorkerBytes} bytes; budget is ${budgets.chirp.maximumWorkflowWorkerBytes}.`);
+assert(workflowCallingStreamProcessorBytes <= budgets.chirp.maximumWorkflowCallingStreamProcessorBytes, `Chirp workflow-calling stream processor is ${workflowCallingStreamProcessorBytes} bytes; budget is ${budgets.chirp.maximumWorkflowCallingStreamProcessorBytes}.`);
+assert(
+  commandProcessorSource.includes('const Account = Object.freeze')
+    && commandProcessorSource.includes('context.models["Account"]'),
+  'Direct Account.get(...) policy reads must compile into a typed transaction-scoped model binding without an authored dependency map.',
+);
+const workflowWorkerSource = await readFile(workflowWorkerRuntimePath, 'utf8');
 assert(workflowWorkerSource.includes('applik8s.task-query/v1alpha1') && workflowWorkerSource.includes('Post.homeTimeline') && workflowWorkerSource.includes('AutomationControl.current'), 'The workflow worker must bundle its schema-bound task-query runtime and both declared views.');
 assert(workflowWorkerSource.includes('REPEATABLE READ READ ONLY') && workflowWorkerSource.includes('different projection definition') && workflowWorkerSource.includes('applik8s.online-projection-rebuild/v1alpha1'), 'The workflow worker must bundle authoritative PostgreSQL snapshot, immutable-manifest resume, and projection-rebuild integrity semantics.');
 assert(workflowWorkerSource.includes('http://chirp-social:8080/') && workflowWorkerSource.includes('http://chirp-administration:8080/'), 'Task queries must use same-namespace Service discovery that remains valid for installation-derived namespaces.');
 assert(!workflowWorkerSource.includes('http://chirp-social.${schema.spec.name}') && !workflowWorkerSource.includes('http://chirp-administration.${schema.spec.name}'), 'Generated Node workers must never receive unevaluated KRO namespace expressions.');
+const workflowCallingStreamSource = await readFile(workflowCallingStreamRuntimePath, 'utf8');
+for (const authoringOnlyMarker of ['typekro', '@kubernetes/client-node', 'ObservableAPI', 'CoreV1Api']) {
+  assert(!workflowCallingStreamSource.includes(authoringOnlyMarker), `Workflow-calling stream processors must not bundle authoring-only dependency ${authoringOnlyMarker}.`);
+}
 const socialGatewaySource = await readFile(join(output, 'typekro/reactive/chirp-social/runtime.mjs'), 'utf8');
 assert(socialGatewaySource.includes('applik8s.task-query/v1alpha1') && socialGatewaySource.includes('inputKey') && socialGatewaySource.includes('/snapshot'), 'Generated gateways must verify short-lived query-, input-, operation-, and audience-bound task admissions.');
 const accountGatewaySource = await readFile(join(output, 'typekro/reactive/chirp-account/runtime.mjs'), 'utf8');
 const socialGatewayBytes = (await stat(join(output, 'typekro/reactive/chirp-social/runtime.mjs'))).size;
 const accountGatewayBytes = (await stat(join(output, 'typekro/reactive/chirp-account/runtime.mjs'))).size;
-assert(socialGatewayBytes < 700_000 && accountGatewayBytes < 700_000, `Focused query gateways must remain below 700 kB (social=${socialGatewayBytes}, account=${accountGatewayBytes}) instead of replaying the authoring graph.`);
+assert(
+  socialGatewayBytes <= budgets.chirp.maximumFocusedQueryGatewayBytes
+    && accountGatewayBytes <= budgets.chirp.maximumFocusedQueryGatewayBytes,
+  `Focused query gateways must remain below ${budgets.chirp.maximumFocusedQueryGatewayBytes} bytes (social=${socialGatewayBytes}, account=${accountGatewayBytes}) instead of replaying the authoring graph.`,
+);
 assert(!socialGatewaySource.includes('typekro') && !accountGatewaySource.includes('typekro'), 'Focused query gateways must not bundle TypeKro or other authoring-only infrastructure modules.');
 const administrationGatewaySource = await readFile(join(output, 'typekro/reactive/chirp-administration/runtime.mjs'), 'utf8');
 assert(administrationGatewaySource.includes('APPLIK8S_KUBERNETES_QUERY_') && administrationGatewaySource.includes('moderationpolicies') && administrationGatewaySource.includes('/__applik8s/v1'), 'The administration gateway must bundle its Kubernetes snapshot/watch authority behind the ordinary query protocol.');
@@ -498,7 +686,12 @@ const artifactReport = {
     'Build durations are local wall-clock observations and exclude container build, registry push/pull, Kubernetes scheduling, and startup.',
   ],
   generatedAt: new Date().toISOString(),
-  git: await gitRevision(),
+  git: await collectV06GitIdentity(root, {
+    exclude: [
+      'benchmarks/v0.6/chirp-artifacts/baseline.json',
+      'benchmarks/v0.6/chirp-artifacts/history/',
+    ],
+  }),
   environment: {
     platform: platform(),
     architecture: process.arch,
@@ -575,16 +768,6 @@ async function totalFileBytes(files) {
 }
 
 function round(value) { return Math.round(value * 100) / 100; }
-
-async function gitRevision() {
-  const [{ stdout: commit }, { stdout: status }, { stdout: diff }] = await Promise.all([
-    execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: root }),
-    execFileAsync('git', ['status', '--porcelain'], { cwd: root }),
-    execFileAsync('git', ['diff', '--binary', 'HEAD'], { cwd: root, maxBuffer: 100 * 1024 * 1024 }),
-  ]);
-  const dirty = status.trim().length > 0;
-  return { commit: commit.trim(), dirty, ...(dirty ? { workingTreeDigest: createHash('sha256').update(diff).digest('hex') } : {}) };
-}
 
 async function run(command, args, cwd, extraEnvironment = {}) {
   const child = spawn(command, args, { cwd, env: { ...process.env, ...extraEnvironment }, stdio: 'inherit' });

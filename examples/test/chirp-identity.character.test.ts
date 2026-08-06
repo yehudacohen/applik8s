@@ -27,9 +27,14 @@ describe('Chirp provider-neutral identity profiles', () => {
       mode: 'deterministic-local', authorizationVersion: 'policy-v1',
     }), new Request('http://chirp.localhost', { headers: { 'x-chirp-user': 'demo-user' } })))
       .resolves.toMatchObject({
-        principal: { id: 'demo-user', claims: { role: 'moderator' } },
-        trustedContext: { issuer: 'chirp://deterministic-local', subject: 'demo-user', identityProvider: 'deterministic-local' },
-        authorizationVersion: 'policy-v1',
+        principal: {
+          id: 'demo-user',
+          identity: { issuer: 'chirp://deterministic-local', subject: 'demo-user' },
+          authorityRevision: 'policy-v1',
+          attributes: { handle: 'demo-user' },
+          roles: ['installation-administrator', 'identity-administrator', 'moderator'],
+        },
+        trustedContext: { issuer: 'chirp://deterministic-local', subject: 'demo-user' },
       });
   });
 
@@ -58,9 +63,14 @@ describe('Chirp provider-neutral identity profiles', () => {
     }), { fetch: requestFetch as typeof fetch });
 
     expect(admission).toMatchObject({
-      principal: { id: 'account-1', claims: { handle: 'ada', role: 'moderator', kind: 'human', roles: ['moderator'] } },
-      trustedContext: { issuer: 'https://identity.example.test', subject: 'account-1', identityProvider: 'ory', sessionVersion: '2026-07-20T11:59:00.000Z' },
-      authorizationVersion: 'keto-policy-v4:2026-07-20T11:59:00.000Z',
+      principal: {
+        id: 'account-1',
+        identity: { issuer: 'https://identity.example.test', subject: 'account-1' },
+        authorityRevision: 'keto-policy-v4:2026-07-20T11:59:00.000Z',
+        attributes: { handle: 'ada' },
+        roles: ['moderator'],
+      },
+      trustedContext: { issuer: 'https://identity.example.test', subject: 'account-1' },
     });
   });
 
@@ -105,9 +115,14 @@ describe('Chirp provider-neutral identity profiles', () => {
       },
     });
     expect(admission).toMatchObject({
-      principal: { id: 'zitadel-account-1', claims: { handle: 'grace', role: 'moderator', roles: ['moderator', 'member'] } },
-      trustedContext: { issuer: 'https://identity.example.test', subject: 'zitadel-account-1', identityProvider: 'zitadel' },
-      authorizationVersion: 'zitadel-policy-v2:1721476800',
+      principal: {
+        id: 'zitadel-account-1',
+        identity: { issuer: 'https://identity.example.test', subject: 'zitadel-account-1' },
+        authorityRevision: 'zitadel-policy-v2:1721476800',
+        attributes: { preferred_username: 'grace' },
+        roles: ['member', 'moderator'],
+      },
+      trustedContext: { issuer: 'https://identity.example.test', subject: 'zitadel-account-1' },
     });
 
     await expect(authenticateConfiguredChirpRequest(configuration, new Request('https://chirp.example.test', {
@@ -132,7 +147,11 @@ describe('Chirp provider-neutral identity profiles', () => {
     });
     vi.stubGlobal('fetch', requestFetch);
     await expect(chirpAuthorization.decide({
-      principal: { id: 'moderator-1' }, action: 'Post.moderate',
+      principal: {
+        id: 'moderator-1',
+        identity: { id: 'identity:ory:moderator-1', kind: 'human', issuer: 'https://identity.example.test', subject: 'moderator-1' },
+      },
+      action: 'Post.moderate',
       resource: { apiVersion: 'chirp.dev/v1', kind: 'Post', name: 'post-1', id: 'post-1' }, context: {},
     })).resolves.toMatchObject({ allowed: true, version: 'keto-revision-9' });
 
@@ -141,7 +160,12 @@ describe('Chirp provider-neutral identity profiles', () => {
       sessionEndpoint: 'https://identity.example.test/oidc/v1/userinfo', authorizationVersion: 'zitadel-policy-v2',
     }));
     await expect(chirpAuthorization.decide({
-      principal: { id: 'moderator-1', claims: { roles: ['moderator'] } }, action: 'Post.moderate',
+      principal: {
+        id: 'moderator-1',
+        identity: { id: 'identity:zitadel:moderator-1', kind: 'human', issuer: 'https://identity.example.test', subject: 'moderator-1' },
+        roles: ['moderator'],
+      },
+      action: 'Post.moderate',
       resource: { apiVersion: 'chirp.dev/v1', kind: 'Post', name: 'post-1', id: 'post-1' }, context: {},
     })).resolves.toMatchObject({ allowed: true, version: 'zitadel-policy-v2' });
   });

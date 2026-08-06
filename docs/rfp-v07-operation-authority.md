@@ -22,39 +22,43 @@ systems may admit principals or project decisions, but they do not own canonical
 
 ## Required developer experience
 
-Existing operations gain authority without a parallel secure API:
+Ordinary model behavior gains authority at the boundary where it is deliberately admitted or exposed,
+without a parallel command or operation-definition API:
 
 ```ts
-const Deploy = Application.operation(
-  "deploy",
-  {
-    input: DeployInput,
-    output: DeployOutput,
-    key: ({ applicationId }) => applicationId,
-    events: [DeploymentRequested],
-  },
-  async (application, input, context) => {
-    const requestId = context.id("deployment");
-    application.patch({ spec: { desiredVersion: input.version } });
-    context.emit(DeploymentRequested, {
+export async function deployApplication(
+  input: typeof DeployInput.infer,
+): Promise<typeof DeployOutput.infer> {
+  return Application.edit(input.applicationId, async application => {
+    const requestId = Id.create("deployment");
+    await application.update({
+      desiredVersion: input.version,
+    });
+    DeploymentRequested.emit({
       requestId,
       applicationId: application.id,
       version: input.version,
     });
     return { requestId };
-  },
-);
+  });
+}
 
 Administrator.can(
   Application.read.all(),
-  Deploy.where((application) => application.environment.ne("production")),
+  deployApplication,
+  {
+    target: Application.where(application =>
+      application.environment.ne("production")),
+  },
 );
 
 const ReleaseAgentIdentity = application.serviceIdentity("release-agent");
 
 ReleaseAgentIdentity.mayRequest(
-  Deploy.where((application) => application.environment.eq("production")),
+  deployApplication,
   {
+    target: Application.where(application =>
+      application.environment.eq("production")),
     approval: ProductionOwner,
     expiresIn: "15m",
     maximumUses: 1,
@@ -68,12 +72,13 @@ Tool visibility remains separate:
 ```ts
 const ReleasePlannerTools = [
   Application.read,
-  Deploy,
+  deployApplication,
 ] as const;
 ```
 
 This is deliberately tool-availability metadata, not an executable agent declaration. The AI RFP owns
-the agent closure and TanStack execution shape. A concrete execution principal may invoke `Deploy` only
+the agent closure and TanStack execution shape. A concrete execution principal may invoke
+`deployApplication` only
 after the authority service resolves a compatible static or runtime grant.
 
 The same authority facet attaches to Kubernetes-resource operation handles without pretending that a
@@ -89,8 +94,7 @@ ImportAdministrator.can(
   ImportJob.delete.all(),
 );
 
-ImportJob.on.create(
-  "initialize-import",
+export const initializeImport = ImportJob.on.create(
   { namespace: application.installation.spec.name },
   async (created, context) => {
     created.status.phase = "Pending";
@@ -102,6 +106,35 @@ ImportJob.on.create(
 writes through the optional admission integration. `ImportJob.on.create` consumes an observed lifecycle
 fact as a workload identity; it is neither granted to the initiating user nor exposed as a callable
 operation.
+
+`application.role(...)` declares what a provider role means; it is not a role
+claim parser. `principal.roles` may be populated only by the selected
+server-side identity adapter from provider-verified evidence. Browser input,
+route payloads, signal action payloads, and arbitrary trusted-context fields
+cannot assign a role. The maintained Ory adapter derives roles from the
+verified Kratos identity and rejects malformed role claims before principal
+admission. The resulting authorization receipt records the exact static
+permission matched through the admitted role, with no invented grant.
+
+An externally authenticated machine gets the same concise, typed authority
+surface without naming its provider:
+
+```ts
+const ReleaseAutomation = application.oauthClient(
+  "release-automation",
+  { issuer: "https://identity.example.test" },
+);
+
+ReleaseAutomation.can(Application.deploy.all());
+```
+
+`oauthClient(...)` binds the exact provider-asserted issuer and client subject
+to a canonical workload identity. The issuer participates in the identity
+digest, so a same-named client from another authorization server receives no
+authority. Ory, Zitadel, or another OAuth implementation may admit the token;
+none of them owns the application permission model. MCP resource, audience,
+scope, expiry, and revocation validation occur before this static grant can
+match.
 
 Runtime administration composes the same deployed operation handles:
 
@@ -166,28 +199,29 @@ The public documentation and generated Start use progressive disclosure:
 The complete authority model remains available without requiring simple applications to configure every
 concept.
 
-`operation(...)` is the v0.7 canonical spelling for exceptional named model behavior. It is a direct
-evolution of the v0.6 `.action(...)` surface, not a new registry or command bus. One declaration and one
-closure derive `Model.<name>(...)`, `Model.on.<name>(...)`, stable catalog identity, authority, and
-transport/tool adapters. “Action” remains migration terminology for the v0.6 surface; new source,
-catalog, permission, and transport examples consistently call executable handles operations.
+“Operation” remains the normalized catalog, authorization, receipt, and audit term. It is not a public
+behavior-definition wrapper. A function acquires an internal stable operation identity only when it is
+registered at a framework boundary, exposed through HTTP/MCP/agent tooling, or used as a durable
+workflow step. The compiler derives that identity from its exported symbol, module, schemas, target
+model, and explicit compatibility revision.
 
-The deprecated `.action(...)` source spelling remains during the v0.7-to-1.0 migration window as a thin
-alias to the same `.operation(...)` implementation and graph node. It may not register a second handler,
-completion stream, catalog record, or permission. Legacy `/actions/` catalog references are read only
-through explicit migration/replacement metadata; all newly emitted identities use `/operations/`.
-Generated projects, new examples, and maintained modules use `.operation(...)` exclusively. The alias
-is removed at 1.0.
+The v0.6 `.action(...)`, draft `.operation(...)`, and low-level model command registries are removed
+from the public API before v0.7. There are no external consumers that justify preserving a misleading
+compatibility surface. Historical `/actions/` catalog references remain relevant only to explicit
+data-migration tooling; newly emitted catalog identities use `/operations/` because that is the
+authority concept, not the authoring syntax.
 
-Relational models, ArkType-backed CRDs/resources, and existing framework entity models retain their
-native authoritative definitions. The authorizable facet attaches to their existing operation handles;
-this RFP does not require them to be translated into one storage schema.
+Application models retain one authoritative `model()` definition. Qualified bindings derive native
+relational, Kubernetes, analytical, index, or document facets without a second field map. The
+authorizable facet attaches to the resulting CRUD handles and deliberately exposed domain functions;
+this RFP does not translate provider-specific execution guarantees into one lowest-common-denominator
+runtime.
 
 The shared operation vocabulary does not erase model-kind execution semantics:
 
 | Model authority | Invocable operations | Reactive lifecycle | Execution guarantee |
 | --- | --- | --- | --- |
-| Promoted relational model | Derived CRUD and named operations | Committed `on.create`, `on.update`, `on.delete`, and named-operation completion streams | Mutation closures run in the declared authoritative database transaction and may emit only declared transactional outbox work. |
+| Relationally bound application model | Derived CRUD and deliberately exposed domain functions | Committed `on.create`, `on.update`, `on.delete`, and admitted-function completion streams | `Model.edit(...)` closures run in the declared authoritative database transaction and may emit only declared transactional outbox work. |
 | ArkType-backed CRD/resource | Typed create, update, delete, status, and explicitly declared resource operations | Kubernetes create/update/delete/reconcile/watch handlers | Kubernetes optimistic concurrency, admission, status ownership, finalizers, and inferred RBAC remain authoritative; no relational transaction is implied. |
 | Framework entity/document model | Only operations supported by its bound model-store capability | Its existing committed lifecycle surface | The selected provider contract determines transaction and change-frontier guarantees; unsupported facets are absent. |
 | Analytical model/projection | Declared reads, aggregates, rebuild, and projection-control operations | Declared ingestion/checkpoint events | It is not canonical transactional write authority unless a separate capability explicitly says so. |
@@ -204,35 +238,39 @@ All invocable handles use one execution model:
 
 ```text
 await Handle(input)
-  application entry through the generated server/client facade
-
-await context.invoke(Handle, input)
-  canonical internal authorized invocation
+  canonical authoring form at application entry and inside managed closures
 
 await context.operations.name(input)
 await context.queries.name(input)
 await context.tasks.name(input)
-  declared typed aliases that lower to context.invoke(theDeclaredHandle, input)
+  migration aliases only; they lower to the same internal invocation
 ```
 
-An executable closure declares every operation, query, task, or workflow handle that it may invoke.
-Generated aliases preserve the underlying handle's execution semantics—query admission, task scheduling,
-workflow start, transaction ordering, result durability—but do not create another invocation system.
-Calling an undeclared imported handle directly from a managed closure fails compilation. Framework-owned
-operation adapters such as `Operation.http()` and MCP tools record the same dependency explicitly during
-graph construction.
+The compiler statically discovers every imported exposed function, query, workflow, or other callable
+handle called by an executable closure, including calls through included module-local helpers. It
+proves the complete
+input expression, target, call site, and bounded authority, then lowers the call through the internal
+invocation primitive and normalized `ExecutionBinding`. Dynamic imports, reflective handle selection,
+unresolved calls, and authority wider than the enclosing workload fail compilation.
 
-Transaction-local state mutation and fact production are intentionally not nested invocations:
-`subject.patch(...)`, `context.emit(...)`, `context.send(...)`, and typed reconciliation-plan mutation
-retain their existing transaction/outbox/operator semantics.
+Generated aliases preserve compatibility and the underlying handle's execution semantics but do not
+define the golden path or create another invocation system. Framework-owned operation adapters such as
+`Operation.http()` and MCP tools record the same dependency during graph construction.
+
+Transaction-local state mutation and fact production are intentionally not nested result-bearing
+invocations. `subject.patch(...)`, direct `Event.emit(...)`, lint-safe `void Command(...)` staging, and
+typed reconciliation-plan mutation retain their transaction/outbox/operator semantics. The compiler
+infers those statically reachable event and command contracts. `context.emit(...)` and
+`context.send(...)` remain compatibility spellings, while `await Command(...)` fails discovery because
+the nested command has no result until the owning transaction commits.
 
 The authored closure grammar is:
 
 ```ts
-// Subject-bound model/resource operation
-async (subject, input, context) => {};
+// Ordinary domain behavior with an explicit model transaction
+async (input) => Model.edit(input.id, async subject => {});
 
-// Free query, task, workflow step, or agent
+// Free query, workflow step, or agent
 async (input, context) => {};
 
 // Committed lifecycle or stream observation
@@ -251,43 +289,31 @@ context position; it does not flatten distinct facts into one generic subject.
 
 ### Exact execution binding
 
-> A task, workflow, processor, or reconciler dependency declaration authorizes its generated workload
-> identity to invoke exactly those declared operations under their declared input, target, and scope
-> constraints. It grants no delegation authority, user impersonation, alternate transport access, or
-> undeclared operation. The resulting workload authority is serialized in the application graph and
-> deployment plan.
+> Statically reachable calls plus any explicit fail-closed maximum envelope authorize a task,
+> workflow, processor, or reconciler workload identity to invoke exactly those operations under their
+> proven input, target, and scope constraints. They grant no delegation authority, user impersonation,
+> alternate transport access, or undeclared operation. The resulting workload authority is serialized
+> in the application graph and deployment plan.
 
 The stable workload grant is the maximum envelope, distinct from authority to start that task/workflow,
 the causal end-user's authority, and the effective authority of any concrete execution. Dependency
-bindings fix selected callee-input fields from validated task input, event data, or the reconciled
-resource:
+bindings record the complete callee-input fields and provenance from validated task input, event data,
+or the reconciled resource:
 
 ```ts
-operations: {
-  completeObservation: Source.completeObservation.onInput(
-    (task) => ({
-      sourceId: task.sourceId,
-      requestId: task.requestId,
-    }),
-  ),
-},
-```
-
-The generated alias accepts only the unbound fields:
-
-```ts
-await context.operations.completeObservation({
+await Source.completeObservation({
+  sourceId: task.sourceId,
+  requestId: task.requestId,
   evidenceCount,
 });
 ```
 
-`onInput(...)`, `onEvent(...)`, and `onResource(...)` are the event-driven public vocabulary. They lower
-to one internal `ExecutionBinding` contract containing the operation handle, execution-source kind,
-serializable projection, and statically known bound keys. They are typed partial application, not merely
-target selectors: bound keys are removed from the alias input type and cannot be redundantly supplied or
-overridden.
+The compiler lowers that complete expression to one internal `ExecutionBinding` containing the
+operation handle, execution-source kind, serializable field provenance, and statically known keys.
+`onInput(...)`, `onEvent(...)`, and `onResource(...)` remain typed partial-application compatibility
+forms during migration; they are no longer required public ceremony for new source.
 
-Their conceptual type contract is:
+The compatibility methods' conceptual type contract is:
 
 ```ts
 interface ExecutionBindable<TInput> {
@@ -442,8 +468,8 @@ This RFP owns:
 - target and relationship scopes;
 - authorization receipts and revalidation for durable work;
 - transport constraints and nested-operation reauthorization;
-- direct/internal invocation lowering, declared dependency aliases, and generated least-privilege
-  workload authority;
+- statically discovered direct/internal invocation lowering, compatibility dependency aliases, and
+  generated least-privilege workload authority;
 - stable workload identities, the public `ExecutionPrincipal` contract, diagnostic execution kinds,
   internal `ExecutionBinding` IR, exact statically proven bound-key sets, monotonic
   field/target/scope composition, terminal bound dependencies, and execution authorization receipts;
@@ -697,8 +723,8 @@ Mutations default to admission plus pre-commit. Irreversible external workflow e
 protected-step check. Query cursors and subscriptions bind to principal, trusted-context digest,
 authorization revision, operation revision, and provider generation.
 
-`context.invoke(operation, input)` always reauthorizes the nested operation. Entry through an authorized
-raw route does not lend the handler ambient authority.
+A nested direct-handle call always reauthorizes through the internal invocation boundary. Entry through
+an authorized raw route does not lend the handler ambient authority.
 
 A model operation closure is transaction-authoritative and may validate, derive, mutate declared
 transactional state, emit declared outbox events, and enqueue declared transactional commands. It may
@@ -790,11 +816,12 @@ Named raw routes and all bindings have stable transport identity. `*` matches ex
 and `**` matches descendants. Selectors resolve after the complete route graph is known; invalid or empty
 matches fail compilation, and newly matched routes appear in manifest compatibility reports.
 
-A raw route closure is an operation in its own right. Nested protected operations reauthorize with
-`context.invoke(...)`; authorizing the raw route does not lend authority to its nested operations. An
-adapted route has no second business closure or permission: it validates and maps HTTP input, then invokes
-the one underlying operation under the route-constrained grant. Transport-constrained authority to HTTP
-or MCP never broadens the underlying operation to another transport.
+A raw route closure is an operation in its own right. Nested protected direct-handle calls reauthorize
+through the internal invocation boundary; authorizing the raw route does not lend authority to its
+nested operations. An adapted route has no second business closure or permission: it validates and maps
+HTTP input, then invokes the one underlying operation under the route-constrained grant.
+Transport-constrained authority to HTTP or MCP never broadens the underlying operation to another
+transport.
 
 ### Queries and subscriptions
 
@@ -820,6 +847,27 @@ Workflow state records the initiating principal, an `ExecutionPrincipal` with di
 Each task attempt receives an execution principal with diagnostic kind `TaskRunPrincipal`, narrowed by
 its validated input and declared dependency bindings. Long-running work revalidates before protected
 external steps and cannot silently retain expired authority.
+
+Each static signal contract declares canonical issue, exact-instance `issuance.read`, and action
+operations. `authorize` restricts issuance-event visibility and action admission to subjects that
+already possess compatible exact-read and relevant action authority; it cannot create a grant.
+`grantAccessTo` derives only exact-instance issuance-read and declared-action grants bounded by target,
+context, subject, use, and expiry after proving compatible `canGrant`. It never grants general contract
+stream enumeration or history. Signal-event delivery is not resolution authority. Action payloads are
+untrusted application input, while the authenticated actor and authorization receipt are
+framework-derived outcome metadata.
+
+Each action method returns only its own action-correlated successful outcome. An exact idempotent replay
+returns the same outcome and receipt. A losing or later conflicting invocation receives only a redacted
+terminal summary and cannot observe the winning action, input, actor, or receipt. Exact
+`issuance.read` does not imply full-resolution-read authority; adding such a public operation requires
+an explicit future authorization contract.
+
+The function-native execution RFP's non-selectable primary-transactional-database `SignalStore`
+transaction is canonical for signal state and transactionally associated grants, receipts, and outbox
+records. Operation authority owns their authorization meaning and enforcement, not a separate signal
+database. Workflow history and event delivery retain causal references to those records but cannot
+resolve or recreate them independently.
 
 ### Kubernetes admission and reconciliation
 
@@ -910,9 +958,9 @@ as policy.
 1. Rename Kubernetes `ApplicationPermissionRule` and add migration/type compatibility fixtures.
 2. Add the authorizable facet, default-deny reachability analysis, stable descriptors, and explicit
    naming to current operations.
-3. Make `.operation(name, contract, closure)` the canonical exceptional-model spelling while preserving
-   the v0.6 direct-handle, transactional, completion-stream, and graph semantics; retain `.action(...)`
-   only as a deprecated alias to that same node until 1.0.
+3. Lower deliberately exposed ordinary functions and `Model.edit(...)` transaction closures into the
+   canonical operation graph after physically removing `.action(...)`, draft `.operation(...)`, and
+   model command registries from the public authoring surface.
 4. Implement catalog staging, activation, compatibility reports, replacement, draining, and retirement.
 5. Add normalized principals, canonical authority models, and static manifest reconciliation.
 6. Add runtime permissions, bounded scopes, delegation, grants, reservations, revocation, and audit.
@@ -920,10 +968,10 @@ as policy.
 8. Add authority draining, retained revocation tombstones, dependency-ordered teardown, external
    neutralization, and audited break-glass recovery.
 9. Add durable receipts and boundary-specific revalidation.
-10. Implement direct/internal invocation lowering, typed dependency aliases, normalized closure
-    signatures, stable workload envelopes, public `ExecutionPrincipal` admission,
-    exact-key explicit/inferred `ExecutionBinding` field projections, terminal/monotonic scope
-    composition, runtime bound-field override rejection, and exact generated workload grants.
+10. Implement statically discovered direct/internal invocation lowering, compatibility dependency
+    aliases, normalized closure signatures, stable workload envelopes, public `ExecutionPrincipal`
+    admission, exact-key inferred/explicit `ExecutionBinding` field projections, terminal/monotonic
+    scope composition, runtime bound-field override rejection, and exact generated workload grants.
 11. Integrate raw routes, adapted HTTP bindings, route-group lowering, queries, subscriptions, workflows,
     processors, MCP handles, and Kubernetes admission.
 12. Add enforcement-projection frontier and fail-closed provider behavior.
@@ -931,34 +979,32 @@ as policy.
 
 ## Required gates
 
-- Existing CRUD behavior and direct named-operation handles remain valid; v0.7 examples use the reviewed
-  `.operation(...)` spelling consistently.
-- One `.operation(...)` declaration derives the direct callable, typed completion stream, catalog entry,
-  authority facet, and transport/tool adapters without copying its handler.
-- Deprecated `.action(...)` declarations lower to the exact same operation graph node and closure during
-  the documented migration window; they cannot produce duplicate catalog, handler, stream, or authority
-  state.
-- Relational, CRD/resource, and framework entity models retain their native schemas while sharing the
-  authorizable operation facet.
+- Existing CRUD behavior and admitted domain functions remain valid; v0.7 examples contain no public
+  `.operation(...)` or `.action(...)` declaration.
+- One registered or deliberately exposed function derives the callable binding, typed completion
+  stream, catalog entry, authority facet, and transport/tool adapters without copying its closure.
+- Public type and runtime tests prove `.action(...)`, draft `.operation(...)`, and model command
+  registries are absent rather than deprecated aliases.
+- Relational, CRD/resource, framework entity, and analytical bindings derive from one authoritative
+  `model()` declaration while sharing the authorizable operation facet.
 - Relational transaction operations, Kubernetes resource operations, reactive lifecycle handlers, and
   analytical operations retain distinct execution guarantees and fail closed when a requested facet is
   unsupported.
-- Transaction closures cannot perform external effects, and later processors/tasks/workflows do not
+- Transaction closures cannot perform external effects, and later processors/workflow steps do not
   inherit the initiating principal implicitly.
-- Direct handle invocation is the generated entry facade, `context.invoke()` is the internal primitive,
-  and declared operation/query/task aliases lower to that primitive without changing the underlying
-  operation semantics.
-- A managed closure cannot invoke an undeclared operation dependency.
-- Task, workflow, processor, and reconciler workload identities receive exactly their serialized maximum
+- Direct handle invocation is canonical at generated entry facades and inside managed closures; compiler
+  lowering and compatibility aliases preserve the underlying operation semantics.
+- A managed closure cannot invoke a dynamic, unresolved, or authority-widening operation dependency.
+- Workflow, processor, route, agent, and reconciler workload identities receive exactly their serialized maximum
   operation/input/target/scope envelopes, with no delegation, impersonation, alternate-transport, or
   ambient caller authority.
-- Every task attempt, workflow run/step, processor delivery, and reconcile attempt executes under a
+- Every workflow step, processor delivery, route/agent execution, and reconcile attempt executes under a
   distinct `ExecutionPrincipal` narrowed to its validated input/event/resource, bound operation input,
   target/scope, audience, deadline, and active authority revision.
 - `onInput`/`onEvent`/`onResource` bind typed callee-input fields from the enclosing execution, remove
   those fields from generated alias inputs, and lower to one `ExecutionBinding`; bound fields cannot be
   supplied or overridden by the caller.
-- Type fixtures prove that the projection parameter is inferred from the enclosing task/workflow input,
+- Type fixtures prove that the projection parameter is inferred from the enclosing workflow input,
   processor event, or reconciled resource without annotations, and that incompatible or unknown bound
   fields fail at the declaration site.
 - Compiler fixtures prove exact returned-key capture independently of TypeScript widening: varying
@@ -990,6 +1036,15 @@ as policy.
 - Static and runtime scopes lower to the same closed IR.
 - Concurrent use of a one-use grant permits at most one distinct command.
 - Same-idempotency-key retry does not consume another use.
+- Every signal contract registers one issue operation, one exact-instance `issuance.read` operation,
+  and its declared action operations without creating a parallel authority namespace.
+- `authorize` creates no grant and requires compatible exact-read/action authority;
+  `grantAccessTo` requires `canGrant`, grants only exact issuance read and declared actions, and cannot
+  enumerate unrelated contract events.
+- Signal action payloads cannot establish actor identity, while the committed terminal outcome
+  references the authenticated actor and canonical authorization receipt.
+- Winning action results are correlated to the invoked action; exact retries reuse them, while losing
+  callers receive redacted terminal summaries and cannot inspect the winning decision.
 - Self-grant, delegation broadening, target broadening, transport broadening, and validity extension fail.
 - Conditional-key execution bindings, bound-field override attempts, post-binding scope changes, and
   any composition that drops an earlier target or predicate fail deterministically.

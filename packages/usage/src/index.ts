@@ -1,114 +1,84 @@
-import type {
-  ApplicationDatabaseBinding,
-  ApplicationProcessorOptions,
-  KubernetesApplicationBuilder,
+import {
+  type ApplicationModelCommandContext,
+  type ApplicationRelationalModel,
+  type PromotedDrizzleTable,
+  module,
 } from '@applik8s/applik8s';
 import {
-  bigint,
-  index,
-  integer,
-  jsonb,
-  pgTable,
-  text,
-  timestamp,
-  uniqueIndex,
-} from 'drizzle-orm/pg-core';
-
-export const applicationUsageFacts = pgTable(
-  'applik8s_usage_facts',
-  {
-    id: text('id').primaryKey(),
-    principalScope: text('principal_scope').notNull(),
-    operationId: text('operation_id'),
-    invocationId: text('invocation_id'),
-    attemptId: text('attempt_id'),
-    provider: text('provider'),
-    backend: text('backend'),
-    logicalModel: text('logical_model'),
-    inputTokens: integer('input_tokens'),
-    outputTokens: integer('output_tokens'),
-    cachedInputTokens: integer('cached_input_tokens'),
-    reasoningTokens: integer('reasoning_tokens'),
-    costMicrounits: bigint('cost_microunits', { mode: 'number' }),
-    pricingRevision: text('pricing_revision'),
-    confidence: text('confidence').notNull(),
-    dimensions: jsonb('dimensions').notNull(),
-    occurredAt: timestamp('occurred_at', {
-      withTimezone: true,
-      mode: 'string',
-    }).notNull(),
-    recordedAt: timestamp('recorded_at', {
-      withTimezone: true,
-      mode: 'string',
-    }).notNull().defaultNow(),
-  },
-  (table) => [
-    uniqueIndex('applik8s_usage_facts_attempt_uidx').on(
-      table.attemptId,
-      table.pricingRevision,
-    ),
-    index('applik8s_usage_facts_scope_time_idx').on(
-      table.principalScope,
-      table.occurredAt,
-    ),
-  ],
-);
-
-export const applicationEntitlements = pgTable(
-  'applik8s_entitlements',
-  {
-    id: text('id').primaryKey(),
-    principalScope: text('principal_scope').notNull(),
-    capability: text('capability').notNull(),
-    limit: bigint('limit', { mode: 'number' }),
-    period: text('period'),
-    constraints: jsonb('constraints').notNull(),
-    authorityRevision: text('authority_revision').notNull(),
-    validFrom: timestamp('valid_from', {
-      withTimezone: true,
-      mode: 'string',
-    }).notNull(),
-    validUntil: timestamp('valid_until', {
-      withTimezone: true,
-      mode: 'string',
-    }),
-  },
-  (table) => [
-    uniqueIndex('applik8s_entitlements_scope_capability_uidx').on(
-      table.principalScope,
-      table.capability,
-      table.authorityRevision,
-    ),
-  ],
-);
-
-export const applicationUsageSchema = Object.freeze({
-  applicationUsageFacts,
   applicationEntitlements,
-});
+  applicationUsageFacts,
+  applicationUsageSchema,
+} from './schema.js';
 
-export interface ApplicationUsageModuleOptions {
-  readonly database?: ApplicationDatabaseBinding;
-  readonly processor?: ApplicationProcessorOptions;
+export * from './schema.js';
+
+function installUsage() {
+  return {
+    // app.include() registers this schema before installation.
+    // typecast: preserve the promoted model facets on the same Drizzle values.
+    UsageFact: applicationUsageFacts as ApplicationRelationalModel<
+      typeof applicationUsageFacts
+    >,
+    // typecast: module installation retains the promoted table identity.
+    Entitlement: applicationEntitlements as PromotedDrizzleTable<
+      typeof applicationEntitlements
+    >,
+  };
 }
 
-export function usage(
-  application: Pick<KubernetesApplicationBuilder, 'model'>,
-  options: ApplicationUsageModuleOptions = {},
-) {
-  const modelOptions = {
-    ...(options.database ? { database: options.database } : {}),
-    ...(options.processor ? { processor: options.processor } : {}),
-  };
-  const UsageFact = application.model(applicationUsageFacts, {
-    ...modelOptions,
-    name: 'UsageFact',
-    revision: false,
+export const usage = module(
+  'usage',
+  { schema: applicationUsageSchema },
+  installUsage,
+);
+
+export interface ActiveEntitlementRequirement {
+  readonly principalScope: string;
+  readonly capability: string;
+}
+
+export class ApplicationEntitlementRequiredError extends Error {
+  readonly code = 'APPLIK8S_ENTITLEMENT_REQUIRED';
+
+  constructor(readonly requirement: ActiveEntitlementRequirement) {
+    super(
+      `Capability ${requirement.capability} requires an active entitlement for ${requirement.principalScope}.`,
+    );
+    this.name = 'ApplicationEntitlementRequiredError';
+  }
+}
+
+/**
+ * Transaction-authoritative entitlement admission for a native model policy.
+ *
+ * Callers declare `Usage.Entitlement` in the policy transaction once; this
+ * helper keeps generic participant decoding and validity-window handling out
+ * of application source.
+ */
+export async function requireActiveEntitlement(
+  context: ApplicationModelCommandContext,
+  requirement: ActiveEntitlementRequirement,
+): Promise<void> {
+  const page = await context.models.Entitlement?.query({
+    where: {
+      principalScope: requirement.principalScope,
+      capability: requirement.capability,
+    },
+    limit: 100,
   });
-  const Entitlement = application.model(applicationEntitlements, {
-    ...modelOptions,
-    name: 'Entitlement',
-    revision: false,
-  });
-  return Object.freeze({ UsageFact, Entitlement });
+  const admittedAt = Date.parse(context.now);
+  const active = page?.items.some(({ spec }) => {
+    const validFrom = Reflect.get(spec, 'validFrom');
+    const validUntil = Reflect.get(spec, 'validUntil');
+    return typeof validFrom === 'string'
+      && Date.parse(validFrom) <= admittedAt
+      && (
+        validUntil == null
+        || (
+          typeof validUntil === 'string'
+          && Date.parse(validUntil) > admittedAt
+        )
+      );
+  }) === true;
+  if (!active) throw new ApplicationEntitlementRequiredError(requirement);
 }

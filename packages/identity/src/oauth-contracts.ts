@@ -1,3 +1,4 @@
+// typecast-file-boundary: OAuth schemas validate wire values before restoring their protocol contract types.
 import type {
   ApplicationIdentityReference,
   ApplicationOAuthAuthorizationFlowPrincipal,

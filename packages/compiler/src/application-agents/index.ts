@@ -12,11 +12,16 @@ import type {
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
 } from '@applik8s/core';
+import {
+  applicationOptionalDeploymentOutputReference,
+} from '@applik8s/deployment-contract';
 import { build } from 'esbuild';
+import { generatedCallbackFactoryModule } from '../application-callback-module.js';
 import {
   emitGeneratedApplicationContainer,
   type GeneratedApplicationContainerArtifact,
 } from '../application-containers/index.js';
+import { applicationGraphStringValue } from '../application-installation-values.js';
 import {
   type ApplicationOperationPlacementReceiver,
   compileApplicationOperationPlacementReceiver,
@@ -62,7 +67,8 @@ interface ApplicationAgentCompilerContract {
     readonly operation: ApplicationOperationDescriptor;
     readonly transport: ApplicationAIAgentNode['tools'][number]['transport'];
     readonly workloadAuthority: ApplicationWorkloadAuthorityEnvelope;
-    readonly receiver: ApplicationOperationPlacementReceiver;
+    readonly receiver?: ApplicationOperationPlacementReceiver;
+    readonly local?: NonNullable<ApplicationAIAgentNode['tools'][number]['local']>;
   }[];
   readonly namespace: string;
   readonly state: NonNullable<ApplicationModelNode['runtime']>;
@@ -155,11 +161,15 @@ function applicationAgentCompilerContract(
       operation,
       transport: tool.transport,
       workloadAuthority: authority,
-      receiver: compileApplicationOperationPlacementReceiver(
-        graph,
-        operation,
-        `Application agent ${agent.name} tool ${operation.id}`,
-      ),
+      ...(tool.local
+        ? { local: tool.local }
+        : {
+            receiver: compileApplicationOperationPlacementReceiver(
+              graph,
+              operation,
+              `Application agent ${agent.name} tool ${operation.id}`,
+            ),
+          }),
     };
   });
   const stateModels = graph.nodes.filter(
@@ -225,6 +235,20 @@ async function emitAgent(
     contract.agent.handlerSource,
     contract.agent.handlerDependencies,
   );
+  for (const [index, tool] of contract.tools.entries()) {
+    if (!tool.local) continue;
+    await writeFile(
+      join(agentDir, localAgentToolModuleFile(index)),
+      generatedCallbackFactoryModule({
+        source: tool.local.handlerSource,
+        ...(tool.local.handlerDependencies
+          ? { dependencies: tool.local.handlerDependencies }
+          : {}),
+        injectedIdentifiers: localAgentToolBindingRoots(tool.local),
+        exportName: 'createTool',
+      }),
+    );
+  }
   if (contract.agent.instructions.kind === 'closure') {
     await writeCallbackModule(
       agentDir,
@@ -243,10 +267,12 @@ async function emitAgent(
     target: 'node22',
     legalComments: 'none',
     minify: true,
+    keepNames: true,
     lineLimit: 120,
     sourcemap: 'external',
     sourcesContent: false,
     metafile: true,
+    nodePaths: [join(process.cwd(), 'node_modules')],
     banner: {
       js: "import { createRequire as __applik8sCreateRequire } from 'node:module'; const require = __applik8sCreateRequire(import.meta.url);",
     },
@@ -335,20 +361,33 @@ function generatedAgentSource(contract: ApplicationAgentCompilerContract): strin
       contract.tools.flatMap((tool) => tool.workloadAuthority.audiences),
     ),
   ].sort();
-  const routeEntries = contract.tools.map((tool) =>
+  const routeEntries = contract.tools.filter(
+    (tool): tool is typeof tool & { readonly receiver: ApplicationOperationPlacementReceiver } =>
+      Boolean(tool.receiver),
+  ).map((tool) =>
     `[${JSON.stringify(tool.operation.id)}, ${JSON.stringify({
       url: tool.receiver.url,
       maximumResponseBytes: 10_485_760,
     })}]`,
   ).join(',\n');
+  const localToolImports = contract.tools.flatMap((tool, index) =>
+    tool.local
+      ? [`import { createTool as createLocalTool${index} } from ${JSON.stringify(`./${localAgentToolModuleFile(index)}`)};`]
+      : []).join('\n');
+  const localToolRuntime = generatedLocalAgentToolRuntime(contract);
   return `
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import postgres from 'postgres';
 import { createApplicationAIAttemptRuntime } from '@applik8s/ai';
+import { createApplicationAIAgentConversationPersistence, createPostgresApplicationConversationStore } from '@applik8s/conversations/runtime';
 import { createApplicationOperationAuthorityRuntime, decodeApplicationExecutionAdmission } from '@applik8s/operations';
 import { createApplicationAIAgentRequestHandler, createApplicationAIOperationExecutor, createPostgresApplicationAIAttemptStore } from '@applik8s/runtime-ai';
 import { callback as handler } from './handler.generated.js';
+${localToolImports}
+${contract.tools.some((tool) => tool.local)
+    ? "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';\nimport { applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
+    : ''}
 ${contract.agent.instructions.kind === 'closure'
     ? "import { callback as instructions } from './instructions.generated.js';"
     : ''}
@@ -382,8 +421,51 @@ function selectedProfileValue(value) {
   }
   return selected;
 }
-const selectedProvider = selectedProfileValue(contract.provider);
-const selectedRoute = selectedProfileValue(contract.route);
+let installationSpec;
+function installationSpecValue(path) {
+  installationSpec ??= JSON.parse(requiredEnv('APPLIK8S_INSTALLATION_SPEC'));
+  let current = installationSpec;
+  for (const segment of path.split('.')) {
+    if (!current || typeof current !== 'object' || Array.isArray(current) || !(segment in current)) {
+      throw new Error('Generated AI provider installation path schema.spec.' + path + ' is absent from APPLIK8S_INSTALLATION_SPEC.');
+    }
+    current = current[segment];
+  }
+  return current;
+}
+function materializeInstallationValue(value) {
+  if (typeof value === 'string') {
+    const reference = /^\\$\\{schema\\.spec\\.([A-Za-z_][A-Za-z0-9_.]*)\\}$/.exec(value);
+    return reference?.[1] ? installationSpecValue(reference[1]) : value;
+  }
+  if (Array.isArray(value)) return value.map(materializeInstallationValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, nested]) => [key, materializeInstallationValue(nested)]),
+  );
+}
+const selectedProvider = materializeInstallationValue(selectedProfileValue(contract.provider));
+const selectedRoute = materializeInstallationValue(selectedProfileValue(contract.route));
+const selectedModelRoute = selectedProvider?.models?.[contract.model.name];
+const selectedBackend = Array.isArray(selectedModelRoute?.backends)
+  ? selectedModelRoute.backends[0]
+  : undefined;
+function requiredProviderString(value, label) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error('Selected AI provider is missing ' + label + '.');
+  }
+  return value;
+}
+function managedOpenAICompatibleBaseUrl(value) {
+  const endpoint = new URL(requiredProviderString(value, 'the managed gateway endpoint'));
+  const pathname = endpoint.pathname.replace(/\\/+$/u, '');
+  if (!pathname.endsWith('/v1')) {
+    endpoint.pathname = (pathname || '') + '/v1';
+  }
+  endpoint.search = '';
+  endpoint.hash = '';
+  return endpoint.toString().replace(/\\/$/u, '');
+}
 const sql = postgres(requiredEnv(${JSON.stringify(contract.state.connectionEnvName)}), {
   max: Math.max(4, contract.deployment.maximumConcurrency + 2),
   idle_timeout: 20,
@@ -392,12 +474,17 @@ const sql = postgres(requiredEnv(${JSON.stringify(contract.state.connectionEnvNa
 });
 const attemptStore = createPostgresApplicationAIAttemptStore({ sql });
 const attemptRuntime = createApplicationAIAttemptRuntime({ store: attemptStore });
+const conversationStore = createPostgresApplicationConversationStore({ sql });
+const conversationPersistence = createApplicationAIAgentConversationPersistence({
+  store: conversationStore,
+});
 const operationAuthority = createApplicationOperationAuthorityRuntime({
   sql,
   application: contract.application,
   catalog: ${JSON.stringify(contract.operationCatalog)},
   ${applicationStaticAuthorityManifest(contract.graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(contract.graph))},` : ''}
 });
+${localToolRuntime}
 const placementRoutes = new Map([${routeEntries}]);
 const invokeOperation = createApplicationAIOperationExecutor({
   authority: operationAuthority,
@@ -405,7 +492,18 @@ const invokeOperation = createApplicationAIOperationExecutor({
   envelopes: contract.tools.map((tool) => tool.workloadAuthority),
   transportSecret: requiredEnv('APPLIK8S_INTERNAL_OPERATION_SECRET'),
   dispatch: {
-    async dispatch({ operation, arguments: input, invocationToken, signal }) {
+    async dispatch({ operation, arguments: input, invocationToken, invocationId, idempotencyKey, principal, authorizationReceipt, trustedContext, signal }) {
+      const local = localAgentTools.get(operation.id);
+      if (local) {
+        return local.invoke(input, {
+          invocationId,
+          idempotencyKey,
+          principal,
+          authorizationReceipt,
+          trustedContext,
+          signal,
+        });
+      }
       const route = placementRoutes.get(operation.id);
       if (!route) throw new Error('AI operation has no compiled placement route.');
       const response = await fetch(route.url, {
@@ -436,16 +534,42 @@ const handle = createApplicationAIAgentRequestHandler({
   logicalModel: contract.model.name,
   instructions: ${instructions},
   provider: selectedProvider.kind === 'ai-deterministic'
-    ? { kind: 'deterministic', response: typeof selectedProvider.fixture?.response === 'string' ? selectedProvider.fixture.response : undefined, latencyMs: selectedProvider.latencyMs }
+    ? {
+        kind: 'deterministic',
+        response: typeof selectedProvider.fixture?.response === 'string'
+          ? selectedProvider.fixture.response
+          : undefined,
+        latencyMs: selectedProvider.latencyMs,
+        ...(selectedProvider.fixture?.tool
+          ? { tool: selectedProvider.fixture.tool }
+          : {}),
+      }
     : {
         kind: 'openai-compatible',
-        name: selectedProvider.name ?? 'envoy-ai-gateway',
-        baseUrl: process.env.APPLIK8S_AI_GATEWAY_URL ?? 'http://envoy-ai-gateway.default.svc',
-        apiKey: process.env.APPLIK8S_AI_GATEWAY_API_KEY ?? 'gateway-managed',
-        model: contract.model.name,
+        name: selectedBackend?.name ?? selectedProvider.name ?? 'envoy-ai-gateway',
+        baseUrl: selectedProvider.provision === false
+          ? requiredProviderString(
+              selectedBackend?.endpoint,
+              'the external backend endpoint',
+            )
+          : managedOpenAICompatibleBaseUrl(
+              requiredEnv('APPLIK8S_AI_GATEWAY_MANAGED_URL'),
+            ),
+        ...(process.env.APPLIK8S_AI_GATEWAY_API_KEY
+          ? { apiKey: process.env.APPLIK8S_AI_GATEWAY_API_KEY }
+          : {}),
+        allowInsecureHttp:
+          selectedProvider.provision !== false
+          || selectedBackend?.allowInsecureHttp === true,
+        model: selectedProvider.provision === false
+          ? requiredProviderString(
+              selectedBackend?.model ?? selectedRoute?.concreteModel,
+              'the external backend model',
+            )
+          : contract.model.name,
       },
   tools: contract.tools,
-  persistence: Object.freeze({ kind: 'pending-tanstack-server-persistence' }),
+  persistence: conversationPersistence,
   timeoutMs: contract.budgets.timeoutMs,
   maximumConcurrency: contract.deployment.maximumConcurrency,
   async admit(request, body) {
@@ -628,6 +752,7 @@ async function initializeDependencies() {
     attempt += 1;
     try {
       await attemptStore.prepare();
+      await conversationStore.prepare();
       await operationAuthority.prepare();
       ready = true;
       lastDependencyError = undefined;
@@ -715,12 +840,227 @@ process.once('SIGINT', () => { void shutdown(); });
 `;
 }
 
+function generatedLocalAgentToolRuntime(
+  contract: ApplicationAgentCompilerContract,
+): string {
+  const localTools = contract.tools.flatMap((tool, index) =>
+    tool.local ? [{ tool, local: tool.local, index }] : []);
+  if (localTools.length === 0) {
+    return 'const localAgentTools = new Map();';
+  }
+  const graphNodes = new Map(
+    contract.graph.nodes.map((node) => [node.id, node]),
+  );
+  const declarations = localTools.map(({ tool, local, index }) => {
+    const transaction = local.functionNativeTransaction;
+    const primary = graphNodes.get(transaction.primaryModel.nodeId);
+    if (primary?.kind !== 'model' || !primary.runtime) {
+      throw new Error(
+        `Application agent ${contract.agent.id} local tool ${tool.operation.id} primary model ${transaction.primaryModel.nodeId} has no PostgreSQL runtime.`,
+      );
+    }
+    const models = transaction.models.map((reference) => {
+      const model = graphNodes.get(reference.nodeId);
+      if (model?.kind !== 'model' || !model.runtime) {
+        throw new Error(
+          `Application agent ${contract.agent.id} local tool ${tool.operation.id} participant ${reference.nodeId} has no PostgreSQL runtime.`,
+        );
+      }
+      return model.runtime;
+    });
+    const outbox = transaction.outbox.map((reference) => {
+      const event = graphNodes.get(reference.nodeId);
+      if (event?.kind !== 'event') {
+        throw new Error(
+          `Application agent ${contract.agent.id} local tool ${tool.operation.id} outbox ${reference.nodeId} is not an event.`,
+        );
+      }
+      return {
+        kind: 'applik8sEvent',
+        id: event.name,
+        name: event.contract.name,
+        version: event.contract.version,
+        payload: {
+          kind: 'jsonSchema',
+          ref: {
+            kind: 'jsonSchema',
+            uri: `generated:${event.name}.payload`,
+          },
+          schema: event.contract.payload.jsonSchema,
+        },
+      };
+    });
+    const bindings = localAgentToolBindingsSource(
+      contract.graph,
+      local,
+    );
+    return `
+{
+  const bindings = ${bindings};
+  const authored = createLocalTool${index}(bindings);
+  localAgentTools.set(${JSON.stringify(tool.operation.id)}, Object.freeze({
+    async invoke(input, context) {
+      const validInput = validateLocalToolValue(${JSON.stringify(local.input.jsonSchema)}, input, ${JSON.stringify(`${tool.operation.id}.input`)});
+      const result = await withApplicationNativeModelTransactionRuntime(
+        Object.freeze({
+          edit: request => executeFunctionNativePostgresModelEdit({
+            bindingId: ${JSON.stringify(`${contract.agent.id}:${tool.operation.id}`)},
+            model: ${JSON.stringify(primary.runtime)},
+            models: ${JSON.stringify(models)},
+            outbox: ${JSON.stringify(outbox)},
+            databaseUrl: requiredEnv(${JSON.stringify(primary.runtime.connectionEnvName)}),
+            delivery: {
+              id: context.idempotencyKey,
+              idempotencyKey: context.idempotencyKey,
+              correlationId: context.invocationId,
+              causationId: context.invocationId,
+              recordedAt: new Date().toISOString(),
+              context: {
+                values: applicationRequestContextValues(
+                  context.principal,
+                  context.principal.authorityRevision,
+                  context.trustedContext,
+                ),
+                digest: context.principal.trustedContextDigest,
+              },
+              authorizationReceipt: context.authorizationReceipt,
+            },
+            revalidateAuthorization: (receipt, boundary, authorization) =>
+              operationAuthority.revalidate(
+                receipt,
+                boundary,
+                authorization.trustedContextDigest,
+                authorization.transaction,
+              ),
+          }, request),
+        }),
+        () => authored(validInput),
+      );
+      return validateLocalToolValue(${JSON.stringify(local.output.jsonSchema)}, result, ${JSON.stringify(`${tool.operation.id}.output`)});
+    },
+  }));
+}`;
+  }).join('\n');
+  return `
+function localToolSchema(json, name) {
+  return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema: json };
+}
+function validateLocalToolValue(json, value, name) {
+  const normalized = normalizeSchema(localToolSchema(json, name), name);
+  const result = normalized.validate(value);
+  if (!result.ok) throw new Error('Application agent local tool ' + name + ' failed schema validation: ' + result.error.message);
+  return result.value;
+}
+function localToolModelSnapshot(value) {
+  return value ? { identity: value.id, value: value.spec, ...(value.revision ? { revision: value.revision } : {}) } : undefined;
+}
+function localToolModelHandle(name) {
+  return Object.freeze({
+    get: async identity => localToolModelSnapshot(await getApplicationNativeModelObject(name, identity)),
+    find: async options => (await findApplicationNativeModelObjects(name, options)).items.map(localToolModelSnapshot),
+    require: async identity => localToolModelSnapshot(await requireApplicationNativeModelObject(name, identity)),
+    edit: (identity, handler) => editApplicationNativeModelObject(name, identity, handler),
+  });
+}
+const localAgentTools = new Map();
+${declarations}`;
+}
+
+function localAgentToolBindingsSource(
+  graph: ApplicationGraph,
+  local: NonNullable<ApplicationAIAgentNode['tools'][number]['local']>,
+): string {
+  const graphNodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const entries = new Map<
+    string,
+    { readonly target: string; readonly value: string }
+  >();
+  for (const binding of local.functionNativeTransaction.modelBindings) {
+    const model = graphNodes.get(binding.model.nodeId);
+    if (model?.kind !== 'model') {
+      throw new Error(
+        `Local agent tool binding ${binding.identifier} references missing model ${binding.model.nodeId}.`,
+      );
+    }
+    const root = localAgentToolBindingRoot(binding.identifier);
+    const previous = entries.get(root);
+    if (previous && previous.target !== model.id) {
+      throw new Error(
+        `Local agent tool binding ${root} is ambiguous between ${previous.target} and ${model.id}.`,
+      );
+    }
+    entries.set(root, {
+      target: model.id,
+      value: `localToolModelHandle(${JSON.stringify(model.name)})`,
+    });
+  }
+  for (const binding of local.functionNativeTransaction.eventBindings ?? []) {
+    const event = graphNodes.get(binding.event.nodeId);
+    if (event?.kind !== 'event') {
+      throw new Error(
+        `Local agent tool binding ${binding.identifier} references missing event ${binding.event.nodeId}.`,
+      );
+    }
+    const root = localAgentToolBindingRoot(binding.identifier);
+    const previous = entries.get(root);
+    if (previous && previous.target !== event.id) {
+      throw new Error(
+        `Local agent tool binding ${root} is ambiguous between ${previous.target} and ${event.id}.`,
+      );
+    }
+    entries.set(root, {
+      target: event.id,
+      value: `createApplicationFunctionNativeEventHandle(${JSON.stringify(`${event.contract.name}.${event.contract.version}`)}, { payload: localToolSchema(${JSON.stringify(event.contract.payload.jsonSchema)}, ${JSON.stringify(`${event.name}.payload`)}) })`,
+    });
+  }
+  return `{ ${[...entries.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([root, binding]) =>
+      `${JSON.stringify(root)}: ${binding.value}`)
+    .join(', ')} }`;
+}
+
+function localAgentToolBindingRoot(identifier: string): string {
+  const root = identifier.split('.')[0]?.trim();
+  if (!root || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(root)) {
+    throw new Error(
+      `Local agent tool callback binding ${JSON.stringify(identifier)} does not have a serializable root identifier.`,
+    );
+  }
+  return root;
+}
+
+function localAgentToolBindingRoots(
+  local: NonNullable<ApplicationAIAgentNode['tools'][number]['local']>,
+): readonly string[] {
+  return [
+    ...local.functionNativeTransaction.modelBindings.map(
+      (binding) => localAgentToolBindingRoot(binding.identifier),
+    ),
+    ...(local.functionNativeTransaction.eventBindings ?? []).map(
+      (binding) => localAgentToolBindingRoot(binding.identifier),
+    ),
+  ].filter(
+    (identifier, index, values) =>
+      /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(identifier)
+      && values.indexOf(identifier) === index,
+  );
+}
+
+function localAgentToolModuleFile(index: number): string {
+  return `tool-${index}.generated.ts`;
+}
+
 function generatedAgentResources(
   contract: ApplicationAgentCompilerContract,
   image: string,
   digest: string,
 ): readonly GeneratedApplicationAgentResource[] {
   const name = kubernetesName(contract.agent.name);
+  const credentialSecret = applicationAgentCredentialSecret(
+    contract.providerConfig,
+    contract.agent.model.name,
+  );
   const labels = {
     'app.kubernetes.io/name': name,
     'app.kubernetes.io/component': 'ai-agent',
@@ -789,6 +1129,32 @@ function generatedAgentResources(
                         value: applicationAgentProfileSelector(
                           contract.providerConfig,
                         ),
+                      }]
+                    : []),
+                  ...(applicationAgentHasManagedEnvoy(
+                    contract.providerConfig,
+                  )
+                    ? [{
+                        name: 'APPLIK8S_AI_GATEWAY_MANAGED_URL',
+                        value:
+                          applicationOptionalDeploymentOutputReference(
+                            `direct.${contract.provider.id}.envoy-ai-gateway`,
+                            'endpoint',
+                          ),
+                      }]
+                    : []),
+                  ...(credentialSecret
+                    ? [{
+                        name:
+                          credentialSecret.environmentName
+                          ?? 'APPLIK8S_AI_GATEWAY_API_KEY',
+                        valueFrom: {
+                          secretKeyRef: {
+                            name: credentialSecret.name,
+                            key: credentialSecret.key,
+                            optional: credentialSecret.optional,
+                          },
+                        },
                       }]
                     : []),
                   {
@@ -1008,4 +1374,128 @@ function applicationAgentProfileSelector(provider: JsonObject): string | undefin
     );
   }
   return `\${schema.spec.${match[1]}}`;
+}
+
+function applicationAgentHasManagedEnvoy(provider: JsonObject): boolean {
+  if (provider.kind === 'envoy-ai-gateway') {
+    return provider.provision !== false;
+  }
+  if (provider.kind !== 'application-provider-selection') return false;
+  const cases = isJsonObject(provider.cases) ? Object.values(provider.cases) : [];
+  return [...cases, provider.default].some(
+    (candidate) =>
+      isJsonObject(candidate)
+      && candidate.kind === 'envoy-ai-gateway'
+      && candidate.provision !== false,
+  );
+}
+
+function applicationAgentCredentialSecret(
+  provider: JsonObject,
+  modelName: string,
+): Readonly<{
+  environmentName?: string;
+  name: string;
+  key: string;
+  optional: boolean;
+}> | undefined {
+  if (provider.kind !== 'application-provider-selection') {
+    const secret = applicationAgentExternalCredential(provider, modelName);
+    if (!secret) return undefined;
+    const name = applicationGraphStringValue(secret.name);
+    if (!name) {
+      throw new Error(
+        'Application AI external credential Secret name must be a concrete or graph-derived string.',
+      );
+    }
+    return {
+      name,
+      key: applicationGraphStringValue(secret.key) ?? 'apiKey',
+      optional: false,
+    };
+  }
+  const selector = typeof provider.selector === 'string'
+    ? provider.selector
+    : undefined;
+  const cases = isJsonObject(provider.cases)
+    ? Object.entries(provider.cases)
+    : [];
+  const fallback = isJsonObject(provider.default)
+    ? provider.default
+    : {};
+  if (!selector || !/^schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/u.test(selector)) {
+    throw new Error(
+      'Application AI credential selection requires a direct schema.spec discriminator.',
+    );
+  }
+  const candidates = [
+    ...cases.map(([, candidate]) => isJsonObject(candidate) ? candidate : {}),
+    fallback,
+  ];
+  const secrets = candidates.map((candidate) =>
+    applicationAgentExternalCredential(candidate, modelName)
+  );
+  if (secrets.every((secret) => secret === undefined)) return undefined;
+  const selected = (
+    read: (secret: Readonly<{ name: unknown; key: unknown }>) => unknown,
+    absent: string,
+  ): string => {
+    const serialize = (
+      candidate: Readonly<{ name: unknown; key: unknown }> | undefined,
+    ): string => applicationAgentScalarExpression(
+      candidate ? read(candidate) : absent,
+    );
+    const otherwise = serialize(secrets.at(-1));
+    const expression = cases.reduceRight(
+      (current, [variant], index) =>
+        `${selector} == ${JSON.stringify(variant)} ? ${serialize(secrets[index])} : (${current})`,
+      otherwise,
+    );
+    return `\${${expression}}`;
+  };
+  return {
+    environmentName: selected(
+      () => 'APPLIK8S_AI_GATEWAY_API_KEY',
+      'APPLIK8S_UNUSED_AI_CREDENTIAL',
+    ),
+    name: selected((secret) => secret.name, 'applik8s-ai-credentials-unused'),
+    key: selected((secret) => secret.key, 'apiKey'),
+    optional: true,
+  };
+}
+
+function applicationAgentExternalCredential(
+  provider: JsonObject,
+  modelName: string,
+): Readonly<{ name: unknown; key: unknown }> | undefined {
+  if (
+    provider.kind !== 'envoy-ai-gateway'
+    || provider.provision !== false
+    || !isJsonObject(provider.models)
+  ) {
+    return undefined;
+  }
+  const model = provider.models[modelName];
+  if (!isJsonObject(model) || !Array.isArray(model.backends)) return undefined;
+  const backend = model.backends.find(isJsonObject);
+  if (!backend || !isJsonObject(backend.credentials)) return undefined;
+  const name = backend.credentials.name;
+  if (name === undefined) return undefined;
+  return {
+    name,
+    key: backend.credentials.key ?? 'apiKey',
+  };
+}
+
+function applicationAgentScalarExpression(value: unknown): string {
+  const serialized = applicationGraphStringValue(value);
+  if (serialized !== undefined) {
+    const expression = /^\$\{(.+)\}$/u.exec(serialized)?.[1];
+    return expression ?? JSON.stringify(serialized);
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return String(value);
+  throw new Error(
+    'Application AI selected credential fields must be scalar installation values.',
+  );
 }

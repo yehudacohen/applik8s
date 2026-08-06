@@ -25,7 +25,7 @@ describe('internal operation placement handler', () => {
       secret,
       bindings: [{
         operation,
-        audience: 'https://research.example.test/mcp',
+        audiences: ['https://research.example.test/mcp'],
         validateInput: (value) => value,
         validateOutput: (value) => value,
         invoke,
@@ -103,7 +103,7 @@ function handler(revalidate: ReturnType<typeof vi.fn>, invoke: ReturnType<typeof
     secret,
     bindings: [{
       operation,
-      audience: 'https://research.example.test/mcp',
+      audiences: ['https://research.example.test/mcp'],
       validateInput: (value) => value,
       validateOutput: (value) => value,
       invoke,

@@ -1,4 +1,4 @@
-import { toKubernetesStructuralOpenApiSchema, validateStructuralOpenApiSchema } from '@applik8s/compiler/kubernetes-schema';
+import { toKubernetesStructuralOpenApiSchema, validateStructuralOpenApiSchema, withApplik8sFrameworkStatusSchema } from '@applik8s/compiler/kubernetes-schema';
 import type { AnyResourceDefinition, AnyResourceVersionDefinition, CapabilityClientSet, ConcurrencyConfig, DeleteTargetOptions, FinalizeHandlerOptions, Handler, HandlerEventType, HandlerRegistration, JsonObject, NormalizedOperationPlan, ObjectRef, OperatorDefinition, OperatorDeploymentOptions, OperatorManifest, PartialStatus, PermissionRule, ProxyHandler, ResourceDefinition, ResourceEventSources, ResourceWatchAddress, Result, StatusConvention } from '@applik8s/core';
 import type { CallableOperator } from '@applik8s/sdk';
 import { sdk, setOperatorDeploymentInterceptor } from '@applik8s/sdk';
@@ -1378,7 +1378,14 @@ function isOwnedResource(resource: AnyResourceDefinition): boolean {
 function crdVersionDocument(resource: AnyResourceDefinition, version: AnyResourceVersionDefinition): JsonObject {
   const specSchema = emitStructuralOpenApiSchema(version.spec, `${resource.kind}.${version.name}.spec`);
   const statusSchema = version.status
-    ? statusSchemaWithConvention(emitStructuralOpenApiSchema(version.status, `${resource.kind}.${version.name}.status`), resource.statusConvention, `${resource.kind}.${version.name}.status`)
+    ? withApplik8sFrameworkStatusSchema(
+      statusSchemaWithConvention(
+        emitStructuralOpenApiSchema(version.status, `${resource.kind}.${version.name}.status`),
+        resource.statusConvention,
+        `${resource.kind}.${version.name}.status`,
+      ),
+      `${resource.kind}.${version.name}.status`,
+    )
     : undefined;
   return compactObject({
     name: version.name,

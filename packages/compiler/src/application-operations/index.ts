@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import type {
   ApplicationGraph,
+  ApplicationCrdNode,
   ApplicationMessageContractSchema,
   ApplicationModelNode,
   ApplicationOperationAuthorityDescriptor,
@@ -11,7 +12,9 @@ import type {
   ApplicationOperationKind,
   ApplicationOperationTransportBinding,
   ApplicationSchemaDescriptor,
+  ApplicationStaticGrantDefinition,
   ApplicationStaticAuthorityManifest,
+  ApplicationStaticPermissionDefinition,
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
 } from '@applik8s/core';
@@ -47,10 +50,22 @@ export function compileApplicationWorkloadAuthority(
         subject: handler.id,
       };
       const serviceIdentity = handler.serviceIdentity;
-      const transports = dependency.authority.restrictions.transport?.kind === 'transport'
-        ? [dependency.authority.restrictions.transport.transport]
-        : operation.authority.transports
-          ?? [...new Set(operation.transports.map((transport) => transport.transport))];
+      const restrictedTransport = dependency.authority.restrictions.transport;
+      if (
+        restrictedTransport?.kind === 'transport'
+        && restrictedTransport.transport !== 'workflow'
+      ) {
+        throw new Error(
+          `Task handler ${handler.id} operation dependency ${dependency.alias} restricts execution to ` +
+            `${restrictedTransport.transport}, but function-native task operations execute with workflow authority.`,
+        );
+      }
+      // The durable workflow is the authorized caller even though the task
+      // runtime publishes its command envelope through JetStream internally.
+      // A model operation may also have an external event transport, so
+      // inheriting the operation-wide transport set here would accidentally
+      // deny the task's actual workflow execution.
+      const transports = ['workflow'] as const;
       return {
         apiVersion: 'applik8s.workloadAuthority/v1alpha1' as const,
         id: `workload-authority:${digestJson({
@@ -123,7 +138,10 @@ export function compileApplicationOperationCatalog(
   options: CompileApplicationOperationCatalogOptions = {},
 ): ApplicationOperationCatalog {
   const baseOperations = [
-    ...graph.nodes.filter((node): node is ApplicationModelNode => node.kind === 'model')
+    ...graph.nodes.filter(
+      (node): node is ApplicationModelNode | ApplicationCrdNode =>
+        node.kind === 'model' || node.kind === 'crd',
+    )
       .flatMap((model) => modelOperations(graph, model)),
     ...graph.nodes.filter((node) => node.kind === 'query').map((query) => queryOperation(graph, query)),
     ...graph.nodes.filter((node) => node.kind === 'task').map((task) => durableOperation('tasks', task.name, 'run', 'task', task.contract, task.id)),
@@ -139,6 +157,8 @@ export function compileApplicationOperationCatalog(
         name: signal.name,
       })),
     ]),
+    ...signalOperations(graph),
+    ...agentLocalOperations(graph),
     ...graph.nodes.filter((node) => node.kind === 'subscription').map((subscription) => subscriptionOperation(graph, subscription)),
     ...graph.nodes.filter((node) => node.kind === 'server').flatMap((server) =>
       server.routes.map((route) => rawRouteOperation(server.id, server.name, route))),
@@ -169,6 +189,291 @@ export function compileApplicationOperationCatalog(
     }
   }
   return catalog;
+}
+
+function agentLocalOperations(
+  graph: ApplicationGraph,
+): readonly ApplicationOperationDescriptor[] {
+  const operations = new Map<string, ApplicationOperationDescriptor>();
+  for (const agent of graph.nodes.filter((node) => node.kind === 'aiAgent')) {
+    for (const tool of agent.tools) {
+      if (!tool.local) continue;
+      const operation: ApplicationOperationDescriptor = {
+        apiVersion: 'applik8s.operation/v1alpha1',
+        id: tool.operationId,
+        version: tool.operationVersion,
+        name: tool.local.name,
+        kind: 'model.operation',
+        input: schemaDescriptor(tool.local.input),
+        output: schemaDescriptor(tool.local.output),
+        errors: {},
+        authority: operationAuthority(tool.authority, ['execution']),
+        transports: [{
+          id: `${agent.id}:${tool.operationId}`,
+          transport: 'control-plane',
+          server: agent.name,
+        }],
+        placement: { nodeId: agent.id, runtime: 'agent-worker' },
+        effects: ['transactional-model-write'],
+        emittedEvents: tool.local.functionNativeTransaction.outbox.map(
+          (event) => event.nodeId,
+        ),
+        ...(tool.local.sourceLocation
+          ? { sourceLocation: tool.local.sourceLocation }
+          : {}),
+      };
+      const previous = operations.get(operation.id);
+      if (
+        previous
+        && digestJson({
+          input: previous.input,
+          output: previous.output,
+          authority: previous.authority,
+        }) !== digestJson({
+          input: operation.input,
+          output: operation.output,
+          authority: operation.authority,
+        })
+      ) {
+        throw new Error(
+          `Ordinary function tool ${operation.id} is exposed with incompatible schemas or authority by ${previous.placement.nodeId} and ${agent.id}.`,
+        );
+      }
+      operations.set(operation.id, previous ?? operation);
+    }
+  }
+  return [...operations.values()];
+}
+
+function signalOperations(
+  graph: ApplicationGraph,
+): readonly ApplicationOperationDescriptor[] {
+  const contracts = new Map<
+    string,
+    {
+      readonly id: string;
+      readonly name: string;
+      readonly version: string;
+      readonly input: ApplicationMessageContractSchema;
+      readonly actions: readonly {
+        readonly name: string;
+        readonly schema: ApplicationMessageContractSchema;
+      }[];
+      readonly nodeId: string;
+      readonly sourceLocation?: ApplicationOperationDescriptor['sourceLocation'];
+    }
+  >();
+  for (const handler of graph.nodes.filter(
+    (node) => node.kind === 'workflowHandler' || node.kind === 'taskHandler',
+  )) {
+    for (const binding of handler.signalBindings ?? []) {
+      const previous = contracts.get(binding.id);
+      const candidate = {
+        id: binding.id,
+        name: binding.name,
+        version: binding.version,
+        input: binding.input,
+        actions: binding.actions,
+        nodeId: handler.id,
+        ...(handler.sourceLocation ? { sourceLocation: handler.sourceLocation } : {}),
+      };
+      if (previous && digestJson({
+        name: previous.name,
+        version: previous.version,
+        input: previous.input,
+        actions: previous.actions,
+      }) !== digestJson({
+        name: candidate.name,
+        version: candidate.version,
+        input: candidate.input,
+        actions: candidate.actions,
+      })) {
+        throw new Error(
+          `Application signal ${binding.id} is captured with incompatible contracts by ${previous.nodeId} and ${handler.id}.`,
+        );
+      }
+      contracts.set(binding.id, previous ?? candidate);
+    }
+  }
+  return [...contracts.values()].flatMap((signal) => {
+    const reference = signalReferenceSchema(signal.id);
+    const issue: ApplicationOperationDescriptor = {
+      apiVersion: 'applik8s.operation/v1alpha1',
+      id: applicationOperationId({
+        domain: 'signals',
+        owner: signal.id,
+        operation: 'issue',
+      }),
+      version: signal.version,
+      name: 'issue',
+      kind: 'signal.issue',
+      input: schemaDescriptor(signal.input),
+      output: schemaDescriptor(reference),
+      errors: {},
+      authority: {
+        classification: 'application-policy',
+        grantable: false,
+        delegable: false,
+        checks: ['execution', 'pre-commit'],
+        defaultScope: { kind: 'all' },
+        transports: ['workflow'],
+      },
+      transports: [{
+        id: `${signal.id}.issue`,
+        transport: 'workflow',
+      }],
+      placement: { nodeId: signal.nodeId, runtime: 'workflow-worker' },
+      ...(signal.sourceLocation ? { sourceLocation: signal.sourceLocation } : {}),
+    };
+    const exactInstanceAuthority: ApplicationOperationAuthorityDescriptor = {
+      classification: 'runtime-grantable',
+      grantable: true,
+      delegable: false,
+      checks: ['admission', 'execution', 'result-read'],
+      defaultScope: { kind: 'all' },
+      transports: ['direct', 'http', 'event'],
+    };
+    const issuanceRead: ApplicationOperationDescriptor = {
+      apiVersion: 'applik8s.operation/v1alpha1',
+      id: applicationOperationId({
+        domain: 'signals',
+        owner: signal.id,
+        operation: 'issuance.read',
+      }),
+      version: signal.version,
+      name: 'issuance.read',
+      kind: 'signal.issuance.read',
+      input: schemaDescriptor(signalIdentitySchema()),
+      output: schemaDescriptor(signalIssuanceSchema(signal.input)),
+      errors: {},
+      authority: exactInstanceAuthority,
+      transports: [
+        {
+          id: `${signal.id}.issuance.read.direct`,
+          transport: 'direct',
+          server: 'application-signal-gateway',
+        },
+        {
+          id: `${signal.id}.issuance.read.http`,
+          transport: 'http',
+          server: 'application-signal-gateway',
+        },
+        {
+          id: `${signal.id}.issuance.read.event`,
+          transport: 'event',
+          server: 'application-signal-gateway',
+        },
+      ],
+      placement: { nodeId: signal.nodeId, runtime: 'server' },
+      ...(signal.sourceLocation ? { sourceLocation: signal.sourceLocation } : {}),
+    };
+    const actions = signal.actions.map(
+      (action): ApplicationOperationDescriptor => ({
+        apiVersion: 'applik8s.operation/v1alpha1',
+        id: applicationOperationId({
+          domain: 'signals',
+          owner: signal.id,
+          operation: action.name,
+        }),
+        version: signal.version,
+        name: action.name,
+        kind: 'signal.action',
+        input: schemaDescriptor(action.schema),
+        output: schemaDescriptor(signalActionResultSchema()),
+        errors: {},
+        authority: exactInstanceAuthority,
+        transports: [
+          {
+            id: `${signal.id}.${action.name}.direct`,
+            transport: 'direct',
+            server: 'application-signal-gateway',
+          },
+          {
+            id: `${signal.id}.${action.name}.http`,
+            transport: 'http',
+            server: 'application-signal-gateway',
+          },
+          {
+            id: `${signal.id}.${action.name}.event`,
+            transport: 'event',
+            server: 'application-signal-gateway',
+          },
+        ],
+        placement: { nodeId: signal.nodeId, runtime: 'server' },
+        ...(signal.sourceLocation
+          ? { sourceLocation: signal.sourceLocation }
+          : {}),
+      }),
+    );
+    return [issue, issuanceRead, ...actions];
+  });
+}
+
+function signalIdentitySchema(): ApplicationMessageContractSchema {
+  return {
+    kind: 'declared',
+    runtime: 'arktype',
+    jsonSchema: {
+      type: 'object',
+      properties: { signalId: { type: 'string', minLength: 1 } },
+      required: ['signalId'],
+      additionalProperties: false,
+    },
+  };
+}
+
+function signalReferenceSchema(id: string): ApplicationMessageContractSchema {
+  return {
+    kind: 'declared',
+    runtime: 'arktype',
+    jsonSchema: {
+      type: 'object',
+      properties: {
+        signalId: { type: 'string', minLength: 1 },
+        contractId: { const: id },
+        expiresAt: { type: 'string', format: 'date-time' },
+        receiptId: { type: 'string', minLength: 1 },
+      },
+      required: ['signalId', 'contractId', 'expiresAt', 'receiptId'],
+      additionalProperties: false,
+    },
+  };
+}
+
+function signalIssuanceSchema(
+  input: ApplicationMessageContractSchema,
+): ApplicationMessageContractSchema {
+  return {
+    kind: 'declared',
+    runtime: 'arktype',
+    jsonSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', minLength: 1 },
+        input: input.jsonSchema,
+        signal: { type: 'object', additionalProperties: true },
+        issuedAt: { type: 'string', format: 'date-time' },
+        expiresAt: { type: 'string', format: 'date-time' },
+      },
+      required: ['id', 'input', 'signal', 'issuedAt', 'expiresAt'],
+      additionalProperties: false,
+    },
+  };
+}
+
+function signalActionResultSchema(): ApplicationMessageContractSchema {
+  return {
+    kind: 'declared',
+    runtime: 'arktype',
+    jsonSchema: {
+      type: 'object',
+      properties: {
+        status: { enum: ['resolved', 'alreadyResolved'] },
+      },
+      required: ['status'],
+      additionalProperties: true,
+    },
+  };
 }
 
 function applyMcpTransportBindings(
@@ -234,7 +539,183 @@ export function applicationStaticAuthorityManifest(
       `Application authority manifest ${manifest.application} does not belong to ${graph.metadata.name}.`,
     );
   }
-  return manifest;
+  const generated = generatedSignalGrantAuthority(graph);
+  if (generated.permissions.length === 0) return manifest;
+  const applicationIdentity = {
+    id: `identity:${graph.metadata.name}:application`,
+    kind: 'service' as const,
+    issuer: `applik8s://${graph.metadata.name}`,
+    subject: 'application-authority',
+  };
+  const base: ApplicationStaticAuthorityManifest = manifest ?? {
+    apiVersion: 'applik8s.authorityManifest/v1alpha1',
+    application: graph.metadata.name,
+    revision: 'sha256:empty',
+    identities: [applicationIdentity],
+    permissions: [],
+    roles: [],
+    grants: [],
+    outcomes: [],
+  };
+  const combined = {
+    ...base,
+    identities: mergeAuthorityRecords(
+      base.identities,
+      [applicationIdentity, ...generated.identities],
+      'identity',
+    ),
+    permissions: mergeAuthorityRecords(
+      base.permissions,
+      generated.permissions,
+      'permission',
+    ),
+    grants: mergeAuthorityRecords(base.grants, generated.grants, 'grant'),
+  };
+  return {
+    ...combined,
+    revision: digestJson({
+      application: combined.application,
+      identities: combined.identities,
+      permissions: combined.permissions,
+      roles: combined.roles,
+      grants: combined.grants,
+      outcomes: combined.outcomes,
+    }),
+  };
+}
+
+/**
+ * Compiler-owned permission identity for the exact-instance grants created by
+ * one workflow worker. Application code only declares `grantAccessTo`; the
+ * compiler proves the captured signal contract and supplies this narrow
+ * delegation authority.
+ */
+export function applicationSignalGrantPermissionId(
+  application: string,
+  workerId: string,
+  signalId: string,
+): string {
+  return `permission:${application}:internal:signal-grant:${digestJson({
+    workerId,
+    signalId,
+  }).slice('sha256:'.length, 'sha256:'.length + 24)}`;
+}
+
+function generatedSignalGrantAuthority(graph: ApplicationGraph): {
+  readonly identities: readonly ApplicationStaticAuthorityManifest['identities'][number][];
+  readonly permissions: readonly ApplicationStaticPermissionDefinition[];
+  readonly grants: readonly ApplicationStaticGrantDefinition[];
+} {
+  const handlers = new Map(
+    graph.nodes
+      .filter(
+        (node) => node.kind === 'workflowHandler' || node.kind === 'taskHandler',
+      )
+      .map((handler) => [handler.id, handler]),
+  );
+  const identities: ApplicationStaticAuthorityManifest['identities'][number][] = [];
+  const permissions: ApplicationStaticPermissionDefinition[] = [];
+  const grants: ApplicationStaticGrantDefinition[] = [];
+  const applicationIdentity = {
+    id: `identity:${graph.metadata.name}:application`,
+    kind: 'service' as const,
+    issuer: `applik8s://${graph.metadata.name}`,
+    subject: 'application-authority',
+  };
+  for (const worker of graph.nodes.filter((node) => node.kind === 'workflowWorker')) {
+    const signals = new Map<
+      string,
+      NonNullable<
+        Extract<
+          ApplicationGraph['nodes'][number],
+          { readonly kind: 'workflowHandler' }
+        >['signalBindings']
+      >[number]
+    >();
+    for (const reference of worker.handlers) {
+      const handler = handlers.get(reference.nodeId);
+      for (const signal of handler?.signalBindings ?? []) {
+        signals.set(signal.id, signal);
+      }
+    }
+    if (signals.size === 0) continue;
+    const workloadIdentity = {
+      id: `identity:${graph.metadata.name}:workload:${worker.id}`,
+      kind: 'workload' as const,
+      issuer: `applik8s://${graph.metadata.name}`,
+      subject: worker.id,
+    };
+    identities.push(workloadIdentity);
+    for (const signal of [...signals.values()].sort((left, right) =>
+      left.id.localeCompare(right.id))) {
+      const permissionId = applicationSignalGrantPermissionId(
+        graph.metadata.name,
+        worker.id,
+        signal.id,
+      );
+      const operationIds = [
+        applicationOperationId({
+          domain: 'signals',
+          owner: signal.id,
+          operation: 'issuance.read',
+        }),
+        ...signal.actions.map((action) =>
+          applicationOperationId({
+            domain: 'signals',
+            owner: signal.id,
+            operation: action.name,
+          })),
+      ].sort();
+      permissions.push({
+        id: permissionId,
+        name: `internal-signal-grant-${signal.id}`,
+        operationIds,
+        scope: { kind: 'all' },
+        transports: ['direct', 'event', 'http'],
+        grantable: true,
+        lifecycleOwner: worker.id,
+      });
+      grants.push({
+        id: `grant:${graph.metadata.name}:internal:signal-grant:${digestJson({
+          workerId: worker.id,
+          signalId: signal.id,
+        }).slice('sha256:'.length, 'sha256:'.length + 24)}`,
+        identity: workloadIdentity,
+        permissionId,
+        operationIds,
+        scope: { kind: 'all' },
+        transports: ['direct', 'event', 'http'],
+        issuedBy: applicationIdentity,
+        canGrant: true,
+        lifecycleOwner: worker.id,
+        reason:
+          'Compiler-derived authority to issue exact-instance grants for a statically captured signal contract.',
+      });
+    }
+  }
+  return {
+    identities: mergeAuthorityRecords([], identities, 'identity'),
+    permissions: mergeAuthorityRecords([], permissions, 'permission'),
+    grants: mergeAuthorityRecords([], grants, 'grant'),
+  };
+}
+
+function mergeAuthorityRecords<TValue extends { readonly id: string }>(
+  existing: readonly TValue[],
+  added: readonly TValue[],
+  kind: string,
+): readonly TValue[] {
+  const values = new Map(existing.map((record) => [record.id, record]));
+  for (const record of added) {
+    const previous = values.get(record.id);
+    if (previous && canonicalJson(previous) !== canonicalJson(record)) {
+      throw new Error(
+        `Application compiler-owned ${kind} ${record.id} conflicts with an authored authority record.`,
+      );
+    }
+    values.set(record.id, previous ?? record);
+  }
+  return [...values.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function applyStaticAuthorityManifest(
@@ -252,8 +733,22 @@ function applyStaticAuthorityManifest(
   }
   return operations.map((operation) => {
     if (!assigned.has(operation.id)) return operation;
-    if (operation.authority.classification !== 'unclassified'
-      && operation.authority.classification !== 'assigned') {
+    const permissions = manifest.permissions.filter((permission) =>
+      permission.operationIds.includes(operation.id));
+    if (
+      operation.authority.classification === 'runtime-grantable'
+      && permissions.every((permission) => permission.grantable)
+    ) {
+      // A grantable permission is the reviewed template from which exact,
+      // narrower runtime grants are derived. It does not replace the
+      // operation's runtime-grantable classification.
+      return operation;
+    }
+    if (
+      operation.authority.classification !== 'unclassified'
+      && operation.authority.classification !== 'assigned'
+      && !isLatentOperationAuthority(operation)
+    ) {
       throw new Error(
         `Application operation ${operation.id} is ${operation.authority.classification} and cannot also be assigned by static authority manifest ${manifest.revision}.`,
       );
@@ -267,6 +762,15 @@ function applyStaticAuthorityManifest(
       },
     };
   });
+}
+
+function isLatentOperationAuthority(
+  operation: ApplicationOperationDescriptor,
+): boolean {
+  return operation.authority.classification === 'application-policy'
+    && operation.authority.defaultScope.kind === 'none'
+    && operation.transports.length === 1
+    && operation.transports[0]?.transport === 'control-plane';
 }
 
 function staticOperationScope(
@@ -283,9 +787,14 @@ function staticOperationScope(
 
 function modelOperations(
   graph: ApplicationGraph,
-  model: ApplicationModelNode,
+  model: ApplicationModelNode | ApplicationCrdNode,
 ): readonly ApplicationOperationDescriptor[] {
   return (model.common?.operations ?? []).map((operation) => {
+    const operationId = applicationOperationId({
+      domain: 'models',
+      owner: model.name,
+      operation: operation.name,
+    });
     const command = graph.nodes.find((node) => node.kind === 'command' && node.name === operation.publicId);
     const handler = command
       ? graph.nodes.find((node) => node.kind === 'commandHandler' && node.command.nodeId === command.id && node.model.nodeId === model.id)
@@ -296,6 +805,11 @@ function modelOperations(
     const errors = command?.kind === 'command'
       ? Object.fromEntries(command.contract.errors.map((error) => [error.name, schemaDescriptor(error.schema)]))
       : {};
+    const reachability = modelOperationReachability(
+      graph,
+      operationId,
+      command?.id,
+    );
     const transport: ApplicationOperationTransportBinding = {
       id: operation.publicId,
       transport: operation.transport === 'query' ? 'http' : 'event',
@@ -303,7 +817,7 @@ function modelOperations(
     };
     return {
       apiVersion: 'applik8s.operation/v1alpha1',
-      id: applicationOperationId({ domain: 'models', owner: model.name, operation: operation.name }),
+      id: operationId,
       version: command?.kind === 'command' ? command.contract.version : 'v1',
       name: operation.name,
       kind,
@@ -313,22 +827,51 @@ function modelOperations(
       target: {
         model: model.name,
         identity: {
-          digest: digestJson(model.common?.identity ?? { fields: model.schema?.identity ?? ['id'] }),
+          digest: digestJson(
+            model.common?.identity
+              ?? { fields: model.kind === 'model' ? model.schema.identity : ['metadata.name'] },
+          ),
           schema: {
             type: 'object',
-            properties: Object.fromEntries((model.common?.identity?.fields ?? model.schema?.identity ?? ['id']).map((field) => [field, {}])),
-            required: [...(model.common?.identity?.fields ?? model.schema?.identity ?? ['id'])],
+            properties: Object.fromEntries(
+              (
+                model.common?.identity?.fields
+                  ?? (model.kind === 'model' ? model.schema.identity : ['metadata.name'])
+              ).map((field) => [field, {}]),
+            ),
+            required: [
+              ...(
+                model.common?.identity?.fields
+                  ?? (model.kind === 'model' ? model.schema.identity : ['metadata.name'])
+              ),
+            ],
             additionalProperties: false,
           },
         },
       },
-      authority: operationAuthority(
-        operation.authority,
-        operation.transport === 'command'
-          ? ['admission', 'enqueue', 'execution', 'pre-commit', 'result-read']
-          : ['admission'],
-      ),
-      transports: [transport],
+      authority: reachability === 'external'
+        ? operationAuthority(
+            operation.authority,
+            operation.transport === 'command'
+              ? ['admission', 'enqueue', 'execution', 'pre-commit', 'result-read']
+              : ['admission'],
+          )
+        : reachability === 'workflow'
+          ? workflowModelOperationAuthority()
+          : latentOperationAuthority(),
+      transports: reachability === 'external'
+        ? [transport]
+        : reachability === 'workflow'
+          ? [{
+              id: operation.publicId,
+              transport: 'workflow',
+              server: 'application-command-processor',
+            }]
+          : [{
+              id: operation.publicId,
+              transport: 'control-plane',
+              server: 'application-command-processor',
+            }],
       placement: {
         nodeId: handler?.id ?? model.id,
         runtime: operation.transport === 'query' ? 'server' : 'command-processor',
@@ -341,12 +884,88 @@ function modelOperations(
   });
 }
 
+function modelOperationReachability(
+  graph: ApplicationGraph,
+  operationId: string,
+  commandNodeId: string | undefined,
+): 'external' | 'workflow' | 'latent' {
+  let workflow = false;
+  for (const node of graph.nodes) {
+      if (
+        node.kind === 'gateway'
+        && commandNodeId
+        && node.commands.some((binding) => binding.command.nodeId === commandNodeId)
+      ) {
+        return 'external';
+      }
+      if (
+        node.kind === 'mcpServer'
+        && node.tools.some((tool) => tool.operationId === operationId)
+      ) {
+        return 'external';
+      }
+      if (
+        node.kind === 'aiAgent'
+        && node.tools.some((tool) => tool.operationId === operationId)
+      ) {
+        return 'external';
+      }
+      if (
+        node.kind === 'server'
+        && node.routes.some((route) =>
+          route.functionNative?.operationBindings?.some(
+            (binding) => binding.operationId === operationId,
+          ))
+      ) {
+        return 'external';
+      }
+      if (
+        node.kind === 'taskHandler'
+        && (node.operations ?? []).some(
+          (dependency) => dependency.authority.operationId === operationId,
+        )
+      ) {
+        workflow = true;
+      }
+  }
+  return workflow ? 'workflow' : 'latent';
+}
+
+function workflowModelOperationAuthority(): ApplicationOperationAuthorityDescriptor {
+  return {
+    classification: 'application-policy',
+    grantable: false,
+    delegable: false,
+    checks: ['execution', 'pre-commit', 'result-read'],
+    defaultScope: { kind: 'all' },
+    transports: ['workflow'],
+  };
+}
+
+function latentOperationAuthority(): ApplicationOperationAuthorityDescriptor {
+  return {
+    classification: 'application-policy',
+    grantable: false,
+    delegable: false,
+    checks: ['execution'],
+    defaultScope: {
+      kind: 'none',
+      reason: 'operation has no compiled transport',
+    },
+    transports: ['control-plane'],
+  };
+}
+
 function queryOperation(
   graph: ApplicationGraph,
   query: Extract<ApplicationGraph['nodes'][number], { readonly kind: 'query' }>,
 ): ApplicationOperationDescriptor {
   const model = query.modelOperation
-    ? graph.nodes.find((node) => node.id === query.modelOperation?.model.nodeId && node.kind === 'model')
+    ? graph.nodes.find(
+        (node) =>
+          node.id === query.modelOperation?.model.nodeId
+          && (node.kind === 'model' || node.kind === 'crd'),
+      )
     : undefined;
   const owner = model?.name ?? query.name;
   const name = query.modelOperation?.name ?? 'read';
@@ -359,11 +978,14 @@ function queryOperation(
     input: schemaDescriptor(query.input),
     output: schemaDescriptor(query.output),
     errors: {},
-    ...(model?.kind === 'model' ? {
+    ...(model && (model.kind === 'model' || model.kind === 'crd') ? {
       target: {
         model: model.name,
         identity: {
-          digest: digestJson(model.common?.identity ?? { fields: model.schema.identity }),
+          digest: digestJson(
+            model.common?.identity
+              ?? { fields: model.kind === 'model' ? model.schema.identity : ['metadata.name'] },
+          ),
           schema: { type: 'object', additionalProperties: true },
         },
       },
@@ -392,6 +1014,20 @@ function durableOperation(
   },
   nodeId: string,
 ): ApplicationOperationDescriptor {
+  const authority: ApplicationOperationAuthorityDescriptor = {
+    // A workflow transport is not a public admission surface. The engine
+    // credential and compiler-issued workload envelope are the application
+    // policy: callers can reach this operation only through a generated
+    // gateway whose service account, contract set, audience, and scope are
+    // fixed by the compiled graph. Adding HTTP/MCP/event exposure remains a
+    // separate transport binding and still requires its own classification.
+    classification: 'application-policy',
+    grantable: false,
+    delegable: false,
+    checks: ['execution', 'protected-step', 'result-read'],
+    defaultScope: { kind: 'all' },
+    transports: ['workflow'],
+  };
   return {
     apiVersion: 'applik8s.operation/v1alpha1',
     id: applicationOperationId({ domain, owner, operation: name }),
@@ -401,7 +1037,7 @@ function durableOperation(
     input: schemaDescriptor(contract.input),
     output: schemaDescriptor(contract.output),
     errors: Object.fromEntries(contract.errors.map((error) => [error.name, schemaDescriptor(error.schema)])),
-    authority: operationAuthority(undefined, ['execution', 'protected-step', 'result-read']),
+    authority,
     transports: [{ id: nodeId, transport: 'workflow' }],
     placement: { nodeId, runtime: 'workflow-worker' },
   };
@@ -422,7 +1058,7 @@ function subscriptionOperation(
     input: emptySchemaDescriptor(),
     output: emptySchemaDescriptor(),
     errors: {},
-    authority: operationAuthority(undefined, ['admission', 'subscription-resume']),
+    authority: operationAuthority(subscription.authority, ['admission', 'subscription-resume']),
     transports: [{ id: subscription.id, transport: subscription.delivery === 'sse' ? 'http' : 'event' }],
     placement: { nodeId: subscription.id, runtime: 'server' },
     ...(subscription.sourceLocation ? { sourceLocation: subscription.sourceLocation } : {}),
@@ -437,6 +1073,10 @@ function rawRouteOperation(
     readonly method: string;
     readonly path: string;
     readonly authority?: ApplicationOperationAuthorityGraphContract;
+    readonly functionNative?: {
+      readonly input: ApplicationMessageContractSchema;
+      readonly output: ApplicationMessageContractSchema;
+    };
     readonly sourceLocation?: ApplicationOperationDescriptor['sourceLocation'];
   },
 ): ApplicationOperationDescriptor {
@@ -445,9 +1085,13 @@ function rawRouteOperation(
     id: applicationOperationId({ domain: 'http', owner: serverName, operation: route.id }),
     version: 'v1',
     name: route.id,
-    kind: 'http.raw',
-    input: emptySchemaDescriptor(),
-    output: emptySchemaDescriptor(),
+    kind: route.functionNative ? 'http.route' : 'http.raw',
+    input: route.functionNative
+      ? schemaDescriptor(route.functionNative.input)
+      : emptySchemaDescriptor(),
+    output: route.functionNative
+      ? schemaDescriptor(route.functionNative.output)
+      : emptySchemaDescriptor(),
     errors: {},
     authority: operationAuthority(route.authority, ['admission']),
     transports: [{

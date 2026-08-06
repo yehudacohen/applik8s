@@ -61,35 +61,28 @@ model.on.create('initialize-account', options, handler);
 Conventional CRUD operations select safe framework defaults. A genuinely exceptional operation can declare
 different ordering or missing-target semantics explicitly.
 
-## Exceptional domain operations
+## Exceptional domain behavior
 
-When CRUD, a task, or a workflow does not describe the behavior, declare one exceptional operation. The
-single declaration derives both the callable method and its typed committed completion event:
+When CRUD, a task, or a workflow does not describe the behavior, export an ordinary function whose
+model-authoritative boundary is `Model.edit(...)`:
 
 ```ts
-const Account = application
-  .model(accounts, { name: 'Account', database: Database })
-  .action('rotateRecoveryCodes', RotateRecoveryCodes, {
-    key: ({ accountId }) => accountId,
-    ordering: 'serial',
-    history: true,
-  }, async (account, input, context) => {
-    const result = await rotateCodesDeterministically(account, input, context);
-    account.patch({ spec: { recoveryCodesRevision: result.revision } });
+export async function rotateRecoveryCodes(input: typeof RotateRecoveryCodes.infer) {
+  return Account.edit(input.accountId, async account => {
+    const result = rotateCodesDeterministically(account, input);
+    await account.update({ recoveryCodesRevision: result.revision });
+    RecoveryCodesRotated.emit({
+      accountId: account.id,
+      revision: result.revision,
+    });
     return result;
   });
-
-await Account.rotateRecoveryCodes(input);
-
-Account.on.rotateRecoveryCodes('audit-recovery-code-rotation', processorOptions, async (completed) => {
-  // completed.previous, completed.current, completed.result, identity, and revision are typed.
-});
+}
 ```
 
-Do not introduce an `.actions({...})` registry or a second completion event. Ordinary domain code uses
-direct lifecycle mutations or a named `Model.action(...)`. The lower-level `Model.on.command(...)` and
-`Model.on.action(...)` registrars remain available for explicit protocol integration and framework
-internals, but do not belong in golden-path examples.
+The route, event handler, workflow step, tool, or other framework trigger that references this function
+supplies its schemas, authority, placement, and stable boundary identity. There is no public
+`.actions({...})`, `.action(...)`, `.operation(...)`, or `Model.on.command(...)` registry.
 
 ## Transactional outboxes
 

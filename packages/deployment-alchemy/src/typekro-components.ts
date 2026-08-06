@@ -13,7 +13,10 @@ export function typeKroMaterializationComponents(
   const index = new Map(declarations.map((declaration, position) => [declaration.id, position]));
   const adjacent = new Map(declarations.map((declaration) => [declaration.id, new Set<string>()]));
   for (const declaration of declarations) {
-    for (const dependency of declaration.dependsOn) {
+    for (const dependency of [
+      ...declaration.dependsOn,
+      ...(declaration.schedulingDependsOn ?? []),
+    ]) {
       if (!byId.has(dependency)) {
         throw new Error(
           `TypeKro declaration ${declaration.id} has canonical dependency ${dependency} outside its materialization group.`,

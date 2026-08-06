@@ -10,14 +10,13 @@ export const MediaUploads = app.stream(MediaUploadCompleted, {
 	authorize: () => false,
 });
 
-export const MediaVerification = MediaUploads.process('verify-uploaded-media', {
+export const MediaVerification = MediaUploads.onEvent({
 	enabled: app.installation.spec.features.media,
-	tasks: { verify: verifyMedia },
 	processor: { replicas: 1, concurrency: 4 },
 	retry: { maxAttempts: 8, initialDelayMs: 250, maxDelayMs: 30_000, deadLetter: true },
 	budgets: { timeoutMs: 60_000, maxInputBytes: 64 * 1_024 },
-}, async (uploaded, context) => {
-	await context.tasks.verify({
+}, async function verifyUploadedMedia(uploaded, context) {
+	await verifyMedia({
 		attachmentId: uploaded.attachmentId,
 		ownerId: uploaded.ownerId,
 		objectKey: uploaded.objectKey,

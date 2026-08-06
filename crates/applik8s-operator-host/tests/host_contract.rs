@@ -8,15 +8,16 @@ use std::sync::{
 use std::time::Duration;
 
 use applik8s_operator_host::{
-    CapabilitySecretRef, HandlerRoute, KubeRuntimeControllerStrategy, LoadedOperatorBundle,
-    OperatorHostError, OperatorHostPaths, OperatorMetrics, ReplayArtifactContext, RetryPolicy,
-    RuntimeLeaderElectionConfig, RuntimeReadiness, StatusConvention, controller_framework,
-    execute_capability_request, execute_capability_request_with_secret_resolver,
-    execute_kubernetes_read_request, host_role, probe_response, reconcile_error_details,
-    reconcile_error_details_with_source_map, reconcile_failure_status, reconcile_log_event,
-    reconcile_metadata, reconcile_otel_attributes, reconcile_stale_status,
-    reconcile_success_status, reconcile_trace_dimensions, replay_artifact, retry_decision,
-    retry_exhausted_status, retry_log_event, validate_plan_finalizer_ownership,
+    CapabilitySecretRef, CapabilityServiceAccountTokenResolver, HandlerRoute,
+    KubeRuntimeControllerStrategy, LoadedOperatorBundle, OperatorHostError, OperatorHostPaths,
+    OperatorMetrics, ReplayArtifactContext, RetryPolicy, RuntimeLeaderElectionConfig,
+    RuntimeReadiness, StatusConvention, controller_framework, execute_capability_request,
+    execute_capability_request_with_auth_resolvers,
+    execute_capability_request_with_secret_resolver, execute_kubernetes_read_request, host_role,
+    probe_response, reconcile_error_details, reconcile_error_details_with_source_map,
+    reconcile_failure_status, reconcile_log_event, reconcile_metadata, reconcile_otel_attributes,
+    reconcile_stale_status, reconcile_success_status, reconcile_trace_dimensions, replay_artifact,
+    retry_decision, retry_exhausted_status, retry_log_event, validate_plan_finalizer_ownership,
     validate_plan_status_subresources, write_replay_artifact,
 };
 use applik8s_runtime_bridge::{
@@ -538,6 +539,97 @@ async fn injects_secret_ref_bearer_auth_for_live_http_capabilities() {
     assert_eq!(response["ok"], true);
     assert_eq!(response["value"]["authorization"], "Bearer secret-token");
     server.abort();
+}
+
+#[tokio::test]
+async fn injects_projected_service_account_auth_only_for_workflow_gateways() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("test listener binds");
+    let addr = listener.local_addr().expect("test listener has addr");
+    let app = axum::Router::new().route(
+        "/v1/workflows/publish/runs",
+        axum::routing::post(|headers: axum::http::HeaderMap| async move {
+            let authorization = headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            axum::Json(serde_json::json!({ "authorization": authorization }))
+        }),
+    );
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let mut manifest = live_http_capability_manifest(&format!("http://{addr}"));
+    manifest["spec"]["capabilities"]["processor"]["auth"] =
+        serde_json::json!({ "type": "serviceAccount" });
+    manifest["spec"]["capabilities"]["processor"]["workflowGateway"] = serde_json::json!({
+        "protocol": "applik8s.workflow-gateway/v1alpha1",
+        "worker": "workflows",
+        "contracts": ["publish"],
+        "caller": {
+            "operator": "post-controller",
+            "namespace": "chirp",
+            "serviceAccount": "post-controller-controller"
+        }
+    });
+    let token_resolver: CapabilityServiceAccountTokenResolver =
+        Arc::new(|| Ok("projected-operator-token".to_string()));
+    let response = execute_capability_request_with_auth_resolvers(
+        &manifest,
+        &serde_json::json!({
+            "capabilityName": "processor",
+            "method": "POST",
+            "path": "/v1/workflows/publish/runs",
+            "body": { "postId": "post-1" },
+            "options": { "idempotencyKey": "post-1" },
+            "reconcileId": "Post-post-1"
+        })
+        .to_string(),
+        None,
+        Some(token_resolver),
+    )
+    .await
+    .expect("capability import returns response JSON");
+    let response: serde_json::Value = serde_json::from_str(&response).expect("response is JSON");
+
+    assert_eq!(response["ok"], true);
+    assert_eq!(
+        response["value"]["authorization"],
+        "Bearer projected-operator-token"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn rejects_service_account_auth_for_arbitrary_http_capabilities() {
+    let mut manifest = live_http_capability_manifest("https://processor.example.test");
+    manifest["spec"]["capabilities"]["processor"]["auth"] =
+        serde_json::json!({ "type": "serviceAccount" });
+    let response = execute_capability_request_with_auth_resolvers(
+        &manifest,
+        &serde_json::json!({
+            "capabilityName": "processor",
+            "method": "GET",
+            "path": "/secure",
+            "reconcileId": "ImageJob-hero-image"
+        })
+        .to_string(),
+        None,
+        Some(Arc::new(|| Ok("must-not-be-used".to_string()))),
+    )
+    .await
+    .expect("capability import returns response JSON");
+    let response: serde_json::Value = serde_json::from_str(&response).expect("response is JSON");
+
+    assert_eq!(response["ok"], false);
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .expect("message is string")
+            .contains("reserved for the private workflow gateway")
+    );
 }
 
 #[tokio::test]

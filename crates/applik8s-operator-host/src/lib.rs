@@ -68,6 +68,7 @@ use tracing_subscriber::EnvFilter;
 const SUPPORTED_HANDLER_ABI: &str = "applik8s.handler/v1alpha1";
 const SUPPORTED_OPERATOR_MANIFEST_VERSION: &str = "applik8s.operator/v1alpha1";
 const KUBERNETES_CONNECTION_PROTOCOL: &str = "applik8s.kubernetes-connection/v1alpha1";
+const SERVICE_ACCOUNT_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 static RECONCILE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
@@ -5314,11 +5315,23 @@ pub type CapabilitySecretResolverFuture =
     Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
 pub type CapabilitySecretResolver =
     Arc<dyn Fn(CapabilitySecretRef) -> CapabilitySecretResolverFuture + Send + Sync>;
+pub type CapabilityServiceAccountTokenResolver =
+    Arc<dyn Fn() -> Result<String, String> + Send + Sync>;
 
 pub async fn execute_capability_request_with_secret_resolver(
     manifest: &Value,
     request_json: &str,
     secret_resolver: Option<CapabilitySecretResolver>,
+) -> Result<String, String> {
+    execute_capability_request_with_auth_resolvers(manifest, request_json, secret_resolver, None)
+        .await
+}
+
+pub async fn execute_capability_request_with_auth_resolvers(
+    manifest: &Value,
+    request_json: &str,
+    secret_resolver: Option<CapabilitySecretResolver>,
+    service_account_token_resolver: Option<CapabilityServiceAccountTokenResolver>,
 ) -> Result<String, String> {
     let request: Value = match serde_json::from_str(request_json) {
         Ok(request) => request,
@@ -5329,7 +5342,14 @@ pub async fn execute_capability_request_with_secret_resolver(
             ));
         }
     };
-    match execute_capability_request_value(manifest, &request, secret_resolver.as_ref()).await {
+    match execute_capability_request_value(
+        manifest,
+        &request,
+        secret_resolver.as_ref(),
+        service_account_token_resolver.as_ref(),
+    )
+    .await
+    {
         Ok(value) => Ok(serde_json::json!({
             "ok": true,
             "value": value,
@@ -5344,6 +5364,7 @@ async fn execute_capability_request_value(
     manifest: &Value,
     request: &Value,
     secret_resolver: Option<&CapabilitySecretResolver>,
+    service_account_token_resolver: Option<&CapabilityServiceAccountTokenResolver>,
 ) -> Result<Value, String> {
     let capability_name = required_capability_request_string(request, "capabilityName")?;
     let method = required_capability_request_string(request, "method")?;
@@ -5374,8 +5395,14 @@ async fn execute_capability_request_value(
         .map_err(|error| format!("failed to construct HTTP capability client: {error}"))?;
     let method = http_method(method)?;
     let mut headers = capability_request_headers(capability_name, request)?;
-    append_secret_ref_auth_header(capability_name, descriptor, secret_resolver, &mut headers)
-        .await?;
+    append_capability_auth_header(
+        capability_name,
+        descriptor,
+        secret_resolver,
+        service_account_token_resolver,
+        &mut headers,
+    )
+    .await?;
     let body = request.get("body").cloned();
     let retry_policy = capability_retry_policy(descriptor)?;
     let mut attempt = 1;
@@ -5491,10 +5518,11 @@ fn capability_request_headers(
     Ok(headers)
 }
 
-async fn append_secret_ref_auth_header(
+async fn append_capability_auth_header(
     capability_name: &str,
     descriptor: &Value,
     secret_resolver: Option<&CapabilitySecretResolver>,
+    service_account_token_resolver: Option<&CapabilityServiceAccountTokenResolver>,
     headers: &mut Vec<(String, String)>,
 ) -> Result<(), String> {
     let auth_type = descriptor
@@ -5502,6 +5530,33 @@ async fn append_secret_ref_auth_header(
         .and_then(Value::as_str)
         .unwrap_or("none");
     if auth_type == "none" {
+        return Ok(());
+    }
+    if auth_type == "serviceAccount" {
+        if descriptor
+            .pointer("/workflowGateway/protocol")
+            .and_then(Value::as_str)
+            != Some("applik8s.workflow-gateway/v1alpha1")
+        {
+            return Err(format!(
+                "Capability {capability_name} serviceAccount auth is reserved for the private workflow gateway."
+            ));
+        }
+        let token = match service_account_token_resolver {
+            Some(resolver) => resolver()?,
+            None => fs::read_to_string(SERVICE_ACCOUNT_TOKEN_PATH).map_err(|error| {
+                format!(
+                    "Capability {capability_name} could not read the projected service-account token: {error}"
+                )
+            })?,
+        };
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(format!(
+                "Capability {capability_name} projected service-account token is empty."
+            ));
+        }
+        headers.push(("Authorization".to_string(), format!("Bearer {token}")));
         return Ok(());
     }
     if auth_type != "secretRef" {
@@ -5696,7 +5751,17 @@ fn validate_live_http_capability(
         .pointer("/auth/type")
         .and_then(Value::as_str)
         .unwrap_or("none");
-    if !matches!(auth_type, "none" | "secretRef") {
+    if auth_type == "serviceAccount"
+        && descriptor
+            .pointer("/workflowGateway/protocol")
+            .and_then(Value::as_str)
+            != Some("applik8s.workflow-gateway/v1alpha1")
+    {
+        return Err(format!(
+            "Capability {capability_name} serviceAccount auth is reserved for the private workflow gateway."
+        ));
+    }
+    if !matches!(auth_type, "none" | "secretRef" | "serviceAccount") {
         return Err(format!(
             "Capability {capability_name} auth type {auth_type} is not implemented for live HTTP execution yet."
         ));

@@ -5,13 +5,11 @@ import {
   createApplicationRuntimeOperation,
   observeApplicationOperationAuthority,
 } from '@applik8s/client';
-import type { AnyResourceDefinition, JsonValue, ResourceIndex } from '@applik8s/core';
+import type { AnyResourceDefinition, ResourceIndex } from '@applik8s/core';
 import type {
   ApplicationKubernetesRbacRule,
   ApplicationRouteHandler,
   ApplicationServer,
-  ApplicationServerCaptureFunction,
-  ApplicationServerCaptureValue,
   ApplicationServerRoute,
 } from './application.js';
 import type { ApplicationServerRuntimeResource } from './application-generated-runtime-sources.js';
@@ -26,23 +24,14 @@ import {
   routeAnalysisCallsMethod,
   routeDynamicBindingAccesses,
   type SerializedApplicationServerRouteWithDependencies,
-  serializedCallbackClosureMessage,
   unsupportedRouteFreeIdentifiers,
 } from './application-route-source.js';
 
-export type SerializedApplicationServerCaptures = Readonly<Record<string, SerializedApplicationServerCapture>>;
-type SerializedApplicationServerCapture = SerializedApplicationServerJsonCapture | SerializedApplicationServerFunctionCapture;
-
-interface SerializedApplicationServerJsonCapture {
-  readonly kind: 'json';
-  readonly value: JsonValue;
-}
-
-interface SerializedApplicationServerFunctionCapture {
-  readonly kind: 'function';
-  readonly source: string;
-  readonly aliasName?: string;
-}
+export {
+  serializeApplicationServerCaptures,
+  serializedApplicationServerCaptureAliases,
+  type SerializedApplicationServerCaptures,
+} from './application-server-captures.js';
 
 export interface ApplicationServerPermissionInferenceRequest {
   readonly routes: readonly ApplicationServerRoute[];
@@ -85,32 +74,6 @@ export function assertDistinctRuntimeBindingNames(bindings: Readonly<Record<stri
       seen.set(name, kind);
     }
   }
-}
-
-export function serializeApplicationServerCaptures(captures: Readonly<Record<string, ApplicationServerCaptureValue>>): SerializedApplicationServerCaptures {
-  const captureNames = new Set(Object.keys(captures));
-  const captureBindingNames = new Set(captureNames);
-  for (const [name, value] of Object.entries(captures)) {
-    if (typeof value === 'function') {
-      const aliasName = applicationServerFunctionCaptureAliasName(name, value.name);
-      if (aliasName) captureBindingNames.add(aliasName);
-    }
-  }
-  const serialized: Record<string, SerializedApplicationServerCapture> = {};
-  for (const [name, value] of Object.entries(captures)) {
-    if (typeof value === 'function') serialized[name] = serializeApplicationServerFunctionCapture(name, value, captureBindingNames);
-    else if (isJsonSerializableValue(value)) serialized[name] = { kind: 'json', value };
-    else throw new Error(`app.server capture ${JSON.stringify(name)} must be JSON-serializable.`);
-  }
-  return serialized;
-}
-
-export function serializedApplicationServerCaptureAliases(captures: SerializedApplicationServerCaptures): Readonly<Record<string, unknown>> {
-  const aliases: Record<string, unknown> = {};
-  for (const capture of Object.values(captures)) {
-    if (capture.kind === 'function' && capture.aliasName) aliases[capture.aliasName] = capture;
-  }
-  return aliases;
 }
 
 export function serializeApplicationServerRoutes(
@@ -195,37 +158,6 @@ export function createRouteRecorder(serverName: string, routes: ApplicationServe
   };
 }
 
-function serializeApplicationServerFunctionCapture(name: string, value: ApplicationServerCaptureFunction, captureNames: ReadonlySet<string>): SerializedApplicationServerFunctionCapture {
-  const source = value.toString().trim();
-  if (!source || source.includes('[native code]')) throw new Error(`app.server capture ${JSON.stringify(name)} must be a serializable JavaScript function.`);
-  try { Function(`return (${source});`); } catch { throw new Error(`app.server capture ${JSON.stringify(name)} must be a serializable JavaScript function expression.`); }
-  const unsupported = unsupportedRouteFreeIdentifiers(analyzeApplicationServerRouteSource(source), captureNames);
-  if (unsupported.length > 0) {
-    throw new Error(serializedCallbackClosureMessage({
-      label: `app.server capture ${JSON.stringify(name)}`,
-      identifiers: unsupported,
-      guidance: 'Pass every referenced value through app.server captures or keep plain constants inside the capture function so the generated server binding is self-contained.',
-    }));
-  }
-  const aliasName = applicationServerFunctionCaptureAliasName(name, value.name);
-  return { kind: 'function', source, ...(aliasName ? { aliasName } : {}) };
-}
-
-function applicationServerFunctionCaptureAliasName(captureName: string, functionName: string): string | undefined {
-  return functionName && functionName !== captureName && /^[$A-Z_a-z][$\w]*$/.test(functionName) ? functionName : undefined;
-}
-
-function isJsonSerializableValue(value: unknown): value is JsonValue {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
-  if (typeof value === 'number') return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(isJsonSerializableValue);
-  if (value && typeof value === 'object') {
-    const prototype = Object.getPrototypeOf(value);
-    return (prototype === Object.prototype || prototype === null) && Object.values(value).every(isJsonSerializableValue);
-  }
-  return false;
-}
-
 function serializeApplicationServerRoute(route: ApplicationServerRoute, bindingNames: ReadonlySet<string>, dynamicAccessDisallowedBindings: ReadonlySet<string>): SerializedApplicationServerRouteWithDependencies {
   try { Function(`return (${route.handlerSource});`); } catch (error) {
     const location = route.handlerSourceLocation ? ` at ${route.handlerSourceLocation.file}:${route.handlerSourceLocation.line}:${route.handlerSourceLocation.column}` : '';
@@ -235,7 +167,12 @@ function serializeApplicationServerRoute(route: ApplicationServerRoute, bindingN
   const dynamicAccesses = routeDynamicBindingAccesses(analysis, dynamicAccessDisallowedBindings);
   if (dynamicAccesses.length > 0) throw new Error(`app.server route ${route.method} ${route.path} uses unsupported dynamic binding access: ${dynamicAccesses.join(', ')}. Use direct methods like Resource.create(...) or index.query(...) so permissions can be inferred.`);
   const unsupported = unsupportedRouteFreeIdentifiers(analysis, bindingNames);
-  const dependencies = applicationRouteSourceDependencies(route, unsupported, bindingNames);
+  const dependencies = route.handlerDependencySource
+    ? {
+        source: route.handlerDependencySource,
+        resolveDir: route.handlerDependencyResolveDir ?? process.cwd(),
+      }
+    : applicationRouteSourceDependencies(route, unsupported, bindingNames);
   if (unsupported.length > 0 && !dependencies) throw new Error(`app.server route ${route.method} ${route.path} cannot serialize closure identifier(s): ${unsupported.join(', ')}. Pass serializable values through app.server captures, pass resources/indexes through app.server bindings, or inline constants inside the handler.`);
   return dependencies ? { ...route, handlerDependencySource: dependencies.source, handlerDependencyResolveDir: dependencies.resolveDir } : route;
 }

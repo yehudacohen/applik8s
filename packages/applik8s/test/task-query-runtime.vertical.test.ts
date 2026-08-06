@@ -34,16 +34,61 @@ describe('task query runtime', () => {
       }],
     });
     const queries = runtime.bind({ context: 'Post.homeTimeline' }, {
-      id: 'automation-account', claims: { role: 'automation-worker' }, authorizationVersion: 'policy-v1', trustedContext: { automationId: 'automation-1' },
+      id: 'automation-account', roles: ['automation-worker'], authorizationVersion: 'policy-v1', trustedContext: { automationId: 'automation-1' },
     });
 
     await expect(queries.context?.({ viewerId: 'automation-account' })).resolves.toEqual([{ id: 'post-1', body: 'hello' }]);
     expect(admission).toEqual({
-      principal: { id: 'automation-account', claims: { role: 'automation-worker' } },
+      principal: { id: 'automation-account', roles: ['automation-worker'] },
       authorizationVersion: 'policy-v1', trustedContext: { automationId: 'automation-1' },
     });
     expect(request).toHaveBeenCalledTimes(1);
     expect(() => runtime.bind({ forbidden: 'Post.notDeclared' }, { id: 'worker', authorizationVersion: 'v1' })).toThrow(/undeclared/);
+  });
+
+  it('preserves function-native zero-input queries while required inputs remain fail-closed', async () => {
+    const inputs: unknown[] = [];
+    const runtime = createApplicationTaskQueryRuntime({
+      cursorSecret: secret,
+      fetch: (async (_url: string | URL | Request, init?: RequestInit) => {
+        inputs.push(JSON.parse(String(init?.body)).input);
+        return new Response(JSON.stringify({
+          kind: 'snapshot',
+          protocol: 'applik8s.query/v1alpha1',
+          query: inputs.length === 1 ? 'AutomationControl.current' : 'Post.byId',
+          value: { ready: true },
+        }), { status: 200 });
+      }) as typeof fetch,
+      queries: [
+        {
+          id: 'AutomationControl.current',
+          audience: 'gateway.automation',
+          endpoint: 'http://gateway/query/snapshot',
+          inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
+          outputSchema: { type: 'object', properties: { ready: { type: 'boolean' } }, required: ['ready'], additionalProperties: false },
+          timeoutMs: 1_000,
+          maxResultBytes: 1_000,
+        },
+        {
+          id: 'Post.byId',
+          audience: 'gateway.social',
+          endpoint: 'http://gateway/query/snapshot',
+          inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: false },
+          outputSchema: { type: 'object', properties: { ready: { type: 'boolean' } }, required: ['ready'], additionalProperties: false },
+          timeoutMs: 1_000,
+          maxResultBytes: 1_000,
+        },
+      ],
+    });
+    const queries = runtime.bind(
+      { current: 'AutomationControl.current', byId: 'Post.byId' },
+      { id: 'automation-account', authorizationVersion: 'v1' },
+    );
+
+    await expect(queries.current?.()).resolves.toEqual({ ready: true });
+    expect(inputs).toEqual([{}]);
+    await expect(queries.byId?.()).rejects.toThrow(/task-query-schema-invalid/);
+    expect(inputs).toEqual([{}]);
   });
 
   it('rejects tampered, wrong-audience, and expired internal admissions', async () => {

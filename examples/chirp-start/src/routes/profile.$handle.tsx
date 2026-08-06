@@ -1,34 +1,32 @@
-import { ApplicationQueryHydrationBoundary } from '@applik8s/react';
 import { createFileRoute } from '@tanstack/react-router';
-import { Account, Block, Follow, Mute, Post } from '../application';
+import { AccountByHandle, Block, BlockViewerState, Follow, FollowViewerState, Mute, MuteViewerState, PostByAuthorHandle } from '../application';
 import { ChirpShell } from '../components/chirp-shell';
 import { PostList, QueryState } from '../components/post-list';
 import { currentAccount } from '../session';
 
 export const Route = createFileRoute('/profile/$handle')({
   loader: ({ params }) => Promise.all([
-    Account.byHandle({ handle: params.handle }).snapshot(),
-    Post.byAuthorHandle({ handle: params.handle, limit: 50 }).snapshot(),
-    Follow.viewerState({ handle: params.handle }).snapshot(),
-    Block.viewerState({ handle: params.handle }).snapshot(),
-    Mute.viewerState({ handle: params.handle }).snapshot(),
+    AccountByHandle({ handle: params.handle }).snapshot(),
+    PostByAuthorHandle({ handle: params.handle, limit: 50 }).snapshot(),
+    FollowViewerState({ handle: params.handle }).snapshot(),
+    BlockViewerState({ handle: params.handle }).snapshot(),
+    MuteViewerState({ handle: params.handle }).snapshot(),
   ]),
   component: ProfilePage,
 });
 
 function ProfilePage() {
-  const snapshots = Route.useLoaderData();
   const { handle } = Route.useParams();
-  return <ApplicationQueryHydrationBoundary snapshots={snapshots}><Profile handle={handle} /></ApplicationQueryHydrationBoundary>;
+  return <Profile handle={handle} />;
 }
 
 function Profile({ handle }: { readonly handle: string }) {
-  const account = Account.byHandle({ handle }).useQuery();
+  const account = AccountByHandle({ handle }).useQuery();
   const session = currentAccount.useQuery();
-  const posts = Post.byAuthorHandle({ handle, limit: 50 }).useQuery();
-  const relationship = Follow.viewerState({ handle }).useQuery();
-  const blockRelationship = Block.viewerState({ handle }).useQuery();
-  const muteRelationship = Mute.viewerState({ handle }).useQuery();
+  const posts = PostByAuthorHandle({ handle, limit: 50 }).useQuery();
+  const relationship = FollowViewerState({ handle }).useQuery();
+  const blockRelationship = BlockViewerState({ handle }).useQuery();
+  const muteRelationship = MuteViewerState({ handle }).useQuery();
   const createFollow = Follow.create.useMutation();
   const updateFollow = Follow.update.useMutation();
   const createBlock = Block.create.useMutation();

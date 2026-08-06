@@ -1,3 +1,4 @@
+// typecast-file-boundary: Placement tests inspect normalized graph fixtures after validating their node discriminants.
 import type {
   ApplicationAuthorizationReceipt,
   ApplicationOperationDescriptor,

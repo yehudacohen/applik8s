@@ -1,3 +1,4 @@
+// typecast-file-boundary: authenticated subscription requests and provider-neutral cursor payloads are validated before typed stream delivery.
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
   type ApplicationAuthorizationReceipt,
@@ -6,7 +7,7 @@ import {
 import { applicationOperationInputDigest } from './application-operation-runtime.js';
 import type { ApplicationQueryPrincipal } from './application-queries.js';
 import type { ApplicationStreamBinding } from './application-reactive.js';
-import type { ApplicationReplayableStream, ApplicationReplayPage } from './projection-runtime-clickhouse.js';
+import type { ApplicationReplayableStream, ApplicationReplayPage, ApplicationStreamEnvelope } from './projection-runtime-clickhouse.js';
 import type { ApplicationSubscriptionLimiter } from './query-gateway.js';
 import { createApplicationSubscriptionLimiter } from './query-gateway.js';
 
@@ -45,6 +46,78 @@ export interface ApplicationStreamSubscriptionGatewayOptions<TPrincipal extends 
     readonly inputDigest: string;
     readonly trustedContextDigest: string;
   }) => ApplicationAuthorizationReceipt | false | Promise<ApplicationAuthorizationReceipt | false>;
+}
+
+export interface ApplicationAuthorizedReplayableStreamOptions<
+  TPayload extends object,
+> {
+  readonly source: ApplicationReplayableStream<TPayload> & {
+    close?(): Promise<void>;
+  };
+  readonly authorize: (
+    event: ApplicationStreamEnvelope<TPayload>,
+  ) => boolean | Promise<boolean>;
+  /** Bounds hidden-row scanning in one public request. */
+  readonly maxScanPages?: number;
+}
+
+/**
+ * Applies event-level authority without leaking unauthorized rows or stalling
+ * the opaque cursor behind them. This is required for exact-instance signal
+ * visibility and is also useful for other row-authorized event families.
+ */
+export function createApplicationAuthorizedReplayableStream<
+  TPayload extends object,
+>(
+  options: ApplicationAuthorizedReplayableStreamOptions<TPayload>,
+): ApplicationReplayableStream<TPayload> & { close?(): Promise<void> } {
+  const maxScanPages = options.maxScanPages ?? 20;
+  if (
+    !Number.isSafeInteger(maxScanPages)
+    || maxScanPages < 1
+    || maxScanPages > 100
+  ) {
+    throw new Error('Authorized stream maxScanPages must be between 1 and 100.');
+  }
+  const closeSource = options.source.close?.bind(options.source);
+  return {
+    async read(afterSequence, limit) {
+      let cursor = afterSequence;
+      let retentionFloor = 0;
+      let exhausted = false;
+      const items: ApplicationStreamEnvelope<TPayload>[] = [];
+      for (
+        let pageIndex = 0;
+        pageIndex < maxScanPages && items.length < limit && !exhausted;
+        pageIndex += 1
+      ) {
+        const page = await options.source.read(
+          cursor,
+          Math.max(1, limit - items.length),
+        );
+        retentionFloor = Math.max(retentionFloor, page.retentionFloor);
+        exhausted = page.exhausted;
+        cursor = page.nextSequence;
+        for (const event of page.items) {
+          if (await options.authorize(event)) items.push(event);
+        }
+        if (page.items.length === 0 && !page.exhausted) {
+          throw new Error(
+            'Authorized stream source did not advance its cursor.',
+          );
+        }
+      }
+      return {
+        items,
+        nextSequence: cursor,
+        exhausted,
+        retentionFloor,
+      };
+    },
+    ...(closeSource
+      ? { close: () => closeSource() }
+      : {}),
+  };
 }
 
 interface StreamCursor {
@@ -130,8 +203,8 @@ export function createApplicationStreamSubscriptionGateway<TPrincipal extends Ap
               while (!session.signal.aborted && now().getTime() - startedAt < maxSessionMs) {
                 const currentIdentity = await admitted(options, request);
                 const currentReceipt = await authorizeStreamOperation(options, 'subscription-resume', subscription, currentIdentity);
-                if (!sameIdentity(identity, currentIdentity)
-                  || !sameReceiptRevision(receipt, currentReceipt)
+                if (!sameIdentityScope(identity, currentIdentity)
+                  || !sameAuthorizationScope(identity, currentIdentity, receipt, currentReceipt)
                   || !await subscription.authorize(currentIdentity.principal)) {
                   enqueue(controller, encoder, 'reset', { protocol: 'applik8s.stream/v1alpha1', kind: 'reset', subscription: subscription.name, reason: 'authorizationChanged' });
                   options.audit?.({ event: 'reset', subscription: subscription.name, principal: identity.principal.id, reason: 'authorizationChanged' });
@@ -209,7 +282,7 @@ function cursorForRequest<TPrincipal extends ApplicationQueryPrincipal>(
 
 function retentionGap(sequence: number, page: ApplicationReplayPage<object>): boolean { return sequence > 0 && page.retentionFloor > sequence; }
 function advanceCursor(cursor: StreamCursor, sequence: number, now: number, ttlSeconds: number): StreamCursor { return { ...cursor, sequence, expiresAt: now + ttlSeconds * 1_000 }; }
-function sameIdentity<TPrincipal extends ApplicationQueryPrincipal>(left: ApplicationStreamSubscriptionIdentity<TPrincipal>, right: ApplicationStreamSubscriptionIdentity<TPrincipal>): boolean { return left.principal.id === right.principal.id && left.principal.authorityRevision === right.principal.authorityRevision && left.contextDigest === right.contextDigest; }
+function sameIdentityScope<TPrincipal extends ApplicationQueryPrincipal>(left: ApplicationStreamSubscriptionIdentity<TPrincipal>, right: ApplicationStreamSubscriptionIdentity<TPrincipal>): boolean { return left.principal.id === right.principal.id && left.contextDigest === right.contextDigest; }
 function streamCursorBindings<TPrincipal extends ApplicationQueryPrincipal>(
   secret: string,
   identity: ApplicationStreamSubscriptionIdentity<TPrincipal>,
@@ -233,14 +306,22 @@ function sameCursorBindings(
   cursor: StreamCursor,
   expected: ReturnType<typeof streamCursorBindings>,
 ): boolean {
-  return cursor.principalBinding === expected.principalBinding
-    && cursor.authorizationBinding === expected.authorizationBinding
+  const sameScope = cursor.principalBinding === expected.principalBinding
     && cursor.contextBinding === expected.contextBinding
     && cursor.applicationBinding === expected.applicationBinding
     && cursor.operationId === expected.operationId
     && cursor.operationVersion === expected.operationVersion
-    && cursor.catalogRevision === expected.catalogRevision
-    && cursor.authorityRevision === expected.authorityRevision;
+    && cursor.catalogRevision === expected.catalogRevision;
+  if (!sameScope) return false;
+  // A fresh operation receipt proves the exact principal/context/operation is
+  // still authorized at the current authority revision. Global authority
+  // advancement by an unrelated grant or receipt must not invalidate a cursor
+  // between replay and subscribe. Receipt-less integrations retain the
+  // conservative principal-revision binding.
+  return expected.authorityRevision !== undefined
+    ? typeof cursor.authorityRevision === 'string'
+    : cursor.authorityRevision === undefined
+      && cursor.authorizationBinding === expected.authorizationBinding;
 }
 
 async function authorizeStreamOperation<TPrincipal extends ApplicationQueryPrincipal>(
@@ -269,16 +350,21 @@ async function authorizeStreamOperation<TPrincipal extends ApplicationQueryPrinc
   return result;
 }
 
-function sameReceiptRevision(
+function sameAuthorizationScope<TPrincipal extends ApplicationQueryPrincipal>(
+  admittedIdentity: ApplicationStreamSubscriptionIdentity<TPrincipal>,
+  currentIdentity: ApplicationStreamSubscriptionIdentity<TPrincipal>,
   admitted: ApplicationAuthorizationReceipt | undefined,
   current: ApplicationAuthorizationReceipt | undefined,
 ): boolean {
-  if (!admitted || !current) return admitted === current;
+  if (!admitted || !current) {
+    return admitted === current
+      && admittedIdentity.principal.authorityRevision
+        === currentIdentity.principal.authorityRevision;
+  }
   return admitted.application === current.application
     && admitted.operationId === current.operationId
     && admitted.operationVersion === current.operationVersion
     && admitted.catalogRevision === current.catalogRevision
-    && admitted.authorityRevision === current.authorityRevision
     && admitted.principal.id === current.principal.id;
 }
 

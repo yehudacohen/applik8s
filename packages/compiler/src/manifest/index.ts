@@ -712,9 +712,35 @@ function validateCapabilityDescriptors(operator: OperatorDefinition): Result<nev
     if (descriptor.endpoint && descriptor.kind === 'http' && !isHttpEndpoint(descriptor.endpoint)) {
       return capabilityError(operator, name, `HTTP capability ${name} endpoint must be an http or https URL.`);
     }
+    if (descriptor.workflowGateway) {
+      const caller = descriptor.workflowGateway.caller;
+      const deploymentNamespace = operator.deployment?.namespace;
+      const deploymentServiceAccount = operator.deployment?.serviceAccountName
+        ?? `${operator.name}-controller`;
+      if (
+        descriptor.kind !== 'http'
+        || descriptor.auth?.type !== 'serviceAccount'
+        || descriptor.workflowGateway.protocol !== 'applik8s.workflow-gateway/v1alpha1'
+        || !descriptor.workflowGateway.worker
+        || descriptor.workflowGateway.contracts.length === 0
+      ) {
+        return capabilityError(operator, name, `Workflow gateway ${name} must be a service-account-authenticated HTTP host capability with at least one contract.`);
+      }
+      if (
+        caller.operator !== operator.name
+        ||
+        caller.namespace !== deploymentNamespace
+        || caller.serviceAccount !== deploymentServiceAccount
+      ) {
+        return capabilityError(operator, name, `Workflow gateway ${name} caller identity must exactly match this operator deployment namespace and service account.`);
+      }
+    }
     const authType = descriptor.auth?.type;
     if (authType && !isSupportedCapabilityAuthType(authType)) {
       return capabilityError(operator, name, `Capability ${name} uses unsupported auth type ${authType}.`);
+    }
+    if (authType === 'serviceAccount' && !descriptor.workflowGateway) {
+      return capabilityError(operator, name, `Capability ${name} may use serviceAccount auth only for a compiler-issued workflow gateway.`);
     }
     if (descriptor.auth?.type === 'secretRef' && (!descriptor.auth.secretRef.name || !descriptor.auth.secretRef.key)) {
       return capabilityError(operator, name, `Capability ${name} secretRef auth must include secret name and key.`);
@@ -792,7 +818,14 @@ function isSupportedLiveCapabilityDescriptor(descriptor: CapabilityDescriptor): 
       && descriptor.execution.idempotency.keySource === 'notApplicable';
   }
   return descriptor.kind === 'http'
-    && (descriptor.auth?.type === 'none' || descriptor.auth?.type === 'secretRef')
+    && (
+      descriptor.auth?.type === 'none'
+      || descriptor.auth?.type === 'secretRef'
+      || (
+        descriptor.auth?.type === 'serviceAccount'
+        && descriptor.workflowGateway?.protocol === 'applik8s.workflow-gateway/v1alpha1'
+      )
+    )
     && descriptor.execution?.liveExecution === 'hostProtocol'
     && descriptor.execution.protocol === 'applik8s.capability/v1alpha1'
     && descriptor.execution.audit.includePayloads === false

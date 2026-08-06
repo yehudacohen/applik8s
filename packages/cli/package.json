@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/cli",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Build and deployment CLI for Applik8s applications.",
   "license": "Apache-2.0",
   "type": "module",
@@ -21,23 +21,24 @@
   "exports": {
     ".": {
       "types": "./dist/cli.d.ts",
-      "import": "./dist/cli.js"
+      "import": "./dist/cli.js",
+      "default": "./dist/cli.js"
     }
   },
   "dependencies": {
-    "@applik8s/applik8s": "0.6.0",
-    "@applik8s/compiler": "0.6.0",
-    "@applik8s/core": "0.6.0",
-    "@applik8s/deployment-alchemy": "0.6.0",
-    "@applik8s/deployment-contract": "0.6.0",
-    "@applik8s/deployment-provider-oci": "0.6.0",
-    "@applik8s/deployment-typekro": "0.6.0",
+    "@applik8s/applik8s": "0.7.0",
+    "@applik8s/compiler": "0.7.0",
+    "@applik8s/core": "0.7.0",
+    "@applik8s/deployment-alchemy": "0.7.0",
+    "@applik8s/deployment-contract": "0.7.0",
+    "@applik8s/deployment-provider-oci": "0.7.0",
+    "@applik8s/deployment-typekro": "0.7.0",
     "@kubernetes/client-node": "^1.3.0",
     "arktype": "^2.1.20",
     "cel-js": "0.8.2",
     "commander": "^15.0.0",
     "esbuild": "^0.28.1",
-    "typekro": "0.32.0",
+    "typekro": "0.33.5",
     "yaml": "^2.9.0"
   }
 }

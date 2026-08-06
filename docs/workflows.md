@@ -1,28 +1,32 @@
-# Durable Tasks and Workflows
+# Durable workflows and managed closures
 
-v0.5 adds provider-neutral durable `task()` and `workflow()` contracts. Definitions are inert until bound inside `app(...)`; app-bound handles provide `run`, `start`, `schedule`, `signal`, result observation, and cancellation.
+v0.7 has one public durability declaration: `workflow(...)`. Ordinary
+closures become managed retryable steps when a workflow calls them. There is
+no public task catalog, alias map, or `context.task(...)` indirection.
+
+A named optionless workflow uses `workflow(id, contract, handler)`. Add the
+options argument only when the workflow or compiler-owned step needs retry,
+timeout, provider, authority, or idempotency metadata. Handles provide direct
+invocation, `start`, schedules, result observation, cancellation, and typed
+signals.
 
 Hatchet is the first `WorkflowEngine` implementation. Applik8s provisions its pinned chart with an external CNPG database in PostgreSQL-only mode, with RabbitMQ disabled. Hatchet owns operational workflow history. PostgreSQL models and v0.4 command transactions remain canonical application state.
 
 ## Effect boundary
 
-External effects belong in tasks. A workflow may coordinate declared tasks and child workflows, sleep durably, wait for declared events, read the workflow clock, and observe cancellation. It may not call `fetch`, databases, Kubernetes clients, the filesystem, wall-clock globals, randomness, or ambient timers directly. The compiler follows captured module-scope helpers and rejects forbidden effects there as well.
+Durable orchestration may coordinate captured managed closures and child
+workflows, sleep durably, emit or await typed signals, read its history-backed
+clock, and observe cancellation. It may not perform external effects directly.
+The compiler follows captured module-local helpers and lowers direct operation,
+query, provider, and child-workflow calls into retryable steps. Hidden ambient
+`fetch`, filesystem, wall-clock, randomness, or timer effects fail compilation.
 
-Tasks are at-least-once and must be retry-safe. Declare an idempotency key that the external system can honor, and propagate correlation/causation metadata when a workflow calls a task. A completed workflow may call a task that commits canonical state through a v0.4 command or model-transaction API; workflow-engine state is not a substitute for that commit.
+Managed effects are at-least-once and must be retry-safe. Declare an
+idempotency key the external system can honor. Canonical application state
+still commits through an authorized model operation or application transaction;
+workflow history is not a substitute for that commit.
 
 ```ts
-const Provision = task('tenant.provision.v1', {
-  input: type({ tenantId: 'string', requestId: 'string' }),
-  output: type({ endpoint: 'string' }),
-});
-
-const Onboard = workflow('tenant.onboard.v1', {
-  input: type({ tenantId: 'string', requestId: 'string' }),
-  output: type({ phase: "'Ready' | 'Compensated' | 'NeedsIntervention'" }),
-  errors: { rejected: type({ reason: 'string' }) },
-  signals: { approval: type({ approved: 'boolean' }) },
-});
-
 platform.provide(WorkflowEngine, WorkflowEngine.hatchet({
   name: 'hatchet',
   namespace: 'platform',
@@ -30,59 +34,117 @@ platform.provide(WorkflowEngine, WorkflowEngine.hatchet({
   database: { clusterName: 'hatchet-db', database: 'hatchet', storageSize: '8Gi' },
 }));
 
-const provision = platform.task(Provision, {
-  retries: 5,
-  idempotencyKey: (input) => input.requestId,
-}, async (input, context) => {
-  // The external system must treat this key idempotently.
-  return provisionTenant(input, context.idempotencyKey, context.signal);
+const ReviewTenant = platform.workflow.signal('tenant.review.v1', {
+  input: type({ tenantId: 'string' }),
+  actions: {
+    approve: type({ 'comment?': 'string' }),
+    reject: type({ reason: 'string' }),
+  },
 });
+const TenantReviewer = platform.role('tenant-reviewer');
+TenantReviewer.can(
+  ReviewTenant.read,
+  ReviewTenant.approve,
+  ReviewTenant.reject,
+);
+const TenantReviewers = { role: 'tenant-reviewer' } as const;
 
-const onboard = platform.workflow(Onboard, { tasks: { provision } }, async (input, context) => {
-  await context.task('provision', input, { idempotencyKey: input.requestId });
-  const approval = await context.waitFor('approval', { lookback: '24h' });
-  if (!approval.approved) context.fail('rejected', { reason: 'approval denied' });
-  return { phase: 'Ready' };
-});
+const provision = platform.workflow(
+  'tenant.provision.v1',
+  {
+    input: type({ tenantId: 'string', requestId: 'string' }),
+    output: type({ endpoint: 'string' }),
+  },
+  {
+    retries: 5,
+    idempotencyKey: input => input.requestId,
+  },
+  async (input, context) =>
+    provisionTenant(input, context.idempotencyKey, context.signal),
+);
+
+const onboard = platform.workflow(
+  'tenant.onboard.v1',
+  {
+    input: type({ tenantId: 'string', requestId: 'string' }),
+    output: type({ phase: "'Ready' | 'Rejected'", endpoint: 'string | null' }),
+  },
+  async (input) => {
+    const provisioned = await provision(input, {
+      idempotencyKey: input.requestId,
+    });
+    const review = await platform.workflow.emitSignal(ReviewTenant, {
+      input: { tenantId: input.tenantId },
+      target: { tenantId: input.tenantId },
+      expiresIn: '24h',
+      authorize: [TenantReviewers],
+    });
+    return (await review()).match({
+      approve: async () => ({ phase: 'Ready', endpoint: provisioned.endpoint }),
+      reject: async () => ({ phase: 'Rejected', endpoint: null }),
+      expired: async () => ({ phase: 'Rejected', endpoint: null }),
+    });
+  },
+);
 
 const run = await onboard.start({ tenantId: 'tenant-a', requestId: 'request-1' });
 const controller = new AbortController();
 const result = await run.result({ signal: controller.signal, timeoutMs: 30_000 });
 ```
 
-Task aliases, child-workflow aliases, signal names, signal payloads, and named durable errors are inferred from the declarations supplied to `app.workflow`. Generated workers validate named error payloads before recording them; callers receive an `ApplicationDurableError` with a typed `{ name, payload }` descriptor. Result observation is always abortable and deadline-bounded, and repeated provider read failures terminate with a structured observation error.
+Child calls, signal contracts, action payloads, and durable outcomes are
+inferred from direct handles. Generated workers validate payloads before
+recording them. Result observation is abortable and deadline-bounded, and
+repeated provider read failures terminate with a structured observation error.
+Generated durable coordinators receive a one-year orchestration ceiling so
+they can remain suspended on signals without inheriting Hatchet's short task
+default. Retryable effect steps retain their own independently bounded
+execution timeouts; an HTTP or client observation timeout never shortens the
+durable run.
 
-## Declared canonical state access
+## Canonical state access
 
-A task does not receive database, JetStream, gateway, or identity-provider credentials. Inject the smallest canonical operations and bounded views it needs. Both use one compiler-captured service principal; the handler can invoke only the aliases in its declaration and cannot manufacture another identity.
+A managed closure does not receive database, JetStream, gateway, or
+identity-provider credentials. It directly calls the smallest canonical
+operations and bounded views it needs. The compiler discovers those handles,
+derives a bounded execution principal, and rejects hidden or ambiguous
+authority.
 
 ```ts
-const executeAutomation = chirp.task(ExecuteAutomation, {
-  operations: {
-    createRun: AutomationRun.create,
-    publish: Post.create,
-    updateRun: AutomationRun.update,
-  },
-  queries: {
-    safety: AutomationControl.current,
-    context: Post.homeTimeline,
-  },
+const executeAutomation = chirp.workflow('automation.execute.v1', {
+  input: ExecuteAutomationInput,
+  output: AutomationResult,
+}, {
+  authority: [
+    AutomationRun.create.all(),
+    Post.create.all(),
+    AutomationRun.update.all(),
+  ],
   principal: (input) => ({
     id: input.accountId,
-    claims: { role: 'automation-worker', automationId: input.automationId },
+    roles: ['automation-worker'],
+    attributes: { automationId: input.automationId },
     authorizationVersion: 'automation-v1',
   }),
 }, async (input, context) => {
-  const safety = await context.queries.safety({});
+  const safety = await AutomationControl.current();
   if (!safety.enabled) throw new Error('Automated publication is disabled.');
-  const recent = await context.queries.context({ viewerId: input.accountId, limit: 20 });
-  const run = await context.operations.createRun({ id: context.invocationId, automationId: input.automationId });
-  // Generate and moderate from bounded `recent`, then use ordinary Post.create.
+  const recent = await Post.homeTimeline({ limit: 20 });
+  const run = await AutomationRun.create({
+    id: context.invocationId,
+    automationId: input.automationId,
+  });
+  // Generate and moderate from bounded `recent`, then call Post.create.
   return { runId: run.identity };
 });
 ```
 
-Declared operations publish the ordinary versioned command envelope, wait for its durable PostgreSQL result, and retain context-scoped idempotency. Declared queries call the ordinary generated query gateway and therefore retain input/output schemas, application authorization, authoritative snapshot semantics, row/byte/time limits, and provider behavior. Their short-lived internal admission is HMAC-bound to the worker's gateway audience, query, snapshot operation, concrete input, and service principal. The same namespace-scoped Secret establishes both effect authorities; it is mounted into the generated worker and never exposed to handler code.
+Direct operations still publish the ordinary versioned command envelope, await
+its durable PostgreSQL result, and retain context-scoped idempotency. Direct
+queries still pass through the generated query gateway with schema validation,
+authorization, snapshot semantics, and budgets. The compiler-owned internal
+admission is bound to the exact operation, input, audience, execution principal,
+and catalog revision; no credential is exposed to application code.
 
 Recurring schedules are desired state, not an ambient Hatchet client call. A committed event processor receives only its declared schedule aliases and reconciles one deterministic identity with a revision:
 
@@ -111,35 +173,35 @@ The model mapper produces the same typed stream payload consumed by the ordinary
 recovery does not introduce a second row schema or a provider-specific bulk-load API:
 
 ```ts
-const HomeTimeline = PostTimelineChanged.project('home-timeline', {
-  store: IndexStore,
-  output: TimelineChange,
-  map: change => change,
-  partitionBy: change => change.authorId,
-  key: change => change.postId,
-  score: change => Date.parse(change.publishedAt),
-  value: change => change,
-  retention: { maxItemsPerPartition: 2_000 },
-  generationScoped: true,
-  rebuild: {
-    source: Post,
-    checkpoint: 'durable',
-    map: post => post.deletedAt === null
-      ? [{ operation: 'upsert', postId: post.id, authorId: post.authorId, publishedAt: post.publishedAt }]
-      : [],
-  },
-});
+const HomeTimeline = PostTimelineChanged
+  .project(TimelinePost, (change, output) =>
+    change.operation === 'remove'
+      ? output.remove({ partition: change.authorId, key: change.postId })
+      : output.upsert({
+          partition: change.authorId,
+          key: change.postId,
+          score: Date.parse(change.publishedAt),
+          value: change,
+        }),
+  )
+  .rebuildFrom(Post, (post, rebuild) =>
+    post.deletedAt === null
+      ? rebuild.source({
+          operation: 'upsert',
+          postId: post.id,
+          authorId: post.authorId,
+          publishedAt: post.publishedAt,
+        })
+      : rebuild.skip(),
+  )
+  .retain({ maxItemsPerPartition: 2_000, maxAge: '30d' });
 
-const buildGeneration = application.task(BuildGeneration, {
-  projections: {
-    homeTimeline: {
-      projection: HomeTimeline,
-      artifacts: ProjectionArtifacts,
-      bounds: { batchSize: 500, maxSegments: 20_000, maxEvents: 10_000_000 },
-    },
-  },
-  idempotencyKey: input => input.generation,
-}, async (input, context) => context.projections.homeTimeline.rebuild(input));
+const buildGeneration = workflow(
+  'timeline.rebuild.v1',
+  { input: type({ generation: 'string' }), output: RebuildResult },
+  { idempotencyKey: input => input.generation },
+  async input => HomeTimeline.rebuild(input),
+);
 ```
 
 The generated worker reads the promoted model and committed public-stream watermark from one bounded
@@ -148,7 +210,9 @@ with commit, so a command excluded from that snapshot is guaranteed to appear af
 the potentially long scan does not hold the commit lock or stall foreground publishing. The worker writes
 checksummed immutable segments and a manifest to the declared object store, loads an inactive Valkey
 generation, catches up retained events after the captured watermark, and atomically publishes only when the
-candidate reaches the active projection checkpoint.
+candidate reaches the active projection checkpoint. The compiler infers the projection effect from
+`HomeTimeline.rebuild(...)`; Applik8s owns the immutable evidence store and bounded rebuild defaults.
+Advanced configuration remains available without making those mechanics part of ordinary workflow code.
 
 The generation id is an immutable recovery identity. A retry validates the manifest scope, definition
 digest, segment references, SHA-256 checksums, counts, and partitions before resuming; it does not rescan

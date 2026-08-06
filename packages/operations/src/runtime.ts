@@ -5,6 +5,7 @@ import type {
   ApplicationEffectiveAuthority,
   ApplicationExecutionKind,
   ApplicationExecutionPrincipal,
+  ApplicationGrantRecord,
   ApplicationIdentityReference,
   ApplicationOperationCatalog,
   ApplicationOperationId,
@@ -13,6 +14,7 @@ import type {
   ApplicationScopeExpression,
   ApplicationStaticAuthorityManifest,
   ApplicationWorkloadAuthorityEnvelope,
+  JsonObject,
 } from '@applik8s/core';
 import { intersectApplicationScopes } from '@applik8s/core';
 import {
@@ -26,6 +28,10 @@ import {
   PostgresApplicationAuthorityRepository,
   PostgresApplicationOperationCatalogRepository,
 } from './postgres.js';
+import {
+  type ApplicationOperationalObservationInput,
+  PostgresApplicationOperationalObservationRepository,
+} from './observations.js';
 
 export interface ApplicationOperationAuthorityRuntimeOptions {
   readonly sql: ApplicationAuthorityPostgresSql;
@@ -44,6 +50,8 @@ export interface ApplicationPrincipalAdmission {
   readonly sessionId?: string;
   readonly clientId?: string;
   readonly flowId?: string;
+  readonly roles?: readonly string[];
+  readonly attributes?: JsonObject;
 }
 
 export interface ApplicationOperationAuthorizationRequest {
@@ -89,6 +97,11 @@ export interface ApplicationExecutionAuthorizationRequest {
   readonly idempotencyKey?: string;
   readonly commandId?: string;
   readonly targetDigest?: string;
+  /**
+   * Explicit compiler policy result for operations classified as
+   * application-policy. Omitted is fail-closed.
+   */
+  readonly applicationPolicyAllowed?: boolean;
 }
 
 export type ApplicationExecutionAuthorizationResult =
@@ -119,7 +132,8 @@ export class ApplicationOperationAuthorityRuntime {
   readonly #catalogRepository: PostgresApplicationOperationCatalogRepository;
   readonly #catalogManager: ApplicationOperationCatalogManager;
   readonly #authority: ApplicationAuthorityService;
-  #prepared?: Promise<ApplicationOperationCatalog>;
+  readonly #observations: PostgresApplicationOperationalObservationRepository;
+  #prepared: Promise<ApplicationOperationCatalog> | undefined;
 
   constructor(options: ApplicationOperationAuthorityRuntimeOptions) {
     if (!options.application.trim()) {
@@ -138,11 +152,25 @@ export class ApplicationOperationAuthorityRuntime {
     this.#catalogRepository = new PostgresApplicationOperationCatalogRepository(options.sql);
     this.#catalogManager = new ApplicationOperationCatalogManager(this.#catalogRepository);
     this.#authority = new ApplicationAuthorityService(this.#authorityRepository);
+    this.#observations = new PostgresApplicationOperationalObservationRepository(
+      options.sql,
+      options.application,
+    );
   }
 
   prepare(): Promise<ApplicationOperationCatalog> {
-    this.#prepared ??= this.#prepare();
+    if (!this.#prepared) {
+      const attempt = this.#prepare();
+      this.#prepared = attempt;
+      void attempt.catch(() => {
+        this.#clearFailedPreparation(attempt);
+      });
+    }
     return this.#prepared;
+  }
+
+  #clearFailedPreparation(attempt: Promise<ApplicationOperationCatalog>): void {
+    if (this.#prepared === attempt) this.#prepared = undefined;
   }
 
   async admitPrincipal(
@@ -168,6 +196,8 @@ export class ApplicationOperationAuthorityRuntime {
       catalogRevision: catalog.revision,
       authorityRevision: authority.revision,
       admittedAt: new Date().toISOString(),
+      ...(admission.roles ? { roles: [...admission.roles] } : {}),
+      ...(admission.attributes ? { attributes: admission.attributes } : {}),
       ...(admission.expiresAt ? { expiresAt: admission.expiresAt } : {}),
       ...(admission.sessionId ? { sessionId: admission.sessionId } : {}),
       ...(admission.clientId ? { clientId: admission.clientId } : {}),
@@ -185,24 +215,47 @@ export class ApplicationOperationAuthorityRuntime {
         message: `Operation ${request.operationId} is unavailable in catalog ${catalog.revision}.`,
       };
     }
-    return this.#authority.authorize({
-      application: this.#application,
-      catalog,
-      operation,
-      principal: request.principal,
-      target: request.target,
-      ...(request.scopeEvidence ? { scopeEvidence: request.scopeEvidence } : {}),
-      audience: request.audience,
-      transport: request.transport,
-      inputDigest: request.inputDigest,
-      trustedContextDigest: request.trustedContextDigest,
-      ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
-      ...(request.commandId ? { commandId: request.commandId } : {}),
-      ...(request.targetDigest ? { targetDigest: request.targetDigest } : {}),
-      ...(request.applicationPolicyAllowed !== undefined
-        ? { applicationPolicyAllowed: request.applicationPolicyAllowed }
-        : {}),
-    });
+    let authorization: ApplicationAuthorizationResult;
+    try {
+      authorization = await this.#authority.authorize({
+        application: this.#application,
+        catalog,
+        operation,
+        principal: request.principal,
+        target: request.target,
+        ...(request.scopeEvidence ? { scopeEvidence: request.scopeEvidence } : {}),
+        audience: request.audience,
+        transport: request.transport,
+        inputDigest: request.inputDigest,
+        trustedContextDigest: request.trustedContextDigest,
+        ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
+        ...(request.commandId ? { commandId: request.commandId } : {}),
+        ...(request.targetDigest ? { targetDigest: request.targetDigest } : {}),
+        ...(request.applicationPolicyAllowed !== undefined
+          ? { applicationPolicyAllowed: request.applicationPolicyAllowed }
+          : {}),
+      });
+    } catch (cause) {
+      throw new Error(
+        `Operation ${request.operationId} authority decision failed.`,
+        { cause },
+      );
+    }
+    try {
+      await this.#recordAuthorization(
+        request.operationId,
+        request.inputDigest,
+        request.transport,
+        request.audience,
+        authorization,
+      );
+    } catch (cause) {
+      throw new Error(
+        `Operation ${request.operationId} authority observation failed.`,
+        { cause },
+      );
+    }
+    return authorization;
   }
 
   async admitExecutionPrincipal(
@@ -271,30 +324,30 @@ export class ApplicationOperationAuthorityRuntime {
     const catalog = await this.prepare();
     const operation = catalog.operations.find((candidate) => candidate.id === request.envelope.operationId);
     if (!operation) {
-      return executionDenied('AUTHORIZATION_OPERATION_MISMATCH', `Workload envelope ${request.envelope.id} references unavailable operation ${request.envelope.operationId}.`);
+      return this.#executionDenied(request, 'AUTHORIZATION_OPERATION_MISMATCH', `Workload envelope ${request.envelope.id} references unavailable operation ${request.envelope.operationId}.`);
     }
     if (request.principal.catalogRevision !== catalog.revision
       || request.envelope.catalogRevision !== catalog.revision) {
-      return executionDenied('AUTHORIZATION_CATALOG_INACTIVE', `Execution ${request.principal.executionId} references a stale operation catalog.`);
+      return this.#executionDenied(request, 'AUTHORIZATION_CATALOG_INACTIVE', `Execution ${request.principal.executionId} references a stale operation catalog.`);
     }
     if (request.principal.workloadIdentity.id !== request.envelope.workloadIdentity.id
       || request.principal.serviceIdentity?.id !== request.envelope.serviceIdentity?.id) {
-      return executionDenied('AUTHORIZATION_WORKLOAD_MISMATCH', `Execution principal ${request.principal.id} does not own workload envelope ${request.envelope.id}.`);
+      return this.#executionDenied(request, 'AUTHORIZATION_WORKLOAD_MISMATCH', `Execution principal ${request.principal.id} does not own workload envelope ${request.envelope.id}.`);
     }
     if (request.principal.cancellationRevision !== request.currentCancellationRevision) {
-      return executionDenied('AUTHORIZATION_EXECUTION_CANCELLED', `Execution ${request.principal.executionId} cancellation revision changed.`);
+      return this.#executionDenied(request, 'AUTHORIZATION_EXECUTION_CANCELLED', `Execution ${request.principal.executionId} cancellation revision changed.`);
     }
     if (Date.now() >= new Date(request.principal.deadline).getTime()) {
-      return executionDenied('AUTHORIZATION_GRANT_EXPIRED', `Execution ${request.principal.executionId} exceeded its deadline.`);
+      return this.#executionDenied(request, 'AUTHORIZATION_GRANT_EXPIRED', `Execution ${request.principal.executionId} exceeded its deadline.`);
     }
     if (request.envelope.inputSchemaDigest !== operation.input.digest) {
-      return executionDenied('AUTHORIZATION_OPERATION_MISMATCH', `Workload envelope ${request.envelope.id} input schema is stale.`);
+      return this.#executionDenied(request, 'AUTHORIZATION_OPERATION_MISMATCH', `Workload envelope ${request.envelope.id} input schema is stale.`);
     }
     if (request.envelope.audiences.length > 0 && !request.envelope.audiences.includes(request.audience)) {
-      return executionDenied('AUTHORIZATION_AUDIENCE_DENIED', `Audience ${request.audience} is outside workload envelope ${request.envelope.id}.`);
+      return this.#executionDenied(request, 'AUTHORIZATION_AUDIENCE_DENIED', `Audience ${request.audience} is outside workload envelope ${request.envelope.id}.`);
     }
     if (!request.envelope.transports.includes(request.transport)) {
-      return executionDenied('AUTHORIZATION_TRANSPORT_DENIED', `Transport ${request.transport} is outside workload envelope ${request.envelope.id}.`);
+      return this.#executionDenied(request, 'AUTHORIZATION_TRANSPORT_DENIED', `Transport ${request.transport} is outside workload envelope ${request.envelope.id}.`);
     }
     const envelopeScopes = [
       ...(request.envelope.restrictions.target ? [request.envelope.restrictions.target] : []),
@@ -316,8 +369,20 @@ export class ApplicationOperationAuthorityRuntime {
       ...(request.idempotencyKey ? { idempotencyKey: request.idempotencyKey } : {}),
       ...(request.commandId ? { commandId: request.commandId } : {}),
       ...(request.targetDigest ? { targetDigest: request.targetDigest } : {}),
+      ...(request.applicationPolicyAllowed !== undefined
+        ? { applicationPolicyAllowed: request.applicationPolicyAllowed }
+        : {}),
     });
-    if (!authorization.allowed) return authorization;
+    if (!authorization.allowed) {
+      await this.#recordAuthorization(
+        request.envelope.operationId,
+        request.inputDigest,
+        request.transport,
+        request.audience,
+        authorization,
+      );
+      return authorization;
+    }
     const effectiveScope = intersectApplicationScopes(
       operation.authority.defaultScope,
       request.target,
@@ -341,7 +406,7 @@ export class ApplicationOperationAuthorityRuntime {
       audience: request.audience,
       transport: request.transport,
     };
-    return {
+    const result: ApplicationExecutionAuthorizationResult = {
       allowed: true,
       receipt,
       principal: {
@@ -353,6 +418,30 @@ export class ApplicationOperationAuthorityRuntime {
         ],
       },
     };
+    await this.#recordAuthorization(
+      request.envelope.operationId,
+      request.inputDigest,
+      request.transport,
+      request.audience,
+      { allowed: true, receipt },
+    );
+    return result;
+  }
+
+  /**
+   * Framework runtimes use the authority database as the canonical
+   * application-scoped administrative observation store. Application code
+   * never receives this method and never wires an observation sink.
+   */
+  async observe(
+    observation: ApplicationOperationalObservationInput,
+    transaction?: ApplicationAuthorityPostgresTransaction,
+  ): Promise<void> {
+    await this.prepare();
+    await this.#observations.upsert(
+      observation,
+      transaction ?? undefined,
+    );
   }
 
   async revalidate(
@@ -385,6 +474,56 @@ export class ApplicationOperationAuthorityRuntime {
       this.#authorityRepository.withinTransaction(transaction, work));
   }
 
+  /**
+   * Runs authority work in an already-open PostgreSQL transaction. Signal
+   * issuance uses this seam so exact-instance grants and the issuance outbox
+   * share one commit boundary rather than coordinating two databases.
+   */
+  async withinTransaction<T>(
+    transaction: ApplicationAuthorityPostgresTransaction,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    await this.prepare();
+    return this.#catalogRepository.withinTransaction(
+      this.#application,
+      transaction,
+      () => this.#authorityRepository.withinTransaction(transaction, work),
+    );
+  }
+
+  async assignGrant(
+    record: ApplicationGrantRecord,
+    transaction?: ApplicationAuthorityPostgresTransaction,
+  ): Promise<ApplicationGrantRecord> {
+    await this.prepare();
+    if (!transaction) return this.#authority.assignGrant(record);
+    return this.withinTransaction(
+      transaction,
+      () => this.#authority.assignGrant(record),
+    );
+  }
+
+  async authorityRevision(
+    transaction?: ApplicationAuthorityPostgresTransaction,
+  ): Promise<string> {
+    await this.prepare();
+    const read = async () => (await this.#authorityRepository.snapshot()).revision;
+    return transaction ? this.withinTransaction(transaction, read) : read();
+  }
+
+  async revokeGrant(
+    grantId: string,
+    reason: string,
+    transaction?: ApplicationAuthorityPostgresTransaction,
+  ): Promise<ApplicationGrantRecord> {
+    await this.prepare();
+    if (!transaction) return this.#authority.revokeGrant(grantId, reason);
+    return this.withinTransaction(
+      transaction,
+      () => this.#authority.revokeGrant(grantId, reason),
+    );
+  }
+
   async releaseEnvelope(receipt: ApplicationAuthorizationReceipt, envelopeId: string): Promise<void> {
     await this.prepare();
     await this.#catalogRepository.removeReference(
@@ -398,24 +537,119 @@ export class ApplicationOperationAuthorityRuntime {
   async #prepare(): Promise<ApplicationOperationCatalog> {
     await this.#authorityRepository.prepare();
     const transition = await this.#catalogManager.stage(this.#declaredCatalog);
+    const operationIds = new Set(transition.catalog.operations.map((operation) => operation.id));
+    if (this.#authorityManifest) {
+      const unknown = this.#authorityManifest.permissions
+        .flatMap((permission) => permission.operationIds)
+        .filter((operationId) => !operationIds.has(operationId));
+      if (unknown.length > 0) {
+        throw new Error(`Application authority manifest ${this.#authorityManifest.revision} references unknown catalog operations: ${[...new Set(unknown)].sort().join(', ')}.`);
+      }
+    }
+    if (transition.predecessor
+      && transition.catalog.state === 'staged'
+      && transition.predecessor.revision !== transition.catalog.revision) {
+      // Application-owned authority is declarative, so reconcile it to the
+      // staged catalog before compatibility activation. Runtime grants then
+      // migrate only when every operation they carry is compatible (or has an
+      // explicit compatible replacement).
+      if (this.#authorityManifest) {
+        await this.#authority.reconcileStaticAuthorityManifest(
+          this.#authorityManifest,
+          transition.catalog.revision,
+        );
+      }
+      const authorityRevision = (await this.#authorityRepository.snapshot()).revision;
+      await this.#authority.migrateCatalogAuthority(
+        transition.predecessor,
+        transition.catalog,
+        authorityRevision,
+      );
+      await this.#catalogRepository.pruneTerminalCommandEnvelopeReferences(
+        this.#application,
+        transition.predecessor.revision,
+      );
+    }
     const activated = await this.#catalogManager.activate(
       this.#application,
       transition.catalog.revision,
     );
     if (this.#authorityManifest) {
-      const operations = new Set(activated.catalog.operations.map((operation) => operation.id));
-      const unknown = this.#authorityManifest.permissions
-        .flatMap((permission) => permission.operationIds)
-        .filter((operationId) => !operations.has(operationId));
-      if (unknown.length > 0) {
-        throw new Error(`Application authority manifest ${this.#authorityManifest.revision} references unknown catalog operations: ${[...new Set(unknown)].sort().join(', ')}.`);
-      }
       await this.#authority.reconcileStaticAuthorityManifest(
         this.#authorityManifest,
         activated.catalog.revision,
       );
     }
+    await this.#observations.prepare();
+    await this.#observations.upsert({
+      id: 'authority:operation-catalog',
+      domain: 'authority',
+      subject: `operation-catalog:${activated.catalog.revision}`,
+      authority: 'canonical',
+      state: 'ready',
+      source: 'application-operation-authority-runtime',
+      evidence: {
+        catalogRevision: activated.catalog.revision,
+        operationCount: activated.catalog.operations.length,
+      },
+      observedAt: new Date().toISOString(),
+    });
     return activated.catalog;
+  }
+
+  async #recordAuthorization(
+    operationId: ApplicationOperationId,
+    inputDigest: string,
+    transport: ApplicationOperationTransport,
+    audience: string,
+    authorization:
+      | ApplicationAuthorizationResult
+      | ApplicationExecutionAuthorizationResult,
+  ): Promise<void> {
+    await this.#observations.upsert({
+      id: authorization.allowed
+        ? `authority:receipt:${authorization.receipt.id}`
+        : `authority:denial:${operationId}:${inputDigest}`,
+      domain: 'authority',
+      subject: operationId,
+      authority: 'canonical',
+      state: authorization.allowed ? 'succeeded' : 'failed',
+      ...(!authorization.allowed ? { reason: authorization.code } : {}),
+      source: 'application-operation-authority-runtime',
+      ...(authorization.allowed
+        ? { causalId: authorization.receipt.id }
+        : {}),
+      evidence: authorization.allowed
+        ? {
+            operationId,
+            audience,
+            transport,
+            receiptId: authorization.receipt.id,
+          }
+        : {
+            operationId,
+            audience,
+            transport,
+            code: authorization.code,
+          },
+      observedAt: new Date().toISOString(),
+    });
+  }
+
+  async #executionDenied(
+    request: ApplicationExecutionAuthorizationRequest,
+    code: string,
+    message: string,
+  ): Promise<ApplicationExecutionAuthorizationResult> {
+    const denied = executionDenied(code, message);
+    await this.#recordAuthorization(
+      request.envelope.operationId,
+      request.inputDigest,
+      request.transport,
+      request.audience,
+      denied,
+    );
+    return denied;
   }
 }
 

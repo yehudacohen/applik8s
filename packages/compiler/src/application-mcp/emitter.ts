@@ -1,3 +1,4 @@
+// typecast-file-boundary: MCP plans are validated before strongly typed generated-source fragments are emitted.
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -57,6 +58,13 @@ interface ApplicationMcpCompilerContract {
   readonly identity: {
     readonly hydraAdminUrl: string;
     readonly hydraPublicUrl: string;
+    /**
+     * MCP OAuth is materialized only for installation profiles whose selected
+     * identity infrastructure contains Hydra. The logical MCP declaration
+     * remains application-owned; unsupported profiles do not receive a
+     * misleading unauthenticated transport.
+     */
+    readonly includeWhen?: string;
   };
   readonly deployment: {
     readonly replicas: number;
@@ -147,6 +155,7 @@ async function emitMcpServer(
     platform: 'node',
     target: 'node22',
     minify: true,
+    keepNames: true,
     legalComments: 'none',
     sourcemap: 'external',
     sourcesContent: false,
@@ -222,10 +231,9 @@ function generatedMcpSource(contract: ApplicationMcpCompilerContract): string {
       maximumResponseBytes: contract.server.transport.maximumResponseBytes,
     })}]`,
   ).join(',\n');
-  return `import { createHash } from 'node:crypto';
-import { createServer } from 'node:http';
+  return `import { createServer } from 'node:http';
 import postgres from 'postgres';
-import { createApplicationOAuthResourceAdmission } from '@applik8s/identity/server';
+import { applicationOAuthIdentityReference, createApplicationOAuthResourceAdmission } from '@applik8s/identity/server';
 import { OryHydraOAuthAdapter } from '@applik8s/identity-ory';
 import { ApplicationMcpServerRuntime, createApplicationMcpHttpHandler, createApplicationMcpPlacementExecutor } from '@applik8s/mcp/server';
 import { createPostgresApplicationMcpStores } from '@applik8s/mcp/postgres';
@@ -249,11 +257,11 @@ const admitRequest = createApplicationOAuthResourceAdmission({
   admitPrincipal: ({ introspection, context, trustedContextDigest, now }) => {
     const subject = introspection.subject ?? introspection.clientId;
     const issuer = introspection.issuer ?? new URL(requiredEnv('APPLIK8S_ORY_HYDRA_PUBLIC_URL')).origin;
-    const identityDigest = createHash('sha256').update(issuer + '\\0' + subject).digest('hex');
     const workload = Boolean(introspection.clientId && introspection.clientId === subject);
+    const identity = applicationOAuthIdentityReference({ issuer, subject, kind: workload ? 'workload' : 'human' });
     return authority.admitPrincipal({
-      id: 'principal:oauth:' + identityDigest,
-      identity: { id: 'identity:oauth:' + identityDigest, kind: workload ? 'workload' : 'human', issuer, subject },
+      id: identity.id.replace(/^identity:/u, 'principal:'),
+      identity,
       kind: workload ? 'workload' : 'human',
       authenticationMethod: 'oauth-token-introspection',
       audience: [context.audience],
@@ -310,6 +318,7 @@ const runtime = new ApplicationMcpServerRuntime({
 });
 const handle = createApplicationMcpHttpHandler({
   runtime,
+  path: ${JSON.stringify(contract.server.path)},
   admitRequest,
   maximumRequestBytes: ${contract.server.transport.maximumRequestBytes},
   maximumResponseBytes: ${contract.server.transport.maximumResponseBytes},
@@ -361,13 +370,23 @@ function generatedMcpResources(
   image: string,
   digest: string,
 ): readonly GeneratedApplicationMcpResource[] {
+  const inclusionAnnotations = contract.identity.includeWhen
+    ? { 'applik8s.dev/include-when': contract.identity.includeWhen }
+    : {};
   const labels = {
     'app.kubernetes.io/name': name,
     'app.kubernetes.io/component': 'mcp-server',
     'app.kubernetes.io/managed-by': 'applik8s',
     'applik8s.dev/graph': contract.graph.metadata.name,
   };
-  const metadata = { name, namespace: contract.namespace, labels };
+  const metadata = {
+    name,
+    namespace: contract.namespace,
+    labels,
+    ...(Object.keys(inclusionAnnotations).length > 0
+      ? { annotations: inclusionAnnotations }
+      : {}),
+  };
   const env = [
     { name: 'NODE_ENV', value: 'production' },
     { name: 'NODE_OPTIONS', value: '--enable-source-maps' },
@@ -403,7 +422,13 @@ function generatedMcpResources(
     {
       apiVersion: 'apps/v1',
       kind: 'Deployment',
-      metadata: { ...metadata, annotations: { 'applik8s.dev/source-digest': digest } },
+      metadata: {
+        ...metadata,
+        annotations: {
+          ...inclusionAnnotations,
+          'applik8s.dev/source-digest': digest,
+        },
+      },
       spec: {
         replicas: contract.deployment.replicas,
         strategy: {
@@ -520,17 +545,37 @@ function mcpDatabase(
 function mcpOryIdentity(graph: ApplicationGraph): {
   readonly hydraAdminUrl: string;
   readonly hydraPublicUrl: string;
+  readonly includeWhen?: string;
 } {
-  const provider = graph.nodes.find(
+  const candidates = graph.nodes.filter(
     (node): node is ApplicationProviderNode =>
       node.kind === 'provider'
-      && node.interface === 'IdentityProvider',
+      && node.interface === 'IdentityProvider'
+      && !node.config?.qualification,
   );
-  const infrastructure = objectValue(provider?.config?.identityInfrastructure);
-  const spec = objectValue(infrastructure.spec);
-  if (infrastructure.kind !== 'ory') {
+  if (candidates.length !== 1) {
     throw new Error(
-      'Generated MCP OAuth admission requires the current Ory IdentityProvider adapter.',
+      `Generated MCP OAuth admission requires exactly one unqualified IdentityProvider; resolved ${candidates.length}.`,
+    );
+  }
+  const provider = candidates[0];
+  const infrastructure = objectValue(provider?.config?.identityInfrastructure);
+  if (infrastructure.kind === 'application-provider-selection') {
+    return mcpProfiledOryIdentity(infrastructure);
+  }
+  return mcpConcreteOryIdentity(infrastructure);
+}
+
+function mcpConcreteOryIdentity(
+  infrastructure: Readonly<Record<string, unknown>>,
+): {
+  readonly hydraAdminUrl: string;
+  readonly hydraPublicUrl: string;
+} {
+  const spec = objectValue(infrastructure.spec);
+  if (infrastructure.kind !== 'ory' || infrastructure.stack !== 'platform') {
+    throw new Error(
+      'Generated MCP OAuth admission requires an Ory platform IdentityProvider with Hydra.',
     );
   }
   const name = applicationGraphStringValue(spec.name);
@@ -543,6 +588,82 @@ function mcpOryIdentity(graph: ApplicationGraph): {
   return {
     hydraAdminUrl: `http://${name}-hydra-admin.${namespace}.svc:4445`,
     hydraPublicUrl: `http://${name}-hydra-public.${namespace}.svc:4444`,
+  };
+}
+
+function mcpProfiledOryIdentity(
+  selection: Readonly<Record<string, unknown>>,
+): {
+  readonly hydraAdminUrl: string;
+  readonly hydraPublicUrl: string;
+  readonly includeWhen?: string;
+} {
+  const selector = typeof selection.selector === 'string'
+    ? selection.selector
+    : undefined;
+  const match = selector
+    ? /^schema\.spec\.([A-Za-z_][A-Za-z0-9_.]*)$/u.exec(selector)
+    : undefined;
+  if (!selector || !match?.[1]) {
+    throw new Error(
+      'Generated MCP OAuth admission requires a direct installation profile selector.',
+    );
+  }
+  const cases = objectValue(selection.cases);
+  const supported = Object.entries(cases).flatMap(([variant, value]) => {
+    const infrastructure = objectValue(value);
+    if (
+      infrastructure.kind !== 'ory'
+      || infrastructure.stack !== 'platform'
+    ) {
+      return [];
+    }
+    return [{
+      variant,
+      identity: mcpConcreteOryIdentity(infrastructure),
+    }];
+  });
+  const fallbackInfrastructure = objectValue(selection.default);
+  const fallback =
+    fallbackInfrastructure.kind === 'ory'
+    && fallbackInfrastructure.stack === 'platform'
+      ? mcpConcreteOryIdentity(fallbackInfrastructure)
+      : undefined;
+  if (supported.length === 0 && !fallback) {
+    throw new Error(
+      'Generated MCP OAuth admission requires at least one installation profile backed by an Ory platform IdentityProvider with Hydra.',
+    );
+  }
+  const first = supported[0]?.identity ?? fallback!;
+  const selectedValue = (
+    property: 'hydraAdminUrl' | 'hydraPublicUrl',
+  ): string => {
+    if (supported.length === 1 && !fallback) {
+      return supported[0]!.identity[property];
+    }
+    const fallbackValue = fallback?.[property] ?? first[property];
+    const expression = supported.reduceRight(
+      (otherwise, entry) =>
+        `${selector} == ${JSON.stringify(entry.variant)} ? ${JSON.stringify(entry.identity[property])} : (${otherwise})`,
+      JSON.stringify(fallbackValue),
+    );
+    return `\${${expression}}`;
+  };
+  const allCasesSupported =
+    Object.keys(cases).length > 0
+    && supported.length === Object.keys(cases).length
+    && Boolean(fallback);
+  const includeWhen = allCasesSupported
+    ? undefined
+    : supported.length === 0
+      ? undefined
+      : `\${${supported
+          .map((entry) => `${selector} == ${JSON.stringify(entry.variant)}`)
+          .join(' || ')}}`;
+  return {
+    hydraAdminUrl: selectedValue('hydraAdminUrl'),
+    hydraPublicUrl: selectedValue('hydraPublicUrl'),
+    ...(includeWhen ? { includeWhen } : {}),
   };
 }
 

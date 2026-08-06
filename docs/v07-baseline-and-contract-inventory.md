@@ -19,6 +19,14 @@ The pin refers to the committed tree only. The Stimp worktree contained uncommit
 template changes during this review; those changes are deliberately not smuggled into the baseline.
 They require a later explicit revision and ledger update before adoption.
 
+[`v07-stimp-parity.json`](./v07-stimp-parity.json) pins the reviewed source
+blobs used by the baseline ledger.
+[`v07-agentic-start-stimp-capability-map.md`](./v07-agentic-start-stimp-capability-map.md)
+is the normative implementation and acceptance map for the complete committed
+product surface. `bun run check:v07:stimp` must verify both the pinned
+dispositions and the generated behavioral journeys; a source marker, prose-only
+claim, or unpinned moving Stimp checkout is not parity evidence.
+
 ## Baseline ledger
 
 ### Preserved
@@ -59,8 +67,6 @@ They require a later explicit revision and ledger update before adoption.
 
 ### Deferred
 
-- Billing-provider implementation beyond a stable entitlement and usage seam.
-- Rich commercial plan/catalog behavior not required by the agentic identity acceptance application.
 - Additional hosted AI, identity, search, workflow, and billing adapters after the first concrete
   providers prove the contracts.
 - Multi-cluster qualification, which requires a second real Kubernetes authority.
@@ -78,6 +84,14 @@ They require a later explicit revision and ledger update before adoption.
 - A generic `tenantId` framework primitive. Applications and modules own organization/workspace domain
   models; the framework owns trusted-context propagation and bounded policy inputs.
 - Browser-owned principal, organization, scope, provider credential, or operation authority.
+
+The committed baseline's credential-free local billing behavior, checkout,
+portal, signed Stripe webhook seam, entitlement projection, and billing
+dashboard are v0.7 parity requirements. Product plans and workspace policy stay
+application-owned; the provider-neutral billing contract and first server-only
+Stripe adapter are maintained modules. A versioned plan/catalog and metering
+outbox are explicit v0.7 Agentic Start improvements rather than framework
+tenancy or pricing policy.
 
 ## Current Applik8s contract inventory
 
@@ -100,14 +114,14 @@ They require a later explicit revision and ledger update before adoption.
 | --- | --- |
 | `ModelStore`, `{ store }` | `TransactionalDatabase`, `{ database }` |
 | `ProjectionStore` | `AnalyticalDatabase` |
-| exceptional model `.action(...)` | `.operation(...)` |
+| exceptional model `.action(...)` / draft `.operation(...)` | ordinary exported function containing `Model.edit(...)` |
 | `/actions/` catalog identity | `/operations/` catalog identity |
 | Kubernetes `ApplicationPermissionRule` | `ApplicationKubernetesRbacRule` |
 
-`Model.action(...)` remains only as the documented source-compatibility alias to the same operation node
-until 1.0. The database aliases may remain import-compatible while migration tooling exists, but new
-graphs, diagnostics, examples, generated projects, manifests, and provider registries emit only the
-canonical vocabulary.
+The obsolete model action/operation/command registries are physically absent from the v0.7 public
+types and runtime objects. The database aliases may remain import-compatible while migration tooling
+exists, but new graphs, diagnostics, examples, generated projects, manifests, and provider registries
+emit only the canonical vocabulary.
 
 ## Package and runtime zones
 
@@ -128,10 +142,10 @@ provider clients, OAuth private clients, or deployment code.
 ## Phase 0 exit checks
 
 - The pinned revision and baseline ledger above are reviewed.
-- Current source emits `TransactionalDatabase`, `AnalyticalDatabase`, `{ database }`, `.operation(...)`,
-  `/operations/`, and `ApplicationKubernetesRbacRule`.
-- Deprecated `.action(...)` produces the same handler, stream, graph node, and identity as
-  `.operation(...)`.
+- Current source emits `TransactionalDatabase`, `AnalyticalDatabase`, `{ database }`,
+  function-native `Model.edit(...)`, `/operations/`, and `ApplicationKubernetesRbacRule`.
+- Negative public type/runtime tests prove `.action(...)`, `.operation(...)`, and model command
+  registries are absent.
 - The operation/catalog, principal, scope, execution-binding, workload-envelope, and explain contracts
   are public and type-tested before runtime authority is enabled.
 - Named routes are normative and compatibility overloads are visibly deprecated.

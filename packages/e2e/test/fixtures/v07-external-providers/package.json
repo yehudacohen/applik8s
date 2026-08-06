@@ -1,0 +1,11 @@
+{
+  "name": "@applik8s/e2e-v07-external-providers",
+  "private": true,
+  "type": "module",
+  "applik8s": {
+    "entrypoint": "src/application.ts",
+    "compositionName": "application",
+    "instance": "kubernetes/application.yaml",
+    "outDir": ".applik8s/deploy"
+  }
+}

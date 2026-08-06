@@ -1,0 +1,47 @@
+import {
+  type FormEvent,
+  useState,
+} from 'react';
+import { PublicAssistant } from '../application';
+
+export function PublicAssistantView() {
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState<string>();
+  const [pending, setPending] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const next = question.trim();
+    if (!next) return;
+    setPending(true);
+    try {
+      const result = await PublicAssistant({ question: next });
+      setAnswer(result.answer);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <main>
+      <p className="eyebrow">Public · capability-free</p>
+      <h1>Deployment assistant</h1>
+      <p>
+        This bounded endpoint has no private models, workspace context, tools,
+        conversation memory, or provider credentials.
+      </p>
+      <form onSubmit={submit}>
+        <label htmlFor="public-question">Question</label>
+        <textarea
+          id="public-question"
+          value={question}
+          onChange={event => setQuestion(event.currentTarget.value)}
+        />
+        <button type="submit" disabled={pending || !question.trim()}>
+          {pending ? 'Answering…' : 'Ask'}
+        </button>
+      </form>
+      {answer ? <p role="status">{answer}</p> : null}
+    </main>
+  );
+}

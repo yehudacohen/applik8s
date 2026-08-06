@@ -82,13 +82,11 @@ await Post.delete({ identity: postId });
 `on.create/update/delete` consumes the same versioned transactional outbox used by explicit domain events;
 it inherits replay, stable event idempotency, bounded concurrency, retry, and dead-letter behavior. Essential
 initialization belongs in database defaults or `beforeCommit`, never in a fallible post-commit handler.
-No `.actions({...})`, command registry, `$model` lookup, or second row schema is required. Exceptional
-non-CRUD operations may still be declared once as a direct typed model method. That one declaration derives
-both `Model.<verb>(input)` and `Model.on.<verb>(...)`; the completion handler receives typed previous/current
-snapshots, the committed result, identity, and revision through the same outbox and processor runtime.
-Lower-level `$model.on.command(...)`, `$model.on.action(...)`, and generic command registration spellings
-exist for explicit protocol integration and framework internals. They are not the ordinary domain-model
-experience and do not appear in golden-path examples.
+No `.actions({...})`, command registry, `$model` lookup, or second row schema exists in the public
+authoring path. Exceptional non-CRUD behavior is an ordinary function containing
+`Model.edit(identity, closure)`. The framework trigger that references the function supplies its
+schema, authority, identity, and placement; committed domain facts are emitted explicitly through the
+same transaction.
 
 Processor context—not the domain payload—carries transport identity: stream version and sequence, stable
 event idempotency, the opaque admitted-context digest, the gateway-established principal, and admitted

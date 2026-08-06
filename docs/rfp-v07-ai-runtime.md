@@ -7,7 +7,7 @@
 **Depends on:** Typed operations and authority, provider DI, Hatchet workflows, event streams, object
 storage, Vite/React/TanStack Start, and TypeKro
 
-**Unblocks:** Agentic Start conversations, Vasco extraction agents, evaluations, and AI operations UI
+**Unblocks:** Agentic Start conversations, Chirp automation agents, evaluations, and AI operations UI
 
 ## Purpose
 
@@ -89,7 +89,7 @@ const SourceResearcher = application.agent(
       ...(request.resume ? { resume: request.resume } : {}),
       tools: context.tanstack.tools,
       // Required by native TanStack server tools so provider call identity and
-      // the admitted ExecutionPrincipal reach canonical context.invoke(...).
+      // the admitted ExecutionPrincipal reach Applik8s invocation admission.
       context: context.tanstack.execution,
       middleware: [
         withPersistence(context.tanstack.persistence),
@@ -181,8 +181,9 @@ selection or use a second chat API.
 
 `context.tanstack.execution` is TanStack AI's native runtime `context` value. It carries the
 request-local admitted `ExecutionPrincipal`, logical invocation ID, physical attempt ID, and canonical
-`context.invoke(...)` bridge. Operation-derived tools require it at the type level and fail closed when
-the upstream tool-call ID is absent.
+internal invocation bridge. Operation-derived tools require it at the type level and fail closed when
+the upstream tool-call ID is absent. Application agent closures call imported operation handles
+directly; the adapter bridge is runtime machinery for TanStack's generated tool callbacks.
 
 At the pinned `@tanstack/ai@0.42.0` baseline, `@tanstack/ai-persistence` has not yet published its server
 package. `@applik8s/ai-tanstack` records that state as `unreleased` and exposes a fail-closed compatibility
@@ -445,9 +446,9 @@ protocol conflict and fails closed. A new physical attempt does not deduplicate 
 provider reused its tool-call ID; cross-attempt semantic reuse requires an explicit application policy
 and separately recorded causal identity.
 
-Server tools invoke `context.invoke(operation, input)` with the current `ExecutionPrincipal`. Client tools are
-explicitly classified, presented, and confirmed through the TanStack AI protocol but cannot perform a
-protected server effect without invoking an authorized operation.
+Server-tool adapters invoke the internal operation boundary with the current `ExecutionPrincipal`.
+Client tools are explicitly classified, presented, and confirmed through the TanStack AI protocol but
+cannot perform a protected server effect without invoking an authorized operation.
 
 Provider-supplied tool arguments are untrusted input. They pass the operation's normalized runtime schema,
 size limits, target resolution, authority, and idempotency checks. Tool results are separately classified
@@ -455,6 +456,14 @@ for model visibility, browser visibility, persistence, redaction, and audit.
 
 Human approval presentation is not approval authority. A TanStack interrupt creates or observes the
 canonical Applik8s approval/grant workflow and resumes only after Hatchet observes its committed result.
+The workflow issues an exported static `workflow.signal(...)` contract through
+`workflow.emitSignal(...)`; its pending instance, access state, issuance event, and outbox row commit
+in the primary transactional database's internal `SignalStore` transaction, and the workflow awaits
+the returned one-shot callable decision. TanStack/AG-UI/SSE presents the event only after exact
+issuance-read admission and hydrates only its opaque signal capability. The authenticated principal and
+current authorization state determine the actor and receipt when an action is invoked; interrupt
+payloads, provider messages, and client tool arguments cannot claim actor identity or create resolution
+authority.
 
 Operation-to-tool adaptation reuses the existing operation closure; it does not copy the closure into a
 second AI handler. Adapting a relational model operation, CRD/resource operation, query, search, or

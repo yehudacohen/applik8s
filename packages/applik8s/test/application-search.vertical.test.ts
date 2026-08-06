@@ -71,9 +71,11 @@ describe('application search projections', () => {
       name: 'Product',
       database,
     });
+    const categoryRelation = Product.$model.relations.category;
+    if (!categoryRelation) throw new Error('Product.category relationship is missing.');
     const categoryName = search.path(
       Product,
-      Product.$model.relations.category!,
+      categoryRelation,
       Category.name,
     );
     const modelBound = Product.index(
@@ -128,7 +130,7 @@ describe('application search projections', () => {
           provider: expect.objectContaining({ interface: 'Search' }),
         }),
         expect.objectContaining({
-          id: 'query.product-search-search',
+          id: 'query.product-search.search',
           kind: 'query',
           publicId: 'product-search.search',
         }),
@@ -156,9 +158,11 @@ describe('application search projections', () => {
       name: 'Product',
       database,
     });
+    const productsRelation = Category.$model.relations.products;
+    if (!productsRelation) throw new Error('Category.products relationship is missing.');
     const productTitle = search.path(
       Category,
-      Category.$model.relations.products!,
+      productsRelation,
       Product.title,
     );
     expect(() =>

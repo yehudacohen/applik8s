@@ -1,0 +1,22 @@
+apiVersion: applik8s-template-project.applik8s.dev/v1alpha1
+kind: Applik8sTemplateProject
+metadata:
+  name: applik8s-template-project-dedicated
+  namespace: applik8s-template-project-control
+spec:
+  name: applik8s-template-project-dedicated
+  profile: dedicated
+  providers:
+    inference:
+      endpoint: https://inference.example.test/v1
+      model: product-assistant-v1
+      credentialSecretName: product-inference
+      credentialKey: apiKey
+    identity:
+      issuer: https://identity.example.test
+    objects:
+      deviceStorageClassName: ceph-block
+    payments:
+      secretName: product-payments
+      apiKeyKey: apiKey
+      webhookSecretKey: webhookSecret

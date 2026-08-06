@@ -101,7 +101,58 @@ const grant: ApplicationGrantRecord = {
   createdAt: '2026-07-29T00:00:00.000Z',
 };
 
+async function seedAdministratorGrantAuthority(
+  repository: InMemoryApplicationAuthorityRepository,
+): Promise<void> {
+  await repository.putGrant({
+    apiVersion: 'applik8s.grant/v1alpha1',
+    id: 'grant:administrator:publish',
+    origin: 'application',
+    identity: administrator,
+    permissionId: permission.id,
+    operationIds: [operation.id],
+    scope: { kind: 'all' },
+    audiences: ['chirp-api'],
+    transports: ['direct'],
+    issuedBy: {
+      id: 'identity:chirp:application',
+      kind: 'service',
+      issuer: 'applik8s://chirp',
+      subject: 'application-authority',
+    },
+    canGrant: true,
+    catalogRevision: catalog.revision,
+    authorityRevision: 'authority-1',
+    createdAt: '2026-07-29T00:00:00.000Z',
+  });
+}
+
 describe('operation authority lifecycle', () => {
+  it('rolls back only audit entries appended by a failed in-memory transaction', async () => {
+    const repository = new InMemoryApplicationAuthorityRepository();
+    const baseline = {
+      apiVersion: 'applik8s.audit/v1alpha1' as const,
+      id: 'audit-before',
+      kind: 'authorization.allowed' as const,
+      occurredAt: '2026-07-29T00:00:00.000Z',
+      authorityRevision: 'authority-1',
+      details: {},
+    };
+    await repository.appendAudit(baseline);
+    expect((await repository.snapshot()).revision).toBe('0');
+
+    await expect(repository.transaction(async () => {
+      await repository.appendAudit({
+        ...baseline,
+        id: 'audit-rolled-back',
+      });
+      throw new Error('rollback');
+    })).rejects.toThrow('rollback');
+
+    expect(repository.audit()).toEqual([baseline]);
+    expect((await repository.snapshot()).revision).toBe('0');
+  });
+
   it('reconciles an application-authored authority manifest idempotently', async () => {
     const repository = new InMemoryApplicationAuthorityRepository();
     const authority = new ApplicationAuthorityService(repository, {
@@ -161,6 +212,89 @@ describe('operation authority lifecycle', () => {
     ]);
   });
 
+  it('authorizes only provider-admitted principal roles through static role permissions', async () => {
+    const repository = new InMemoryApplicationAuthorityRepository();
+    const authority = new ApplicationAuthorityService(repository, {
+      now: () => new Date('2026-07-29T00:00:00.000Z'),
+      id: () => 'role-authorization-receipt',
+    });
+    const applicationIdentity: ApplicationIdentityReference = {
+      id: 'identity:chirp:application',
+      kind: 'service',
+      issuer: 'applik8s://chirp',
+      subject: 'application-authority',
+    };
+    await authority.reconcileStaticAuthorityManifest({
+      apiVersion: 'applik8s.authorityManifest/v1alpha1',
+      application: 'chirp',
+      revision: 'sha256:role-authority',
+      identities: [applicationIdentity],
+      permissions: [{
+        id: 'permission:chirp:administrator:publish',
+        name: 'administrator-publish',
+        operationIds: [operation.id],
+        scope: { kind: 'all' },
+        transports: ['direct'],
+        audiences: ['chirp-api'],
+        grantable: false,
+      }],
+      roles: [{
+        id: 'role:chirp:administrator',
+        name: 'administrator',
+        permissionIds: ['permission:chirp:administrator:publish'],
+      }],
+      grants: [],
+      outcomes: [],
+    }, catalog.revision);
+    const rolePrincipal: ApplicationPrincipal = {
+      ...principal,
+      id: 'principal:administrator',
+      identity: administrator,
+      roles: ['administrator'],
+    };
+    const request = {
+      application: 'chirp',
+      catalog,
+      operation,
+      principal: rolePrincipal,
+      target: { kind: 'all' as const },
+      audience: 'chirp-api',
+      transport: 'direct' as const,
+      inputDigest: 'sha256:role-input',
+      trustedContextDigest: rolePrincipal.trustedContextDigest,
+    };
+
+    await expect(authority.authorize(request)).resolves.toMatchObject({
+      allowed: true,
+      receipt: {
+        matchedGrantIds: [],
+        matchedPermissionIds: [
+          'permission:chirp:administrator:publish',
+        ],
+      },
+    });
+    await expect(authority.authorize({
+      ...request,
+      principal: { ...rolePrincipal, roles: ['viewer'] },
+    })).resolves.toMatchObject({
+      allowed: false,
+      code: 'AUTHORIZATION_NO_GRANT',
+    });
+    expect(repository.audit()).toContainEqual(
+      expect.objectContaining({
+        kind: 'authorization.denied',
+        authorityRevision: rolePrincipal.authorityRevision,
+        principal: administrator,
+        operationId: operation.id,
+        details: {
+          code: 'AUTHORIZATION_NO_GRANT',
+          audience: 'chirp-api',
+          transport: 'direct',
+        },
+      }),
+    );
+  });
+
   it('reserves a one-use grant atomically and reuses only the exact idempotent retry', async () => {
     const repository = new InMemoryApplicationAuthorityRepository();
     let id = 0;
@@ -169,6 +303,7 @@ describe('operation authority lifecycle', () => {
       id: () => `generated-${++id}`,
     });
     await authority.createRuntimePermission(permission);
+    await seedAdministratorGrantAuthority(repository);
     await authority.assignGrant(grant);
     const request = {
       application: 'chirp',
@@ -202,6 +337,7 @@ describe('operation authority lifecycle', () => {
     const repository = new InMemoryApplicationAuthorityRepository();
     const authority = new ApplicationAuthorityService(repository);
     await authority.createRuntimePermission(permission);
+    await seedAdministratorGrantAuthority(repository);
     await expect(authority.assignGrant({ ...grant, issuedBy: identity })).rejects.toMatchObject({
       code: 'AUTHORITY_SELF_GRANT',
     } satisfies Partial<ApplicationAuthorityError>);
@@ -240,6 +376,7 @@ describe('operation authority lifecycle', () => {
     const repository = new InMemoryApplicationAuthorityRepository();
     const authority = new ApplicationAuthorityService(repository);
     await authority.createRuntimePermission(permission);
+    await seedAdministratorGrantAuthority(repository);
     await authority.assignGrant(grant);
     await expect(authority.authorize({
       application: 'chirp',
@@ -263,6 +400,7 @@ describe('operation authority lifecycle', () => {
       now: () => new Date('2026-07-29T00:00:00.000Z'),
     });
     await authority.createRuntimePermission(permission);
+    await seedAdministratorGrantAuthority(repository);
     const outcome: ApplicationOutcomeDefinition = {
       apiVersion: 'applik8s.outcome/v1alpha1',
       id: 'outcome:post-visible',
@@ -332,6 +470,7 @@ describe('operation authority lifecycle', () => {
       id: () => 'generated',
     });
     await authority.createRuntimePermission(permission);
+    await seedAdministratorGrantAuthority(repository);
     const { maximumUses: _maximumUses, ...unboundedGrant } = grant;
     await authority.assignGrant(unboundedGrant);
     const admitted = await authority.authorize({
@@ -389,6 +528,7 @@ describe('operation authority lifecycle', () => {
     const repository = new InMemoryApplicationAuthorityRepository();
     const authority = new ApplicationAuthorityService(repository);
     await authority.createRuntimePermission(permission);
+    await seedAdministratorGrantAuthority(repository);
     const { maximumUses: _maximumUses, ...unboundedGrant } = grant;
     await authority.assignGrant(unboundedGrant);
     const secondGrant = {
@@ -439,6 +579,7 @@ describe('operation authority lifecycle', () => {
     }));
     expect(repository.catalogReferences(catalog.revision, 'grant')).toEqual([]);
     expect(repository.catalogReferences(successor.revision, 'grant')).toEqual([
+      'grant:administrator:publish',
       grant.id,
       secondGrant.id,
     ]);

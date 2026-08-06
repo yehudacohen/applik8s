@@ -1,13 +1,12 @@
 // typecast-file-boundary: the observer validates untyped Kubernetes status payloads before projecting typed readiness.
 import type { DeploymentJsonObject } from '@applik8s/deployment-contract';
+import * as kubernetes from '@kubernetes/client-node';
 import { kubernetesStatusCode } from './application-deployment-exposure-observer.js';
 import { assertDeploymentJson } from './application-deployment-json.js';
+import { APPLICATION_DEPLOYMENT_TIMEOUT_MS } from './application-deployment-timeouts.js';
 import { makeKubernetesApiClient } from './kubernetes-api-client.js';
 
-export interface ApplicationDeploymentObserverIo {
-  stdout(message: string): void;
-}
-
+export interface ApplicationDeploymentObserverIo { stdout(message: string): void; }
 export interface ObservedApplicationInstance {
   readonly apiVersion: string;
   readonly kind: string;
@@ -46,7 +45,6 @@ export async function readApplicationInstance(
     );
   }
   // static-import-exception: Kubernetes observation belongs only in the Node deployment host.
-  const kubernetes = await import('@kubernetes/client-node');
   const kubeConfig = new kubernetes.KubeConfig();
   kubeConfig.loadFromDefault();
   kubeConfig.setCurrentContext(context);
@@ -90,7 +88,6 @@ export async function readResourceGraphDefinition(
   context: string,
   name: string,
 ): Promise<unknown | undefined> {
-  const kubernetes = await import('@kubernetes/client-node');
   const kubeConfig = new kubernetes.KubeConfig();
   kubeConfig.loadFromDefault();
   kubeConfig.setCurrentContext(context);
@@ -251,7 +248,7 @@ export async function waitForApplicationInstanceReadiness(
   context: string,
   instance: ObservedApplicationInstance,
   io: ApplicationDeploymentObserverIo,
-  timeoutMs = 10 * 60_000,
+  timeoutMs = APPLICATION_DEPLOYMENT_TIMEOUT_MS,
 ): Promise<ApplicationInstallationReadiness> {
   const stableReadinessMs = 30_000;
   const [group, version] = instance.apiVersion.split('/');
@@ -350,6 +347,10 @@ export async function waitForResourceGraphDefinitionReadiness(
   throw new Error(`Timed out after ${timeoutMs}ms waiting for ResourceGraphDefinition/${name}; last status: ${lastSummary || 'unavailable'}.`);
 }
 
+export {
+  applicationOwnedDeletionNamespaces,
+  waitForApplicationOwnedNamespaceDeletion,
+} from './application-deployment-deletion-observer.js';
 export {
   kubernetesStatusCode,
   verifyApplicationRegistryPullSecret,

@@ -7,6 +7,8 @@ interface ResolveApplicationInstallationValueOptions {
   readonly preserveInstallationReferences?: boolean;
 }
 
+const APPLICATION_OMIT = Symbol('applik8s.application-installation.omit');
+
 /** Resolve direct installation-schema references at the deployment boundary. */
 export function resolveApplicationInstallationValues<T>(
   value: T,
@@ -51,12 +53,18 @@ function resolveValue(value: unknown, spec: Readonly<Record<string, unknown>>, s
   if (Array.isArray(value)) {
     const resolved: unknown[] = [];
     seen.set(value, resolved);
-    for (const entry of value) resolved.push(resolveValue(entry, spec, seen, options));
+    for (const entry of value) {
+      const next = resolveValue(entry, spec, seen, options);
+      if (next !== APPLICATION_OMIT) resolved.push(next);
+    }
     return resolved;
   }
   const resolved: Record<string, unknown> = {};
   seen.set(value, resolved);
-  for (const [key, entry] of Object.entries(value)) resolved[key] = resolveValue(entry, spec, seen, options);
+  for (const [key, entry] of Object.entries(value)) {
+    const next = resolveValue(entry, spec, seen, options);
+    if (next !== APPLICATION_OMIT) resolved[key] = next;
+  }
   return resolved;
 }
 
@@ -131,12 +139,57 @@ function resolveApplicationSchemaExpression(expression: string, spec: Readonly<R
     throw new Error(`Unsupported Application installation expression ${expression}.`);
   }
   try {
-    const resolved = evaluate(expression, { schema: { spec } }, { string: (value: unknown) => String(value) });
+    const resolved = evaluate(
+      expression,
+      {
+        schema: {
+          spec: installationSpecWithAbsentReferences(expression, spec),
+        },
+      },
+      {
+        string: (value: unknown) => String(value),
+        dyn: <T>(value: T): T => value,
+        omit: () => APPLICATION_OMIT,
+      },
+    );
     if (resolved === undefined || resolved === null) throw new Error('expression resolved to an absent value');
     return resolved;
   } catch (error) {
     throw new MissingApplicationInstallationValueError(expression, error);
   }
+}
+
+/**
+ * CEL implementations may resolve member paths before choosing a conditional
+ * branch. Profile schemas intentionally omit fields that belong only to an
+ * inactive variant, so give those paths an inert null leaf while preserving
+ * every authored value. If the selected branch actually needs one, the final
+ * absent-value check still fails closed.
+ */
+function installationSpecWithAbsentReferences(
+  expression: string,
+  spec: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const copy = structuredClone(spec) as Record<string, unknown>;
+  for (const match of expression.matchAll(
+    /\bschema\.spec((?:\.[A-Za-z_][A-Za-z0-9_]*)+)/g,
+  )) {
+    const segments = (match[1] ?? '').split('.').filter(Boolean);
+    let cursor = copy;
+    for (const [index, segment] of segments.entries()) {
+      if (index === segments.length - 1) {
+        if (!Object.hasOwn(cursor, segment)) cursor[segment] = null;
+        continue;
+      }
+      const current = cursor[segment];
+      if (!current || typeof current !== 'object' || Array.isArray(current)) {
+        if (current !== undefined) break;
+        cursor[segment] = {};
+      }
+      cursor = cursor[segment] as Record<string, unknown>;
+    }
+  }
+  return copy;
 }
 
 function supportedApplicationSchemaExpression(expression: string): boolean {
@@ -146,8 +199,11 @@ function supportedApplicationSchemaExpression(expression: string): boolean {
   if (/schema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+\s*\(/.test(expression)) return false;
   const withoutStrings = expression.replace(/"(?:[^"\\]|\\.)*"/g, '""');
   const withoutReferences = withoutStrings.replace(/\bschema\.spec(?:\.[A-Za-z_][A-Za-z0-9_]*)+/g, '');
-  const withoutFunctions = withoutReferences.replace(/\bstring(?=\s*\()/g, '');
-  const withoutLiterals = withoutFunctions.replace(/\b(?:true|false)\b/g, '');
+  const withoutFunctions = withoutReferences.replace(
+    /\b(?:string|dyn|omit)(?=\s*\()/g,
+    '',
+  );
+  const withoutLiterals = withoutFunctions.replace(/\b(?:true|false|null)\b/g, '');
   const withoutNumbers = withoutLiterals.replace(/\b\d+(?:\.\d+)?\b/g, '');
   return /^[\s()?:=!<>&|+*/%.,\-"']+$/.test(withoutNumbers);
 }

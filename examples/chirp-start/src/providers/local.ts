@@ -71,23 +71,35 @@ export function localObjectStorage(
     readonly ownership?: 'external' | 'direct-provisioned';
   } = {},
 ) {
+  const ownership = connection.ownership ?? 'direct-provisioned';
   return ObjectStorage.s3({
     enabled,
     name: 'chirp-media',
     bucket,
     prefix: connection.prefix ?? 'site',
     region: connection.region ?? 'us-east-1',
-    endpoint: connection.endpoint ?? 'http://rook-ceph-rgw-harbor-object-store.typekro-harbor-ceph.svc:80',
+    // This endpoint belongs to the local provider integration, not the
+    // application domain. Every consumer—including database backup—receives
+    // it from this one qualified ObjectStorage binding. External profiles
+    // replace it through their own provider connection.
+    endpoint:
+      connection.endpoint
+      ?? 'http://rook-ceph-rgw-applik8s-object-store.applik8s-rook-ceph.svc:80',
     forcePathStyle: connection.forcePathStyle ?? true,
     credentialsSecret: { apiVersion: 'v1', kind: 'Secret', name: connection.credentialsSecretName ?? 'chirp-media', namespace },
-    ownership: connection.ownership ?? 'direct-provisioned',
-    provisioning: {
-      enabled: provision,
-      claimName: 'chirp-media',
-      storageClassName: 'typekro-harbor-bucket-retain',
-      claimLifecycle: 'application',
-      timeoutMs: 300_000,
-    },
+    ownership,
+    ...(ownership === 'direct-provisioned'
+      ? {
+          provisioning: {
+            enabled: provision,
+            claimName: 'chirp-media',
+            storageClassName: 'typekro-harbor-bucket-retain',
+            // typecast: the conditional object would otherwise widen this lifecycle literal.
+            claimLifecycle: 'application' as const,
+            timeoutMs: 300_000,
+          },
+        }
+      : {}),
   });
 }
 

@@ -15,6 +15,9 @@ import { ApplicationQueryClient } from './store.js';
 
 export const applicationOperationContract = Symbol.for('@applik8s/application-operation');
 export const applicationOperationSchemas = Symbol.for('@applik8s/application-operation-schemas');
+const generatedFunctionOperation = Symbol.for(
+  'applik8s.generatedFunctionOperation',
+);
 
 /**
  * Authoring-time schemas associated with a callable operation. The values stay
@@ -86,6 +89,10 @@ export interface ApplicationScopeComparator {
 export type ApplicationScopeValueInput =
   | ApplicationScopeScalar
   | {
+    readonly kind: 'applicationTrustedContext';
+    readonly name: string;
+  }
+  | {
     readonly source: 'target' | 'principal' | 'trusted-context' | 'input' | 'event' | 'resource';
     readonly path: string;
   };
@@ -99,7 +106,13 @@ export type ApplicationModelScopePredicate<TTarget> = (
 ) => ApplicationScopeExpression;
 
 export type ApplicationOperationInput<TOperation> =
-  TOperation extends (input: infer TInput) => unknown ? TInput : never;
+  TOperation extends ApplicationOperation<infer TInput, unknown, unknown>
+    ? TInput
+    : TOperation extends ApplicationQueryOperation<infer TInput, unknown, unknown>
+    ? TInput
+    : TOperation extends (input: infer TInput) => unknown
+      ? TInput
+      : never;
 export type ApplicationOperationOutput<TOperation> =
   TOperation extends (input: infer _TInput) => Promise<infer TOutput>
     ? TOutput
@@ -203,8 +216,16 @@ export interface AuthorizableOperation<TInput, TOutput, TTarget = unknown> {
   authorize(options: ApplicationAuthorizationLifetime): this;
 }
 
+type ApplicationOperationInputKeys<TInput> =
+  TInput extends unknown ? keyof TInput : never;
+
+export type ApplicationOperationArguments<TInput> =
+  [ApplicationOperationInputKeys<TInput>] extends [never]
+    ? [input?: TInput]
+    : [input: TInput];
+
 export interface ApplicationMutationState<TInput, TOutput> {
-  (input: TInput): Promise<TOutput>;
+  (...args: ApplicationOperationArguments<TInput>): Promise<TOutput>;
   readonly pending: boolean;
   readonly paused: boolean;
   readonly data: TOutput | undefined;
@@ -227,7 +248,7 @@ export interface ApplicationMutationHookOptions<TInput> {
 }
 
 export interface ApplicationOperation<TInput, TOutput, TTarget = unknown> extends AuthorizableOperation<TInput, TOutput, TTarget> {
-  (input: TInput): Promise<TOutput>;
+  (...args: ApplicationOperationArguments<TInput>): Promise<TOutput>;
   readonly [applicationOperationContract]: ApplicationOperationContract;
   readonly [applicationOperationSchemas]?: ApplicationOperationSchemaBinding<TInput, TOutput>;
   readonly operation: ApplicationOperationContract;
@@ -237,7 +258,7 @@ export interface ApplicationMutationOperation<TInput, TOutput, TTarget = unknown
   useMutation(options?: ApplicationMutationHookOptions<TInput>): ApplicationMutationState<TInput, TOutput>;
 }
 
-export interface ApplicationQueryInvocation<TValue> {
+export interface ApplicationQueryInvocation<TValue> extends PromiseLike<TValue> {
   readonly operation: ApplicationOperationContract;
   readonly input: unknown;
   snapshot(): Promise<ApplicationQuerySnapshot<TValue>>;
@@ -263,7 +284,7 @@ export interface ApplicationQuerySuspenseResult<TValue> {
 }
 
 export interface ApplicationQueryOperation<TInput, TValue, TTarget = unknown> extends AuthorizableOperation<TInput, TValue, TTarget> {
-  (input: TInput): ApplicationQueryInvocation<TValue>;
+  (...args: ApplicationOperationArguments<TInput>): ApplicationQueryInvocation<TValue>;
   readonly [applicationOperationContract]: ApplicationOperationContract;
   readonly [applicationOperationSchemas]?: ApplicationOperationSchemaBinding<TInput, TValue>;
   readonly operation: ApplicationOperationContract;
@@ -353,7 +374,8 @@ export function createApplicationMutationOperation<TInput, TOutput, TTarget = un
   invoke?: (input: TInput) => Promise<TOutput>,
   schemas?: ApplicationOperationSchemaBinding<TInput, TOutput>,
 ): ApplicationMutationOperation<TInput, TOutput, TTarget> {
-  const callable = ((input: TInput) => {
+  const callable = ((...args: ApplicationOperationArguments<TInput>) => {
+    const input = normalizeApplicationOperationInput(args[0]);
     if (invoke) return invoke(input);
     const runtime = currentOperationRuntime();
     if (!runtime) {
@@ -372,7 +394,8 @@ export function createApplicationRuntimeOperation<TInput, TOutput, TTarget = unk
 ): ApplicationOperation<TInput, TOutput, TTarget> {
   assertApplicationOperationContract(contract);
   if (contract.transport !== 'runtime') throw new Error(`Application runtime operation ${contract.id} must use runtime transport.`);
-  const callable = ((input: TInput) => {
+  const callable = ((...args: ApplicationOperationArguments<TInput>) => {
+    const input = normalizeApplicationOperationInput(args[0]);
     if (invoke) return invoke(input);
     const runtime = currentOperationRuntime();
     if (!runtime) throw new Error(`Application runtime operation ${contract.id} has no active authenticated runtime.`);
@@ -394,7 +417,9 @@ export function createApplicationQueryOperation<TInput, TValue, TTarget = unknow
   if (contract.transport !== 'query' || contract.operation !== 'query') {
     throw new Error(`Application query operation ${contract.id} must use query transport and query operation metadata.`);
   }
-  const callable = ((input: TInput): ApplicationQueryInvocation<TValue> => ({
+  const callable = ((...args: ApplicationOperationArguments<TInput>): ApplicationQueryInvocation<TValue> => {
+    const input = normalizeApplicationOperationInput(args[0]);
+    return ({
     operation: contract,
     input,
     async snapshot(): Promise<ApplicationQuerySnapshot<TValue>> {
@@ -407,6 +432,13 @@ export function createApplicationQueryOperation<TInput, TValue, TTarget = unknow
     },
     async preload(): Promise<TValue> {
       return (await this.snapshot()).value;
+    },
+    // biome-ignore lint/suspicious/noThenProperty: Query invocations are intentionally awaitable while retaining preload and React adapter methods.
+    then<TResult1 = TValue, TResult2 = never>(
+      onfulfilled?: ((value: TValue) => TResult1 | PromiseLike<TResult1>) | null,
+      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    ): PromiseLike<TResult1 | TResult2> {
+      return this.preload().then(onfulfilled, onrejected);
     },
     useQuery(): ApplicationQueryOperationState<TValue> {
       const hook = installedQueryHooks.at(-1);
@@ -422,7 +454,8 @@ export function createApplicationQueryOperation<TInput, TValue, TTarget = unknow
       }
       return hook<TInput, TValue>(contract, input, true) as ApplicationQuerySuspenseResult<TValue>;
     },
-  })) as ApplicationQueryOperation<TInput, TValue, TTarget>;
+    });
+  }) as ApplicationQueryOperation<TInput, TValue, TTarget>;
   const decorated = decorateAuthorizableOperation(callable, contract);
   if (schemas) bindApplicationOperationSchemas(decorated, schemas);
   return decorated;
@@ -447,7 +480,7 @@ export function attachApplicationOperations<
 }
 
 export function decorateApplicationMutationOperation<TInput, TOutput, TTarget = unknown>(
-  callable: (input: TInput) => Promise<TOutput>,
+  callable: (...args: ApplicationOperationArguments<TInput>) => Promise<TOutput>,
   contract: ApplicationOperationContract,
   schemas?: ApplicationOperationSchemaBinding<TInput, TOutput>,
 ): ApplicationMutationOperation<TInput, TOutput, TTarget> {
@@ -502,6 +535,7 @@ export function bindApplicationOperationSchemas<TInput, TOutput>(
 export function getApplicationOperationSchemas<TInput, TOutput>(
   operation: ApplicationOperation<TInput, TOutput> | ApplicationQueryOperation<TInput, TOutput>,
 ): ApplicationOperationSchemaBinding<TInput, TOutput> | undefined {
+  materializeGeneratedFunctionOperation(operation);
   return Reflect.get(operation, applicationOperationSchemas) as
     | ApplicationOperationSchemaBinding<TInput, TOutput>
     | undefined;
@@ -509,7 +543,36 @@ export function getApplicationOperationSchemas<TInput, TOutput>(
 
 export function getApplicationOperationContract(value: unknown): ApplicationOperationContract | undefined {
   if (typeof value !== 'function') return undefined;
+  materializeGeneratedFunctionOperation(value);
   return Reflect.get(value, applicationOperationContract) as ApplicationOperationContract | undefined;
+}
+
+function materializeGeneratedFunctionOperation(value: Function): void {
+  if (Reflect.has(value, applicationOperationContract)) return;
+  const generated = Reflect.get(value, generatedFunctionOperation);
+  if (!generated || typeof generated !== 'object') return;
+  const contract = Reflect.get(generated, 'contract');
+  const schemas = Reflect.get(generated, 'schemas');
+  if (
+    !contract
+    || typeof contract !== 'object'
+    || !schemas
+    || typeof schemas !== 'object'
+    || !Reflect.has(schemas, 'input')
+    || !Reflect.has(schemas, 'output')
+  ) {
+    throw new Error(
+      `Compiler-generated operation metadata on ${value.name || '<anonymous>'} is incomplete.`,
+    );
+  }
+  decorateApplicationMutationOperation(
+    value as (input: unknown) => Promise<unknown>,
+    contract as ApplicationOperationContract,
+    {
+      input: Reflect.get(schemas, 'input'),
+      output: Reflect.get(schemas, 'output'),
+    },
+  );
 }
 
 function assertApplicationOperationContract(contract: ApplicationOperationContract): void {
@@ -793,9 +856,22 @@ function comparisonScope(
 }
 
 function scopeValue(value: ApplicationScopeValueInput): Extract<ApplicationScopeExpression, { readonly kind: 'compare' }>['value'] {
-  return typeof value === 'object' && value !== null
-    ? { kind: 'reference', source: value.source, path: value.path }
-    : { kind: 'literal', value };
+  if (typeof value !== 'object' || value === null) {
+    return { kind: 'literal', value };
+  }
+  if (!('source' in value)) {
+    if (!value.name.trim()) {
+      throw new Error(
+        'Application trusted-context authority references require a name.',
+      );
+    }
+    return {
+      kind: 'reference',
+      source: 'trusted-context',
+      path: value.name,
+    };
+  }
+  return { kind: 'reference', source: value.source, path: value.path };
 }
 
 function pathCaptureProxy(path: readonly string[] = []): object {
@@ -875,4 +951,8 @@ function removableInstallation<T>(installations: T[], value: T): () => void {
     const index = installations.lastIndexOf(value);
     if (index >= 0) installations.splice(index, 1);
   };
+}
+
+function normalizeApplicationOperationInput<TInput>(input: TInput | undefined): TInput {
+  return (input ?? {}) as TInput;
 }

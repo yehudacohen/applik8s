@@ -1,0 +1,59 @@
+import { Applik8sProvider } from '@applik8s/react';
+import { ApplicationIdentityProvider } from '@applik8s/react/identity';
+import {
+  HeadContent,
+  Link,
+  Outlet,
+  Scripts,
+  createRootRoute,
+} from '@tanstack/react-router';
+import type { ReactNode } from 'react';
+import { AccountSession } from '../features/account/session';
+import { getApplicationIdentitySession } from '../features/account/session-loader';
+import '../styles.css';
+
+export const Route = createRootRoute({
+  head: () => ({
+    meta: [
+      { charSet: 'utf-8' },
+      { name: 'viewport', content: 'width=device-width, initial-scale=1' },
+      { title: 'applik8s-template-project · Applik8s Agentic Start' },
+    ],
+  }),
+  loader: () => getApplicationIdentitySession(),
+  component: Root,
+});
+
+function Root() {
+  const initialSession = Route.useLoaderData();
+  return (
+    <ApplicationIdentityProvider initialSession={initialSession}>
+      <Document>
+        <Applik8sProvider>
+          <Outlet />
+        </Applik8sProvider>
+      </Document>
+    </ApplicationIdentityProvider>
+  );
+}
+
+function Document({ children }: { readonly children: ReactNode }) {
+  return (
+    <html lang="en">
+      <head>
+        <HeadContent />
+      </head>
+      <body>
+        <header>
+          <nav aria-label="Application">
+            <Link to="/">Notes</Link>
+            <Link to="/operations">Operations</Link>
+          </nav>
+          <AccountSession />
+        </header>
+        {children}
+        <Scripts />
+      </body>
+    </html>
+  );
+}

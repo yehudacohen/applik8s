@@ -177,7 +177,29 @@ function frameworkMigrationSql(models: readonly ApplicationModelNode[]): string 
     'CREATE TABLE IF NOT EXISTS applik8s_command_outbox (id text PRIMARY KEY, scope text NOT NULL REFERENCES applik8s_command_inbox(scope) ON DELETE CASCADE, contract_name text NOT NULL, contract_version text NOT NULL, partition_key text NOT NULL, envelope jsonb NOT NULL, payload jsonb NOT NULL, published_at timestamptz, created_at timestamptz NOT NULL DEFAULT now());',
     'CREATE INDEX IF NOT EXISTS applik8s_event_outbox_pending ON applik8s_event_outbox (created_at) WHERE published_at IS NULL;',
     'CREATE INDEX IF NOT EXISTS applik8s_command_outbox_pending ON applik8s_command_outbox (created_at) WHERE published_at IS NULL;',
-    "CREATE TABLE IF NOT EXISTS applik8s_model_changes (sequence bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, model text NOT NULL, operation text NOT NULL CHECK (operation IN ('insert', 'update', 'delete', 'invalidate', 'reset')), identity jsonb, revision text, context_digest text NOT NULL, changed_fields jsonb, recorded_at timestamptz NOT NULL);",
+    'CREATE TABLE IF NOT EXISTS applik8s_model_change_commit_frontier (singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton), position bigint NOT NULL CHECK (position >= 0));',
+    'INSERT INTO applik8s_model_change_commit_frontier (singleton, position) VALUES (true, 0) ON CONFLICT (singleton) DO NOTHING;',
+    "CREATE TABLE IF NOT EXISTS applik8s_model_changes (sequence bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, commit_position bigint, model text NOT NULL, operation text NOT NULL CHECK (operation IN ('insert', 'update', 'delete', 'invalidate', 'reset')), identity jsonb, revision text, context_digest text NOT NULL, changed_fields jsonb, recorded_at timestamptz NOT NULL);",
+    'ALTER TABLE applik8s_model_changes ADD COLUMN IF NOT EXISTS commit_position bigint;',
+    'UPDATE applik8s_model_change_commit_frontier SET position = GREATEST(position, COALESCE((SELECT max(commit_position) FROM applik8s_model_changes), 0)) WHERE singleton = true;',
+    `WITH ordered AS (
+  SELECT sequence, row_number() OVER (ORDER BY sequence) AS position
+  FROM applik8s_model_changes
+  WHERE commit_position IS NULL
+), updated AS (
+  UPDATE applik8s_model_changes AS changes
+  SET commit_position = ordered.position + frontier.position
+  FROM ordered
+  CROSS JOIN applik8s_model_change_commit_frontier AS frontier
+  WHERE frontier.singleton = true
+    AND changes.sequence = ordered.sequence
+  RETURNING changes.commit_position
+)
+UPDATE applik8s_model_change_commit_frontier
+SET position = GREATEST(position, COALESCE((SELECT max(commit_position) FROM updated), position))
+WHERE singleton = true;`,
+    'ALTER TABLE applik8s_model_changes ALTER COLUMN commit_position SET NOT NULL;',
+    'CREATE UNIQUE INDEX IF NOT EXISTS applik8s_model_changes_commit_position ON applik8s_model_changes (commit_position);',
     'CREATE INDEX IF NOT EXISTS applik8s_model_changes_context_sequence ON applik8s_model_changes (context_digest, sequence);',
     'CREATE INDEX IF NOT EXISTS applik8s_model_changes_model_sequence ON applik8s_model_changes (model, sequence);',
   ];

@@ -9,6 +9,7 @@
     "predev": "bun run --cwd ../.. build:packages",
     "dev": "vite dev --port 3000",
     "generate-routes": "tsr generate",
+    "typecheck": "bun run generate-routes && tsc --noEmit -p tsconfig.json",
     "prebuild": "bun run --cwd ../.. build:packages",
     "build": "vite build",
     "deploy:local": "applik8s deploy src/application.ts --context orbstack",

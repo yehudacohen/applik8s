@@ -46,6 +46,42 @@ export interface ApplicationCommandClientOptions {
   readonly id?: () => string;
 }
 
+export interface ApplicationClientRandomSource {
+  randomUUID?(): string;
+  getRandomValues<T extends ArrayBufferView>(value: T): T;
+}
+
+/**
+ * Creates a browser-safe UUID without requiring a secure HTTP origin.
+ *
+ * `crypto.randomUUID()` is secure-context-only in browsers, while
+ * `crypto.getRandomValues()` remains available on local cluster HTTP origins.
+ * Command identity is therefore generated from the latter when necessary
+ * without weakening entropy or burdening application code with environment
+ * checks.
+ */
+export function createApplicationClientId(
+  source: ApplicationClientRandomSource = globalThis.crypto,
+): string {
+  try {
+    const value = source.randomUUID?.();
+    if (value) return value;
+  } catch {
+    // A browser may expose randomUUID while rejecting it on an insecure origin.
+  }
+  const bytes = source.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] ?? 0) & 0x0f | 0x40;
+  bytes[8] = (bytes[8] ?? 0) & 0x3f | 0x80;
+  const hex = [...bytes].map((value) => value.toString(16).padStart(2, '0'));
+  return [
+    hex.slice(0, 4).join(''),
+    hex.slice(4, 6).join(''),
+    hex.slice(6, 8).join(''),
+    hex.slice(8, 10).join(''),
+    hex.slice(10).join(''),
+  ].join('-');
+}
+
 interface CommandEntry<TOutput = unknown> {
   readonly command: string;
   readonly commandId: string;
@@ -64,7 +100,7 @@ export class ApplicationCommandClient {
 
   constructor(readonly transport: ApplicationCommandTransport, options: ApplicationCommandClientOptions = {}) {
     this.#poll = { initialMs: options.poll?.initialMs ?? 250, maxMs: options.poll?.maxMs ?? 5_000, factor: options.poll?.factor ?? 1.75 };
-    this.#id = options.id ?? (() => crypto.randomUUID());
+    this.#id = options.id ?? createApplicationClientId;
     if (this.#poll.initialMs < 10 || this.#poll.maxMs < this.#poll.initialMs || this.#poll.factor < 1) throw new Error('ApplicationCommandClient polling bounds are invalid.');
   }
 

@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import type { ApplicationAuthorizationReceipt, JsonValue } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { type } from 'arktype';
+import {
+  emitApplicationManagedEvent,
+  type ApplicationStagedEffectReference,
+} from './application-managed-effects-api.js';
 
 export { type };
 
@@ -53,6 +57,30 @@ export interface EventDefinition<TPayload extends object> {
   readonly name: string;
   readonly version: string;
   readonly payload: SchemaInput<TPayload>;
+  emit(payload: TPayload): ApplicationStagedEffectReference;
+}
+
+const applicationEventEmitterSymbol = Symbol.for(
+  'applik8s.applicationEventEmitter',
+);
+
+/** Framework-owned lookup used by recursive callback dependency inference. */
+export function applicationEventDefinitionFor(
+  value: unknown,
+): EventDefinition<object> | undefined {
+  if (typeof value === 'object' && value !== null) {
+    if (Reflect.get(value, 'kind') !== 'applik8sEvent') return undefined;
+    // typecast: the stable event discriminant is checked before erasing only its payload generic for compiler inference.
+    return value as EventDefinition<object>;
+  }
+  if (typeof value !== 'function') return undefined;
+  const definition = Reflect.get(value, applicationEventEmitterSymbol);
+  return definition
+    && typeof definition === 'object'
+    && Reflect.get(definition, 'kind') === 'applik8sEvent'
+    // typecast: the emitter's private symbol and event discriminant jointly prove this framework-created definition.
+    ? definition as EventDefinition<object>
+    : undefined;
 }
 
 export interface StreamDefinition<TPayload extends object> {
@@ -61,20 +89,6 @@ export interface StreamDefinition<TPayload extends object> {
   readonly name: string;
   readonly version: string;
   readonly payload: SchemaInput<TPayload>;
-}
-
-export interface TaskDefinition<
-  TInput extends object,
-  TOutput extends object,
-  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
-> {
-  readonly kind: 'applik8sTask';
-  readonly id: string;
-  readonly name: string;
-  readonly version: string;
-  readonly input: SchemaInput<TInput>;
-  readonly output: SchemaInput<TOutput>;
-  readonly errors: { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> };
 }
 
 export interface WorkflowDefinition<
@@ -186,7 +200,22 @@ export function event<TPayload extends object>(
   options: { readonly payload: SchemaInput<TPayload> }
 ): EventDefinition<TPayload> {
   const identity = applicationContractIdentity('event', id);
-  return { kind: 'applik8sEvent', id, ...identity, payload: options.payload };
+  const emit = (payload: TPayload) =>
+    emitApplicationManagedEvent(definition, payload);
+  const definition: EventDefinition<TPayload> = {
+    kind: 'applik8sEvent',
+    id,
+    ...identity,
+    payload: options.payload,
+    emit,
+  };
+  Object.defineProperty(emit, applicationEventEmitterSymbol, {
+    value: definition,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return Object.freeze(definition);
 }
 
 /** Defines an inert, versioned public replay contract. Materialize it with app.stream(...). */
@@ -196,30 +225,6 @@ export function stream<TPayload extends object>(
 ): StreamDefinition<TPayload> {
   const identity = applicationContractIdentity('stream', id);
   return { kind: 'applik8sStream', id, ...identity, payload: options.payload };
-}
-
-export function task<
-  TInput extends object,
-  TOutput extends object,
-  TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
->(
-  id: string,
-  options: {
-    readonly input: SchemaInput<TInput>;
-    readonly output: SchemaInput<TOutput>;
-    readonly errors?: { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> };
-  }
-): TaskDefinition<TInput, TOutput, TErrors> {
-  const identity = applicationContractIdentity('task', id);
-  return {
-    kind: 'applik8sTask',
-    id,
-    ...identity,
-    input: options.input,
-    output: options.output,
-    // typecast: omitted errors are the empty mapped error contract represented by TErrors's default.
-    errors: (options.errors ?? {}) as { readonly [TName in keyof TErrors]: SchemaInput<TErrors[TName]> },
-  };
 }
 
 export function workflow<

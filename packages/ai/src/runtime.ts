@@ -386,6 +386,15 @@ export function createApplicationAIAttemptRuntime(options: {
       input: ApplicationAIToolProposalInput,
     ): Promise<ApplicationAIToolProposalRecord> {
       const argumentsHash = await applicationAIDigest(input.arguments);
+      const proposalIdentity = await applicationAIDigest({
+        invocationId: input.invocationId,
+        attemptId: input.attemptId,
+        providerToolCallId: input.providerToolCallId,
+        operationId: input.operationId,
+        operationVersion: input.operationVersion,
+        argumentsHash,
+      });
+      const proposalId = `proposal_${proposalIdentity.replace(/^sha256:/u, '')}`;
       return options.store.transact(input.invocationId, (transaction) => {
         const invocation = requireInvocation(transaction, input.invocationId);
         const attempt = requireAttempt(transaction, input.attemptId);
@@ -418,14 +427,7 @@ export function createApplicationAIAttemptRuntime(options: {
         const commandId = ids.next('command');
         const proposal: ApplicationAIToolProposalRecord = Object.freeze({
           apiVersion: 'applik8s.aiToolProposal/v1alpha1',
-          id: [
-            input.invocationId,
-            input.attemptId,
-            input.providerToolCallId,
-            input.operationId,
-            input.operationVersion,
-            argumentsHash,
-          ].join('\u0000'),
+          id: proposalId,
           invocationId: input.invocationId,
           attemptId: input.attemptId,
           providerToolCallId: nonEmpty(

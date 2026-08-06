@@ -1,3 +1,4 @@
+// typecast-file-boundary: Kubernetes watch payloads are structurally validated before exposure status fields are inspected.
 import type { ResolvedApplicationContainerRegistry } from '@applik8s/applik8s/deployment-registry';
 import { makeKubernetesApiClient } from './kubernetes-api-client.js';
 

@@ -15,6 +15,14 @@ export interface ApplicationCommandProcessorBinding {
     boundary: 'execution',
     delivery: ApplicationModelCommandDeliveryOptions,
   ): Promise<{ readonly allowed: true } | { readonly allowed: false; readonly code: string; readonly message: string }>;
+  /**
+   * Releases the catalog pin only after a protected command reaches a durable
+   * terminal result. Failure is retryable and therefore happens before ack.
+   */
+  releaseAuthorization?(
+    receipt: ApplicationAuthorizationReceipt,
+    envelopeId: string,
+  ): Promise<void>;
   /** Compiler-generated durable terminal-result recorder. */
   recordTerminalFailure?(input: object, delivery: ApplicationModelCommandDeliveryOptions, failure: { readonly code: 'processing_failed' | 'authorization_denied'; readonly attempts: number }): Promise<void>;
 }
@@ -129,6 +137,7 @@ export async function handleJetStreamCommandMessage(
           code: 'authorization_denied',
           attempts: deliveryCount,
         });
+        await releaseAuthorization(binding, envelope);
         message.ack();
         processorLog(options, 'applik8s-command-authorization-denied', {
           messageId: envelope.id,
@@ -140,6 +149,7 @@ export async function handleJetStreamCommandMessage(
       }
     }
     const result = await binding.execute(envelope.payload, delivery);
+    await releaseAuthorization(binding, envelope);
     message.ack();
     processorLog(options, 'applik8s-command-processed', {
       messageId: envelope.id,
@@ -150,6 +160,7 @@ export async function handleJetStreamCommandMessage(
     return 'acked';
   } catch (error) {
     if (isDurableCommandRejectedError(error)) {
+      await releaseAuthorization(binding, envelope);
       message.ack();
       processorLog(options, 'applik8s-command-rejected', { messageId: envelope.id, binding: binding.bindingId, attempt: deliveryCount, rejection: error.rejection, replayed: error.replayed, observation: error.observation });
       return 'acked';
@@ -166,10 +177,22 @@ export async function handleJetStreamCommandMessage(
       throw new Error(`applik8s-command-terminal-recorder-missing: Binding ${binding.bindingId} cannot durably record exhausted delivery ${envelope.id}.`);
     }
     await binding.recordTerminalFailure(envelope.payload, delivery, { code: 'processing_failed', attempts: deliveryCount });
+    await releaseAuthorization(binding, envelope);
     message.term('applik8s command attempts exhausted');
     processorLog(options, 'applik8s-command-dead-lettered', { messageId: envelope.id, binding: binding.bindingId, attempt: deliveryCount, error: safeErrorMessage(error) });
     return 'terminated';
   }
+}
+
+async function releaseAuthorization(
+  binding: ApplicationCommandProcessorBinding,
+  envelope: ApplicationMessageEnvelope<object>,
+): Promise<void> {
+  if (!envelope.authorizationReceipt) return;
+  if (!binding.releaseAuthorization) {
+    throw new Error(`applik8s-authorization-release-missing: Binding ${binding.bindingId} received a protected durable command without a catalog-reference releaser.`);
+  }
+  await binding.releaseAuthorization(envelope.authorizationReceipt, envelope.id);
 }
 
 function commandResultObservation(result: unknown): Readonly<Record<string, unknown>> {

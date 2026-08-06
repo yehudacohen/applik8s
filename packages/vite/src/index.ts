@@ -6,7 +6,7 @@ import { dirname, extname, relative, resolve } from 'node:path';
 import {
   type ApplicationFacadeManifest,
   applicationFacadeManifest,
-  discoverApplicationGraph,
+  discoverApplicationGraphWithExports,
   generatedApplicationFacadeSource,
   generatedApplicationFetchGatewayModules,
 } from '@applik8s/compiler';
@@ -18,6 +18,11 @@ export interface Applik8sViteOptions {
   readonly artifactManifest?: string;
   /** Same-origin by default; configure when browser route loaders use a mounted or external gateway path. */
   readonly browserBaseUrl?: string;
+  /**
+   * Optional framework adapter imported by the generated browser facade before
+   * operation handles are created. Framework-neutral Vite leaves this unset.
+   */
+  readonly browserAdapterModule?: string;
   /** Records a framework adapter's final server bundle after its nested build completes. */
   readonly serverArtifact?: { readonly outputDirectory: string; readonly entrypoint: string };
 }
@@ -28,6 +33,8 @@ interface ViteOutputChunkLike {
   readonly isEntry?: boolean;
   readonly code: string;
   readonly modules: Readonly<Record<string, unknown>>;
+  readonly imports?: readonly string[];
+  readonly dynamicImports?: readonly string[];
 }
 
 interface ViteOutputAssetLike {
@@ -107,7 +114,14 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
       return generatedApplicationFacadeSource(
         facade,
         id === serverFacadeId ? 'server' : 'browser',
-        options.browserBaseUrl ? { browserBaseUrl: options.browserBaseUrl } : {},
+        {
+          ...(options.browserBaseUrl
+            ? { browserBaseUrl: options.browserBaseUrl }
+            : {}),
+          ...(options.browserAdapterModule
+            ? { browserAdapterModule: options.browserAdapterModule }
+            : {}),
+        },
       );
     },
     async generateBundle(outputOptions, bundle) {
@@ -157,18 +171,25 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
     await readFile(application, 'utf8').catch((cause) => {
       throw new Error(`Applik8s Vite could not read application entrypoint ${application}: ${cause instanceof Error ? cause.message : String(cause)}`);
     });
-    const discovered = await discoverApplicationGraph(
+    const discovered = await discoverApplicationGraphWithExports(
       application,
       options.compositionName,
     );
     if (!discovered.ok) throw new Error(`Applik8s Vite could not discover the ApplicationGraph: ${discovered.error.message}`);
-    facade = applicationFacadeManifest(discovered.value);
+    facade = applicationFacadeManifest(discovered.value.graph, {
+      operationExports: discovered.value.operationExports,
+      modelExports: discovered.value.modelExports,
+      signalExports: discovered.value.signalExports,
+      agentExports: discovered.value.agentExports,
+    });
     const metadataPath = resolve(root, '.applik8s/application-facade.json');
     await mkdir(dirname(metadataPath), { recursive: true });
     await writeFile(metadataPath, `${JSON.stringify(facade, null, 2)}\n`);
     const generatedRoot = resolve(root, '.applik8s/generated');
     const ownedFilesPath = resolve(generatedRoot, 'applik8s-vite-files.json');
-    const gateway = generatedApplicationFetchGatewayModules(discovered.value);
+    const gateway = generatedApplicationFetchGatewayModules(discovered.value.graph, {
+      modelExports: discovered.value.modelExports,
+    });
     const files = gateway?.files ?? {};
     const previous = await readFile(ownedFilesPath, 'utf8')
       .then((value) => JSON.parse(value) as unknown)
@@ -295,12 +316,90 @@ function assertBrowserDependencyZone(files: readonly ViteOutputLike[]): void {
   for (const file of files) {
     if (file.type !== 'chunk') continue;
     for (const forbidden of forbiddenBrowserPackages) {
-      if (Object.keys(file.modules).some((moduleId) =>
-        isForbiddenBrowserModule(moduleId, forbidden))) {
-        throw new Error(`Applik8s browser dependency-zone violation: ${file.fileName} contains server-only package ${forbidden}.`);
+      const moduleIds = Object.keys(file.modules);
+      const offending = moduleIds.filter((moduleId) =>
+        isForbiddenBrowserModule(moduleId, forbidden));
+      if (offending.length > 0) {
+        const local = moduleIds
+          .filter((moduleId) =>
+            moduleId.includes('/src/')
+            || moduleId.includes('/packages/'))
+          .slice(0, 20);
+        const importers = files
+          .filter((candidate): candidate is ViteOutputChunkLike =>
+            candidate.type === 'chunk'
+            && Boolean(
+              candidate.imports?.includes(file.fileName)
+              || candidate.dynamicImports?.includes(file.fileName)
+            ))
+          .map((candidate) => candidate.fileName);
+        const importerDetails = files
+          .filter((candidate): candidate is ViteOutputChunkLike =>
+            candidate.type === 'chunk'
+            && importers.includes(candidate.fileName))
+          .map((candidate) => {
+            const relevant = Object.keys(candidate.modules)
+              .filter((moduleId) =>
+                moduleId.includes('/examples/')
+                || moduleId.includes('/packages/')
+                || moduleId.includes('/node_modules/.bun/typekro@'))
+              .slice(0, 20);
+            return `${candidate.fileName}[${relevant.join(', ')}]`;
+          });
+        const traces = browserChunkImportTraces(files, file.fileName)
+          .slice(0, 5)
+          .map((trace) => trace.join(' -> '));
+        throw new Error(
+          `Applik8s browser dependency-zone violation: ${file.fileName} contains server-only package ${forbidden}.`
+          + ` Offending modules: ${offending.join(', ')}.`
+          + ` Importing chunks: ${importers.join(', ') || 'none'}.`
+          + ` Importer modules: ${importerDetails.join('; ') || 'none'}.`
+          + ` Import traces: ${traces.join('; ') || 'none'}.`
+          + ` Local chunk modules: ${local.join(', ')}.`,
+        );
       }
     }
   }
+}
+
+function browserChunkImportTraces(
+  files: readonly ViteOutputLike[],
+  target: string,
+): readonly (readonly string[])[] {
+  const chunks = files.filter(
+    (file): file is ViteOutputChunkLike => file.type === 'chunk',
+  );
+  const byName = new Map(chunks.map((chunk) => [chunk.fileName, chunk]));
+  const parents = new Map<string, string[]>();
+  for (const chunk of chunks) {
+    for (const dependency of [
+      ...(chunk.imports ?? []),
+      ...(chunk.dynamicImports ?? []),
+    ]) {
+      const entries = parents.get(dependency) ?? [];
+      entries.push(chunk.fileName);
+      parents.set(dependency, entries);
+    }
+  }
+  const traces: string[][] = [];
+  const visit = (name: string, suffix: readonly string[], seen: Set<string>) => {
+    if (seen.has(name) || traces.length >= 5) return;
+    const chunk = byName.get(name);
+    if (chunk?.isEntry) {
+      traces.push([name, ...suffix]);
+      return;
+    }
+    const next = parents.get(name) ?? [];
+    if (next.length === 0) {
+      traces.push([name, ...suffix]);
+      return;
+    }
+    const visited = new Set(seen);
+    visited.add(name);
+    for (const parent of next) visit(parent, [name, ...suffix], visited);
+  };
+  visit(target, [], new Set());
+  return traces;
 }
 
 function isForbiddenBrowserModule(

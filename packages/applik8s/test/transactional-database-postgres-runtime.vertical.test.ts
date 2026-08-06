@@ -9,10 +9,11 @@ import { testApplicationPrincipal } from '../../../test-support/application-prin
 import { app } from '../src/application.js';
 import { type ApplicationRuntimeModelContract, applicationModelMigrationPreflightSql, applicationModelMigrationSql } from '../src/application-models.js';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
+import { runApplicationModelBeforeCommit } from '../src/application-model-policy.js';
 import { applicationRequestContextValues } from '../src/command-principal.js';
 import { command, event } from '../src/dsl.js';
-import { closePostgresModelCommandRuntime, executePostgresModelCommand, isRetryablePostgresTransactionError, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
-import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor } from '../src/native-models.js';
+import { closePostgresModelCommandRuntime, executeFunctionNativePostgresModelEdit, executePostgresModelCommand, isRetryablePostgresTransactionError, type PostgresModelCommandEventDefinition, normalizePostgresNativeModelValue, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
+import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor, nativeApplicationModelCommandRegistrar } from '../src/native-models.js';
 import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/postgres-outbox-runtime.js';
 import { applicationRelationalFrameworkMigrationSql } from '../src/relational-runtime.js';
 import { closePostgresModelClients, createPostgresModelClient } from '../src/transactional-database-postgres-runtime.js';
@@ -36,6 +37,8 @@ describe('Postgres TransactionalDatabase script runtime', () => {
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_model_history"');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_event_outbox"');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS "applik8s_command_outbox"');
+    expect(migration).toContain('PRIMARY KEY (application, revision, kind, reference_id)\n  );\n\nALTER TABLE applik8s_operation_catalog_references');
+    expect(migration).toContain("ADD COLUMN IF NOT EXISTS operation_ids jsonb NOT NULL DEFAULT '[]'::jsonb;\n\nCREATE TABLE IF NOT EXISTS \"applik8s_model_migrations\"");
     expect(migration).toContain('WHERE published_at IS NULL');
     expect(migration).toContain('applik8s_command_inbox_cleanup');
     expect(migration).toContain('applik8s_event_outbox_cleanup');
@@ -46,6 +49,25 @@ describe('Postgres TransactionalDatabase script runtime', () => {
     expect(isRetryablePostgresTransactionError({ code: '40001' })).toBe(true);
     expect(isRetryablePostgresTransactionError({ code: '23505' })).toBe(false);
     expect(isRetryablePostgresTransactionError(new Error('connection failed'))).toBe(false);
+  });
+
+  it('normalizes provider-native timestamps to the logical JSON model representation', () => {
+    const timestamp = new Date('2026-08-06T04:43:58.000Z');
+
+    expect(normalizePostgresNativeModelValue({
+      createdAt: timestamp,
+      nested: [{ observedAt: timestamp }],
+      retained: '2026-08-06T04:43:58.000Z',
+    })).toEqual({
+      createdAt: '2026-08-06T04:43:58.000Z',
+      nested: [{ observedAt: '2026-08-06T04:43:58.000Z' }],
+      retained: '2026-08-06T04:43:58.000Z',
+    });
+  });
+
+  it('restores PostgreSQL int8 strings using the compiled Drizzle number intent', () => {
+    expect(normalizePostgresNativeModelValue('42', 'number')).toBe(42);
+    expect(normalizePostgresNativeModelValue('42')).toBe('42');
   });
 
   it('persists an idempotent redacted terminal result without handler or model side effects', async () => {
@@ -268,7 +290,12 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     }
     const commandModel = { ...scriptNoteModel(`${tableName}_commands`, 'APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL'), name: 'ScriptCommandNote' };
     const bindingId = `script-note-command-${process.pid}`;
-    const NoteChanged = event('note.changed.v1', { payload: type({ message: 'string' }) });
+    // The compiler decorates its internal lowering record without mutating the
+    // public, deliberately frozen event handle.
+    const NoteChanged = {
+      ...event('note.changed.v1', { payload: type({ message: 'string' }) }),
+      partition: (payload: object) => String(Reflect.get(payload, 'message')),
+    } satisfies PostgresModelCommandEventDefinition;
     await sql.unsafe(applicationModelMigrationSql(commandModel));
     await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
     const client = createPostgresModelClient<{ readonly message: string }>(commandModel);
@@ -299,7 +326,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     const first = await executePostgresModelCommand(execution);
     const duplicate = await executePostgresModelCommand(execution);
 
-    expect(first).toMatchObject({ replayed: false, output: { previous: 'before', current: 'after' }, model: { spec: { message: 'after' } }, events: [expect.objectContaining({ contract: { name: 'note.changed', version: 'v1' }, causationId: 'message-1', recordedAt: '2026-07-10T12:00:00.000Z' })] });
+    expect(first).toMatchObject({ replayed: false, output: { previous: 'before', current: 'after' }, model: { spec: { message: 'after' } }, events: [expect.objectContaining({ contract: { name: 'note.changed', version: 'v1' }, causationId: 'message-1', recordedAt: '2026-07-10T12:00:00.000Z', partitionKey: 'after' })] });
     expect(duplicate).toMatchObject({ replayed: true, output: first.output, model: { spec: { message: 'after' } }, events: [] });
     expect(first.observation).toEqual({ commandId: 'message-1', correlationId: 'message-1', target: { model: 'ScriptCommandNote', key: 'note-command-1' }, phase: 'completed', replayed: false, resultRevision: first.model.revision, stateRevision: { authority: 'model', model: 'ScriptCommandNote', target: 'note-command-1', revision: first.model.revision } });
     expect(first.events[0]).toMatchObject({ stateRevision: first.observation.stateRevision });
@@ -309,6 +336,55 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_model_transitions WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
     await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_model_history WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
     await expect(sql.unsafe('SELECT count(*)::int AS count FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toMatchObject([{ count: 1 }]);
+    await expect(sql.unsafe('SELECT partition_key FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)', [bindingId])).resolves.toEqual([{ partition_key: 'after' }]);
+
+    let createInvocations = 0;
+    const createExistingExecution = {
+      ...execution,
+      operation: 'create' as const,
+      bindingId: `${bindingId}-create`,
+      command: { name: 'models.ScriptCommandNote.create', version: 'v1' },
+      message: {
+        ...execution.message,
+        id: 'message-create-existing',
+        input: { message: 'must-not-overwrite' },
+        idempotencyKey: 'request-create-existing',
+      },
+      initialize: (input: { readonly message: string }) => input,
+      async handler() {
+        createInvocations += 1;
+        return { previous: 'missing', current: 'must-not-overwrite' };
+      },
+    };
+    await expect(
+      executePostgresModelCommand(createExistingExecution),
+    ).rejects.toMatchObject({
+      code: 'applik8s-command-rejected',
+      replayed: false,
+      rejection: {
+        name: 'targetExists',
+        payload: {
+          model: 'ScriptCommandNote',
+          targetKey: 'note-command-1',
+        },
+      },
+      observation: expect.objectContaining({
+        phase: 'rejected',
+        stateRevision: first.observation.stateRevision,
+      }),
+    });
+    await expect(
+      executePostgresModelCommand(createExistingExecution),
+    ).rejects.toMatchObject({
+      code: 'applik8s-command-rejected',
+      replayed: true,
+      rejection: { name: 'targetExists' },
+    });
+    expect(createInvocations).toBe(0);
+    await expect(client.get({ id: 'note-command-1' })).resolves.toMatchObject({
+      spec: { message: 'after' },
+      revision: first.model.revision,
+    });
 
     const conflictExecution = {
       ...execution,
@@ -348,6 +424,41 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     });
     await expect(sql.unsafe("SELECT count(*)::int AS count FROM applik8s_command_results WHERE error ->> 'name' = 'nameReserved'", [])).resolves.toMatchObject([{ count: 1 }]);
 
+    const transientPolicyFailure = Object.assign(
+      new Error('serialization retry required'),
+      { code: '40001' },
+    );
+    const transientPolicyExecution = {
+      ...execution,
+      retry: { mode: 'never' as const },
+      message: {
+        ...execution.message,
+        id: 'message-transient-policy-failure',
+        idempotencyKey: 'request-transient-policy-failure',
+      },
+      errors: ['policyRejected'],
+      schemas: {
+        ...execution.schemas,
+        errors: {
+          policyRejected: {
+            type: 'object',
+            properties: { message: { type: 'string' } },
+            required: ['message'],
+            additionalProperties: false,
+          },
+        },
+      },
+      async handler() {
+        await runApplicationModelBeforeCommit(() => {
+          throw transientPolicyFailure;
+        });
+        return { previous: 'before', current: 'after' };
+      },
+    };
+    await expect(executePostgresModelCommand(transientPolicyExecution)).rejects.toBe(
+      transientPolicyFailure,
+    );
+
     const invalidOutputExecution = {
       ...execution,
       message: { ...execution.message, id: 'message-invalid-output', idempotencyKey: 'request-invalid-output' },
@@ -367,6 +478,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
       },
     };
     await expect(executePostgresModelCommand(invalidRejectionExecution)).rejects.toThrow(/applik8s-message-schema-invalid.*errors\.nameReserved/);
+    const preCommitContextDigest = 'a'.repeat(64);
     const authorizationReceipt = {
       apiVersion: 'applik8s.authorizationReceipt/v1alpha1' as const,
       application: 'test',
@@ -381,12 +493,12 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
         kind: 'human' as const,
         authenticationMethod: 'test',
         audience: ['script-command'],
-        trustedContextDigest: 'pre-commit-context',
+        trustedContextDigest: preCommitContextDigest,
         catalogRevision: 'catalog-pre-commit',
         authorityRevision: 'authority-pre-commit',
         admittedAt: '2026-07-10T12:00:00.000Z',
       },
-      trustedContextDigest: 'pre-commit-context',
+      trustedContextDigest: preCommitContextDigest,
       matchedPermissionIds: [],
       matchedGrantIds: [],
       inputDigest: 'sha256:pre-commit-input',
@@ -404,7 +516,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
         id: 'message-pre-commit-denied',
         idempotencyKey: 'request-pre-commit-denied',
         authorizationReceipt,
-        context: { values: {}, digest: 'pre-commit-context' },
+        context: { values: {}, digest: preCommitContextDigest },
       },
       async handler(note: { readonly spec: { readonly message: string }; patch(patch: { readonly spec: { readonly message?: string } }): void }) {
         note.patch({ spec: { message: 'must-not-commit' } });
@@ -459,6 +571,90 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(commandModel.tableName)}`);
   });
 
+  it('executes function-native Model.edit through the same durable transaction and duplicate-recovery kernel', async () => {
+    if (!liveDatabaseUrl) {
+      throw new Error('Function-native model edit test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
+    }
+    const bindingId = `function-native-script-note-${process.pid}`;
+    const FunctionNativeChanged = {
+      ...event('function-native-note.changed.v1', {
+        payload: type({ id: 'string', message: 'string' }),
+      }),
+      partition: (payload: object) => String(Reflect.get(payload, 'id')),
+    } satisfies PostgresModelCommandEventDefinition;
+    await sql.unsafe(applicationModelMigrationSql(model));
+    await sql.unsafe(
+      'DELETE FROM applik8s_command_inbox WHERE binding_id = $1',
+      [bindingId],
+    );
+    const client = createPostgresModelClient<{ readonly message: string }>(
+      model,
+    );
+    await client.create({
+      id: 'function-native-note',
+      spec: { message: 'before' },
+    });
+    let invocations = 0;
+    const execution = {
+      bindingId,
+      model,
+      models: [model],
+      outbox: [FunctionNativeChanged],
+      databaseUrl: liveDatabaseUrl,
+      delivery: {
+        id: 'function-native-event-1',
+        idempotencyKey: 'function-native-event-1',
+        correlationId: 'function-native-event-1',
+        causationId: 'function-native-event-1',
+        recordedAt: '2026-08-02T00:00:00.000Z',
+      },
+    };
+    const request = {
+      model: 'ScriptNote',
+      identity: 'function-native-note',
+      async handler(note: {
+        readonly identity: string;
+        readonly message: string;
+        update(patch: { readonly message?: string }): Promise<void>;
+      }) {
+        invocations += 1;
+        await note.update({ message: 'after' });
+        FunctionNativeChanged.emit({
+          id: note.identity,
+          message: note.message,
+        });
+        return { id: note.identity, message: note.message };
+      },
+    };
+
+    const first = await executeFunctionNativePostgresModelEdit(
+      execution,
+      request,
+    );
+    const duplicate = await executeFunctionNativePostgresModelEdit(
+      execution,
+      request,
+    );
+
+    expect(first).toEqual({
+      id: 'function-native-note',
+      message: 'after',
+    });
+    expect(duplicate).toEqual(first);
+    expect(invocations).toBe(1);
+    await expect(client.get({ id: 'function-native-note' })).resolves.toMatchObject({
+      spec: { message: 'after' },
+    });
+    await expect(sql.unsafe(
+      'SELECT count(*)::int AS count FROM applik8s_event_outbox WHERE scope IN (SELECT scope FROM applik8s_command_inbox WHERE binding_id = $1)',
+      [bindingId],
+    )).resolves.toEqual([{ count: 1 }]);
+    await sql.unsafe(
+      'DELETE FROM applik8s_command_inbox WHERE binding_id = $1',
+      [bindingId],
+    );
+  });
+
   it('executes direct native create, update, and delete operations with committed lifecycle events and replay', async () => {
     if (!liveDatabaseUrl) {
       throw new Error('Live direct native CRUD test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
@@ -473,22 +669,27 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     const direct = app(`direct-native-${process.pid}`);
     const Database = direct.database.postgres('direct-native', { schema: { cards } });
     const CardBase = direct.model(cards, { name: `DirectCard${process.pid}`, database: Database, revision: 'revision' });
+    CardBase.create.beforeCommit({ history: true }, async (_card, input) => {
+      if (input.title === 'policy-rejected') {
+        throw new Error('Card title is rejected by policy.');
+      }
+    });
     const ArchiveCard = command(`direct-card-${process.pid}.archive.v1`, {
       input: type({ cardId: 'string' }),
       output: type({ archived: 'boolean' }),
     });
-    const Card = CardBase.action('archive', ArchiveCard, {
+    const archive = nativeApplicationModelCommandRegistrar(CardBase)!(ArchiveCard, {
       key: ({ cardId }) => cardId,
       history: true,
     }, async (card) => {
       card.patch({ spec: { title: 'archived' } });
       return { archived: true };
     });
+    const Card = CardBase;
     const model = nativeApplicationModelBindingFor(Card);
     const create = applicationModelCommandBindingForOperation(Card.create);
     const update = applicationModelCommandBindingForOperation(Card.update);
     const remove = applicationModelCommandBindingForOperation(Card.delete);
-    const archive = applicationModelCommandBindingForOperation(Card.archive);
     const admittedContext = {
       values: applicationRequestContextValues(
         testApplicationPrincipal('author-1', { authorityRevision: 'chirp-authz-v1', trustedContext: { tenantId: 'direct-native-live' } }),
@@ -501,7 +702,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
         'context:tenantId': 'd'.repeat(64),
       },
     } as const;
-    if (!model || !create || !update || !remove || !archive) throw new Error('Direct native lifecycle bindings were not installed.');
+    if (!model || !create || !update || !remove) throw new Error('Direct native lifecycle bindings were not installed.');
 
     await sql.unsafe(`CREATE TABLE ${quoteIdentifier(directTableName)} (id text PRIMARY KEY, title text NOT NULL, owner_id text DEFAULT nullif(current_setting('applik8s.principal.id', true), '') NOT NULL, revision text NOT NULL)`);
     await sql.unsafe(applicationModelMigrationSql(model.runtime));
@@ -536,6 +737,45 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
         model: created.model,
         events: [],
       });
+
+      const rejectedDelivery = {
+        id: 'direct-create-policy-rejected',
+        targetKey: 'card-policy-rejected',
+        idempotencyKey: 'direct-create-policy-rejected',
+        context: admittedContext,
+        databaseUrl: liveDatabaseUrl,
+      } as const;
+      await expect(create.execute({
+        id: 'card-policy-rejected',
+        title: 'policy-rejected',
+        revision: 'input-policy-rejected',
+      }, rejectedDelivery)).rejects.toMatchObject({
+        code: 'applik8s-command-rejected',
+        replayed: false,
+        rejection: {
+          name: 'policyRejected',
+          payload: { message: 'Card title is rejected by policy.' },
+        },
+      });
+      await expect(create.execute({
+        id: 'card-policy-rejected',
+        title: 'policy-rejected',
+        revision: 'input-policy-rejected',
+      }, {
+        ...rejectedDelivery,
+        id: 'direct-create-policy-rejected-replay',
+      })).rejects.toMatchObject({
+        code: 'applik8s-command-rejected',
+        replayed: true,
+        rejection: {
+          name: 'policyRejected',
+          payload: { message: 'Card title is rejected by policy.' },
+        },
+      });
+      await expect(sql.unsafe(
+        `SELECT count(*)::int AS count FROM ${quoteIdentifier(directTableName)} WHERE id = $1`,
+        ['card-policy-rejected'],
+      )).resolves.toEqual([{ count: 0 }]);
 
       await expect(create.execute({ id: 'card-without-actor', title: 'rejected', revision: 'input-r2' }, {
         id: 'direct-create-without-actor',
@@ -805,7 +1045,12 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     const bindingId = `script-relay-command-${process.pid}`;
     const RelayChanged = event('relay.changed.v1', { payload: type({ count: 'number' }) });
     await sql.unsafe(applicationModelMigrationSql(relayModel));
-    await sql.unsafe('DELETE FROM applik8s_command_inbox WHERE binding_id = $1', [bindingId]);
+    // The relay owns the global pending queue. Remove only rows owned by this
+    // file's script-* fixtures so an interrupted prior run cannot contaminate
+    // the crash/retry proof or erase non-test application events.
+    await sql.unsafe(
+      "DELETE FROM applik8s_command_inbox WHERE binding_id LIKE 'script-%'",
+    );
     const client = createPostgresModelClient<{ readonly count: number }>(relayModel);
     await client.create({ id: 'relay-target', spec: { count: 0 } });
     await executePostgresModelCommand<{ readonly count: number }, Record<string, never>, { readonly amount: number }, { readonly count: number }>({

@@ -59,8 +59,14 @@ function createHttpQueryMultiplexer(input: {
 } {
   const subscriptions = new Map<string, HttpMultiplexSubscription>();
   let nextId = 0;
-  let active: AbortController | undefined;
+  let active: {
+    readonly controller: AbortController;
+    readonly completed: Promise<void>;
+  } | undefined;
   let restartQueued = false;
+  let restartRevision = 0;
+  let reconciledRevision = 0;
+  let reconciling: Promise<void> | undefined;
 
   return {
     subscribe(query, queryInput, cursor, options) {
@@ -80,22 +86,43 @@ function createHttpQueryMultiplexer(input: {
   };
 
   function scheduleRestart(): void {
+    restartRevision += 1;
+    queueReconcile();
+  }
+
+  function queueReconcile(): void {
     if (restartQueued) return;
     restartQueued = true;
     queueMicrotask(() => {
       restartQueued = false;
-      restart();
+      if (!reconciling) {
+        reconciling = reconcile().finally(() => {
+          reconciling = undefined;
+          if (restartRevision !== reconciledRevision) queueReconcile();
+        });
+      }
     });
   }
 
-  function restart(): void {
-    active?.abort();
-    active = undefined;
-    if (subscriptions.size === 0) return;
-    const controller = new AbortController();
-    active = controller;
-    const included = [...subscriptions.values()];
-    void run(controller, included);
+  async function reconcile(): Promise<void> {
+    while (reconciledRevision !== restartRevision) {
+      const revision = restartRevision;
+      const previous = active;
+      if (previous) {
+        previous.controller.abort();
+        await previous.completed;
+      }
+      if (revision !== restartRevision) continue;
+      reconciledRevision = revision;
+      if (subscriptions.size === 0) {
+        active = undefined;
+        continue;
+      }
+      const controller = new AbortController();
+      const included = [...subscriptions.values()];
+      const completed = run(controller, included);
+      active = { controller, completed };
+    }
   }
 
   async function run(controller: AbortController, included: readonly HttpMultiplexSubscription[]): Promise<void> {
@@ -125,11 +152,11 @@ function createHttpQueryMultiplexer(input: {
         if (frame.event.kind !== 'reset') subscription.cursor = frame.event.cursor;
         subscription.onEvent(frame.event);
       }
-      if (!controller.signal.aborted && active === controller) failIncluded(included, new Error('Multiplexed query subscription ended before cancellation.'));
+      if (!controller.signal.aborted && active?.controller === controller) failIncluded(included, new Error('Multiplexed query subscription ended before cancellation.'));
     } catch (error) {
-      if (!controller.signal.aborted && active === controller) failIncluded(included, error instanceof Error ? error : new Error(String(error)));
+      if (!controller.signal.aborted && active?.controller === controller) failIncluded(included, error instanceof Error ? error : new Error(String(error)));
     } finally {
-      if (active === controller) active = undefined;
+      if (active?.controller === controller) active = undefined;
     }
   }
 
@@ -186,6 +213,11 @@ async function* sseData(stream: ReadableStream<Uint8Array>, maxEventBytes: numbe
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  let cancellation: Promise<void> | undefined;
+  const abort = () => {
+    cancellation ??= reader.cancel().catch(() => undefined);
+  };
+  signal.addEventListener('abort', abort, { once: true });
   try {
     while (!signal.aborted) {
       const chunk = await reader.read();
@@ -203,6 +235,8 @@ async function* sseData(stream: ReadableStream<Uint8Array>, maxEventBytes: numbe
       }
     }
   } finally {
-    await reader.cancel().catch(() => undefined);
+    signal.removeEventListener('abort', abort);
+    cancellation ??= reader.cancel().catch(() => undefined);
+    await cancellation;
   }
 }

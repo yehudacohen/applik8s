@@ -2,6 +2,7 @@
 import type {
   ApplicationExposureReadinessContract,
   ApplicationGeneratedResourceContract,
+  JsonObject,
   JsonValue,
 } from '@applik8s/core';
 import { Cel, externalRef } from 'typekro';
@@ -31,12 +32,14 @@ import {
   type ApplicationProviderQualification,
   type ApplicationProviderState,
   type ApplicationTypedProviderContract,
-  type ApplicationValkeyIndexBackend,
   applicationCertificateImplementation,
   applicationDnsPublicationImplementation,
   applicationHttpExposureImplementation,
+  applicationIdentityProviderDatabaseDependency,
+  applicationIndexBackend,
   applicationProviderImplementationName,
   applicationProviderInterface,
+  applicationProviderSelectionFor,
   applicationTypedProviderContract,
   isIngressHttpExposureProvider,
   isNodePortHttpExposureProvider,
@@ -45,6 +48,113 @@ import { applicationTypeKroExpressionValue, applicationTypeKroGraphValue, applic
 
 export interface ApplicationInfrastructureState extends ApplicationGraphState, ApplicationProviderState {
   readonly emittedIndexStores: Set<string>;
+}
+
+function selectedApplicationProviderProperty(
+  implementation: unknown,
+  property: string,
+): unknown {
+  const selection = applicationProviderSelectionFor(implementation);
+  if (!selection) {
+    return implementation && typeof implementation === 'object'
+      ? Reflect.get(implementation, property)
+      : undefined;
+  }
+  const cases = Object.fromEntries(
+    Object.entries(selection.cases).map(([variant, branch]) => [
+      variant,
+      branch && typeof branch === 'object'
+        ? Reflect.get(branch, property) ?? null
+        : null,
+    ]),
+  );
+  const fallback =
+    selection.default && typeof selection.default === 'object'
+      ? Reflect.get(selection.default, property) ?? null
+      : null;
+  if (Object.values(cases).every((value) => value === null) && fallback === null) {
+    return undefined;
+  }
+  return {
+    kind: selection.kind,
+    selector: selection.selector,
+    cases,
+    default: fallback,
+  };
+}
+
+function applicationIdentityAuthenticationGraphValue(
+  implementation: unknown,
+): JsonValue | undefined {
+  const selection = applicationProviderSelectionFor(implementation);
+  if (!selection) {
+    const callback = serializedIdentityAuthentication(implementation);
+    return callback
+      ? applicationTypeKroGraphValue(callback) as JsonValue
+      : undefined;
+  }
+  const cases = Object.fromEntries(
+    Object.entries(selection.cases).map(([variant, provider]) => {
+      const callback = serializedIdentityAuthentication(provider);
+      if (!callback) {
+        throw new Error(
+          `Application IdentityProvider profile branch ${variant} has no serializable authentication callback.`,
+        );
+      }
+      return [variant, callback];
+    }),
+  );
+  const fallback = serializedIdentityAuthentication(selection.default);
+  if (!fallback) {
+    throw new Error(
+      'Application IdentityProvider profile default has no serializable authentication callback.',
+    );
+  }
+  return applicationTypeKroGraphValue({
+    authenticationProfile: {
+      selector: selection.selector,
+      cases,
+      default: fallback,
+    },
+  }) as JsonValue;
+}
+
+function serializedIdentityAuthentication(
+  implementation: unknown,
+): Readonly<Record<string, JsonValue>> | undefined {
+  if (!implementation || typeof implementation !== 'object') return undefined;
+  const deterministicAdmission = Reflect.get(
+    implementation,
+    'deterministicAdmission',
+  );
+  if (deterministicAdmission) {
+    return {
+      authenticationSource:
+        `async () => (${JSON.stringify(deterministicAdmission)})`,
+    };
+  }
+  const authenticate = Reflect.get(implementation, 'authenticate');
+  if (typeof authenticate !== 'function') return undefined;
+  const callback = serializeApplicationCallback({
+    registrar: 'IdentityProvider',
+    argumentIndex: 0,
+    property: 'authenticate',
+    label: 'IdentityProvider authentication',
+    callback: authenticate as (...args: never[]) => unknown,
+    allowDeferredResolution: true,
+  });
+  return {
+    authenticationSource: callback.source,
+    ...(callback.dependencies
+      ? { authenticationDependencies: callback.dependencies as unknown as JsonValue }
+      : {}),
+    ...(callback.location
+      ? { authenticationLocation: callback.location as unknown as JsonValue }
+      : {}),
+    ...(callback.unresolved
+      ? { authenticationUnresolved: callback.unresolved as unknown as JsonValue }
+      : {}),
+  };
 }
 
 export function emitApplicationConfig(
@@ -375,30 +485,19 @@ export function recordApplicationProviderGraph(
   implementation: unknown,
   typedContract?: ApplicationTypedProviderContract,
   qualification?: ApplicationProviderQualification,
+  aliasOf?: string | null,
 ): void {
   const resolvedContract = typedContract ?? applicationTypedProviderContract(tokenName);
   const providerInterface = applicationProviderInterface(tokenName) ?? resolvedContract?.interface;
   if (!providerInterface) return;
-  const deterministicIdentityAdmission = tokenName === 'IdentityProvider'
-    && implementation && typeof implementation === 'object'
-    ? Reflect.get(implementation, 'deterministicAdmission')
-    : undefined;
-  const identityProviderAuthentication = deterministicIdentityAdmission
-    ? {
-        source: `async () => (${JSON.stringify(deterministicIdentityAdmission)})`,
-        dependencies: undefined,
-        location: undefined,
-        unresolved: undefined,
-      }
-    : tokenName === 'IdentityProvider'
-    && implementation && typeof implementation === 'object'
-    && typeof Reflect.get(implementation, 'authenticate') === 'function'
-    ? serializeApplicationCallback({
-        registrar: 'IdentityProvider', argumentIndex: 0, property: 'authenticate', label: 'IdentityProvider authentication',
-        callback: Reflect.get(implementation, 'authenticate') as (...args: never[]) => unknown,
-        allowDeferredResolution: true,
-      })
-    : undefined;
+  const identityProviderAuthentication =
+    tokenName === 'IdentityProvider'
+      ? applicationIdentityAuthenticationGraphValue(implementation)
+      : undefined;
+  const identityDatabaseDependency =
+    tokenName === 'IdentityProvider'
+      ? applicationIdentityProviderDatabaseDependency(implementation)
+      : undefined;
   const oauthAuthorizationDecision = tokenName === 'OAuthAuthorizationServer'
     && implementation && typeof implementation === 'object'
     && typeof Reflect.get(implementation, 'decide') === 'function'
@@ -428,16 +527,23 @@ export function recordApplicationProviderGraph(
     config: {
       bindingKind,
       provider: applicationProviderImplementationName(implementation),
+      ...(aliasOf !== undefined ? { aliasOf } : {}),
       ...(qualification
         ? { qualification: qualification as unknown as JsonValue }
         : {}),
       ...(identityProviderAuthentication ? {
-        identity: applicationTypeKroGraphValue({
-          authenticationSource: identityProviderAuthentication.source,
-          ...(identityProviderAuthentication.dependencies ? { authenticationDependencies: identityProviderAuthentication.dependencies } : {}),
-          ...(identityProviderAuthentication.location ? { authenticationLocation: identityProviderAuthentication.location } : {}),
-          ...(identityProviderAuthentication.unresolved ? { authenticationUnresolved: identityProviderAuthentication.unresolved } : {}),
-        }) as JsonValue,
+        identity: identityProviderAuthentication,
+      } : {}),
+      ...(identityDatabaseDependency ? {
+        identityRuntime: {
+          databaseProvider: {
+            interface: identityDatabaseDependency.interface,
+            nodeId: applicationProviderGraphNodeId(
+              identityDatabaseDependency.interface,
+              identityDatabaseDependency.qualification,
+            ),
+          },
+        },
       } : {}),
       ...(oauthAuthorizationDecision ? {
         oauthAuthorization: applicationTypeKroGraphValue({
@@ -447,8 +553,13 @@ export function recordApplicationProviderGraph(
           ...(oauthAuthorizationDecision.unresolved ? { decisionUnresolved: oauthAuthorizationDecision.unresolved } : {}),
         }) as JsonValue,
       } : {}),
-      ...((tokenName === 'IdentityProvider' || tokenName === 'OAuthAuthorizationServer') && implementation && typeof implementation === 'object' && Reflect.get(implementation, 'infrastructure')
-        ? { identityInfrastructure: applicationTypeKroGraphValue(Reflect.get(implementation, 'infrastructure')) as JsonValue }
+      ...((tokenName === 'IdentityProvider' || tokenName === 'OAuthAuthorizationServer')
+        && selectedApplicationProviderProperty(implementation, 'infrastructure') !== undefined
+        ? {
+            identityInfrastructure: applicationTypeKroGraphValue(
+              selectedApplicationProviderProperty(implementation, 'infrastructure'),
+            ) as JsonValue,
+          }
         : {}),
       ...(tokenName === 'ApplicationHost' && implementation && typeof implementation === 'object'
         ? { host: applicationTypeKroGraphValue(implementation) as JsonValue }
@@ -474,8 +585,26 @@ export function recordApplicationProviderGraph(
       ...(providerInterface === 'AI' && implementation && typeof implementation === 'object'
         ? { ai: applicationTypeKroGraphValue(implementation) as JsonValue }
         : {}),
+      ...((providerInterface === 'EventLog' || providerInterface === 'WorkflowEngine')
+        && implementation
+        && typeof implementation === 'object'
+        && Reflect.get(implementation, 'kind') !== 'application-provider-selection'
+        ? applicationTypeKroGraphValue(implementation) as JsonObject
+        : {}),
     },
   });
+  if (identityDatabaseDependency) {
+    addApplicationGraphEdge(state, {
+      from: {
+        nodeId: applicationProviderGraphNodeId(
+          identityDatabaseDependency.interface,
+          identityDatabaseDependency.qualification,
+        ),
+      },
+      to: { nodeId },
+      relationship: 'provides',
+    });
+  }
 }
 
 export function emitProvidedApplicationIndexStore(
@@ -484,11 +613,7 @@ export function emitProvidedApplicationIndexStore(
   applicationNamespace: string | undefined,
   implementation: unknown,
 ): void {
-  const backend = implementation === 'valkey'
-    ? { kind: 'valkey' } satisfies ApplicationValkeyIndexBackend
-    : implementation && typeof implementation === 'object' && Reflect.get(implementation, 'kind') === 'valkey'
-      ? implementation as ApplicationValkeyIndexBackend
-      : undefined;
+  const backend = applicationIndexBackend(implementation);
   const dynamicHost = applicationTypeKroExpressionValue(backend?.host);
   if (!backend || backend.provision === false || (backend.host && !dynamicHost) || backend.provisioner !== 'hyperspike') return;
   const namespace = backend.namespace ?? applicationNamespace ?? 'default';

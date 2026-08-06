@@ -45,10 +45,12 @@ export function compileApplicationDeploymentGraph(
   const contributorKeys: string[] = [];
   for (const provider of providerNodes(request.graph.nodes)) {
     const key = contributorKey(provider.interface, provider.implementation);
-    const contributor = contributors.get(key)
-      ?? (provider.implementation === "application-provider-selection"
-        ? applicationProviderSelectionDeploymentContributor(provider.interface)
-        : undefined);
+    const contributor = hasProfileProviderBranches(provider)
+      ? applicationProviderSelectionDeploymentContributor(provider.interface)
+      : contributors.get(key)
+        ?? (provider.implementation === "application-provider-selection"
+          ? applicationProviderSelectionDeploymentContributor(provider.interface)
+          : undefined);
     if (!contributor) {
       throw new Error(
         `Application provider ${provider.id} has no deployment contributor for ${provider.interface}/${provider.implementation}.`,
@@ -80,6 +82,9 @@ export function compileApplicationDeploymentGraph(
     (artifact) => !baseArtifactIds.has(artifact.id),
   );
   const root = rootCompositionNode(request, rootArtifacts, fragments);
+  const contributionEdges = contributions.flatMap(
+    (contribution) => contribution.edges,
+  );
   const deploymentNodes = [
     ...artifactNodes,
     ...contributionNodes,
@@ -104,18 +109,41 @@ export function compileApplicationDeploymentGraph(
       ...rootArtifacts.flatMap((artifact) => artifactEdges(artifact, root)),
       ...artifactDependencyEdges(artifactNodes),
       ...registryArtifactEdges(contributionNodes, artifactNodes),
-      ...contributions.flatMap((contribution) => contribution.edges),
+      ...contributionEdges,
       ...[...contributionNodes, ...infrastructureNodes]
         .filter((node) => node.id !== root.id)
+        // A generated Secret consumed by another deployment node reaches the
+        // root transitively through that consumer. Adding a second, synthetic
+        // output edge to the root invents an artifact requirement that the
+        // application composition does not consume.
+        .filter(
+          (node) =>
+            !isGeneratedSecretNode(node) ||
+            !contributionEdges.some(
+              (edge) => edge.from === node.id && edge.to !== root.id,
+            ),
+        )
         .map(
           (node): ApplicationDeploymentEdge =>
             isGeneratedSecretNode(node)
-              ? {
+              ? node.spec.referenceMode === "staticIdentity"
+                ? {
+                    from: node.id,
+                    to: root.id,
+                    relationship: "requiresReady",
+                  }
+                : {
                   from: node.id,
                   to: root.id,
                   relationship: "requiresOutput",
                   output: "name",
                 }
+              : isClusterApiPrerequisiteNode(node)
+                ? {
+                    from: node.id,
+                    to: root.id,
+                    relationship: "installsApi",
+                  }
               : {
                   from: node.id,
                   to: root.id,
@@ -139,6 +167,32 @@ export function compileApplicationDeploymentGraph(
   };
 }
 
+/**
+ * Graph normalization may already expose the selected implementation name
+ * while retaining the profile branch descriptor as deployment authority.
+ * Selection therefore follows the descriptor, not only the historical
+ * `application-provider-selection` implementation marker.
+ */
+function hasProfileProviderBranches(
+  provider: ApplicationProviderNode,
+): boolean {
+  const profile = provider.config?.profile;
+  if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
+    return false;
+  }
+  const branches = Reflect.get(profile, "branches");
+  return Array.isArray(branches) && branches.length > 0;
+}
+
+function isClusterApiPrerequisiteNode(
+  node: ApplicationDeploymentNode,
+): boolean {
+  return (
+    node.kind === "kubernetesDirect" &&
+    node.spec.compositionId === "applik8s-custom-resource-definition"
+  );
+}
+
 function applicationInfrastructureNodes(
   request: CompileApplicationDeploymentGraphRequest,
   contributionNodes: readonly ApplicationDeploymentNode[],
@@ -150,6 +204,10 @@ function applicationInfrastructureNodes(
         : request.identity.instance),
     "application workload namespace",
   );
+  const controlPlaneNamespace = requiredConcreteNamespace(
+    request.identity.controlPlaneNamespace,
+    "application control-plane namespace",
+  );
   const namespaceDeletion = contributionNodes.some(
     (node) =>
       node.scope.namespace === workloadNamespace &&
@@ -160,12 +218,32 @@ function applicationInfrastructureNodes(
     ? "retain"
     : "delete";
   const namespaces = new Map<string, ApplicationDeploymentNode>();
-  // The control-plane namespace contains the root Application instance and is
-  // therefore always an external lifecycle boundary. Owning it would let a
-  // destroy remove its own finalizing instance (or attempt to delete a
-  // protected namespace such as `default`). Only the application workload
-  // namespace is eligible for graph ownership.
-  if (!protectedKubernetesNamespace(workloadNamespace)) {
+  // Bootstrap a non-protected control-plane namespace as retained
+  // application infrastructure. The root Application instance depends on it,
+  // so Alchemy creates it first and removes the instance before releasing the
+  // retained namespace declaration during destroy. This gives a fresh
+  // installation a one-command path without ever attempting to delete the
+  // namespace that contains its own finalizing CR.
+  if (!protectedKubernetesNamespace(controlPlaneNamespace)) {
+    namespaces.set(
+      controlPlaneNamespace,
+      namespaceNode(
+        "direct.namespace.control-plane",
+        controlPlaneNamespace,
+        "retain",
+        request,
+      ),
+    );
+  }
+  // The External profile is a brownfield adoption boundary: its workload
+  // namespace contains externally supplied provider credentials and therefore
+  // must pre-exist and survive application destroy. A workload namespace that
+  // is also the control-plane namespace inherits the safer retained lifecycle.
+  if (
+    request.identity.profile !== "external"
+    && !protectedKubernetesNamespace(workloadNamespace)
+    && !namespaces.has(workloadNamespace)
+  ) {
     namespaces.set(
       workloadNamespace,
       namespaceNode(
@@ -182,10 +260,84 @@ function applicationInfrastructureNodes(
   ];
   return [
     ...namespaces.values(),
+    ...clusterApiPrerequisiteNodes(request),
     ...dedupeGeneratedSecrets(generatedSecrets).map((secret) =>
       generatedSecretNode(secret, request),
     ),
   ];
+}
+
+function clusterApiPrerequisiteNodes(
+  request: CompileApplicationDeploymentGraphRequest,
+): readonly ApplicationDeploymentNode[] {
+  return (request.clusterApiPrerequisites ?? [])
+    .map((manifest) => {
+      // typecast: readonly JSON arrays are rejected before restoring the
+      // portable object branch for Kubernetes metadata inspection.
+      const metadata = (
+        manifest.metadata &&
+        typeof manifest.metadata === "object" &&
+        !Array.isArray(manifest.metadata)
+          ? manifest.metadata
+          : undefined
+      ) as Readonly<Record<string, unknown>> | undefined;
+      const name =
+        metadata && typeof metadata.name === "string"
+          ? metadata.name
+          : undefined;
+      if (
+        manifest.apiVersion !== "apiextensions.k8s.io/v1" ||
+        manifest.kind !== "CustomResourceDefinition" ||
+        !name?.trim()
+      ) {
+        throw new Error(
+          "Application cluster API prerequisites must be named apiextensions.k8s.io/v1 CustomResourceDefinitions.",
+        );
+      }
+      const configuration = { name, manifest };
+      return {
+        id: `direct.crd.${digestApplicationDeploymentValue(name).slice("sha256:".length, 18)}`,
+        kind: "kubernetesDirect" as const,
+        contractVersion: 1,
+        source: {},
+        provider: {
+          interface: "CustomResourceDefinition",
+          implementation: "typekro-kubernetes",
+          version: "1",
+        },
+        scope: { connectionDigest: request.identity.connection.digest },
+        capabilities: {
+          strategies: ["direct" as const],
+          alchemy: true as const,
+        },
+        configurationDigest: digestApplicationDeploymentValue(configuration),
+        inputs: {},
+        outputs: [
+          {
+            name: "reference",
+            type: "resourceReference" as const,
+            sensitivity: "public" as const,
+            persistence: "state" as const,
+          },
+        ],
+        // A CRD may serve more than one application instance. Retain the
+        // shared API when this installation is destroyed; removing one
+        // consumer must never cascade-delete another consumer's custom
+        // resources.
+        lifecycle: {
+          ownership: "shared" as const,
+          deletion: "retain" as const,
+          adoption: "createOrAdoptExact" as const,
+        },
+        spec: {
+          compositionId: "applik8s-custom-resource-definition",
+          reason:
+            "Establish a shared application API before its controller and KRO instance reconcile.",
+          configuration,
+        },
+      };
+    })
+    .sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function protectedKubernetesNamespace(name: string): boolean {
@@ -240,7 +392,7 @@ function namespaceNode(
 function applicationGraphGeneratedSecrets(
   request: CompileApplicationDeploymentGraphRequest,
 ): readonly ApplicationGeneratedSecretRequirement[] {
-  return request.graph.nodes.flatMap((node) => {
+  const gatewaySecrets = request.graph.nodes.flatMap((node) => {
     if (
       node.kind !== "gateway" ||
       node.materialization !== "generatedDeployment" ||
@@ -273,6 +425,75 @@ function applicationGraphGeneratedSecrets(
       },
     ];
   });
+  const nodes = new Map(request.graph.nodes.map((node) => [node.id, node]));
+  const workflowSecrets = request.graph.nodes.flatMap((node) => {
+    if (node.kind !== "workflowWorker") return [];
+    const taskOperations = node.handlers.flatMap((reference) => {
+      const handler = nodes.get(reference.nodeId);
+      return handler?.kind === "taskHandler"
+        ? handler.operations ?? []
+        : [];
+    });
+    if (taskOperations.length === 0) return [];
+    const exposedGateway = request.graph.nodes.some(
+      (candidate) =>
+        candidate.kind === "gateway" &&
+        candidate.materialization === "generatedDeployment" &&
+        candidate.commands.some((command) =>
+          taskOperations.some(
+            (operation) => operation.command.nodeId === command.command.nodeId,
+          ),
+        ),
+    );
+    if (exposedGateway) return [];
+    return [
+      {
+        id: `${node.id}.context`,
+        namespace: requiredConcreteNamespace(
+          request.graph.metadata.namespace ?? "default",
+          `workflow worker ${node.id} context Secret namespace`,
+        ),
+        name: safeNodeId(`${node.name}-context`),
+        values: {
+          key: {
+            kind: "random" as const,
+            bytes: 48,
+            encoding: "base64url" as const,
+          },
+        },
+        consumers: [node.id],
+      },
+    ];
+  });
+  const contextConsumers = request.graph.nodes.flatMap((node) =>
+    (node.kind === "gateway" &&
+      node.materialization === "generatedDeployment") ||
+    node.kind === "server"
+      ? [node.id]
+      : [],
+  );
+  const contextSecrets =
+    contextConsumers.length === 0
+      ? []
+      : [
+          {
+            id: "application.context",
+            namespace: requiredConcreteNamespace(
+              request.graph.metadata.namespace ?? "default",
+              "application context Secret namespace",
+            ),
+            name: `${safeNodeId(request.graph.metadata.name)}-context`,
+            values: {
+              key: {
+                kind: "random" as const,
+                bytes: 48,
+                encoding: "base64url" as const,
+              },
+            },
+            consumers: [...new Set(contextConsumers)].sort(),
+          },
+        ];
+  return [...gatewaySecrets, ...workflowSecrets, ...contextSecrets];
 }
 
 function dedupeGeneratedSecrets(
@@ -643,9 +864,63 @@ function artifactDependencyEdges(
 function providerNodes(
   nodes: readonly ApplicationGraphNode[],
 ): readonly ApplicationProviderNode[] {
-  return nodes.filter(
+  const providers = nodes.filter(
     (node): node is ApplicationProviderNode => node.kind === "provider",
   );
+  const aliases = new Set<string>();
+  for (const provider of providers) {
+    const aliasOf = providerAliasTarget(provider);
+    if (!aliasOf) continue;
+    const target = providers.find((candidate) => candidate.id === aliasOf);
+    if (!target) {
+      throw new Error(
+        `Application provider ${provider.id} aliases missing provider ${aliasOf}.`,
+      );
+    }
+    if (target.interface !== provider.interface) {
+      throw new Error(
+        `Application provider ${provider.id} cannot alias ${target.id}: provider interfaces differ (${provider.interface} vs ${target.interface}).`,
+      );
+    }
+    aliases.add(provider.id);
+  }
+  const primaryInterfaces = new Set(
+    providers
+      .filter((provider) => providerQualificationName(provider) === "primary")
+      .map((provider) => provider.interface),
+  );
+  return providers.filter(
+    (provider) =>
+      !aliases.has(provider.id)
+      && (
+        providerQualificationName(provider) !== undefined
+        || !primaryInterfaces.has(provider.interface)
+      ),
+  );
+}
+
+function providerAliasTarget(
+  provider: ApplicationProviderNode,
+): string | undefined {
+  const aliasOf = provider.config?.aliasOf;
+  return typeof aliasOf === "string" && aliasOf.trim()
+    ? aliasOf
+    : undefined;
+}
+
+function providerQualificationName(
+  provider: ApplicationProviderNode,
+): string | undefined {
+  const qualification = provider.config?.qualification;
+  if (
+    !qualification
+    || typeof qualification !== "object"
+    || Array.isArray(qualification)
+  ) {
+    return undefined;
+  }
+  const name = Reflect.get(qualification, "name");
+  return typeof name === "string" && name.trim() ? name : undefined;
 }
 
 function contributorRegistry(

@@ -121,9 +121,23 @@ export interface ApplicationAIQualifiedProviderToken<
 export interface ApplicationAIDeterministicProvider {
   readonly kind: 'ai-deterministic';
   readonly production: false;
-  readonly fixture?: JsonObject;
+  readonly fixture?: ApplicationAIDeterministicFixture;
   readonly latencyMs?: number;
 }
+
+export type ApplicationAIDeterministicFixture = JsonObject & {
+  readonly response?: string;
+  /**
+   * Optional first-turn tool proposal used only by the credential-free,
+   * explicitly non-production provider. `index` selects one of the agent's
+   * already-declared typed tools; the fixture never invents an operation ID,
+   * schema, handler, or authority decision.
+   */
+  readonly tool?: JsonObject & {
+    readonly index?: number;
+    readonly input: JsonObject;
+  };
+};
 
 export interface ApplicationAIBackendCredentialReference {
   readonly apiVersion: 'v1';
@@ -139,6 +153,8 @@ export interface ApplicationAIBackendDefinition {
   readonly providerClass: 'openai' | 'anthropic' | 'bedrock' | 'openai-compatible';
   readonly model: string;
   readonly endpoint?: string;
+  /** Permit plain HTTP only for an explicitly local or otherwise trusted test backend. */
+  readonly allowInsecureHttp?: boolean;
   readonly region?: string;
   readonly credentials?: ApplicationAIBackendCredentialReference;
   readonly capabilities?: readonly ApplicationAICapabilityName[];
@@ -177,6 +193,34 @@ export interface ApplicationEnvoyAIGatewayProvider {
     readonly usage?: boolean;
     readonly cost?: boolean;
     readonly redactBodies?: boolean;
+  };
+  readonly platform?: {
+    readonly envoyGatewayNamespace?: string;
+    readonly aiGatewayNamespace?: string;
+    readonly gatewayClassName?: string;
+    readonly mcpSessionEncryptionSeedSecret?: {
+      readonly apiVersion: 'v1';
+      readonly kind: 'Secret';
+      readonly name: string;
+      readonly namespace?: string;
+      readonly key?: string;
+    };
+  };
+  readonly rateLimit?: {
+    readonly redisUrl: string;
+    readonly rules: readonly {
+      readonly identityHeader?: string;
+      readonly requests: number;
+      readonly unit: 'second' | 'minute' | 'hour' | 'day';
+      readonly cost?:
+        | 'request'
+        | 'input-tokens'
+        | 'output-tokens'
+        | 'total-tokens'
+        | 'cached-input-tokens'
+        | 'cache-creation-input-tokens'
+        | 'reasoning-tokens';
+    }[];
   };
   readonly exposure?: {
     readonly serviceName?: string;
@@ -244,6 +288,47 @@ export interface ApplicationAIAgentRequest {
   readonly resume?: unknown;
 }
 
+/**
+ * Provider-neutral durable conversation boundary used by managed agent
+ * runtimes. The concrete store remains an application dependency; the AI
+ * runtime only knows how to begin one admitted run and persist its observable
+ * protocol effects.
+ */
+export interface ApplicationAIAgentPersistence {
+  begin(
+    input: ApplicationAIAgentPersistenceInput,
+  ): Promise<ApplicationAIAgentPersistenceRun>;
+}
+
+export interface ApplicationAIAgentPersistenceInput {
+  readonly principal: ApplicationExecutionPrincipal;
+  /** Exact server-admitted context; durable ownership must not depend on a transport-secret digest. */
+  readonly trustedContext: Readonly<Record<string, JsonValue>>;
+  readonly conversationId: string;
+  readonly protocolRunId: string;
+  readonly agentRunId: string;
+  readonly invocationId: string;
+  readonly messages: readonly JsonValue[];
+  readonly startedAt: string;
+}
+
+export interface ApplicationAIAgentPersistenceRun {
+  readonly conversationId: string;
+  readonly protocolRunId: string;
+  readonly principalScope: string;
+  append(event: JsonObject): Promise<void>;
+  complete(input: {
+    readonly messageId: string;
+    readonly content: JsonValue;
+    readonly completedAt: string;
+  }): Promise<void>;
+  terminate(input: {
+    readonly status: 'interrupted' | 'failed' | 'cancelled';
+    readonly reason: string;
+    readonly terminatedAt: string;
+  }): Promise<void>;
+}
+
 export interface ApplicationAIAgentRuntimeContext<TTanStack = unknown> {
   readonly runId: string;
   readonly invocationId: string;
@@ -290,9 +375,12 @@ export interface ApplicationAIConversationRecord {
   readonly apiVersion: 'applik8s.aiConversation/v1alpha1';
   readonly id: string;
   readonly principalScope: string;
+  readonly title?: string;
   readonly revision: number;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly archivedAt?: string;
+  readonly retentionUntil?: string;
 }
 
 export interface ApplicationAIMessageRecord {
@@ -315,6 +403,7 @@ export interface ApplicationAIProtocolRunRecord {
   readonly status: 'running' | 'interrupted' | 'completed' | 'failed' | 'cancelled';
   readonly agentRunId?: string;
   readonly invocationId?: string;
+  readonly terminalReason?: string;
   readonly startedAt: string;
   readonly updatedAt: string;
 }
@@ -553,6 +642,36 @@ const aiProviderToken: ApplicationAIProviderToken = {
     ) {
       throw new Error('AI.deterministic({ latencyMs }) must be a non-negative integer.');
     }
+    const fixture = options.fixture;
+    if (
+      fixture?.response !== undefined
+      && typeof fixture.response !== 'string'
+    ) {
+      throw new Error('AI.deterministic({ fixture.response }) must be a string.');
+    }
+    if (fixture?.tool !== undefined) {
+      const tool = fixture.tool;
+      if (
+        !tool
+        || typeof tool !== 'object'
+        || Array.isArray(tool)
+        || !tool.input
+        || typeof tool.input !== 'object'
+        || Array.isArray(tool.input)
+      ) {
+        throw new Error(
+          'AI.deterministic({ fixture.tool }) requires one object input.',
+        );
+      }
+      if (
+        tool.index !== undefined
+        && (!Number.isSafeInteger(tool.index) || tool.index < 0)
+      ) {
+        throw new Error(
+          'AI.deterministic({ fixture.tool.index }) must be a non-negative integer.',
+        );
+      }
+    }
     return Object.freeze({
       kind: 'ai-deterministic',
       production: false,
@@ -618,11 +737,22 @@ function backend(
   options: Omit<ApplicationAIBackendDefinition, 'apiVersion' | 'name' | 'providerClass'>,
 ): ApplicationAIBackendDefinition {
   stableName(name, 'AI backend');
-  if (!options.model.trim()) throw new Error(`AI backend ${name} model must not be empty.`);
-  if (options.endpoint) {
+  if (
+    typeof options.model === 'string'
+      ? !options.model.trim()
+      : !isTypeKroSchemaReference(options.model)
+  ) {
+    throw new Error(`AI backend ${name} model must not be empty.`);
+  }
+  if (typeof options.endpoint === 'string' && options.endpoint) {
     const endpoint = new URL(options.endpoint);
-    if (endpoint.protocol !== 'https:') {
-      throw new Error(`AI backend ${name} endpoint must use HTTPS.`);
+    if (
+      endpoint.protocol !== 'https:'
+      && !(options.allowInsecureHttp === true && endpoint.protocol === 'http:')
+    ) {
+      throw new Error(
+        `AI backend ${name} endpoint must use HTTPS. Set allowInsecureHttp only for an explicit local test backend.`,
+      );
     }
   }
   return Object.freeze({
@@ -631,6 +761,14 @@ function backend(
     providerClass,
     ...options,
   });
+}
+
+function isTypeKroSchemaReference(value: unknown): boolean {
+  return Boolean(
+    value
+    && typeof value === 'object'
+    && Reflect.get(value, Symbol.for('TypeKro.KubernetesRef')) === true,
+  );
 }
 
 function validateConstraints(
@@ -667,6 +805,27 @@ function validateEnvoyProvider(
     const names = route.backends.map((candidate) => candidate.name);
     if (new Set(names).size !== names.length) {
       throw new Error(`AI.envoy logical route ${model} contains duplicate backend names.`);
+    }
+  }
+  if (options.rateLimit) {
+    if (!options.rateLimit.redisUrl.trim()) {
+      throw new Error('AI.envoy rateLimit.redisUrl must be non-empty.');
+    }
+    if (options.rateLimit.rules.length === 0) {
+      throw new Error('AI.envoy rateLimit requires at least one rule.');
+    }
+    for (const rule of options.rateLimit.rules) {
+      if (!Number.isSafeInteger(rule.requests) || rule.requests < 1) {
+        throw new Error('AI.envoy rate-limit requests must be positive integers.');
+      }
+    }
+  }
+  const seed = options.platform?.mcpSessionEncryptionSeedSecret;
+  if (seed) {
+    if (!seed.name.trim() || (seed.key !== undefined && !seed.key.trim())) {
+      throw new Error(
+        'AI.envoy MCP session-encryption Secret name/key must be non-empty.',
+      );
     }
   }
 }

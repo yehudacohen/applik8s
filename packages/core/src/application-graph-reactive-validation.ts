@@ -32,10 +32,30 @@ function queryMessages(node: ApplicationQueryNode, graph: ApplicationGraph): rea
   for (const read of node.reads) if (!ids.has(read.model.nodeId)) messages.push(`Application query ${node.id} reads missing model ${read.model.nodeId}.`);
   if (node.budgets.timeoutMs < 1 || node.budgets.maxResultBytes < 1 || node.budgets.maxRows < 1) messages.push(`Application query ${node.id} budgets must be positive.`);
   if (!node.authorizationSource?.trim() || !node.handlerSource?.trim()) messages.push(`Application query ${node.id} must retain serializable authorization and handler callbacks.`);
-  if (Boolean(node.database) === Boolean(node.kubernetes)) messages.push(`Application query ${node.id} must declare exactly one PostgreSQL or Kubernetes snapshot authority.`);
-  if (node.snapshotResume === 'resumableInvalidation' && !node.database && !node.kubernetes) messages.push(`Application query ${node.id} promises resumable invalidation without a provider runtime.`);
+  // A search query carries its canonical database as the committed-change
+  // invalidation source; the Search provider remains its sole snapshot
+  // authority.
+  const authorityCount =
+    Number(Boolean(node.database && !node.search))
+    + Number(Boolean(node.kubernetes))
+    + Number(Boolean(node.search));
+  if (authorityCount !== 1) messages.push(`Application query ${node.id} must declare exactly one PostgreSQL, Kubernetes, or search snapshot authority.`);
+  if (node.snapshotResume === 'resumableInvalidation' && authorityCount === 0) messages.push(`Application query ${node.id} promises resumable invalidation without a provider runtime.`);
   if (node.kubernetes && (!node.kubernetes.project.source.trim() || node.kubernetes.pageSize < 1 || node.kubernetes.maxPages < 1 || node.kubernetes.maxItems < 1)) {
     messages.push(`Application query ${node.id} has an incomplete or unbounded Kubernetes snapshot/watch authority.`);
+  }
+  if (node.search) {
+    const index = graph.nodes.find((candidate) => candidate.id === node.search?.index.nodeId);
+    const provider = graph.nodes.find((candidate) => candidate.id === node.search?.provider.nodeId);
+    if (index?.kind !== 'index' || index.purpose !== 'searchProjection' || !index.search) {
+      messages.push(`Application query ${node.id} references an incompatible search projection ${node.search.index.nodeId}.`);
+    }
+    if (provider?.kind !== 'provider' || provider.interface !== 'Search') {
+      messages.push(`Application query ${node.id} references an incompatible Search provider ${node.search.provider.nodeId}.`);
+    }
+    if (index?.kind === 'index' && index.provider.nodeId !== node.search.provider.nodeId) {
+      messages.push(`Application query ${node.id} and search projection ${index.id} do not share one Search provider authority.`);
+    }
   }
   if (node.projection) {
     const projection = graph.nodes.find((candidate) => candidate.id === node.projection?.nodeId);
@@ -48,16 +68,29 @@ function queryMessages(node: ApplicationQueryNode, graph: ApplicationGraph): rea
 function gatewayMessages(node: ApplicationGatewayNode, graph: ApplicationGraph): readonly string[] {
   const byId = new Map(graph.nodes.map((candidate) => [candidate.id, candidate]));
   const messages: string[] = [];
+  if (node.visibility !== 'public' && node.visibility !== 'internal') {
+    messages.push(`Application gateway ${node.id} must declare visibility as public or internal.`);
+  }
   if (node.queries.length + node.commands.length + node.subscriptions.length === 0) messages.push(`Application gateway ${node.id} must expose at least one query, command, or subscription.`);
   for (const query of node.queries) if (byId.get(query.nodeId)?.kind !== 'query') messages.push(`Application gateway ${node.id} references non-query ${query.nodeId}.`);
   for (const subscription of node.subscriptions) if (byId.get(subscription.nodeId)?.kind !== 'subscription') messages.push(`Application gateway ${node.id} references non-subscription ${subscription.nodeId}.`);
   if (node.subscriptionLimits.perPrincipal < 1 || node.subscriptionLimits.total < node.subscriptionLimits.perPrincipal) messages.push(`Application gateway ${node.id} has invalid subscription limits.`);
-  if (node.materialization === 'generatedDeployment' && (!node.authenticationSource?.trim() || !node.cursorSecret || !node.deployment)) messages.push(`Generated application gateway ${node.id} must declare authentication, cursor Secret, and deployment contracts.`);
+  const hasAuthentication = Boolean(node.authenticationSource?.trim()) || validProfiledCallback(node.authenticationProfile);
+  if (node.materialization === 'generatedDeployment' && (!hasAuthentication || !node.cursorSecret || !node.deployment)) messages.push(`Generated application gateway ${node.id} must declare authentication, cursor Secret, and deployment contracts.`);
   for (const command of node.commands) {
     if (byId.get(command.command.nodeId)?.kind !== 'command' || byId.get(command.handler.nodeId)?.kind !== 'commandHandler') messages.push(`Application gateway ${node.id} references an invalid command or command handler.`);
   }
   if (node.commands.length > 0 && !node.commandAuthorizationSource?.trim()) messages.push(`Application gateway ${node.id} exposes commands without an application authorization callback.`);
   return messages;
+}
+
+function validProfiledCallback(
+  profile: ApplicationGatewayNode['authenticationProfile'],
+): boolean {
+  if (!profile?.selector.trim() || !profile.default.source.trim()) return false;
+  const cases = Object.entries(profile.cases);
+  return cases.length > 0
+    && cases.every(([variant, callback]) => variant.trim().length > 0 && callback.source.trim().length > 0);
 }
 
 function streamMessages(node: ApplicationStreamNode): readonly string[] {

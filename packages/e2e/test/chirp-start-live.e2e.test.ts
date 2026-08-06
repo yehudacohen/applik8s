@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setApplicationWorkflowRuntimeFactory } from '@applik8s/applik8s';
 import { S3Client } from '@aws-sdk/client-s3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildHomeTimelineGeneration, RebuildHomeTimelines } from '../../../examples/chirp-start/src/recovery/timeline';
+import { RebuildHomeTimelines } from '../../../examples/chirp-start/src/recovery/timeline';
 import { createS3ApplicationObjectStorageRuntime } from '@applik8s/runtime-s3';
 import { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';
 import {
@@ -47,8 +47,9 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
     const installedUrl = await installationStatusUrl();
     web = externalEndpoint(process.env.APPLIK8S_CHIRP_BASE_URL ?? installedUrl);
     clickhouse = await startPortForward('service/clickhouse-chirp-analytics', 8_123);
-    workflowApi = await startPortForward('service/chirp-workflows-api', 8_080);
-    workflowEngine = await startPortForward('service/chirp-workflows-engine', 7_070);
+    const workflowEndpoints = await deployedWorkflowEndpoints();
+    workflowApi = await portForwardClusterServiceEndpoint(workflowEndpoints.apiUrl);
+    workflowEngine = await portForwardClusterServiceEndpoint(workflowEndpoints.hostPort);
     previousWorkflowToken = process.env.HATCHET_CLIENT_TOKEN;
     process.env.HATCHET_CLIENT_TOKEN = await secretValue(namespace, 'hatchet-client-config', 'HATCHET_CLIENT_TOKEN');
     restoreWorkflowRuntime = setApplicationWorkflowRuntimeFactory(async () => createHatchetWorkflowRuntime({
@@ -114,6 +115,11 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
     });
 
     const before = await snapshot(endpoint);
+    const postAnalyticsPartition = 'demo-user';
+    const postAnalyticsRowsBefore = await analyticalProjectionCount(
+      required(clickhouse).endpoint,
+      postAnalyticsPartition,
+    );
     const postId = `e2e-${Date.now()}`;
     const body = `Chirp public golden path ${new Date().toISOString()}`;
     const invalidation = waitForInvalidation(endpoint, before.cursor);
@@ -134,7 +140,11 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
     const found = await waitForPost(endpoint, postId);
     expect(found).toMatchObject({ id: postId, body, authorId: 'demo-user', visibility: 'public' });
     await assertOnlineTimelineProjection(postId, body);
-    await waitForProjection(required(clickhouse).endpoint, postId);
+    await waitForProjection(
+      required(clickhouse).endpoint,
+      postAnalyticsPartition,
+      postAnalyticsRowsBefore,
+    );
 
     const reactionId = `e2e-like-${postId}`;
     const reaction = await postJson(`${endpoint}/__applik8s/v1/commands/models.Reaction.create.v1/submit`, {
@@ -146,6 +156,14 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
     await expect(waitForCommand(endpoint, stringField(reaction, 'progressCursor'), 'models.Reaction.create.v1')).resolves.toMatchObject({ durableResult: 'succeeded' });
     await waitForReactionProjection(required(clickhouse).endpoint, postId);
     await waitForTrendingPost(endpoint, postId);
+    await expect(waitForEngagementBatch(endpoint, postId)).resolves.toMatchObject({
+      partitionKey: postId,
+      eventCount: '1',
+      netDelta: '1',
+      firstSequence: expect.any(String),
+      lastSequence: expect.any(String),
+      processedAt: expect.any(String),
+    });
 
     const processorLogs = (await kubectl(['logs', `deployment/chirp-commands`, '--namespace', namespace, '--since=5m'])).stdout;
     expect(processorLogs).toContain(`"event":"applik8s-command-processed"`);
@@ -237,7 +255,10 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
       publishedWatermark: expect.any(Number),
       events: expect.any(Number),
       rows: expect.any(Number),
-      manifestKey: `projection-rebuilds/home-timeline/${generation}/manifest.json`,
+      manifest: expect.objectContaining({
+        store: 'home-timeline-rebuild-artifacts',
+        key: `projection-rebuilds/home-timeline/${generation}/manifest.json`,
+      }),
     });
     expect(result.publishedWatermark).toBeGreaterThanOrEqual(result.sourceWatermark);
     expect(result.rows).toBeGreaterThan(0);
@@ -249,14 +270,17 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
     await expect(waitForPost(endpoint, baselineId)).resolves.toMatchObject({ id: baselineId, body: baselineBody });
     await expect(waitForPost(endpoint, foregroundId)).resolves.toMatchObject({ id: foregroundId, body: foregroundBody });
 
-    const evidence = await validateProjectionRebuildArtifacts(result.manifestKey, generation);
+    const evidence = await validateProjectionRebuildArtifacts(
+      result.manifest,
+      generation,
+    );
     expect(evidence.manifest.sourceWatermark).toBe(result.sourceWatermark);
     expect(evidence.manifest.segments.length).toBeGreaterThan(0);
 
     // A distinct provider invocation reaches the task again. The runtime must
     // validate and reuse the already-published immutable manifest instead of
     // rescanning authority or rejecting the target as active.
-    const repeated = await buildHomeTimelineGeneration.run(
+    const repeated = await RebuildHomeTimelines.run(
       { generation },
       { idempotencyKey: `chirp-live-rebuild-repeat-${generation}` },
       { timeoutMs: 600_000, pollIntervalMs: 500 },
@@ -318,7 +342,13 @@ interface ProjectionRebuildResult {
   readonly publishedWatermark: number;
   readonly events: number;
   readonly rows: number;
-  readonly manifestKey: string;
+  readonly manifest: {
+    readonly store: string;
+    readonly key: string;
+    readonly size: number;
+    readonly contentType: string;
+    readonly sha256: string;
+  };
 }
 
 interface ProjectionRebuildEvidence {
@@ -392,6 +422,69 @@ async function installationStatusUrl(): Promise<string> {
     'get', `chirpinstallation/${installationName}`, '--namespace', controlPlaneNamespace, '--output=json',
   ])).stdout);
   return stringField(objectField(installation, 'status'), 'url');
+}
+
+async function deployedWorkflowEndpoints(): Promise<{
+  readonly apiUrl: string;
+  readonly hostPort: string;
+}> {
+  const deployment = jsonObject((await kubectl([
+    'get', 'deployment/chirp-workflows', '--namespace', namespace, '--output=json',
+  ])).stdout);
+  const spec = objectField(deployment, 'spec');
+  const template = objectField(spec, 'template');
+  const podSpec = objectField(template, 'spec');
+  const containers = podSpec.containers;
+  if (!Array.isArray(containers) || containers.length === 0) {
+    throw new Error('The deployed Chirp workflow worker has no containers.');
+  }
+  const container = containers[0];
+  if (!container || typeof container !== 'object' || Array.isArray(container)) {
+    throw new Error('The deployed Chirp workflow worker has an invalid primary container.');
+  }
+  const environment = Reflect.get(container, 'env');
+  if (!Array.isArray(environment)) {
+    throw new Error('The deployed Chirp workflow worker has no hydrated environment.');
+  }
+  const value = (name: string): string => {
+    const entry = environment.find((candidate) =>
+      candidate !== null
+      && typeof candidate === 'object'
+      && !Array.isArray(candidate)
+      && Reflect.get(candidate, 'name') === name
+    );
+    const result = entry && typeof entry === 'object' ? Reflect.get(entry, 'value') : undefined;
+    if (typeof result !== 'string' || result.length === 0) {
+      throw new Error(`The deployed Chirp workflow worker is missing ${name}.`);
+    }
+    return result;
+  };
+  return {
+    apiUrl: value('HATCHET_CLIENT_API_URL'),
+    hostPort: value('HATCHET_CLIENT_HOST_PORT'),
+  };
+}
+
+async function portForwardClusterServiceEndpoint(endpoint: string): Promise<PortForward> {
+  const parsed = endpoint.includes('://')
+    ? new URL(endpoint)
+    : new URL(`tcp://${endpoint}`);
+  const hostParts = parsed.hostname.split('.');
+  const service = hostParts[0];
+  const serviceNamespace = hostParts[1] ?? namespace;
+  const remotePort = Number(parsed.port);
+  if (
+    !service
+    || !Number.isSafeInteger(remotePort)
+    || remotePort < 1
+    || remotePort > 65_535
+    || (hostParts.length > 2 && hostParts[2] !== 'svc')
+  ) {
+    throw new Error(
+      `The deployed Chirp workflow endpoint is not a cluster Service endpoint: ${endpoint}`,
+    );
+  }
+  return startPortForward(`service/${service}`, remotePort, serviceNamespace);
 }
 
 async function snapshot(endpoint: string): Promise<{ readonly value: readonly unknown[]; readonly cursor: string }> {
@@ -498,20 +591,25 @@ async function waitForPost(endpoint: string, postId: string): Promise<Record<str
   throw new Error(`Authoritative Chirp requery never returned ${postId}${lastError instanceof Error ? `; last transport error: ${lastError.message}` : ''}.`);
 }
 
-async function waitForProjection(endpoint: string, postId: string): Promise<void> {
-  const query = `SELECT count() AS rows FROM chirp.post_analytics_hourly FINAL WHERE _applik8s_partition_key = '${postId.replaceAll("'", "''")}' FORMAT JSONEachRow`;
+async function analyticalProjectionCount(endpoint: string, partitionKey: string): Promise<number> {
+  const query = `SELECT count() AS rows FROM chirp.post_analytics_hourly FINAL WHERE _applik8s_partition_key = '${partitionKey.replaceAll("'", "''")}' FORMAT JSONEachRow`;
+  const response = await fetch(`${endpoint}/?query=${encodeURIComponent(query)}`, { method: 'POST' });
+  const body = await response.text();
+  if (!response.ok) throw new Error(`ClickHouse rejected the Chirp analytical projection query: ${body}`);
+  return Number(jsonObject(body).rows);
+}
+
+async function waitForProjection(endpoint: string, partitionKey: string, rowsBefore: number): Promise<void> {
   const deadline = Date.now() + 60_000;
-  let last = '';
+  let last = rowsBefore;
   while (Date.now() < deadline) {
-    const response = await fetch(`${endpoint}/?query=${encodeURIComponent(query)}`, { method: 'POST' });
-    last = await response.text();
-    if (response.ok) {
-      const value = jsonObject(last);
-      if (Number(value.rows) === 1) return;
-    }
+    last = await analyticalProjectionCount(endpoint, partitionKey);
+    if (last > rowsBefore) return;
     await sleep(500);
   }
-  throw new Error(`ClickHouse projection never observed ${postId}: ${last}`);
+  throw new Error(
+    `ClickHouse projection partition ${partitionKey} did not advance beyond ${rowsBefore} rows; observed ${last}.`,
+  );
 }
 
 async function waitForReactionProjection(endpoint: string, postId: string): Promise<void> {
@@ -537,6 +635,37 @@ async function waitForTrendingPost(endpoint: string, postId: string): Promise<vo
     await sleep(500);
   }
   throw new Error(`The typed Post.trending query never returned ClickHouse-ranked post ${postId}: ${JSON.stringify(last)}`);
+}
+
+async function waitForEngagementBatch(
+  endpoint: string,
+  partitionKey: string,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + 120_000;
+  let last: Record<string, unknown> = {};
+  while (Date.now() < deadline) {
+    last = await querySnapshot(
+      endpoint,
+      'EngagementBatch.recentEngagementBatches',
+      { limit: 100 },
+    );
+    const value = last.value;
+    if (Array.isArray(value)) {
+      const receipt = value.find(
+        (candidate) =>
+          candidate !== null
+          && typeof candidate === 'object'
+          && Reflect.get(candidate, 'partitionKey') === partitionKey,
+      );
+      if (receipt && typeof receipt === 'object') {
+        return receipt as Record<string, unknown>;
+      }
+    }
+    await sleep(500);
+  }
+  throw new Error(
+    `The bounded EngagementBatch view never returned a frozen batch receipt for ${partitionKey}: ${JSON.stringify(last)}`,
+  );
 }
 
 async function waitForInvalidation(endpoint: string, cursor: string): Promise<string> {
@@ -609,7 +738,11 @@ async function secretValue(targetNamespace: string, name: string, key: string): 
   return value;
 }
 
-async function validateProjectionRebuildArtifacts(manifestKey: string, generation: string): Promise<ProjectionRebuildEvidence> {
+async function validateProjectionRebuildArtifacts(
+  manifestReference: ProjectionRebuildResult['manifest'],
+  generation: string,
+): Promise<ProjectionRebuildEvidence> {
+  const manifestKey = manifestReference.key;
   const config = jsonObject((await kubectl(['get', 'configmap/chirp-media', '--namespace', namespace, '--output=json'])).stdout);
   const data = objectField(config, 'data');
   const bucket = stringField(data, 'BUCKET_NAME');
@@ -631,7 +764,7 @@ async function validateProjectionRebuildArtifacts(manifestKey: string, generatio
   });
   try {
     const runtime = createS3ApplicationObjectStorageRuntime({
-      store: 'projection-artifacts',
+      store: manifestReference.store,
       provider: { kind: 's3', bucket, prefix: 'site', region: 'us-east-1', endpoint: forward.endpoint, forcePathStyle: true },
       client,
     });
@@ -749,6 +882,7 @@ async function writeCompleteChirpEvidenceReceipt(): Promise<void> {
     'authoritative-requery',
     'clickhouse-projection',
     'clickhouse-product-query',
+    'frozen-microbatch-durable-receipt',
     'schema-complete-status',
     'harbor-digest-images',
     'declared-nodeport-exposure',

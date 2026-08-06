@@ -134,6 +134,35 @@ function graph(classification: 'public' | 'unclassified'): ApplicationGraph {
           reconciliationLink: 'modelRevisionWhenPresent',
         },
       },
+      {
+        id: 'gateway.public',
+        kind: 'gateway',
+        name: 'public',
+        stability: 'stable',
+        visibility: 'public',
+        queries: [],
+        commands: [{
+          command: { nodeId: 'command.posts.publish.v1' },
+          handler: { nodeId: 'commandHandler.post-publish' },
+        }],
+        subscriptions: [],
+        transport: 'http-sse',
+        authentication: 'external-provider',
+        trustedContextAdmission: 'server-validated',
+        browserCredentials: 'forbidden',
+        subscriptionLimits: { perPrincipal: 10, total: 100 },
+        routes: {
+          snapshots: '/queries/:query/snapshot',
+          subscriptions: '/queries/:query/subscribe',
+          streamReplay: '/streams/:subscription/replay',
+          streamSubscriptions: '/streams/:subscription/subscribe',
+          commandSubmission: '/commands/:command/submit',
+          commandProgress: '/commands/:command/progress',
+        },
+        resume: 'resumableInvalidation',
+        materialization: 'runtimeOnly',
+        commandAuthorizationSource: '() => true',
+      },
     ],
     edges: [],
     providerRequirements: [],
@@ -166,6 +195,210 @@ describe('application operation catalog compilation', () => {
       revision: 'catalog-1',
       requireClassified: true,
     })).toThrow(/operation catalog is not production-ready/i);
+  });
+
+  it('keeps an unrouted undeclared model handle latent without inventing public authority', () => {
+    const fixture = graph('unclassified');
+    const model = fixture.nodes.find((node) => node.kind === 'model');
+    const common = model?.common;
+    if (!model || !common?.operations) throw new Error('Expected model operation fixture.');
+    const operations = common.operations.map(({ authority: _authority, ...operation }) => ({
+      ...operation,
+      authorization: 'undeclared' as const,
+    }));
+    const latent: ApplicationGraph = {
+      ...fixture,
+      nodes: fixture.nodes
+        .filter((node) => node.kind !== 'gateway')
+        .map((node) =>
+          node.id === model.id
+            ? {
+                ...model,
+                common: {
+                  ...common,
+                  operations,
+                },
+              }
+            : node),
+    };
+
+    const catalog = compileApplicationOperationCatalog(latent, {
+      revision: 'catalog-latent',
+      requireClassified: true,
+    });
+    expect(catalog.operations).toEqual([
+      expect.objectContaining({
+        id: 'applik8s://models/Post/operations/publish',
+        transports: [{
+          id: 'posts.publish.v1',
+          transport: 'control-plane',
+          server: 'application-command-processor',
+        }],
+        authority: expect.objectContaining({
+          classification: 'application-policy',
+          defaultScope: {
+            kind: 'none',
+            reason: 'operation has no compiled transport',
+          },
+        }),
+      }),
+    ]);
+  });
+
+  it('classifies a model operation used only by a durable workflow as internal application policy', () => {
+    const base = graph('unclassified');
+    const withoutGateway = base.nodes.filter((node) => node.kind !== 'gateway');
+    const workflowGraph = {
+      ...base,
+      nodes: [
+        ...withoutGateway,
+        {
+          id: 'task-handler.review',
+          kind: 'taskHandler',
+          name: 'review',
+          stability: 'stable',
+          task: { nodeId: 'task.review' },
+          workflowEngine: {
+            interface: 'WorkflowEngine',
+            nodeId: 'provider.workflow-engine',
+          },
+          operations: [{
+            alias: 'publish',
+            command: { nodeId: 'command.posts.publish.v1' },
+            handler: { nodeId: 'commandHandler.post-publish' },
+            authority: {
+              apiVersion: 'applik8s.operationDependency/v1alpha1',
+              alias: 'publish',
+              operationId: 'applik8s://models/Post/operations/publish',
+              invocation: 'context.invoke',
+              authorization: 'reauthorize',
+              restrictions: {
+                target: { kind: 'all' },
+                predicates: [],
+              },
+              terminal: true,
+            },
+          }],
+          retry: {
+            mode: 'boundedExponentialBackoff',
+            maxAttempts: 3,
+            initialDelayMs: 100,
+            maxDelayMs: 1_000,
+          },
+          executionTimeoutSeconds: 60,
+          scheduleTimeoutSeconds: 300,
+          idempotency: {
+            required: true,
+            keySource: 'invocation',
+            guarantee: 'atLeastOnceRetrySafe',
+          },
+          effectBoundary: 'externalEffectsAllowed',
+          handlerSource: 'async () => ({})',
+        },
+      ],
+    } as ApplicationGraph;
+
+    const catalog = compileApplicationOperationCatalog(workflowGraph, {
+      revision: 'catalog-workflow-internal',
+      requireClassified: true,
+    });
+    expect(catalog.operations).toEqual([
+      expect.objectContaining({
+        id: 'applik8s://models/Post/operations/publish',
+        transports: [{
+          id: 'posts.publish.v1',
+          transport: 'workflow',
+          server: 'application-command-processor',
+        }],
+        authority: expect.objectContaining({
+          classification: 'application-policy',
+          defaultScope: { kind: 'all' },
+          transports: ['workflow'],
+        }),
+      }),
+    ]);
+  });
+
+  it('classifies engine-internal durable operations through the generated application policy', () => {
+    const base = graph('public');
+    const contract = {
+      name: 'proof',
+      version: 'v1',
+      input: {
+        kind: 'declared' as const,
+        runtime: 'arktype' as const,
+        jsonSchema: {
+          type: 'object',
+          properties: { id: { type: 'string' } },
+          required: ['id'],
+        },
+      },
+      output: {
+        kind: 'declared' as const,
+        runtime: 'arktype' as const,
+        jsonSchema: {
+          type: 'object',
+          properties: { done: { type: 'boolean' } },
+          required: ['done'],
+        },
+      },
+      errors: [],
+    };
+    const catalog = compileApplicationOperationCatalog({
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: 'task.proof.v1',
+          kind: 'task',
+          name: 'proof.v1',
+          stability: 'stable',
+          contract,
+        },
+        {
+          id: 'workflow.proof.v1',
+          kind: 'workflow',
+          name: 'proof.v1',
+          stability: 'stable',
+          contract: { ...contract, signals: [] },
+          triggers: { crons: [] },
+        },
+      ],
+    }, {
+      revision: 'catalog-durable-private',
+      requireClassified: true,
+    });
+
+    expect(
+      catalog.operations
+        .filter((operation) => operation.transports.every((binding) => binding.transport === 'workflow'))
+        .map((operation) => ({
+          id: operation.id,
+          classification: operation.authority.classification,
+          transports: operation.authority.transports,
+        })),
+    ).toEqual([
+      {
+        id: 'applik8s://tasks/proof.v1/operations/run',
+        classification: 'application-policy',
+        transports: ['workflow'],
+      },
+      {
+        id: 'applik8s://workflows/proof.v1/operations/cancel',
+        classification: 'application-policy',
+        transports: ['workflow'],
+      },
+      {
+        id: 'applik8s://workflows/proof.v1/operations/result',
+        classification: 'application-policy',
+        transports: ['workflow'],
+      },
+      {
+        id: 'applik8s://workflows/proof.v1/operations/start',
+        classification: 'application-policy',
+        transports: ['workflow'],
+      },
+    ]);
   });
 
   it('uses the static authority manifest as replay-safe classification evidence', () => {
@@ -207,6 +440,113 @@ describe('application operation catalog compilation', () => {
       classification: 'assigned',
       defaultScope: { kind: 'all' },
     });
+  });
+
+  it('catalogs CRD-backed model operations and views under the same canonical identities', () => {
+    const createOperation = 'applik8s://models/ModerationPolicy/operations/create' as const;
+    const currentOperation = 'applik8s://queries/ModerationPolicy/operations/current' as const;
+    const catalog = compileApplicationOperationCatalog({
+      apiVersion: 'applik8s.appGraph/v1alpha1',
+      kind: 'ApplicationGraph',
+      metadata: { name: 'chirp' },
+      nodes: [
+        {
+          id: 'crd.moderation-policy',
+          kind: 'crd',
+          name: 'ModerationPolicy',
+          stability: 'stable',
+          materialization: 'kubernetes-crd',
+          resource: {
+            apiVersion: 'chirp.applik8s.dev/v1alpha1',
+            kind: 'ModerationPolicy',
+            plural: 'moderationpolicies',
+            scope: 'Namespaced',
+          },
+          common: {
+            identity: { fields: ['metadata.name'], encoding: 'scalar' },
+            snapshot: { shape: 'identity-value-revision', revisionOptional: true },
+            changes: { authority: 'kubernetes-watch', rawWrites: 'observed' },
+            relationships: [],
+            operations: [{
+              name: 'create',
+              operation: 'create',
+              transport: 'command',
+              publicId: 'ModerationPolicy.create',
+              authorization: 'application-defined',
+            }],
+          },
+        },
+        {
+          id: 'query.ModerationPolicy.current',
+          kind: 'query',
+          name: 'ModerationPolicy.current',
+          publicId: 'ModerationPolicy.current',
+          version: 'v1',
+          stability: 'stable',
+          input: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } },
+          output: { kind: 'declared', runtime: 'arktype', jsonSchema: { type: 'object' } },
+          reads: [{ model: { nodeId: 'crd.moderation-policy' } }],
+          authorization: 'application-defined',
+          trustedContext: [],
+          budgets: { timeoutMs: 1_000, maxResultBytes: 1_024, maxRows: 1 },
+          snapshotResume: 'resumableInvalidation',
+          incremental: 'invalidation-requery',
+          cursor: 'opaque-query-version-context-scoped',
+          authorizationSource: '() => true',
+          handlerSource: 'async () => ({})',
+          modelOperation: {
+            model: { nodeId: 'crd.moderation-policy' },
+            name: 'current',
+            kind: 'view',
+          },
+        },
+        {
+          id: 'authority-manifest.application',
+          kind: 'authorityManifest',
+          name: 'application-authority',
+          stability: 'stable',
+          manifest: {
+            apiVersion: 'applik8s.authorityManifest/v1alpha1',
+            application: 'chirp',
+            revision: 'sha256:crd-role',
+            identities: [],
+            permissions: [{
+              id: 'permission:chirp:moderator',
+              name: 'moderator',
+              operationIds: [createOperation, currentOperation],
+              scope: { kind: 'all' },
+              grantable: false,
+            }],
+            roles: [],
+            grants: [],
+            outcomes: [],
+          },
+        },
+      ],
+      edges: [],
+      providerRequirements: [],
+      providerBindings: [],
+      compatibility: emptyCompatibility,
+    }, { revision: 'catalog-crd-authority' });
+
+    expect(catalog.operations.map((operation) => operation.id)).toEqual([
+      createOperation,
+      currentOperation,
+    ]);
+    expect(catalog.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: createOperation,
+          target: expect.objectContaining({ model: 'ModerationPolicy' }),
+          authority: expect.objectContaining({ classification: 'assigned' }),
+        }),
+        expect.objectContaining({
+          id: currentOperation,
+          target: expect.objectContaining({ model: 'ModerationPolicy' }),
+          authority: expect.objectContaining({ classification: 'assigned' }),
+        }),
+      ]),
+    );
   });
 
   it('fails closed when a static authority manifest references an unknown operation', () => {
@@ -275,7 +615,6 @@ describe('application operation catalog compilation', () => {
                   operator: 'eq',
                   value: { kind: 'literal', value: 'draft' },
                 }],
-                transport: { kind: 'transport', bindingId: 'posts.publish.v1', transport: 'event' },
               },
               binding: {
                 apiVersion: 'applik8s.executionBinding/v1alpha1',
@@ -323,11 +662,75 @@ describe('application operation catalog compilation', () => {
           source: 'input',
           boundKeys: ['postId'],
         }),
-        transports: ['event'],
+        transports: ['workflow'],
         delegation: 'forbidden',
         impersonation: 'forbidden',
       }),
     ]);
+  });
+
+  it('rejects a task dependency that explicitly selects a non-workflow transport', () => {
+    const base = graph('public');
+    const catalog = compileApplicationOperationCatalog(base, {
+      revision: 'catalog-task-transport',
+    });
+    const operationId = catalog.operations[0]?.id;
+    if (!operationId) throw new Error('Expected one compiled operation.');
+    const workloadGraph = {
+      ...base,
+      nodes: [
+        ...base.nodes,
+        {
+          id: 'task-handler.publish-post',
+          kind: 'taskHandler',
+          name: 'publish-post',
+          stability: 'stable',
+          task: { nodeId: 'task.publish-post' },
+          workflowEngine: { interface: 'WorkflowEngine', nodeId: 'provider.workflow-engine' },
+          operations: [{
+            alias: 'publish',
+            command: { nodeId: 'command.posts.publish.v1' },
+            handler: { nodeId: 'commandHandler.post-publish' },
+            authority: {
+              apiVersion: 'applik8s.operationDependency/v1alpha1',
+              alias: 'publish',
+              operationId,
+              invocation: 'context.invoke',
+              authorization: 'reauthorize',
+              restrictions: {
+                target: { kind: 'all' },
+                predicates: [],
+                transport: {
+                  kind: 'transport',
+                  bindingId: 'posts.publish.v1',
+                  transport: 'event',
+                },
+              },
+              terminal: true,
+            },
+          }],
+          retry: {
+            mode: 'boundedExponentialBackoff',
+            maxAttempts: 3,
+            initialDelayMs: 100,
+            maxDelayMs: 1_000,
+          },
+          executionTimeoutSeconds: 60,
+          scheduleTimeoutSeconds: 300,
+          idempotency: {
+            required: true,
+            keySource: 'invocation',
+            guarantee: 'atLeastOnceRetrySafe',
+          },
+          effectBoundary: 'externalEffectsAllowed',
+          handlerSource: 'async () => ({})',
+        },
+      ],
+    } as ApplicationGraph;
+
+    expect(() => compileApplicationWorkloadAuthority(workloadGraph, catalog)).toThrow(
+      /function-native task operations execute with workflow authority/i,
+    );
   });
 
   it('serializes one workload authority envelope per declared AI agent tool', () => {
@@ -380,6 +783,7 @@ describe('application operation catalog compilation', () => {
             graphNode: { nodeId: 'model.post' },
             authority: {
               classification: 'public',
+              permissionIds: [],
               grantable: false,
               delegable: false,
               scope: {
@@ -492,6 +896,87 @@ describe('application operation catalog compilation', () => {
             path: '/admin/users/:id/disable',
           },
         })],
+      }),
+    ]);
+  });
+
+  it('retains typed function-native HTTP schemas in the canonical operation catalog', () => {
+    const base = graph('public');
+    const input = {
+      kind: 'declared' as const,
+      runtime: 'arktype' as const,
+      jsonSchema: {
+        type: 'object',
+        properties: { postId: { type: 'string' } },
+        required: ['postId'],
+      },
+    };
+    const output = {
+      kind: 'declared' as const,
+      runtime: 'arktype' as const,
+      jsonSchema: {
+        type: 'object',
+        properties: { revision: { type: 'number' } },
+        required: ['revision'],
+      },
+    };
+    const catalog = compileApplicationOperationCatalog({
+      ...base,
+      nodes: [{
+        id: 'server.api',
+        kind: 'server',
+        name: 'api',
+        stability: 'stable',
+        routes: [{
+          id: 'publish-post',
+          named: true,
+          method: 'POST',
+          path: '/posts/:id/publish',
+          authority: {
+            classification: 'public',
+            permissionIds: [],
+            grantable: false,
+            delegable: false,
+            scope: { kind: 'all' },
+          },
+          functionNative: {
+            input,
+            output,
+            handler: { source: 'async ({ input }) => ({ revision: 1 })' },
+            idempotency: {
+              source: 'http-idempotency-key',
+              contextScoped: true,
+            },
+            requestBoundary: {
+              durableValues: 'schema-normalized-only',
+              rawRequestCapture: 'rejected',
+              principal: 'framework-authenticated',
+            },
+          },
+        }],
+        resources: [],
+        indexes: [],
+        observability: {
+          health: { mode: 'http', readinessPath: '/-/healthz', livenessPath: '/-/healthz' },
+          logs: { format: 'json', component: 'api', failureEvents: [] },
+          metrics: { mode: 'none', names: [] },
+          events: [],
+          sourceMaps: 'required',
+          replayArtifacts: [],
+          diagnosticsArtifact: { kind: 'routeDiagnostics', name: 'api-routes' },
+        },
+      }],
+    }, {
+      revision: 'catalog-typed-routes',
+      requireClassified: true,
+    });
+
+    expect(catalog.operations).toEqual([
+      expect.objectContaining({
+        id: 'applik8s://http/api/operations/publish-post',
+        kind: 'http.route',
+        input: expect.objectContaining({ schema: input.jsonSchema }),
+        output: expect.objectContaining({ schema: output.jsonSchema }),
       }),
     ]);
   });

@@ -29,6 +29,13 @@ export interface CompileApplicationDeploymentGraphRequest {
     readonly resources: readonly DeploymentJsonObject[];
     readonly status: DeploymentJsonObject;
   };
+  /**
+   * Cluster-scoped APIs emitted beside the root RGD. They cannot be children
+   * of one KRO instance because deleting that instance would remove the API
+   * before its resources and finalizers finish. The deployment compiler lowers
+   * them into ordered, retained TypeKro direct nodes instead.
+   */
+  readonly clusterApiPrerequisites?: readonly DeploymentJsonObject[];
   /** Generated runtime credentials whose values are created only by the operation host. */
   readonly generatedSecrets?: readonly ApplicationGeneratedSecretRequirement[];
   readonly contributors?: readonly ApplicationDeploymentContributor[];
@@ -48,9 +55,16 @@ export type ApplicationGeneratedSecretValue =
       readonly kind: "random";
       readonly bytes: number;
       readonly encoding: "base64url";
+      readonly characters?: number;
     }
   | {
-      /** Explicitly non-sensitive metadata stored beside generated credentials. */
+      /** Private JWK material is generated only by the operation host. */
+      readonly kind: "jwkSet";
+      readonly algorithm: "RS256";
+      readonly modulusLength: 2048 | 3072 | 4096;
+      readonly keyId: string;
+    }
+  | {
       readonly kind: "publicLiteral";
       readonly value: string;
     };
@@ -90,7 +104,11 @@ export interface ApplicationTypeKroFragmentDescriptor extends DeploymentJsonObje
   readonly providerInterface?: string;
   readonly providerImplementation?: string;
   readonly contributorVersion?: number;
-  readonly execution?: "root-composition" | "runtime-only" | "external-controller";
+  readonly execution?:
+    | "root-composition"
+    | "direct-provider"
+    | "runtime-only"
+    | "external-controller";
   readonly profile?: string;
   readonly configuration?: DeploymentJsonObject;
 }

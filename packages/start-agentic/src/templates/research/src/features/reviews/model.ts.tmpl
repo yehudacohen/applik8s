@@ -1,0 +1,400 @@
+import {
+  type ApplicationModelViewContext,
+  module,
+} from '@applik8s/applik8s';
+import { type } from 'arktype';
+import { desc, eq } from 'drizzle-orm';
+import { application } from '../../app';
+import {
+  ArtifactObjects,
+  Artifacts,
+  Conversations,
+  Evaluations,
+  Usage,
+} from '../../modules';
+import { requireActiveEntitlement } from '@applik8s/usage';
+import { database } from '../../providers';
+import {
+  Administrator,
+  Member,
+  Owner,
+  WorkspaceId,
+} from '../workspaces/model';
+import { ResearchReview as ResearchReviewTable } from './schema';
+
+const ResearchReviewListResult = type({
+  id: 'string',
+  workspaceId: 'string',
+  title: 'string',
+  state: "'pending' | 'approved' | 'rejected' | 'expired'",
+  artifactId: 'string | null',
+  decisionReceipt: 'string | null',
+  decidedByPrincipalId: 'string | null',
+  createdAt: 'string',
+  updatedAt: 'string',
+}).array();
+
+async function listResearchReviews(
+  _input: object,
+  context: ApplicationModelViewContext,
+) {
+  const workspaceId = String(context.trustedContext.workspaceId ?? '');
+  return context.database(database)
+    .select({
+      id: ResearchReviewTable.id,
+      workspaceId: ResearchReviewTable.workspaceId,
+      title: ResearchReviewTable.title,
+      state: ResearchReviewTable.state,
+      artifactId: ResearchReviewTable.artifactId,
+      decisionReceipt: ResearchReviewTable.decisionReceipt,
+      decidedByPrincipalId: ResearchReviewTable.decidedByPrincipalId,
+      createdAt: ResearchReviewTable.createdAt,
+      updatedAt: ResearchReviewTable.updatedAt,
+    })
+    .from(ResearchReviewTable)
+    .where(eq(ResearchReviewTable.workspaceId, workspaceId))
+    .orderBy(desc(ResearchReviewTable.createdAt))
+    .limit(100);
+}
+
+const reviews = module(
+  'reviews',
+  { schema: { ResearchReview: ResearchReviewTable } },
+  () => ({ ResearchReview: ResearchReviewTable }),
+);
+
+export const { ResearchReview } = application.include(reviews);
+const workflow = application.workflow;
+
+ResearchReview.create.beforeCommit(
+  {
+    transaction: { models: [Usage.Entitlement] },
+    processor: { replicas: 1, concurrency: 8 },
+    retry: {
+      mode: 'boundedExponentialBackoff',
+      maxAttempts: 5,
+      initialDelayMs: 100,
+      maxDelayMs: 5_000,
+    },
+  },
+  async function enforceResearchReviewEntitlement(
+    review,
+    _input,
+    context,
+  ) {
+    await requireActiveEntitlement(context, {
+      principalScope: review.value.workspaceId,
+      capability: 'research-review',
+    });
+  },
+);
+
+export const ResearchReviewDecision = workflow.signal(
+  'research.review-decision.v1',
+  {
+    input: type({
+      reviewId: 'string',
+      workspaceId: 'string',
+      title: 'string',
+    }),
+    actions: {
+      approve: type({ 'comment?': 'string' }),
+      reject: type({ reason: 'string' }),
+    },
+  },
+);
+
+export const ResearchReviewSignals = ResearchReviewDecision.subscribe(
+  'research-review-decisions',
+  {
+    delivery: 'sse',
+    authorize: ({ principal }) =>
+      principal.roles?.some((role) =>
+        role === 'workspace-owner' || role === 'workspace-administrator',
+      ) === true,
+  },
+);
+
+export const ResearchReviewList = ResearchReview.view(
+  {
+    input: type({}),
+    output: ResearchReviewListResult,
+    database,
+    authorize: ({ principal }) => principal.id.length > 0,
+    budgets: { timeoutMs: 2_000, maxRows: 100, maxResultBytes: 256_000 },
+  },
+  listResearchReviews,
+);
+
+Owner.can(
+  ResearchReviewDecision.read,
+  ResearchReviewDecision.approve,
+  ResearchReviewDecision.reject,
+  ResearchReview.create.where(review => review.workspaceId.eq(WorkspaceId)),
+  ResearchReviewList,
+);
+Administrator.can(
+  ResearchReviewDecision.read,
+  ResearchReviewDecision.approve,
+  ResearchReviewDecision.reject,
+  ResearchReview.create.where(review => review.workspaceId.eq(WorkspaceId)),
+  ResearchReviewList,
+);
+Member.can(
+  ResearchReview.create.where(review => review.workspaceId.eq(WorkspaceId)),
+  ResearchReviewList,
+);
+
+const ResearchReviewWorker = application.serviceIdentity(
+  'research-review-worker',
+);
+
+export const finalizeResearchReview = workflow(
+  'research.review.finalize.v1',
+  {
+    input: type({
+      reviewId: 'string',
+      workspaceId: 'string',
+      title: 'string',
+      action: "'approved' | 'rejected' | 'expired'",
+      'actorId?': 'string',
+      'receipt?': 'string',
+      'comment?': 'string',
+    }),
+    output: type({
+      reviewId: 'string',
+      state: "'approved' | 'rejected' | 'expired'",
+      'artifactId?': 'string',
+      'receipt?': 'string',
+    }),
+  },
+  {
+    authority: [
+      ResearchReview.update.all(),
+      Artifacts.Artifact.create.all(),
+      Conversations.Memory.create.all(),
+      Evaluations.EvaluationRun.create.all(),
+      Evaluations.EvaluationResult.create.all(),
+      Usage.UsageFact.create.all(),
+    ],
+    identity: ResearchReviewWorker,
+    retries: 3,
+    idempotencyKey: ({ reviewId, action }) => reviewId + ':' + action,
+  },
+  async function finalizeResearchReviewEffect(input, context) {
+    if (input.action === 'approved') {
+      if (!input.actorId || !input.receipt) {
+        throw new Error('Approved review requires an actor and receipt.');
+      }
+      const artifactId = input.reviewId + ':decision';
+      const objectKey = 'reviews/' + input.reviewId + '/decision.json';
+      const body = JSON.stringify({
+        reviewId: input.reviewId,
+        workspaceId: input.workspaceId,
+        title: input.title,
+        action: input.action,
+        comment: input.comment ?? null,
+        actor: input.actorId,
+        receipt: input.receipt,
+      });
+      const stored = await ArtifactObjects.put({
+        key: objectKey,
+        body,
+        contentType: 'application/json',
+      });
+      await Artifacts.Artifact.create({
+        id: artifactId,
+        principalScope: input.workspaceId,
+        kind: 'research-review-decision',
+        mediaType: stored.contentType,
+        state: 'available',
+        store: stored.store,
+        objectKey: stored.key,
+        sha256: stored.sha256,
+        size: new TextEncoder().encode(body).byteLength,
+        workflowRunId: context.invocationId,
+        invocationId: context.invocationId,
+        provenance: {
+          reviewId: input.reviewId,
+          decisionReceipt: input.receipt,
+          actor: input.actorId,
+        },
+      });
+      const completedAt = new Date().toISOString();
+      await Conversations.Memory.create({
+        id: input.reviewId + ':memory',
+        principalScope: input.workspaceId,
+        namespace: 'research-review',
+        content: {
+          reviewId: input.reviewId,
+          title: input.title,
+          decision: 'approved',
+          actor: input.actorId,
+          receipt: input.receipt,
+        },
+        retentionUntil: new Date(
+          Date.parse(completedAt) + 30 * 24 * 60 * 60 * 1_000,
+        ).toISOString(),
+      });
+      await Usage.UsageFact.create({
+        id: input.reviewId + ':usage',
+        principalScope: input.workspaceId,
+        operationId: 'research.review.finalize.v1',
+        invocationId: context.invocationId,
+        provider: 'human-review',
+        backend: 'workflow',
+        logicalModel: 'research-review',
+        inputTokens: 0,
+        outputTokens: 0,
+        costMicrounits: 0,
+        pricingRevision: 'starter-v1',
+        confidence: 'measured',
+        dimensions: {
+          reviewId: input.reviewId,
+          outcome: 'approved',
+        },
+        occurredAt: completedAt,
+      });
+      const evaluationRunId = input.reviewId + ':evaluation';
+      await Evaluations.EvaluationRun.create({
+        id: evaluationRunId,
+        datasetId: 'research-review-v1',
+        scorerId: 'research-review-human-v1',
+        logicalModel: 'research-review',
+        status: 'completed',
+        startedAt: completedAt,
+        completedAt,
+      });
+      await Evaluations.EvaluationResult.create({
+        id: input.reviewId + ':evaluation-result',
+        runId: evaluationRunId,
+        caseId: 'research-review-approval',
+        score: 1,
+        evidence: {
+          decisionReceipt: input.receipt,
+          actor: input.actorId,
+        },
+        artifactId,
+        invocationId: context.invocationId,
+      });
+      await ResearchReview.update({
+        identity: input.reviewId,
+        patch: {
+          state: 'approved',
+          artifactId,
+          decisionReceipt: input.receipt,
+          decidedByPrincipalId: input.actorId,
+          updatedAt: new Date().toISOString(),
+        },
+      });
+      return {
+        reviewId: input.reviewId,
+        state: 'approved' as const,
+        artifactId,
+        receipt: input.receipt,
+      };
+    }
+    await ResearchReview.update({
+      identity: input.reviewId,
+      patch: {
+        state: input.action,
+        ...(input.receipt ? { decisionReceipt: input.receipt } : {}),
+        ...(input.actorId
+          ? { decidedByPrincipalId: input.actorId }
+          : {}),
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    return {
+      reviewId: input.reviewId,
+      state: input.action,
+      ...(input.receipt ? { receipt: input.receipt } : {}),
+    };
+  },
+);
+
+export const reviewResearch = workflow(
+  'research.review.v1',
+  {
+    input: type({
+      reviewId: 'string',
+      workspaceId: 'string',
+      title: 'string',
+    }),
+    output: type({
+      reviewId: 'string',
+      state: "'approved' | 'rejected' | 'expired'",
+      'artifactId?': 'string',
+      'receipt?': 'string',
+    }),
+  },
+  async function executeResearchReview(input) {
+    const decision = await workflow.emitSignal(ResearchReviewDecision, {
+      input,
+      expiresIn: '24h',
+      target: {
+        reviewId: input.reviewId,
+        workspaceId: input.workspaceId,
+      },
+      authorize: [
+        { role: 'workspace-owner' },
+        { role: 'workspace-administrator' },
+      ],
+    });
+    const outcome = await decision();
+    return outcome.match({
+      approve: async ({ actor, receipt, input: approval }) => {
+        return finalizeResearchReview({
+          reviewId: input.reviewId,
+          workspaceId: input.workspaceId,
+          title: input.title,
+          action: 'approved',
+          ...(approval.comment ? { comment: approval.comment } : {}),
+          actorId: actor.id,
+          receipt: receipt.id,
+        }, { idempotencyKey: input.reviewId + ':approved' });
+      },
+      reject: async ({ actor, receipt }) => {
+        return finalizeResearchReview({
+          reviewId: input.reviewId,
+          workspaceId: input.workspaceId,
+          title: input.title,
+          action: 'rejected',
+          actorId: actor.id,
+          receipt: receipt.id,
+        }, { idempotencyKey: input.reviewId + ':rejected' });
+      },
+      expired: async () => {
+        return finalizeResearchReview({
+          reviewId: input.reviewId,
+          workspaceId: input.workspaceId,
+          title: input.title,
+          action: 'expired',
+        }, { idempotencyKey: input.reviewId + ':expired' });
+      },
+    });
+  },
+);
+
+export const ResearchReviewCoordinator = ResearchReview.on.create(
+  {
+    processor: { replicas: 1, concurrency: 8 },
+    retry: {
+      maxAttempts: 5,
+      initialDelayMs: 250,
+      maxDelayMs: 5_000,
+      deadLetter: true,
+    },
+    budgets: { timeoutMs: 15_000, maxInputBytes: 32_000 },
+  },
+  async function beginResearchReview(created) {
+    await reviewResearch.start(
+      {
+        reviewId: created.value.id,
+        workspaceId: created.value.workspaceId,
+        title: created.value.title,
+      },
+      { idempotencyKey: created.value.id },
+    );
+  },
+);

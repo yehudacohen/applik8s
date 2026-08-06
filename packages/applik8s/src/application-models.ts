@@ -1,11 +1,11 @@
 // typecast-file-boundary: schema-normalized model contracts cross erased runtime registries here; casts restore their declaration-time generics after identity checks.
 import { createHash } from 'node:crypto';
-import { type ApplicationMutationOperation, type ApplicationOperationAuthorizationContract, type ApplicationOperationLike, createApplicationMutationOperation, observeApplicationOperationAuthority } from '@applik8s/client';
+import type { ApplicationMutationOperation, ApplicationOperationAuthorizationContract, ApplicationOperationLike } from '@applik8s/client';
 import type { ApplicationAuthorizationReceipt, ApplicationCommandHandlerNode, ApplicationCommandRetentionContract, ApplicationExpressionContract, ApplicationGeneratedResourceContract, ApplicationMessageContractSchema, ApplicationMigrationContract, ApplicationModelConstraint, ApplicationModelIndex, ApplicationModelNode, ApplicationModelOperationGraphContract, ApplicationProcessorNode, ApplicationProviderInterfaceContract, ApplicationProviderInterfaceKind, ApplicationProviderRuntimeContract, ApplicationResourceRef, ApplicationRetentionPolicy, ApplicationRetryPolicy, ApplicationTransactionalDatabaseGuaranteesContract, ApplicationTransactionalDatabaseSemanticsContract, JsonValue } from '@applik8s/core';
 import { applicationAuthorityPostgresSchemaStatements } from '@applik8s/operations';
 import { normalizeSchema, type SchemaInput } from '@applik8s/sdk';
+import { type as arkType } from 'arktype';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
-import { type ApplicationEventLogResourceState, emitApplicationEventLogResources } from './application-event-log-resources.js';
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import { applicationGeneratedJobDurableStatus, applicationGeneratedJobObservability, applicationGeneratedJobPhase, applicationGeneratedJobRetry, applicationGeneratedJobRuntime, applicationGeneratedJobStatusLifecycle, applicationGeneratedJobStatusUpdater } from './application-jobs.js';
@@ -13,13 +13,13 @@ import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions,
 import type { ApplicationAnalyticalDatabaseProvider, ApplicationEventLogProvider, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderState, ApplicationTransactionalDatabaseProvider } from './application-providers.js';
 import { applicationEventLogImplementation, applicationProviderImplementationName, applicationProviderInterface, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationTransactionalDatabaseImplementation } from './application-providers.js';
 import { analyzeApplicationServerRouteSource, applicationCommandSourceViolations, serializedCallbackClosureMessage, unsupportedRouteFreeIdentifiers } from './application-route-source.js';
-import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString, applicationTypeKroValueIdentity } from './application-typekro-values.js';
+import { applicationTypeKroGraphValue, applicationTypeKroJsonStringArray, applicationTypeKroSerializedValue, applicationTypeKroString, applicationTypeKroValueIdentity } from './application-typekro-values.js';
 import type { ApplicationCommandPrincipal } from './command-principal.js';
-import type { CommandDefinition, EntityDefinition, EventDefinition } from './dsl.js';
+import { type CommandDefinition, type EntityDefinition, type EventDefinition, event } from './dsl.js';
 import type { ApplicationEventLogPublisher, EventLogPublishAcknowledgement } from './event-log-runtime.js';
 import type { PostgresModelCommandResult } from './model-command-postgres-runtime.js';
 import { canonicalApplicationCommandKey, executePostgresModelCommand } from './model-command-postgres-runtime.js';
-import { applicationModelCommandBindingForOperation, applicationModelFacet, bindApplicationModelCommandOperation, type DrizzleAnalyticalApplicationModelFacet, type DrizzleApplicationModelFacet, getApplicationModelFacet, nativeApplicationModelBindingFor } from './native-models.js';
+import { applicationModelCommandBindingForOperation, applicationModelFacet, type DrizzleAnalyticalApplicationModelFacet, type DrizzleApplicationModelFacet, getApplicationModelFacet, nativeApplicationModelBindingFor } from './native-models.js';
 import { createPostgresModelClient } from './transactional-database-postgres-runtime.js';
 
 const applicationModelCommandAuthorities = new WeakMap<object, Map<string, ApplicationOperationAuthorizationContract>>();
@@ -61,20 +61,6 @@ export interface ApplicationModelBinding<TSpec extends object, TStatus extends o
   delete(ref: ApplicationModelRef): Promise<void>;
   index(name: string, options?: ApplicationModelIndexOptions<TSpec, TStatus>): ApplicationModelIndexBinding<TSpec, TStatus>;
   transaction<TResult>(handler: (model: ApplicationModelTransactionClient<TSpec, TStatus>) => TResult | Promise<TResult>): Promise<TResult>;
-  /** Declares a durable domain operation and installs its typed callable directly on this model. */
-  operation<const TName extends string, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
-    name: TName,
-    operation: CommandDefinition<TInput, TOutput, TErrors>,
-    options: ApplicationModelCommandOptions<TInput, TSpec>,
-    handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
-  ): this & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>>;
-  /** @deprecated Use model.operation(name, ...) instead. Removed at 1.0. */
-  action<const TName extends string, TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
-    name: TName,
-    operation: CommandDefinition<TInput, TOutput, TErrors>,
-    options: ApplicationModelCommandOptions<TInput, TSpec>,
-    handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
-  ): this & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>>;
   readonly on: ApplicationModelEventRegistrar<TSpec, TStatus>;
 }
 
@@ -90,7 +76,11 @@ export interface ApplicationModelCommandOptions<
   TInput extends object,
   TSpec extends object,
 > {
-  readonly key: (input: TInput, context?: ApplicationCommandRoutingContext) => ApplicationCommandKey;
+  readonly key: (
+    input: TInput,
+    context?: ApplicationCommandRoutingContext,
+    messageId?: string,
+  ) => ApplicationCommandKey;
   readonly ordering?: 'serial' | 'concurrent';
   readonly idempotencyKey?: (input: TInput) => string;
   /** Route a missing submitted key to this alternate key in the same model. */
@@ -108,7 +98,7 @@ export interface ApplicationModelCommandOptions<
   readonly retry?: ApplicationRetryPolicy;
   readonly retention?: Partial<ApplicationCommandRetentionContract>;
   readonly processor?: ApplicationProcessorOptions;
-  /** Compiler-owned direct model operation name. Prefer model.operation(name, ...) over setting this explicitly. */
+  /** @internal Compiler-owned direct model operation name. */
   readonly publicName?: string;
   /** @internal Compiler-owned conventional mutation classification. */
   readonly __operation?: ApplicationModelOperationGraphContract['operation'];
@@ -119,6 +109,18 @@ export interface ApplicationModelCommandOptions<
     readonly initialize?: string;
     readonly handler?: string;
   };
+  /** @internal Framework-owned identifiers for generated lifecycle events. */
+  readonly __generatedEventBindings?: Readonly<
+    Record<string, EventDefinition<object>>
+  >;
+  /** @internal Closed callback contract for a generated native beforeCommit policy. */
+  readonly __generatedBeforeCommit?: import('@applik8s/core').ApplicationSerializedCallbackContract;
+  /** @internal Compiler-captured direct model and operation dependencies. */
+  readonly __generatedCalls?: readonly unknown[];
+  /** @internal Local identifiers for compiler-captured models, events, and operations. */
+  readonly __generatedModelBindings?: Readonly<Record<string, unknown>>;
+  /** @internal Compiler-captured direct calls whose result was awaited by the authored callback. */
+  readonly __generatedAwaitedCalls?: Readonly<Record<string, unknown>>;
 }
 
 /** Named models and promoted native Drizzle models share the same transaction-participant experience. */
@@ -229,6 +231,11 @@ export interface ApplicationModelCommandBinding<TInput extends object = object, 
   readonly processor: string;
   /** Compiler-authoring bridge from the direct handle to its canonical graph operation. */
   classify(authority: ApplicationOperationAuthorizationContract): void;
+  /** Framework-owned deterministic routing used by ambient transaction staging. */
+  route(input: TInput, messageId: string, context?: ApplicationCommandRoutingContext): {
+    readonly targetKey: ApplicationCommandKey;
+    readonly idempotencyKey: string;
+  };
   send(input: TInput, delivery: Omit<ApplicationModelCommandDeliveryOptions, 'databaseUrl' | 'targetKey' | 'idempotencyKey'>): Promise<ApplicationCommandSubmissionAcknowledgement>;
   execute(input: TInput, delivery: ApplicationModelCommandDeliveryOptions): Promise<PostgresModelCommandResult<TSpec, TStatus, TOutput>>;
   drain(): Promise<void>;
@@ -263,7 +270,16 @@ export interface ApplicationRuntimeModelContract {
     readonly schema?: string;
     readonly identity: { readonly property: string; readonly column: string };
     readonly revision?: { readonly property: string; readonly column: string };
-    readonly columns: readonly { readonly property: string; readonly column: string }[];
+    readonly columns: readonly {
+      readonly property: string;
+      readonly column: string;
+      /**
+       * Drizzle's logical value type. PostgreSQL drivers may expose a different
+       * representation (notably int8 as a string), so generated runtimes must
+       * retain this decoder intent rather than guessing from a live value.
+       */
+      readonly logicalType?: string;
+    }[];
     readonly access?: { readonly context: string; readonly setting: string; readonly property: string; readonly column: string };
   };
 }
@@ -330,23 +346,6 @@ export interface ApplicationModelEventRegistrar<TSpec extends object, TStatus ex
   created(handler: ApplicationModelEventHandler<TSpec, TStatus>): ApplicationModelEventBinding;
   updated(handler: ApplicationModelEventHandler<TSpec, TStatus>): ApplicationModelEventBinding;
   deleted(handler: ApplicationModelEventHandler<TSpec, TStatus>): ApplicationModelEventBinding;
-  command<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
-    command: CommandDefinition<TInput, TOutput, TErrors>,
-    options: ApplicationModelCommandOptions<TInput, TSpec>,
-    handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
-  ): ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus>;
-  /** Low-level registration surface used by model.operation(...). Prefer the direct named method in application code. */
-  operation<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
-    operation: CommandDefinition<TInput, TOutput, TErrors>,
-    options: ApplicationModelCommandOptions<TInput, TSpec>,
-    handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
-  ): ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus>;
-  /** @deprecated Use model.on.operation(...) instead. Removed at 1.0. */
-  action<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>>>(
-    operation: CommandDefinition<TInput, TOutput, TErrors>,
-    options: ApplicationModelCommandOptions<TInput, TSpec>,
-    handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
-  ): ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus>;
 }
 
 export type ApplicationModelEventHandler<TSpec extends object, TStatus extends object = Record<string, never>> = (model: ApplicationModelObject<TSpec, TStatus>) => unknown | Promise<unknown>;
@@ -356,7 +355,7 @@ export interface ApplicationModelEventBinding {
   readonly event: 'created' | 'updated' | 'deleted';
 }
 
-interface ApplicationModelGraphState extends ApplicationGraphState, ApplicationProviderState, ApplicationEventLogResourceState {
+interface ApplicationModelGraphState extends ApplicationGraphState, ApplicationProviderState {
   readonly appResource?: { readonly kind: string };
 }
 
@@ -710,6 +709,25 @@ export function recordApplicationModelCommandGraph<
   const processorName = options.processor?.group ?? `${model.name}-commands`;
   const processorNodeId = applicationGraphNodeId('processor', processorName);
   const publicName = applicationCommandPublicName(options.publicName, command.name);
+  const completionEvent =
+    (options.__operation ?? 'custom') === 'custom'
+      ? event(
+          `models.${model.name}.${publicName}.completed.v1`,
+          {
+            // typecast: ArkType cannot prove a heterogeneous generic object
+            // definition assembled from the model and command schemas, but
+            // both schemas already satisfy this registrar's object bounds.
+            payload: arkType({
+              operation: `'${publicName}'`,
+              identity: 'string',
+              previous: model.entity.spec,
+              current: model.entity.spec,
+              result: command.output,
+              revision: 'string',
+            } as never) as unknown as SchemaInput<object>,
+          },
+        )
+      : undefined;
   if (state.graphNodes.some((node) => node.id === handlerNodeId)) {
     throw new Error(`Model ${model.name} already has a handler for command ${command.id}. Command handlers must be unambiguous within an application graph.`);
   }
@@ -726,8 +744,83 @@ export function recordApplicationModelCommandGraph<
       : applicationCommandFunctionExpression('idempotencyKey', model.name, command.id, options.idempotencyKey)
     : undefined;
   const declaredTransactionModels = uniqueApplicationModelBindings(options.transaction?.models ?? []);
+  const generatedBindings = Object.entries(options.__generatedModelBindings ?? {});
+  const directModelBindings = generatedBindings
+    .flatMap(([identifier, participant]) => {
+      const normalizedParticipant =
+        participant
+        && typeof participant === 'object'
+        && Reflect.get(participant, 'kind') === 'applicationModel'
+          ? participant as ApplicationModelBinding<object, object>
+          : participant && typeof participant === 'object'
+            ? nativeApplicationModelBindingFor(participant)
+            : undefined;
+      return normalizedParticipant ? [{ identifier, participant: normalizedParticipant }] : [];
+    })
+    .sort((left, right) => left.identifier.localeCompare(right.identifier));
+  const generatedEvents = [
+    ...(completionEvent
+      ? [{
+          identifier: '__applik8sCompletionEvent',
+          event: completionEvent as EventDefinition<object>,
+        }]
+      : []),
+    ...Object.entries(options.__generatedEventBindings ?? {}).map(
+      ([identifier, generated]) => ({ identifier, event: generated }),
+    ),
+    ...generatedBindings.flatMap(([identifier, candidate]) =>
+      candidate
+      && typeof candidate === 'object'
+      && Reflect.get(candidate, 'kind') === 'applik8sEvent'
+        ? [{ identifier, event: candidate as EventDefinition<object> }]
+        : []),
+  ];
+  const generatedEventIdentifiers = new Set<string>();
+  const generatedEventIdsByIdentifier = new Map<string, string>();
+  for (const { identifier, event: generated } of generatedEvents) {
+    const previous = generatedEventIdsByIdentifier.get(identifier);
+    if (previous && previous !== generated.id) {
+      throw new Error(
+        `Model ${model.name} command ${command.id} binds generated event identifier ${identifier} to both ${previous} and ${generated.id}.`,
+      );
+    }
+    generatedEventIdentifiers.add(identifier);
+    generatedEventIdsByIdentifier.set(identifier, generated.id);
+  }
+  const generatedCommands = generatedBindings.flatMap(([identifier, candidate]) => {
+    if (
+      candidate
+      && typeof candidate === 'object'
+      && Reflect.get(candidate, 'kind') === 'applik8sCommand'
+    ) {
+      return [{
+        identifier,
+        command: candidate as CommandDefinition<
+          object,
+          object,
+          Readonly<Record<string, object>>
+        >,
+      }];
+    }
+    const binding = applicationModelCommandBindingForOperation(candidate);
+    return binding
+      ? [{
+          identifier,
+          command: applicationOutboxCommandDefinition(
+            state,
+            model.name,
+            command.id,
+            candidate as ApplicationOperationLike,
+          ),
+        }]
+      : [];
+  });
   const selfRead = declaredTransactionModels.some((participant) => participant.name === model.name);
-  const transactionModels = uniqueApplicationModelBindings([model, ...declaredTransactionModels]);
+  const transactionModels = uniqueApplicationModelBindings([
+    model,
+    ...declaredTransactionModels,
+    ...directModelBindings.map(({ participant }) => participant),
+  ]);
   const historyModels = uniqueApplicationModelBindings([...(options.history ? [model] : []), ...(options.transaction?.history ?? [])]);
   const transactionModelIds = new Set(transactionModels.map((participant) => applicationGraphNodeId('model', participant.name)));
   for (const historyModel of historyModels) {
@@ -737,16 +830,75 @@ export function recordApplicationModelCommandGraph<
   }
   validateApplicationCommandTransactionDomain(model.name, command.id, transactionModels);
 
-  const outboxEvents = [...(options.events ?? []), ...(options.transaction?.outbox ?? [])];
+  const generatedEventIds = new Set(generatedEvents.map(({ event }) => event.id));
+  const explicitOutboxEvents = [
+    ...(options.events ?? []),
+    ...(options.transaction?.outbox ?? []),
+  ].filter((event) => !generatedEventIds.has(event.id));
+  const outboxEvents = [
+    ...explicitOutboxEvents,
+    ...generatedEvents.map(({ event }) => event),
+  ];
   if (new Set(outboxEvents.map((event) => event.id)).size !== outboxEvents.length) throw new Error(`Model ${model.name} command ${command.id} declares a duplicate outbox event.`);
-  const outboxCommands = (options.transaction?.commands ?? []).map((outboxCommand) => applicationOutboxCommandDefinition(state, model.name, command.id, outboxCommand));
+  const generatedCommandIds = new Set(generatedCommands.map(({ command: generated }) => generated.id));
+  const explicitOutboxCommands = (options.transaction?.commands ?? [])
+    .map((outboxCommand) =>
+      applicationOutboxCommandDefinition(state, model.name, command.id, outboxCommand))
+    .filter((outboxCommand) => !generatedCommandIds.has(outboxCommand.id));
+  const outboxCommands = [
+    ...explicitOutboxCommands,
+    ...generatedCommands.map(({ command: generated }) => generated),
+  ];
   const handlerSource = options.__generatedSources?.handler
     ? applicationGeneratedCommandFunctionSource('handler', model.name, command.id, options.__generatedSources.handler)
     : applicationCommandFunctionSource('handler', model.name, command.id, handler);
-  const eventBindings = outboxEvents.length > 0 ? applicationCommandEventBindings(handlerSource, outboxEvents, model.name, command.id) : [];
-  const commandBindings = outboxCommands.length > 0 ? applicationCommandOutboxBindings(handlerSource, outboxCommands, model.name, command.id) : [];
+  const eventBindings = [
+    ...(explicitOutboxEvents.length > 0
+      ? applicationCommandEventBindings(
+          `${handlerSource}\n${options.__generatedBeforeCommit?.source ?? ''}`,
+          explicitOutboxEvents,
+          model.name,
+          command.id,
+          generatedEventIdentifiers,
+        )
+      : []),
+    ...generatedEvents.map(({ identifier, event: generated }) => ({
+      identifier,
+      event: { nodeId: applicationGraphNodeId('event', generated.id) },
+    })),
+  ];
+  const commandBindings = [
+    ...(explicitOutboxCommands.length > 0
+      ? applicationCommandOutboxBindings(
+          `${handlerSource}\n${options.__generatedBeforeCommit?.source ?? ''}`,
+          explicitOutboxCommands,
+          model.name,
+          command.id,
+        )
+      : []),
+    ...generatedCommands.map(({ identifier, command: generated }) => ({
+      identifier,
+      command: { nodeId: applicationGraphNodeId('command', generated.id) },
+    })),
+  ];
+  for (const binding of directModelBindings) {
+    if ([...eventBindings, ...commandBindings].some(({ identifier }) => identifier === binding.identifier)) {
+      throw new Error(`Model ${model.name} command ${command.id} uses ${binding.identifier} as both an emitted contract and a direct model binding.`);
+    }
+  }
   const retention = applicationCommandRetention(options.retention, model.name, command.id);
-  validateApplicationCommandHandlerClosure(handlerSource, [...eventBindings, ...commandBindings], model.name, command.id);
+  validateApplicationCommandHandlerClosure(
+    handlerSource,
+    [...eventBindings, ...commandBindings],
+    [
+      ...directModelBindings.map(({ identifier }) => identifier),
+      ...(options.__generatedBeforeCommit
+        ? ['__applik8sBeforeCommit', '__applik8sRunBeforeCommit']
+        : []),
+    ],
+    model.name,
+    command.id,
+  );
   addApplicationGraphNode(state, {
     id: commandNodeId,
     kind: 'command',
@@ -783,7 +935,6 @@ export function recordApplicationModelCommandGraph<
   if (!eventLog) {
     throw new Error(`Model ${model.name} command ${command.id} requires an EventLog provider. Bind EventLog to a nats-jetstream provider.`);
   }
-  emitApplicationEventLogResources(state, eventLog);
   recordApplicationProviderGraph(state, 'EventLog', 'commandTransport', eventLog);
   for (const event of outboxEvents) {
     const eventNodeId = applicationGraphNodeId('event', event.id);
@@ -826,6 +977,10 @@ export function recordApplicationModelCommandGraph<
     ...(options.missing && options.missing !== 'reject' && 'route' in options.missing ? { missingRoute: options.missing.route } : {}),
     transaction: {
       models: transactionModels.map((participant) => ({ nodeId: applicationGraphNodeId('model', participant.name) })),
+      modelBindings: directModelBindings.map(({ identifier, participant }) => ({
+        identifier,
+        model: { nodeId: applicationGraphNodeId('model', participant.name) },
+      })),
       ...(selfRead ? { selfRead: true } : {}),
       history: historyModels.map((participant) => ({ nodeId: applicationGraphNodeId('model', participant.name) })),
       outbox: outboxEvents.map((event) => ({ nodeId: applicationGraphNodeId('event', event.id) })),
@@ -849,6 +1004,16 @@ export function recordApplicationModelCommandGraph<
       reconciliationLink: 'modelRevisionWhenPresent',
     },
     handlerSource,
+    ...(options.__generatedBeforeCommit
+      ? { beforeCommit: options.__generatedBeforeCommit }
+      : {}),
+    ...(completionEvent
+      ? {
+          completionEvent: {
+            nodeId: applicationGraphNodeId('event', completionEvent.id),
+          },
+        }
+      : {}),
     ...(options.missing && options.missing !== 'reject' && 'initialize' in options.missing
       ? { initializeSource: options.__generatedSources?.initialize
         ? applicationGeneratedCommandFunctionSource('initialize', model.name, command.id, options.__generatedSources.initialize)
@@ -925,7 +1090,11 @@ export function recordApplicationModelCommandGraph<
   const initialize = options.missing && options.missing !== 'reject' && 'initialize' in options.missing
     ? options.missing.initialize
     : undefined;
-  const targetKey = (input: TInput) => canonicalApplicationCommandKey(options.key(input));
+  const targetKey = (
+    input: TInput,
+    context?: ApplicationCommandRoutingContext,
+    messageId?: string,
+  ) => canonicalApplicationCommandKey(options.key(input, context, messageId));
   const commandIdempotencyKey = (input: TInput, messageId: string) => options.idempotencyKey?.(input) ?? messageId;
   return {
     kind: 'applicationModelCommand',
@@ -943,9 +1112,15 @@ export function recordApplicationModelCommandGraph<
         candidate.name === publicName ? { ...candidate, authority } : candidate);
       addApplicationGraphNode(state, { ...current, common: { ...current.common, operations } });
     },
+    route(input, messageId, context) {
+      return {
+        targetKey: targetKey(input, context, messageId),
+        idempotencyKey: commandIdempotencyKey(input, messageId),
+      };
+    },
     async send(input, delivery) {
       validateApplicationMessage(command.input, input, `${command.id}.input`);
-      const key = targetKey(input);
+      const key = targetKey(input, undefined, delivery.id);
       // static-import-exception: provider adapters are optional and load only when this NATS-backed command binding is invoked.
       publisher ??= import('@applik8s/runtime-nats/event-log').then(({ createJetStreamEventLog }) => createJetStreamEventLog({
         servers,
@@ -978,6 +1153,12 @@ export function recordApplicationModelCommandGraph<
     execute(input, delivery) {
       return executePostgresModelCommand({
         bindingId: handlerName,
+        operation:
+          options.__operation === 'create' ||
+          options.__operation === 'update' ||
+          options.__operation === 'delete'
+            ? options.__operation
+            : 'custom',
         command: { name: command.name, version: command.version },
         errors: Object.keys(command.errors),
         schemas: {
@@ -1010,6 +1191,12 @@ export function recordApplicationModelCommandGraph<
         history: historyModels.some((participant) => participant.name === model.name),
         // typecast: command transaction declarations erase payload specifics after their schemas have been validated and recorded in the graph.
         outbox: outboxEvents as readonly EventDefinition<object>[],
+        ...(completionEvent
+          ? {
+              completionEvent:
+                completionEvent as EventDefinition<object>,
+            }
+          : {}),
         commands: outboxCommands,
         ordering: options.ordering ?? 'serial',
         ...(options.missing && options.missing !== 'reject' && 'route' in options.missing ? { missingRoute: options.missing.route } : {}),
@@ -1112,7 +1299,7 @@ function applicationEventLogRuntime(provider: ApplicationEventLogProvider): Appl
   return {
     env: {
       APPLIK8S_EVENT_LOG_PROVIDER: provider.kind,
-      APPLIK8S_NATS_SERVERS: JSON.stringify(servers.map(applicationTypeKroSerializedValue)),
+      APPLIK8S_NATS_SERVERS: applicationTypeKroJsonStringArray(servers),
       APPLIK8S_NATS_STREAM: provider.stream ?? 'APPLIK8S_EVENTS',
       APPLIK8S_NATS_SUBJECT_PREFIX: provider.subjectPrefix ?? 'applik8s',
     },
@@ -1130,10 +1317,15 @@ function applicationCommandEventBindings(
   events: readonly EventDefinition<object>[],
   modelName: string,
   commandId: string,
+  generatedIdentifiers: ReadonlySet<string> = new Set(),
 ): readonly { readonly identifier: string; readonly event: { readonly nodeId: string } }[] {
   const identifiers = [...handlerSource.matchAll(/\.\s*emit\s*\(\s*([A-Za-z_$][\w$]*)\s*,/g)]
     .map((match) => match[1])
-    .filter((identifier): identifier is string => Boolean(identifier));
+    .filter(
+      (identifier): identifier is string =>
+        typeof identifier === 'string'
+        && !generatedIdentifiers.has(identifier),
+    );
   const unique = [...new Set(identifiers)];
   if (unique.length !== events.length) {
     throw new Error(`Model ${modelName} command ${commandId} must emit each declared outbox event through a stable identifier so the generated processor can serialize its closure. Found ${unique.length} event identifiers (${unique.join(', ') || 'none'}) for ${events.length} declared events (${events.map((event) => event.id).join(', ')}).`);
@@ -1199,11 +1391,18 @@ function applicationCommandOutboxBindings(
 function validateApplicationCommandHandlerClosure(
   handlerSource: string,
   eventBindings: readonly { readonly identifier: string }[],
+  modelBindings: readonly string[],
   modelName: string,
   commandId: string,
 ): void {
   const analysis = analyzeApplicationServerRouteSource(handlerSource);
-  const unsupported = unsupportedRouteFreeIdentifiers(analysis, new Set(eventBindings.map((binding) => binding.identifier)));
+  const unsupported = unsupportedRouteFreeIdentifiers(
+    analysis,
+    new Set([
+      ...eventBindings.map((binding) => binding.identifier),
+      ...modelBindings,
+    ]),
+  );
   if (unsupported.length > 0) {
     throw new Error(serializedCallbackClosureMessage({
       label: `Model ${modelName} command ${commandId} handler`,
@@ -1222,6 +1421,12 @@ function applicationCommandProcessorGeneratedResources(
   const name = kubernetesNameSegment(processorName);
   const namespace = model.secretNamespace ?? eventLog.namespace;
   const nodeId = applicationGraphNodeId('processor', processorName);
+  const configuredStreamName = applicationTypeKroSerializedValue(
+    eventLog.name ?? eventLog.stream ?? 'applik8s-events',
+  );
+  const streamName = configuredStreamName.startsWith('${')
+    ? configuredStreamName
+    : kubernetesNameSegment(configuredStreamName);
   const resource = (apiVersion: string, kind: string, resourceName: string): ApplicationResourceRef => ({
     apiVersion,
     kind,
@@ -1235,7 +1440,7 @@ function applicationCommandProcessorGeneratedResources(
     ...('disabled' in deployment.disruption ? [] : [{ role: 'policy' as const, graphNode: { nodeId }, resource: resource('policy/v1', 'PodDisruptionBudget', name), artifact: { kind: 'kubernetesManifest' as const, name: `${name}-pod-disruption-budget.yaml` } }]),
     { role: 'runtimeBundle', graphNode: { nodeId }, resource: resource('v1', 'ConfigMap', `${name}-source`), artifact: { kind: 'runtimeBundle', name: `${name}-source` } },
     // typecast: preserve discriminants while conditionally adding the TypeKro-owned Stream.
-    ...(eventLog.provision === false ? [] : [{ role: 'providerDependency' as const, graphNode: { nodeId }, resource: resource('jetstream.nats.io/v1beta2', 'Stream', kubernetesNameSegment(eventLog.name ?? 'applik8s-events')), artifact: { kind: 'typeKroResource' as const, name: kubernetesNameSegment(eventLog.name ?? 'applik8s-events') } }]),
+    ...(eventLog.provision === false ? [] : [{ role: 'providerDependency' as const, graphNode: { nodeId }, resource: resource('jetstream.nats.io/v1beta2', 'Stream', streamName), artifact: { kind: 'typeKroResource' as const, name: streamName } }]),
     { role: 'providerDependency', graphNode: { nodeId }, resource: resource('jetstream.nats.io/v1beta2', 'Consumer', name), artifact: { kind: 'typeKroResource', name } },
   ];
 }
@@ -1372,48 +1577,34 @@ export type ApplicationModelCommandRegistrar<TSpec extends object, TStatus exten
   handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
 ) => ApplicationModelCommandBinding<TInput, TOutput, TSpec, TStatus>;
 
-function installApplicationModelOperation<
+const applicationModelCommandRegistrars =
+  new WeakMap<object, ApplicationModelCommandRegistrar<object, object>>();
+
+export function bindApplicationModelCommandRegistrar<
   TSpec extends object,
   TStatus extends object,
-  const TName extends string,
-  TInput extends object,
-  TOutput extends object,
-  TErrors extends Readonly<Record<string, object>>,
 >(
   model: ApplicationModelBinding<TSpec, TStatus>,
-  name: TName,
-  definition: CommandDefinition<TInput, TOutput, TErrors>,
-  options: ApplicationModelCommandOptions<TInput, TSpec>,
-  handler: ApplicationModelCommandHandler<TSpec, TStatus, TInput, TOutput, TErrors>,
-): ApplicationModelBinding<TSpec, TStatus> & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>> {
-  if (!/^[$A-Z_a-z][$\w]*$/.test(name)) {
-    throw new Error(`Application model operation name ${JSON.stringify(name)} must be a JavaScript identifier.`);
-  }
-  if (name in model) {
-    throw new Error(`Application model operation ${name} cannot replace an existing model member.`);
-  }
-  const binding = model.on.operation(definition, { ...options, publicName: name }, handler);
-  const operation = createApplicationMutationOperation<TInput, TOutput>({
-    apiVersion: 'applik8s.operation/v1alpha1',
-    kind: 'applicationOperation',
-    id: definition.id,
-    model: model.name,
-    name,
-    operation: 'custom',
-    transport: 'command',
-  }, undefined, {
-    input: definition.input,
-    output: definition.output,
-  });
-  bindApplicationModelCommandOperation(operation, binding);
-  observeApplicationOperationAuthority(operation, (authority) => binding.classify(authority));
-  Object.defineProperty(model, name, {
-    value: operation,
-    enumerable: false,
-    configurable: false,
-    writable: false,
-  });
-  return model as ApplicationModelBinding<TSpec, TStatus> & Readonly<Record<TName, ApplicationMutationOperation<TInput, TOutput>>>;
+  registrar: ApplicationModelCommandRegistrar<TSpec, TStatus>,
+): void {
+  // typecast: the model object is the identity boundary that restores the
+  // declaration-time generics when the compiler-owned registrar is retrieved.
+  applicationModelCommandRegistrars.set(
+    model,
+    registrar as unknown as ApplicationModelCommandRegistrar<object, object>,
+  );
+}
+
+export function applicationModelCommandRegistrar<
+  TSpec extends object,
+  TStatus extends object,
+>(
+  model: ApplicationModelBinding<TSpec, TStatus>,
+): ApplicationModelCommandRegistrar<TSpec, TStatus> | undefined {
+  // typecast: the registrar was stored under this exact model identity.
+  return applicationModelCommandRegistrars.get(model) as
+    | ApplicationModelCommandRegistrar<TSpec, TStatus>
+    | undefined;
 }
 
 export function applicationModelBinding<TSpec extends object, TStatus extends object>(entity: EntityDefinition<TSpec, TStatus>, _provider: ApplicationTransactionalDatabaseProvider, options: ApplicationModelOptions<TSpec, TStatus> | undefined, runtime: ApplicationRuntimeModelContract, commandRegistrar?: ApplicationModelCommandRegistrar<TSpec, TStatus>): ApplicationModelBinding<TSpec, TStatus> {
@@ -1457,36 +1648,13 @@ export function applicationModelBinding<TSpec extends object, TStatus extends ob
       }
       return scriptClient().transaction(handler);
     },
-    operation(operationName, operation, operationOptions, handler) {
-      return installApplicationModelOperation(this, operationName, operation, operationOptions, handler);
-    },
-    action(operationName, operation, operationOptions, handler) {
-      return installApplicationModelOperation(this, operationName, operation, operationOptions, handler);
-    },
     on: {
       created: () => applicationModelUnsupportedEvent(name, 'created'),
       updated: () => applicationModelUnsupportedEvent(name, 'updated'),
       deleted: () => applicationModelUnsupportedEvent(name, 'deleted'),
-      command(command, commandOptions, handler) {
-        if (!commandRegistrar) {
-          throw new Error(`Model ${name}.on.command(...) has no application graph registration context and fails closed.`);
-        }
-        return commandRegistrar(command, commandOptions, handler);
-      },
-      operation(operation, operationOptions, handler) {
-        if (!commandRegistrar) {
-          throw new Error(`Model ${name}.on.operation(...) has no application graph registration context and fails closed.`);
-        }
-        return commandRegistrar(operation, operationOptions, handler);
-      },
-      action(operation, operationOptions, handler) {
-        if (!commandRegistrar) {
-          throw new Error(`Model ${name}.on.operation(...) has no application graph registration context and fails closed.`);
-        }
-        return commandRegistrar(operation, operationOptions, handler);
-      },
     },
   };
+  if (commandRegistrar) bindApplicationModelCommandRegistrar(binding, commandRegistrar);
   return binding;
 }
 
@@ -1525,7 +1693,7 @@ export function applicationRuntimeModelContract<TSpec extends object, TStatus ex
 export function applicationModelMigrationSql(model: ApplicationRuntimeModelContract): string {
   const migrationPlan = applicationModelMigrationPlan(model);
   const statements = [
-    ...applicationAuthorityPostgresSchemaStatements,
+    ...applicationAuthorityPostgresSchemaStatements.map((statement) => `${statement.trimEnd()};`),
     `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_model_migrations')} (\n  id text PRIMARY KEY,\n  model text NOT NULL,\n  revision text NOT NULL,\n  plan jsonb NOT NULL,\n  applied_at timestamptz NOT NULL DEFAULT now()\n);`,
     `CREATE TABLE IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_admissions')} (\n  scope text PRIMARY KEY,\n  command text NOT NULL,\n  binding_id text NOT NULL,\n  command_id text NOT NULL,\n  authorization_receipt jsonb NOT NULL,\n  admitted_at timestamptz NOT NULL DEFAULT now()\n);`,
     `CREATE INDEX IF NOT EXISTS ${quoteSqlIdentifier('applik8s_command_admissions_cleanup')} ON ${quoteSqlIdentifier('applik8s_command_admissions')} (binding_id, admitted_at);`,
@@ -1819,66 +1987,17 @@ function applicationTransactionalDatabaseRuntime(provider: ApplicationTransactio
 }
 
 /**
- * A profile may replace the database implementation, but generated workloads
- * have one immutable connection contract. Require every branch to preserve
- * that logical database/Secret identity and use the declared default branch
- * as the concrete runtime descriptor.
+ * Profile-selected database fields are already lowered by
+ * applicationTransactionalDatabaseImplementation() into schema-driven values.
+ * Preserve those values in the generated workload rather than freezing the
+ * first branch's connection identity: external profiles legitimately point at
+ * a different cluster, database, and Secret.
  */
 function applicationTransactionalDatabaseRuntimeProvider(
   provider: ApplicationTransactionalDatabaseProvider,
-  modelName: string,
+  _modelName: string,
 ): ApplicationTransactionalDatabaseProvider {
-  const selection =
-    applicationProviderSelectionFor<ApplicationTransactionalDatabaseProvider>(
-      provider,
-    );
-  if (!selection) return provider;
-  const branches = [
-    ...Object.entries(selection.cases),
-    ['default', selection.default] as const,
-  ];
-  const identities = branches.map(([variant, branch]) => ({
-    variant,
-    identity: applicationTransactionalDatabaseRuntimeIdentity(
-      branch,
-      modelName,
-    ),
-  }));
-  const expected = identities[0];
-  const mismatch = identities.find(
-    (candidate) =>
-      JSON.stringify(candidate.identity) !== JSON.stringify(expected?.identity),
-  );
-  if (expected && mismatch) {
-    throw new Error(
-      `Profile-selected TransactionalDatabase for model ${modelName} changes its generated workload connection between ${expected.variant} and ${mismatch.variant}. Keep clusterName, database, connectionSecret name/namespace, and connectionSecretKey stable across profile branches.`,
-    );
-  }
-  return selection.default;
-}
-
-function applicationTransactionalDatabaseRuntimeIdentity(
-  provider: ApplicationTransactionalDatabaseProvider,
-  modelName: string,
-): Readonly<Record<string, string>> {
-  const clusterName =
-    provider.clusterName
-    ?? provider.name
-    ?? provider.cluster?.name
-    ?? `${kubernetesNameSegment(modelName)}-db`;
-  const secret = provider.connectionSecret ?? {
-    apiVersion: 'v1',
-    kind: 'Secret',
-    name: `${clusterName}-app`,
-    ...(provider.namespace ? { namespace: provider.namespace } : {}),
-  };
-  return {
-    clusterName,
-    database: provider.database ?? kubernetesNameSegment(modelName),
-    secretName: secret.name ?? `${clusterName}-app`,
-    secretNamespace: secret.namespace ?? provider.namespace ?? '',
-    secretKey: provider.connectionSecretKey ?? 'uri',
-  };
+  return provider;
 }
 
 function applicationModelIdentity<TSpec extends object, TStatus extends object>(schema: ApplicationModelSchemaOptions<TSpec, TStatus> | undefined): readonly string[] {
@@ -2011,6 +2130,12 @@ function recordApplicationProviderGraph(
         stream: eventLog.stream ?? 'APPLIK8S_EVENTS',
         subjectPrefix: eventLog.subjectPrefix ?? 'applik8s',
         provision: eventLog.provision ?? true,
+        replicas: eventLog.replicas ?? 1,
+        storageSize: eventLog.storageSize ?? '10Gi',
+        ...(eventLog.storageClassName
+          ? { storageClassName: eventLog.storageClassName }
+          : {}),
+        pvcRetentionPolicy: eventLog.pvcRetentionPolicy ?? 'retain',
         authMode: eventLog.authMode ?? 'token',
         ...(eventLog.connectionSecret ? { connectionSecret: { apiVersion: eventLog.connectionSecret.apiVersion, kind: eventLog.connectionSecret.kind, ...(eventLog.connectionSecret.name ? { name: eventLog.connectionSecret.name } : {}), ...(eventLog.connectionSecret.namespace ? { namespace: eventLog.connectionSecret.namespace } : {}) } } : {}),
         tokenKey: eventLog.tokenKey ?? 'token',

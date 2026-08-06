@@ -12,11 +12,12 @@ import type { ApplicationGraphState } from './application-graph-state.js';
 import type { ApplicationObjectReference, ApplicationObjectStoreBinding } from './application-object-storage.js';
 import type { ApplicationProviderState, ApplicationProviderToken } from './application-providers.js';
 import type { ApplicationOnlineProjectionBinding } from './application-reactive.js';
-import type { TaskDefinition, WorkflowDefinition } from './dsl.js';
+import type { WorkflowDefinition } from './dsl.js';
+import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
 import type { ApplicationOnlineProjectionRebuildResult } from './projection-rebuild-runtime.js';
 import type { ApplicationStructuredGenerationProviderToken } from './structured-generation.js';
 import type { ApplicationStructuredGenerationCapability } from './structured-generation-runtime.js';
-import type { ApplicationWorkflowInvocationMetadata, ApplicationWorkflowResultOptions, ApplicationWorkflowRun } from './workflow-runtime.js';
+import type { ApplicationWorkflowInvocationMetadata, ApplicationWorkflowResultOptions, ApplicationWorkflowRun, ApplicationWorkflowScheduleResult, ApplicationWorkflowScheduleSpec } from './workflow-runtime.js';
 
 export interface ApplicationWorkflowState extends ApplicationGraphState, ApplicationProviderState {
   readonly workflowHandlers: Map<string, ApplicationWorkflowHandlerRegistration>;
@@ -46,7 +47,8 @@ export interface ApplicationTaskProjectionTarget {
 
 export interface ApplicationTaskServicePrincipal {
   readonly id: string;
-  readonly claims?: JsonObject;
+  readonly roles?: readonly string[];
+  readonly attributes?: JsonObject;
   readonly authorizationVersion: string;
   readonly trustedContext?: JsonObject;
 }
@@ -159,6 +161,11 @@ export interface ApplicationTaskOptions<
   readonly idempotencyKey?: (input: TInput) => string;
   /** External capabilities made available through context.use(...) in this task only. */
   readonly requires?: readonly ApplicationProviderToken<unknown>[];
+  /**
+   * Explicit maximum authority for direct callable model operations. Ordinary
+   * statically reachable query handles are inferred by the compiler.
+   */
+  readonly authority?: readonly ApplicationTaskOperationDependency[];
   /** Durable model operations made available as context.operations.<alias>(...). */
   readonly operations?: TOperations;
   /** Bounded application views made available as context.queries.<alias>(...). */
@@ -176,6 +183,10 @@ export interface ApplicationTaskOptions<
    */
   readonly principal?: (input: TInput) => ApplicationTaskServicePrincipal;
   readonly worker?: ApplicationWorkflowWorkerOptions;
+  /** Compiler-owned direct callable captures; never authored by applications. */
+  readonly __generatedCalls?: readonly unknown[];
+  /** Compiler-owned source identifiers for direct callable captures. */
+  readonly __generatedBindings?: Readonly<Record<string, unknown>>;
 }
 
 export interface ApplicationWorkflowWorkerOptions {
@@ -198,6 +209,10 @@ export interface ApplicationWorkflowOptions<
   readonly workflows?: TWorkflows;
   readonly crons?: readonly { readonly name?: string; readonly expression: string; readonly input: object }[];
   readonly worker?: ApplicationWorkflowWorkerOptions;
+  /** Compiler-owned direct callable captures; never authored by applications. */
+  readonly __generatedCalls?: readonly unknown[];
+  /** Compiler-owned source identifiers for direct callable captures. */
+  readonly __generatedBindings?: Readonly<Record<string, unknown>>;
 }
 
 export type ApplicationTaskReference = { readonly kind: 'applik8sTask'; readonly id: string } | { readonly kind: 'applicationTask'; readonly definition: { readonly id: string } };
@@ -228,12 +243,14 @@ export type ApplicationWorkflowReferenceOutput<TReference> = TReference extends 
     : never;
 
 export interface ApplicationTaskBinding<TInput extends object, TOutput extends object, TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>> {
+  (input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
   readonly kind: 'applicationTask';
   readonly definition: TaskDefinition<TInput, TOutput, TErrors>;
   readonly __errors?: TErrors;
   run(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
   start(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput, TErrors>>;
   schedule(input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata): Promise<{ readonly id: string }>;
+  reconcile(schedule: ApplicationWorkflowScheduleSpec<TInput>, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowScheduleResult>;
 }
 
 export interface ApplicationWorkflowBinding<
@@ -242,6 +259,7 @@ export interface ApplicationWorkflowBinding<
   TErrors extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
   TSignals extends Readonly<Record<string, object>> = Readonly<Record<never, never>>,
 > {
+  (input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
   readonly kind: 'applicationWorkflow';
   readonly definition: WorkflowDefinition<TInput, TOutput, TErrors, TSignals>;
   readonly __errors?: TErrors;
@@ -249,6 +267,7 @@ export interface ApplicationWorkflowBinding<
   run(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata, result?: ApplicationWorkflowResultOptions): Promise<TOutput>;
   start(input: TInput, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowRun<TOutput, TErrors>>;
   schedule(input: TInput, at: Date, metadata?: ApplicationWorkflowInvocationMetadata): Promise<{ readonly id: string }>;
+  reconcile(schedule: ApplicationWorkflowScheduleSpec<TInput>, metadata?: ApplicationWorkflowInvocationMetadata): Promise<ApplicationWorkflowScheduleResult>;
   signal<TName extends [keyof TSignals] extends [never] ? string : keyof TSignals & string>(
     runId: string,
     name: TName,

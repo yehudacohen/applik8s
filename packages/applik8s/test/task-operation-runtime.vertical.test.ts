@@ -2,12 +2,13 @@
 
 import type { ApplicationAuthorizationReceipt, ApplicationExecutionPrincipal, ApplicationWorkloadAuthorityEnvelope, JsonValue } from '@applik8s/core';
 import { describe, expect, it, vi } from 'vitest';
-import { applicationCommandPrincipal } from '../src/command-principal.js';
+import { applicationCommandPrincipal, applicationCommandTrustedContext } from '../src/command-principal.js';
 import type { ApplicationPostgresSql } from '../src/postgres-runtime-contract.js';
 import {
   type ApplicationTaskOperationAuthorityError,
   ApplicationTaskOperationFailedError,
   ApplicationTaskOperationRejectedError,
+  canonicalApplicationTaskServicePrincipal,
   createApplicationTaskOperationRuntime,
 } from '../src/task-operation-runtime.js';
 import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
@@ -20,6 +21,49 @@ const inputSchema = {
 } as const;
 
 describe('task operation runtime', () => {
+  it('promotes the authored task identity into one revision-bound admitted principal', () => {
+    const principal = canonicalApplicationTaskServicePrincipal({
+      id: 'media-verifier',
+      roles: ['media-processor'],
+      attributes: { workload: 'media' },
+      authorizationVersion: 'catalog-authored-v1',
+      trustedContext: { tenantId: 'tenant-a' },
+    }, {
+      application: 'chirp',
+      workerId: 'workflow-worker.chirp',
+      catalogRevision: 'catalog-7',
+      authorityRevision: 'authority-11',
+      invocationId: 'run-42',
+      contextSecret: 'a-stable-secret-containing-at-least-thirty-two-characters',
+      now: () => new Date('2026-07-31T12:00:00.000Z'),
+    });
+
+    expect(principal).toMatchObject({
+      id: 'media-verifier',
+      identity: {
+        id: 'identity:chirp:service:media-verifier',
+        kind: 'service',
+        issuer: 'applik8s://chirp',
+        subject: 'media-verifier',
+      },
+      kind: 'service',
+      authenticationMethod: 'applik8s-task-service-principal/catalog-authored-v1',
+      audience: ['workflow-worker.chirp'],
+      roles: ['media-processor'],
+      attributes: { workload: 'media' },
+      catalogRevision: 'catalog-7',
+      authorityRevision: 'authority-11',
+      authorizationVersion: 'authority-11',
+      trustedContext: { tenantId: 'tenant-a' },
+      admittedAt: '2026-07-31T12:00:00.000Z',
+      sessionId: 'run-42',
+      trustedContextDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(JSON.stringify(principal)).not.toContain(
+      'a-stable-secret-containing-at-least-thirty-two-characters',
+    );
+  });
+
   it('does not require a service principal for a task with no declared operations in a shared worker', async () => {
     const runtime = createApplicationTaskOperationRuntime({
       commands: [],
@@ -59,7 +103,19 @@ describe('task operation runtime', () => {
     const operations = runtime.bind(
       { publish: 'Post.create.v1' },
       taskPrincipal('bot-1', 'policy-v1', { automationId: 'a-1' }),
-      { invocationId: 'run-1', idempotencyKey: 'run-1', signal: new AbortController().signal },
+      {
+        invocationId: 'run-1',
+        idempotencyKey: 'run-1',
+        signal: new AbortController().signal,
+        trustedContext: {
+          values: { organizationId: 'org-1' },
+          digest: 'b'.repeat(64),
+          changeScopes: {
+            global: 'c'.repeat(64),
+            'context:organizationId': 'd'.repeat(64),
+          },
+        },
+      },
     );
 
     await expect(operations.publish?.({ id: 'post-1', body: 'hello' })).resolves.toEqual({ identity: 'post-1', accepted: true });
@@ -68,13 +124,117 @@ describe('task operation runtime', () => {
       readonly values: Readonly<Record<string, JsonValue>>;
     });
     expect(principal).toMatchObject({ id: 'bot-1', authorityRevision: 'policy-v1' });
+    expect(Reflect.get(Reflect.get(published ?? {}, 'trustedContext') as object, 'digest')).toBe('b'.repeat(64));
+    expect(applicationCommandTrustedContext(
+      Reflect.get(published ?? {}, 'trustedContext') as {
+        readonly values: Readonly<Record<string, JsonValue>>;
+      },
+    )).toEqual({ organizationId: 'org-1' });
     expect(Reflect.get(Reflect.get(published ?? {}, 'trustedContext') as object, 'changeScopes')).toMatchObject({
-      global: expect.stringMatching(/^[a-f0-9]{64}$/),
-      'context:automationId': expect.stringMatching(/^[a-f0-9]{64}$/),
+      global: 'c'.repeat(64),
+      'context:organizationId': 'd'.repeat(64),
     });
     expect(JSON.stringify(published)).not.toContain('a-stable-secret-containing-at-least-thirty-two-characters');
     await runtime.close();
     expect(drain).toHaveBeenCalledOnce();
+  });
+
+  it('binds an authenticated request principal and its canonical receipt to a direct operation', async () => {
+    let published: Record<string, unknown> | undefined;
+    const principal = taskPrincipal(
+      'alice',
+      'policy-v1',
+      { organizationId: 'org-1' },
+    );
+    const receipt = {
+      apiVersion: 'applik8s.authorizationReceipt/v1alpha1',
+      id: 'receipt-http-1',
+      application: 'chirp',
+      operationId: 'applik8s://models/Post/operations/create',
+      operationVersion: 'v1',
+      catalogRevision: 'catalog-v1',
+      authorityRevision: 'policy-v1',
+      principal,
+      trustedContextDigest: principal.trustedContextDigest,
+      matchedPermissionIds: [],
+      matchedGrantIds: [],
+      inputDigest: 'sha256:input',
+      target: { kind: 'all' as const },
+      scopeEvidence: [],
+      audience: 'server.public-api',
+      transport: 'http' as const,
+      admittedAt: '2026-08-02T12:00:00.000Z',
+    } as const;
+    const authorizeOperation = vi.fn(async () => ({
+      allowed: true as const,
+      receipt,
+    }));
+    const sql = {
+      unsafe: vi.fn(async () => published
+        ? [{ output: { identity: 'post-1' }, error: null }]
+        : []),
+    } as unknown as ApplicationPostgresSql;
+    const runtime = createApplicationTaskOperationRuntime({
+      commands: [{
+        id: 'models.Post.create.v1',
+        bindingId: 'Post-commands',
+        model: 'Post',
+        inputSchema,
+        databaseUrl: 'postgres://unused',
+        sql,
+        key: (input) => Reflect.get(input, 'id'),
+      }],
+      cursorSecret:
+        'a-stable-secret-containing-at-least-thirty-two-characters',
+      eventLogPublisher: {
+        async publish(envelope) {
+          published = envelope as unknown as Record<string, unknown>;
+          return {
+            stream: 'events',
+            sequence: 1,
+            duplicate: false,
+            subject: 'commands',
+            messageId: envelope.id,
+          };
+        },
+        async drain() {},
+      },
+      authorizeOperation,
+    });
+    const operations = runtime.bind(
+      {
+        create: {
+          commandId: 'models.Post.create.v1',
+          operationId: 'applik8s://models/Post/operations/create',
+          boundKeys: [],
+        },
+      },
+      principal,
+      {
+        invocationId: 'http-request-1',
+        idempotencyKey: 'client-key-1',
+        signal: new AbortController().signal,
+      },
+    );
+
+    await expect(
+      operations.create?.({ id: 'post-1', body: 'hello' }),
+    ).resolves.toEqual({ identity: 'post-1' });
+    expect(authorizeOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        principal,
+        operationId: 'applik8s://models/Post/operations/create',
+        target: {
+          kind: 'target',
+          model: 'Post',
+          identity: { key: 'post-1' },
+        },
+      }),
+    );
+    expect(Reflect.get(published ?? {}, 'authorizationReceipt')).toEqual(
+      receipt,
+    );
+    await runtime.close();
   });
 
   it('fails closed for undeclared aliases and invalid command input', async () => {

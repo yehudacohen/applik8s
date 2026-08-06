@@ -18,10 +18,17 @@ export function createHttpApplicationRuntimeTransport(options: HttpApplicationRu
   return {
     async execute<TInput, TOutput>(operation: ApplicationOperationContract, input: TInput): Promise<TOutput> {
       if (operation.transport !== 'runtime') throw new Error(`Application runtime transport cannot execute ${operation.transport} operation ${operation.id}.`);
+      const configuredHeaders = await resolvedHeaders(options.headers);
+      const headers = new Headers(configuredHeaders);
+      if (!headers.has('idempotency-key')) {
+        headers.set('idempotency-key', globalThis.crypto.randomUUID());
+      }
+      headers.set('content-type', 'application/json');
+      headers.set('accept', 'application/json');
       const response = await request(`${baseUrl}/runtime/${encodeURIComponent(operation.id)}`, {
         method: 'POST',
         credentials: options.credentials ?? 'same-origin',
-        headers: { 'content-type': 'application/json', accept: 'application/json', ...await resolvedHeaders(options.headers) },
+        headers,
         body: JSON.stringify({ input }),
       });
       const text = await boundedText(response, response.ok ? maxResponseBytes : Math.min(maxResponseBytes, 16 * 1024));

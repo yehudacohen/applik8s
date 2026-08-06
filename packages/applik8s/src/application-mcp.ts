@@ -1,3 +1,4 @@
+// typecast-file-boundary: MCP authoring values are runtime-validated before they cross the typed operation and graph boundary.
 import {
   getApplicationOperationContract,
   type ApplicationOperationLike,
@@ -350,11 +351,19 @@ function stableName(value: string, field: string): string {
   if (
     !normalized
     || normalized.length > 512
-    || /[\s?#\u0000-\u001f\u007f]/u.test(normalized)
+    || /[\s?#]/u.test(normalized)
+    || containsControlCharacter(normalized)
   ) {
     throw new Error(`${field} must be a stable non-empty identifier.`);
   }
   return normalized;
+}
+
+function containsControlCharacter(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
 }
 
 function normalizedMcpPath(value: string): string {
@@ -432,4 +441,3 @@ function duplicates(values: readonly string[]): readonly string[] {
   }
   return [...duplicates].sort();
 }
-

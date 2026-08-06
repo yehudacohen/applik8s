@@ -1,0 +1,25 @@
+{
+  "authority": {
+    "minimumDecisionsPerSecond": 10000,
+    "maximumP95Ms": 5,
+    "maximumRssGrowthBytes": 134217728
+  },
+  "signals": {
+    "minimumIssuesPerSecond": 5000,
+    "minimumResolutionsPerSecond": 5000,
+    "maximumIssueP95Ms": 5,
+    "maximumResolutionP95Ms": 5,
+    "maximumRssGrowthBytes": 134217728
+  },
+  "frozenBatches": {
+    "minimumEventsPerSecond": 10000,
+    "maximumConvergenceMs": 3000,
+    "maximumRssGrowthBytes": 134217728
+  },
+  "identityStart": {
+    "maximumBrowserJavaScriptGzipBytes": 150000,
+    "maximumServerOutputBytes": 5242880,
+    "maximumApplicationGraphNodes": 250,
+    "maximumResourceGraphBytes": 524288
+  }
+}

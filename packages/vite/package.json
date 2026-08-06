@@ -1,24 +1,32 @@
 {
   "name": "@applik8s/vite",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Framework-neutral Vite build partitioning for Applik8s applications.",
   "license": "Apache-2.0",
   "type": "module",
-  "files": ["dist"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yehudacohen/applik8s.git",
     "directory": "packages/vite"
   },
   "dependencies": {
-    "@applik8s/compiler": "0.6.0",
-    "@applik8s/server": "0.6.0"
+    "@applik8s/compiler": "0.7.0",
+    "@applik8s/server": "0.7.0"
   },
   "peerDependencies": {
     "vite": ">=7 <9"
   },
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   }
 }

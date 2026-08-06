@@ -20,6 +20,7 @@ export interface ApplicationSerializedCallbackContract {
 /** Declarative Kubernetes snapshot/watch authority for a public query. */
 export interface ApplicationKubernetesQueryAuthorityContract {
   readonly kind: 'kubernetes-list-watch';
+  readonly invocation?: 'request' | 'model-native';
   readonly model: ApplicationGraphNodeRef;
   readonly resource: ApplicationResourceRef & {
     readonly plural: string;

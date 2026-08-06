@@ -10,7 +10,10 @@ export async function digestFile(path: string): Promise<string> {
 }
 
 export function safePathSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_.-]/g, '-');
+  const sanitized = value.replace(/[^a-zA-Z0-9_.-]/g, '-');
+  if (sanitized.length <= 120) return sanitized;
+  const digest = createHash('sha256').update(value).digest('hex').slice(0, 24);
+  return `${sanitized.slice(0, 95)}-${digest}`;
 }
 
 export function unique<T>(values: readonly T[]): T[] {

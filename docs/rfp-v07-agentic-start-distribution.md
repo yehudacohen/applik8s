@@ -1,19 +1,19 @@
 # RFP: Applik8s v0.7 — Agentic Start Distribution and Acceptance Applications
 
-**Status:** Proposed; maintainer review required
+**Status:** Accepted direction; implementation and release qualification in progress
 
 **Charter:** [`charter-v07-agentic-platform.md`](charter-v07-agentic-platform.md)
 
 **Depends on:** Completion candidates from the operation-authority, profiles-and-Starts, search, AI
 runtime, identity-and-OAuth, and MCP RFPs
 
-**Requested by:** Vasco, the agentic identity and authorization platform, CollectorBills, and the
+**Requested by:** Chirp, GuestBook, the agentic identity and authorization platform, and the
 migration away from Stimp runtime plumbing
 
 ## Purpose
 
 Package the v0.7 primitives into one coherent, maintainable Agentic Start and prove them through real
-Vasco and agentic-identity product paths. This RFP owns distribution and integration quality. It must not
+Chirp, GuestBook, and agentic-identity product paths. This RFP owns distribution and integration quality. It must not
 repair missing foundational semantics by creating Start-local registries, databases, authorization,
 workflow runtimes, or deployment mechanisms.
 
@@ -37,19 +37,12 @@ src/
   providers.ts
   modules.ts
   features/
-    sources/
-      index.ts
+    notes/
       schema.ts
       model.ts
-      operations.ts
-      workflows.ts
-      search.ts
-      permissions.ts
-      agent.ts
-      routes.ts
-    accounts/
-    administration/
+    account/
   routes/
+test/
 vite.config.ts
 package.json
 ```
@@ -74,7 +67,11 @@ export const application = app("research-platform", {
 });
 ```
 
-The generated project wires maintained modules explicitly rather than hiding them in the constructor:
+The default generated product includes the lightweight operations overview
+without silently installing unrelated product domains. The explicit
+`--example research` application composes the complete maintained suite rather
+than hiding it in the constructor or threading provider dependencies through
+every module call:
 
 ```ts
 // src/modules.ts
@@ -82,29 +79,63 @@ import { conversations } from "@applik8s/conversations";
 import { approvals } from "@applik8s/approvals";
 import { artifacts } from "@applik8s/artifacts";
 import { tanstackAgents } from "@applik8s/ai-tanstack";
+import { operationsControlCenter } from "@applik8s/operations-ui";
 import { application } from "./app";
 
-export const Conversations = conversations(application);
-export const Artifacts = artifacts(application);
-export const Approvals = approvals(application, {
-  conversations: Conversations,
-});
-export const Agents = tanstackAgents(application, {
-  conversations: Conversations,
-  approvals: Approvals,
-  artifacts: Artifacts,
-});
+export const Conversations = application.include(conversations);
+export const Artifacts = application.include(artifacts);
+export const Approvals = application.include(approvals);
+export const Agents = application.include(tanstackAgents);
+export const Operations = application.include(operationsControlCenter);
 ```
 
-These functions add ordinary typed nodes and return handles from the same application graph. They are
-side-effect-free during discovery and do not create a module registry. An application can inspect,
-replace, configure, or remove one import without replacing the application constructor or copying
-package internals.
+The default product instead uses:
+
+```ts
+import { operationsOverview } from "@applik8s/operations-ui";
+
+export const Operations = application.include(operationsOverview);
+export const OperationsSnapshot = Operations.snapshot;
+```
+
+Application-owned reusable features use one callback-native boundary:
+
+```ts
+const notes = module(
+  "notes",
+  { schema: { Note } },
+  application => {
+    const Notes = Note.view(contract, listNotes);
+    const Authenticated = application.role("authenticated");
+    Authenticated.can(Note.create, Notes);
+    return { Note, Notes, Authenticated };
+  },
+);
+
+export const { Note, Notes } = application.include(notes);
+```
+
+The returned plain object is the exact inferred export boundary. The framework
+validates and freezes it internally and executes setup once per application.
+There is no dummy callable, second `install()` callback, mutable module
+registry, or user-authored `Object.freeze(...)`. Explicit `schema` is the
+honest pre-setup escape hatch; returned top-level models and relations are
+inferred where unambiguous.
+
+`include(...)` adds ordinary typed nodes and returns handles from the same
+application graph. An application can
+inspect, replace, configure, or remove one inclusion without replacing the
+application constructor or copying package internals. Business-level
+configuration remains explicit. Authors do not enumerate internal models,
+spread package schemas, pass database clients, repeat processor deployment
+settings, or re-map CRUD handles merely to mount a maintained module.
+
+The complete dependency and module graph remains visible through `plan`,
+`explain`, generated diagnostics, and operations UI. Removing authored wiring
+does not make provider or lifecycle boundaries opaque.
 
 ```ts
 // src/features/sources/model.ts
-import { database } from "../../providers";
-
 const ObservationRequested = event("source.observation-requested.v1", {
   payload: type({
     requestId: "string",
@@ -113,112 +144,77 @@ const ObservationRequested = event("source.observation-requested.v1", {
   }),
 });
 
-export const Source = application
-  .model(sources, { database })
-  .operation(
-    "observe",
-    {
-      input: ObserveSourceInput,
-      output: ObserveSourceOutput,
-      key: ({ sourceId }) => sourceId,
-      events: [ObservationRequested],
-    },
-    async (source, input, context) => {
-      const requestId = context.id("observation");
-      source.patch({ spec: { observationState: "queued" } });
-      context.emit(ObservationRequested, {
+export const Source = model("Source", {
+  id: field.uuid().primary(),
+  url: field.url(),
+  observationState: field.enum("idle", "queued", "running"),
+});
+
+export async function observeSource(
+  input: typeof ObserveSourceInput.infer,
+): Promise<typeof ObserveSourceOutput.infer> {
+  return Source.edit(input.sourceId, async source => {
+      const requestId = Id.create("observation");
+      await source.update({ observationState: "queued" });
+      ObservationRequested.emit({
         requestId,
         sourceId: source.id,
         reason: input.reason,
       });
       return { requestId };
-    },
-  );
+  });
+}
 ```
 
 External observation work remains a separate, visible effect closure:
 
 ```ts
-const ObserveSourceEffects = task("source.observe.effects.v1", {
-  input: type({
-    requestId: "string",
-    sourceId: "string",
-  }),
-  output: type({
-    evidenceCount: "number.integer >= 0",
-  }),
+const ObserveSourceEffects = type({
+  requestId: "string",
+  sourceId: "string",
 });
 
-export const observeSourceEffects = application.task(
-  ObserveSourceEffects,
-  {
-    requires: [Http],
-    operations: {
-      recordEvidence: Evidence.create.onInput(
-        (task) => ({
-          sourceId: task.sourceId,
-        }),
-      ),
-      completeObservation: Source.completeObservation.onInput(
-        (task) => ({
-          sourceId: task.sourceId,
-          requestId: task.requestId,
-        }),
-      ),
-    },
-    queries: {
-      source: Source.read.onInput(
-        (task) => ({
-          sourceId: task.sourceId,
-        }),
-      ),
-    },
-    idempotencyKey: ({ requestId }) => requestId,
-    retries: 4,
-  },
-  async (input, context) => {
-    const http = context.inject(Http);
-    const source = await context.queries.source();
-    const response = await http.get(source.url, { signal: context.signal });
+async function observeSourceEffects(
+  input: typeof ObserveSourceEffects.infer,
+  context: EventContext,
+) {
+    const source = await Source.require(input.sourceId);
+    const response = await Http.get(source.url, { signal: context.signal });
     const evidence = await extractEvidence(response, context.signal);
 
     for (const item of evidence) {
-      await context.operations.recordEvidence({
+      await Evidence.create({
+        sourceId: input.sourceId,
         title: item.title,
         excerpt: item.excerpt,
       });
     }
-    await context.operations.completeObservation({
+    await Source.completeObservation({
+      sourceId: input.sourceId,
+      requestId: input.requestId,
       evidenceCount: evidence.length,
     });
     return { evidenceCount: evidence.length };
-  },
-);
+}
 
-ObservationRequests.process(
-  "execute-source-observation",
+export const executeSourceObservation = ObservationRequests.onEvent(
   {
-    tasks: {
-      observe: observeSourceEffects.onEvent(
-        (event) => ({
-          requestId: event.requestId,
-          sourceId: event.sourceId,
-        }),
-      ),
-    },
+    idempotencyKey: event => event.requestId,
+    retries: 4,
   },
-  async (_requested, context) => {
-    await context.tasks.observe();
-  },
+  async event => observeSourceEffects({
+    requestId: event.requestId,
+    sourceId: event.sourceId,
+  }),
 );
 ```
 
-`application.task(contract, options, closure)` is the authored task-definition golden path. A standalone
-`task(name, schemas)` value is only a reusable typed contract for package composition; it does not
-register or execute work. `context.tasks.observe(...)` is the declared dependency alias for scheduling
-the resulting task handle and lowers to the same internal invocation machinery.
+The event registration owns retry, idempotency, workload identity, and placement. The effect remains an
+ordinary colocated function and the compiler records its complete causal input mappings, hydrated
+capabilities, and least-privilege authority. A workflow that needs an independently durable retry
+boundary passes the same function to `context.step(...)`; there is no second `task()` declaration.
 
-The Start may supply safe processor/task defaults, but it may not fold this effect into the model
+The Start may supply safe processor defaults, but it may not fold this effect into the model
 transaction or hide the authored closures in generated metadata.
 
 ```ts
@@ -279,26 +275,46 @@ Domain files do not import Hatchet, OpenSearch, Ory, Envoy AI Gateway, TypeKro, 
 provider credentials. Agent files do import TanStack AI: it is the application-facing AI library and is
 not hidden behind an Applik8s chat facade.
 
+The exported agent is also the browser connection selector. Vite replaces the application entrypoint
+with a generated browser-safe facade, so the route imports the same typed symbol without loading the
+server closure or repeating its name as transport configuration:
+
+```tsx
+import { createApplicationTanStackConnection } from "@applik8s/ai-tanstack/client";
+import { useChat } from "@tanstack/ai-react";
+import { SourceResearcher } from "../../application";
+
+const connection = createApplicationTanStackConnection({
+  agent: SourceResearcher,
+});
+
+const chat = useChat({
+  connection,
+  threadId: conversation.id,
+});
+```
+
+`forwardedProps: { agent: "source-researcher" }` is not a public application API. The generated facade
+preserves `{ kind: "applicationAgent", name }` as an inert browser reference and the connection adapter
+lowers it to the private gateway selector. Missing, stale, or malformed handles fail closed before a
+request is issued.
+
 The generated project also demonstrates a Kubernetes-native model so the Start does not accidentally
 teach that every application model is relational:
 
 ```ts
-export const ImportJob = application.crd(ImportJobEntity, {
+export const ImportJob = application.crd("ImportJob", {
   apiVersion: "research.example.com/v1alpha1",
+  spec: ImportJobSpec,
+  status: ImportJobStatus,
 });
 
-ImportJob.on.create(
-  "initialize-import-job",
-  { namespace: application.installation.spec.name },
-  async (created, context) => {
-    if (!created.spec.sourceUrl.trim()) {
-      created.status.phase = "Rejected";
-      created.status.reason = "A source URL is required.";
-      return;
-    }
-    created.status.phase = "Pending";
-  },
-);
+ImportJob.on.reconcile(async resource => {
+  const run = await importSource.start({
+    sourceUrl: resource.spec.sourceUrl,
+  });
+  await resource.track("import", run);
+});
 ```
 
 Relational models retain their Drizzle tables; CRD/resource models retain their ArkType definitions;
@@ -320,43 +336,44 @@ The generated example keeps execution placement visible:
 The Start may infer compatible workloads and defaults, but it may not move a closure to a different
 authority merely to simplify generation. A single source project does not mean a single process.
 
-Within managed closures, direct imported-handle calls are not an alternate internal API.
-`context.invoke(handle, input)` is the canonical internal authorized invocation, while declared
-`context.operations`, `context.queries`, and `context.tasks` members are typed aliases that lower to it.
-Ordinary application entrypoints still call handles directly. Transaction-local model mutation and
-outbox emission retain their existing primitives rather than becoming nested operation invocations.
+Managed closures and ordinary application entrypoints call imported handles directly. The compiler
+resolves each static call and complete input expression, then lowers it through the same normalized
+internal invocation and `ExecutionBinding` machinery. Dynamic, reflective, unresolved, or
+authority-widening calls fail compilation. `context.invoke(...)` is runtime machinery, and generated
+operation/query/task aliases are migration compatibility rather than the Start's authored surface.
+Transaction-local model mutation and outbox emission retain their existing primitives rather than
+becoming nested operation invocations.
 
-A task, workflow, processor, or reconciler dependency declaration defines its generated
-`WorkloadIdentity`'s maximum operation, input, target, scope, audience, and transport envelope. Each
+Statically reachable calls plus any explicit fail-closed maximum envelope define the generated
+`WorkloadIdentity`'s maximum operation, input, target, scope, audience, and transport authority. Each
 concrete input, workflow step, event delivery, or reconcile attempt executes under a distinct public
 `ExecutionPrincipal`; task/workflow/processor/reconcile names are diagnostic kinds rather than parallel
 principal APIs. Neither layer grants delegation authority, user impersonation, alternate transport
 access, ambient caller authority, or an undeclared operation.
 
-Execution bindings such as `Source.read.onInput(task => ({ sourceId: task.sourceId }))` and
-`observeSourceEffects.onEvent(event => ({ requestId: event.requestId, sourceId: event.sourceId }))` fix
-callee-input fields from the enclosing execution and remove those fields from the generated alias input.
+The compiler records direct expressions such as `Source.read({ sourceId: input.sourceId })` and
+`observeSourceEffects({ requestId: event.requestId, sourceId: event.sourceId })` as exact causal
+bindings. `onInput`, `onEvent`, `onResource`, and generated aliases remain migration forms only.
 They lower to one internal `ExecutionBinding` IR serialized in the application graph, run receipt, and
 deployment plan. The compiler may infer a binding only when it can prove the complete field projection
 and must display that inference in `plan` and `explain`. Ambiguous bare dependencies fail; broad access
 is visible as `.all()`. Dependency removal or narrowing appears as an authority/deployment diff.
-Here, `onEvent(...)` declares causal binding from the processor's current event; it does not register the
-processor. `process(...)` remains the registration boundary.
 
-The compiler records the exact returned key set, not a widened `Partial<OperationInput>`. Conditional
-values are valid, but conditional keys, optional keys, unresolved spreads, computed keys, divergent
-return branches, and unnormalizable helper results fail compilation. Generated aliases omit exactly the
-bound keys, and untyped callers attempting to submit one fail before bound and unbound values are
-merged.
+The compiler records the exact direct-input key set, not a widened `Partial<OperationInput>`.
+Conditional values are valid, but unresolved conditional keys, optional keys, unresolved spreads,
+computed keys, divergent branches, and unnormalizable helper results fail compilation.
 
 Execution binding is terminal. Static restrictions come first:
 
 ```ts
-Evidence.create
-  .where((evidence) => evidence.classification.ne("secret"))
-  .onInput((task) => ({
-    sourceId: task.sourceId,
-  }));
+const CreatePublicEvidence = Evidence.create
+  .where(evidence => evidence.classification.ne("secret"));
+
+await CreatePublicEvidence({
+  sourceId: input.sourceId,
+  title: item.title,
+  excerpt: item.excerpt,
+});
 ```
 
 The base operation, optional `.on(ref)` or `.all()` target selector, every `.where()` predicate,
@@ -400,7 +417,7 @@ The explanation includes:
 
 - source location, stable operation ID/revision, schemas, and declared errors;
 - authoritative model/provider and selected profile qualification;
-- direct/internal invocation paths and declared dependency aliases;
+- direct/internal invocation paths and statically discovered dependency bindings;
 - transaction, outbox, task, workflow, processor, and external-effect boundaries;
 - generated runtime placement, maximum workload envelope, public `ExecutionPrincipal`, bound
   input/target/scope, binding provenance, operation grants, and inferred Kubernetes RBAC;
@@ -460,6 +477,8 @@ The first distribution supplies:
 - evaluations, datasets, scorers, and result history;
 - memory records with explicit scope and retention;
 - usage, model cost, quotas, and entitlement seams;
+- provider-neutral billing, local non-production billing, checkout/portal
+  operations, signed webhook ingestion, and entitlement projection;
 - identity, OAuth, permissions, grants, sessions, and client administration;
 - MCP server/client integration;
 - named relationship-aware search indexes;
@@ -488,6 +507,8 @@ The initial package boundaries should permit independent adoption and browser/se
 @applik8s/approvals
 @applik8s/artifacts
 @applik8s/evals
+@applik8s/billing
+@applik8s/billing-stripe
 @applik8s/operations
 ```
 
@@ -511,7 +532,7 @@ gate. The initial plan is:
 | Identity/OAuth | deterministic development providers | Ory | Identity/OAuth RFP |
 | Authorization | canonical PostgreSQL authority | canonical authority plus qualified projections | Operation-authority RFP |
 | MCP | in-process/HTTP development path | protected HTTP plus optional Envoy `MCPRoute` | MCP RFP |
-| Application hosting | local Vite/TanStack Start | `ApplicationHost`, TLS, DNS, exposure | Existing hosting plus distribution qualification |
+| Application hosting | local Vite/TanStack Start | Vite-inferred `ApplicationHost` and container; typed TLS, DNS, and exposure overrides | Existing hosting plus distribution qualification |
 | Images | local cluster-compatible build path | qualified registry/adoption policy | Existing container/TypeKro lifecycle; distribution qualification |
 | Operations UI | maintained local routes | same routes with production providers | Distribution RFP |
 
@@ -550,6 +571,12 @@ Every administration route is protected through the ordinary typed operation aut
 cannot assume administrator access from path location, deployment namespace, or possession of an
 operations cookie.
 
+Maintained browser operations expose purpose-built presentation contracts,
+never raw persistence rows. Adding a maintained source requires an explicit
+field allowlist and redaction review; message content, evidence, operation
+targets, grants, credentials, secret references, and unrestricted provider
+diagnostics do not cross the browser boundary by default.
+
 ## Generated-source budget
 
 The generator may copy only application-owned shell and example extension points. Release review must
@@ -565,14 +592,23 @@ record:
 Generated source must remain understandable in one maintainer review session. Large generated runtime,
 registry, provider, auth, workflow, SSE, or deployment implementations fail the Start boundary.
 
-The initial release budget is:
+The v0.7 release budget is:
 
-- at most 12 generated application-owned shell/configuration files before examples;
+- at most 24 generated application-owned files for the default product shell,
+  including tests, copyable installation examples, README, and lineage;
 - at most 600 non-generated nonblank lines for the Start integration shell;
+- ordinary thin TanStack route adapters are counted and reviewed separately
+  from the application-owned shell;
 - no copied provider client, registry, workflow engine, auth service, event gateway, SSE runtime, or
   deployment reconciler;
 - generated route trees, manifests, facades, and container contexts live under ignored build output;
 - one command identifies which lines/files are application-owned versus package/generated.
+
+The full `--example research` acceptance application is an explicit reviewed
+exception: at most 42 emitted overlay files and 2,600 template lines. It exists
+to exercise Stimp parity and distributed product behavior, not as the default
+“start building” experience. The default and research budgets are asserted
+separately.
 
 Exceeding the numeric budget requires a maintainer-approved exception explaining why the code is
 application policy rather than package responsibility.
@@ -581,7 +617,9 @@ application policy rather than package responsibility.
 
 `src/app.ts` creates the application. `src/installation.ts` declares only the application-owned
 installation schema. `src/providers.ts` selects Start profile modules and intentional overrides.
-`src/modules.ts` explicitly imports and composes maintained modules one at a time.
+`src/modules.ts` explicitly imports and includes maintained modules one at a
+time; included modules resolve typed providers from the application graph
+rather than configuration threading.
 `src/features/<feature>/` co-locates ordinary provider-native models, operations, events, workflows,
 agents, indexes, permissions, MCP exposure, and route implementations. `src/routes/` contains only the
 thin upstream-shaped route modules required by TanStack Start and imports those feature definitions.
@@ -599,12 +637,64 @@ The generated project must:
   TypeKro, and Alchemy;
 - support removal of the Agentic Start package without reverse-engineering generated runtime internals.
 
+### Lineage and eventual updates
+
+Every generated project records `.applik8s/start-lineage.json` with the Start
+name/version, generator version, selected example, pinned upstream TanStack CLI,
+and TanStack Start version. Template source lives as independently reviewable
+assets in `@applik8s/start-agentic`; the generator does not embed an opaque
+multi-thousand-line source map.
+
+The future `applik8s start update --check` command is read-only. It will load
+that lineage, render the corresponding old and current templates, classify
+each path as unchanged, application-modified, template-added, template-removed,
+or conflicting, and print a deterministic drift report. It must never overwrite
+application-owned changes. An apply/update workflow is intentionally outside
+v0.7 until ownership and three-way-merge policy receive separate review.
+
+### Signal-event delivery in Start applications
+
+Start does not introduce a notification or approval transport. A static
+`workflow.signal(...)` contract is an ordinary typed issuance-event stream, so server routes and browser
+code consume it through the same authenticated, resumable event/SSE boundary used by other application
+events:
+
+```ts
+const subscription = ReviewDecision.subscribe(
+  { organizationId },
+  { cursor, signal: request.signal },
+);
+
+for await (const event of subscription) {
+  yield event;
+}
+```
+
+The schema-aware Start codec preserves the event envelope and hydrates only `event.signal` into the
+contract's declared action methods. It does not serialize the workflow run, provider topology, grant
+record, authorized-subject selector, authorization receipt, or execution principal. Calling an action
+uses the authenticated request principal and current authorization state; actor identity is never
+accepted from the client payload.
+
+Subscription admission authorizes the typed subscription transport and the exact signal instance's
+canonical `issuance.read` operation before delivery. The gateway filters inaccessible issuances before
+serialization. `grantAccessTo` includes bounded visibility for that exact issuance plus its declared
+actions, but never general stream enumeration or history; `authorize` requires the subject to already
+possess compatible issuance-read and action authority.
+
+Reconnect and replay use the ordinary event cursor and reproduce the same signal identity rather than
+issuing another capability. Observing or handling a signal event grants no authority to resolve it, and
+the event stream is never the source of truth for the decision outcome. The canonical `SignalStore`
+state—an internal subsystem of the profile's primary transactional database—determines pending,
+resolved, or expired status across browser reconnect and server restart.
+
 ## Default profiles
 
 ### Starter
 
 - credential-free deterministic identity and AI, visibly non-production;
-- PostgreSQL for transactional and compatible analytical/search roles;
+- PostgreSQL for transactional and compatible analytical/search roles, including the non-selectable
+  framework control schema and `SignalStore`;
 - JetStream, local S3-compatible object storage, and Hatchet;
 - one-node capacity appropriate for OrbStack;
 - no claim of production durability or identity qualification.
@@ -613,9 +703,17 @@ Starter is the first-run profile, not a mock-only path. Canonical commands, outb
 approvals, object intents, search projection, browser delivery, permissions, audit, and cleanup use their
 real runtime contracts. Only external credentials and production infrastructure are substituted.
 
+The maintained Starter owns a single-node persistent S3-compatible service as
+an internal deployment-provider detail. Alchemy generates its credentials,
+TypeKro owns its Deployment, PVC, Service, and client NetworkPolicy, and
+application/runtime code receives the ordinary provider-neutral S3 binding.
+Starter must never assume an ambient Rook operator, bucket StorageClass, or
+preinstalled object store. Dedicated remains the qualified Rook/Ceph path.
+
 ### Dedicated
 
-- CNPG or another qualified transactional database;
+- CNPG or another qualified transactional database carrying the same framework control schema and
+  non-selectable `SignalStore`;
 - ClickHouse or another qualified analytical database;
 - JetStream and qualified Rook/Ceph-backed object storage;
 - Hatchet;
@@ -659,36 +757,30 @@ release-candidate showcase must still prove the modules compose.
 Every external provider reports verified endpoint/capability readiness separately from ownership.
 Deletion removes only application-owned projections, credentials, routes, and bindings.
 
-## Vasco acceptance slice
+## Maintained application acceptance
 
-The slice must prove:
+The distribution is proven by two public applications:
 
-1. A customer or agent registers a source through an authorized typed operation.
-2. A Hatchet workflow retrieves content through a declared provider capability.
-3. Raw evidence is stored through object storage with provenance.
-4. An agent run proposes a normalized observation and extraction configuration.
-5. A deterministic validator accepts, rejects, or requests approval.
-6. Approval waits durably and resumes through a typed operation.
-7. A short-lived grant is reserved and consumed at the protected boundary.
-8. Canonical state commits in PostgreSQL and emits a durable transition event.
-9. A named index follows source, observation, and entity relationships.
-10. TanStack Start server-renders and live-requeries authorized evidence.
-11. An MCP client searches evidence and requests a permitted observation.
-12. Principal, agent definition, run identity, model attempt, workflow, grant, artifact, and outcome are
-    visible in one causal timeline.
-13. Exact tool-call replay within one physical attempt reuses its operation; another physical attempt
-    cannot collide merely because the provider reused a tool-call ID.
-14. Duplicate, replay, related change, history loss, rebuild, and index cutover are tested.
-15. Concurrent source-observation task/processor executions share a stable workload identity but receive
-    distinct execution principals; each can read or complete only its own bound source.
+1. **GuestBook** is the minimal readability gate. It proves one authoritative model/resource
+   declaration, typed create, `on.create`/`on.update`, a persistent view, SSE invalidation, and browser
+   requery without `operation()`, `task()`, provider lookup, repeated handler-name strings, manual
+   outbox writes, or internal imports.
+2. **Chirp** is the composition and scale gate. It proves relational and analytical model bindings,
+   direct model behavior, event and batch processing, durable workflows and steps, object storage,
+   search, online and analytical projections, authorization, signals, agents, MCP, SSR/live queries,
+   replay, rebuild, and one causal operations timeline.
 
-No acceptance step may manually insert application, outbox, index, grant, event, or audit records.
-No acceptance step may replace an executable application closure with fixture-only metadata or bypass
-the transaction/outbox/task boundary to make the demonstration shorter.
+Both applications must build from packed public packages and the same maintained generator available to
+a clean consumer. No acceptance step may manually insert application, outbox, index, grant, event, or
+audit records, replace an executable closure with fixture-only metadata, or bypass a transaction,
+checkpoint, durable-step, or outbox boundary merely to shorten the demonstration.
 
-The Vasco slice must be created from packed public packages and the same Start generator available to a
-clean consumer. Product-specific code may define sources, evidence, observations, validators, policies,
-agents, and UI, but it may not import internal packages or replace a Start runtime module.
+The repository must expose one complete local v0.7 gate and one OrbStack
+prerelease gate. The prerelease gate runs the local cohort first, exercises the
+graph lifecycle and both maintained applications through their ordinary public
+deployment paths, records browser evidence, and finally invokes the
+machine-readable release scorecard. It must fail while any non-deferred item is
+partial, pending, or blocked.
 
 ## Agentic identity acceptance slice
 
@@ -717,8 +809,8 @@ The slice must prove:
     principal to invoke an operation on another execution's target.
 
 The identity slice is a separate generated application using the same Start and modules. This proves
-that authority, Ory, MCP, workflows, search, and operations UI are reusable modules rather than
-Vasco-specific code.
+that authority, Ory, MCP, workflows, search, and operations UI are reusable rather than
+application-specific.
 
 ## CollectorBills and future-product conformance
 
@@ -789,6 +881,27 @@ must maintain:
 3. automated parity at the behavioral/product-contract level rather than file-for-file source parity;
 4. an explicit ledger of improved, deferred, and rejected Stimp behavior with rationale and replacement
    guidance.
+
+The onboarding experience is framework-maintained rather than copied into each
+generated application. `@applik8s/start-agentic/react` owns the browser-safe
+first-run component; the generated product route supplies only its application
+identity and ordinary operations/documentation links. The
+surface must lead with the usable product, identify Starter as credential-free
+and non-production **as the generated first-run default**, expose `bun run
+plan` as the side-effect-free deployment preview, and progressively disclose
+dedicated or external provider configuration. It must not misrepresent that
+default as the authoritative runtime-selected profile. Authoritative profile
+visibility belongs to the authenticated operations/status surface. The
+component must not receive provider credentials, server-only handles, TypeKro
+objects, or deployment runtime state.
+
+Generated projects expose `bun run dev` as the upstream side-effect-free local
+web loop and `bun run dev:cluster` as the explicit one-command cluster loop.
+`dev:cluster` runs the ordinary production build and `applik8s deploy` path to
+readiness before starting Vite; it does not add deployment side effects to the
+Vite plugin, infer an ambient Kubernetes context, or silently destroy the
+installation when the web process exits. Infrastructure changes are applied by
+restarting that explicit command or invoking `bun run deploy`.
 
 No Stimp source is copied merely to preserve an internal API. Feature-first organization, public
 Applik8s primitives, maintained packages, and the TypeKro/Alchemy lifecycle remain normative even where
@@ -863,7 +976,7 @@ Release evidence records:
 4. Build the Start package and real starter profile from packed dependencies.
 5. Package conversation, run, approval, artifact, usage, evaluation, and operations modules.
 6. Package dedicated/external profiles and recovery runbooks.
-7. Implement the Vasco slice without internal imports or manual state writes.
+7. Migrate Chirp and GuestBook without internal imports or manual state writes.
 8. Implement the independent agentic identity slice and adversarial matrix.
 9. Run integrated lifecycle, replacement, performance, supply-chain, and browser-boundary gates.
 10. Conduct maintainer source/DX review and prepare the charter scorecard.
@@ -888,21 +1001,23 @@ Release evidence records:
 - Generated application code is feature-first; no empty global `models/`, `operations/`, `events/`,
   `workflows/`, `agents/`, `indexes/`, or `permissions/` taxonomy is created.
 - TanStack route files remain thin upstream-compatible adapters over feature-owned route behavior.
-- Managed closures use the normalized subject/free/lifecycle/route/reconciler grammar; declared
-  operation aliases lower to `context.invoke()` rather than creating another invocation system.
-- `application.task(...)` is the task-definition golden path; reusable task contracts do not register a
-  second task, and `context.tasks.*` aliases schedule the declared task handles.
-- Task, workflow, processor, and reconciler dependency declarations generate only exact
+- Start signal SSE authorizes the typed subscription transport and exact `issuance.read` before
+  serialization; `grantAccessTo` reveals only its exact issuance, replay preserves identity, and action
+  payloads cannot claim the authenticated actor.
+- Managed closures use the normalized subject/free/lifecycle/route/reconciler grammar and invoke
+  statically reachable handles directly through one compiler-lowered invocation system.
+- Registered closures and workflow steps are the effect-execution path; no `application.task(...)`
+  wrapper or reusable task registry is generated.
+- Statically reachable workflow-step, processor, route, agent, and reconciler calls generate only exact
   operation/input/target/scope workload grants, serialize them in graph/deployment plans, and never
   confer delegation, impersonation, alternate-transport, or ambient caller authority.
-- Every task attempt, workflow run/step, processor delivery, and reconcile attempt receives a distinct
+- Every workflow run/step, processor delivery, route/agent execution, and reconcile attempt receives a distinct
   execution principal; the same workload credential cannot use one execution to access another
   execution's target.
-- `onInput`/`onEvent`/`onResource` fix typed operation-input fields from the enclosing execution, remove
-  those fields from generated aliases, and lower to one serialized `ExecutionBinding`; callers cannot
-  override bound fields.
-- Generated examples infer every binding callback's task/event/resource type without annotations and
-  infer each dependency alias as accepting only the remaining unbound fields.
+- Direct input expressions preserve exact step/event/resource provenance and lower to one serialized
+  `ExecutionBinding`; compatibility `onInput`/`onEvent`/`onResource` aliases remain equivalent during
+  migration and callers cannot override previously bound fields.
+- Generated examples infer every direct call's step/event/resource provenance without annotations.
 - Generated and type fixtures prove exact-key capture independently of TypeScript widening; fixed keys
   with execution-varying values pass, while conditional/optional keys, unresolved spreads, computed
   keys, divergent branches, and unnormalizable helpers fail.
@@ -914,6 +1029,10 @@ Release evidence records:
   ambiguous dependency fails compilation.
 - The documented create/dev/test/plan/deploy/status/destroy loop passes from packed packages, and
   deployment/destruction use the TypeKro/Alchemy lifecycle.
+- Destroy does not report completion merely because Alchemy submitted
+  deletion. Every application-owned Namespace must reach an authoritative
+  Kubernetes `404`; terminating namespaces, protected PVCs, and finalizers
+  remain a failed/pending destroy receipt.
 - `explain` human and JSON output derives from the real graph/plan and distinguishes maximum workload
   authority from effective per-execution authority while accounting for operation, provider, resource,
   and lifecycle consequences.
@@ -942,7 +1061,7 @@ Release evidence records:
   idempotent provider/local completion.
 - MCP acceptance proves catalog-pinned sessions and versioned incompatible stateless revisions.
 - AI acceptance proves physical-attempt-scoped tool-call idempotency and conflict rejection.
-- Vasco and the identity application use only public packed packages and share maintained modules.
+- Chirp, GuestBook, and the identity application use only public packed packages and share maintained modules.
 - At least one binary artifact and scheduled/batch conformance path passes.
 - Pod replacement and retry do not lose committed work or duplicate protected/billable effects silently.
 - Complete deletion uses the TypeKro/Alchemy lifecycle and leaves only explicitly retained, documented
@@ -965,7 +1084,7 @@ Release evidence records:
 ## Definition of done
 
 This RFP is complete when a clean consumer can generate, understand, run, deploy, operate, recover, and
-delete the Agentic Start; Vasco and agentic identity pass without privileged/manual shortcuts; and the
+delete the Agentic Start; Chirp, GuestBook, and agentic identity pass without privileged/manual shortcuts; and the
 maintainer judges the authored application source succinct relative to the distributed behavior it
 expresses. The capability matrix must contain no unowned or assertion-only capability, the generated shell
 must remain within budget, every pinned Stimp baseline behavior must have an evidenced disposition, and

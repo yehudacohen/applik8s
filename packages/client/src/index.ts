@@ -1,7 +1,7 @@
 export type { HttpApplicationCommandTransportOptions } from './command-http-transport.js';
 export { createHttpApplicationCommandTransport } from './command-http-transport.js';
 export type * from './command-store.js';
-export { ApplicationCommandClient, ApplicationCommandFailedError, ApplicationCommandRejectedError, waitForApplicationCommand } from './command-store.js';
+export { ApplicationCommandClient, ApplicationCommandFailedError, ApplicationCommandRejectedError, createApplicationClientId, waitForApplicationCommand } from './command-store.js';
 export type { HttpApplicationQueryTransportOptions } from './http-transport.js';
 export { createHttpApplicationQueryTransport } from './http-transport.js';
 export type * from './hydration.js';
@@ -30,6 +30,8 @@ export {
   observeApplicationOperationAuthority,
 } from './operations.js';
 export type * from './protocol.js';
+export type * from './signals.js';
+export { createApplicationSignalOperation } from './signals.js';
 export type { HttpApplicationRuntimeTransportOptions } from './runtime-http-transport.js';
 export { createHttpApplicationRuntimeTransport } from './runtime-http-transport.js';
 export type * from './store.js';

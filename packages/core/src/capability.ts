@@ -1,4 +1,4 @@
-import type { Applik8sError, CapabilityFailureMode, CapabilityKind, Condition, ExternalEffectPhase, JsonArray, JsonPrimitive, KubernetesName, ReconcileId, Result, Sha256Digest, Timestamp } from './common.js';
+import type { Applik8sError, CapabilityFailureMode, CapabilityKind, Condition, ExternalEffectPhase, JsonArray, JsonPrimitive, KubernetesName, NamespaceName, ReconcileId, Result, Sha256Digest, Timestamp } from './common.js';
 import type { DeleteResult, PermissionRule } from './resource.js';
 
 export interface CapabilityClientSet { readonly [capabilityName: string]: CapabilityClient; }
@@ -12,7 +12,7 @@ export type CapabilityResponsePayload<TResponse = CapabilityPayload> =
   | { readonly ok: true; readonly value: TResponse; readonly observedAt?: Timestamp }
   | { readonly ok: false; readonly error: Applik8sError };
 export interface CapabilityHost { request<TResponse = CapabilityPayload, TBody = CapabilityPayload>(request: CapabilityRequestPayload<TBody>): Promise<CapabilityResponsePayload<TResponse>>; }
-export interface CapabilityDescriptor { readonly name: string; readonly kind: CapabilityKind; readonly auth?: CapabilityAuth; readonly endpoint?: string; readonly permissions?: readonly PermissionRule[]; readonly kubernetesConnection?: KubernetesConnectionCapability; readonly policy?: CapabilityPolicy; readonly execution?: CapabilityExecutionPolicy; readonly sensitive?: boolean; }
+export interface CapabilityDescriptor { readonly name: string; readonly kind: CapabilityKind; readonly auth?: CapabilityAuth; readonly endpoint?: string; readonly permissions?: readonly PermissionRule[]; readonly kubernetesConnection?: KubernetesConnectionCapability; readonly workflowGateway?: WorkflowGatewayCapability; readonly policy?: CapabilityPolicy; readonly execution?: CapabilityExecutionPolicy; readonly sensitive?: boolean; }
 export interface KubernetesConnectionCapabilityDescriptor extends CapabilityDescriptor { readonly kind: 'kubernetes'; readonly kubernetesConnection: KubernetesConnectionCapability; readonly execution: CapabilityExecutionPolicy & { readonly protocol: 'applik8s.kubernetes-connection/v1alpha1' }; }
 export type CapabilityAuth =
   | { readonly type: 'secretRef'; readonly secretRef: SecretRef }
@@ -21,6 +21,17 @@ export type CapabilityAuth =
 export interface SecretRef { readonly name: KubernetesName; readonly namespace?: import('./common.js').NamespaceName; readonly key: string; }
 /** Portable declaration for one named Kubernetes execution capability. */
 export interface KubernetesConnectionCapability { readonly endpointPolicy: string; }
+/** Framework-owned metadata for the private operator-to-workflow bridge. */
+export interface WorkflowGatewayCapability {
+  readonly protocol: 'applik8s.workflow-gateway/v1alpha1';
+  readonly worker: KubernetesName;
+  readonly contracts: readonly string[];
+  readonly caller: {
+    readonly operator: KubernetesName;
+    readonly namespace: NamespaceName;
+    readonly serviceAccount: KubernetesName;
+  };
+}
 /** Environment-specific binding. This is installation data and never enters the handler ABI. */
 export interface KubernetesConnectionBinding { readonly kubeconfigSecretRef: SecretRef; readonly context: string; readonly endpointPolicy: KubernetesEndpointPolicy; }
 export interface KubernetesEndpointPolicy { readonly name: string; readonly version: string; readonly scheme: 'https'; readonly hosts: readonly string[]; readonly ports: readonly number[]; readonly allowedCidrs?: readonly string[]; readonly tlsServerNames?: readonly string[]; readonly redirects: 'deny'; }

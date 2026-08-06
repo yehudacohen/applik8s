@@ -58,7 +58,7 @@ export async function emitApplicationDeploymentGraph(
     request.bundlePath,
     request.projectRoot,
   );
-  const materializedComposition = await applicationMaterializedComposition(
+  const materialized = await applicationMaterializedComposition(
     request.bundlePath,
     request.graph.metadata.name,
   );
@@ -69,7 +69,9 @@ export async function emitApplicationDeploymentGraph(
   );
   const installationSpec = jsonObject(request.installationSpec, "installation spec");
   const profileTransition = request.profileTransition
-    ? jsonObject(request.profileTransition, "profile transition")
+    ? deploymentRelevantProfileTransition(
+        jsonObject(request.profileTransition, "profile transition"),
+      )
     : undefined;
   const connectionDigest = digestApplicationDeploymentValue({
     provider: "kubernetes",
@@ -94,7 +96,11 @@ export async function emitApplicationDeploymentGraph(
     installationSpec,
     ...(profileTransition ? { profileTransition } : {}),
     artifacts,
-    materializedComposition,
+    materializedComposition: {
+      resources: materialized.resources,
+      status: materialized.status,
+    },
+    clusterApiPrerequisites: materialized.clusterApiPrerequisites,
     generatedSecrets,
   });
   const path = join(dirname(request.bundlePath), "application-deployment-graph.json");
@@ -105,6 +111,20 @@ export async function emitApplicationDeploymentGraph(
     graph: result.graph,
     artifactCount: artifacts.length,
   };
+}
+
+/**
+ * Fresh and unchanged profile observations have no deployment effect. Keeping
+ * their different mode labels in the portable graph makes identical desired
+ * state hash differently after the first successful reconcile. Actual
+ * transition entries and their acknowledgements remain part of plan identity.
+ */
+function deploymentRelevantProfileTransition(
+  transition: DeploymentJsonObject,
+): DeploymentJsonObject | undefined {
+  return Array.isArray(transition.entries) && transition.entries.length === 0
+    ? undefined
+    : transition;
 }
 
 async function applicationGeneratedSecretRequirements(
@@ -199,6 +219,7 @@ async function applicationMaterializedComposition(
 ): Promise<{
   readonly resources: readonly DeploymentJsonObject[];
   readonly status: DeploymentJsonObject;
+  readonly clusterApiPrerequisites: readonly DeploymentJsonObject[];
 }> {
   const resourcesPath = join(dirname(bundlePath), "resources.json");
   const resourcesValue: unknown = JSON.parse(await readFile(resourcesPath, "utf8"));
@@ -244,7 +265,59 @@ async function applicationMaterializedComposition(
       schema.status,
       `ResourceGraphDefinition/${applicationName} status`,
     ),
+    clusterApiPrerequisites: applicationClusterApiPrerequisites(
+      resourcesValue.map((value) =>
+        objectValue(value, `${resourcesPath} resource`),
+      ),
+    ),
   };
+}
+
+function applicationClusterApiPrerequisites(
+  resources: readonly DeploymentJsonObject[],
+): readonly DeploymentJsonObject[] {
+  const byName = new Map<
+    string,
+    { readonly manifest: DeploymentJsonObject; readonly digest: string }
+  >();
+  for (const resource of resources) {
+    if (
+      resource.apiVersion !== "apiextensions.k8s.io/v1" ||
+      resource.kind !== "CustomResourceDefinition"
+    ) {
+      continue;
+    }
+    const metadata = objectValue(
+      resource.metadata,
+      "CustomResourceDefinition metadata",
+    );
+    const name = stringValue(
+      metadata.name,
+      "CustomResourceDefinition metadata.name",
+    );
+    // CRDs are cluster-scoped. TypeKro may serialize the same authored CRD
+    // both as a top-level prerequisite and as a graph-template projection
+    // carrying a meaningless schema-derived namespace. Normalize that field
+    // away before identity/differential comparison.
+    const normalizedMetadata = Object.fromEntries(
+      Object.entries(metadata).filter(([key]) => key !== "namespace"),
+    );
+    const manifest: DeploymentJsonObject = {
+      ...resource,
+      metadata: normalizedMetadata,
+    };
+    const digest = digestApplicationDeploymentValue(manifest);
+    const existing = byName.get(name);
+    if (existing && existing.digest !== digest) {
+      throw new Error(
+        `Compiler artifacts contain divergent CustomResourceDefinition/${name} prerequisites.`,
+      );
+    }
+    byName.set(name, existing ?? { manifest, digest });
+  }
+  return [...byName.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, value]) => value.manifest);
 }
 
 function kubernetesName(value: string): string {
@@ -316,6 +389,7 @@ async function applicationArtifactRequirements(
     ["reactive", "reactive"],
     ["mcp", "mcp"],
     ["agents", "agent"],
+    ["http", "http"],
   ] as const) {
     for (const entryValue of arrayValue(spec[collection])) {
       const entry = objectValue(entryValue, `${collection} bundle entry`);

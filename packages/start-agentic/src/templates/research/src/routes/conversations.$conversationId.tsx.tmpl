@@ -1,0 +1,15 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { ConversationDetail } from '../application';
+import { ResearchConversation } from '../features/research/view';
+
+export const Route = createFileRoute('/conversations/$conversationId')({
+  loader: ({ params }) => ConversationDetail({
+    conversationId: params.conversationId,
+  }).preload(),
+  component: ConversationRoute,
+});
+
+function ConversationRoute() {
+  const { conversationId } = Route.useParams();
+  return <ResearchConversation conversationId={conversationId} />;
+}

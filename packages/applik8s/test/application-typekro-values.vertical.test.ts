@@ -1,29 +1,61 @@
-// typecast-file-boundary: Tests inspect TypeKro proxy internals and serialized CEL fixtures that intentionally cross static type boundaries.
-
-import { type } from 'arktype';
 import { Cel } from 'typekro';
-import { describe, expect, test } from 'vitest';
-import { app } from '../src/application.js';
-import { applicationTypeKroGreaterThan } from '../src/application-typekro-values.js';
+import { describe, expect, it } from 'vitest';
+import { applicationTypeKroJsonStringArray } from '../src/application-typekro-values.js';
 
-describe('application TypeKro value composition', () => {
-  test('parenthesizes nested selection expressions before comparison', () => {
-    const selected = Cel.expr<number>('schema.spec.profile == "starter" ? 1 : 3');
-    const compared = applicationTypeKroGreaterThan(selected as number, 1);
-    expect(Reflect.get(compared as unknown as object, 'expression')).toBe('(schema.spec.profile == "starter" ? 1 : 3) > 1');
+describe('Application TypeKro value lowering', () => {
+  it('keeps graph-aware string arrays in one CEL expression', () => {
+    const namespace = Cel.expr<string>(
+      'schema.spec.profile == "starter" ? "identity-start-system" : "identity-system"',
+    );
+
+    const encoded = applicationTypeKroJsonStringArray([
+      Cel.expr<string>(
+        '"nats://applik8s-events." + string('
+          + Reflect.get(namespace, 'expression')
+          + ') + ".svc:4222"',
+      ),
+    ]);
+
+    const expression = celExpression(encoded);
+    expect(expression).toBe(
+      '"[\\\"" + string("nats://applik8s-events." + string(schema.spec.profile == "starter" ? "identity-start-system" : "identity-system") + ".svc:4222") + "\\\"]"',
+    );
+    expect(expression).not.toContain('${');
   });
 
-  test('keeps concrete comparisons concrete', () => {
-    expect(applicationTypeKroGreaterThan(3, 1)).toBe(true);
-    expect(applicationTypeKroGreaterThan(1, 1)).toBe(false);
+  it('rehydrates complete portable ApplicationGraph markers without treating mixed strings as expressions', () => {
+    const encoded = applicationTypeKroJsonStringArray([
+      '${schema.spec.events.server}',
+    ]);
+    expect(celExpression(encoded)).toBe(
+      '"[\\\"" + string(schema.spec.events.server) + "\\\"]"',
+    );
+
+    expect(
+      applicationTypeKroJsonStringArray([
+        'prefix-${schema.spec.events.server}',
+      ]),
+    ).toBe('["prefix-${schema.spec.events.server}"]');
   });
 
-  test('offers typed installation string interpolation without exposing CEL', () => {
-    const application = app('bounded-name', {
-      spec: type({ name: 'string' }),
-      status: type({ ready: 'boolean' }),
-    });
-    const bucket = application.interpolate`${application.installation.spec.name}-media`;
-    expect(Reflect.get(bucket as unknown as object, 'expression')).toBe('"" + string(schema.spec.name) + "-media"');
+  it('returns ordinary JSON when every endpoint is concrete', () => {
+    expect(
+      applicationTypeKroJsonStringArray([
+        'nats://events-a.messaging.svc:4222',
+        'nats://events-b.messaging.svc:4222',
+      ]),
+    ).toBe(
+      '["nats://events-a.messaging.svc:4222","nats://events-b.messaging.svc:4222"]',
+    );
   });
 });
+
+function celExpression(value: unknown): unknown {
+  if (
+    value === null
+    || (typeof value !== 'object' && typeof value !== 'function')
+  ) {
+    throw new Error('Expected a graph-aware CEL value.');
+  }
+  return Reflect.get(value, 'expression');
+}

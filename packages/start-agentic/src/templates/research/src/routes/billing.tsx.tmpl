@@ -1,0 +1,8 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { BillingDashboard } from '../application';
+import { BillingDashboardView } from '../features/billing-view';
+
+export const Route = createFileRoute('/billing')({
+  loader: () => BillingDashboard({}).preload(),
+  component: BillingDashboardView,
+});

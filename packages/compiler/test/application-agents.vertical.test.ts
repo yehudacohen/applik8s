@@ -2,6 +2,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { AI } from '@applik8s/ai';
 import { app, applicationGraphFor, IdentityProvider } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
@@ -9,9 +10,17 @@ import { pgTable, text } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { emitGeneratedApplicationAgents } from '../src/application-agents/index.js';
 import {
+  applicationFacadeManifest,
+  generatedApplicationFacadeSource,
+} from '../src/application-facade/index.js';
+import {
   compileApplicationOperationCatalog,
   compileApplicationWorkloadAuthority,
 } from '../src/application-operations/index.js';
+import {
+  discoverApplicationGraph,
+  discoverApplicationGraphWithExports,
+} from '../src/pipeline/index.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -23,12 +32,182 @@ afterEach(async () => {
 });
 
 describe('generated application AI agents', () => {
+  it('compiles an ordinary exported function into one durable local agent tool', async () => {
+    const discovered = await discoverApplicationGraphWithExports(
+      new URL(
+        './fixtures/v07-function-agent-app.ts',
+        import.meta.url,
+      ).pathname,
+      'functionAgentProof',
+    );
+    expect(
+      discovered.ok,
+      discovered.ok ? undefined : discovered.error.message,
+    ).toBe(true);
+    if (!discovered.ok) return;
+    expect(discovered.value.agentExports).toEqual([
+      { name: 'Publisher', agentName: 'publisher' },
+    ]);
+    const manifest = applicationFacadeManifest(discovered.value.graph, {
+      agentExports: discovered.value.agentExports,
+    });
+    expect(manifest.agents).toEqual([
+      { name: 'publisher', exportNames: ['Publisher'] },
+    ]);
+    const browser = generatedApplicationFacadeSource(manifest, 'browser');
+    expect(browser).toContain(
+      "export const Publisher = Object.freeze({ kind: 'applicationAgent', name: \"publisher\" });",
+    );
+    expect(browser).not.toContain('@applik8s/ai');
+    expect(browser).not.toContain('@tanstack/ai');
+    const catalog = compileApplicationOperationCatalog(discovered.value.graph);
+    const authority = compileApplicationWorkloadAuthority(
+      discovered.value.graph,
+      catalog,
+    );
+    const operation = catalog.operations.find(
+      (candidate) => candidate.placement?.runtime === 'agent-worker',
+    );
+    expect(operation).toMatchObject({
+      id: expect.stringMatching(
+        /^applik8s:\/\/functions\/.*v07-function-agent-app\.ts%23publishPost\/operations\/invoke$/,
+      ),
+      kind: 'model.operation',
+      placement: {
+        nodeId: 'aiAgent.publisher',
+        runtime: 'agent-worker',
+      },
+      effects: ['transactional-model-write'],
+      emittedEvents: ['event.posts.published.v1'],
+    });
+    const outDir = await mkdtemp(
+      join(tmpdir(), 'applik8s-function-agent-'),
+    );
+    temporaryDirectories.push(outDir);
+    const artifacts = await emitGeneratedApplicationAgents({
+      graph: discovered.value.graph,
+      operationCatalog: catalog,
+      workloadAuthority: authority,
+      outDir,
+      entrypoint: new URL(
+        './fixtures/v07-function-agent-app.ts',
+        import.meta.url,
+      ).pathname,
+    });
+    expect(artifacts).toHaveLength(1);
+    const artifact = artifacts[0];
+    if (!artifact) throw new Error('Expected generated function agent.');
+    const generated = await readFile(
+      join(dirname(artifact.sourcePath), 'agent.generated.ts'),
+      'utf8',
+    );
+    const toolModule = await readFile(
+      join(dirname(artifact.sourcePath), 'tool-0.generated.ts'),
+      'utf8',
+    );
+    expect(generated).toContain(
+      'executeFunctionNativePostgresModelEdit',
+    );
+    expect(generated).toContain(
+      'idempotencyKey: context.idempotencyKey',
+    );
+    expect(generated).toContain(
+      'values: applicationRequestContextValues(',
+    );
+    expect(generated).toContain(
+      'authorizationReceipt: context.authorizationReceipt',
+    );
+    expect(generated).toContain(
+      'operationAuthority.revalidate(',
+    );
+    expect(generated).toContain('const localAgentTools = new Map()');
+    expect(generated).toContain(
+      '"Post": localToolModelHandle("Post")',
+    );
+    expect(generated).not.toContain('"Post": { "edit"');
+    expect(generated).toContain(
+      'const placementRoutes = new Map([])',
+    );
+    expect(generated.indexOf('const local = localAgentTools.get(operation.id)'))
+      .toBeLessThan(
+        generated.indexOf(
+          "if (!route) throw new Error('AI operation has no compiled placement route.')",
+        ),
+      );
+    expect(toolModule).toContain('export function createTool(__applik8sBindings = {})');
+    expect(toolModule).toContain('const Post = __applik8sBindings["Post"]');
+    expect(toolModule).toContain('const PostPublished = __applik8sBindings["PostPublished"]');
+    expect(toolModule).toContain('Post.edit');
+    expect(toolModule).toContain('PostPublished.emit');
+    // static-import-exception: this assertion loads the compiler-emitted module at its per-test temporary path.
+    const loaded = await import(
+      `${pathToFileURL(
+        join(dirname(artifact.sourcePath), 'tool-0.generated.ts'),
+      ).href}?test=${Date.now()}`
+    ) as {
+      readonly createTool: (bindings: {
+        readonly Post: {
+          edit(
+            identity: string,
+            handler: (post: {
+              readonly id: string;
+              update(value: unknown): Promise<void>;
+            }) => Promise<unknown>,
+          ): Promise<unknown>;
+        };
+        readonly PostPublished: { emit(value: unknown): void };
+      }) => (input: {
+        readonly postId: string;
+        readonly body: string;
+      }) => Promise<unknown>;
+    };
+    const updated: unknown[] = [];
+    const emitted: unknown[] = [];
+    const tool = loaded.createTool({
+      Post: {
+        async edit(identity, handler) {
+          return handler({
+            id: identity,
+            async update(value) {
+              updated.push(value);
+            },
+          });
+        },
+      },
+      PostPublished: {
+        emit(value) {
+          emitted.push(value);
+        },
+      },
+    });
+    await expect(
+      tool({ postId: 'post-1', body: 'Published by agent' }),
+    ).resolves.toEqual({
+      postId: 'post-1',
+      state: 'published',
+    });
+    expect(updated).toEqual([
+      { body: 'Published by agent', state: 'published' },
+    ]);
+    expect(emitted).toEqual([
+      { postId: 'post-1', body: 'Published by agent' },
+    ]);
+  }, 15_000);
+
   it('emits one focused immutable workload with canonical tools and authority', async () => {
     const application = app('research-platform', {
       namespace: 'research-system',
       spec: type({
         name: 'string',
         profile: "'starter' | 'dedicated' | 'external'",
+        providers: {
+          inference: {
+            endpoint: 'string',
+            model: 'string',
+            credentialSecretName: 'string',
+            credentialKey: 'string',
+          },
+        },
       }),
       status: type({ ready: 'boolean' }),
     });
@@ -39,9 +218,68 @@ describe('generated application AI agents', () => {
       .starter(() =>
         AI.deterministic({ fixture: { response: 'starter evidence' } }))
       .dedicated(() =>
-        AI.deterministic({ fixture: { response: 'dedicated evidence' } }))
-      .external(() =>
-        AI.deterministic({ fixture: { response: 'external evidence' } }))
+        AI.envoy({
+          name: 'research-inference',
+          namespace: 'research-system',
+          provision: true,
+          versions: {
+            envoyGateway: 'v1.6.0',
+            aiGateway: 'v0.6.0',
+            gatewayApi: 'v1.4.1',
+          },
+          models: {
+            fast: {
+              fallback: 'disabled',
+              backends: [
+                {
+                  apiVersion: 'applik8s.aiBackend/v1alpha1',
+                  name: 'primary',
+                  providerClass: 'openai-compatible',
+                  model: 'fast',
+                  endpoint: 'http://model.research-system.svc:8080',
+                  credentials: {
+                    apiVersion: 'v1',
+                    kind: 'Secret',
+                    name: 'research-inference-provider',
+                    namespace: 'research-system',
+                    key: 'apiKey',
+                  },
+                  capabilities: ['chat', 'tools', 'streaming'],
+                },
+              ],
+            },
+          },
+        }))
+      .external((spec) =>
+        AI.envoy({
+          provision: false,
+          versions: {
+            envoyGateway: 'v1.6.0',
+            aiGateway: 'v0.6.0',
+            gatewayApi: 'v1.4.1',
+          },
+          models: {
+            fast: {
+              fallback: 'disabled',
+              backends: [{
+                apiVersion: 'applik8s.aiBackend/v1alpha1',
+                name: 'external',
+                providerClass: 'openai-compatible',
+                model: spec.providers.inference.model,
+                endpoint: spec.providers.inference.endpoint,
+                allowInsecureHttp: true,
+                credentials: {
+                  apiVersion: 'v1',
+                  kind: 'Secret',
+                  name: spec.providers.inference.credentialSecretName,
+                  namespace: 'research-system',
+                  key: spec.providers.inference.credentialKey,
+                },
+                capabilities: ['chat', 'tools', 'streaming'],
+              }],
+            },
+          },
+        }))
       .exhaustive();
     application.provide(
       IdentityProvider,
@@ -93,8 +331,20 @@ describe('generated application AI agents', () => {
         },
       },
     });
+    const previewGraph = applicationGraphFor(application);
+    if (!previewGraph) throw new Error('Expected a preview application graph.');
+    expect(
+      previewGraph.nodes
+        .filter((node) => node.kind === 'gateway')
+        .map((node) => node.name),
+    ).toEqual(['agent-tools']);
     const graph = applicationGraphFor(application.composition);
     if (!graph) throw new Error('Expected an application graph.');
+    expect(
+      graph.nodes
+        .filter((node) => node.kind === 'gateway')
+        .map((node) => node.name),
+    ).toEqual(['agent-tools']);
     const catalog = compileApplicationOperationCatalog(graph);
     const authority = compileApplicationWorkloadAuthority(graph, catalog);
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-agent-'));
@@ -142,6 +392,27 @@ describe('generated application AI agents', () => {
                       {
                         name: 'APPLIK8S_PROFILE_VARIANT',
                         value: '${schema.spec.profile}',
+                      },
+                      {
+                        name: 'APPLIK8S_AI_GATEWAY_MANAGED_URL',
+                        value:
+                          'applik8s.deployment-output-optional/v1:direct.provider.ai.v1alpha1.inference.envoy-ai-gateway:endpoint',
+                      },
+                      {
+                        name: expect.stringContaining(
+                          'APPLIK8S_UNUSED_AI_CREDENTIAL',
+                        ),
+                        valueFrom: {
+                          secretKeyRef: {
+                            name: expect.stringContaining(
+                              'schema.spec.providers.inference.credentialSecretName',
+                            ),
+                            key: expect.stringContaining(
+                              'schema.spec.providers.inference.credentialKey',
+                            ),
+                            optional: true,
+                          },
+                        },
                       },
                       {
                         name: 'APPLIK8S_DATABASE_APPLICATION_URL',
@@ -199,6 +470,15 @@ describe('generated application AI agents', () => {
       'APPLIK8S_INTERNAL_OPERATION_SECRET',
     );
     expect(normalizedSource).toContain('applik8s_ai_attempts');
+    expect(normalizedSource).toContain('applik8s_conversations');
+    expect(generatedSource).toContain(
+      'createApplicationAIAgentConversationPersistence',
+    );
+    expect(generatedSource).toContain('await conversationStore.prepare()');
+    expect(generatedSource).toContain('persistence: conversationPersistence');
+    expect(generatedSource).not.toContain(
+      'pending-tanstack-server-persistence',
+    );
     expect(normalizedSource).toContain('completion-uncertain');
     expect(generatedSource).toContain('applik8s-agent-startup-wait');
     expect(generatedSource).toContain('agent_dependencies_unavailable');
@@ -208,8 +488,25 @@ describe('generated application AI agents', () => {
     );
     expect(normalizedSource).toContain('APPLIK8S_PROFILE_VARIANT');
     expect(normalizedSource).toContain('starter evidence');
-    expect(normalizedSource).toContain('dedicated evidence');
-    expect(normalizedSource).toContain('external evidence');
+    expect(normalizedSource).toContain(
+      '${schema.spec.providers.inference.endpoint}',
+    );
+    expect(generatedSource).toContain('selectedBackend?.endpoint');
+    expect(generatedSource).toContain('selectedBackend?.model');
+    expect(generatedSource).toContain(
+      'materializeInstallationValue(selectedProfileValue(contract.provider))',
+    );
+    expect(normalizedSource).toContain('APPLIK8S_INSTALLATION_SPEC');
+    expect(normalizedSource).toContain(
+      'APPLIK8S_AI_GATEWAY_MANAGED_URL',
+    );
+    expect(generatedSource).toContain(
+      "endpoint.pathname = (pathname || '') + '/v1';",
+    );
+    expect(generatedSource).toContain(
+      "managedOpenAICompatibleBaseUrl(\n              requiredEnv('APPLIK8S_AI_GATEWAY_MANAGED_URL'),",
+    );
+    expect(normalizedSource).not.toContain('gateway-managed');
     expect(generatedSource).toContain(
       'action: decision.action,',
     );

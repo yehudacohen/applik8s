@@ -7,7 +7,7 @@
 **Depends on:** v0.6 native models and relationships, committed change streams, durable processors,
 provider DI, authorization operations, TypeKro, and object storage
 
-**Unblocks:** Vasco evidence search, searchable authority audit, and Agentic Start administration
+**Unblocks:** Chirp content discovery, searchable authority audit, and Agentic Start administration
 
 ## Purpose
 
@@ -414,7 +414,7 @@ external service or snapshots.
 5. Land and release TypeKro OpenSearch lifecycle support.
 6. Implement OpenSearch runtime, security, snapshots, rebuild, and cutover.
 7. Integrate typed operations, browser queries, live invalidation, and authorization filters.
-8. Qualify Vasco and authority-audit search paths.
+8. Qualify Chirp and authority-audit search paths.
 
 ## Required gates
 
@@ -459,7 +459,7 @@ external service or snapshots.
 
 This RFP is complete when named indexes compile into bounded inverse invalidation and rebuild plans,
 PostgreSQL and OpenSearch providers satisfy their declared capabilities, search remains authorization
-scoped, TypeKro owns the complete OpenSearch lifecycle, and Vasco can rebuild and live-query related
-evidence without manual document writes. The public example must demonstrate a related-model change,
+scoped, TypeKro owns the complete OpenSearch lifecycle, and Chirp can rebuild and live-query related
+content without manual document writes. The public example must demonstrate a related-model change,
 reparent, delete, history-loss rebuild, atomic cutover, authorization denial, SSR query, and live
 requery through the same typed index. Completion does not authorize v0.7.

@@ -1,21 +1,15 @@
-import { ApplicationQueryHydrationBoundary } from '@applik8s/react';
 import { createFileRoute } from '@tanstack/react-router';
 import { useState } from 'react';
-import { Attachments, Media, Post } from '../application';
+import { Attachments, PostHomeTimeline, Media, Post } from '../application';
 import { ChirpShell } from '../components/chirp-shell';
 import { PostList, QueryState } from '../components/post-list';
 
-const timeline = Post.homeTimeline({ limit: 50 });
+const timeline = PostHomeTimeline({ limit: 50 });
 
 export const Route = createFileRoute('/')({
   loader: () => timeline.snapshot(),
-  component: ChirpPage,
+  component: Home,
 });
-
-function ChirpPage() {
-  const initial = Route.useLoaderData();
-  return <ApplicationQueryHydrationBoundary snapshots={[initial]}><Home /></ApplicationQueryHydrationBoundary>;
-}
 
 function Home() {
   const posts = timeline.useQuery();
@@ -35,16 +29,22 @@ function Home() {
       event.preventDefault();
       const message = body.trim();
       if (!message) return;
+      const submittedReply = replyingTo;
+      const submittedQuote = quoting;
+      const submittedAttachment = attachment;
+      const submittedAltText = altText;
       setMediaError(undefined);
       const postId = crypto.randomUUID();
       try {
-        const completed = attachment ? await uploadAttachment(attachment, setMediaPhase) : undefined;
+        const completed = submittedAttachment
+          ? await uploadAttachment(submittedAttachment, setMediaPhase)
+          : undefined;
         await publish({
           id: postId,
           body: message,
           visibility,
-          ...(replyingTo ? { replyToPostId: replyingTo.id } : {}),
-          ...(quoting ? { quotePostId: quoting.id } : {}),
+          ...(submittedReply ? { replyToPostId: submittedReply.id } : {}),
+          ...(submittedQuote ? { quotePostId: submittedQuote.id } : {}),
         });
         if (completed) {
           setMediaPhase('recording');
@@ -56,14 +56,14 @@ function Home() {
             byteLength: String(completed.size),
             sha256: completed.sha256,
             uploadReceipt: completed.receipt,
-            altText: altText.trim() || 'Attached media',
+            altText: submittedAltText.trim() || 'Attached media',
           });
         }
-        setBody('');
-        setReplyingTo(undefined);
-        setQuoting(undefined);
-        setAttachment(undefined);
-        setAltText('');
+        setBody((current) => current.trim() === message ? '' : current);
+        setReplyingTo((current) => current === submittedReply ? undefined : current);
+        setQuoting((current) => current === submittedQuote ? undefined : current);
+        setAttachment((current) => current === submittedAttachment ? undefined : current);
+        setAltText((current) => current === submittedAltText ? '' : current);
       } catch (error) {
         setMediaError(error instanceof Error ? error : new Error(String(error)));
       } finally {
@@ -120,6 +120,6 @@ function mediaPhaseLabel(phase: 'idle' | 'hashing' | 'uploading' | 'verifying' |
   return ({ idle: 'Publishing…', hashing: 'Checking…', uploading: 'Uploading…', verifying: 'Verifying…', recording: 'Attaching…' })[phase];
 }
 
-function HomeRail({ transport, durableResult, revision }: { readonly transport: string; readonly durableResult: string; readonly revision: string }) {
+function HomeRail({ transport, durableResult, revision }: { readonly transport: string; readonly durableResult: string; readonly revision: string | number }) {
   return <><div className="discover"><h2>Why this feed matters</h2><p>Actions commit to PostgreSQL. Events are replayable. SSE carries invalidation, and the browser requeries the authoritative view.</p></div><div className="inspector"><p className="eyebrow">Live evidence</p><h2>Current request</h2><div className="status"><span>action transport</span><b>{transport}</b><span>durable result</span><b>{durableResult}</b><span>query revision</span><b>{revision}</b></div></div></>;
 }

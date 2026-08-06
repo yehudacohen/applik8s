@@ -1,12 +1,275 @@
-# Goal: Converge Applik8s deployment on TypeKro and Alchemy v2
+# Goal: Complete the v0.7 Agentic Platform on the converged TypeKro/Alchemy deployment
 
-**Status:** TypeKro 0.32.0 is pinned, the pre-graph lifecycle engine has been removed, local qualification
-is green, and GuestBook, Chirp, and the generated v0.6 application have each passed their live OrbStack
-golden paths through the graph-backed Alchemy/TypeKro deployment engine. Operator-host reconciliation is
+## v0.7 release objective
+
+The active objective is to execute
+[`docs/charter-v07-agentic-platform.md`](./docs/charter-v07-agentic-platform.md)
+and its machine-readable scorecard completely and excellently, while preserving
+the graph-backed TypeKro/Alchemy lifecycle established below. Vasco is a
+dependent customer-zero project after the framework is complete; it is not an
+Applik8s v0.7 release fixture.
+
+### 2026-08-05 Agentic Start productization update
+
+- Callback-native `module(name, setup)` and `module(name, options, setup)` are
+  the golden path. The framework validates and freezes returned exports,
+  executes setup once per application inclusion, preserves exact inferred
+  exports, and keeps `defineApplicationModule(...)` only as a deprecated
+  compatibility/internal seam.
+- The official TanStack scaffold now receives a reviewable 24-file default
+  product overlay. The full 42-file `--example research` application remains
+  the Stimp and distributed-behavior acceptance fixture rather than the first
+  thing a builder must understand.
+- The default product includes one authenticated native model, one direct
+  view, one typed agent tool, explicit authority, reviewed profile capacity,
+  lightweight actionable operations, copyable installation profiles, an
+  isolated generated test configuration, accurate first-run documentation,
+  persisted context selection, and starter lineage.
+- Clean packed qualification currently covers 47 packages and 78 public
+  entrypoints, then generates a migration, runs the generated product tests,
+  discovers and compiles the application graph, and builds the browser/server
+  production artifacts without monorepo-only package resolution.
+- All nine Stimp acceptance journeys have named executable local/live/browser
+  gates and source evidence. The fast parity fixture remains honestly reported
+  as seven generated product contracts; live receipts remain separate release
+  authority.
+- Kubernetes-native create policies and function-native views preserve
+  contextual ArkType input, principal, selection, and projected-resource
+  types. GuestBook and Chirp no longer reconstruct handler types through
+  nested `Parameters<...>` expressions.
+
+No v0.7 release or tag has been created. The local candidate cohort and each
+Starter, Dedicated, and External live lane have passed independently. The
+research Starter fixes below intentionally changed the complete working-tree
+identity, so the remaining release authority is one final exact-worktree
+OrbStack prerelease refresh rather than reuse of those now-stale receipts.
+
+### 2026-08-05 exact-candidate update
+
+- TypeKro `0.33.5` is published, pinned in every Applik8s consumer, and passes
+  the released-package/Alchemy qualification gate.
+- Agentic Start is now part of the release authority rather than a
+  documentation-only starter: the pinned official TanStack generator produces
+  one feature-first application with 23 relational tables and one inferred
+  28-node deployment graph.
+- The research application explicitly and idempotently bootstraps its local
+  owner workspace, owner membership, and `research-review` entitlement in its
+  application-owned migration. The generic Starter identity continues to
+  refuse to invent product tenancy. The ordinary
+  `ResearchReview.create(...)` path performs its entitlement check inside the
+  authoritative model transaction through the maintained
+  `requireActiveEntitlement(...)` helper.
+- The exact generated application passed production client/SSR/Nitro build,
+  41-resource Alchemy/19-declaration TypeKro deployment, stable readiness,
+  exact 41-resource no-op reapply, and five browser journeys covering workspace
+  isolation, invitation/member-role administration, public AI, local billing,
+  durable conversations, typed SSE approval, immutable artifacts, memory,
+  usage, and evaluations.
+- Teardown completed only through `applik8s destroy` → Alchemy → TypeKro,
+  including root instance, generated RGD, persistent dependencies, and the
+  owned Namespace. No graph child or finalizer was deleted out of band.
+- The pinned Stimp baseline map now has no partial or missing product row, and
+  the machine-readable scorecard reports 27 complete, zero partial/pending/
+  blocked, and one intentionally deferred multi-cluster item.
+
+No release or tag has been created. The exact-source local cohort and every
+live profile have passed during productization; the complete OrbStack cohort
+must now be refreshed once against the final working-tree digest before release
+review.
+
+### 2026-08-05 productization qualification
+
+- Callback-native modules, maintained examples, the generated product shell,
+  explicit authority, profile capacity, progressive operations, template
+  assets, lineage, context selection, CLI progress, and generated application
+  tests now execute as one consistent first-run contract.
+- The exact source passed the complete local release cohort: all workspace and
+  maintained-example typechecks, lint and repository audits, module/deployment
+  ratchets, 160 v0.7 package contract tests, package dry runs, scorecard,
+  profile topology, performance/history, TypeKro qualification, Stimp parity,
+  browser security, identity acceptance, all three production application
+  builds, Rust formatting/Clippy, 9 operator-host tests, 100 host contracts,
+  12 runtime-bridge tests, 27 ComponentizeJS/WIT/Wasmtime contracts, and 7
+  generated runtime-contract tests.
+- A clean package consumer packed 47 coordinated packages, imported 78 public
+  Node entrypoints, and passed the CLI, function-native workflow,
+  registry-free model/query, generated migration/tests, and generated Agentic
+  Start browser/server paths without monorepo resolution.
+- Identity Start remains inside its release ceilings at 140,936 browser gzip
+  bytes, 3,202,467 server bytes, 225 semantic graph nodes/284 edges, and a
+  182,805-byte TypeKro resource graph. The reviewed deployment topology is
+  GuestBook 9/12 nodes/edges; Chirp Starter 38/95, Dedicated 40/98, External
+  27/48; and Identity Start Starter 24/46, Dedicated 39/80, External 16/24.
+- The clean Starter live gate built from packed packages, deployed 37 resources
+  through ApplicationDeploymentGraph → Alchemy → TypeKro 0.33.5, reached
+  stable readiness, passed both maintained browser journeys, and removed all
+  37 resources plus the owned Namespace through the same graph-backed destroy
+  path.
+- The browser command path now exposes an internal generated receiver only
+  when an application explicitly exports a model operation. The receiver
+  remains the single authority-enforcing owner; no duplicate command gateway
+  is created.
+- Every generated reactive/HTTP gateway now shares one application context
+  secret for authorization and relational change-scope derivation while
+  retaining gateway-local cursor secrets. This removes cross-gateway snapshot
+  divergence without making cursors transferable.
+- The machine-readable scorecard remains 27 complete, zero partial/pending/
+  blocked, and one intentionally deferred multi-cluster item.
+
+The release remains unauthorized. The next gate is the full
+`check:v07:prerelease:orbstack` matrix, especially Dedicated/External Identity
+Start ownership and provider behavior; do not infer those receipts from the
+passing Starter profile.
+
+The public reconciliation contract is intentionally settled before further
+release expansion:
+
+- `Resource.on.reconcile(handler)` is the sole public continuous-reconciliation
+  spelling;
+- an Application-owned resource automatically contributes its generated
+  operator install, watch, namespace, service account, RBAC, closure capture,
+  and callable workflow authority;
+- builder materialization must replay that resource-owned declaration without
+  a second registration;
+- `app.reconcile(Resource, handler)` is removed now, with no compatibility
+  alias, because there are no consumers requiring it;
+- `app.on(...)` is removed too; multiple `Resource.on.*` callbacks share one
+  inferred controller and advanced placement/RBAC lives on the resource's
+  `controller` option; and
+- public controller vocabulary is resource-owned too:
+  `ApplicationResourceControllerOptions` and
+  `ApplicationResourceEventHandler` replace the removed
+  `ApplicationReconcileOptions` and `ApplicationReconcileHandler` exports,
+  without compatibility aliases; and
+- GuestBook, Chirp, generated Start output, compiler fixtures, and release
+  documentation must use the resource-native form.
+
+This is enforced rather than deprecated: the public builder type and runtime
+object expose neither `reconcile` nor `on`, and negative type tests fail if
+either name returns. The existing resource-native controller path groups all
+`Resource.on.*` declarations for one CRD into one inferred operator and replays
+that operator during Application materialization.
+
+The relational behavior contract is equally explicit:
+
+- conventional writes remain `Model.create`, `Model.update`, and
+  `Model.delete`;
+- required reads and non-CRUD atomic behavior use `Model.require` and
+  `Model.edit(identity, transactionClosure)` inside an ordinary managed
+  TypeScript function;
+- `.action(...)`, draft `.operation(...)`, `Model.command(...)`, and
+  `Model.on.command(...)` are physically absent from public types and runtime
+  objects, with no compatibility aliases; and
+- the compiler-owned durable command machinery remains internal lowering
+  infrastructure rather than an application authoring surface.
+
+The API freeze is complete, but the execution gate is deliberately still open:
+
+- [x] expose typed `Model.require` and `Model.edit(identity, closure)` without a
+      public registry;
+- [x] remove command/action/operation registries from types, runtime objects,
+      maintained examples, and packed consumers;
+- [x] carry recursively reached `Model.edit`, `Model.require`, model reads, and
+      `Event.emit` as semantic graph dependencies instead of source-text
+      guesses or authored participant/outbox maps;
+- [x] lower event and frozen-batch handlers with one inferred writable model
+      into the existing PostgreSQL command kernel, using the durable source
+      identity for duplicate recovery and the inferred models/events for
+      transaction participants and outbox admission;
+- [x] prove the function-native kernel against OrbStack PostgreSQL: the first
+      delivery updated authoritative state and committed one event outbox row,
+      while identical redelivery returned the durable result without invoking
+      the transaction closure again;
+- [x] lower function-native workflows that reach `Model.edit(...)` through
+      ordinary module-local helpers into an inferred internal durable step,
+      then run that step through the same command kernel with its Hatchet
+      invocation identity; no public task or operation registry is introduced;
+- [x] inherit the event lowering for `Model.on.create/update/delete(...)`
+      because model lifecycle callbacks are ordinary replayable stream
+      processors rather than a separate execution engine;
+- [x] lower ordinary exported functions used as agent tools into the same
+      compiler-owned PostgreSQL command kernel. The compiler derives a stable
+      module-plus-symbol operation identity and typed schemas, preserves
+      `identity.can(function)` and `tools: [function]` without a wrapper,
+      executes inference outside the transaction, and carries the durable
+      provider-tool-call identity, execution principal, authorization receipt,
+      inferred model participants, and event outbox through pre-commit
+      revalidation;
+- [x] complete the same lowering for typed HTTP routes rather than permitting
+      the route family to invent its own transaction runtime. The public
+      `const api = app.http(...); api.post(name, path, contract, handler)`
+      registrar, one-shot graph finalization, schema/authority callbacks,
+      context-scoped idempotency contract, raw-request rejection boundary, and
+      inferred transaction plan lower into one compiler-owned OCI worker; no
+      raw source ConfigMap or provisional `app.server` Deployment survives.
+      The generated boundary authenticates first, pins the principal to the
+      exact compiled catalog, derives relational change scopes from the
+      server-held context secret, validates schemas, enforces route and
+      operation authority, and enters the canonical durable command kernel.
+      The exact emitted worker passes live PostgreSQL qualification with a
+      dynamic path, `Model.edit`, duplicate replay, process restart, and one
+      durable inbox/transition effect;
+- [x] prove the exact compiler-emitted event-worker `runtime.mjs` against
+      PostgreSQL with a nested participant read, transactional model update and
+      event emission, process restart, checkpoint rewind, and duplicate
+      recovery. The release gate asserts one durable inbox/result, transition,
+      and outbox effect after both deliveries. Frozen-batch admission and
+      acknowledgement retain their separate focused runtime/compiler evidence.
+
+The release remains unauthorized until every non-deferred item in
+[`docs/v0.7-scorecard.json`](./docs/v0.7-scorecard.json) is complete and its
+checked-in/live evidence was produced from the exact candidate worktree.
+`check:v07:scorecard:release` enforces that statement mechanically: every
+required receipt must use schema v3, match the current git commit and complete
+working-tree digest, identify the current cluster UID, be less than 24 hours
+old, and contain exactly one run-bound observation for every classified
+assertion. Stale, partial, duplicate, unclassified, or wrong-cluster receipts
+fail closed.
+
+**Status:** TypeKro 0.33.5 is pinned, the pre-graph lifecycle engine has been removed, and GuestBook,
+Chirp, and the generated v0.6 application have each passed their live OrbStack golden paths through
+the graph-backed Alchemy/TypeKro deployment engine. `Resource.on.reconcile(...)` is now the sole public
+continuous-reconciliation API; `app.reconcile(...)` has been physically removed from the authoring
+surface, examples, generated applications, compiler fixtures, and public API tests. Operator-host reconciliation is
 globally bounded to the declared single-worker contract and immutable WASM components are compiled once
 while every invocation receives fresh host state, eliminating the publisher OOM exposed by the GuestBook
-restart path. TypeKro 0.32.0 includes PR #126's status-projection fixes. Final qualification is focused on
+restart path. TypeKro 0.33.5 includes the status-projection, singleton-scheduling, generated-CRD
+migration, and stable artifact-binding fixes required by
+the current graph. Final qualification is focused on
 refreshing exact-worktree evidence across the complete release cohort.
+
+The live lifecycle matrix additionally exposed and fixed two ownership defects
+before release: generated Secrets now require both graph-local node identity
+and stable installation identity before they are treated as managed, and each
+graph node's delete/retain contract is lowered into Alchemy's removal policy
+instead of being masked by the resource type's safe retain default. OrbStack
+proves delete, retain, explicit graph-backed cleanup, and same-node
+cross-installation external adoption without `kubectl delete`.
+
+The 2026-08-02 Identity Start teardown exposed one further provider-lifecycle
+defect: the generated graph did not preserve the physical
+HelmRepository → NATS → NACK → Stream → Consumer → processor chain. KRO could
+therefore remove NACK and NATS while a Stream still held its NACK finalizer.
+The compiler now emits those dependency expressions into the authoritative RGD,
+the TypeKro adapter retains them, and a full artifact regression proves every
+edge. Release qualification must deploy and delete a fresh Identity Start
+candidate through the ordinary TypeKro/Alchemy path and observe authoritative
+absence. The earlier stranded instance completed deletion naturally after its
+Stream and Consumer finalizers were resolved through temporary TypeKro-owned
+NATS/NACK recovery installations. Both recovery installations were then
+deleted through their factories. No shared-controller restart, finalizer
+patch, or manual graph-child deletion was required. After the Identity,
+Chirp, and GuestBook roots were authoritatively absent, their disposable
+retained/history namespaces were deleted under explicit maintainer
+authorization.
+
+The same fail-fast cleanup now applies to durable execution: neither the root
+package nor the public `/dsl` entrypoint exports `task()`, and application
+scopes do not expose `app.task`. Provider adapters retain an internal task
+descriptor only as a lowering target for ordinary managed closures and
+function-native workflows. Maintained examples and live workflow fixtures call
+workflow handles directly rather than authoring task catalogs or
+`context.task(...)` aliases.
 
 **Prepared:** 2026-07-27
 
@@ -18,15 +281,217 @@ qualification remain explicitly deferred.
 **Release rule:** do not tag, publish, or cut an Applik8s release until the refactor and live lifecycle
 results have been reviewed explicitly.
 
-**Upstream prerequisite:** TypeKro 0.32.0 contains PR #117's semantic planning, Alchemy v2,
+The reproducible release commands are now:
+
+- `bun run check:v07:local` for the complete source/package/contract/security/
+  profile/performance/application-build/Rust cohort; and
+- `bun run check:v07:prerelease:orbstack` for that same local cohort followed
+  by graph lifecycle, maintained live applications, browser evidence, and the
+  fail-closed release scorecard. The release scorecard additionally validates
+  exact-candidate receipts for PostgreSQL, ClickHouse, the generated
+  application, GuestBook, Chirp deployment/runtime/browser, graph lifecycle,
+  and all three Agentic Start profiles.
+
+The prerelease command ending at a partial scorecard is a failure, not an
+informational warning.
+
+**Upstream prerequisite:** TypeKro 0.33.5 contains PR #117's semantic planning, Alchemy v2,
 artifact-output, singleton, scope, namespace-lifecycle, and structured-default fixes plus PR #126's secure,
 unambiguous arbitrary-resource status projection. Applik8s pins it exactly; do not use a caret range until
 the experimental planning DTOs have a qualified compatibility policy.
 
 ## Execution progress
 
-As of 2026-07-29, the published TypeKro 0.32.0 cohort is pinned exactly and the ordinary deployment path is
+As of 2026-08-02, the published TypeKro cohort is pinned exactly and the ordinary deployment path is
 graph-backed end to end:
+
+- public reconciliation is now physically resource-native: the Application
+  builder exposes neither `reconcile` nor `on`, negative type tests preserve
+  that absence, and graph inspection proves `installation.configure(...)`
+  infrastructure and later function-native model views without materializing
+  or freezing the composition;
+- `app.role(name).can(...)` now records static role meaning in the canonical
+  authority manifest, provider-admitted roles participate in authorization and
+  receipts, and the Ory adapter derives them only from verified Kratos identity
+  evidence. The maintained control center installs an explicit administrator
+  role and exposes a bounded searchable audit timeline whose browser records
+  omit principals, targets, arbitrary details, grants, and credentials;
+- a fresh 2026-08-01 OrbStack Hatchet gate proved the resource-native
+  `WorkflowJob.on.reconcile(...)` path through the public CLI, Alchemy, and TypeKro: workflow admission
+  was adopted from canonical CR status on reconcile, the retrying effect executed exactly twice, the
+  CR reached `Succeeded`, and the controller settled without a reconciliation hot loop. The same exact
+  gate survived active-worker replacement and a durable wait, delivered a typed signal, propagated
+  correlation, compensated a failed run, reported intervention, cancelled a tracked run, and completed
+  instance-before-RGD and Namespace teardown without imperative graph deletion;
+- the 2026-08-01 Chirp candidate passed its then-current nine-journey browser
+  cohort against OrbStack after two ordinary graph deployments converged to
+  `39 resources, 0 changes`: canonical request identity now drives relational
+  and Kubernetes views without a duplicate authorization-version shape, and
+  workflow task principals plus compiler-bounded policy admission carry both
+  valid and rejected media through object storage, JetStream, Hatchet,
+  transactional model policy, SSE invalidation, and UI requery;
+- the 2026-08-01 function-native stream follow-up added a real frozen
+  engagement microbatch worker, compiler-preserved authored partitioning, and
+  fresh-source recovery after transient database/DNS failures. Two ordinary
+  deployments converged at `40 resources, 0 changes`; the complete live Chirp
+  runtime suite then passed its public SSR/JetStream/PostgreSQL/Valkey/SSE/
+  ClickHouse path, authoritative Valkey rebuild with concurrent foreground
+  writes, and acknowledged-work preservation across processor, projection,
+  gateway, web, and Harbor restarts;
+- the same live gate proved durable child replay after replacing the active Hatchet worker,
+  signal delivery, compensation, intervention, cancellation, and correlation propagation. Generated
+  child calls now use Hatchet's public stable `key` option, fixing the provider replay
+  nondeterminism exposed by worker replacement;
+- typed durable signals now synthesize the emitting workflow worker's
+  contract-specific `canGrant` authority behind `grantAccessTo`; issuance
+  atomically records exact-instance grants with signal state and the outbox,
+  while action authorization, terminal compare-and-swap, grant retirement,
+  resolution fact, and outbox insertion share the same primary-database
+  transaction. Application authors still provide only the recipient identity,
+  target, and expiry rather than framework grant records;
+- Chirp now exercises that contract through ordinary function-native code: a
+  risky generated post causes the durable automation coordinator to emit one
+  typed review signal, expose its issuance through an authorized moderator SSE
+  subscription, and await approve/reject/expiry. Preparation, publication, and
+  rejection remain direct callable workflows that the compiler lowers into
+  retryable effect steps; application code never declares tasks. The clean
+  build also removed provider side effects from pure model aliases, keeping
+  relational gateway bundles free of TypeKro and the Kubernetes client;
+- resource/workflow tracking now gives generation replacement literal
+  semantics: `supersede` records a bounded prior-run summary and lets that run
+  continue under workflow retention, while `cancel` requests cancellation by
+  the persisted provider reference. The misleading `retain` spelling and an
+  unimplementable start-then-`finish` promise are absent from the v0.7 API;
+- canonical CR status plus bounded exact-resource resync is the complete v0.7
+  tracking authority. A provider push bridge may reduce observation latency,
+  but no private subscription index is required for correctness or restart
+  recovery;
+- the clean packed-consumer gate now generates from the maintained official
+  TanStack scaffold overlay, discovers the full Agentic Start graph, compiles
+  it through TypeKro, emits its search worker and operations route, plans all
+  three exhaustive provider profiles, and builds both browser and server
+  artifacts using only packed Applik8s packages. The operations route imports
+  `Conversation.operationsSnapshot` through the generated application facade,
+  so neither the server graph nor TypeKro enters the browser dependency zone;
+- maintained module composition now stays explicit without leaking package
+  internals: the operations control center accepts the Conversations,
+  Approvals, Artifacts, Evaluations, and Usage module handles directly instead
+  of making every generated application enumerate fifteen framework-owned
+  model handles. Its returned `Conversation` model is statically refined with
+  the installed `operationsSnapshot` facet, and the checked-in and generated
+  Identity Start applications export that single browser-safe model symbol
+  without a cast or parallel operation declaration;
+- the maintained identity acceptance application now has an independent
+  production artifact gate in `check:v07:local`. It builds the exact
+  Vite/Nitro browser and server outputs, verifies the web-artifact manifests,
+  rejects server/deployment/Kubernetes markers in browser JavaScript, rejects
+  development JSX in SSR output, compiles the TypeKro application graph, and
+  enforces browser, server, graph-node, and resource-manifest ceilings. The
+  current candidate passes at 140,320 browser gzip bytes, 3,177,376 server
+  bytes, 193 graph nodes/288 edges, and a 151,153-byte TypeKro resource
+  manifest. The maintained browser uses native TanStack AI chat and selects
+  the same exported `AccessAdvisor` handle through the generated dual-runtime
+  facade, without repeating an agent name in `forwardedProps`; its remaining
+  acceptance boundary is the dedicated-profile Ory live receipt rather than
+  an unbuilt example;
+- the maintained operations query now lowers every database source into one
+  typed, allowlisted browser record. Raw message content, evidence, targets,
+  grants, credentials, and provider documents cannot cross the route simply
+  because the control center reads their source table;
+- the same maintained query partitions canonical operational observations into
+  installation, provider, workflow, consumer, projection/search, AI, MCP,
+  authority, identity, object-store, database, and gateway lanes. Applications
+  do not register or remap a dozen administration queries to obtain the honest
+  domain-specific control-center surface;
+- the framework-owned operational observation store is now application-scoped
+  at its primary key and query boundary. Operation catalogs, authorization
+  outcomes, durable-signal issuance/terminal state, Hatchet workflow attempts,
+  and JetStream command-consumer heartbeats write observations automatically
+  through generated runtimes; applications do not configure a telemetry sink.
+  Expired provider heartbeats render as `unknown`, not stale readiness;
+- Stimp parity is now executable rather than aspirational: twelve reviewed
+  product paths carry pinned and locally Git-verified baseline blob identities,
+  explicit disposition rationales and replacement guidance, current Applik8s
+  evidence, and a generated behavioral fixture. `check:v07:stimp` proves
+  deterministic feature-first generation, the official TanStack boundary,
+  credential-free onboarding, maintained module composition, external
+  ownership, explicit lifecycle commands, and absence of a Stimp runtime
+  dependency; the clean packed-consumer release gate proves the same generated
+  product from package tarballs;
+- generated Agentic Start applications now render a maintained, browser-safe
+  onboarding surface rather than copying a product-specific guide. It starts
+  with the usable product, identifies Starter as credential-free and
+  non-production, links the maintained operations surface, teaches the
+  side-effect-free `bun run plan` boundary, and progressively discloses the
+  dedicated/external provider transition;
+- generated Start projects now distinguish the pure upstream `bun run dev`
+  loop from an explicit `bun run dev:cluster` bootstrap. The latter reuses the
+  ordinary production build/deploy/readiness path before starting Vite, so one
+  command can start Starter without smuggling Kubernetes mutation into a Vite
+  hook or ambient context;
+- maintained relational modules now author public entities once through
+  `model()/field`; public identity and revision exceptions live on that
+  declaration, emitted package declarations expose only the supported model
+  facet, and database auto-binding plus explicit module composition is
+  idempotent. The generated Agentic Start graph proves that package-boundary
+  replay does not duplicate native mutation handlers or maintained queries;
+- typed signal projections now receive inert references in the type system.
+  Ordinary output schemas fail closed if they attempt to persist the
+  capability, while an explicit model-backed `field.signal(...)` records the
+  exact contract, same-as-issuance visibility, and bounded retention in the
+  ApplicationGraph;
+- capability-bearing query results now inherit that same exact issuance-read
+  boundary automatically. The generated gateway resolves the canonical signal
+  and admits the current principal before returning either a public or
+  internally invoked result; application query code cannot accidentally turn a
+  persisted reference into broader signal visibility;
+- browser security is now an explicit executable release surface rather than
+  an empty scorecard row: thirteen threat controls map principal derivation,
+  authority installation, same-origin preload, server-module exclusion,
+  object-intent integrity, signal actor/action/stream isolation, cursor
+  non-transferability, restart recovery, workload-envelope isolation, and
+  maintained-operations row redaction to
+  focused contract and browser evidence. The item remains partial until its
+  live receipt is refreshed from the exact release candidate;
+- signal crash-window evidence is now explicit: admission failure leaves no
+  issuance or outbox row, post-commit workflow-history loss replays the same
+  occurrence, a broker publication crash is retried from the durable outbox,
+  and the resumed workflow reattaches to canonical terminal state. Public
+  typed-role admission remains deliberately open rather than trusting a
+  browser-authored role;
+- the exact PostgreSQL signal gate now repeats issuance and action resolution
+  across independent store instances, proving canonical actor derivation,
+  idempotent same-action replay, losing-action redaction, and durable outbox
+  recovery against the selected provider rather than only the in-memory
+  contract;
+- v0.7 synthetic performance evidence now has an executable three-run history
+  gate. Candidate identity hashes tracked and untracked authored files, excludes
+  only the receipt's own baseline/history outputs, verifies identity again
+  after recording, and requires the latest full-run baseline to match the exact
+  current source tree;
+- the formerly empty identity-acceptance row now has a checked
+  seventeen-requirement conformance manifest. Thirteen requirements already
+  map to concrete provider-neutral identity, OAuth/Hydra, authority, MCP,
+  catalog-migration, denial, and execution-isolation evidence; the remaining
+  four explicitly name the integrated application work instead of hiding it
+  behind package-level test claims;
+- profile-selected provider configuration now materializes direct
+  `schema.spec.*` references from the concrete installation before portable
+  deployment planning. The generated dedicated profile consequently retains
+  its application-owned Ory platform stack and concrete Envoy credentials,
+  while the external profile produces no application-owned provider
+  infrastructure;
+- typed `app.select(...)` lifecycle choices retain their finite authored value
+  set through composition. A PostgreSQL provider selecting only `external` or
+  `direct-provisioned` now emits exactly one conditional observed Cluster and
+  never invents an unreachable KRO-owned data branch. Chirp readiness therefore
+  observes its authoritative direct-lifecycle CNPG Cluster independently of
+  native-model registration order, while the external profile remains
+  connection-Secret-authoritative;
+- the live graph and every application resource were removed through TypeKro/Alchemy. The disposable
+  namespace was empty across all discoverable namespaced APIs and reached authoritative 404 shortly
+  after the prior five-minute namespace-controller allowance; the gate now uses a bounded seven-minute
+  allowance without editing Kubernetes or application finalizers;
 
 - GuestBook Start passed its current-source live OrbStack lifecycle after rebuilding the Rust host:
   browser command admission, Kubernetes reconciliation, rejection, SSE invalidation, authoritative requery,
@@ -40,11 +505,59 @@ graph-backed end to end:
   provider ratchet;
 - the generated v0.6 application passed its command/outbox, JetStream, SSE/requery, ClickHouse, restart,
   KRO readiness, and finalizer-safe deletion path;
-- Chirp passed its runtime/recovery suite and all nine browser checks. Its production build remains within
+- Chirp passed its runtime/recovery suite and all then-current browser checks. The maintained browser
+  contract now additionally requires normal-command-to-search and ClickHouse-ranked Explore journeys;
+  its production build remains within
   the tracked browser, server, RGD, OCI-context, and generated-artifact budgets;
 - OrbStack Namespace deletion is currently slow because the shared Namespace controller is draining a large
   pre-existing backlog. Tests now wait for authoritative 404 and fail closed; no raw Namespace deletion or
   finalizer patch is accepted as a successful cleanup path;
+- the maintained Starter object-storage provider is now self-contained rather
+  than assuming an ambient `rook-ceph-bucket` StorageClass: Alchemy generates
+  installation-owned credentials, TypeKro materializes a pinned multi-arch
+  SeaweedFS S3 Deployment/PVC/Service/NetworkPolicy, and the application still
+  consumes the ordinary provider-neutral S3 contract. Dedicated continues to
+  use the direct Rook/Ceph OBC boundary;
+- Starter and Dedicated now internalize the complete Hatchet connection
+  contract. Their generated installation specs always include the in-cluster
+  API URL and `HATCHET_CLIENT_TOKEN` key together, so KRO cannot materialize a
+  half-configured Secret volume when authors correctly omit framework-owned
+  provider wiring;
+- the PostgreSQL signal authority now retries schema preparation after a
+  transient connection or database failure instead of caching the first
+  rejected promise for the life of the gateway process. Focused regression
+  coverage and an OrbStack rollout prove the same gateway can recover to
+  `/ready` without a restart;
+- TanStack Start now installs the React query adapter through its generated
+  browser facade. Applications do not need a magic side-effect import to make
+  `Model.useQuery(...)` work, while the generic Vite integration remains
+  framework-neutral. The generated adapter import precedes model-handle
+  creation and is covered at the Vite/TanStack boundary;
+- deterministic framework principals no longer embed the compiler wall clock.
+  Omitted admission time uses a stable epoch sentinel, preserving byte-identical
+  bundles and deployment identities while explicit authenticated admission
+  continues to carry its real timestamp. Two independent Identity Start plans
+  produced the same 16-node, 8-artifact graph digest
+  `sha256:e39b8bf4461c78fede6ffbf3cb2cfeebbd3e4ed945149515fe2c9068788710f1`;
+- after applying that exact graph once, an immediate ordinary replay reported
+  **20 resources, 0 changes, 7 TypeKro declarations**, with all eight immutable
+  artifacts and every Kubernetes declaration at `noop`. This is the current
+  exact-source idempotency evidence for the Identity Start Starter profile;
+- that replay also exposed a release-blocking shared-cluster capacity loop
+  rather than a false-positive status projection. Kubernetes events prove the
+  application-host pod is **Preempted** every roughly 45 seconds by a newly
+  scheduled `system-cluster-critical` CoreDNS pod while the node reports `Too
+  many pods`. CoreDNS itself is being killed and recreated on the same cadence
+  by an external authority; each critical replacement then takes the
+  application pod's slot. The Application Deployment remains at generation 11,
+  its ReplicaSet stays at desired replicas 1, the pod template and immutable
+  image do not change, and every other readiness dependency is healthy. The
+  cluster currently has 87 Running pods plus a large failed/completed backlog
+  against a 110-Pod node capacity and has other active Codex sessions. This is
+  not an Applik8s/TypeKro deletion loop, and qualification must stop or finish
+  the owning external workflow rather than mutate its resources. The
+  30-second Applik8s stability gate correctly refuses transient readiness in
+  the meantime;
 
 - a fresh `chirp-refactor` deployment planned one 31-node portable graph, materialized 15 TypeKro
   declarations through a 39-resource Alchemy Stack, and completed its changed operations successfully.
@@ -78,7 +591,7 @@ graph-backed end to end:
   deterministic digests without TypeKro, Alchemy, Kubernetes, or credential dependencies.
 - `@applik8s/deployment-compiler` lowers the concrete profile into explicit artifact, generated-credential,
   namespace, direct-provider, external-provider, and root-composition nodes. The Chirp starter graph
-  currently contains 31 nodes, 21 immutable artifacts, 79 causal edges, and no fallback resource type.
+  currently contains 32 nodes, 22 immutable artifacts, 82 causal edges, and no fallback resource type.
 - `@applik8s/deployment-typekro` reconstructs the compiler-final Kubernetes graph as one TypeKro composition,
   consumes image and Secret-reference outputs through `artifactOutput(...)`, preserves canonical per-factory
   direct declarations, and leaves cross-composition ordering to the outer graph instead of corrupting
@@ -133,8 +646,11 @@ graph-backed end to end:
   `installation.connect(...)` loads its default Kubernetes transport only when requested. PostgreSQL-backed
   commands, model stores, streams, projections, gateways, and outboxes lazily load the focused adapter; the
   Drizzle schema/model semantics remain with authoring, but connection creation and driver lifecycle do not.
-- packed-consumer qualification now covers 27 packages and 43 public entrypoints; the executable is installed
-  from `@applik8s/cli`, and clean-directory compilation plus the v0.4/v0.5/v0.6 consumer graphs pass.
+- packed-consumer qualification now covers 45 packages and 68 public entrypoints; the executable is installed
+  from `@applik8s/cli`, and clean-directory compilation, function-native workflows and the registry-free
+  model API, the
+  v0.6 graph, and the generated Agentic Start browser/server production build pass. The packed runtime
+  also proves that removed command/operation/action registries cannot return.
 - a real temporary PostgreSQL server qualified the adapter boundary with 24 live tests covering relational
   authority/RLS, CRUD and indexed queries, transactions, command/outbox atomicity and replay, concurrency,
   rollback, deadlock retry, retention, and fail-closed schema drift.
@@ -144,7 +660,7 @@ graph-backed end to end:
 
 Earlier live OrbStack work published every Chirp image successfully, including both derived operator images,
 and proved creation of the Harbor project, expandable 20Gi CNPG database, and the first artifact level. That
-run then exposed insufficient Ceph daemon sizing under concurrent registry builds. TypeKro 0.32.0 exposes
+run then exposed insufficient Ceph daemon sizing under concurrent registry builds. The pinned TypeKro 0.33.5 exposes
 the required Rook/Ceph resource overrides and fixes the object-valued `Cel.default()` output that was rejected by live
 KRO because the schema-object branch and literal-map branch had incompatible CEL types. The local TypeKro
 repair widens both structured branches to `dyn` while preserving direct-mode JavaScript semantics; the
@@ -178,15 +694,131 @@ The remaining steady-state cleanup and qualification work is:
   workers share bounded eight-container envelopes with unique health ports. Dedicated profiles may retain
   isolation. Further footprint work should be driven by measured scheduling, memory, cold-start, and
   contention evidence rather than another unbounded consolidation heuristic;
-- TypeKro 0.32.0 contains PR #126. Its reviewed suite covered semantic and imperative alias-collision parity,
-  secret-taint rejection, canonical expressions, nested identities, client hydration, and live OrbStack
-  status projection/cleanup; Applik8s now qualifies only against that published cohort;
-- TypeKro's Alchemy generic-resource deletion must wait for owned Namespace disappearance before returning
-  success. Applik8s must consume that corrected contract rather than adding a second namespace finalizer
-  engine;
-- TypeKro still emits noisy but non-fatal namespace diagnostics while constructing some analysis graphs.
-  Its dependency scanner also interprets literal Kubernetes `.svc` hostnames as unknown resource ids.
-  These should be tracked upstream rather than patched around in Applik8s.
+- TypeKro 0.33.5 is the exact pinned cohort. Its reviewed surface covers semantic and imperative
+  alias-collision parity, secret-taint rejection, canonical expressions, nested identities, client
+  hydration, stable artifact-binding schemas, scheduling-only singleton
+  prerequisites, restart-safe generated-CRD migration, and ordinary Alchemy
+  materialization; `check:v07:typekro` fails if that dependency/API cohort
+  drifts;
+- interrupted root-RGD retries exposed two TypeKro artifact-binding
+  migration defects: Enhanced RGD metadata proxies reached the Kubernetes
+  serializer, and the migration did not wait for KRO to create the generated
+  CRD after repairing the RGD. Both are repaired and qualified in the local
+  TypeKro worktree and released TypeKro 0.33.5. The migration now normalizes caller
+  objects at its boundary, retries resource-version conflicts from a fresh RGD
+  read, waits boundedly for the generated CRD without swallowing API failures,
+  and synchronizes the complete artifact-binding map before imperative or
+  Alchemy instance updates so removed outputs cannot leave stale keys. The
+  focused 153-test cohort, all three TypeKro typechecks, build, lint,
+  deterministic/randomized/coverage unit cohorts, and the live OrbStack v0.32
+  interrupted-upgrade recovery passed with complete cleanup. Applik8s now pins
+  that published cohort. Version 0.33.5 also replaces the complete generated
+  CRD through the released client path and represents singleton ownership
+  through a scheduling-only barrier. Native qualification passes; complete
+  lifecycle and External-provider live evidence remain release-candidate
+  gates rather than upstream code blockers;
+- TypeKro's Alchemy generic-resource deletion should wait for owned Namespace
+  disappearance before returning success. Until that provider receipt carries
+  authoritative absence, the Applik8s CLI performs observation-only
+  verification after the ordinary Alchemy/TypeKro destroy transaction. It does
+  not patch finalizers, rediscover ownership, or implement a second deletion
+  engine, and it cannot report success before the owned Namespace reaches a
+  real `404`;
+- TypeKro 0.33.5 no longer emits the earlier false Namespace or literal Kubernetes `.svc` dependency
+  diagnostics for Applik8s's reconstructed graph. The adapter regression keeps those messages absent
+  without filtering or patching TypeKro diagnostics.
+
+### Historical exact-source v0.7 local qualification
+
+This 2026-08-02 checkpoint is retained as lifecycle history and is superseded
+for current release-readiness numbers by the 2026-08-05 productization
+qualification above. Its receipts remain useful evidence, but its package,
+graph, scorecard, and artifact counts are not the current candidate metrics.
+
+The repository-local structural release cohort is green for the current
+2026-08-02 working tree after physically removing `app.reconcile`/`app.on`,
+splitting the deployment observer below its maintainability ratchet, repairing
+profile-selected PostgreSQL lifecycle projection, adding compiler-owned
+authenticated typed HTTP execution, and making custom model mutations publish
+one framework-owned `models.<Model>.<operation>.completed.v1` fact from the
+canonical transaction. The completion fact is admitted into the same outbox
+only after the handler succeeds and authorization is revalidated; direct and
+compiler-emitted processors share that behavior. Exact-source performance and
+lifecycle receipts were refreshed before the final release-evidence and
+JetStream lifecycle edits; they must be recorded once more only after the
+candidate source stops changing:
+
+- root and maintained-example TypeScript typechecks passed;
+- lint, typecast/static-import/test-taxonomy audits, runtime-contract
+  generation, documentation consistency, release metadata, module boundaries,
+  and deployment-maintainability ratchets passed. Biome reports 197 existing
+  test-fixture warnings and zero errors;
+- the v0.7 contract lane passed 144 of 145 tests, with the one live PostgreSQL
+  attempt-store fixture intentionally skipped outside its live lane;
+- the exact compiler-emitted function-native event worker passed its ephemeral
+  PostgreSQL release gate, including nested model hydration, atomic update plus
+  outbox emission, restart, checkpoint rewind, and duplicate-effect recovery;
+- 45 coordinated packages packed, 68 public entrypoints imported under Node,
+  and clean consumers passed the executable, v0.4 command/EventLog, v0.6 native
+  model/query/exposure, function-native workflow, and Agentic Start generation,
+  discovery, compilation, browser, and server paths;
+- the quick synthetic performance budget passes, and a new exact-source full
+  run records 10,000 authority decisions, 10,000 signal
+  issuances/resolutions, and 10,000 frozen-batch events with no budget
+  violations. The durable history gate accepts 31 runs and requires the latest
+  receipt to match the exact authored working-tree digest;
+- GuestBook's production Vite/Nitro SSR artifact passed, and Chirp's full build
+  passed with 302 graph nodes, 123,332 browser gzip bytes, 2,666,707 server
+  bytes, a 259,990-byte RGD, a 20,072,116-byte OCI context, 457 generated
+  TypeKro artifacts, and two prerequisite instances;
+- profile topology remains stable at GuestBook 7 nodes/9 edges; Chirp Starter
+  32/82, Dedicated 33/83, and External 26/48; and Identity Start Starter
+  16/30, Dedicated 25/49, and External 13/23;
+- TypeKro 0.33.5/Alchemy beta.58 qualification, all twelve Stimp parity paths,
+  thirteen browser-security controls with 37 focused tests, and the
+  seventeen-item identity acceptance contract all passed. Identity acceptance
+  remains honestly partial at 13 complete and four integrated-live items;
+- Rust formatting and Clippy with warnings denied passed, followed by 9
+  operator-host unit tests, 100 host contracts, 12 runtime-bridge unit tests,
+  27 real ComponentizeJS/WIT/Wasmtime bridge contracts, 7 generated-contract
+  tests, and all doc tests; and
+- the exact public compiler/model regression cohort passes 63 tests; the real
+  PostgreSQL lane passes two relational and 23 canonical transaction tests,
+  including the generated completion fact and duplicate recovery;
+- a fresh direct/KRO OrbStack lifecycle matrix passes apply, no-op, update,
+  failure resume, graph-owned Secret delete/retain/explicit cleanup, external
+  ownership isolation, instance-before-RGD teardown, and authoritative
+  Namespace `404` without imperative graph deletion; and
+- the exact GuestBook Start browser-shaped Kubernetes command, reconciliation,
+  resumable invalidation, and requery journey passes on OrbStack under the
+  TypeKro 0.33.5 cohort. The compiler now recognizes when the selected
+  `ApplicationHost` already owns a purely Kubernetes-native browser surface and
+  keeps that gateway runtime-only, preventing a second Deployment, Service,
+  service account, RBAC, and NetworkPolicy owner from competing for the same
+  live identities. The generated graph contains one owner for each host
+  resource, and graph-backed KRO/Alchemy teardown removed both the root instance
+  and its owned Namespace without out-of-band deletion; and
+- the contract-mode scorecard now reports 19 complete, 8 partial, zero
+  pending, zero blocked, and one deliberately deferred multi-cluster item.
+
+The local cohort is necessary but not sufficient for release. The remaining
+release authority is the exact-candidate maintained-application/browser,
+provider-profile, identity, and signal-provider matrix and
+conversion of every non-deferred scorecard item from partial to complete.
+TypeKro 0.33.5 is published and pinned. Native singleton scheduling, artifact
+dependency, and generated-CRD migration qualification passes. The scorecard
+remains partial until the exact candidate passes the direct/KRO lifecycle
+matrix and live External graph.
+
+The shared OrbStack pod ceiling has been cleared through owner-aware cleanup.
+The active Chirp installation was retired by `applik8s destroy`, which let
+Alchemy and TypeKro delete its 40-resource graph. The older GuestBook root was
+retired through `factory.deleteInstance()`, and the Identity root completed
+under KRO after its provider chain recovered. Only after all three owners were
+authoritatively absent were their disposable retained/history namespaces
+deleted under explicit maintainer authorization. Raw workload deletion,
+finalizer mutation, and manual graph-child deletion remain prohibited cleanup
+paths.
 
 The first isolated TypeKro 0.31/Alchemy qualification pass added concrete evidence and narrowed the live
 blockers:
@@ -275,7 +907,7 @@ every exact-worktree live receipt is refreshed together.
 The scorecard correctly rejects receipts from an earlier dirty-worktree digest. The shared Ceph platform is
 healthy, Harbor's authenticated data path is proven, the isolated Alchemy transaction converges to a
 zero-change plan, and the GuestBook, generated-application, and Chirp runtime/browser paths are functionally
-green. TypeKro 0.32.0 is now pinned; refresh the exact-worktree datastore and application receipts together
+green. TypeKro 0.33.5 is now pinned; refresh the exact-worktree datastore and application receipts together
 and complete the separate-identity direct lifecycle matrix.
 
 ## Objective
@@ -918,8 +1550,8 @@ work is qualification of the single graph-backed engine, not migration between e
 
 | Decision                 | Default for this goal                                                                                                         | Required evidence                                                   |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| TypeKro version/API      | exact pin to the first reviewed release containing PR #117; all experimental planning access isolated in one adapter          | API capability contract and packed-import test                      |
-| Alchemy version cohort   | use the exact Alchemy/Effect cohort required by that TypeKro release                                                          | dependency-cohort check; no duplicate incompatible Effect runtime   |
+| TypeKro version/API      | exact pin to TypeKro 0.33.5; all experimental planning access isolated in one adapter                                          | `check:v07:typekro`, adapter contract tests, and packed-import test |
+| Alchemy version cohort   | Alchemy 2.0.0-beta.58 and Effect 4.0.0-beta.84, exactly matching TypeKro 0.33.5                                                | `check:v07:typekro`; no duplicate incompatible Effect runtime       |
 | local/CI state backend   | one secured, atomic filesystem-backed implementation for local use and an isolated CI location; in-memory only for unit tests | restart/resume, lock contention, corruption, backup/restore tests   |
 | production state backend | interface and threat model documented, but a remote implementation may follow this single-cluster goal                        | no claim that local filesystem state is multi-host production state |
 | Stack identity           | canonical encoded full identity plus digest and persisted reverse lookup                                                      | adversarial collision/property tests and two simultaneous installs  |
@@ -960,8 +1592,8 @@ two intended authorities.
       identities before effects.
 - [x] Lower a normalized `ApplicationGraph` and concrete installation spec into a deployment graph without
       importing the author's module a second time or reconstructing authoring-time schemas.
-- [ ] Add graph snapshots and profile tests for GuestBook, Chirp starter, Chirp dedicated, and Chirp
-      external-provider profiles.
+- [x] Add graph snapshots and profile tests for GuestBook; Chirp starter, dedicated, and external-provider;
+      and Identity Start starter, dedicated, and external-provider profiles.
 
 **Gate:** the deployment graph completely describes the current plan, is deterministic across builds, and
 fails closed before any effect when lifecycle or dependency semantics are ambiguous.
@@ -984,8 +1616,8 @@ fails closed before any effect when lifecycle or dependency semantics are ambigu
 - [x] Enforce RGD/instance/namespace deletion ordering and safe singleton/shared ownership through TypeKro's
       current lifecycle machinery.
 
-**Gate:** GuestBook and each Chirp profile compile to one inspectable application composition plus only the
-explicit direct-only/shared prerequisites required by their contracts.
+**Gate:** GuestBook and every Chirp and Identity Start profile compile to one inspectable application
+composition plus only the explicit direct-only/shared prerequisites required by their contracts.
 
 ## Workstream 3: Implement the Alchemy v2 deployment backend
 
@@ -1003,7 +1635,9 @@ explicit direct-only/shared prerequisites required by their contracts.
       rejection, schema migration, corruption diagnostics, and backup/export.
 - [x] Redact sensitive inputs and add structural tests proving secrets and kubeconfig contents never enter
       serialized deployment graphs, Alchemy props/outputs, logs, status, or committed evidence.
-- [ ] Add deterministic fake-provider tests and live direct/KRO tests against OrbStack.
+- [x] Add deterministic provider tests plus a focused live direct/KRO engine test against OrbStack. The
+      live gate proves failure/resume, no-op, update, dependency-safe destroy, and final absence through
+      `ApplicationDeploymentGraph` → TypeKro → Alchemy; the broader provider matrix remains Workstream 5.
 
 **Gate:** applying and destroying the same deployment graph through Alchemy is idempotent, resumable,
 dependency-correct, secret-safe, and finalizer-safe.
@@ -1032,7 +1666,8 @@ CLI, compiler pipeline, deletion runner, and receipt machinery.
 
 - [ ] Prove first install, idempotent redeploy, changed-artifact update, changed-provider configuration,
       interrupted apply, resume, readiness failure, and corrected retry.
-- [ ] Prove direct and KRO deployment strategies from the same deployment graph.
+- [x] Prove direct and KRO deployment strategies from the same minimal deployment graph, including no-op,
+      update, graph-backed deletion, and final Namespace absence.
 - [ ] Prove destroy waits for instances/finalizers before RGDs and leaves no orphan resources or terminating
       namespaces.
 - [ ] Prove shared Harbor/Rook/operator resources and retained PostgreSQL/object data survive application
@@ -1042,13 +1677,17 @@ CLI, compiler pipeline, deletion runner, and receipt machinery.
       Kubernetes objects, NodePorts, databases, buckets, streams, or credentials.
 - [ ] Prove dependency cycles, missing outputs, failed secret resolution, stale state, state corruption,
       connection mismatch, and unsafe ownership fail with actionable diagnostics before destructive effects.
-- [ ] Never use ad-hoc `kubectl delete` as the successful lifecycle path in tests or implementation.
-- [ ] Characterize and bound slow namespace-controller convergence seen on OrbStack: TypeKro/Alchemy
+- [x] Never use ad-hoc `kubectl delete` as the successful lifecycle path in tests or implementation;
+      `check:deployment-maintainability` scans the CLI, deployment adapters, and authoritative v0.7
+      release-lifecycle paths so fixture teardown or failure injection cannot be mistaken for release
+      evidence and the successful path cannot silently regress.
+- [x] Characterize and bound slow namespace-controller convergence seen on OrbStack: TypeKro/Alchemy
       deletion removed every graph-owned object and awaited a real namespace 404, but empty test
-      namespaces took roughly five to eight minutes to clear Kubernetes' built-in finalizer.
-- [ ] Remove TypeKro planning noise that currently misclassifies the `svc` segment of Kubernetes DNS names
-      as a resource reference and reports Namespaces as missing a namespace. These warnings are false
-      positives, but they obscure actionable deployment diagnostics.
+      namespaces took roughly five and a half minutes to clear Kubernetes' built-in finalizer in the
+      focused 2026-08-01 direct/KRO run.
+- [x] Prove TypeKro 0.33.5 no longer misclassifies literal Kubernetes `.svc` hostnames or cluster-scoped
+      Namespaces in Applik8s's reconstructed plans. The adapter asserts the real diagnostics are absent;
+      Applik8s does not suppress or rewrite upstream diagnostics.
 
 **Gate:** lifecycle behavior is derived from the graph and executed by Alchemy/TypeKro, not from cleanup
 knowledge duplicated in tests or the CLI.

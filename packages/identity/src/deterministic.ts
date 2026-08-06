@@ -17,6 +17,11 @@ export interface ApplicationDeterministicIdentityOptions {
   readonly issuer?: string;
   readonly kind?: Extract<ApplicationIdentityKind, 'human' | 'service' | 'external'>;
   readonly authenticationMethod?: string;
+  /**
+   * Explicit Starter-only role evidence. Dedicated and External profiles must
+   * derive roles from authenticated provider evidence instead.
+   */
+  readonly roles?: readonly string[];
   readonly trustedContext?: Readonly<Record<string, JsonValue>>;
   readonly admittedAt?: string;
   readonly expiresAt?: string;
@@ -40,7 +45,12 @@ export function createDeterministicApplicationPrincipal(
   );
   const kind = options.kind ?? 'human';
   const admittedAt = validTimestamp(
-    options.admittedAt ?? new Date().toISOString(),
+    // This provider is embedded in portable Starter graphs. A wall-clock
+    // default would make identical compilations produce different application
+    // graphs and container artifacts. Callers that need a meaningful admission
+    // instant must supply one; the credential-free deterministic default is a
+    // stable sentinel.
+    options.admittedAt ?? '1970-01-01T00:00:00.000Z',
     'admittedAt',
   );
   const expiresAt = options.expiresAt
@@ -51,6 +61,10 @@ export function createDeterministicApplicationPrincipal(
     throw new Error(
       'Deterministic identity audience requires at least one non-empty value.',
     );
+  }
+  const roles = options.roles?.map((role) => required(role, 'role'));
+  if (roles && new Set(roles).size !== roles.length) {
+    throw new Error('Deterministic identity roles must be unique.');
   }
   return Object.freeze({
     id: `principal:${application}:deterministic:${subject}`,
@@ -68,6 +82,7 @@ export function createDeterministicApplicationPrincipal(
     catalogRevision,
     authorityRevision,
     admittedAt,
+    ...(roles ? { roles: Object.freeze(roles) } : {}),
     ...(expiresAt ? { expiresAt } : {}),
     ...(options.sessionId ? { sessionId: required(options.sessionId, 'sessionId') } : {}),
   });

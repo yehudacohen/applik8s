@@ -1,17 +1,11 @@
-import { ApplicationQueryHydrationBoundary } from '@applik8s/react';
 import { createFileRoute } from '@tanstack/react-router';
-import { Bookmark } from '../application';
+import { Bookmark, BookmarkMine } from '../application';
 import { ChirpShell, PageIntro } from '../components/chirp-shell';
 import { QueryState } from '../components/post-list';
 import { formatUtcTimestamp } from '../format';
 
-const saved = Bookmark.mine({ limit: 50 });
-export const Route = createFileRoute('/bookmarks')({ loader: () => saved.snapshot(), component: BookmarksPage });
-
-function BookmarksPage() {
-  const snapshot = Route.useLoaderData();
-  return <ApplicationQueryHydrationBoundary snapshots={[snapshot]}><Bookmarks /></ApplicationQueryHydrationBoundary>;
-}
+const saved = BookmarkMine({ limit: 50 });
+export const Route = createFileRoute('/bookmarks')({ loader: () => saved.snapshot(), component: Bookmarks });
 function Bookmarks() {
   const bookmarks = saved.useQuery();
   const remove = Bookmark.update.useMutation();

@@ -110,7 +110,7 @@ export class ApplicationQueryClient {
       // typecast: the preceding filter requires a truthy cursor for every dehydrated ready entry.
       cursor: entry.state.cursor as string,
       capability: 'resumableInvalidation',
-      generatedAt: new Date().toISOString(),
+      generatedAt: new Date(entry.snapshotGeneratedAt).toISOString(),
     }));
   }
 

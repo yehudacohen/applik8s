@@ -1,6 +1,6 @@
 // typecast-file-boundary: Hatchet adapter tests construct SDK-shaped fakes and decoded task payloads to verify the provider boundary.
 import { ApplicationDurableError, ApplicationWorkflowObservationError } from '@applik8s/applik8s';
-import { createHatchetWorkflowRuntimeFromClient, createHatchetWorkflowRuntimeFromClientFactory, durableErrorFromMessage, reconcileHatchetWorkflowSchedule, waitForHatchetResult } from '@applik8s/runtime-hatchet';
+import { createHatchetWorkflowRuntimeFromClient, createHatchetWorkflowRuntimeFromClientFactory, durableErrorFromMessage, observeHatchetWorkflowRun, reconcileHatchetWorkflowSchedule, waitForHatchetResult } from '@applik8s/runtime-hatchet';
 import { describe, expect, it, vi } from 'vitest';
 
 describe('Hatchet workflow result observation', () => {
@@ -68,6 +68,36 @@ describe('Hatchet workflow result observation', () => {
     const cancelled = { runs: { get: vi.fn(async () => ({ run: { status: 'CANCELLED' } })) } };
     // typecast: terminal-state fakes intentionally omit unrelated Hatchet client methods.
     await expect(waitForHatchetResult(cancelled as never, 'run-cancelled', { timeoutMs: 100 })).rejects.toMatchObject({ failure: 'cancelled' });
+  });
+
+  it('maps one provider observation into the provider-neutral tracking contract', async () => {
+    const client = {
+      runs: {
+        get: vi.fn(async () => ({
+          run: {
+            status: 'COMPLETED',
+            output: { endpoint: 'https://example.test' },
+            createdAt: '2026-07-31T12:00:00Z',
+            startedAt: '2026-07-31T12:00:01Z',
+            finishedAt: '2026-07-31T12:00:02Z',
+          },
+        })),
+      },
+    };
+
+    await expect(
+      observeHatchetWorkflowRun<{ endpoint: string }>(
+        client as never,
+        'run-complete',
+        '2026-07-31T11:59:59.000Z',
+      ),
+    ).resolves.toEqual({
+      phase: 'Succeeded',
+      result: { endpoint: 'https://example.test' },
+      admittedAt: '2026-07-31T12:00:00.000Z',
+      startedAt: '2026-07-31T12:00:01.000Z',
+      finishedAt: '2026-07-31T12:00:02.000Z',
+    });
   });
 });
 

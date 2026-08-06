@@ -4,7 +4,10 @@ import { dirname, resolve } from 'node:path';
 import { nitro } from 'nitro/vite';
 import type { PluginOption } from 'vite';
 
-export type Applik8sStartViteOptions = Omit<Applik8sViteOptions, 'serverArtifact'>;
+export type Applik8sStartViteOptions = Omit<
+  Applik8sViteOptions,
+  'browserAdapterModule' | 'serverArtifact'
+>;
 
 /**
  * Thin TanStack Start adapter over the framework-neutral Applik8s Vite plugin.
@@ -24,6 +27,10 @@ export function applik8sStart(options: Applik8sStartViteOptions = {}): PluginOpt
     }),
     applik8sVite({
       ...options,
+      // TanStack Start is React-specific. Install the adapter through the
+      // generated facade so application authors never need a magic side-effect
+      // import while @applik8s/vite remains framework neutral.
+      browserAdapterModule: '@applik8s/react',
       serverArtifact: { outputDirectory: '.output', entrypoint: 'server/index.mjs' },
     }),
     {

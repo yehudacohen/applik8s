@@ -7,6 +7,7 @@ import type {
   ApplicationScopeExpression,
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
+  JsonValue,
 } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import { applicationRequestContextValues } from './command-principal.js';
@@ -31,6 +32,24 @@ export interface ApplicationTaskOperationPrincipal extends ApplicationPrincipal 
   readonly trustedContext?: JsonObject;
 }
 
+export interface ApplicationTaskServicePrincipalInput {
+  readonly id: string;
+  readonly roles?: readonly string[];
+  readonly attributes?: JsonObject;
+  readonly authorizationVersion: string;
+  readonly trustedContext?: JsonObject;
+}
+
+export interface CanonicalApplicationTaskPrincipalOptions {
+  readonly application: string;
+  readonly workerId: string;
+  readonly catalogRevision: string;
+  readonly authorityRevision: string;
+  readonly invocationId: string;
+  readonly contextSecret: string;
+  readonly now?: () => Date;
+}
+
 export interface ApplicationTaskOperationInvocation {
   readonly invocationId: string;
   readonly idempotencyKey: string;
@@ -40,6 +59,12 @@ export interface ApplicationTaskOperationInvocation {
   readonly signal: AbortSignal;
   readonly deadline?: string;
   readonly cancellationRevision?: string;
+  /** Provider-admitted data context inherited by durable children. */
+  readonly trustedContext?: {
+    readonly values: Readonly<Record<string, JsonValue>>;
+    readonly digest: string;
+    readonly changeScopes?: Readonly<Record<string, string>>;
+  };
 }
 
 export interface ApplicationTaskOperationRuntimeOptions {
@@ -64,6 +89,25 @@ export interface ApplicationTaskOperationRuntimeOptions {
     readonly commandId: string;
     readonly targetDigest: string;
     readonly cancellationRevision: string;
+  }) => Promise<
+    | { readonly allowed: true; readonly receipt: ApplicationAuthorizationReceipt }
+      | { readonly allowed: false; readonly code: string; readonly message: string }
+  >;
+  /**
+   * Authenticated request-boundary authority used by generated HTTP workers.
+   * This shares the durable command publisher/result observer with tasks but
+   * keeps the end-user principal canonical instead of manufacturing a
+   * workload execution principal.
+   */
+  readonly authorizeOperation?: (request: {
+    readonly principal: ApplicationTaskOperationPrincipal;
+    readonly operationId: string;
+    readonly target: ApplicationScopeExpression;
+    readonly inputDigest: string;
+    readonly trustedContextDigest: string;
+    readonly idempotencyKey: string;
+    readonly commandId: string;
+    readonly targetDigest: string;
   }) => Promise<
     | { readonly allowed: true; readonly receipt: ApplicationAuthorizationReceipt }
     | { readonly allowed: false; readonly code: string; readonly message: string }
@@ -91,6 +135,71 @@ export type ApplicationTaskOperationAliasBinding =
   };
 
 /**
+ * Promotes the intentionally small authoring-time service identity into the
+ * complete admitted principal consumed by the operation-authority boundary.
+ * The worker, never application code, owns revision binding and context
+ * integrity.
+ */
+export function canonicalApplicationTaskServicePrincipal(
+  principal: ApplicationTaskServicePrincipalInput,
+  options: CanonicalApplicationTaskPrincipalOptions,
+): ApplicationTaskOperationPrincipal & {
+  readonly authorizationVersion: string;
+  readonly trustedContext: JsonObject;
+} {
+  if (!principal || typeof principal !== 'object'
+    || typeof principal.id !== 'string' || !principal.id.trim()
+    || typeof principal.authorizationVersion !== 'string' || !principal.authorizationVersion.trim()) {
+    throw new Error('Application task service principal is incomplete.');
+  }
+  const trustedContext = principal.trustedContext ?? {};
+  if (!trustedContext || typeof trustedContext !== 'object' || Array.isArray(trustedContext)) {
+    throw new Error('Application task service principal trustedContext must be an object.');
+  }
+  for (const [name, value] of Object.entries({
+    application: options.application,
+    workerId: options.workerId,
+    catalogRevision: options.catalogRevision,
+    authorityRevision: options.authorityRevision,
+    invocationId: options.invocationId,
+  })) {
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new Error(`Application task principal ${name} is required.`);
+    }
+  }
+  if (options.contextSecret.length < 32) {
+    throw new Error('Application task principal contextSecret must contain at least 32 characters.');
+  }
+  const authorityRevision = options.authorityRevision.trim();
+  const application = options.application.trim();
+  const id = principal.id.trim();
+  return Object.freeze({
+    id,
+    identity: Object.freeze({
+      id: `identity:${application}:service:${id}`,
+      kind: 'service',
+      issuer: `applik8s://${application}`,
+      subject: id,
+    }),
+    kind: 'service',
+    authenticationMethod: `applik8s-task-service-principal/${principal.authorizationVersion.trim()}`,
+    audience: Object.freeze([options.workerId.trim()]),
+    ...(principal.roles ? { roles: Object.freeze([...principal.roles]) } : {}),
+    ...(principal.attributes ? { attributes: Object.freeze({ ...principal.attributes }) } : {}),
+    trustedContextDigest: applicationAdmittedContextDigest({
+      values: trustedContext,
+      digestSecret: options.contextSecret,
+    }),
+    catalogRevision: options.catalogRevision.trim(),
+    authorityRevision,
+    admittedAt: (options.now ?? (() => new Date()))().toISOString(),
+    authorizationVersion: authorityRevision,
+    trustedContext: Object.freeze({ ...trustedContext }),
+    sessionId: options.invocationId.trim(),
+  });
+}
+
+/**
  * Internal task effect adapter. It deliberately publishes the same command
  * envelope consumed by generated command processors and observes the same
  * durable PostgreSQL result. No handler receives EventLog/database credentials
@@ -114,12 +223,22 @@ export function createApplicationTaskOperationRuntime(options: ApplicationTaskOp
       if (Object.keys(aliases).length === 0) return Object.freeze({});
       validatePrincipal(principal);
       if (!invocation.invocationId.trim() || !invocation.idempotencyKey.trim()) throw new Error('Application task operation invocation identity is incomplete.');
+      const inheritedContext = invocation.trustedContext;
       const durableContext = applicationRequestContextValues(
         principal,
         principal.authorityRevision,
-        principal.trustedContext ?? {},
+        inheritedContext?.values ?? principal.trustedContext ?? {},
       );
-      const contextDigest = applicationAdmittedContextDigest({ values: durableContext, digestSecret: options.cursorSecret });
+      const contextDigest = inheritedContext?.digest
+        ?? applicationAdmittedContextDigest({ values: durableContext, digestSecret: options.cursorSecret });
+      if (!/^[a-f0-9]{64}$/i.test(contextDigest)) {
+        throw new Error('Application task operation inherited an invalid trusted-context digest.');
+      }
+      const changeScopes = inheritedContext?.changeScopes
+        ?? applicationRelationalChangeScopes({ values: durableContext, digestSecret: options.cursorSecret });
+      if (!validRelationalChangeScopes(changeScopes)) {
+        throw new Error('Application task operation inherited invalid relational change scopes.');
+      }
       const envelopes = Object.values(aliases).flatMap((binding) =>
         typeof binding === 'string' || !binding.envelope ? [] : [binding.envelope]);
       const requiresAuthority = envelopes.length > 0;
@@ -173,6 +292,28 @@ export function createApplicationTaskOperationRuntime(options: ApplicationTaskOp
               );
             }
             authorizationReceipt = decision.receipt;
+          } else if (
+            typeof aliasBinding !== 'string'
+            && options.authorizeOperation
+          ) {
+            const decision = await options.authorizeOperation({
+              principal,
+              operationId: aliasBinding.operationId,
+              target,
+              inputDigest,
+              trustedContextDigest: contextDigest,
+              idempotencyKey,
+              commandId,
+              targetDigest,
+            });
+            if (!decision.allowed) {
+              throw new ApplicationTaskOperationAuthorityError(
+                decision.code,
+                aliasBinding.operationId,
+                decision.message,
+              );
+            }
+            authorizationReceipt = decision.receipt;
           }
           verified ??= Promise.resolve(publisher.verify?.()).catch((error) => {
             verified = undefined;
@@ -191,7 +332,7 @@ export function createApplicationTaskOperationRuntime(options: ApplicationTaskOp
             routing: { binding: command.bindingId, targetKey, idempotencyKey },
             ...(commandOptions.expectedRevision ? { expectedRevision: commandOptions.expectedRevision } : {}),
             ...(authorizationReceipt ? { authorizationReceipt } : {}),
-            trustedContext: { values: durableContext, digest: contextDigest, changeScopes: applicationRelationalChangeScopes({ values: durableContext, digestSecret: options.cursorSecret }) },
+            trustedContext: { values: durableContext, digest: contextDigest, changeScopes },
           }, 'commands');
           return waitForResult({ command, targetKey, idempotencyKey, contextDigest, signal: invocation.signal });
         }];
@@ -237,6 +378,12 @@ export function createApplicationTaskOperationRuntime(options: ApplicationTaskOp
       delayMs = Math.min(1_000, Math.ceil(delayMs * 1.75));
     }
   }
+}
+
+function validRelationalChangeScopes(value: Readonly<Record<string, string>>): boolean {
+  return typeof value.global === 'string'
+    && /^[a-f0-9]{64}$/i.test(value.global)
+    && Object.values(value).every((digest) => /^[a-f0-9]{64}$/i.test(digest));
 }
 
 function completeBoundInput(

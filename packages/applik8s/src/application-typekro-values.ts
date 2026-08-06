@@ -34,6 +34,28 @@ export function applicationTypeKroString(...parts: readonly unknown[]): string {
   return Cel.expr<string>(expression);
 }
 
+/**
+ * Encode a string array for an environment variable without serializing
+ * TypeKro references into nested `${...}` marker text. The returned value is
+ * concrete JSON in direct mode and one CEL string expression in KRO mode.
+ *
+ * Provider endpoints are URI-like values and therefore cannot contain the
+ * JSON string delimiters that would require a second escaping pass.
+ */
+export function applicationTypeKroJsonStringArray(values: readonly unknown[]): string {
+  const expressions = values.map(applicationTypeKroExpression);
+  if (expressions.every((expression) => expression === undefined)) {
+    return JSON.stringify(values.map((value) => String(value)));
+  }
+  const parts: unknown[] = ['["'];
+  values.forEach((value, index) => {
+    if (index > 0) parts.push('","');
+    parts.push(value);
+  });
+  parts.push('"]');
+  return applicationTypeKroString(...parts);
+}
+
 export function applicationTypeKroValueIdentity(value: unknown): string {
   return applicationTypeKroExpression(value) ?? String(value ?? '');
 }
@@ -90,6 +112,13 @@ function graphValue(value: unknown, ancestors: WeakSet<object>): unknown {
 }
 
 function applicationTypeKroExpression(value: unknown): string | undefined {
+  // ApplicationGraph is a portable JSON boundary. It represents a branded
+  // TypeKro value as one complete `${...}` marker, so accept that exact form
+  // when a later composition stage hydrates the graph. Partial/interpolated
+  // strings remain ordinary application data.
+  if (typeof value === 'string' && value.startsWith('${') && value.endsWith('}')) {
+    return value.slice(2, -1);
+  }
   if (!value || (typeof value !== 'object' && typeof value !== 'function')) return undefined;
   if (Reflect.get(value, Symbol.for('TypeKro.KubernetesRef')) === true) {
     const resourceId = Reflect.get(value, 'resourceId');

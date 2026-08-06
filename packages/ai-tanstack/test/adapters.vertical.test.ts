@@ -3,6 +3,7 @@ import { createApplicationMutationOperation } from '@applik8s/client';
 import type { ApplicationExecutionPrincipal, ApplicationOperationId } from '@applik8s/core';
 import { type } from 'arktype';
 import { describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { hydrateApplicationConversationMessage } from '../src/client.js';
 import {
   type ApplicationTanStackToolExecutionContext,
   type ApplicationTanStackToolInvocation,
@@ -34,6 +35,25 @@ const operation = createApplicationMutationOperation(
 );
 
 describe('TanStack AI operation tools', () => {
+  it('hydrates canonical conversation records into browser-native messages', () => {
+    expect(
+      hydrateApplicationConversationMessage({
+        id: 'message-1',
+        role: 'assistant',
+        content: {
+          id: 'message-1',
+          role: 'assistant',
+          parts: [{ type: 'text', content: 'Durable response.' }],
+        },
+        createdAt: '2026-08-05T12:00:00.000Z',
+      }),
+    ).toMatchObject({
+      id: 'message-1',
+      role: 'assistant',
+      parts: [{ type: 'text', content: 'Durable response.' }],
+    });
+  });
+
   it('adapts the original ArkType schemas into a native server tool and invokes canonical authority', async () => {
     const tool = asTool(operation);
     expect(tool.__toolSide).toBe('server');
@@ -136,7 +156,10 @@ describe('TanStack AI connection and compatibility', () => {
     const connection = createApplicationTanStackConnection({
       endpoint: '/api/agent',
       fetchClient,
-      forwardedProps: { surface: 'test' },
+      agent: {
+        kind: 'applicationAgent',
+        name: 'access-advisor',
+      },
     });
     for await (const _chunk of connection.connect(
       [],
@@ -151,10 +174,20 @@ describe('TanStack AI connection and compatibility', () => {
       threadId: 'conversation-1',
       runId: 'protocol-run-1',
       forwardedProps: {
-        applik8s: { surface: 'test' },
+        applik8s: { agent: 'access-advisor' },
         request: 'value',
       },
     });
+  });
+
+  it('fails closed instead of accepting an untyped or empty agent selector', () => {
+    expect(() => createApplicationTanStackConnection({
+      // @ts-expect-error Agent selection is a typed application handle, not a string.
+      agent: 'access-advisor',
+    })).toThrow(/application\.agent/);
+    expect(() => createApplicationTanStackConnection({
+      agent: { kind: 'applicationAgent', name: ' ' },
+    })).toThrow(/application\.agent/);
   });
 
   it('rejects synthesized identities and forwards cancellation to fetch', async () => {

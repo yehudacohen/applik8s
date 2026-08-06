@@ -1,6 +1,6 @@
 // typecast-file-boundary: Drizzle doubles erase schemas while assertions verify the runtime restoration boundary.
 import type { ApplicationDatabaseBinding, ApplicationDatabaseClient } from '@applik8s/applik8s';
-import { applicationRelationalFrameworkMigrationSql, createApplicationRelationalContext, postgres, promoteDrizzleTable, trustedContext } from '@applik8s/applik8s';
+import { applicationDatabaseHandle, applicationRelationalFrameworkMigrationSql, createApplicationRelationalContext, postgres, promoteDrizzleTable, trustedContext, withApplicationDatabaseRuntimeResolver } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import { PgDialect, pgTable, text, uuid } from 'drizzle-orm/pg-core';
 import { describe, expect, test } from 'vitest';
@@ -202,5 +202,20 @@ describe('v0.6 relational runtime', () => {
     const reconstructed = { kind: 'applicationDatabase', name: 'catalog', provider: { kind: 'postgres' }, schema: {} } as unknown as ApplicationDatabaseBinding;
 
     await expect(context.run(reconstructed, () => context.database(reconstructed))).resolves.toBeDefined();
+  });
+
+  test('hydrates a declared database as an ordinary Drizzle client only inside managed execution', async () => {
+    const { database } = fixture();
+    const select = () => 'selected';
+    const handle = applicationDatabaseHandle(database);
+    const resolve = <TSchema extends Readonly<Record<string, unknown>>>(
+      _binding: ApplicationDatabaseBinding<TSchema>,
+    ) => ({ select }) as unknown as ApplicationDatabaseClient<TSchema>;
+
+    expect(() => handle.select()).toThrow(/only callable inside a managed/);
+    expect(withApplicationDatabaseRuntimeResolver(
+      resolve,
+      () => handle.select(),
+    )).toBe('selected');
   });
 });

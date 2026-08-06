@@ -57,6 +57,7 @@ export interface ApplicationAuthorityRepository {
     revision: string,
     kind: 'grant' | 'envelope' | 'workflow' | 'session',
     referenceId: string,
+    operationIds?: readonly ApplicationOperationId[],
   ): Promise<void>;
   removeCatalogReference?(
     revision: string,
@@ -328,6 +329,7 @@ export class ApplicationAuthorityService {
           ...(definition.audiences ? { audiences: definition.audiences } : {}),
           ...(definition.transports ? { transports: definition.transports } : {}),
           issuedBy: definition.issuedBy,
+          ...(definition.canGrant ? { canGrant: true } : {}),
           ...(definition.lifecycleOwner ? { lifecycleOwner: definition.lifecycleOwner } : {}),
           ...(definition.reason ? { reason: definition.reason } : {}),
           ...(definition.maximumUses !== undefined ? { maximumUses: definition.maximumUses } : {}),
@@ -531,9 +533,17 @@ export class ApplicationAuthorityService {
           catalogRevision: to.revision,
           authorityRevision: nextAuthorityRevision,
         } satisfies ApplicationGrantRecord));
+      const migratedGrantById = new Map(
+        migratedGrants.map((grant) => [grant.id, grant]),
+      );
+      const grantValidationState: ApplicationAuthoritySnapshot = {
+        ...migrationState,
+        grants: state.grants.map((grant) =>
+          migratedGrantById.get(grant.id) ?? grant),
+      };
 
       for (const grant of migratedGrants) {
-        this.#validateGrant(grant, migrationState, {
+        this.#validateGrant(grant, grantValidationState, {
           requireGrantablePermission: grant.origin === 'runtime',
         });
       }
@@ -543,7 +553,12 @@ export class ApplicationAuthorityService {
       for (const grant of migratedGrants) {
         await this.#repository.putGrant(grant);
         await this.#repository.removeCatalogReference?.(from.revision, 'grant', grant.id);
-        await this.#repository.putCatalogReference?.(to.revision, 'grant', grant.id);
+        await this.#repository.putCatalogReference?.(
+          to.revision,
+          'grant',
+          grant.id,
+          grant.operationIds,
+        );
       }
       for (const grant of state.grants.filter((candidate) =>
         candidate.catalogRevision === from.revision
@@ -596,6 +611,9 @@ export class ApplicationAuthorityService {
     options: { readonly requireGrantablePermission: boolean },
   ): void {
     validateScopeOrThrow(record.scope, `grants.${record.id}.scope`);
+    if (record.identity.id === record.issuedBy.id && record.origin === 'runtime') {
+      throw new ApplicationAuthorityError('AUTHORITY_SELF_GRANT', `Runtime principal ${record.identity.id} cannot grant authority to itself.`);
+    }
     if (record.operationIds.length === 0) {
       throw new ApplicationAuthorityError('AUTHORITY_GRANT_CONFLICT', `Grant ${record.id} must contain at least one operation.`);
     }
@@ -618,6 +636,51 @@ export class ApplicationAuthorityService {
       assertSubset(record.transports ?? [], permission.transports ?? record.transports ?? [], 'transport', record.id);
       if (options.requireGrantablePermission && !permission.grantable) {
         throw new ApplicationAuthorityError('AUTHORITY_PERMISSION_NOT_GRANTABLE', `Permission ${permission.id} cannot be assigned at runtime.`);
+      }
+    }
+    if (options.requireGrantablePermission) {
+      if (!permission) {
+        throw new ApplicationAuthorityError(
+          'AUTHORITY_PERMISSION_UNAVAILABLE',
+          `Runtime grant ${record.id} must derive from one grantable permission.`,
+        );
+      }
+      const issuerGrant = state.grants.find((candidate) =>
+        candidate.identity.id === record.issuedBy.id
+        && candidate.canGrant === true
+        && !candidate.revokedAt
+        && !isExpired(candidate.expiresAt, this.#now())
+        && candidate.catalogRevision === record.catalogRevision
+        && candidate.permissionId === permission.id);
+      if (!issuerGrant) {
+        throw new ApplicationAuthorityError(
+          'AUTHORITY_PERMISSION_NOT_GRANTABLE',
+          `Identity ${record.issuedBy.id} has no active canGrant authority for permission ${permission.id}.`,
+        );
+      }
+      assertSubset(record.operationIds, issuerGrant.operationIds, 'operation', record.id);
+      assertScopeNotBroader(record.scope, issuerGrant.scope, record.id);
+      assertSubset(
+        record.audiences ?? [],
+        issuerGrant.audiences ?? record.audiences ?? [],
+        'audience',
+        record.id,
+      );
+      assertSubset(
+        record.transports ?? [],
+        issuerGrant.transports ?? record.transports ?? [],
+        'transport',
+        record.id,
+      );
+      if (
+        record.expiresAt
+        && issuerGrant.expiresAt
+        && record.expiresAt > issuerGrant.expiresAt
+      ) {
+        throw new ApplicationAuthorityError(
+          'AUTHORITY_GRANT_CONFLICT',
+          `Runtime grant ${record.id} cannot outlive issuer grant ${issuerGrant.id}.`,
+        );
       }
     }
     if (record.delegationId) {
@@ -645,9 +708,6 @@ export class ApplicationAuthorityService {
         throw new ApplicationAuthorityError('AUTHORITY_OUTCOME_SELF_VERIFICATION', `Grant ${record.id} cannot verify its own required outcome.`);
       }
     }
-    if (record.identity.id === record.issuedBy.id && record.origin === 'runtime') {
-      throw new ApplicationAuthorityError('AUTHORITY_SELF_GRANT', `Runtime principal ${record.identity.id} cannot grant authority to itself.`);
-    }
   }
 
   async delegate(record: ApplicationDelegationRecord, parentGrant: ApplicationGrantRecord): Promise<ApplicationDelegationRecord> {
@@ -670,33 +730,83 @@ export class ApplicationAuthorityService {
   async authorize(request: ApplicationAuthorizationRequest): Promise<ApplicationAuthorizationResult> {
     return this.#repository.transaction(async () => {
       const now = this.#now();
+      const denyAuthorization = async (
+        code: ApplicationAuthorizationDenialCode,
+        message: string,
+      ): Promise<
+        Extract<ApplicationAuthorizationResult, { readonly allowed: false }>
+      > => {
+        const denied = deny(code, message);
+        await this.#audit(
+          'authorization.denied',
+          request.principal.authorityRevision,
+          {
+            principal: request.principal.identity,
+            operationId: request.operation.id,
+            ...(request.targetDigest
+              ? { targetDigest: request.targetDigest }
+              : {}),
+            details: {
+              code,
+              audience: request.audience,
+              transport: request.transport,
+            },
+          },
+        );
+        return denied;
+      };
       if (request.catalog.state !== 'active' && request.catalog.state !== 'draining') {
-        return deny('AUTHORIZATION_CATALOG_INACTIVE', `Catalog ${request.catalog.revision} is ${request.catalog.state}.`);
+        return denyAuthorization('AUTHORIZATION_CATALOG_INACTIVE', `Catalog ${request.catalog.revision} is ${request.catalog.state}.`);
       }
       if (!request.catalog.operations.some((operation) => operation.id === request.operation.id)
         || request.principal.catalogRevision !== request.catalog.revision) {
-        return deny('AUTHORIZATION_OPERATION_MISMATCH', `Principal and operation must resolve through catalog ${request.catalog.revision}.`);
+        return denyAuthorization('AUTHORIZATION_OPERATION_MISMATCH', `Principal and operation must resolve through catalog ${request.catalog.revision}.`);
       }
       if (request.operation.authority.classification === 'unclassified') {
-        return deny('AUTHORIZATION_OPERATION_UNCLASSIFIED', `Operation ${request.operation.id} has no authority classification.`);
+        return denyAuthorization('AUTHORIZATION_OPERATION_UNCLASSIFIED', `Operation ${request.operation.id} has no authority classification.`);
       }
       if (request.principal.trustedContextDigest !== request.trustedContextDigest) {
-        return deny('AUTHORIZATION_CONTEXT_MISMATCH', 'Trusted request context does not match the admitted principal.');
+        return denyAuthorization('AUTHORIZATION_CONTEXT_MISMATCH', 'Trusted request context does not match the admitted principal.');
       }
       if (!request.principal.audience.includes(request.audience)) {
-        return deny('AUTHORIZATION_AUDIENCE_DENIED', `Principal ${request.principal.id} was not admitted for audience ${request.audience}.`);
+        return denyAuthorization('AUTHORIZATION_AUDIENCE_DENIED', `Principal ${request.principal.id} was not admitted for audience ${request.audience}.`);
       }
       if (request.operation.authority.audiences && !request.operation.authority.audiences.includes(request.audience)) {
-        return deny('AUTHORIZATION_AUDIENCE_DENIED', `Audience ${request.audience} is outside operation ${request.operation.id}.`);
+        return denyAuthorization('AUTHORIZATION_AUDIENCE_DENIED', `Audience ${request.audience} is outside operation ${request.operation.id}.`);
       }
       if (request.operation.authority.transports && !request.operation.authority.transports.includes(request.transport)) {
-        return deny('AUTHORIZATION_TRANSPORT_DENIED', `Transport ${request.transport} is outside operation ${request.operation.id}.`);
+        return denyAuthorization('AUTHORIZATION_TRANSPORT_DENIED', `Transport ${request.transport} is outside operation ${request.operation.id}.`);
       }
       if (request.operation.authority.classification === 'application-policy'
         && request.applicationPolicyAllowed !== true) {
-        return deny('AUTHORIZATION_POLICY_DENIED', `Application policy denied ${request.operation.id}.`);
+        return denyAuthorization('AUTHORIZATION_POLICY_DENIED', `Application policy denied ${request.operation.id}.`);
       }
       const state = await this.#repository.snapshot();
+      const principalRoles = new Set(request.principal.roles ?? []);
+      const rolePermissionIds = new Set(
+        state.roles
+          .filter(
+            (role) =>
+              !role.retiredAt
+              && principalRoles.has(role.name),
+          )
+          .flatMap((role) => role.permissionIds),
+      );
+      const rolePermissions =
+        request.operation.authority.classification === 'public'
+        || request.operation.authority.classification === 'application-policy'
+          ? []
+          : state.permissions.filter(
+              (permission) =>
+                rolePermissionIds.has(permission.id)
+                && !permission.retiredAt
+                && permission.catalogRevision === request.catalog.revision
+                && permission.operationIds.includes(request.operation.id)
+                && (!permission.audiences
+                  || permission.audiences.includes(request.audience))
+                && (!permission.transports
+                  || permission.transports.includes(request.transport)),
+            );
       const candidates = request.operation.authority.classification === 'public'
         || request.operation.authority.classification === 'application-policy'
         ? []
@@ -708,23 +818,40 @@ export class ApplicationAuthorityService {
           && (!grant.transports || grant.transports.includes(request.transport)));
       if (request.operation.authority.classification !== 'public'
         && request.operation.authority.classification !== 'application-policy'
-        && candidates.length === 0) {
-        return deny('AUTHORIZATION_NO_GRANT', `Principal ${request.principal.identity.id} has no grant for ${request.operation.id}.`);
+        && candidates.length === 0
+        && rolePermissions.length === 0) {
+        return denyAuthorization('AUTHORIZATION_NO_GRANT', `Principal ${request.principal.identity.id} has no grant for ${request.operation.id}.`);
       }
       const grant = candidates.find((candidate) => !candidate.revokedAt && !isExpired(candidate.expiresAt, now));
-      if (!grant && candidates.some((candidate) => candidate.revokedAt)) {
-        return deny('AUTHORIZATION_GRANT_REVOKED', `Every matching grant for ${request.operation.id} is revoked.`);
+      const rolePermission = rolePermissions.find(
+        (permission) =>
+          intersectApplicationScopes(
+            request.operation.authority.defaultScope,
+            request.target,
+            ...(request.scopeEvidence ?? []),
+            permission.scope,
+          ).kind !== 'none',
+      );
+      if (!grant && !rolePermission && candidates.length === 0 && rolePermissions.length > 0) {
+        return denyAuthorization(
+          'AUTHORIZATION_SCOPE_EMPTY',
+          `Every role permission for ${request.operation.id} excludes the requested target.`,
+        );
       }
-      if (!grant && candidates.some((candidate) => isExpired(candidate.expiresAt, now))) {
-        return deny('AUTHORIZATION_GRANT_EXPIRED', `Every matching grant for ${request.operation.id} is expired.`);
+      if (!grant && !rolePermission && candidates.some((candidate) => candidate.revokedAt)) {
+        return denyAuthorization('AUTHORIZATION_GRANT_REVOKED', `Every matching grant for ${request.operation.id} is revoked.`);
+      }
+      if (!grant && !rolePermission && candidates.some((candidate) => isExpired(candidate.expiresAt, now))) {
+        return denyAuthorization('AUTHORIZATION_GRANT_EXPIRED', `Every matching grant for ${request.operation.id} is expired.`);
       }
       const scope = intersectApplicationScopes(
         request.operation.authority.defaultScope,
         request.target,
         ...(request.scopeEvidence ?? []),
         ...(grant ? [grant.scope] : []),
+        ...(rolePermission ? [rolePermission.scope] : []),
       );
-      if (scope.kind === 'none') return deny('AUTHORIZATION_SCOPE_EMPTY', `Authority intersection is empty: ${scope.reason}.`);
+      if (scope.kind === 'none') return denyAuthorization('AUTHORIZATION_SCOPE_EMPTY', `Authority intersection is empty: ${scope.reason}.`);
 
       let reservation: ApplicationGrantReservation | undefined;
       if (grant?.maximumUses !== undefined) {
@@ -743,7 +870,7 @@ export class ApplicationAuthorityService {
             candidate.grantId === grant.id
             && !['released', 'expired'].includes(candidate.state));
           if (consumed.length >= grant.maximumUses) {
-            return deny('AUTHORIZATION_GRANT_EXHAUSTED', `Grant ${grant.id} has no remaining uses.`);
+            return denyAuthorization('AUTHORIZATION_GRANT_EXHAUSTED', `Grant ${grant.id} has no remaining uses.`);
           }
           const timestamp = now.toISOString();
           reservation = {
@@ -779,7 +906,12 @@ export class ApplicationAuthorityService {
         authorityRevision: request.principal.authorityRevision,
         principal: request.principal,
         trustedContextDigest: request.trustedContextDigest,
-        matchedPermissionIds: grant?.permissionId ? [grant.permissionId] : [],
+        matchedPermissionIds: [
+          ...new Set([
+            ...(grant?.permissionId ? [grant.permissionId] : []),
+            ...(rolePermission ? [rolePermission.id] : []),
+          ]),
+        ],
         matchedGrantIds: grant ? [grant.id] : [],
         inputDigest: request.inputDigest,
         target: request.target,
@@ -795,6 +927,7 @@ export class ApplicationAuthorityService {
           request.catalog.revision,
           'envelope',
           request.commandId,
+          [request.operation.id],
         );
       }
       await this.#audit('authorization.allowed', request.principal.authorityRevision, {
@@ -999,11 +1132,26 @@ export class ApplicationAuthorityService {
   }
 
   async #putGrant(record: ApplicationGrantRecord): Promise<void> {
+    const previous = (await this.#repository.snapshot()).grants.find(
+      (candidate) => candidate.id === record.id,
+    );
     await this.#repository.putGrant(record);
+    if (previous && previous.catalogRevision !== record.catalogRevision) {
+      await this.#repository.removeCatalogReference?.(
+        previous.catalogRevision,
+        'grant',
+        previous.id,
+      );
+    }
     if (record.revokedAt || isExpired(record.expiresAt, this.#now())) {
       await this.#repository.removeCatalogReference?.(record.catalogRevision, 'grant', record.id);
     } else {
-      await this.#repository.putCatalogReference?.(record.catalogRevision, 'grant', record.id);
+      await this.#repository.putCatalogReference?.(
+        record.catalogRevision,
+        'grant',
+        record.id,
+        record.operationIds,
+      );
     }
   }
 }
@@ -1047,11 +1195,17 @@ export class InMemoryApplicationAuthorityRepository implements ApplicationAuthor
   async putOutcome(record: ApplicationOutcomeDefinition): Promise<void> { this.#put(this.#outcomes, record); }
   async putReservation(record: ApplicationGrantReservation): Promise<void> { this.#put(this.#reservations, record); }
   async putTombstone(record: ApplicationRevocationTombstone): Promise<void> { this.#put(this.#tombstones, record); }
-  async appendAudit(event: ApplicationAuditEvent): Promise<void> { this.#audit.push(clone(event)); this.#revision += 1; }
+  async appendAudit(event: ApplicationAuditEvent): Promise<void> {
+    // Audit position is not authority state. Advancing the policy revision for
+    // an authorization receipt would make that receipt invalidate every other
+    // cursor and admitted principal merely by recording its own decision.
+    this.#audit.push(clone(event));
+  }
   async putCatalogReference(
     revision: string,
     kind: 'grant' | 'envelope' | 'workflow' | 'session',
     referenceId: string,
+    _operationIds?: readonly ApplicationOperationId[],
   ): Promise<void> {
     const key = `${revision}\0${kind}`;
     const values = this.#catalogReferences.get(key) ?? new Set<string>();
@@ -1092,7 +1246,10 @@ export class InMemoryApplicationAuthorityRepository implements ApplicationAuthor
       outcomes: cloneMap(this.#outcomes),
       reservations: cloneMap(this.#reservations),
       tombstones: cloneMap(this.#tombstones),
-      audit: clone(this.#audit),
+      // Audit is append-only. Capturing its length preserves exact rollback
+      // semantics without cloning the complete history before every
+      // authorization decision (which made a sequence of decisions O(n²)).
+      auditLength: this.#audit.length,
       catalogReferences: new Map(
         [...this.#catalogReferences].map(([key, values]) => [key, new Set(values)]),
       ),
@@ -1110,7 +1267,7 @@ export class InMemoryApplicationAuthorityRepository implements ApplicationAuthor
       restoreMap(this.#outcomes, checkpoint.outcomes);
       restoreMap(this.#reservations, checkpoint.reservations);
       restoreMap(this.#tombstones, checkpoint.tombstones);
-      this.#audit.splice(0, this.#audit.length, ...checkpoint.audit);
+      this.#audit.splice(checkpoint.auditLength);
       this.#catalogReferences.clear();
       for (const [key, values] of checkpoint.catalogReferences) {
         this.#catalogReferences.set(key, new Set(values));
@@ -1263,7 +1420,10 @@ function isExpired(expiresAt: string | undefined, now: Date): boolean {
   return expiresAt !== undefined && Date.parse(expiresAt) <= now.getTime();
 }
 
-function deny(code: ApplicationAuthorizationDenialCode, message: string): ApplicationAuthorizationResult {
+function deny(
+  code: ApplicationAuthorizationDenialCode,
+  message: string,
+): Extract<ApplicationAuthorizationResult, { readonly allowed: false }> {
   return { allowed: false, code, message };
 }
 

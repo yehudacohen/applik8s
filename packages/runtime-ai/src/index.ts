@@ -2,12 +2,14 @@
 // execution principals are validated before erased AI/tool generics are
 // restored at this runtime boundary.
 
-export * from './postgres-attempt-store.js';
 export * from './agent-gateway.js';
 export * from './operation-executor.js';
+export * from './postgres-attempt-store.js';
 
 import type {
   ApplicationAIAgentHandler,
+  ApplicationAIAgentPersistence,
+  ApplicationAIAgentPersistenceRun,
   ApplicationAIAttemptRecord,
   ApplicationAIInvocationRecord,
   ApplicationAIStreamDelta,
@@ -35,6 +37,7 @@ import type {
   ApplicationOperationDescriptor,
   ApplicationRequestAdmission,
   ApplicationWorkloadAuthorityEnvelope,
+  JsonObject,
 } from '@applik8s/core';
 import {
   type AnyTextAdapter,
@@ -55,13 +58,18 @@ export type ApplicationAITextProvider =
       readonly kind: 'deterministic';
       readonly response?: string;
       readonly latencyMs?: number;
+      readonly tool?: {
+        readonly index?: number;
+        readonly input: JsonObject;
+      };
     }
   | {
       readonly kind: 'openai-compatible';
       readonly name: string;
       readonly baseUrl: string;
-      readonly apiKey: string;
+      readonly apiKey?: string;
       readonly model: string;
+      readonly allowInsecureHttp?: boolean;
       readonly api?: 'chat-completions' | 'responses';
       readonly timeoutMs?: number;
       readonly maximumRetries?: number;
@@ -143,7 +151,7 @@ export interface ApplicationAIAgentRuntimeOptions<
   >;
   readonly provider: ApplicationAITextProvider;
   readonly tools: readonly ApplicationAIAgentToolContract[];
-  readonly persistence: unknown;
+  readonly persistence: ApplicationAIAgentPersistence;
   readonly timeoutMs: number;
   readonly maximumConcurrency: number;
   readonly maximumRequestBytes?: number;
@@ -248,6 +256,26 @@ export function createApplicationAIAgentRequestHandler<TResult>(
         return response;
       }
       reservation = await options.attemptLifecycle.dispatching(reservation);
+      let persistedRun: ApplicationAIAgentPersistenceRun;
+      try {
+        persistedRun = await options.persistence.begin({
+          principal,
+          trustedContext: admission.trustedContext,
+          conversationId: body.threadId,
+          protocolRunId: body.runId,
+          agentRunId: principal.executionId,
+          invocationId: reservation.invocationId,
+          messages: body.messages.map((message, index) =>
+            jsonValue(message, `Agent request message ${index}`)),
+          startedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        await options.attemptLifecycle.fail(reservation, {
+          classification: 'provider-failed',
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
       const instructions = typeof options.instructions === 'string'
         ? options.instructions
         : await options.instructions(body.data ?? {});
@@ -319,6 +347,7 @@ export function createApplicationAIAgentRequestHandler<TResult>(
               result as AsyncIterable<StreamChunk>,
               reservation,
               options.attemptLifecycle,
+              persistedRun,
               controller.signal,
             ),
             releaseExecution,
@@ -335,6 +364,12 @@ export function createApplicationAIAgentRequestHandler<TResult>(
           reservation,
           { messageId },
         );
+        const completedAt = new Date().toISOString();
+        await persistedRun.complete({
+          messageId,
+          content: jsonValue(result, 'Agent result'),
+          completedAt,
+        });
         await options.attemptLifecycle.commitCanonical(
           reservation,
           {
@@ -429,16 +464,26 @@ async function* durableAgentStream(
   source: AsyncIterable<StreamChunk>,
   initialReservation: ApplicationAIAgentAttemptReservation,
   lifecycle: ApplicationAIAgentAttemptLifecycle,
+  persistence: ApplicationAIAgentPersistenceRun,
   signal: AbortSignal,
 ): AsyncIterable<StreamChunk> {
   let reservation = initialReservation;
   let terminal = false;
+  let persistenceTerminal = false;
   let messageId: string | undefined;
   let content = '';
   try {
     for await (const chunk of source) {
       const event = jsonRecord(chunk, 'TanStack AI stream event');
+      await persistence.append(event);
       reservation = await lifecycle.append(reservation, event);
+      if (chunk.type === EventType.RUN_STARTED) {
+        // TanStack emits one provider lifecycle pair per agent-loop turn.
+        // A tool-call turn is durable evidence, but only the final assistant
+        // turn owns the canonical response message.
+        messageId = undefined;
+        content = '';
+      }
       if (
         chunk.type === EventType.TEXT_MESSAGE_START
         || chunk.type === EventType.TEXT_MESSAGE_CONTENT
@@ -450,12 +495,22 @@ async function* durableAgentStream(
         content += chunk.delta;
       }
       if (chunk.type === EventType.RUN_ERROR) {
-        terminal = true;
+        const reason = streamErrorReason(chunk);
+        await persistence.terminate({
+          status: 'failed',
+          reason,
+          terminatedAt: new Date().toISOString(),
+        });
+        persistenceTerminal = true;
         reservation = await lifecycle.fail(reservation, {
           classification: 'provider-failed',
-          reason: streamErrorReason(chunk),
+          reason,
         });
-      } else if (chunk.type === EventType.RUN_FINISHED) {
+        terminal = true;
+      } else if (
+        chunk.type === EventType.RUN_FINISHED
+        && chunk.finishReason !== 'tool_calls'
+      ) {
         if (!messageId) {
           throw new Error(
             `AI attempt ${reservation.attemptId} completed without an assistant message identity.`,
@@ -467,6 +522,12 @@ async function* durableAgentStream(
             ? { usage: jsonRecord(chunk.usage, 'TanStack AI usage') }
             : {}),
         });
+        await persistence.complete({
+          messageId,
+          content,
+          completedAt: new Date().toISOString(),
+        });
+        persistenceTerminal = true;
         reservation = await lifecycle.commitCanonical(reservation, {
           messageId,
           content,
@@ -476,15 +537,31 @@ async function* durableAgentStream(
       yield chunk;
     }
     if (!terminal) {
+      const classification = signal.aborted
+        ? 'cancelled'
+        : 'completion-uncertain';
+      const reason = signal.aborted
+        ? 'The admitted agent request was cancelled before a terminal provider event.'
+        : 'The provider stream ended without a terminal TanStack AI event.';
+      await persistence.terminate({
+        status: signal.aborted ? 'cancelled' : 'interrupted',
+        reason,
+        terminatedAt: new Date().toISOString(),
+      });
       reservation = await lifecycle.fail(reservation, {
-        classification: signal.aborted ? 'cancelled' : 'completion-uncertain',
-        reason: signal.aborted
-          ? 'The admitted agent request was cancelled before a terminal provider event.'
-          : 'The provider stream ended without a terminal TanStack AI event.',
+        classification,
+        reason,
       });
     }
   } catch (error) {
     if (!terminal) {
+      if (!persistenceTerminal) {
+        await persistence.terminate({
+          status: signal.aborted ? 'cancelled' : 'interrupted',
+          reason: error instanceof Error ? error.message : String(error),
+          terminatedAt: new Date().toISOString(),
+        });
+      }
       await lifecycle.fail(reservation, {
         classification: signal.aborted ? 'cancelled' : 'completion-uncertain',
         reason: error instanceof Error ? error.message : String(error),
@@ -749,14 +826,22 @@ export function applicationAITextAdapter(
     return deterministicTextAdapter(provider);
   }
   const endpoint = new URL(provider.baseUrl);
-  if (endpoint.protocol !== 'https:' && endpoint.hostname !== 'localhost'
-    && endpoint.hostname !== '127.0.0.1') {
+  if (
+    endpoint.protocol !== 'https:'
+    && endpoint.hostname !== 'localhost'
+    && endpoint.hostname !== '127.0.0.1'
+    && provider.allowInsecureHttp !== true
+  ) {
     throw new Error('OpenAI-compatible AI provider endpoints must use HTTPS outside loopback.');
   }
   return openaiCompatibleText(provider.model, {
     name: provider.name,
     baseURL: endpoint.toString().replace(/\/$/u, ''),
-    apiKey: provider.apiKey,
+    // The application-side client talks to the managed gateway, which owns
+    // upstream provider credentials. The OpenAI-compatible adapter still
+    // requires a non-empty local credential during construction, so use a
+    // non-secret sentinel when the gateway does not require client auth.
+    apiKey: provider.apiKey ?? 'applik8s-managed-gateway',
     api: provider.api ?? 'chat-completions',
     ...(provider.timeoutMs !== undefined ? { timeout: provider.timeoutMs } : {}),
     ...(provider.maximumRetries !== undefined ? { maxRetries: provider.maximumRetries } : {}),
@@ -897,9 +982,56 @@ function deterministicTextAdapter(
       if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
       const runId = options.runId ?? `run-${crypto.randomUUID()}`;
       const threadId = options.threadId ?? `thread-${crypto.randomUUID()}`;
-      const messageId = `message-${crypto.randomUUID()}`;
       const timestamp = Date.now();
       yield { type: EventType.RUN_STARTED, runId, threadId, model: adapter.model, timestamp };
+      const fixtureTool = provider.tool;
+      if (fixtureTool && !hasToolResultAfterLatestUser(options.messages)) {
+        const toolIndex = fixtureTool.index ?? 0;
+        const tool = options.tools?.[toolIndex];
+        if (!tool) {
+          throw new Error(
+            `Deterministic AI fixture selects tool index ${toolIndex}, but the agent exposes ${options.tools?.length ?? 0} tools.`,
+          );
+        }
+        const toolCallId = `tool-call-${crypto.randomUUID()}`;
+        const argumentsJson = JSON.stringify(fixtureTool.input);
+        yield {
+          type: EventType.TOOL_CALL_START,
+          toolCallId,
+          toolCallName: tool.name,
+          toolName: tool.name,
+          index: toolIndex,
+          model: adapter.model,
+          timestamp,
+        };
+        yield {
+          type: EventType.TOOL_CALL_ARGS,
+          toolCallId,
+          delta: argumentsJson,
+          args: argumentsJson,
+          model: adapter.model,
+          timestamp,
+        };
+        yield {
+          type: EventType.TOOL_CALL_END,
+          toolCallId,
+          toolCallName: tool.name,
+          toolName: tool.name,
+          input: fixtureTool.input,
+          model: adapter.model,
+          timestamp,
+        };
+        yield {
+          type: EventType.RUN_FINISHED,
+          runId,
+          threadId,
+          model: adapter.model,
+          timestamp,
+          finishReason: 'tool_calls',
+        };
+        return;
+      }
+      const messageId = `message-${crypto.randomUUID()}`;
       yield { type: EventType.TEXT_MESSAGE_START, messageId, role: 'assistant', model: adapter.model, timestamp };
       yield { type: EventType.TEXT_MESSAGE_CONTENT, messageId, delta: response, model: adapter.model, timestamp };
       yield { type: EventType.TEXT_MESSAGE_END, messageId, model: adapter.model, timestamp };
@@ -911,6 +1043,21 @@ function deterministicTextAdapter(
     },
   };
   return adapter;
+}
+
+function hasToolResultAfterLatestUser(
+  messages: readonly { readonly role: string }[],
+): boolean {
+  let lastUser = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'user') {
+      lastUser = index;
+      break;
+    }
+  }
+  return messages
+    .slice(lastUser + 1)
+    .some((message) => message.role === 'tool');
 }
 
 async function boundedJson(
@@ -985,12 +1132,30 @@ function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
 function jsonRecord(
   value: unknown,
   description: string,
-): Readonly<Record<string, unknown>> {
+): JsonObject {
   const normalized = JSON.parse(JSON.stringify(value)) as unknown;
   if (!normalized || typeof normalized !== 'object' || Array.isArray(normalized)) {
     throw new Error(`${description} must be a JSON object.`);
   }
-  return normalized as Readonly<Record<string, unknown>>;
+  return normalized as JsonObject;
+}
+
+function jsonValue(
+  value: unknown,
+  description: string,
+): import('@applik8s/core').JsonValue {
+  const normalized = JSON.parse(JSON.stringify(value)) as unknown;
+  if (
+    normalized === null
+    || typeof normalized === 'string'
+    || typeof normalized === 'number'
+    || typeof normalized === 'boolean'
+    || Array.isArray(normalized)
+    || (normalized && typeof normalized === 'object')
+  ) {
+    return normalized as import('@applik8s/core').JsonValue;
+  }
+  throw new Error(`${description} must be JSON-serializable.`);
 }
 
 function streamErrorReason(

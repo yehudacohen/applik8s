@@ -26,6 +26,10 @@ import { deploy as deployAlchemyStack } from "alchemy/Deploy";
 import { destroy as destroyAlchemyStack } from "alchemy/Destroy";
 import * as Output from "alchemy/Output";
 import * as Plan from "alchemy/Plan";
+import {
+  destroy as destroyAlchemyResource,
+  retain as retainAlchemyResource,
+} from "alchemy/RemovalPolicy";
 import { evalStack, Stack } from "alchemy/Stack";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -55,10 +59,8 @@ import {
   applicationAlchemyStackIdentity,
 } from "./identity.js";
 import { claimApplicationAlchemyStackIdentity } from "./identity-registry.js";
-import {
-  type ApplicationAlchemyLease,
-  acquireApplicationAlchemyLease,
-} from "./lease.js";
+import { withDeploymentLease } from "./deployment-lease.js";
+import { assertApplicationAlchemyDestroyCompleted } from "./destroy-state.js";
 import { runApplicationAlchemyEffect } from "./runtime.js";
 import { applicationAlchemyState } from "./state.js";
 import {
@@ -67,6 +69,7 @@ import {
   withOrderingOnlyPrerequisites,
 } from "./typekro-ordering.js";
 import { typeKroMaterializationComponents } from "./typekro-components.js";
+import { typeKroCompositionOutputBinding } from "./typekro-output-binding.js";
 
 export interface ApplicationAlchemyDeploymentOptions {
   readonly graph: ApplicationDeploymentGraph;
@@ -238,9 +241,16 @@ export function createApplicationAlchemyDeployment(
           ApplicationGeneratedSecretAttributes
         >();
         for (const secret of generatedSecrets) {
-          const resource = yield* ApplicationGeneratedSecret(
-            secret.id,
-            generatedSecretProps(secret, options.graph, namespaceHandles),
+          const props = generatedSecretProps(
+            secret,
+            options.graph,
+            namespaceHandles,
+          );
+          const declaration = ApplicationGeneratedSecret(secret.id, props);
+          const resource = yield* (
+            props.deletionPolicy === "delete"
+              ? destroyAlchemyResource()(declaration)
+              : retainAlchemyResource()(declaration)
           );
           bindings[secret.id] = {
             resource,
@@ -364,6 +374,15 @@ export function createApplicationAlchemyDeployment(
             group.deploymentNodeId,
             Object.values(resources),
           );
+          const outputBinding = typeKroCompositionOutputBinding(
+            options.graph,
+            group,
+            resources,
+            bindings,
+          );
+          if (outputBinding) {
+            bindings[group.deploymentNodeId] = outputBinding;
+          }
         }
         return {
           artifacts: artifactOutputs,
@@ -435,6 +454,11 @@ export function createApplicationAlchemyDeployment(
           }),
           runtime,
         );
+        await assertApplicationAlchemyDestroyCompleted({
+          stateRoot: options.stateRoot,
+          stack: stack.key,
+          stage,
+        });
         return { stack, stage, transaction: "destroyed" };
       }),
   };
@@ -490,41 +514,6 @@ function summarizePlan(plan: Plan.Plan): readonly ApplicationAlchemyPlanChange[]
     (left, right) =>
       left.id.localeCompare(right.id) || left.action.localeCompare(right.action),
   );
-}
-
-async function withDeploymentLease<T>(
-  options: ApplicationAlchemyDeploymentOptions,
-  stack: ApplicationAlchemyStackIdentity,
-  operation: () => Promise<T>,
-): Promise<T> {
-  const ttlMs = options.leaseTtlMs ?? 60_000;
-  const lease = await acquireApplicationAlchemyLease(options.stateRoot, stack, {
-    owner: options.owner ?? `pid-${process.pid}`,
-    ttlMs,
-    acquireTimeoutMs: 10_000,
-  });
-  return runWithHeartbeat(lease, ttlMs, operation);
-}
-
-async function runWithHeartbeat<T>(
-  lease: ApplicationAlchemyLease,
-  ttlMs: number,
-  operation: () => Promise<T>,
-): Promise<T> {
-  let heartbeatFailure: unknown;
-  const interval = setInterval(() => {
-    lease.heartbeat().catch((cause: unknown) => {
-      heartbeatFailure = cause;
-    });
-  }, Math.max(100, Math.floor(ttlMs / 3)));
-  try {
-    const result = await operation();
-    if (heartbeatFailure) throw heartbeatFailure;
-    return result;
-  } finally {
-    clearInterval(interval);
-    await lease.release();
-  }
 }
 
 function safeStage(value: string): string {

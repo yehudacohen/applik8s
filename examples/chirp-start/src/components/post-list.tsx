@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Attachments, Bookmark, Media, Reaction, Report, type TimelinePostValue } from '../application';
+import { Attachments, Bookmark, MediaForPosts, Reaction, Report, type TimelinePostValue } from '../application';
 import { formatUtcTimestamp } from '../format';
 
 export function PostList({ posts, onReply, onQuote }: { readonly posts: readonly TimelinePostValue[]; readonly onReply?: (post: TimelinePostValue) => void; readonly onQuote?: (post: TimelinePostValue) => void }) {
@@ -9,7 +9,7 @@ export function PostList({ posts, onReply, onQuote }: { readonly posts: readonly
   const updateBookmark = Bookmark.update.useMutation();
   const report = Report.create.useMutation();
   const postIds = useMemo(() => posts.map((post) => post.id), [posts]);
-  const mediaQuery = useMemo(() => Media.forPosts({ postIds }), [postIds]);
+  const mediaQuery = useMemo(() => MediaForPosts({ postIds }), [postIds]);
   const media = mediaQuery.useQuery();
   const mediaByPost = useMemo(() => {
     const grouped = new Map<string, MediaValue[]>();
@@ -68,7 +68,7 @@ interface MediaValue {
 	readonly objectKey: string;
 	readonly altText: string;
 	readonly processingState: string;
-	readonly processingReason: string;
+	readonly processingReason: string | null;
 }
 
 function PostMedia({ attachments, pending }: { readonly attachments: readonly MediaValue[]; readonly pending: boolean }) {
@@ -96,7 +96,7 @@ function PostMedia({ attachments, pending }: { readonly attachments: readonly Me
 	})}{downloadError ? <div className="mediaOutcome failed" role="alert">{downloadError.message}</div> : null}</div>;
 }
 
-export function QueryState({ phase, error, empty }: { readonly phase: string; readonly error?: Error; readonly empty: boolean }) {
+export function QueryState({ phase, error, empty }: { readonly phase: string; readonly error: Error | undefined; readonly empty: boolean }) {
   if (error) return <div className="empty" role="alert">{error.message}</div>;
   if (phase !== 'ready') return <div className="empty">Loading the authoritative view…</div>;
   if (empty) return <div className="empty">Nothing is here yet.</div>;

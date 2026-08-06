@@ -1,20 +1,28 @@
 {
   "name": "@applik8s/client",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Browser-safe query, snapshot, resume, and external-store client for Applik8s applications.",
   "license": "Apache-2.0",
   "type": "module",
-  "files": ["dist"],
-  "publishConfig": { "access": "public" },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yehudacohen/applik8s.git",
     "directory": "packages/client"
   },
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
   },
   "dependencies": {
-    "@applik8s/core": "0.6.0"
+    "@applik8s/core": "0.7.0"
   }
 }

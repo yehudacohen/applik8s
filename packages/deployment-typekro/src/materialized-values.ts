@@ -5,7 +5,10 @@ import type {
   DeploymentJsonObject,
   DeploymentJsonValue,
 } from "@applik8s/deployment-contract";
-import { digestApplicationDeploymentValue } from "@applik8s/deployment-contract";
+import {
+  digestApplicationDeploymentValue,
+  parseApplicationDeploymentOutputReference,
+} from "@applik8s/deployment-contract";
 import { artifactOutput } from "typekro/experimental/planning";
 import type { ExpressionContext } from "./expression-reconstruction.js";
 import { transformExpressionString } from "./expression-reconstruction.js";
@@ -26,11 +29,24 @@ export interface ArtifactSubstitutionIndex {
 
 export function artifactSubstitutionIndex(
   graph: ApplicationDeploymentGraph,
+  deploymentNodeId?: string,
 ): ArtifactSubstitutionIndex {
+  const requiredProducers = deploymentNodeId
+    ? new Set(
+        graph.edges
+          .filter(
+            (edge) =>
+              edge.relationship === "requiresOutput" &&
+              edge.to === deploymentNodeId,
+          )
+          .map((edge) => edge.from),
+      )
+    : undefined;
   const byLogicalReference = new Map<string, ArtifactSubstitution>();
   const byRepository = new Map<string, ArtifactSubstitution>();
   const byGeneratedSecretName = new Map<string, string>();
   for (const node of graph.nodes) {
+    if (requiredProducers && !requiredProducers.has(node.id)) continue;
     if (
       node.kind === "externalProvider" &&
       node.provider.interface === "Secret" &&
@@ -96,6 +112,22 @@ export function transformMaterializedValue(
   } = {},
 ): unknown {
   if (typeof value === "string") {
+    const deploymentOutput =
+      parseApplicationDeploymentOutputReference(value);
+    if (deploymentOutput) {
+      if (
+        deploymentOutput.optional
+        && !context.graph.nodes.some(
+          (node) => node.id === deploymentOutput.nodeId,
+        )
+      ) {
+        return "";
+      }
+      return artifactOutput(
+        deploymentOutput.nodeId,
+        deploymentOutput.output,
+      );
+    }
     const generatedSecret = artifacts.byGeneratedSecretName.get(value);
     if (generatedSecret) {
       return artifactOutput(generatedSecret, "name");

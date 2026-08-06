@@ -15,10 +15,16 @@ for (let shard = 1; shard <= shards; shard += 1) {
     'run',
     `--shard=${shard}/${shards}`,
     `--maxWorkers=${workers}`,
+    '--exclude=packages/compiler/test/application-workflows.vertical.test.ts',
     '--passWithNoTests',
   ]);
   if (code !== 0) process.exit(code);
 }
+
+const workflowCompilerCode = await run(process.execPath, [
+  resolve('scripts/run-workflow-compiler-tests.mjs'),
+]);
+if (workflowCompilerCode !== 0) process.exit(workflowCompilerCode);
 
 function boundedInteger(raw, fallback, name) {
   if (raw === undefined) return fallback;

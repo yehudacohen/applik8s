@@ -1,3 +1,4 @@
+// typecast-file-boundary: MCP server tests intentionally supply boundary fixtures to verify runtime protocol validation.
 import {
   CallToolResultSchema,
   InitializeResultSchema,
@@ -118,6 +119,55 @@ describe('MCP server runtime', () => {
     });
   });
 
+  it('accepts nullable values emitted by ArkType-backed operation schemas', async () => {
+    const base = operationFixture('catalog-1');
+    const output = schema({
+      type: 'object',
+      properties: {
+        value: {
+          type: 'object',
+          properties: {
+            approvedBy: { type: 'string', nullable: true },
+          },
+          required: ['approvedBy'],
+        },
+      },
+      required: ['value'],
+    });
+    const operation = {
+      ...base,
+      output,
+      transports: base.transports.map((transport) => ({
+        ...transport,
+        ...(transport.mcp
+          ? {
+            mcp: {
+              ...transport.mcp,
+              schemaRevision: `${base.input.digest}:${output.digest}`,
+            },
+          }
+          : {}),
+      })),
+    };
+    const runtime = runtimeFixture({
+      catalog: catalogSource(catalogFixture('catalog-1', 'active', operation)),
+      execute: async () => ({ value: { approvedBy: null } }),
+    });
+    const admission = admissionFixture();
+    const initialized = await runtime.initialize({
+      protocolVersion: applicationMcpProtocolRevision,
+      clientInfo: { name: 'test-client', version: '1.0.0' },
+    }, admission);
+
+    await expect(runtime.callTool('greet', { name: 'Ada' }, {
+      admission,
+      sessionId: initialized.sessionId,
+      idempotencyKey: 'nullable-result',
+    })).resolves.toMatchObject({
+      structuredContent: { value: { approvedBy: null } },
+    });
+  });
+
   it('prevents session transfer and rejects wrong protocol eras', async () => {
     const runtime = runtimeFixture({
       catalog: catalogSource(catalogFixture('catalog-1', 'active', operationFixture('catalog-1'))),
@@ -170,6 +220,55 @@ describe('MCP server runtime', () => {
     expect(rejected.status).toBe(401);
     expect(rejected.headers.get('www-authenticate')).toContain('resource_metadata=');
     expect(admitRequest).not.toHaveBeenCalled();
+  });
+
+  it('mounts transport on an internal path without changing OAuth resource identity', async () => {
+    const runtime = runtimeFixture({
+      catalog: catalogSource(catalogFixture('catalog-1', 'active', operationFixture('catalog-1'))),
+      execute: async () => ({ message: 'ok' }),
+    });
+    const handle = createApplicationMcpHttpHandler({
+      runtime,
+      path: '/__applik8s/mcp/public',
+      admitRequest: async () => admissionFixture(),
+    });
+    const canonical = await handle(new Request('https://mcp.example.test/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: applicationMcpProtocolRevision,
+          clientInfo: { name: 'test-client', version: '1.0.0' },
+        },
+      }),
+    }));
+    expect(canonical.status).toBe(404);
+    const mounted = await handle(new Request(
+      'http://identity-start-access-mcp/__applik8s/mcp/public',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: applicationMcpProtocolRevision,
+            clientInfo: { name: 'test-client', version: '1.0.0' },
+          },
+        }),
+      },
+    ));
+    expect(mounted.status).toBe(200);
+    expect(mounted.headers.get('Mcp-Session-Id')).toBeTruthy();
+    await expect(mounted.json()).resolves.toMatchObject({
+      result: {
+        protocolVersion: applicationMcpProtocolRevision,
+      },
+    });
   });
 
   it('releases abandoned session catalog references through a bounded expiry sweep', async () => {

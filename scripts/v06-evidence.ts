@@ -67,7 +67,17 @@ export interface V06EvidenceReceipt {
   readonly assertionEvidence: readonly V06AssertionEvidence[];
 }
 
-export async function collectV06GitIdentity(root = process.cwd()): Promise<V06GitIdentity> {
+export async function collectV06GitIdentity(
+  root = process.cwd(),
+  options: {
+    /**
+     * Evidence outputs that are derived from the candidate may be excluded to
+     * avoid a self-referential digest. Authored source and configuration must
+     * never be placed under an excluded path.
+     */
+    readonly exclude?: readonly string[];
+  } = {},
+): Promise<V06GitIdentity> {
   const [{ stdout: commit }, { stdout: status }, { stdout: listed }] = await Promise.all([
     execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: root }),
     execFileAsync('git', ['status', '--porcelain'], { cwd: root, maxBuffer: 100 * 1024 * 1024 }),
@@ -76,7 +86,18 @@ export async function collectV06GitIdentity(root = process.cwd()): Promise<V06Gi
       maxBuffer: 100 * 1024 * 1024,
     }),
   ]);
-  const files = listed.split('\0').filter(Boolean).sort();
+  const excluded = (options.exclude ?? []).map((path) =>
+    path.replaceAll('\\', '/').replace(/^\.\/+/, '')
+  );
+  const files = listed
+    .split('\0')
+    .filter(Boolean)
+    .filter((path) => !excluded.some((candidate) =>
+      candidate.endsWith('/')
+        ? path.startsWith(candidate)
+        : path === candidate
+    ))
+    .sort();
   const digest = createHash('sha256');
   for (const relativePath of files) {
     const path = join(root, relativePath);

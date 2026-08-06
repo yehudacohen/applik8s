@@ -7,6 +7,27 @@ import { configMap } from 'typekro/kubernetes';
 import { describe, expect, it } from 'vitest';
 
 describe('installable Application resources', () => {
+  it('preserves integer bounds while flattening discriminated installation unions for KRO', () => {
+    const Common = type({ name: 'string' });
+    const Starter = type({ profile: "'starter'" });
+    const External = type({
+      profile: "'external'",
+      providers: {
+        index: {
+          port: '1 <= number.integer <= 65535',
+        },
+      },
+    });
+    const application = app('bounded-union', {
+      spec: Common.and(Starter.or(External)),
+      status: type({ ready: 'boolean' }),
+    });
+
+    const yaml = application.composition.factory('kro').toYaml();
+    expect(yaml).toContain('port: integer | minimum=1 maximum=65535');
+    expect(yaml).not.toContain('port: float');
+  });
+
   it('uses one typed schema for the Application RGD and its public installation model', () => {
     const InstallationSpec = type({
       name: 'string',
@@ -44,8 +65,33 @@ describe('installable Application resources', () => {
     const mediaMode = chirp.when(chirp.installation.spec.features.media, { then: 'enabled', otherwise: 'disabled' });
     const objectStorageRequired = chirp.any(chirp.installation.spec.features.media, chirp.installation.spec.features.analytics);
     const allOptionalFeatures = chirp.all(chirp.installation.spec.features.media, chirp.installation.spec.features.analytics);
-    expect(Reflect.get(replicas as unknown as object, 'expression')).toContain('schema.spec.profile == "starter" ? 1');
-    expect(Reflect.get(mediaMode as unknown as object, 'expression')).toBe('schema.spec.features.media ? "enabled" : ("disabled")');
+    const storage = chirp.select(chirp.installation.spec.profile, {
+      starter: chirp.select(chirp.installation.spec.profile, {
+        starter: '16Gi',
+        dedicated: '250Gi',
+        external: '16Gi',
+        default: '16Gi',
+      }),
+      dedicated: '250Gi',
+      external: '10Gi',
+      default: '16Gi',
+    });
+    const nestedMediaMode = chirp.when(chirp.installation.spec.features.media, {
+      // biome-ignore lint/suspicious/noThenProperty: the public conditional DSL intentionally uses then/otherwise branches.
+      then: mediaMode,
+      otherwise: chirp.select(chirp.installation.spec.profile, {
+        starter: 'deferred',
+        default: 'disabled',
+      }),
+    });
+    expect(Reflect.get(replicas as unknown as object, 'expression')).toContain('(schema.spec.profile) == "starter" ? (1)');
+    expect(Reflect.get(mediaMode as unknown as object, 'expression')).toBe('(schema.spec.features.media) ? ("enabled") : ("disabled")');
+    expect(Reflect.get(storage as unknown as object, 'expression')).toContain(
+      '? ((schema.spec.profile) == "starter" ? ("16Gi")',
+    );
+    expect(Reflect.get(nestedMediaMode as unknown as object, 'expression')).toContain(
+      '? ((schema.spec.features.media) ? ("enabled") : ("disabled"))',
+    );
     expect(Reflect.get(objectStorageRequired as unknown as object, 'expression')).toBe('(schema.spec.features.media) || (schema.spec.features.analytics)');
     expect(Reflect.get(allOptionalFeatures as unknown as object, 'expression')).toBe('(schema.spec.features.media) && (schema.spec.features.analytics)');
     chirp.installation.configure((spec, application) => {
@@ -146,7 +192,10 @@ describe('installable Application resources', () => {
   });
 
   it('nests a TypeKro composition through app.infra(...) with a stable graph identity', () => {
-    const dependency = kubernetesComposition({
+    const dependency = kubernetesComposition<
+      { name: string; namespace: string },
+      { ready: boolean }
+    >({
       name: 'identity-dependency',
       kind: 'IdentityDependency',
       spec: type({ name: 'string', namespace: 'string' }),

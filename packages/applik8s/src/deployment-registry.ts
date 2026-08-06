@@ -30,13 +30,24 @@ export interface ResolvedApplicationContainerRegistry {
 export function applicationContainerRegistryFromGraph(
   graph: ApplicationGraph,
 ): ApplicationContainerRegistryProvider {
-  const candidates = graph.nodes.filter(
+  const declared = graph.nodes.filter(
     (node): node is ApplicationProviderNode<'ContainerRegistry'> =>
       node.kind === 'provider' && node.interface === 'ContainerRegistry',
   );
-  if (candidates.length === 0) return { kind: 'orbstack-container-registry' };
+  const candidates = declared.filter(
+    (node) =>
+      !node.config?.qualification
+      || typeof node.config.qualification !== 'object'
+      || Array.isArray(node.config.qualification),
+  );
+  if (declared.length === 0) return { kind: 'orbstack-container-registry' };
+  if (candidates.length === 0) {
+    throw new Error(
+      'ApplicationGraph declares named ContainerRegistry providers but no unqualified application default. Bind the selected registry with app.provide(ContainerRegistry, binding).',
+    );
+  }
   if (candidates.length > 1) {
-    throw new Error('ApplicationGraph declares more than one ContainerRegistry provider.');
+    throw new Error('ApplicationGraph declares more than one unqualified ContainerRegistry provider.');
   }
   const provider = candidates[0]?.config?.containerRegistry;
   if (!isApplicationContainerRegistryProvider(provider)) {

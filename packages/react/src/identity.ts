@@ -1,5 +1,4 @@
 import {
-  createApplicationIdentityClient,
   type ApplicationIdentityAccountView,
   type ApplicationIdentityClient,
   type ApplicationIdentityClientOptions,
@@ -9,33 +8,65 @@ import {
   type ApplicationOAuthClientView,
   type ApplicationOAuthConsentView,
   type ApplicationPreAuthenticationFlowKind,
+  createApplicationIdentityClient,
 } from '@applik8s/identity/client';
 import {
   createContext,
   createElement,
+  type ReactNode,
   useCallback,
   useContext,
   useEffect,
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from 'react';
 
 const ApplicationIdentityClientContext = createContext<ApplicationIdentityClient | undefined>(undefined);
+const ApplicationIdentityInitialSessionContext = createContext<ApplicationIdentitySessionView | undefined>(undefined);
 
 export interface ApplicationIdentityProviderProps extends ApplicationIdentityClientOptions {
   readonly client?: ApplicationIdentityClient;
+  /** Request-scoped session snapshot serialized by the server route loader. */
+  readonly initialSession?: ApplicationIdentitySessionView;
   readonly children?: ReactNode;
 }
 
 /** Router-independent provider for the browser-safe identity seam. */
 export function ApplicationIdentityProvider(props: ApplicationIdentityProviderProps): ReactNode {
+  const {
+    baseUrl,
+    children,
+    client: providedClient,
+    credentials,
+    fetch: requestFetch,
+    initialSession,
+    maxResponseBytes,
+  } = props;
   const client = useMemo(
-    () => props.client ?? createApplicationIdentityClient(props),
-    [props.baseUrl, props.client, props.credentials, props.fetch, props.maxResponseBytes],
+    () => providedClient ?? createApplicationIdentityClient({
+      ...(baseUrl !== undefined ? { baseUrl } : {}),
+      ...(credentials !== undefined ? { credentials } : {}),
+      ...(requestFetch !== undefined ? { fetch: requestFetch } : {}),
+      ...(maxResponseBytes !== undefined ? { maxResponseBytes } : {}),
+    }),
+    [
+      baseUrl,
+      credentials,
+      maxResponseBytes,
+      providedClient,
+      requestFetch,
+    ],
   );
-  return createElement(ApplicationIdentityClientContext.Provider, { value: client }, props.children);
+  return createElement(
+    ApplicationIdentityClientContext.Provider,
+    { value: client },
+    createElement(
+      ApplicationIdentityInitialSessionContext.Provider,
+      { value: initialSession },
+      children,
+    ),
+  );
 }
 
 export function useApplicationIdentityClient(): ApplicationIdentityClient {
@@ -57,7 +88,9 @@ export interface ApplicationIdentitySessionState extends ApplicationIdentityReso
 
 export function useApplicationIdentitySession(): ApplicationIdentitySessionState {
   const client = useApplicationIdentityClient();
-  const resource = useIdentityResource(() => client.session(), [client]);
+  const initialSession = useContext(ApplicationIdentityInitialSessionContext);
+  const load = useCallback(() => client.session(), [client]);
+  const resource = useIdentityResource(load, initialSession);
   const logout = useCallback(async () => {
     const session = await client.logout();
     resource.replace(session);
@@ -73,7 +106,8 @@ export interface ApplicationIdentityAccountState extends ApplicationIdentityReso
 
 export function useApplicationIdentityAccount(): ApplicationIdentityAccountState {
   const client = useApplicationIdentityClient();
-  const resource = useIdentityResource(() => client.account(), [client]);
+  const load = useCallback(() => client.account(), [client]);
+  const resource = useIdentityResource(load);
   const update = useCallback(async (input: Readonly<Record<string, unknown>>) => {
     const account = await client.updateAccount(input);
     resource.replace(account);
@@ -162,7 +196,8 @@ export interface ApplicationOAuthConsentState extends ApplicationIdentityResourc
 
 export function useApplicationOAuthConsent(consentId: string): ApplicationOAuthConsentState {
   const client = useApplicationIdentityClient();
-  const resource = useIdentityResource(() => client.consent(consentId), [client, consentId]);
+  const load = useCallback(() => client.consent(consentId), [client, consentId]);
+  const resource = useIdentityResource(load);
   const decide = useCallback(
     (decision: 'approve' | 'deny') => client.decideConsent(consentId, decision),
     [client, consentId],
@@ -183,7 +218,8 @@ export interface ApplicationOAuthClientsState extends ApplicationIdentityResourc
 
 export function useApplicationOAuthClients(): ApplicationOAuthClientsState {
   const client = useApplicationIdentityClient();
-  const resource = useIdentityResource(() => client.clients(), [client]);
+  const load = useCallback(() => client.clients(), [client]);
+  const resource = useIdentityResource(load);
   const create = useCallback(async (input: Parameters<ApplicationIdentityClient['createClient']>[0]) => {
     const credential = await client.createClient(input);
     await resource.refresh();
@@ -207,7 +243,7 @@ export function useApplicationOAuthClients(): ApplicationOAuthClientsState {
 
 function useIdentityResource<T>(
   load: () => Promise<T>,
-  dependencies: readonly unknown[],
+  initialValue?: T,
 ): {
   readonly state: ApplicationIdentityResourceState<T>;
   readonly replace: (value: T) => void;
@@ -218,7 +254,9 @@ function useIdentityResource<T>(
     readonly phase: ApplicationIdentityResourceState<T>['phase'];
     readonly data?: T;
     readonly error?: Error;
-  }>({ phase: 'loading' });
+  }>(() => initialValue === undefined
+    ? { phase: 'loading' }
+    : { phase: 'ready', data: initialValue });
   const refresh = useCallback(async () => {
     active.current?.abort();
     const controller = new AbortController();
@@ -235,13 +273,12 @@ function useIdentityResource<T>(
       if (!controller.signal.aborted) setState({ phase: 'error', error: normalizedError(error) });
       throw error;
     }
-  // The caller supplies the exact semantic dependencies for its stable loader closure.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, dependencies);
+  }, [load]);
   useEffect(() => {
+    if (initialValue !== undefined) return () => active.current?.abort();
     void refresh().catch(() => undefined);
     return () => active.current?.abort();
-  }, [refresh]);
+  }, [initialValue, refresh]);
   const replace = useCallback((value: T) => setState({ phase: 'ready', data: value }), []);
   const exposed = useMemo<ApplicationIdentityResourceState<T>>(
     () => ({ ...state, refresh }),

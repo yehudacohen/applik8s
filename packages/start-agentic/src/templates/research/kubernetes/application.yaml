@@ -1,0 +1,8 @@
+apiVersion: applik8s-template-project.applik8s.dev/v1alpha1
+kind: Applik8sTemplateProject
+metadata:
+  name: applik8s-template-project
+  namespace: default
+spec:
+  name: applik8s-template-project
+  profile: starter

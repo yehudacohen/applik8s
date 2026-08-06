@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transformSync } from 'esbuild';
+import type { JsonObject } from '@applik8s/core';
 import { blockCommentEnd, escapeRegExp, isDeclarationIdentifier, isRegexLiteralStart, lineCommentEnd, nextNonWhitespace, previousNonWhitespace, regexLiteralEnd, unique } from './application-route-source-utilities.js';
 export interface ApplicationRouteSourceLocation {
   readonly file: string;
@@ -16,6 +17,11 @@ export interface ApplicationRouteSourceRoute {
   readonly handlerSource: string;
   readonly handlerSourceKind?: 'source' | 'functionToString';
   readonly handlerSourceLocation?: ApplicationRouteSourceLocation;
+  readonly functionNative?: {
+    readonly input: JsonObject;
+    readonly output: JsonObject;
+    readonly transaction?: unknown;
+  };
 }
 
 export interface SerializedApplicationServerRouteWithDependencies extends ApplicationRouteSourceRoute {
@@ -45,6 +51,15 @@ export interface ApplicationServerMethodAlias {
 
 export interface ApplicationRouteSourceDependencies {
   readonly source: string;
+  /**
+   * Executable helper declarations that belong to the callback itself.
+   *
+   * Framework handle registrations are omitted here because their callbacks
+   * are admitted and validated independently when the handle is registered.
+   * Consumers performing closure-safety analysis must use this source instead
+   * of rescanning the complete module materialization source.
+   */
+  readonly analysisSource: string;
   readonly resolveDir: string;
 }
 
@@ -253,7 +268,38 @@ function resolveApplicationRouteSourceDependencies(file: string, unsupported: re
   const ordered = [...new Map([...included.values()].map((binding) => [`${binding.kind}:${binding.position}:${binding.source}`, binding])).values()].sort((left, right) => left.position - right.position);
   const imports = ordered.filter((binding) => binding.kind === 'import').map((binding) => binding.source);
   const declarations = ordered.filter((binding) => binding.kind === 'declaration').map((binding) => binding.source);
-  return { source: [...imports, ...declarations].join('\n\n'), resolveDir: dirname(file) };
+  const analysisDeclarations = declarations.filter((declaration) =>
+    !isDirectApplicationWorkflowHandleRegistration(declaration)
+  );
+  return {
+    source: [...imports, ...declarations].join('\n\n'),
+    analysisSource: analysisDeclarations.join('\n\n'),
+    resolveDir: dirname(file),
+  };
+}
+
+/**
+ * A direct `const effect = application.workflow(...)` declaration is a typed
+ * durable handle, not executable orchestration. Its implementation callback is
+ * validated through its own registration path (task rules for a single-step
+ * workflow, orchestration rules for a durable workflow). Rescanning the whole
+ * declaration while validating a caller would incorrectly reject legal
+ * coordinator-to-effect calls.
+ *
+ * The recognition is intentionally narrow and fail-closed: one identifier,
+ * one direct member call, and no second declarator or trailing expression.
+ */
+function isDirectApplicationWorkflowHandleRegistration(source: string): boolean {
+  const stripped = stripCommentsAndStrings(source);
+  const match = stripped.match(
+    /^(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*\.\s*workflow\s*\(/,
+  );
+  if (!match) return false;
+  const open = stripped.lastIndexOf('(', match[0].length - 1);
+  if (open < 0) return false;
+  const close = matchingDelimiter(stripped, open, '(', ')');
+  if (close === undefined) return false;
+  return /^;?\s*$/.test(stripped.slice(close + 1));
 }
 
 const applicationRouteSourceModulePath = fileURLToPath(import.meta.url);
@@ -673,6 +719,7 @@ const routeKeywords = new Set([
   'for',
   'function',
   'if',
+  'import',
   'in',
   'instanceof',
   'let',
@@ -1028,7 +1075,10 @@ function callArgumentsAtLocation(source: string, location: ApplicationRouteSourc
   const searchEnd = Math.min(source.length, position + 8000);
   const windowSource = source.slice(searchStart, searchEnd);
   const calls: { readonly openParen: number; readonly closeParen: number; readonly distance: number; readonly args: readonly string[] }[] = [];
-  const callPattern = new RegExp(`\\.\\s*${methodName}\\s*\\(`, 'g');
+  const callPattern = new RegExp(
+    `(?:\\.\\s*|\\b)${escapeRegExp(methodName)}\\s*\\(`,
+    'g',
+  );
   for (const match of windowSource.matchAll(callPattern)) {
     const openParen = searchStart + (match.index ?? 0) + match[0].lastIndexOf('(');
     const closeParen = matchingDelimiter(source, openParen, '(', ')');

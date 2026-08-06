@@ -1,3 +1,4 @@
+// typecast-file-boundary: MCP schemas validate untrusted protocol payloads before restoring typed contracts.
 import type {
   ApplicationCatalogRevisionId,
   ApplicationOperationDescriptor,

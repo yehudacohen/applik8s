@@ -1,18 +1,20 @@
 // typecast-file-boundary: symbol-keyed process registries bridge separately bundled server chunks while preserving request-runtime identity.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
-  createApplicationQueryOperation,
-  installApplicationOperationRuntimeResolver,
   type ApplicationCommandClient,
   type ApplicationOperationContract,
+  type ApplicationOperationRuntime,
   type ApplicationQueryClient,
   type ApplicationQueryOperation,
   type ApplicationQuerySnapshot,
-  type ApplicationOperationRuntime,
+  createApplicationQueryOperation,
+  installApplicationOperationRuntimeResolver,
 } from '@applik8s/client';
 
 export interface Applik8sServerRequestRuntime {
   readonly request: Request;
+  /** Request-scoped same-origin transport supplied by the server adapter. */
+  readonly fetch?: typeof globalThis.fetch;
   readonly queryClient: ApplicationQueryClient;
   readonly commandClient: ApplicationCommandClient;
   /** Immediate authenticated operations that do not claim durable-command semantics. */

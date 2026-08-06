@@ -3,7 +3,7 @@ import { publishablePackageManifestPaths } from './publishable-packages.mjs';
 
 const publishablePackages = publishablePackageManifestPaths;
 
-const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.6.0';
+const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.7.0';
 const releaseLabel = `v${expectedVersion}`;
 const publishablePackageNames = new Set();
 const publishableManifests = new Map();
@@ -184,7 +184,10 @@ for (const path of publishablePackages) {
   requireField(path, manifest, 'description');
   requireField(path, manifest, 'license');
   requireField(path, manifest, 'type');
-  requireField(path, manifest, 'exports');
+  // Executable-only create-* packages intentionally expose a bin without an
+  // importable module. Requiring a synthetic export would make importing the
+  // package execute the CLI as a side effect.
+  if (manifest.bin === undefined) requireField(path, manifest, 'exports');
   requireField(path, manifest, 'files');
   requireField(path, manifest, 'publishConfig');
   requireField(path, manifest, 'repository');

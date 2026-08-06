@@ -16,7 +16,7 @@ Suggested opening:
 - Browser bundles receive generated operation facades, never provider SDKs, credentials, or Kubernetes clients.
 - Client-side route loaders can preload through the generated same-origin authority before React mounts.
 - SSR executes through the active authenticated Nitro request context; no anonymous loopback fallback exists.
-- `app.on(GuestBookEntry, { created, updated })` makes non-HTTP lifecycle behavior visible in application code.
+- `GuestBookEntry.on.created(...)` and `.updated(...)` make non-HTTP lifecycle behavior visible beside the resource declaration.
 - `ApplicationHost.kubernetes(...)` places the immutable web artifact in the graph.
 - `app.expose(...)` can bind local HTTP or explicit cert-manager and ExternalDNS providers for managed HTTPS.
 - Loader snapshots hydrate before query subscribers mount, then resumable invalidations trigger authoritative requery.

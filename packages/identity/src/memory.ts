@@ -1,3 +1,4 @@
+// typecast-file-boundary: The in-memory identity provider validates stored protocol records at its provider boundary.
 import type {
   ApplicationIdentityAdmissionReceipt,
   ApplicationIdentityFlowStore,

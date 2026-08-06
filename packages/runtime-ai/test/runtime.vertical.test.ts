@@ -1,3 +1,6 @@
+// typecast-file-boundary: AI runtime tests deliberately inspect provider payload fixtures after validation.
+
+import type { ApplicationAIAgentPersistence } from '@applik8s/ai';
 import type {
   ApplicationExecutionPrincipal,
   ApplicationOperationDescriptor,
@@ -8,10 +11,23 @@ import { describe, expect, it } from 'vitest';
 import {
   type ApplicationAIAgentAttemptLifecycle,
   type ApplicationAIAgentToolContract,
+  applicationAITextAdapter,
   createApplicationAIAgentRequestHandler,
 } from '../src/index.js';
 
 describe('generated application AI runtime', () => {
+  it('constructs a managed OpenAI-compatible gateway adapter without upstream credentials', () => {
+    expect(() =>
+      applicationAITextAdapter({
+        kind: 'openai-compatible',
+        name: 'managed-gateway',
+        baseUrl: 'http://identity-start-inference.identity-start-system.svc:8080/v1',
+        model: 'fast',
+        allowInsecureHttp: true,
+      }),
+    ).not.toThrow();
+  });
+
   it('runs a native TanStack stream with server instructions and physical attempt identity', async () => {
     const invocations: unknown[] = [];
     const lifecycleEvents: string[] = [];
@@ -21,7 +37,7 @@ describe('generated application AI runtime', () => {
       instructions: 'Answer with evidence.',
       provider: { kind: 'deterministic', response: 'evidenced' },
       tools: [toolContract()],
-      persistence: Object.freeze({ kind: 'test-persistence' }),
+      persistence: persistence(),
       timeoutMs: 5_000,
       maximumConcurrency: 2,
       admit: () => admission(),
@@ -69,6 +85,63 @@ describe('generated application AI runtime', () => {
     ]);
   });
 
+  it('executes a declared typed tool from a deterministic starter fixture before returning text', async () => {
+    const invocations: unknown[] = [];
+    const handler = createApplicationAIAgentRequestHandler({
+      name: 'researcher',
+      logicalModel: 'fast',
+      instructions: 'Use the declared operation.',
+      provider: {
+        kind: 'deterministic',
+        response: 'The typed operation completed.',
+        tool: { input: { text: 'from deterministic fixture' } },
+      },
+      tools: [toolContract()],
+      persistence: persistence(),
+      timeoutMs: 5_000,
+      maximumConcurrency: 1,
+      admit: () => admission(),
+      reserveAttempt: ({ runId }) => ({
+        action: 'dispatch',
+        runId,
+        invocationId: 'invocation-tool',
+        attemptId: 'attempt-tool',
+        version: 1,
+      }),
+      recovery: unavailableRecovery(),
+      attemptLifecycle: attemptLifecycle([]),
+      invoke: async (operation, input, invocation) => {
+        invocations.push({ operation: operation.id, input, invocation });
+        return { id: 'post-1' };
+      },
+      handler: async (request, context) => chat({
+        adapter: context.tanstack.adapter,
+        messages: request.messages,
+        threadId: request.threadId,
+        runId: context.runId,
+        tools: context.tanstack.tools,
+        context: context.tanstack.execution,
+      }),
+    });
+
+    const response = await handler(agentRequest());
+    expect(response.status).toBe(200);
+    const events = await response.text();
+
+    expect(events).toContain('"type":"TOOL_CALL_START"');
+    expect(events).toContain('"delta":"The typed operation completed."');
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toMatchObject({
+      operation: 'applik8s://models/Post/operations/create',
+      input: { text: 'from deterministic fixture' },
+      invocation: {
+        invocationId: 'invocation-tool',
+        attemptId: 'attempt-tool',
+        providerToolCallId: expect.stringMatching(/^tool-call-/),
+      },
+    });
+  });
+
   it('fails closed when admission does not produce a live agent execution principal', async () => {
     const expired = {
       ...principal(),
@@ -80,7 +153,7 @@ describe('generated application AI runtime', () => {
       instructions: 'Do work.',
       provider: { kind: 'deterministic' },
       tools: [toolContract()],
-      persistence: {},
+      persistence: persistence(),
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(expired),
@@ -110,7 +183,7 @@ describe('generated application AI runtime', () => {
       instructions: 'Do work.',
       provider: { kind: 'deterministic' },
       tools: [],
-      persistence: {},
+      persistence: persistence(),
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(),
@@ -153,7 +226,7 @@ describe('generated application AI runtime', () => {
       instructions: 'Do work.',
       provider: { kind: 'deterministic' },
       tools: [],
-      persistence: {},
+      persistence: persistence(),
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(),
@@ -201,7 +274,7 @@ describe('generated application AI runtime', () => {
       instructions: 'Do work.',
       provider: { kind: 'deterministic' },
       tools: [],
-      persistence: {},
+      persistence: persistence(),
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(),
@@ -245,7 +318,7 @@ describe('generated application AI runtime', () => {
       instructions: 'Do work.',
       provider: { kind: 'deterministic' },
       tools: [],
-      persistence: {},
+      persistence: persistence(),
       timeoutMs: 5_000,
       maximumConcurrency: 1,
       admit: () => admission(),
@@ -421,6 +494,21 @@ function attemptLifecycle(events: string[]): ApplicationAIAgentAttemptLifecycle 
     async fail(reservation, failure) {
       events.push(`fail:${failure.classification}:${reservation.version}`);
       return { ...reservation, version: reservation.version + 1 };
+    },
+  };
+}
+
+function persistence(): ApplicationAIAgentPersistence {
+  return {
+    async begin(input) {
+      return {
+        conversationId: input.conversationId,
+        protocolRunId: input.protocolRunId,
+        principalScope: 'principal:test',
+        async append() {},
+        async complete() {},
+        async terminate() {},
+      };
     },
   };
 }

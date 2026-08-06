@@ -1,0 +1,6 @@
+apiVersion: identity-external-providers.applik8s.dev/v1alpha1
+kind: IdentityExternalProviders
+metadata:
+  name: identity-external-providers
+  namespace: identity-start-control
+spec: {}

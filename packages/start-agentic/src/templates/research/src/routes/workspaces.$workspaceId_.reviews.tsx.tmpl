@@ -1,0 +1,13 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { ResearchReviewList } from '../application';
+import { ResearchReviewWorkspace } from '../features/reviews/view';
+
+export const Route = createFileRoute('/workspaces/$workspaceId/reviews')({
+  loader: () => ResearchReviewList({}).preload(),
+  component: ResearchReviewsRoute,
+});
+
+function ResearchReviewsRoute() {
+  const { workspaceId } = Route.useParams();
+  return <ResearchReviewWorkspace workspaceId={workspaceId} />;
+}

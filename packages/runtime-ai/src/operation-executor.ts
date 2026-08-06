@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type {
+  ApplicationAuthorizationReceipt,
   ApplicationExecutionPrincipal,
   ApplicationOperationDescriptor,
   ApplicationOperationTransport,
@@ -23,6 +24,11 @@ export interface ApplicationAIOperationDispatch {
     readonly arguments: JsonValue;
     readonly invocationToken: string;
     readonly invocationId: string;
+    /** Retry-stable provider-tool proposal identity. */
+    readonly idempotencyKey: string;
+    readonly principal: ApplicationExecutionPrincipal;
+    readonly authorizationReceipt: ApplicationAuthorizationReceipt;
+    readonly trustedContext: Readonly<Record<string, JsonValue>>;
     readonly signal?: AbortSignal;
   }): Promise<JsonValue>;
 }
@@ -169,6 +175,10 @@ export function createApplicationAIOperationExecutor(
       arguments: input,
       invocationToken,
       invocationId: internalInvocationId,
+      idempotencyKey: proposal.commandId,
+      principal: authorization.principal,
+      authorizationReceipt: authorization.receipt,
+      trustedContext: invocation.admission.trustedContext,
       ...(invocation.signal ? { signal: invocation.signal } : {}),
     });
   };

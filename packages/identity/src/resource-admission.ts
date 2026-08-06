@@ -1,5 +1,7 @@
+// typecast-file-boundary: Kubernetes identity resources are schema-validated before admission metadata is interpreted.
 import { createHash } from 'node:crypto';
 import type {
+  ApplicationIdentityReference,
   ApplicationPrincipal,
   ApplicationRequestAdmission,
   JsonObject,
@@ -34,6 +36,52 @@ export interface ApplicationOAuthResourceAdmissionOptions {
   }) => ApplicationPrincipal | Promise<ApplicationPrincipal>;
   readonly maximumTokenBytes?: number;
   readonly clock?: () => Date;
+}
+
+export interface ApplicationOAuthIdentityReferenceOptions {
+  /** Exact issuer value asserted by the trusted OAuth provider. */
+  readonly issuer: string;
+  /** Stable OAuth subject. Client-credential workloads use their client ID. */
+  readonly subject: string;
+  readonly kind: Extract<
+    ApplicationIdentityReference['kind'],
+    'human' | 'workload'
+  >;
+}
+
+/**
+ * Derives the canonical identity shared by OAuth admission and static
+ * application authority declarations. Issuer participation prevents a client
+ * ID issued by one provider from inheriting authority assigned to another.
+ */
+export function applicationOAuthIdentityReference(
+  options: ApplicationOAuthIdentityReferenceOptions,
+): ApplicationIdentityReference {
+  const issuer = exactOAuthIdentityValue(options.issuer, 'issuer');
+  const subject = exactOAuthIdentityValue(options.subject, 'subject');
+  const parsedIssuer = new URL(issuer);
+  if (
+    (parsedIssuer.protocol !== 'https:' && parsedIssuer.protocol !== 'http:')
+    || parsedIssuer.username
+    || parsedIssuer.password
+    || parsedIssuer.search
+    || parsedIssuer.hash
+  ) {
+    throw new Error(
+      'OAuth identity issuer must be an absolute HTTP(S) URI without credentials, query, or fragment.',
+    );
+  }
+  const identityDigest = createHash('sha256')
+    .update(issuer)
+    .update('\0')
+    .update(subject)
+    .digest('hex');
+  return Object.freeze({
+    id: `identity:oauth:${identityDigest}`,
+    kind: options.kind,
+    issuer,
+    subject,
+  });
 }
 
 /**
@@ -135,6 +183,14 @@ function bearerToken(request: Request, maximumBytes: number): string {
     );
   }
   return match[1];
+}
+
+function exactOAuthIdentityValue(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 2_048) {
+    throw new Error(`OAuth identity ${label} must be a non-empty bounded string.`);
+  }
+  return normalized;
 }
 
 function normalizedContext(

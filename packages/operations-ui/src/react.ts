@@ -1,3 +1,4 @@
+// typecast-file-boundary: React operation hooks restore generic result types after the shared client validates transport responses.
 import type { ApplicationQueryOperation } from '@applik8s/client';
 import { Applik8sProvider } from '@applik8s/react';
 import {
@@ -58,12 +59,44 @@ function ApplicationOperationsDashboard(
   }
   const sections = [
     ['Conversations', snapshot.conversations, 'Canonical product state'],
+    ['Messages', snapshot.messages, 'Canonical conversation content state'],
     ['Runs', snapshot.runs, 'Execution and delivery state'],
+    ['Run events', snapshot.runEvents, 'Resumable causal delivery state'],
+    ['Memory', snapshot.memory, 'Scoped retained memory state'],
     ['Approvals', snapshot.approvals, 'Authority and review state'],
+    ['Outcomes', snapshot.outcomes, 'Independent outcome verification state'],
     ['Artifacts', snapshot.artifacts, 'Object and provenance state'],
+    ['Evaluation datasets', snapshot.evaluationDatasets, 'Versioned quality inputs'],
+    ['Evaluation cases', snapshot.evaluationCases, 'Bounded quality cases'],
+    ['Evaluation scorers', snapshot.evaluationScorers, 'Versioned scoring authority'],
     ['Evaluations', snapshot.evaluations, 'Quality and result state'],
+    ['Evaluation results', snapshot.evaluationResults, 'Scored evidence state'],
     ['Usage', snapshot.usage, 'Provider usage and cost facts'],
+    ['Entitlements', snapshot.entitlements, 'Canonical quota and entitlement state'],
+    ['Installations', snapshot.installations, 'Graph and installation convergence state'],
+    ['Providers', snapshot.providers, 'Provider-reported readiness and failure state'],
+    ['Workflows', snapshot.workflows, 'Queue, wait, retry, cancellation, and terminal state'],
+    ['Event consumers', snapshot.eventConsumers, 'Delivery, lag, checkpoint, and dead-letter state'],
+    ['Projections and search', snapshot.projections, 'Generation, lag, rebuild, validation, and cutover state'],
+    ['AI runtimes', snapshot.ai, 'Resolution, latency, usage, fallback, and redaction-safe state'],
+    ['MCP', snapshot.mcp, 'Server, client, tool, denial, and latency state'],
+    ['Authority', snapshot.authority, 'Redacted authority lifecycle observations'],
+    ['Identity', snapshot.identity, 'Provider-neutral identity and OAuth readiness'],
+    ['Object stores', snapshot.objectStores, 'Object authority and provider readiness'],
+    ['Databases', snapshot.databases, 'Canonical database readiness and recovery state'],
+    ['Gateways', snapshot.gateways, 'Admission and exposure readiness'],
+    ['Audit', snapshot.audit, 'Searchable redacted causal authority timeline'],
+    ['Operational observations', snapshot.operational, 'Authority-classified readiness, delivery, provider, and inferred state'],
   ] as const;
+  const attention = sections
+    .flatMap(([section, rows]) =>
+      rows
+        .filter(needsAttention)
+        .map((row) => ({ section, row })),
+    )
+    .sort((left, right) =>
+      attentionPriority(left.row) - attentionPriority(right.row),
+    );
   return createElement('main', { style: styles.shell }, [
     heading(props.title),
     createElement(
@@ -71,6 +104,36 @@ function ApplicationOperationsDashboard(
       { key: 'boundary', style: styles.boundary },
       'Canonical application state is shown separately from delivery, authority, object, quality, and provider facts. Missing evidence is never reported as healthy.',
     ),
+    createElement('section', {
+      key: 'attention',
+      style: styles.attention,
+      'aria-label': 'Needs attention',
+    }, [
+      createElement('div', { key: 'attention-heading' }, [
+        createElement('p', { key: 'attention-eyebrow', style: styles.attentionEyebrow }, 'Act first'),
+        createElement('h2', { key: 'attention-title', style: styles.attentionTitle }, 'Needs attention'),
+      ]),
+      attention.length === 0
+        ? createElement(
+            'p',
+            { key: 'attention-empty', style: styles.empty },
+            'No failed, blocked, waiting, degraded, or unknown observations.',
+          )
+        : createElement(
+            'ol',
+            { key: 'attention-rows', style: styles.attentionList },
+            attention.slice(0, 12).map(({ section, row }, index) =>
+              createElement(
+                'li',
+                { key: `${section}:${recordKey(row, index)}`, style: styles.attentionRow },
+                [
+                  createElement('strong', { key: 'section' }, section),
+                  createElement(OperationsRecord, { key: 'record', value: row }),
+                ],
+              ),
+            ),
+          ),
+    ]),
     createElement(
       'div',
       { key: 'grid', style: styles.grid },
@@ -111,10 +174,61 @@ function OperationsSection(props: {
       : createElement(
           'ol',
           { key: 'rows', style: styles.list },
-          props.rows.slice(0, 8).map((row, index) =>
-            createElement('li', { key: recordKey(row, index), style: styles.row }, summarize(row)),
+          [...props.rows]
+            .sort((left, right) =>
+              attentionPriority(left) - attentionPriority(right),
+            )
+            .slice(0, 8)
+            .map((row, index) =>
+            createElement(
+              'li',
+              { key: recordKey(row, index), style: styles.row },
+              createElement(OperationsRecord, { value: row }),
+            ),
           ),
         ),
+  ]);
+}
+
+function OperationsRecord(props: { readonly value: unknown }): ReactNode {
+  if (!isRecord(props.value)) return String(props.value);
+  const id = firstString(props.value, ['id']);
+  const identity =
+    firstString(props.value, ['name', 'label', 'operationId', 'capability'])
+      ?? id
+      ?? 'record';
+  const state = firstString(props.value, [
+    'status',
+    'state',
+    'phase',
+    'confidence',
+  ]);
+  const category = firstString(props.value, ['category']);
+  return createElement('div', { style: styles.record }, [
+    createElement('span', { key: 'summary' }, [
+      createElement('span', { key: 'identity' }, identity),
+      ...(state
+        ? [
+            createElement(
+              'strong',
+              {
+                key: 'state',
+                style: needsAttention(props.value)
+                  ? styles.stateAttention
+                  : styles.state,
+              },
+              state,
+            ),
+          ]
+        : []),
+    ]),
+    category || id
+      ? createElement(
+          'code',
+          { key: 'identity', style: styles.identifier },
+          [category, id].filter(Boolean).join(' · '),
+        )
+      : null,
   ]);
 }
 
@@ -123,11 +237,34 @@ function recordKey(value: unknown, index: number): string {
   return String(index);
 }
 
-function summarize(value: unknown): string {
-  if (!isRecord(value)) return String(value);
-  const identity = firstString(value, ['name', 'id', 'operationId', 'capability']) ?? 'record';
-  const state = firstString(value, ['status', 'state', 'phase', 'confidence']);
-  return state ? `${identity} — ${state}` : identity;
+function needsAttention(value: unknown): boolean {
+  return attentionPriority(value) < 2;
+}
+
+function attentionPriority(value: unknown): number {
+  if (!isRecord(value)) return 2;
+  const state = firstString(value, [
+    'status',
+    'state',
+    'phase',
+    'confidence',
+  ])?.toLowerCase();
+  if (!state) return 2;
+  if (
+    /failed|failure|error|unhealthy|degraded|blocked|denied|stalled|dead.?letter/.test(
+      state,
+    )
+  ) {
+    return 0;
+  }
+  if (
+    /waiting|pending|retry|installing|unknown|missing|reconcil|terminating/.test(
+      state,
+    )
+  ) {
+    return 1;
+  }
+  return 2;
 }
 
 function firstString(
@@ -171,6 +308,38 @@ const styles = {
     background: '#f1faf6',
     lineHeight: 1.55,
   },
+  attention: {
+    marginTop: 20,
+    padding: 18,
+    border: '1px solid #efc5b8',
+    borderRadius: 16,
+    background: '#fff8f5',
+  },
+  attentionEyebrow: {
+    margin: 0,
+    color: '#9a3f28',
+    fontSize: 11,
+    fontWeight: 800,
+    letterSpacing: '0.12em',
+    textTransform: 'uppercase',
+  },
+  attentionTitle: { margin: '4px 0 0', fontSize: 22 },
+  attentionList: {
+    display: 'grid',
+    gap: 8,
+    margin: '16px 0 0',
+    padding: 0,
+    listStyle: 'none',
+  },
+  attentionRow: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(120px, 0.35fr) minmax(0, 1fr)',
+    alignItems: 'start',
+    gap: 12,
+    padding: 10,
+    borderRadius: 10,
+    background: '#fff',
+  },
   grid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(310px, 1fr))',
@@ -204,6 +373,28 @@ const styles = {
   },
   list: { margin: 0, padding: 0, listStyle: 'none' },
   row: { padding: '11px 18px', borderTop: '1px solid #f1f4f2', fontSize: 14 },
+  record: { display: 'grid', gap: 3 },
+  state: {
+    marginLeft: 8,
+    padding: '2px 7px',
+    borderRadius: 999,
+    background: '#edf2ef',
+    color: '#45544f',
+    fontSize: 11,
+  },
+  stateAttention: {
+    marginLeft: 8,
+    padding: '2px 7px',
+    borderRadius: 999,
+    background: '#ffe2d8',
+    color: '#8b2f18',
+    fontSize: 11,
+  },
+  identifier: {
+    color: '#6a7772',
+    fontSize: 11,
+    overflowWrap: 'anywhere',
+  },
   empty: { margin: 0, padding: 18, color: '#73817c', fontStyle: 'italic' },
   error: {
     padding: 16,

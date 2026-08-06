@@ -1,0 +1,220 @@
+{
+  "apiVersion": "applik8s.identityAcceptance/v1alpha1",
+  "release": "v0.7",
+  "requirements": [
+    {
+      "id": "human-session-admission",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/identity/test/runtime.vertical.test.ts",
+          "marker": "consumes provider completion once and replays one canonical admission receipt"
+        },
+        {
+          "path": "packages/identity/test/runtime.vertical.test.ts",
+          "marker": "records and later neutralizes a provider session orphan"
+        }
+      ]
+    },
+    {
+      "id": "oauth-authorization-code-pkce",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/identity/test/oauth-runtime.vertical.test.ts",
+          "marker": "requires exact registered redirects, scope/resource/audience subsets, and PKCE"
+        },
+        {
+          "path": "packages/identity-ory/test/hydra.vertical.test.ts",
+          "marker": "revalidates the authoritative consent request"
+        }
+      ]
+    },
+    {
+      "id": "machine-client-credentials",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/identity-ory/test/hydra.vertical.test.ts",
+          "marker": "exchanges, introspects, and revokes tokens"
+        }
+      ]
+    },
+    {
+      "id": "typed-protected-operations",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/operations/test/authority.vertical.test.ts",
+          "marker": "reserves a one-use grant atomically"
+        }
+      ]
+    },
+    {
+      "id": "static-identity-role-authority",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/operations/test/authority.vertical.test.ts",
+          "marker": "authorizes only provider-admitted principal roles through static role permissions"
+        },
+        {
+          "path": "packages/applik8s/test/application-authority.vertical.test.ts",
+          "marker": "declares provider-admitted roles directly against typed operations"
+        },
+        {
+          "path": "packages/identity-ory/test/kratos.vertical.test.ts",
+          "marker": "provider-derived roles from a server-side session cookie"
+        },
+        {
+          "path": "scripts/run-identity-start-dedicated-live.ts",
+          "marker": "provider-derived-role-authority"
+        }
+      ]
+    },
+    {
+      "id": "runtime-permission-composition",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/operations/test/authority.vertical.test.ts",
+          "marker": "rejects self-grants and delegation broadening"
+        }
+      ]
+    },
+    {
+      "id": "scoped-grant-lifecycle",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/operations/test/authority.vertical.test.ts",
+          "marker": "revalidates durable receipts and retains revocation obligations"
+        }
+      ]
+    },
+    {
+      "id": "agent-production-request",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/ai/test/runtime.vertical.test.ts",
+          "marker": "requires executable agents and preserves service identity separately"
+        },
+        {
+          "path": "scripts/run-identity-start-dedicated-live.ts",
+          "marker": "production-sensitive-agent-admission"
+        }
+      ]
+    },
+    {
+      "id": "durable-human-approval",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "examples/chirp-start/src/automation/workflow.ts",
+          "marker": "emitSignal"
+        },
+        {
+          "path": "packages/applik8s/test/signal-runtime.vertical.test.ts",
+          "marker": "reattaches to canonical state after wakeup"
+        },
+        {
+          "path": "scripts/run-identity-start-dedicated-live.ts",
+          "marker": "durable-human-approval"
+        }
+      ]
+    },
+    {
+      "id": "bounded-delegated-authority",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/operations/test/authority.vertical.test.ts",
+          "marker": "requires independent approval and independent outcome verification"
+        }
+      ]
+    },
+    {
+      "id": "mcp-http-invocation-without-token-passthrough",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/mcp/test/server.vertical.test.ts",
+          "marker": "never accepts query-string bearer tokens"
+        }
+      ]
+    },
+    {
+      "id": "independent-outcome-observation",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/operations/test/authority.vertical.test.ts",
+          "marker": "requires independent approval and independent outcome verification"
+        }
+      ]
+    },
+    {
+      "id": "searchable-audit-live-administration",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/operations-ui/test/module.vertical.test.ts",
+          "marker": "searches a redacted canonical audit timeline"
+        },
+        {
+          "path": "scripts/run-identity-start-dedicated-live.ts",
+          "marker": "redacted-audit-search"
+        }
+      ]
+    },
+    {
+      "id": "catalog-migration-with-pinned-work",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/operations/test/authority.vertical.test.ts",
+          "marker": "migrates pinned permission and grant meanings"
+        },
+        {
+          "path": "packages/mcp/test/server.vertical.test.ts",
+          "marker": "does not reinterpret a live session when a new catalog activates"
+        }
+      ]
+    },
+    {
+      "id": "mcp-version-coexistence",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/mcp/test/server.vertical.test.ts",
+          "marker": "prevents session transfer and rejects wrong protocol eras"
+        }
+      ]
+    },
+    {
+      "id": "adversarial-authority-denials",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/operations/test/authority.vertical.test.ts",
+          "marker": "rejects trusted-context drift before considering grants"
+        },
+        {
+          "path": "packages/operations/test/authority.vertical.test.ts",
+          "marker": "rejects self-grants and delegation broadening"
+        }
+      ]
+    },
+    {
+      "id": "cross-execution-workload-isolation",
+      "state": "complete",
+      "evidence": [
+        {
+          "path": "packages/operations/test/execution-admission-transport.vertical.test.ts",
+          "marker": "rejects signature, run binding, identity, and expiry mismatches"
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+// typecast-file-boundary: Identity schemas validate wire values before restoring their corresponding protocol contract types.
 import type {
   ApplicationIdentityReference,
   ApplicationPreAuthenticationFlowPrincipal,

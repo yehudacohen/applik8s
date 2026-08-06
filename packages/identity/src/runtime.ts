@@ -1,3 +1,4 @@
+// typecast-file-boundary: Identity storage and signed payloads are validated before typed runtime contracts are reconstructed.
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import type {
   ApplicationPreAuthenticationFlowPrincipal,

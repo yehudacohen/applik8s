@@ -4,6 +4,7 @@ import type {
 import { describe, expect, it, vi } from 'vitest';
 import {
   ApplicationOAuthResourceAdmissionError,
+  applicationOAuthIdentityReference,
   createApplicationOAuthResourceAdmission,
 } from '../src/resource-admission.js';
 
@@ -11,6 +12,24 @@ const resource = 'https://research.example.test/mcp';
 const now = new Date('2026-07-29T12:00:00.000Z');
 
 describe('OAuth protected-resource admission', () => {
+  it('derives an issuer-bound canonical workload identity', () => {
+    expect(applicationOAuthIdentityReference({
+      issuer: 'https://identity.example.test',
+      subject: 'release-automation',
+      kind: 'workload',
+    })).toEqual({
+      id: 'identity:oauth:fa5c66f5a6d11204c5f704dac23b9063fdc666be06b603bddc55a526b7a4cad1',
+      kind: 'workload',
+      issuer: 'https://identity.example.test',
+      subject: 'release-automation',
+    });
+    expect(() => applicationOAuthIdentityReference({
+      issuer: 'https://identity.example.test?tenant=other',
+      subject: 'release-automation',
+      kind: 'workload',
+    })).toThrow(/without credentials, query, or fragment/);
+  });
+
   it('introspects a header credential and delegates canonical principal admission', async () => {
     const introspectToken = vi.fn(async () => ({
       active: true,

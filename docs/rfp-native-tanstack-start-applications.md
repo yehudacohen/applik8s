@@ -11,6 +11,13 @@
 **Target:** Applik8s v0.6 release; every child implementation gate and the complete GuestBook proof are
 required before the release is tagged
 
+> **v0.7 syntax authority:** This document remains the authority for the framework-neutral Vite,
+> browser partition, SSR hydration, and TanStack adapter boundaries established in v0.6. The v0.7
+> function-native RFP refines callback registration, direct dependency inference, projections, and
+> workflow syntax. Where a code sketch conflicts, follow
+> [`rfp-v07-function-native-execution.md`](rfp-v07-function-native-execution.md) and the current
+> `examples/guestbook-start` acceptance source.
+
 ## Implementation status
 
 The framework-neutral architecture in this RFP is implemented on the v0.6 work branch:

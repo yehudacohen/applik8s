@@ -1,4 +1,6 @@
 // typecast-file-boundary: application graph metadata is attached through shared symbol keys and structurally checked before compiler projection.
+
+import { createHash } from 'node:crypto';
 import type {
   ApplicationGraph,
   ApplicationInstallationArtifactContract,
@@ -53,7 +55,16 @@ export function injectGeneratedResourcesIntoApplicationRgd(
     && resource.metadata.name === applicationName);
   if (!target) {
     if (generatedResources.length === 0) return artifacts;
-    throw new Error(`Application ${applicationName} generated processor resources but its TypeKro ResourceGraphDefinition was not found.`);
+    const definitions = artifacts.resources
+      .filter(
+        (resource) =>
+          resource.apiVersion === 'kro.run/v1alpha1'
+          && resource.kind === 'ResourceGraphDefinition',
+      )
+      .map((resource) => resource.metadata.name);
+    throw new Error(
+      `Application ${applicationName} generated processor resources but its TypeKro ResourceGraphDefinition was not found. Emitted definitions: ${definitions.length > 0 ? definitions.join(', ') : '<none>'}.`,
+    );
   }
   const spec = target.spec;
   if (!isJsonObject(spec) || !Array.isArray(spec.resources)) {
@@ -63,8 +74,25 @@ export function injectGeneratedResourcesIntoApplicationRgd(
   // CRDs are cluster-scoped installation prerequisites shared by every instance.
   // Keeping them outside the per-instance graph prevents one instance deletion
   // from removing the API and avoids CRD cleanup finalizers blocking KRO teardown.
+  const generatedResourceIdentities = new Set(
+    generatedResources.flatMap((resource) => {
+      const identity = applicationKubernetesResourceIdentity(resource);
+      return identity ? [identity] : [];
+    }),
+  );
+  const replacedFunctionNativeServerResources = graph
+    ? applicationFunctionNativeServerResourceIdentities(graph)
+    : new Set<string>();
   const existingResources = spec.resources
     .filter((resource) => !isResourceGraphTemplateKind(resource, 'CustomResourceDefinition'))
+    .filter((resource) => {
+      const identity = applicationResourceGraphEntryIdentity(resource);
+      return identity === undefined
+        || (
+          !generatedResourceIdentities.has(identity)
+          && !replacedFunctionNativeServerResources.has(identity)
+        );
+    })
     .map((resource) => graph ? applicationProviderConditionalGraphEntry(resource, graph) : resource)
     .map((resource) => applicationInstallationRuntimeGraphEntry(resource, schema, applicationName, true));
   const injected = generatedResources
@@ -83,8 +111,10 @@ export function injectGeneratedResourcesIntoApplicationRgd(
   // External references are graph inputs. Emit them before every authored or
   // generated consumer so downstream composition adapters can bind typed
   // dependencies while materializing Pod specs in one pass.
-  const resources = [...requiredReferences, ...existingResources, ...installationResources, ...injected]
-    .filter(isJsonObject);
+  const resources = applicationProviderLifecycleGraph(
+    [...requiredReferences, ...existingResources, ...installationResources, ...injected]
+      .filter(isJsonObject),
+  );
   const projectedSchema = schema && installation?.statusProjection?.mode === 'standardApplicationReadiness'
     ? { ...schema, status: applicationInstallationStatusProjection(schema, resources, installation.statusProjection.fields, graph) }
     : schema;
@@ -95,6 +125,340 @@ export function injectGeneratedResourcesIntoApplicationRgd(
       spec: { ...spec, ...(projectedSchema ? { schema: projectedSchema } : {}), resources },
     } : resource),
   };
+}
+
+/**
+ * Preserve provider lifecycle edges that cannot be inferred from ordinary
+ * Kubernetes fields. In particular, NACK owns finalizers on JetStream
+ * resources, so KRO must delete command processors, Consumers, and Streams
+ * before it removes NACK or the NATS server.
+ */
+function applicationProviderLifecycleGraph(
+  resources: readonly JsonObject[],
+): readonly JsonObject[] {
+  const indexed = resources.map((entry) => ({
+    entry,
+    id: typeof entry.id === 'string' ? entry.id : undefined,
+    template: isJsonObject(entry.template)
+      ? entry.template
+      : isJsonObject(entry.externalRef)
+        ? entry.externalRef
+        : undefined,
+  }));
+  const withDependencies = new Map<string, Set<string>>();
+  const depend = (
+    dependent: (typeof indexed)[number] | undefined,
+    dependency: (typeof indexed)[number] | undefined,
+  ) => {
+    if (!dependent?.id || !dependency?.id || dependent.id === dependency.id) return;
+    const dependencies = withDependencies.get(dependent.id) ?? new Set<string>();
+    dependencies.add(dependency.id);
+    withDependencies.set(dependent.id, dependencies);
+  };
+  const inNamespace = (namespace: string | undefined) =>
+    indexed.filter((candidate) => applicationTemplateNamespace(candidate.template) === namespace);
+
+  for (const candidate of indexed) {
+    const template = candidate.template;
+    if (!template) continue;
+    const namespace = applicationTemplateNamespace(template);
+    const namespaceResources = inNamespace(namespace);
+    const migration = namespaceResources.find((other) =>
+      other.template !== undefined
+      && applicationTemplateKind(other.template) === 'Job'
+      && applicationTemplateLabels(other.template)?.['app.kubernetes.io/component'] === 'migration');
+    if (
+      migration
+      && candidate !== migration
+      && applicationTemplateLabels(template)?.['app.kubernetes.io/managed-by'] === 'applik8s'
+      && applicationTemplateRunsApplicationCode(template)
+    ) {
+      // Framework and promoted-model tables have one authoritative owner: the
+      // generated migration Job. Runtime processes may retain idempotent
+      // bootstraps for backwards compatibility, but they must not race the
+      // application migration transaction on a fresh database. The synthetic
+      // reference gives KRO a real readiness/lifecycle edge, so workloads are
+      // created only after the Job completes and are deleted before it.
+      depend(candidate, migration);
+    }
+    const chart = applicationHelmReleaseChart(template);
+    if (
+      chart === 'nats'
+      || candidate.id === 'applik8sEventsNatsHelmRelease'
+      || candidate.id?.startsWith('applik8sEventsNatsHelmRelease_')
+    ) {
+      const repositoryName = applicationHelmReleaseRepositoryName(template);
+      depend(candidate, namespaceResources.find((other) =>
+        applicationTemplateKind(other.template) === 'HelmRepository'
+        && applicationTemplateName(other.template) === repositoryName));
+      continue;
+    }
+    if (
+      chart === 'nack'
+      || candidate.id === 'applik8sEventsNackHelmRelease'
+      || candidate.id?.startsWith('applik8sEventsNackHelmRelease_')
+    ) {
+      depend(candidate, namespaceResources.find((other) =>
+        applicationHelmReleaseChart(other.template) === 'nats'
+        || other.id === 'applik8sEventsNatsHelmRelease'
+        || other.id?.startsWith('applik8sEventsNatsHelmRelease_')));
+      continue;
+    }
+    if (applicationTemplateKind(template) === 'Stream') {
+      depend(candidate, namespaceResources.find((other) =>
+        applicationHelmReleaseChart(other.template) === 'nack'
+        || other.id === 'applik8sEventsNackHelmRelease'
+        || other.id?.startsWith('applik8sEventsNackHelmRelease_')));
+      continue;
+    }
+    if (applicationTemplateKind(template) === 'Consumer') {
+      const streamName = isJsonObject(template.spec) ? template.spec.streamName : undefined;
+      const streams = namespaceResources.filter((other) =>
+        applicationTemplateKind(other.template) === 'Stream');
+      const stream = streams.find((other) =>
+        isJsonObject(other.template?.spec)
+        && other.template.spec.name === streamName)
+        ?? (streams.length === 1 ? streams[0] : undefined);
+      // A reference to a conditionally omitted resource remains a graph
+      // dependency in KRO. It therefore omits the Consumer as well, even when
+      // an External profile supplies the Stream. Keep the strong lifecycle
+      // edge for unconditional managed Streams; conditional Streams reconcile
+      // independently while NACK remains ordered after both descendants.
+      if (!Array.isArray(stream?.entry.includeWhen)) {
+        depend(candidate, stream);
+      }
+      continue;
+    }
+    if (
+      applicationTemplateKind(template) === 'Deployment'
+      && applicationTemplateLabels(template)?.['app.kubernetes.io/component'] === 'command-processor'
+    ) {
+      const name = applicationTemplateName(template);
+      depend(candidate, namespaceResources.find((other) =>
+        applicationTemplateKind(other.template) === 'Consumer'
+        && applicationTemplateName(other.template) === name));
+    }
+  }
+
+  return indexed.map(({ entry, id, template }) => {
+    const dependencies = id ? withDependencies.get(id) : undefined;
+    const migrationReadyWhen =
+      id
+      && template
+      && applicationTemplateKind(template) === 'Job'
+      && applicationTemplateLabels(template)?.['app.kubernetes.io/component'] === 'migration'
+        ? [`\${${id}.status.succeeded == 1}`]
+        : undefined;
+    const entryWithReadiness = migrationReadyWhen
+      ? {
+          ...entry,
+          readyWhen: [
+            ...(Array.isArray(entry.readyWhen) ? entry.readyWhen : []),
+            ...migrationReadyWhen,
+          ],
+        }
+      : entry;
+    if (
+      !template
+      || !isJsonObject(entry.template)
+      || !dependencies
+      || dependencies.size === 0
+    ) {
+      return entryWithReadiness;
+    }
+    const metadata = isJsonObject(template.metadata) ? template.metadata : {};
+    const annotations = isJsonObject(metadata.annotations) ? metadata.annotations : {};
+    return {
+      ...entryWithReadiness,
+      template: {
+        ...template,
+        metadata: {
+          ...metadata,
+          annotations: {
+            ...annotations,
+            ...Object.fromEntries([...dependencies].sort().map((dependencyId) => [
+              applicationDependencyAnnotationKey(dependencyId),
+              applicationDependencyReference(indexed, dependencyId),
+            ])),
+          },
+        },
+      },
+    };
+  });
+}
+
+function applicationDependencyReference(
+  resources: readonly {
+    readonly id: string | undefined;
+    readonly template: JsonObject | undefined;
+  }[],
+  dependencyId: string,
+): string {
+  const dependency = resources.find((candidate) => candidate.id === dependencyId);
+  if (
+    dependency?.template
+    && applicationTemplateKind(dependency.template) === 'Job'
+    && applicationTemplateLabels(dependency.template)?.['app.kubernetes.io/component'] === 'migration'
+  ) {
+    // A metadata reference becomes concrete as soon as KRO creates the Job.
+    // That is enough for topological deletion, but not for migration admission:
+    // database-backed application processes must remain unmaterializable until
+    // the authoritative Job has actually succeeded. The status reference stays
+    // unresolved while the Job is pending or failed and becomes the annotation
+    // string "1" only after successful completion.
+    return `\${string(${dependencyId}.status.succeeded)}`;
+  }
+  return `\${${dependencyId}.metadata.name}`;
+}
+
+function applicationDependencyAnnotationKey(dependencyId: string): string {
+  const digest = createHash('sha256').update(dependencyId).digest('hex').slice(0, 24);
+  return `typekro.dev/depends-on-${digest}`;
+}
+
+function applicationTemplateKind(template: JsonObject | undefined): string | undefined {
+  return typeof template?.kind === 'string' ? template.kind : undefined;
+}
+
+function applicationTemplateName(template: JsonObject | undefined): string | undefined {
+  return isJsonObject(template?.metadata) && typeof template.metadata.name === 'string'
+    ? template.metadata.name
+    : undefined;
+}
+
+function applicationTemplateNamespace(template: JsonObject | undefined): string | undefined {
+  return isJsonObject(template?.metadata) && typeof template.metadata.namespace === 'string'
+    ? template.metadata.namespace
+    : undefined;
+}
+
+function applicationTemplateLabels(template: JsonObject): JsonObject | undefined {
+  return isJsonObject(template.metadata) && isJsonObject(template.metadata.labels)
+    ? template.metadata.labels
+    : undefined;
+}
+
+function applicationTemplateRunsApplicationCode(template: JsonObject): boolean {
+  return applicationTemplateKind(template) === 'Deployment'
+    || applicationTemplateKind(template) === 'StatefulSet'
+    || applicationTemplateKind(template) === 'DaemonSet'
+    || applicationTemplateKind(template) === 'Job'
+    || applicationTemplateKind(template) === 'CronJob';
+}
+
+function applicationHelmReleaseChart(template: JsonObject | undefined): string | undefined {
+  if (applicationTemplateKind(template) !== 'HelmRelease' || !isJsonObject(template?.spec)) return undefined;
+  const chart = isJsonObject(template.spec.chart) ? template.spec.chart : undefined;
+  const chartSpec = isJsonObject(chart?.spec) ? chart.spec : undefined;
+  return typeof chartSpec?.chart === 'string' ? chartSpec.chart : undefined;
+}
+
+function applicationHelmReleaseRepositoryName(template: JsonObject): string | undefined {
+  if (!isJsonObject(template.spec)) return undefined;
+  const chart = isJsonObject(template.spec.chart) ? template.spec.chart : undefined;
+  const chartSpec = isJsonObject(chart?.spec) ? chart.spec : undefined;
+  const sourceRef = isJsonObject(chartSpec?.sourceRef) ? chartSpec.sourceRef : undefined;
+  return typeof sourceRef?.name === 'string' ? sourceRef.name : undefined;
+}
+
+export function filterReplacedFunctionNativeServerResources<
+  TResource extends TypeKroCompositionResource,
+>(
+  resources: readonly TResource[],
+  graph: ApplicationGraph,
+): readonly TResource[] {
+  const replaced = applicationFunctionNativeServerResourceIdentities(graph);
+  return resources.filter((resource) => {
+    const identity = applicationKubernetesResourceIdentity(resource);
+    return identity === undefined || !replaced.has(identity);
+  });
+}
+
+function applicationFunctionNativeServerResourceIdentities(
+  graph: ApplicationGraph,
+): ReadonlySet<string> {
+  const identities = new Set<string>();
+  for (const node of graph.nodes) {
+    if (
+      node.kind !== 'server'
+      || !node.routes.some((route) => route.functionNative !== undefined)
+    ) {
+      continue;
+    }
+    for (const generated of node.generatedResources ?? []) {
+      if (!generated.resource) continue;
+      if (
+        generated.role !== 'workload'
+        && generated.role !== 'service'
+        && generated.role !== 'rbac'
+        && generated.role !== 'runtimeBundle'
+        && generated.role !== 'routeDiagnostics'
+      ) {
+        continue;
+      }
+      const identity = applicationKubernetesResourceIdentity({
+        apiVersion: generated.resource.apiVersion,
+        kind: generated.resource.kind,
+        metadata: {
+          name: generated.resource.name,
+          ...(generated.resource.namespace
+            ? { namespace: generated.resource.namespace }
+            : {}),
+        },
+      });
+      if (identity) identities.add(identity);
+      if (generated.role === 'rbac') {
+        for (const kind of ['ServiceAccount', 'RoleBinding']) {
+          const rbacIdentity = applicationKubernetesResourceIdentity({
+            apiVersion:
+              kind === 'ServiceAccount'
+                ? 'v1'
+                : 'rbac.authorization.k8s.io/v1',
+            kind,
+            metadata: {
+              name: generated.resource.name,
+              ...(generated.resource.namespace
+                ? { namespace: generated.resource.namespace }
+                : {}),
+            },
+          });
+          if (rbacIdentity) identities.add(rbacIdentity);
+        }
+      }
+    }
+  }
+  return identities;
+}
+
+function applicationResourceGraphEntryIdentity(
+  value: unknown,
+): string | undefined {
+  if (!isJsonObject(value) || !isJsonObject(value.template)) return undefined;
+  return applicationKubernetesResourceIdentity(value.template);
+}
+
+function applicationKubernetesResourceIdentity(
+  value: unknown,
+): string | undefined {
+  if (
+    !isJsonObject(value)
+    || typeof value.apiVersion !== 'string'
+    || typeof value.kind !== 'string'
+    || !isJsonObject(value.metadata)
+    || typeof value.metadata.name !== 'string'
+  ) {
+    return undefined;
+  }
+  const namespace =
+    typeof value.metadata.namespace === 'string'
+      ? value.metadata.namespace
+      : '';
+  return [
+    value.apiVersion,
+    value.kind,
+    namespace,
+    value.metadata.name,
+  ].join('\u0000');
 }
 
 function applicationResourceUsesInstallationContract(resource: unknown): boolean {
@@ -156,10 +520,31 @@ function applicationGeneratedResourceGraphEntry(resource: TypeKroCompositionReso
   const annotations = metadata && isJsonObject(metadata.annotations) ? metadata.annotations : undefined;
   const authoredIncludeWhen = annotations?.['applik8s.dev/include-when'];
   const includeWhen = applicationKroIncludeWhen(typeof authoredIncludeWhen === 'string' ? authoredIncludeWhen : undefined);
+  const generatedResource = applicationResourceWithoutCompilerAnnotations(resource);
+  const generatedMetadata: JsonObject = isJsonObject(generatedResource.metadata)
+    ? generatedResource.metadata
+    : {};
+  const generatedLabels = isJsonObject(generatedMetadata.labels)
+    ? generatedMetadata.labels
+    : {};
   return {
     id: typeKroGeneratedResourceId(resource, index),
     ...(typeof includeWhen === 'string' && includeWhen.trim().length > 0 ? { includeWhen: [includeWhen] } : {}),
-    template: applicationResourceWithoutCompilerAnnotations(resource),
+    template: {
+      ...generatedResource,
+      metadata: {
+        ...generatedMetadata,
+        labels: {
+          ...generatedLabels,
+          // This is the semantic boundary between compiler-owned application
+          // workloads and provider infrastructure that merely happens to be
+          // present in the same RGD. Lifecycle ordering, rollout intent, and
+          // migration readiness can therefore target generated resources
+          // without accidentally coupling third-party controllers or charts.
+          'app.kubernetes.io/managed-by': 'applik8s',
+        },
+      },
+    },
   };
 }
 
@@ -240,8 +625,13 @@ function applicationProviderConditionalGraphEntry(resource: unknown, graph: Appl
   if (!isJsonObject(resource)) return resource;
   const analyticalDatabase = graph.nodes.find((node): node is ApplicationProviderNode<'AnalyticalDatabase'> =>
     node.kind === 'provider' && node.interface === 'AnalyticalDatabase' && node.implementation === 'clickhouse');
-  const condition = applicationKroIncludeWhen(analyticalDatabase && isJsonObject(analyticalDatabase.config)
-    ? applicationGraphAllConditions(analyticalDatabase.config.enabled, analyticalDatabase.config.provision)
+  const analyticalConfig = analyticalDatabase && isJsonObject(analyticalDatabase.config)
+    ? (isJsonObject(analyticalDatabase.config.analyticalDatabase)
+      ? analyticalDatabase.config.analyticalDatabase
+      : analyticalDatabase.config)
+    : undefined;
+  const condition = applicationKroIncludeWhen(analyticalConfig
+    ? applicationGraphAllConditions(analyticalConfig.enabled, analyticalConfig.provision)
     : undefined);
   if (!condition) return resource;
   const target = isJsonObject(resource.template) ? resource.template : isJsonObject(resource.externalRef) ? resource.externalRef : undefined;
@@ -267,6 +657,37 @@ function applicationResourceWithoutCompilerAnnotations(resource: TypeKroComposit
 
 function applicationRequiredExternalReferences(graph: ApplicationGraph): readonly JsonObject[] {
   const references: JsonObject[] = [];
+  const eventLogs = graph.nodes.filter(
+    (node): node is ApplicationProviderNode<'EventLog'> =>
+      node.kind === 'provider'
+      && node.interface === 'EventLog'
+      && node.implementation === 'nats-jetstream',
+  );
+  for (const eventLog of eventLogs) {
+    const config = isJsonObject(eventLog.config) ? eventLog.config : {};
+    const provision = applicationGraphBooleanCondition(config.provision);
+    if (provision === 'false') continue;
+    const name = applicationGraphStringValue(config.name) ?? 'applik8s-events';
+    const namespace =
+      applicationGraphStringValue(config.namespace)
+      ?? applicationGraphStringValue(graph.metadata.namespace);
+    const identitySuffix = eventLog.id === 'provider.event-log'
+      ? ''
+      : `_${createHash('sha256').update(eventLog.id).digest('hex').slice(0, 10)}`;
+    const reference = (
+      id: string,
+      releaseName: string,
+    ) => applicationExternalReference(id, {
+      apiVersion: 'helm.toolkit.fluxcd.io/v2',
+      kind: 'HelmRelease',
+      name: releaseName,
+      ...(namespace ? { namespace } : {}),
+    }, provision);
+    references.push(
+      reference(`applik8sEventsNatsHelmRelease${identitySuffix}`, name),
+      reference(`applik8sEventsNackHelmRelease${identitySuffix}`, 'nack'),
+    );
+  }
   const objectStorage = graph.nodes.find((node): node is ApplicationProviderNode<'ObjectStorage'> => node.kind === 'provider' && node.interface === 'ObjectStorage');
   const credentials = objectStorage && isJsonObject(objectStorage.config) && isJsonObject(objectStorage.config.objectStorage)
     ? objectStorage.config.objectStorage.credentialsSecret
@@ -277,7 +698,12 @@ function applicationRequiredExternalReferences(graph: ApplicationGraph): readonl
   if (isJsonObject(credentials) && typeof credentials.apiVersion === 'string' && typeof credentials.kind === 'string' && typeof credentials.name === 'string') {
     references.push(applicationExternalReference('applik8sObjectStorageCredentials', credentials, objectStorageEnabled));
   }
-  const registry = graph.nodes.find((node) => node.kind === 'provider' && node.interface === 'ContainerRegistry');
+  const registry = graph.nodes.find(
+    (node) =>
+      node.kind === 'provider'
+      && node.interface === 'ContainerRegistry'
+      && !isJsonObject(node.config?.qualification),
+  );
   const registryConfig = registry?.kind === 'provider' && isJsonObject(registry.config) && isJsonObject(registry.config.containerRegistry)
     ? registry.config.containerRegistry
     : undefined;

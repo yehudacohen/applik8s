@@ -350,6 +350,17 @@ app.use('*', async (context, next) => {
 for (const route of routes) {
   app.on(route.method, route.path, async (context) => {
     try {
+      if (route.functionNative) {
+        const unavailable = new Error(
+          'Function-native HTTP route execution has not been materialized by the authenticated operation worker.',
+        );
+        unavailable.statusCode = 503;
+        unavailable.diagnostic = {
+          event: 'applik8s-function-native-http-worker-unavailable',
+          routeId: route.id,
+        };
+        throw unavailable;
+      }
       const url = new URL(context.req.url);
       const params = context.req.param();
       const form = await honoFormData(context.req);
@@ -525,6 +536,9 @@ export function routeManifestEntry(module: GeneratedApplicationServerRouteModule
     bundleInputs: routeBundleInputs(module),
     diagnostics: routeDiagnosticsContract(),
     observability: routeObservabilityEntry(),
+    ...(module.route.functionNative
+      ? { functionNative: routeFunctionNativeManifest(module.route) }
+      : {}),
   };
 }
 
@@ -540,7 +554,35 @@ function routeRuntimeMetadataProperties(module: GeneratedApplicationServerRouteM
     `bundleInputs: ${JSON.stringify(routeBundleInputs(module))}`,
     `diagnostics: ${JSON.stringify(routeDiagnosticsContract())}`,
     `observability: ${JSON.stringify(routeObservabilityEntry())}`,
+    ...(module.route.functionNative
+      ? [
+          `functionNative: ${JSON.stringify(
+            routeFunctionNativeManifest(module.route),
+          )}`,
+        ]
+      : []),
   ].join(', ');
+}
+
+function routeFunctionNativeManifest(
+  route: SerializedApplicationServerRouteWithDependencies,
+): object {
+  const functionNative = route.functionNative;
+  if (!functionNative) return {};
+  return {
+    input: functionNative.input,
+    output: functionNative.output,
+    idempotency: {
+      source: 'http-idempotency-key',
+      contextScoped: true,
+    },
+    requestBoundary: {
+      durableValues: 'schema-normalized-only',
+      rawRequestCapture: 'rejected',
+      principal: 'framework-authenticated',
+    },
+    transaction: Boolean(functionNative.transaction),
+  };
 }
 
 function routeObservabilityEntry(): object {

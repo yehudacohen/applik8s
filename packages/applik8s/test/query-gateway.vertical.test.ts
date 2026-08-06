@@ -1,6 +1,6 @@
 // typecast-file-boundary: gateway fixtures emulate heterogeneous query and database results validated by the runtime.
 import type { ApplicationModelChange, ApplicationOnlineQueryRuntimeSource, ApplicationOnlineQuerySource, ApplicationQueryBinding, ApplicationRelationalContext } from '@applik8s/applik8s';
-import { app, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationStreamSubscriptionGateway, createApplicationSubscriptionLimiter, postgres, trustedContext } from '@applik8s/applik8s';
+import { app, applicationGraphFor, createApplicationQueryGateway, createApplicationQueryGatewayHttpHandler, createApplicationStreamSubscriptionGateway, createApplicationSubscriptionLimiter, postgres, trustedContext } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
 import type { ApplicationAuthorizationReceipt } from '@applik8s/core';
 import { pgTable, text, uuid } from 'drizzle-orm/pg-core';
@@ -35,6 +35,8 @@ function queryFixture() {
 function fakeContext(pages: readonly { readonly items: readonly (ApplicationModelChange & { readonly sequence: number })[]; readonly retentionFloor: number }[] = []): ApplicationRelationalContext {
   let page = 0;
   return {
+    admittedContext: { values: {}, digestSecret: 'query-gateway-test-context-secret' },
+    trustedContext: {},
     database() { throw new Error('not used'); },
     async run(_binding, handler) { return handler(); },
     async snapshot(_binding, handler) { return { value: await handler(), sequence: 5 }; },
@@ -85,6 +87,14 @@ function queryReceipt(
 }
 
 describe('v0.6 authenticated query gateway', () => {
+  test('treats the required query authorization callback as application policy', () => {
+    const { catalog } = queryFixture();
+    const graph = applicationGraphFor(catalog.composition);
+    expect(graph?.nodes.find((node) => node.kind === 'query')).toMatchObject({
+      authority: expect.objectContaining({ classification: 'application-policy' }),
+    });
+  });
+
   test('binds the app declaration directly to an authenticated Request/Response runtime', async () => {
     const { catalog, query } = queryFixture();
     const handler = catalog.gateway('public', { queries: [query] }).httpHandler({
@@ -147,6 +157,81 @@ describe('v0.6 authenticated query gateway', () => {
         expiresAt: '2026-07-30T12:00:30.000Z',
       },
     })).resolves.toEqual([{ id: 'card-1', name: 'First' }]);
+  });
+
+  test('fails closed unless every returned signal capability has exact-instance read authority', async () => {
+    const { query } = queryFixture();
+    const signal = {
+      $type: 'applik8s.signal/v1' as const,
+      contract: {
+        id: 'review-decision.v1',
+        name: 'review-decision',
+        version: 'v1',
+      },
+      issuance: { id: 'signal-1' },
+      expiresAt: '2026-08-03T12:00:00.000Z',
+    };
+    const capabilityQuery = {
+      ...query,
+      id: 'reviews.pending.v1',
+      name: 'reviews.pending',
+      output: type({
+        id: 'string',
+        signal: {
+          $type: "'applik8s.signal/v1'",
+          contract: {
+            id: 'string',
+            name: 'string',
+            version: 'string',
+          },
+          issuance: { id: 'string' },
+          expiresAt: 'string',
+        },
+      }).array(),
+      run: async () => [{ id: 'review-1', signal }],
+    } as unknown as ApplicationQueryBinding<unknown, unknown>;
+    const gatewayOptions = {
+      queries: [capabilityQuery],
+      authenticate: async () => ({
+        principal: testApplicationPrincipal('allowed', {
+          authorityRevision: 'permissions-1',
+        }),
+        admittedContext: {
+          values: { organizationId: 'organization-1' },
+          digestSecret: 'context-digest-secret-context-digest-secret',
+        },
+      }),
+      context: () => fakeContext(),
+      cursorSecret: 'cursor-signing-secret-cursor-signing-secret',
+    } as const;
+
+    const unguarded = createApplicationQueryGateway(gatewayOptions);
+    await expect(
+      unguarded.snapshot({}, capabilityQuery.id, { limit: 5 }),
+    ).rejects.toMatchObject({ code: 'APPLIK8S_QUERY_FORBIDDEN' });
+
+    const observed: unknown[] = [];
+    const admitted = createApplicationQueryGateway({
+      ...gatewayOptions,
+      authorizeOutputCapability: ({ capability, identity }) => {
+        observed.push({ capability, principal: identity.principal.id });
+        return capability.issuance.id === 'signal-1';
+      },
+    });
+    await expect(
+      admitted.snapshot({}, capabilityQuery.id, { limit: 5 }),
+    ).resolves.toMatchObject({
+      value: [{ id: 'review-1', signal }],
+    });
+    expect(observed).toEqual([{
+      capability: {
+        kind: 'signalReference',
+        contract: signal.contract,
+        issuance: signal.issuance,
+        expiresAt: signal.expiresAt,
+      },
+      principal: 'allowed',
+    }]);
   });
 
   test('returns a validated bounded snapshot and resumes an intervening relevant change', async () => {
@@ -350,6 +435,7 @@ describe('v0.6 authenticated query gateway', () => {
   });
 
   test('reports known projection unavailability as an actionable retryable response without leaking provider details', async () => {
+    const reported: { error: unknown; context: { readonly query?: string; readonly operation?: 'snapshot' | 'subscribe' } }[] = [];
     const handler = createApplicationQueryGatewayHttpHandler({
       async snapshot() {
         throw Object.assign(new Error('secret provider endpoint and credential details'), {
@@ -358,6 +444,10 @@ describe('v0.6 authenticated query gateway', () => {
       },
       async *subscribe() { yield* []; },
       async invoke() { throw new Error('not used'); },
+    }, {
+      onError(error, context) {
+        reported.push({ error, context });
+      },
     });
     const response = await handler(new Request('https://catalog.test/queries/timeline.v1/snapshot', {
       method: 'POST', body: JSON.stringify({ input: {} }),
@@ -365,6 +455,9 @@ describe('v0.6 authenticated query gateway', () => {
     expect(response.status).toBe(503);
     expect(response.headers.get('retry-after')).toBe('5');
     expect(await response.json()).toEqual({ error: 'projection_unavailable' });
+    expect(reported).toHaveLength(1);
+    expect(reported[0]?.context).toEqual({ query: 'timeline.v1', operation: 'snapshot' });
+    expect(reported[0]?.error).toMatchObject({ code: 'APPLIK8S_ONLINE_PROJECTION_UNAVAILABLE' });
   });
 
   test('shares one per-principal concurrency budget across query and public-stream SSE', async () => {
@@ -410,6 +503,8 @@ describe('v0.6 authenticated query gateway', () => {
           authorize: async () => true,
           project: () => { throw new Error('not used by limiter fixture'); },
           subscribe: () => { throw new Error('not used by limiter fixture'); },
+          onEvent: () => { throw new Error('not used by limiter fixture'); },
+          onBatch: () => { throw new Error('not used by limiter fixture'); },
           process: () => { throw new Error('not used by limiter fixture'); },
         },
         authorize: async () => true,

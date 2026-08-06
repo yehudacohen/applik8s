@@ -21,9 +21,13 @@ import type {
 	ApplicationProviderState,
 } from "./application-providers.js";
 import {
-	isApplicationObjectStorageProvider,
-	ObjectStorage,
+	applicationObjectStorageImplementation,
 } from "./application-providers.js";
+import {
+	applicationObjectStorageRuntime,
+	installApplicationObjectStorageRuntimeResolver,
+	setApplicationObjectStorageRuntimeFactory,
+} from "./application-object-storage-runtime-resolver.js";
 import { applicationTypeKroGraphValue } from "./application-typekro-values.js";
 
 export interface ApplicationObjectStoreOptions {
@@ -175,18 +179,10 @@ export interface ApplicationObjectStoreBinding {
 	}): Promise<ApplicationSignedObjectIntent>;
 }
 
-type ApplicationObjectStorageRuntimeFactory = (
-	binding: ApplicationObjectStoreBinding,
-) => ApplicationObjectStorageRuntime;
-
-let runtimeFactory: ApplicationObjectStorageRuntimeFactory | undefined;
-
-/** Runtime adapters install one provider client factory; discovery remains pure and credential-free. */
-export function setApplicationObjectStorageRuntimeFactory(
-	factory: ApplicationObjectStorageRuntimeFactory | undefined,
-): void {
-	runtimeFactory = factory;
-}
+export {
+	installApplicationObjectStorageRuntimeResolver,
+	setApplicationObjectStorageRuntimeFactory,
+};
 
 interface ApplicationObjectStoreState
 	extends ApplicationGraphState,
@@ -311,11 +307,7 @@ export function registerApplicationObjectStore(
 
 	let binding: ApplicationObjectStoreBinding;
 	const runtime = () => {
-		if (!runtimeFactory)
-			throw new Error(
-				`Application object store ${name} has no hydrated runtime adapter. Install the selected ObjectStorage provider runtime before performing object I/O.`,
-			);
-		return runtimeFactory(binding);
+		return applicationObjectStorageRuntime(binding);
 	};
 	const assertKey = (key: string) => {
 		if (!key || key.startsWith("/") || key.includes("..") || key.length > 1_024)
@@ -472,17 +464,5 @@ function normalizeSha256(value: string, label: string): string {
 function objectStorageImplementation(
 	value: unknown,
 ): ApplicationObjectStorageProvider | undefined {
-	if (isApplicationObjectStorageProvider(value)) return value;
-	if (
-		value &&
-		typeof value === "object" &&
-		Reflect.get(value, "kind") === "applicationProvider" &&
-		Reflect.get(value, "token") === ObjectStorage
-	) {
-		const implementation = Reflect.get(value, "implementation");
-		return isApplicationObjectStorageProvider(implementation)
-			? implementation
-			: undefined;
-	}
-	return undefined;
+	return applicationObjectStorageImplementation(value);
 }

@@ -1,0 +1,102 @@
+import {
+  type FormEvent,
+  useState,
+} from 'react';
+import {
+  BillingDashboard,
+  OpenBillingPortal,
+  StartCheckout,
+} from '../application';
+
+export function BillingDashboardView() {
+  const dashboard = BillingDashboard({}).useQuery();
+  const [notice, setNotice] = useState<string>();
+  const [pending, setPending] = useState(false);
+
+  async function choose(
+    event: FormEvent<HTMLFormElement>,
+    plan: string,
+  ) {
+    event.preventDefault();
+    setPending(true);
+    try {
+      const result = await StartCheckout({
+        plan,
+        returnTo: globalThis.location.href,
+      });
+      setNotice(
+        result.mode === 'simulated'
+          ? 'Starter checkout is simulated and non-production.'
+          : 'Continue to the payment provider.',
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function openPortal() {
+    setPending(true);
+    try {
+      const result = await OpenBillingPortal({
+        returnTo: globalThis.location.href,
+      });
+      setNotice(
+        result.mode === 'simulated'
+          ? 'Starter billing portal is simulated and non-production.'
+          : 'Continue to the payment provider.',
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <main>
+      <p className="eyebrow">Provider-neutral billing</p>
+      <h1>Plan, usage, and entitlements</h1>
+      <p>
+        Product state is canonical application data. Payment-provider details
+        and credentials remain server-only.
+      </p>
+      <section aria-label="Current subscription">
+        <h2>Subscription</h2>
+        <p>
+          {dashboard.data?.subscription
+            ? `${dashboard.data.subscription.planId} · ${dashboard.data.subscription.status}`
+            : 'No active subscription'}
+        </p>
+        <button type="button" onClick={openPortal} disabled={pending}>
+          Open billing portal
+        </button>
+      </section>
+      <section aria-label="Plans">
+        <h2>Plans</h2>
+        {dashboard.data?.plans.map(plan => (
+          <form key={plan.id} onSubmit={event => choose(event, plan.id)}>
+            <strong>{plan.name}</strong>
+            <button type="submit" disabled={pending}>
+              Choose {plan.name}
+            </button>
+          </form>
+        ))}
+      </section>
+      <section aria-label="Usage">
+        <h2>Usage</h2>
+        <p>
+          {dashboard.data?.usage.inputTokens ?? 0} input tokens ·{' '}
+          {dashboard.data?.usage.outputTokens ?? 0} output tokens ·{' '}
+          {dashboard.data?.usage.costMicrounits ?? 0} cost µ-units
+        </p>
+      </section>
+      <section aria-label="Entitlements">
+        <h2>Entitlements</h2>
+        {dashboard.data?.entitlements.map(entitlement => (
+          <p key={entitlement.capability}>
+            {entitlement.capability}: {entitlement.limit ?? 'unlimited'}
+          </p>
+        ))}
+      </section>
+      {notice ? <p role="status">{notice}</p> : null}
+    </main>
+  );
+}

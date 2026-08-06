@@ -1,0 +1,269 @@
+import type {
+  ApplicationModelViewContext,
+  ApplicationQueryPrincipal,
+} from '@applik8s/applik8s';
+import { applicationAIConversationPrincipalScope } from '@applik8s/conversations/runtime';
+import { type } from 'arktype';
+import {
+  and,
+  desc,
+  eq,
+  isNull,
+} from 'drizzle-orm';
+import { Conversations } from '../../modules';
+import { database } from '../../providers';
+import {
+  Administrator,
+  Authenticated,
+  Member,
+  Owner,
+} from '../workspaces/model';
+
+const ConversationSummary = type({
+  id: 'string',
+  'title?': 'string',
+  updatedAt: 'string',
+});
+export type ConversationSummaryValue = typeof ConversationSummary.infer;
+
+const ConversationDetailResult = type({
+  conversation: ConversationSummary,
+  messages: type({
+    id: 'string',
+    role: "'system' | 'user' | 'assistant' | 'tool'",
+    content: 'unknown',
+    createdAt: 'string',
+  }).array(),
+}).or('null');
+
+async function listConversations(
+  _input: object,
+  context: ApplicationModelViewContext,
+) {
+  const client = context.database(database);
+  const principalScope = applicationAIConversationPrincipalScope(
+    context.principal,
+    context.trustedContext,
+  );
+  const rows = await client.select({
+    id: Conversations.Conversation.id,
+    title: Conversations.Conversation.title,
+    updatedAt: Conversations.Conversation.updatedAt,
+  })
+  .from(Conversations.Conversation)
+  .where(and(
+    eq(Conversations.Conversation.principalScope, principalScope),
+    isNull(Conversations.Conversation.archivedAt),
+  ))
+  .orderBy(desc(Conversations.Conversation.updatedAt))
+  .limit(100);
+  return rows.map(row => ({
+    id: row.id,
+    ...(row.title ? { title: row.title } : {}),
+    updatedAt: row.updatedAt,
+  }));
+}
+
+async function loadConversation(
+  input: { readonly conversationId: string },
+  context: ApplicationModelViewContext,
+) {
+  const client = context.database(database);
+  const principalScope = applicationAIConversationPrincipalScope(
+    context.principal,
+    context.trustedContext,
+  );
+  const [conversation] = await client.select({
+    id: Conversations.Conversation.id,
+    title: Conversations.Conversation.title,
+    updatedAt: Conversations.Conversation.updatedAt,
+  })
+  .from(Conversations.Conversation)
+  .where(and(
+    eq(Conversations.Conversation.id, input.conversationId),
+    eq(Conversations.Conversation.principalScope, principalScope),
+  ))
+  .limit(1);
+  if (!conversation) return null;
+  const messages = await client.select({
+    id: Conversations.Message.id,
+    role: Conversations.Message.role,
+    content: Conversations.Message.content,
+    createdAt: Conversations.Message.createdAt,
+  })
+  .from(Conversations.Message)
+  .where(eq(Conversations.Message.conversationId, conversation.id))
+  .orderBy(Conversations.Message.revision)
+  .limit(1_000);
+  return {
+    conversation: {
+      id: conversation.id,
+      ...(conversation.title ? { title: conversation.title } : {}),
+      updatedAt: conversation.updatedAt,
+    },
+    messages,
+  };
+}
+
+function authenticatedQuery({
+  principal,
+}: {
+  readonly principal: ApplicationQueryPrincipal;
+}) {
+  return principal.id.length > 0;
+}
+
+export const ConversationInbox = Conversations.Conversation.view(
+  {
+    input: type({}),
+    output: ConversationSummary.array(),
+    database,
+    authorize: authenticatedQuery,
+    budgets: { timeoutMs: 2_000, maxRows: 100, maxResultBytes: 256_000 },
+  },
+  listConversations,
+);
+
+export const ConversationDetail = Conversations.Conversation.view(
+  {
+    input: type({ conversationId: 'string' }),
+    output: ConversationDetailResult,
+    database,
+    reads: [Conversations.Message],
+    authorize: authenticatedQuery,
+    budgets: { timeoutMs: 2_000, maxRows: 1_001, maxResultBytes: 1_000_000 },
+  },
+  loadConversation,
+);
+
+Conversations.Conversation.update.beforeCommit(
+  {
+    processor: { replicas: 1, concurrency: 8 },
+    retry: {
+      mode: 'boundedExponentialBackoff',
+      maxAttempts: 5,
+      initialDelayMs: 100,
+      maxDelayMs: 5_000,
+    },
+  },
+  async function enforceConversationOwnership(
+    conversation,
+    input,
+    context,
+  ) {
+    if (
+      !context.principal
+      || conversation.value.principalScope
+        !== applicationAIConversationPrincipalScope(
+          context.principal,
+          context.trustedContext,
+        )
+    ) {
+      throw new Error('Conversation is unavailable in this identity scope.');
+    }
+    const fields = Object.keys(input.patch);
+    if (
+      fields.length === 0
+      || fields.some(field => field !== 'title' && field !== 'archivedAt')
+    ) {
+      throw new Error(
+        'Conversation updates may change only title or archivedAt.',
+      );
+    }
+    if (
+      typeof input.patch.title === 'string'
+      && !input.patch.title.trim()
+    ) {
+      throw new Error('Conversation title must not be empty.');
+    }
+  },
+);
+
+Conversations.Conversation.create.beforeCommit(
+  {
+    processor: { replicas: 1, concurrency: 8 },
+    retry: {
+      mode: 'boundedExponentialBackoff',
+      maxAttempts: 5,
+      initialDelayMs: 100,
+      maxDelayMs: 5_000,
+    },
+  },
+  async function enforceConversationCreationScope(
+    conversation,
+    _input,
+    context,
+  ) {
+    if (
+      !context.principal
+      || conversation.value.principalScope
+        !== applicationAIConversationPrincipalScope(
+          context.principal,
+          context.trustedContext,
+        )
+    ) {
+      throw new Error(
+        'Conversation creation must use the admitted identity scope.',
+      );
+    }
+  },
+);
+
+Conversations.Conversation.delete.beforeCommit(
+  {
+    processor: { replicas: 1, concurrency: 8 },
+    retry: {
+      mode: 'boundedExponentialBackoff',
+      maxAttempts: 5,
+      initialDelayMs: 100,
+      maxDelayMs: 5_000,
+    },
+  },
+  async function enforceConversationDeletionScope(
+    conversation,
+    _input,
+    context,
+  ) {
+    if (
+      !context.principal
+      || conversation.value.principalScope
+        !== applicationAIConversationPrincipalScope(
+          context.principal,
+          context.trustedContext,
+        )
+    ) {
+      throw new Error('Conversation is unavailable in this identity scope.');
+    }
+  },
+);
+
+Owner.can(
+  Conversations.Conversation.create.all(),
+  Conversations.Conversation.update.all(),
+  Conversations.Conversation.delete.all(),
+  ConversationInbox,
+  ConversationDetail,
+);
+Administrator.can(
+  Conversations.Conversation.create.all(),
+  Conversations.Conversation.update.all(),
+  Conversations.Conversation.delete.all(),
+  ConversationInbox,
+  ConversationDetail,
+);
+Member.can(
+  Conversations.Conversation.create.all(),
+  Conversations.Conversation.update.all(),
+  Conversations.Conversation.delete.all(),
+  ConversationInbox,
+  ConversationDetail,
+);
+Authenticated.can(
+  Conversations.Conversation.create.all(),
+  Conversations.Conversation.update.all(),
+  Conversations.Conversation.delete.all(),
+  ConversationInbox,
+  ConversationDetail,
+);
+
+export const Conversation = Conversations.Conversation;

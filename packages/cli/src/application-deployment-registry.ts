@@ -31,7 +31,17 @@ export async function resolveDeploymentContainerRegistry(
   const graphPath = bundle.spec?.applicationGraph?.path;
   const graph = graphPath ? await readGeneratedApplicationGraph(bundlePath, io.cwd) : undefined;
   const registryGraph = graph
-    ? applicationGraphDeploymentSlice(graph, (node) => node.kind === 'provider' && node.interface === 'ContainerRegistry')
+    ? applicationGraphDeploymentSlice(
+        graph,
+        (node) =>
+          node.kind === 'provider'
+          && node.interface === 'ContainerRegistry'
+          && (
+            !node.config?.qualification
+            || typeof node.config.qualification !== 'object'
+            || Array.isArray(node.config.qualification)
+          ),
+      )
     : undefined;
   const authoredProvider = registryGraph
     ? applicationContainerRegistryFromGraph(resolveApplicationInstallationValues(registryGraph, spec, { preserveInstallationReferences: true }))

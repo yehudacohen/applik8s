@@ -1,0 +1,8 @@
+apiVersion: identity-start.applik8s.dev/v1alpha1
+kind: IdentityStart
+metadata:
+  name: identity-start
+  namespace: identity-start-control
+spec:
+  name: identity-start
+  profile: starter

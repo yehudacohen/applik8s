@@ -38,9 +38,9 @@ it('compiles the Tenant Platform v0.5 durable onboarding and decommissioning pro
     ]));
     expect(applicationGraph?.nodes).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'provider', interface: 'DnsPublication' }),
-      expect.objectContaining({ kind: 'operator', name: 'tenant-v05-tenant-dns' }),
+      expect.objectContaining({ kind: 'operator', name: 'tenant-controller' }),
     ]));
-    const tenantDnsOperator = result.value.artifacts.operatorArtifacts.find((artifact) => artifact.operatorName === 'tenant-v05-tenant-dns');
+    const tenantDnsOperator = result.value.artifacts.operatorArtifacts.find((artifact) => artifact.operatorName === 'tenant-controller');
     // typecast: the compiler emitted this JSON through its validated operator-manifest serialization path.
     const tenantDnsManifest = JSON.parse(await readFile(tenantDnsOperator?.manifestJsonPath ?? '', 'utf8')) as { readonly spec?: { readonly secondaryWatches?: readonly unknown[] } };
     expect(tenantDnsManifest.spec?.secondaryWatches).toContainEqual(expect.objectContaining({

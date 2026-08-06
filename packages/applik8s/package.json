@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/applik8s",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "TypeScript framework for programming Kubernetes-native applications and operators.",
   "license": "Apache-2.0",
   "type": "module",
@@ -18,116 +18,173 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./operator": {
       "types": "./dist/operator.d.ts",
-      "import": "./dist/operator.js"
+      "import": "./dist/operator.js",
+      "default": "./dist/operator.js"
     },
     "./dns": {
       "types": "./dist/dns.d.ts",
-      "import": "./dist/dns.js"
+      "import": "./dist/dns.js",
+      "default": "./dist/dns.js"
     },
     "./dsl": {
       "types": "./dist/dsl.d.ts",
-      "import": "./dist/dsl.js"
+      "import": "./dist/dsl.js",
+      "default": "./dist/dsl.js"
     },
     "./drizzle": {
       "types": "./dist/drizzle.d.ts",
-      "import": "./dist/drizzle.js"
+      "import": "./dist/drizzle.js",
+      "default": "./dist/drizzle.js"
     },
     "./typekro": {
       "types": "./dist/typekro.d.ts",
-      "import": "./dist/typekro.js"
+      "import": "./dist/typekro.js",
+      "default": "./dist/typekro.js"
     },
     "./factories": {
       "types": "./dist/factories.d.ts",
-      "import": "./dist/factories.js"
+      "import": "./dist/factories.js",
+      "default": "./dist/factories.js"
     },
     "./factories/*": {
       "types": "./dist/factories/*.d.ts",
-      "import": "./dist/factories/*.js"
+      "import": "./dist/factories/*.js",
+      "default": "./dist/factories/*.js"
     },
     "./processor-runtime": {
       "types": "./dist/processor-runtime.d.ts",
-      "import": "./dist/processor-runtime.js"
+      "import": "./dist/processor-runtime.js",
+      "default": "./dist/processor-runtime.js"
     },
     "./event-log-runtime": {
       "types": "./dist/event-log-runtime.d.ts",
-      "import": "./dist/event-log-runtime.js"
+      "import": "./dist/event-log-runtime.js",
+      "default": "./dist/event-log-runtime.js"
     },
     "./postgres-runtime-contract": {
       "types": "./dist/postgres-runtime-contract.d.ts",
-      "import": "./dist/postgres-runtime-contract.js"
+      "import": "./dist/postgres-runtime-contract.js",
+      "default": "./dist/postgres-runtime-contract.js"
     },
     "./reactive-runtime": {
       "types": "./dist/reactive-runtime.d.ts",
-      "import": "./dist/reactive-runtime.js"
+      "import": "./dist/reactive-runtime.js",
+      "default": "./dist/reactive-runtime.js"
     },
     "./query-runtime": {
       "types": "./dist/query-runtime.d.ts",
-      "import": "./dist/query-runtime.js"
+      "import": "./dist/query-runtime.js",
+      "default": "./dist/query-runtime.js"
     },
     "./command-gateway-runtime": {
       "types": "./dist/command-gateway-runtime.d.ts",
-      "import": "./dist/command-gateway-runtime.js"
+      "import": "./dist/command-gateway-runtime.js",
+      "default": "./dist/command-gateway-runtime.js"
     },
     "./subscription-runtime": {
       "types": "./dist/subscription-runtime.d.ts",
-      "import": "./dist/subscription-runtime.js"
+      "import": "./dist/subscription-runtime.js",
+      "default": "./dist/subscription-runtime.js"
     },
     "./projection-worker-runtime": {
       "types": "./dist/projection-worker-runtime.d.ts",
-      "import": "./dist/projection-worker-runtime.js"
+      "import": "./dist/projection-worker-runtime.js",
+      "default": "./dist/projection-worker-runtime.js"
     },
     "./structured-generation-runtime": {
       "types": "./dist/structured-generation-runtime.d.ts",
-      "import": "./dist/structured-generation-runtime.js"
+      "import": "./dist/structured-generation-runtime.js",
+      "default": "./dist/structured-generation-runtime.js"
     },
     "./structured-generation": {
       "types": "./dist/structured-generation.d.ts",
-      "import": "./dist/structured-generation.js"
+      "import": "./dist/structured-generation.js",
+      "default": "./dist/structured-generation.js"
     },
     "./task-operation-runtime": {
       "types": "./dist/task-operation-runtime.d.ts",
-      "import": "./dist/task-operation-runtime.js"
+      "import": "./dist/task-operation-runtime.js",
+      "default": "./dist/task-operation-runtime.js"
     },
     "./task-query-runtime": {
       "types": "./dist/task-query-runtime.d.ts",
-      "import": "./dist/task-query-runtime.js"
+      "import": "./dist/task-query-runtime.js",
+      "default": "./dist/task-query-runtime.js"
     },
     "./stream-worker-runtime": {
       "types": "./dist/stream-worker-runtime.d.ts",
-      "import": "./dist/stream-worker-runtime.js"
+      "import": "./dist/stream-worker-runtime.js",
+      "default": "./dist/stream-worker-runtime.js"
+    },
+    "./signal-runtime": {
+      "types": "./dist/signal-runtime.d.ts",
+      "import": "./dist/signal-runtime.js",
+      "default": "./dist/signal-runtime.js"
+    },
+    "./signal-gateway": {
+      "types": "./dist/signal-gateway.d.ts",
+      "import": "./dist/signal-gateway.js",
+      "default": "./dist/signal-gateway.js"
+    },
+    "./operation-runtime": {
+      "types": "./dist/application-operation-runtime.d.ts",
+      "import": "./dist/application-operation-runtime.js",
+      "default": "./dist/application-operation-runtime.js"
+    },
+    "./workflow-runtime-resolvers": {
+      "types": "./dist/workflow-runtime-resolvers.d.ts",
+      "import": "./dist/workflow-runtime-resolvers.js",
+      "default": "./dist/workflow-runtime-resolvers.js"
+    },
+    "./workflow-runtime": {
+      "types": "./dist/workflow-runtime.d.ts",
+      "import": "./dist/workflow-runtime.js",
+      "default": "./dist/workflow-runtime.js"
+    },
+    "./workflow-gateway-binding": {
+      "types": "./dist/workflow-gateway-binding.d.ts",
+      "import": "./dist/workflow-gateway-binding.js",
+      "default": "./dist/workflow-gateway-binding.js"
     },
     "./deployment-registry": {
       "types": "./dist/deployment-registry.d.ts",
-      "import": "./dist/deployment-registry.js"
+      "import": "./dist/deployment-registry.js",
+      "default": "./dist/deployment-registry.js"
+    },
+    "./internal/provider-runtime": {
+      "types": "./dist/application-provider-runtime.d.ts",
+      "import": "./dist/application-provider-runtime.js",
+      "default": "./dist/application-provider-runtime.js"
     }
   },
   "dependencies": {
-    "@applik8s/ai": "0.6.0",
-    "@applik8s/ai-tanstack": "0.6.0",
-    "@applik8s/client": "0.6.0",
-    "@applik8s/core": "0.6.0",
-    "@applik8s/identity": "0.6.0",
-    "@applik8s/operations": "0.6.0",
-    "@applik8s/sdk": "0.6.0",
-    "@applik8s/typekro-adapter": "0.6.0",
-    "@applik8s/typetainer": "0.6.0",
+    "@applik8s/ai": "0.7.0",
+    "@applik8s/ai-tanstack": "0.7.0",
+    "@applik8s/client": "0.7.0",
+    "@applik8s/core": "0.7.0",
+    "@applik8s/identity": "0.7.0",
+    "@applik8s/operations": "0.7.0",
+    "@applik8s/sdk": "0.7.0",
+    "@applik8s/typekro-adapter": "0.7.0",
+    "@applik8s/typetainer": "0.7.0",
     "arktype": "^2.1.20",
     "drizzle-arktype": "0.1.3",
     "drizzle-orm": "^0.45.1",
     "esbuild": "^0.28.1",
     "hono": "^4.10.7",
-    "typekro": "0.32.0"
+    "typekro": "0.33.5"
   },
   "peerDependencies": {
-    "@applik8s/runtime-hatchet": "0.6.0",
-    "@applik8s/runtime-nats": "0.6.0",
-    "@applik8s/runtime-kubernetes": "0.6.0",
-    "@applik8s/runtime-opensearch": "0.6.0",
-    "@applik8s/runtime-postgres": "0.6.0"
+    "@applik8s/runtime-hatchet": "0.7.0",
+    "@applik8s/runtime-nats": "0.7.0",
+    "@applik8s/runtime-kubernetes": "0.7.0",
+    "@applik8s/runtime-opensearch": "0.7.0",
+    "@applik8s/runtime-postgres": "0.7.0"
   },
   "peerDependenciesMeta": {
     "@applik8s/runtime-hatchet": {

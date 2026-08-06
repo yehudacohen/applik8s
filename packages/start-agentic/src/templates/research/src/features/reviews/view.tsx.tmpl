@@ -1,0 +1,184 @@
+import type {
+  ApplicationSignal,
+  ApplicationSignalIssuance,
+} from '@applik8s/applik8s';
+import { selectAgenticWorkspace } from '@applik8s/start-agentic/react';
+import {
+  type FormEvent,
+  useEffect,
+  useState,
+} from 'react';
+import {
+  ResearchReview,
+  ResearchReviewDecision,
+  ResearchReviewList,
+} from '../../application';
+
+type ReviewDefinition = typeof ResearchReviewDecision.signal;
+type ReviewIssuance = ApplicationSignalIssuance<
+  ReviewDefinition,
+  ApplicationSignal<ReviewDefinition>
+>;
+
+export function ResearchReviewWorkspace(
+  { workspaceId }: { readonly workspaceId: string },
+) {
+  useEffect(() => {
+    selectAgenticWorkspace(workspaceId);
+  }, [workspaceId]);
+  const reviews = ResearchReviewList({}).useQuery();
+  const createReview = ResearchReview.create.useMutation();
+  const signals = useResearchReviewSignals();
+  const [title, setTitle] = useState('');
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const next = title.trim();
+    if (!next) return;
+    await createReview({ workspaceId, title: next });
+    setTitle('');
+  }
+
+  return (
+    <main>
+      <p className="eyebrow">Function-native durable execution</p>
+      <h1>Research reviews</h1>
+      <p>
+        Creating one ordinary model starts a durable workflow. Its typed
+        decision is delivered over SSE, authorized by the framework principal,
+        and produces an immutable decision artifact.
+      </p>
+      <form onSubmit={submit}>
+        <label htmlFor="review-title">Review title</label>
+        <input
+          id="review-title"
+          value={title}
+          onChange={event => setTitle(event.currentTarget.value)}
+        />
+        <button
+          type="submit"
+          disabled={!title.trim() || createReview.pending}
+        >
+          {createReview.pending ? 'Starting…' : 'Start durable review'}
+        </button>
+        {createReview.error
+          ? <p role="alert">{createReview.error.message}</p>
+          : null}
+      </form>
+
+      <section aria-label="Pending review signals">
+        <h2>Decision signals</h2>
+        {signals.error ? <p role="alert">{signals.error.message}</p> : null}
+        {signals.items.map(review => (
+          <article
+            key={review.id}
+            data-signal-id={review.signal.issuance.id}
+          >
+            <strong>{review.input.title}</strong>
+            <p>Durable review {review.input.reviewId}</p>
+            <button
+              type="button"
+              disabled={signals.pending === review.id}
+              onClick={() => signals.resolve(review, 'approve')}
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              disabled={signals.pending === review.id}
+              onClick={() => signals.resolve(review, 'reject')}
+            >
+              Reject
+            </button>
+          </article>
+        ))}
+      </section>
+
+      <section aria-label="Authoritative review state">
+        <h2>Review state</h2>
+        {reviews.error ? <p role="alert">{reviews.error.message}</p> : null}
+        {(reviews.data ?? []).map(review => (
+          <article key={review.id} data-review-id={review.id}>
+            <strong>{review.title}</strong>
+            <p>{review.state}</p>
+            {review.artifactId
+              ? <small>Artifact {review.artifactId}</small>
+              : null}
+            {review.decidedByPrincipalId
+              ? <small>Decided by {review.decidedByPrincipalId}</small>
+              : null}
+          </article>
+        ))}
+      </section>
+    </main>
+  );
+}
+
+function useResearchReviewSignals() {
+  const [items, setItems] = useState<readonly ReviewIssuance[]>([]);
+  const [pending, setPending] = useState<string>();
+  const [error, setError] = useState<Error>();
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const initial = await ResearchReviewDecision.subscribe({
+          signal: controller.signal,
+        }).replay({ limit: 100, signal: controller.signal });
+        setItems(uniqueReviews(initial.items));
+        const live = ResearchReviewDecision.subscribe({
+          after: initial.cursor,
+          signal: controller.signal,
+        });
+        for await (const review of live) {
+          setItems(current => uniqueReviews([review, ...current]));
+        }
+      } catch (cause) {
+        if (!controller.signal.aborted) {
+          setError(cause instanceof Error ? cause : new Error(String(cause)));
+        }
+      }
+    })();
+    return () => controller.abort();
+  }, []);
+  return {
+    items,
+    pending,
+    error,
+    async resolve(review: ReviewIssuance, action: 'approve' | 'reject') {
+      setPending(review.id);
+      setError(undefined);
+      try {
+        const result = action === 'approve'
+          ? await review.signal.approve(
+              { comment: 'Approved through the typed workspace review.' },
+              { idempotencyKey: review.id + ':approve' },
+            )
+          : await review.signal.reject(
+              { reason: 'Rejected through the typed workspace review.' },
+              { idempotencyKey: review.id + ':reject' },
+            );
+        if (
+          result.status === 'resolved'
+          || result.status === 'alreadyResolved'
+        ) {
+          setItems(current =>
+            current.filter(candidate => candidate.id !== review.id),
+          );
+        }
+      } catch (cause) {
+        setError(cause instanceof Error ? cause : new Error(String(cause)));
+      } finally {
+        setPending(undefined);
+      }
+    },
+  };
+}
+
+function uniqueReviews(
+  reviews: readonly ReviewIssuance[],
+): readonly ReviewIssuance[] {
+  return [
+    ...new Map(reviews.map(review => [review.id, review])).values(),
+  ].sort((left, right) => right.issuedAt.localeCompare(left.issuedAt));
+}

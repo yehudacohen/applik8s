@@ -108,7 +108,7 @@ async function buildBenchmark() {
   const directory = await mkdtemp(join(tmpdir(), 'applik8s-v05-benchmark-'));
   try {
     const started = performance.now();
-    await execFileAsync('bun', ['run', 'applik8s', 'build', join(root, 'examples/tenant-platform.ts'), '--typekro', '--composition-name', 'tenantPlatformV05', '--out-dir', directory], { cwd: root, timeout: 240_000, maxBuffer: 20 * 1024 * 1024 });
+    await execFileAsync('bun', ['run', 'applik8s', 'build', join(root, 'examples/tenant-platform-v05.ts'), '--typekro', '--composition-name', 'tenantPlatformV05', '--out-dir', directory], { cwd: root, timeout: 240_000, maxBuffer: 20 * 1024 * 1024 });
     const durationMs = performance.now() - started;
     const files = await artifactFiles(directory);
     // typecast: generated workflow manifests are repository-owned and only the defensive optional size field is consumed.

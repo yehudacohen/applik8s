@@ -38,7 +38,7 @@ const alchemyLayer = Layer.mergeAll(LoggingCli, AlchemyContextLive);
 
 /**
  * Executes an Alchemy effect in the exact runtime cohort pinned by TypeKro
- * 0.32.0. This is the single intentionally isolated Alchemy host boundary.
+ * 0.33.5. This is the single intentionally isolated Alchemy host boundary.
  */
 export function applicationAlchemyRuntimeEffect<A>(
   effect: Effect.Effect<A, unknown, unknown>,

@@ -1,7 +1,7 @@
 import { ApplicationHost, Certificate, DnsPublication, HttpExposure } from '@applik8s/applik8s';
 import { externalRef } from 'typekro';
 import { app, capacity, namespace, publicExposure } from './app';
-import { Account, Attachments, Automation, AutomationControl, AutomationRun, Avatars, Block, Bookmark, DefaultModerationPolicy, Follow, gateway, Media, ModerationCase, ModerationPolicy, Mute, Notification, Post, ProjectionArtifacts, Reaction, RebuildHomeTimelines, Report } from './models';
+export * from './models';
 
 /**
  * The portable deployment graph hoists this Namespace through a TypeKro
@@ -11,6 +11,7 @@ import { Account, Attachments, Automation, AutomationControl, AutomationRun, Ava
 export const workloadNamespace = app.infra(() => externalRef({
   apiVersion: 'v1',
   kind: 'Namespace',
+  scope: 'cluster',
   id: 'chirpWorkloadNamespace',
   metadata: { name: namespace },
 }));
@@ -51,6 +52,4 @@ app.installation.configure((spec, installation) => {
   });
 });
 
-export { ChirpInstallation } from './app';
-export type { TimelinePostValue } from './models';
-export { Account, Attachments, Automation, AutomationControl, AutomationRun, Avatars, app, Block, Bookmark, DefaultModerationPolicy, Follow, gateway, Media, ModerationCase, ModerationPolicy, Mute, Notification, Post, ProjectionArtifacts, Reaction, RebuildHomeTimelines, Report };
+export { app, ChirpInstallation } from './app';

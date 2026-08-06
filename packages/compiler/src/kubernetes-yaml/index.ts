@@ -14,7 +14,7 @@ import type { V1Role } from '@kubernetes/client-node/dist/gen/models/V1Role.js';
 import type { V1RoleBinding } from '@kubernetes/client-node/dist/gen/models/V1RoleBinding.js';
 import type { V1ServiceAccount } from '@kubernetes/client-node/dist/gen/models/V1ServiceAccount.js';
 import { stringify } from 'yaml';
-import { toKubernetesStructuralOpenApiSchema, validateStructuralOpenApiSchema } from '../kubernetes-schema/index.js';
+import { toKubernetesStructuralOpenApiSchema, validateStructuralOpenApiSchema, withApplik8sFrameworkStatusSchema } from '../kubernetes-schema/index.js';
 import { DEFAULT_OPERATOR_HOST_IMAGE_REFERENCE } from '../operator-host-image.js';
 
 export interface KubernetesYamlRequest {
@@ -228,9 +228,12 @@ function isOwnedResource(resource: AnyResourceDefinition): boolean {
 function crdVersionDocument(resource: AnyResourceDefinition, version: AnyResourceVersionDefinition) {
   const specSchema = emitStructuralOpenApiSchema(version.spec, `${resource.kind}.${version.name}.spec`);
   const statusSchema = version.status
-    ? statusSchemaWithConvention(
-      emitStructuralOpenApiSchema(version.status, `${resource.kind}.${version.name}.status`),
-      resource.statusConvention,
+    ? withApplik8sFrameworkStatusSchema(
+      statusSchemaWithConvention(
+        emitStructuralOpenApiSchema(version.status, `${resource.kind}.${version.name}.status`),
+        resource.statusConvention,
+        `${resource.kind}.${version.name}.status`,
+      ),
       `${resource.kind}.${version.name}.status`,
     )
     : undefined;
