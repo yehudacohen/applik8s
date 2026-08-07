@@ -213,6 +213,13 @@ export interface ApplicationExecutionPrincipal extends ApplicationPrincipal {
   readonly attempt: number;
   readonly workloadIdentity: ApplicationIdentityReference;
   readonly serviceIdentity?: ApplicationIdentityReference;
+  /**
+   * Stable principal ID of the request principal that initiated this execution.
+   *
+   * This is attribution evidence, never ambient authority. Authorization still
+   * uses this execution principal and its bounded workload envelopes.
+   */
+  readonly causalPrincipalId?: string;
   readonly causalPrincipal?: ApplicationIdentityReference;
   readonly causalGrantIds: readonly string[];
   readonly deadline: string;

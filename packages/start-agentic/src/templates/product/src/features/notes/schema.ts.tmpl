@@ -1,8 +1,14 @@
-import { authenticatedPrincipalId, field, model } from '@applik8s/applik8s/drizzle';
+import {
+  authenticatedPrincipalId,
+  causalPrincipalId,
+  field,
+  model,
+} from '@applik8s/applik8s/drizzle';
 
 export const Note = model('notes', {
   id: field.uuid('id').defaultRandom().primaryKey(),
-  ownerPrincipalId: field.text('owner_principal_id').notNull().default(authenticatedPrincipalId),
+  ownerPrincipalId: field.text('owner_principal_id').notNull().default(causalPrincipalId),
+  createdByPrincipalId: field.text('created_by_principal_id').notNull().default(authenticatedPrincipalId),
   body: field.text('body').notNull(),
   createdAt: field.timestamp('created_at', {
     withTimezone: true,

@@ -15,17 +15,25 @@ still uses the same typed provider contracts as Dedicated and External.
 bun run check
 bun run deploy       # requires package.json applik8s.context or --context
 bun run dev           # web-only process; useful for UI-only work
-bun run dev:cluster   # live providers + in-cluster Vite hot reload
+bun run dev:cluster   # credential-free Starter + in-cluster Vite hot reload
+bun run dev:live      # OpenRouter + the same in-cluster hot reload
 bun run status
 bun run destroy
 ```
 
-`bun run dev:cluster` selects `kubernetes/application.developer.yaml`, resolves
-OpenRouter and Stripe credentials from the operation host, and applies a
-TypeKro aspect that runs Vite in the graph-owned ApplicationHost. Only an
-allowlist of source and build files is mounted; `.env`, Git data, and deployment
-state never enter the pod. A local Vite process is web-only because routes that
-open authenticated database sessions require the cluster services.
+`bun run dev:cluster` selects the credential-free Starter installation and
+applies a TypeKro aspect that runs Vite in the graph-owned ApplicationHost.
+`bun run dev:live` selects `kubernetes/application.developer.yaml` and resolves
+the OpenRouter credential from the operation host. Only an allowlist of source
+and build files is mounted; `.env`, Git data, and deployment state never enter
+the pod. A local Vite process is web-only because routes that open authenticated
+database sessions require the cluster services.
+
+Local source mounting requires a cluster whose nodes share the host filesystem.
+Applik8s recognizes OrbStack, Docker Desktop, and Rancher Desktop automatically
+and fails before deployment on other contexts. Set
+`APPLIK8S_DEVELOPMENT_SHARED_FILESYSTEM=1` only when a different local cluster
+provides the same guarantee.
 
 Environment-backed credentials are not limited to development. A Dedicated
 installation may explicitly set `credentialSource.kind: hostEnvironment` and
@@ -42,7 +50,8 @@ The CLI never adopts kubectl's ambient context. Generate with
 
 - **Starter** is a local, credential-free, non-production system.
 - **Developer** keeps Starter-sized stateful services while using live
-  OpenRouter and Stripe providers supplied through operation-host bindings.
+  OpenRouter inference supplied through an operation-host binding. Payments
+  remain simulated unless the installation explicitly selects Stripe.
 - **Dedicated** owns production-grade dependencies in the application graph.
 - **External** binds explicitly external services and never silently adopts
   their lifecycle.

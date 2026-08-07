@@ -119,7 +119,21 @@ export function compileApplicationWorkloadAuthority(
         operationId: operation.id,
         catalogRevision: catalog.revision,
         restrictions: {
-          target: tool.authority.scope,
+          // Agent declarations are materialized before later
+          // `ServiceIdentity.can(tool)` calls finish the static authority
+          // manifest. In that ordinary ordering the tool still carries its
+          // unclassified deny-all placeholder even though the compiled
+          // operation catalog has the reviewed static scope. The workload
+          // envelope must use that final catalog scope; retaining the
+          // placeholder would make a valid static grant unusable at runtime.
+          target:
+            tool.authority.classification === 'unclassified'
+              ? staticAgentToolScope(
+                  graph,
+                  agent.serviceIdentity.id,
+                  operation,
+                )
+              : tool.authority.scope,
           predicates: [],
         },
         inputSchemaDigest: operation.input.digest,
@@ -131,6 +145,28 @@ export function compileApplicationWorkloadAuthority(
     }));
   return [...taskEnvelopes, ...agentEnvelopes]
     .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function staticAgentToolScope(
+  graph: ApplicationGraph,
+  serviceIdentityId: string,
+  operation: ApplicationOperationDescriptor,
+): ApplicationOperationDescriptor['authority']['defaultScope'] {
+  const authority = graph.nodes.find(
+    (node) => node.kind === 'authorityManifest',
+  );
+  const scopes = authority?.kind === 'authorityManifest'
+    ? authority.manifest.grants
+      .filter(
+        (grant) =>
+          grant.identity.id === serviceIdentityId
+          && grant.operationIds.includes(operation.id),
+      )
+      .map((grant) => grant.scope)
+    : [];
+  if (scopes.length === 1) return scopes[0]!;
+  if (scopes.length > 1) return { kind: 'or', expressions: scopes };
+  return operation.authority.defaultScope;
 }
 
 export function compileApplicationOperationCatalog(

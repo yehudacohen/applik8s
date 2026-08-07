@@ -16,6 +16,8 @@ const notes = module(
         input: type({}),
         output: type({
           id: 'string',
+          ownerPrincipalId: 'string',
+          createdByPrincipalId: 'string',
           body: 'string',
           createdAt: 'string',
         }).array(),
@@ -24,14 +26,16 @@ const notes = module(
       },
       async function listNotes(_input, context) {
         return context.database(database)
-        .select({
-          id: NoteTable.id,
-          body: NoteTable.body,
-          createdAt: NoteTable.createdAt,
-        })
-        .from(NoteTable)
-        .where(eq(NoteTable.ownerPrincipalId, context.principal.id))
-        .orderBy(desc(NoteTable.createdAt))
+          .select({
+            id: NoteTable.id,
+            ownerPrincipalId: NoteTable.ownerPrincipalId,
+            createdByPrincipalId: NoteTable.createdByPrincipalId,
+            body: NoteTable.body,
+            createdAt: NoteTable.createdAt,
+          })
+          .from(NoteTable)
+          .where(eq(NoteTable.ownerPrincipalId, context.principal.id))
+          .orderBy(desc(NoteTable.createdAt))
           .limit(100);
       },
     );

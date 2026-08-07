@@ -47,7 +47,8 @@ describe('pinned Stimp product-contract parity', () => {
     expect(manifest.scripts).toMatchObject({
       plan: 'bun run build && applik8s plan',
       deploy: 'bun run build && applik8s deploy',
-      'dev:cluster': 'bun run build && applik8s deploy --development --instance kubernetes/application.developer.yaml',
+      'dev:cluster': 'bun run build && applik8s deploy --development --instance kubernetes/application.yaml',
+      'dev:live': 'bun run build && applik8s deploy --development --instance kubernetes/application.developer.yaml',
       status: 'applik8s status',
       destroy: 'applik8s destroy',
     });

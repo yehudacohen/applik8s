@@ -297,6 +297,11 @@ The `ExecutionPrincipal` contains causal requester, logical service identity, de
 run ID, delegated grants, audience, trusted-context digest, expiration, and authorization revision.
 Agent source code cannot obtain broader authority by adding a tool to the definition.
 
+When an admitted tool creates a human-owned model, ownership is derived from
+the execution principal's framework-admitted causal principal ID. The agent
+remains the actor in authorization receipts and audit history. Tool input never
+supplies an owner or claims the requester's identity.
+
 This is the agent specialization of the authority RFP's execution model: `ServiceIdentity` supplies
 logical baseline application authority, `WorkloadIdentity` authenticates the deployed runtime and
 defines its maximum dependency envelope, and `ExecutionPrincipal` defines one narrow admitted run.

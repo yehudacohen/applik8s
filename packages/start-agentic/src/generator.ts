@@ -233,7 +233,8 @@ async function updateGeneratedPackage(
     'db:generate': 'drizzle-kit generate',
     plan: 'bun run build && applik8s plan',
     deploy: 'bun run build && applik8s deploy',
-    'dev:cluster': 'bun run build && applik8s deploy --development --instance kubernetes/application.developer.yaml',
+    'dev:cluster': 'bun run build && applik8s deploy --development --instance kubernetes/application.yaml',
+    'dev:live': 'bun run build && applik8s deploy --development --instance kubernetes/application.developer.yaml',
     status: 'applik8s status',
     destroy: 'applik8s destroy',
   };

@@ -74,8 +74,15 @@ export async function createGeneratedApplicationAlchemyDeployment<
   kubeConfig.loadFromDefault();
   kubeConfig.setCurrentContext(options.context);
   // Resolve eagerly so an unknown context fails before Alchemy creates state.
-  if (!kubeConfig.getCurrentCluster() || !kubeConfig.getCurrentUser()) {
+  const currentCluster = kubeConfig.getCurrentCluster();
+  if (!currentCluster || !kubeConfig.getCurrentUser()) {
     throw new Error(`Kubernetes context ${options.context} does not resolve a cluster and user.`);
+  }
+  if (options.development) {
+    assertApplicationDevelopmentSharedFilesystem({
+      context: options.context,
+      server: currentCluster.server,
+    });
   }
   const artifactRegistry = applicationAlchemyArtifactRegistry(
     options.registry,
@@ -118,6 +125,40 @@ export async function createGeneratedApplicationAlchemyDeployment<
         : {}),
     },
   });
+}
+
+const knownSharedFilesystemDevelopmentContexts = new Set([
+  'orbstack',
+  'docker-desktop',
+  'rancher-desktop',
+]);
+
+/**
+ * Fails before deployment when hostPath-based source mounting cannot be
+ * justified.
+ *
+ * A Kubernetes API endpoint on localhost is insufficient evidence: kind and
+ * similar clusters expose a local API while their node filesystem is isolated.
+ * Maintained desktop distributions are admitted by identity; other compatible
+ * local clusters require an explicit operation-host acknowledgement.
+ */
+export function assertApplicationDevelopmentSharedFilesystem(input: {
+  readonly context: string;
+  readonly server: string;
+  readonly environment?: Readonly<Record<string, string | undefined>>;
+}): void {
+  const context = input.context.trim().toLowerCase();
+  const environment = input.environment ?? process.env;
+  if (
+    knownSharedFilesystemDevelopmentContexts.has(context)
+    || context.startsWith('orbstack-')
+    || environment.APPLIK8S_DEVELOPMENT_SHARED_FILESYSTEM === '1'
+  ) {
+    return;
+  }
+  throw new Error(
+    `Development source mounting cannot prove that Kubernetes context ${input.context} shares host paths with its nodes (${input.server}). Use OrbStack, Docker Desktop, or Rancher Desktop, or set APPLIK8S_DEVELOPMENT_SHARED_FILESYSTEM=1 only for a compatible local cluster.`,
+  );
 }
 
 export async function readApplicationDeploymentGraph(

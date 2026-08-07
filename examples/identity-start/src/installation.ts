@@ -91,7 +91,7 @@ const DeveloperProviders = type({
     credentialSecretName: 'string',
     'credentialKey?': 'string',
   },
-  payments: {
+  'payments?': {
     secretName: 'string',
     'apiKeyKey?': 'string',
     'webhookSecretKey?': 'string',

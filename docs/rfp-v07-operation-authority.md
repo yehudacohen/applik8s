@@ -562,6 +562,16 @@ through a `WorkloadIdentity`; each run receives a distinct `ExecutionPrincipal` 
 concrete run, logical service identity, deployed workload identity, and grant chain without collapsing
 them into one string.
 
+Model ownership attribution is deliberately separate from the authorization
+actor. `authenticatedPrincipalId` means the principal executing the operation.
+`causalPrincipalId` is a framework-derived model default: direct requests use
+their authenticated principal ID, while admitted agent, workflow, task,
+processor, and reconcile executions use their signed causal principal ID.
+Selecting this default declares attribution semantics; it does not grant the
+execution any authority held by the causal principal. The value cannot appear
+in public operation input, and the durable authorization receipt retains the
+execution actor, causal identity, grant chain, and operation provenance.
+
 The same identity separation applies to every generated runtime. An optional logical `ServiceIdentity`
 owns reusable baseline application authority. A `WorkloadIdentity` authenticates the deployed process
 and defines its maximum dependency envelope; it is not the effective principal of each delivery. Every

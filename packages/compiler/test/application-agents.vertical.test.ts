@@ -347,6 +347,15 @@ describe('generated application AI agents', () => {
     ).toEqual(['agent-tools']);
     const catalog = compileApplicationOperationCatalog(graph);
     const authority = compileApplicationWorkloadAuthority(graph, catalog);
+    expect(authority).toEqual([
+      expect.objectContaining({
+        operationId: 'applik8s://models/Post/operations/create',
+        restrictions: {
+          target: { kind: 'all' },
+          predicates: [],
+        },
+      }),
+    ]);
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-agent-'));
     temporaryDirectories.push(outDir);
 

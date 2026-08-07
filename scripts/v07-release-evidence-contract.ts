@@ -75,6 +75,13 @@ export const v07ReleaseEvidenceContract: Readonly<
     'browser:runs a workspace-scoped durable review from SSE signal to immutable artifact',
     'graph-backed-destroy',
   ]),
+  'agentic-product-starter': Object.freeze([
+    'migration-generation',
+    'production-build',
+    'graph-backed-deploy',
+    'causal-agent-note',
+    'graph-backed-destroy',
+  ]),
 });
 
 export const v07ReleaseEvidenceSuites = Object.freeze([
@@ -90,6 +97,7 @@ export const v07ReleaseEvidenceSuites = Object.freeze([
   'identity-start-dedicated',
   'identity-start-external',
   'agentic-start-starter',
+  'agentic-product-starter',
 ] as const);
 
 export const v07EvidenceDirectory = '.applik8s-tmp/evidence/v0.7';

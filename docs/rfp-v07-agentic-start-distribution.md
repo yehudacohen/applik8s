@@ -899,12 +899,22 @@ component must not receive provider credentials, server-only handles, TypeKro
 objects, or deployment runtime state.
 
 Generated projects expose `bun run dev` as the upstream side-effect-free local
-web loop and `bun run dev:cluster` as the explicit one-command cluster loop.
-`dev:cluster` runs the ordinary production build and `applik8s deploy` path to
-readiness before starting Vite; it does not add deployment side effects to the
-Vite plugin, infer an ambient Kubernetes context, or silently destroy the
-installation when the web process exits. Infrastructure changes are applied by
-restarting that explicit command or invoking `bun run deploy`.
+web loop, `bun run dev:cluster` as the credential-free Starter cluster loop,
+and `bun run dev:live` as the explicitly credentialed Developer loop. Both
+cluster commands run the ordinary production build and `applik8s deploy` path
+to readiness with the local-source development aspect; they do not add
+deployment side effects to the Vite plugin, infer an ambient Kubernetes
+context, or silently destroy the installation when the web process exits. Live
+payment credentials are required only when a billing-capable application
+selects Stripe. Infrastructure changes are applied by restarting the explicit
+command or invoking `bun run deploy`.
+
+The local-source aspect admits only clusters whose nodes are known to share
+the operation host's filesystem. Maintained desktop clusters work without
+configuration; another compatible local cluster requires an explicit
+operation-host acknowledgement. A remote or merely loopback-exposed API server
+must fail before graph mutation rather than deploy unresolved `hostPath`
+mounts.
 
 No Stimp source is copied merely to preserve an internal API. Feature-first organization, public
 Applik8s primitives, maintained packages, and the TypeKro/Alchemy lifecycle remain normative even where
@@ -916,6 +926,8 @@ The Start RFP owns the integrated gates:
 
 - fresh generation and install from packed packages;
 - real browser SSR, hydration, streaming, authorization change, and requery;
+- a human request whose agent tool creates a causally human-owned row while
+  preserving the distinct agent execution principal in durable provenance;
 - pod replacement for web, gateway, worker, workflow, indexer, and agent execution;
 - complete starter deletion and documented retained data;
 - dedicated dependency lifecycle and recovery;

@@ -20,26 +20,26 @@ import {
   createV06AssertionEvidence,
   discardV06Evidence,
   writeV06EvidenceReceipt,
-} from './v06-evidence';
+} from './v06-evidence.js';
 import {
   writeOfficialTanStackScaffold,
-} from './generated-agentic-start-live-support';
+} from './generated-agentic-start-live-support.js';
 
 const root = process.cwd();
 const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
-const projectName = 'agentic-start-evidence';
+const projectName = 'agentic-product-evidence';
 const target = join(root, '.applik8s-tmp', projectName);
 const namespace = `${projectName}-system`;
 const execution = {
   root,
   context,
-  label: 'agentic-start-starter',
+  label: 'agentic-product-starter',
 } as const;
 const cli = join(root, 'packages/cli/dist/bin.js');
 const timeoutMs = 20 * 60_000;
 const evidencePath = join(
   root,
-  '.applik8s-tmp/evidence/v0.7/agentic-start-starter.json',
+  '.applik8s-tmp/evidence/v0.7/agentic-product-starter.json',
 );
 const deploymentGraphPath = join(
   target,
@@ -60,7 +60,7 @@ await createApplicationAgenticStart({
   targetDirectory: target,
   projectName,
   applik8sVersion: 'workspace:*',
-  example: 'research',
+  example: 'product',
   install: false,
   async run(command) {
     if (
@@ -68,7 +68,7 @@ await createApplicationAgenticStart({
       || command.arguments[0] !== '@tanstack/cli@0.70.1'
     ) {
       throw new Error(
-        `Generated live Start invoked an unexpected scaffold command: ${command.executable} ${command.arguments.join(' ')}`,
+        `Generated product invoked an unexpected scaffold command: ${command.executable} ${command.arguments.join(' ')}`,
       );
     }
     await writeOfficialTanStackScaffold(target, projectName);
@@ -88,7 +88,7 @@ try {
   ) {
     await runIdentityStartCommand(
       execution,
-      'destroy a prior or interrupted generated Agentic Start graph',
+      'destroy a prior or interrupted generated product graph',
       cli,
       ['destroy', '--context', context],
       target,
@@ -117,7 +117,7 @@ try {
   );
   await runIdentityStartCommand(
     execution,
-    'generate relational migrations from the generated model declarations',
+    'generate the product relational migration',
     join(root, 'node_modules/.bin/drizzle-kit'),
     ['generate', '--config', 'drizzle.config.ts'],
     target,
@@ -127,11 +127,11 @@ try {
   );
   if (migrations.length === 0) {
     throw new Error(
-      'Drizzle reported success without generating a relational migration.',
+      'Drizzle reported success without generating a product migration.',
     );
   }
   observed.set('migration-generation', {
-    test: 'Drizzle generated the authoritative schema from application models',
+    test: 'Drizzle generated the Notes schema from its model declaration',
     observedAt: new Date().toISOString(),
   });
   await runIdentityStartCommand(
@@ -143,14 +143,14 @@ try {
   );
   await runIdentityStartCommand(
     execution,
-    'typecheck the generated TanStack Start application',
+    'typecheck the generated product',
     join(root, 'node_modules/.bin/tsc'),
     ['--project', 'tsconfig.json', '--noEmit'],
     target,
   );
   await runIdentityStartCommand(
     execution,
-    'build the generated TanStack Start application',
+    'build the generated product',
     'bun',
     ['run', 'build'],
     target,
@@ -160,30 +160,18 @@ try {
     test: 'official TanStack Start client, SSR, and Nitro production build',
     observedAt: new Date().toISOString(),
   });
+
   deployed = true;
   await runIdentityStartCommand(
     execution,
-    'deploy the generated Start through Alchemy and TypeKro',
+    'deploy the generated product through Alchemy and TypeKro',
     cli,
     ['deploy', '--context', context, '--skip-app-build'],
     target,
     { NODE_OPTIONS: '--max-old-space-size=8192' },
   );
   observed.set('graph-backed-deploy', {
-    test: 'Alchemy and TypeKro deployed the generated application graph',
-    observedAt: new Date().toISOString(),
-  });
-  await runIdentityStartCommand(
-    execution,
-    'reapply the exact generated Start to prove migration and graph idempotency',
-    cli,
-    ['deploy', '--context', context, '--skip-app-build'],
-    target,
-    { NODE_OPTIONS: '--max-old-space-size=8192' },
-  );
-  observed.set('graph-noop-redeploy', {
-    test:
-      'the exact generated graph and migration workload reapplied without a schema conflict',
+    test: 'Alchemy and TypeKro deployed the generated product graph',
     observedAt: new Date().toISOString(),
   });
 
@@ -195,47 +183,40 @@ try {
   );
   await runIdentityStartCommand(
     execution,
-    'execute the generated owner/workspace/conversation browser journeys',
+    'execute the causal agent-owned Notes browser journey',
     join(root, 'node_modules/.bin/playwright'),
-    ['test', '--config', 'playwright.agentic.config.ts'],
+    ['test', '--config', 'playwright.agentic-product.config.ts'],
     root,
-    { APPLIK8S_AGENTIC_START_BASE_URL: tunnel.url },
+    { APPLIK8S_AGENTIC_PRODUCT_BASE_URL: tunnel.url },
   );
+  const journey =
+    'attributes an agent-created note to its human requester and reactively renders it';
   const results = await passedIdentityStartBrowserTests(
     join(
       root,
-      '.applik8s-tmp/evidence/v0.7/agentic-start-browser-results.json',
+      '.applik8s-tmp/evidence/v0.7/agentic-product-browser-results.json',
     ),
   );
-  const expected = [
-    'bootstraps a local owner and admits only server-validated workspace selection',
-    'calls the bounded public assistant through its generated function-native facade',
-    'renders provider-neutral billing and executes simulated checkout and portal calls',
-    'persists, reloads, renames, and archives a generated research conversation',
-  'runs a workspace-scoped durable review from SSE signal to immutable artifact',
-  ];
-  if (
-    results.size !== expected.length
-    || expected.some((name) => !results.has(name))
-  ) {
+  if (results.size !== 1 || !results.has(journey)) {
     throw new Error(
-      `Generated Agentic Start browser evidence is incomplete: ${[
+      `Generated Agentic product browser evidence is incomplete: ${[
         ...results.keys(),
       ].join(', ') || '<none>'}.`,
     );
   }
-  for (const [name, result] of results) {
-    observed.set(`browser:${name}`, {
-      test: name,
-      observedAt: result.completedAt,
-    });
-  }
+  const browser = results.get(journey);
+  if (!browser) throw new Error('Generated product browser evidence vanished.');
+  observed.set('causal-agent-note', {
+    test: journey,
+    observedAt: browser.completedAt,
+  });
+
   const [git, cluster, installation, artifacts] = await Promise.all([
     collectV06GitIdentity(root),
     collectV06ClusterIdentity(context),
     collectV06InstallationIdentity({
       context,
-      resource: `agenticstartevidence/${projectName}`,
+      resource: `agenticproductevidence/${projectName}`,
       namespace: 'default',
     }),
     collectV06ArtifactIdentity(deploymentGraphPath),
@@ -245,7 +226,7 @@ try {
 
   await runIdentityStartCommand(
     execution,
-    'destroy the generated Start through Alchemy and TypeKro',
+    'destroy the generated product through Alchemy and TypeKro',
     cli,
     ['destroy', '--context', context],
     target,
@@ -264,21 +245,20 @@ try {
     timeoutMs,
   );
   observed.set('graph-backed-destroy', {
-    test:
-      'Applik8s destroy removed the root instance, RGD, and owned application namespace',
+    test: 'Applik8s destroy removed the product graph and owned namespace',
     observedAt: new Date().toISOString(),
   });
+
   const required = [
     'migration-generation',
     'production-build',
     'graph-backed-deploy',
-    'graph-noop-redeploy',
-    ...expected.map((name) => `browser:${name}`),
+    'causal-agent-note',
     'graph-backed-destroy',
   ];
   const completedAt = new Date().toISOString();
   await writeV06EvidenceReceipt(evidencePath, {
-    suite: 'agentic-start-starter',
+    suite: 'agentic-product-starter',
     run: { id: runId, startedAt, completedAt },
     candidate: { git, cluster, installation, artifacts },
     environment: {
@@ -293,7 +273,9 @@ try {
       required.map((assertion) => {
         const evidence = observed.get(assertion);
         if (!evidence) {
-          throw new Error(`Missing generated Agentic Start evidence ${assertion}.`);
+          throw new Error(
+            `Missing generated Agentic product evidence ${assertion}.`,
+          );
         }
         return { assertion, ...evidence };
       }),
@@ -301,22 +283,16 @@ try {
     ),
   });
   console.log(
-    `Generated Agentic Start Starter qualification passed with graph-backed cleanup; evidence recorded at ${evidencePath}.`,
+    `Generated Agentic product qualification passed; evidence recorded at ${evidencePath}.`,
   );
 } catch (error) {
   await discardV06Evidence(evidencePath);
   await tunnel?.close();
-  const deploymentGraphExists = await Bun.file(
-    join(
-      target,
-      '.applik8s/deploy/typekro/application-deployment-graph.json',
-    ),
-  ).exists();
-  if (deployed && deploymentGraphExists) {
+  if (deployed && await Bun.file(deploymentGraphPath).exists()) {
     try {
       await runIdentityStartCommand(
         execution,
-        'clean up a failed generated Agentic Start qualification',
+        'clean up a failed generated product qualification',
         cli,
         ['destroy', '--context', context],
         target,
@@ -324,7 +300,7 @@ try {
     } catch (cleanupError) {
       throw new AggregateError(
         [error, cleanupError],
-        'Generated Agentic Start qualification and graph-backed cleanup both failed.',
+        'Generated product qualification and cleanup both failed.',
       );
     }
   }

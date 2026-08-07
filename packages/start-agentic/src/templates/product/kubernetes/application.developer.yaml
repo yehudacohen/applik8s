@@ -15,11 +15,3 @@ spec:
       credentialSource:
         kind: hostEnvironment
         variable: OPENROUTER_API_KEY
-    payments:
-      secretName: applik8s-template-project-payments
-      apiKeyKey: apiKey
-      webhookSecretKey: webhookSecret
-      credentialSource:
-        kind: hostEnvironment
-        apiKeyVariable: STRIPE_SECRET_KEY
-        webhookSecretVariable: STRIPE_WEBHOOK_SECRET

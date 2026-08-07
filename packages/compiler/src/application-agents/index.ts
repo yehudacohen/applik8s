@@ -596,6 +596,7 @@ const handle = createApplicationAIAgentRequestHandler({
       attempt: invocation.attempt,
       workloadIdentity: ${JSON.stringify(workloadIdentity)},
       serviceIdentity: contract.serviceIdentity,
+      causalPrincipalId: invocation.admission.principal.id,
       causalPrincipal: invocation.admission.principal.identity,
       causalGrantIds: invocation.causalGrantIds,
       envelopes: contract.tools.map((tool) => tool.workloadAuthority),

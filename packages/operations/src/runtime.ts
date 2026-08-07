@@ -75,6 +75,7 @@ export interface ApplicationExecutionPrincipalAdmission {
   readonly attempt: number;
   readonly workloadIdentity: ApplicationIdentityReference;
   readonly serviceIdentity?: ApplicationIdentityReference;
+  readonly causalPrincipalId?: string;
   readonly causalPrincipal?: ApplicationIdentityReference;
   readonly causalGrantIds?: readonly string[];
   readonly envelopes: readonly ApplicationWorkloadAuthorityEnvelope[];
@@ -302,6 +303,7 @@ export class ApplicationOperationAuthorityRuntime {
       attempt: admission.attempt,
       workloadIdentity: admission.workloadIdentity,
       ...(admission.serviceIdentity ? { serviceIdentity: admission.serviceIdentity } : {}),
+      ...(admission.causalPrincipalId ? { causalPrincipalId: admission.causalPrincipalId } : {}),
       ...(admission.causalPrincipal ? { causalPrincipal: admission.causalPrincipal } : {}),
       causalGrantIds: [...(admission.causalGrantIds ?? [])],
       authenticationMethod: 'workload-identity',

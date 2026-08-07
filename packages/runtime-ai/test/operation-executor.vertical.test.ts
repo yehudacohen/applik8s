@@ -50,6 +50,7 @@ describe('AI operation executor', () => {
     const dispatch = vi.fn(async ({
       invocationToken,
       authorizationReceipt,
+      principal,
     }) => {
       const invocation = decodeApplicationInternalOperationInvocation(
         secret,
@@ -70,6 +71,13 @@ describe('AI operation executor', () => {
       expect(invocation.idempotencyKey).toBe('command-1');
       expect(invocation.admission).toEqual(admission);
       expect(authorizationReceipt).toEqual(expectedReceipt);
+      expect(principal).toMatchObject({
+        id: 'principal:research:execution:agent:agent-run-1:1',
+        causalPrincipalId: 'principal:research:human:user-1',
+        causalPrincipal: {
+          id: 'identity:user-1',
+        },
+      });
       return { items: ['source-1'] };
     });
     const invoke = createApplicationAIOperationExecutor({
@@ -220,6 +228,7 @@ function executionAdmission(): ApplicationRequestAdmission & {
         issuer: 'https://identity.example.test',
         subject: 'user-1',
       },
+      causalPrincipalId: 'principal:research:human:user-1',
       causalGrantIds: [],
       authenticationMethod: 'workload-identity',
       audience: ['identity:research:workload:aiAgent.researcher'],

@@ -52,6 +52,7 @@ const applicationBeforeCommitSourceCache = new WeakMap<
 import { getTableColumns, getTableName } from 'drizzle-orm';
 import type { AnyPgTable } from 'drizzle-orm/pg-core';
 import {
+  isApplicationCausalPrincipalDefault,
   isApplicationAuthenticatedPrincipalDefault,
   isApplicationRandomUuidDefault,
 } from './drizzle.js';
@@ -299,13 +300,18 @@ export function bindApplicationNativeCreateOperation<TTable extends AnyPgTable>(
   if (!identityProperty) throw new Error(`Native model ${facet.name} cannot generate create because it has no scalar identity property.`);
   const identityColumn = getTableColumns(model)[identityProperty];
   const principalDerivedIdentity = isApplicationAuthenticatedPrincipalDefault(identityColumn?.default);
+  const causalPrincipalDerivedIdentity = isApplicationCausalPrincipalDefault(
+    identityColumn?.default,
+  );
   const envelopeDerivedIdentity = isApplicationRandomUuidDefault(identityColumn?.default);
-  const keySource = principalDerivedIdentity
+  const keySource = causalPrincipalDerivedIdentity
+    ? `(input, context) => { const supplied = input[${JSON.stringify(identityProperty)}]; if (supplied !== undefined) return String(supplied); const principalId = context?.principal?.kind === 'execution' ? context.principal.causalPrincipalId : context?.principal?.id; if (!principalId) throw new Error(${JSON.stringify(`Native model ${facet.name}.create requires an admitted causal principal because ${identityProperty} uses causalPrincipalId.`)}); return principalId; }`
+    : principalDerivedIdentity
     ? `(input, context) => { const supplied = input[${JSON.stringify(identityProperty)}]; if (supplied !== undefined) return String(supplied); const principalId = context?.principal?.id; if (!principalId) throw new Error(${JSON.stringify(`Native model ${facet.name}.create requires an admitted principal because ${identityProperty} uses authenticatedPrincipalId.`)}); return principalId; }`
     : envelopeDerivedIdentity
       ? `(input, _context, messageId) => { const supplied = input[${JSON.stringify(identityProperty)}]; if (supplied !== undefined) return String(supplied); if (!messageId) throw new Error(${JSON.stringify(`Native model ${facet.name}.create requires a durable message identity because ${identityProperty} uses defaultRandom().`)}); const compact = String(messageId).replace(/[^0-9a-f]/gi, '').toLowerCase(); if (compact.length < 32) throw new Error(${JSON.stringify(`Native model ${facet.name}.create cannot derive a UUID from its durable message identity.`)}); const hex = compact.slice(-32); return \`\${hex.slice(0, 8)}-\${hex.slice(8, 12)}-4\${hex.slice(13, 16)}-\${((parseInt(hex[16], 16) & 3) | 8).toString(16)}\${hex.slice(17, 20)}-\${hex.slice(20)}\`; }`
       : `(input) => String(input[${JSON.stringify(identityProperty)}])`;
-  const initializeSource = principalDerivedIdentity
+  const initializeSource = principalDerivedIdentity || causalPrincipalDerivedIdentity
     ? `(input, targetKey) => ({ ...input, [${JSON.stringify(identityProperty)}]: targetKey })`
     : '(input) => input';
   const policyCallback = policy
@@ -320,12 +326,22 @@ export function bindApplicationNativeCreateOperation<TTable extends AnyPgTable>(
         const supplied = Reflect.get(input, identityProperty);
         if (supplied !== undefined) return String(supplied);
         const principalId = context?.principal?.id;
+        const causalPrincipalId = context?.principal
+          && 'causalPrincipalId' in context.principal
+          && typeof context.principal.causalPrincipalId === 'string'
+          ? context.principal.causalPrincipalId
+          : principalId;
+        if (causalPrincipalDerivedIdentity && causalPrincipalId) {
+          return causalPrincipalId;
+        }
         if (principalDerivedIdentity && principalId) return principalId;
         if (envelopeDerivedIdentity && messageId) {
           return applicationUuidFromDurableMessageIdentity(messageId);
         }
         throw new Error(`Native model ${facet.name}.create requires ${
-          principalDerivedIdentity
+          causalPrincipalDerivedIdentity
+            ? `an admitted causal principal because ${identityProperty} uses causalPrincipalId`
+            : principalDerivedIdentity
             ? `an admitted principal because ${identityProperty} uses authenticatedPrincipalId`
             : envelopeDerivedIdentity
               ? `a durable message identity because ${identityProperty} uses defaultRandom()`
@@ -333,7 +349,8 @@ export function bindApplicationNativeCreateOperation<TTable extends AnyPgTable>(
         }.`);
       },
       missing: {
-        initialize: (input: TInput, targetKey: string) => (principalDerivedIdentity
+        initialize: (input: TInput, targetKey: string) => (
+          principalDerivedIdentity || causalPrincipalDerivedIdentity
           ? { ...input, [identityProperty]: targetKey }
           : input) as TValue,
       },

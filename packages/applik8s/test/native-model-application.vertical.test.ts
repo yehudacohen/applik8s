@@ -2,6 +2,7 @@
 import { type ApplicationModelCreateEvent, app, applicationGraphFor, applicationModelFacet, type ModelEvent, postgres, trustedContext } from '@applik8s/applik8s';
 import {
   authenticatedPrincipalId,
+  causalPrincipalId,
   field,
   model as relationalModel,
 } from '@applik8s/applik8s/drizzle';
@@ -259,6 +260,41 @@ describe('v0.6 app-scoped native model promotion', () => {
     });
     expect(handler && 'initializeSource' in handler ? handler.initializeSource : undefined).toContain('targetKey');
     expect(Account.create).toBeTypeOf('function');
+  });
+
+  test('derives causal ownership without collapsing the execution actor into the requester', () => {
+    const documents = relationalModel('causal_documents', {
+      ownerId: field.text('owner_id').default(causalPrincipalId).primaryKey(),
+      body: field.text('body').notNull(),
+    });
+    const causalApp = app('causal-model', { namespace: 'causal-system' });
+    const Database = causalApp.database.postgres('causal', {
+      schema: { documents },
+      migrations: { path: './drizzle' },
+    });
+    causalApp.model(documents, { name: 'Document', database: Database });
+    const graph = applicationGraphFor(causalApp.composition);
+    const create = graph?.nodes.find(
+      (node): node is ApplicationCommandNode =>
+        node.kind === 'command'
+        && node.name === 'models.Document.create.v1',
+    );
+    expect(create?.contract.input.jsonSchema.required).toEqual(['body']);
+    const handler = graph?.nodes.find(
+      (node) =>
+        node.kind === 'commandHandler'
+        && node.command.nodeId === create?.id,
+    );
+    expect(handler).toMatchObject({
+      key: {
+        kind: 'function',
+        source: expect.stringContaining('causalPrincipalId'),
+      },
+      missing: 'initialize',
+    });
+    expect(handler && 'initializeSource' in handler
+      ? handler.initializeSource
+      : undefined).toContain('targetKey');
   });
 
   test('registers a native table, provider, relationship, access authority, and serializable common model contract', () => {

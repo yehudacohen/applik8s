@@ -42,6 +42,26 @@ export function applicationCommandPrincipal(
   return isApplicationPrincipal(encoded) ? encoded : undefined;
 }
 
+/**
+ * Returns the trusted ownership-attribution principal for one durable command.
+ *
+ * The immediate execution principal remains the authorization actor. Only a
+ * framework-admitted execution principal may redirect attribution to its
+ * causal requester; ordinary request principals attribute to themselves.
+ */
+export function applicationCommandCausalPrincipalId(
+  principal: ApplicationCommandPrincipal | undefined,
+): string | undefined {
+  if (!principal) return undefined;
+  if (principal.kind !== 'execution') return principal.id;
+  const causalPrincipalId = 'causalPrincipalId' in principal
+    ? principal.causalPrincipalId
+    : undefined;
+  return typeof causalPrincipalId === 'string' && causalPrincipalId.trim()
+    ? causalPrincipalId
+    : undefined;
+}
+
 export function applicationCommandTrustedContext(
   context: { readonly values: Readonly<Record<string, JsonValue>> } | undefined,
 ): Readonly<Record<string, JsonValue>> {

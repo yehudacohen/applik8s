@@ -377,8 +377,12 @@ command:
 bun dev
 
 # Build, plan, deploy, and wait for the complete Kubernetes Starter profile,
-# then run the local TanStack development server against its bound outputs.
+# then run the graph-owned Vite server with allowlisted source mounts.
 bun dev:cluster
+
+# Select explicitly credentialed live providers with the same source-mount
+# loop. Unused providers do not demand credentials.
+bun dev:live
 
 # Explicit durable-environment lifecycle.
 bun applik8s plan
@@ -389,6 +393,9 @@ bun applik8s deploy
 uses the ordinary application graph and lifecycle rather than a second
 development deployment system. The onboarding and operations UI identify
 which loop and provider/profile evidence the user is observing.
+The default cluster loop is credential-free. `dev:live` opts into the
+Developer installation, and Stripe remains simulated unless the application
+actually includes billing and selects the live adapter.
 
 Events, batches, and projections preserve the same callback-native shape:
 

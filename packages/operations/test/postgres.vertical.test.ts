@@ -336,6 +336,13 @@ describe('PostgreSQL operation authority repositories', () => {
       executionId: 'task-run-1',
       attempt: 1,
       workloadIdentity,
+      causalPrincipalId: 'principal:chirp:human:author-1',
+      causalPrincipal: {
+        id: 'identity:chirp:human:author-1',
+        kind: 'human',
+        issuer: 'https://identity.example.test',
+        subject: 'author-1',
+      },
       envelopes: [envelope],
       trustedContextDigest: 'sha256:context',
       audience: ['chirp-worker'],
@@ -358,6 +365,13 @@ describe('PostgreSQL operation authority repositories', () => {
       executionKind: 'task',
       executionId: 'task-run-1',
       workloadIdentity,
+      causalPrincipalId: 'principal:chirp:human:author-1',
+      causalPrincipal: {
+        id: 'identity:chirp:human:author-1',
+        kind: 'human',
+        issuer: 'https://identity.example.test',
+        subject: 'author-1',
+      },
       effectiveAuthority: [],
     });
     expect(authorized).toMatchObject({

@@ -121,7 +121,11 @@ export interface AgenticManagedStripePayments extends AgenticStripePayments {
 
 export interface AgenticDeveloperProviders {
   readonly inference: AgenticDedicatedInference;
-  readonly payments: AgenticManagedStripePayments;
+  /**
+   * Optional live payment adapter. Applications that do not consume billing
+   * remain credential-free; omitted payments use the simulated provider.
+   */
+  readonly payments?: AgenticManagedStripePayments;
 }
 
 /**
@@ -895,7 +899,9 @@ export function configureAgenticProfiles<
     .provide(PrimaryPayments)
     .starter(() => AgenticStarter.payments())
     .developer((spec) =>
-      AgenticDeveloper.payments(spec.providers.payments, profileContext),
+      spec.providers.payments
+        ? AgenticDeveloper.payments(spec.providers.payments, profileContext)
+        : AgenticStarter.payments(),
     )
     .dedicated((spec) =>
       AgenticDedicated.payments(spec.providers.payments, profileContext),

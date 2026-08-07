@@ -1,6 +1,7 @@
 // typecast-file-boundary: PostgreSQL vertical fixtures decode controlled fake result rows into the same runtime shapes used by the adapter.
 
 import { type } from 'arktype';
+import type { ApplicationExecutionPrincipal } from '@applik8s/core';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import postgres from 'postgres';
@@ -664,6 +665,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
       id: text('id').primaryKey(),
       title: text('title').notNull(),
       ownerId: text('owner_id').notNull().default(drizzleSql<string>`nullif(current_setting('applik8s.principal.id', true), '')`),
+      causalOwnerId: text('causal_owner_id').notNull().default(drizzleSql<string>`nullif(current_setting('applik8s.principal.causal_id', true), '')`),
       revision: text('revision').notNull(),
     });
     const direct = app(`direct-native-${process.pid}`);
@@ -690,9 +692,41 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     const create = applicationModelCommandBindingForOperation(Card.create);
     const update = applicationModelCommandBindingForOperation(Card.update);
     const remove = applicationModelCommandBindingForOperation(Card.delete);
+    const requestingPrincipal = testApplicationPrincipal('author-1', {
+      authorityRevision: 'chirp-authz-v1',
+      trustedContext: { tenantId: 'direct-native-live' },
+    });
+    const executionPrincipal: ApplicationExecutionPrincipal = {
+      ...requestingPrincipal,
+      id: 'principal:direct-native:execution:agent:run-1:1',
+      identity: {
+        id: 'identity:direct-native:service:assistant',
+        kind: 'service',
+        issuer: 'applik8s://direct-native',
+        subject: 'assistant',
+      },
+      kind: 'execution',
+      authenticationMethod: 'workload-identity',
+      executionKind: 'agent',
+      executionId: 'run-1',
+      attempt: 1,
+      workloadIdentity: {
+        id: 'identity:direct-native:workload:assistant',
+        kind: 'workload',
+        issuer: 'applik8s://direct-native',
+        subject: 'assistant',
+      },
+      causalPrincipalId: requestingPrincipal.id,
+      causalPrincipal: requestingPrincipal.identity,
+      causalGrantIds: [],
+      deadline: '2099-01-01T00:00:00.000Z',
+      cancellationRevision: 'cancel-1',
+      bindings: [],
+      effectiveAuthority: [],
+    };
     const admittedContext = {
       values: applicationRequestContextValues(
-        testApplicationPrincipal('author-1', { authorityRevision: 'chirp-authz-v1', trustedContext: { tenantId: 'direct-native-live' } }),
+        executionPrincipal,
         'chirp-authz-v1',
         { tenantId: 'direct-native-live' },
       ),
@@ -704,7 +738,7 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
     } as const;
     if (!model || !create || !update || !remove) throw new Error('Direct native lifecycle bindings were not installed.');
 
-    await sql.unsafe(`CREATE TABLE ${quoteIdentifier(directTableName)} (id text PRIMARY KEY, title text NOT NULL, owner_id text DEFAULT nullif(current_setting('applik8s.principal.id', true), '') NOT NULL, revision text NOT NULL)`);
+    await sql.unsafe(`CREATE TABLE ${quoteIdentifier(directTableName)} (id text PRIMARY KEY, title text NOT NULL, owner_id text DEFAULT nullif(current_setting('applik8s.principal.id', true), '') NOT NULL, causal_owner_id text DEFAULT nullif(current_setting('applik8s.principal.causal_id', true), '') NOT NULL, revision text NOT NULL)`);
     await sql.unsafe(applicationModelMigrationSql(model.runtime));
     await sql.unsafe(applicationRelationalFrameworkMigrationSql(Database, [Card]));
     try {
@@ -724,11 +758,39 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
       });
       expect(created).toMatchObject({
         replayed: false,
-        output: { identity: 'card-1', value: { id: 'card-1', title: 'created', ownerId: 'author-1' }, revision: expect.any(String) },
-        model: { id: 'card-1', spec: { id: 'card-1', title: 'created', ownerId: 'author-1' }, revision: expect.any(String) },
+        output: {
+          identity: 'card-1',
+          value: {
+            id: 'card-1',
+            title: 'created',
+            ownerId: executionPrincipal.id,
+            causalOwnerId: requestingPrincipal.id,
+          },
+          revision: expect.any(String),
+        },
+        model: {
+          id: 'card-1',
+          spec: {
+            id: 'card-1',
+            title: 'created',
+            ownerId: executionPrincipal.id,
+            causalOwnerId: requestingPrincipal.id,
+          },
+          revision: expect.any(String),
+        },
         events: [expect.objectContaining({
           contract: { name: `models.DirectCard${process.pid}.created`, version: 'v1' },
-          payload: { operation: 'create', identity: 'card-1', value: expect.objectContaining({ id: 'card-1', title: 'created', ownerId: 'author-1' }), revision: expect.any(String) },
+          payload: {
+            operation: 'create',
+            identity: 'card-1',
+            value: expect.objectContaining({
+              id: 'card-1',
+              title: 'created',
+              ownerId: executionPrincipal.id,
+              causalOwnerId: requestingPrincipal.id,
+            }),
+            revision: expect.any(String),
+          },
         })],
       });
       expect(replayedCreate).toMatchObject({
@@ -822,7 +884,14 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
       expect(archived).toMatchObject({
         replayed: false,
         output: { archived: true },
-        model: { spec: expect.objectContaining({ id: 'card-1', title: 'archived', ownerId: 'author-1' }) },
+        model: {
+          spec: expect.objectContaining({
+            id: 'card-1',
+            title: 'archived',
+            ownerId: executionPrincipal.id,
+            causalOwnerId: requestingPrincipal.id,
+          }),
+        },
         events: [expect.objectContaining({
           contract: { name: `models.DirectCard${process.pid}.archive.completed`, version: 'v1' },
           payload: {

@@ -298,6 +298,9 @@ export { index, pgEnum, primaryKey, uniqueIndex };
 export { relations };
 
 const authenticatedPrincipalDefault = Symbol.for('@applik8s/drizzle-authenticated-principal-default');
+const causalPrincipalDefault = Symbol.for(
+  '@applik8s/drizzle-causal-principal-default',
+);
 
 export type ApplicationAuthenticatedPrincipalDefault = SQL<string> & {
   readonly [authenticatedPrincipalDefault]: true;
@@ -332,6 +335,42 @@ export function isApplicationAuthenticatedPrincipalDefault(value: unknown): valu
     const text = Reflect.get(chunk, 'value');
     return Array.isArray(text)
       && text.join('') === "nullif(current_setting('applik8s.principal.id', true), '')";
+  });
+}
+
+export type ApplicationCausalPrincipalDefault = SQL<string> & {
+  readonly [causalPrincipalDefault]: true;
+};
+
+/**
+ * PostgreSQL default attributed to the trusted request principal that caused
+ * the current operation.
+ *
+ * Direct human requests resolve to the authenticated principal. Agent,
+ * workflow, and event executions retain their own actor for authorization and
+ * audit while this default resolves to the framework-admitted causal
+ * principal. Application input can never supply or override that attribution.
+ */
+export const causalPrincipalId = sql<string>`coalesce(nullif(current_setting('applik8s.principal.causal_id', true), ''), nullif(current_setting('applik8s.principal.id', true), ''))` as ApplicationCausalPrincipalDefault;
+Object.defineProperty(causalPrincipalId, causalPrincipalDefault, {
+  value: true,
+  enumerable: false,
+  configurable: false,
+  writable: false,
+});
+
+export function isApplicationCausalPrincipalDefault(
+  value: unknown,
+): value is ApplicationCausalPrincipalDefault {
+  if (!value || typeof value !== 'object') return false;
+  if (Reflect.get(value, causalPrincipalDefault) === true) return true;
+  const chunks = Reflect.get(value, 'queryChunks');
+  if (!Array.isArray(chunks)) return false;
+  return chunks.some((chunk) => {
+    if (!chunk || typeof chunk !== 'object') return false;
+    const text = Reflect.get(chunk, 'value');
+    return Array.isArray(text)
+      && text.join('') === "coalesce(nullif(current_setting('applik8s.principal.causal_id', true), ''), nullif(current_setting('applik8s.principal.id', true), ''))";
   });
 }
 

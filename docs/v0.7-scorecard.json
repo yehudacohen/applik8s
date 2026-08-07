@@ -273,7 +273,9 @@
         "docs/v07-stimp-parity.json",
         "scripts/check-v07-stimp-parity.mjs",
         "scripts/run-agentic-start-starter-live.ts",
+        "scripts/run-agentic-product-starter-live.ts",
         "packages/e2e/browser/agentic-start-golden-path.e2e.test.ts",
+        "packages/e2e/browser/agentic-product-golden-path.e2e.test.ts",
         "packages/start-agentic/test/stimp-parity.vertical.test.ts",
         "packages/start-agentic/test/generator.vertical.test.ts",
         "scripts/package-consumer-smoke.mjs"

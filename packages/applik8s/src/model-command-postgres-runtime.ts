@@ -6,7 +6,11 @@ import type { ApplicationAuthorizationReceipt, ApplicationRetryPolicy, JsonObjec
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
 import type { ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationRuntimeModelContract } from './application-models.js';
 import { applicationPublicStreamCommitScope } from './application-stream-commit.js';
-import { applicationCommandPrincipal, applicationCommandTrustedContext } from './command-principal.js';
+import {
+  applicationCommandCausalPrincipalId,
+  applicationCommandPrincipal,
+  applicationCommandTrustedContext,
+} from './command-principal.js';
 import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
 import type { ApplicationCommandObservation, ApplicationMessageEnvelope, ApplicationStateRevisionRef, CommandDefinition, EventDefinition } from './dsl.js';
 import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from './postgres-runtime-contract.js';
@@ -1543,6 +1547,11 @@ async function installCommandTrustedContext(
   // command has no admitted principal; model defaults use NULLIF to fail
   // actor-owned NOT NULL columns closed in that case.
   await transaction.unsafe('SELECT set_config($1, $2, true)', ['applik8s.principal.id', principal?.id ?? '']);
+  const causalPrincipalId = applicationCommandCausalPrincipalId(principal);
+  await transaction.unsafe(
+    'SELECT set_config($1, $2, true)',
+    ['applik8s.principal.causal_id', causalPrincipalId ?? ''],
+  );
   const access = model.nativeRelational?.access;
   if (!access) return;
   const value = context?.values[access.context];

@@ -313,6 +313,9 @@ describe('Agentic Start generator', () => {
     expect(manifest.scripts.plan).toBe('bun run build && applik8s plan');
     expect(manifest.scripts.deploy).toBe('bun run build && applik8s deploy');
     expect(manifest.scripts['dev:cluster']).toBe(
+      'bun run build && applik8s deploy --development --instance kubernetes/application.yaml',
+    );
+    expect(manifest.scripts['dev:live']).toBe(
       'bun run build && applik8s deploy --development --instance kubernetes/application.developer.yaml',
     );
     expect(manifest.scripts.status).toBe('applik8s status');
@@ -473,6 +476,10 @@ describe('Agentic Start generator', () => {
     const readme = await readFile(join(target, 'README.md'), 'utf8');
     expect(readme).toContain('Starter profile is credential-free');
     expect(readme).toContain('web-only');
+    expect(readme).toContain('dev:live');
+    expect(readme).toContain(
+      'APPLIK8S_DEVELOPMENT_SHARED_FILESYSTEM=1',
+    );
     expect(readme).toContain('applik8s.context');
     expect(readme).toContain('Starter lineage');
     const environment = await readFile(join(target, '.env.example'), 'utf8');
@@ -492,6 +499,24 @@ describe('Agentic Start generator', () => {
     expect(notesModel).toContain("'notes',\n  NoteTable,");
     expect(notesModel).not.toContain('ApplicationModelViewContext');
     expect(notesModel).not.toContain('{ schema: { Note: NoteTable } }');
+    const notesSchema = await readFile(
+      join(target, 'src/features/notes/schema.ts'),
+      'utf8',
+    );
+    expect(notesSchema).toContain(
+      'ownerPrincipalId: field.text',
+    );
+    expect(notesSchema).toContain('.default(causalPrincipalId)');
+    expect(notesSchema).toContain(
+      'createdByPrincipalId: field.text',
+    );
+    expect(notesSchema).toContain('.default(authenticatedPrincipalId)');
+    const developerInstallation = await readFile(
+      join(target, 'kubernetes/application.developer.yaml'),
+      'utf8',
+    );
+    expect(developerInstallation).toContain('OPENROUTER_API_KEY');
+    expect(developerInstallation).not.toContain('STRIPE_');
     const home = await readFile(
       join(target, 'src/routes/index.tsx'),
       'utf8',
