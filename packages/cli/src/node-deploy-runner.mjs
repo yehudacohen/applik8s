@@ -35,6 +35,7 @@ const deployArgs = [
   ...(options.skipAppBuild ? ['--skip-app-build'] : []),
   ...(options.skipImageBuild ? ['--skip-image-build'] : []),
   ...(options.planOnly ? ['--plan-only'] : []),
+  ...(options.development ? ['--development'] : []),
   ...(options.allowBreakingChanges ? ['--allow-breaking-changes'] : []),
 ];
 const deleteArgs = [

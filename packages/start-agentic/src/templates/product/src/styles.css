@@ -36,8 +36,39 @@ textarea {
 }
 
 main {
-  width: min(48rem, calc(100% - 2rem));
+  width: min(72rem, calc(100% - 2rem));
   margin: 4rem auto;
+}
+
+.notes-intro {
+  max-width: 44rem;
+  margin-bottom: 2rem;
+}
+
+.notes-intro h1 {
+  margin: 0.25rem 0 0.75rem;
+  font-size: clamp(2.2rem, 6vw, 4.6rem);
+  line-height: 0.98;
+  letter-spacing: -0.055em;
+}
+
+.notes-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.panel {
+  padding: 1.25rem;
+  border: 1px solid #d9e0e5;
+  border-radius: 1rem;
+  background: #fff;
+  box-shadow: 0 1rem 3rem rgb(24 32 40 / 7%);
+}
+
+.panel h2 {
+  margin-top: 0;
 }
 
 .eyebrow {
@@ -85,6 +116,39 @@ button:disabled {
   opacity: 0.55;
 }
 
+.actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+button.secondary {
+  color: #275d42;
+  background: #e7f0eb;
+}
+
+.conversation {
+  min-height: 10rem;
+}
+
+.conversation article[data-role="assistant"] {
+  border-color: #b7d4c4;
+  background: #f0f7f3;
+}
+
 [role="alert"] {
   color: #a1261c;
+}
+
+@media (max-width: 48rem) {
+  .notes-grid {
+    grid-template-columns: 1fr;
+  }
+
+  header {
+    padding-inline: 1rem;
+  }
+
+  main {
+    margin-block: 2rem;
+  }
 }

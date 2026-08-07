@@ -35,8 +35,9 @@ describe('generated application', () => {
 
   it('validates model input and the deterministic Starter tool fixture', () => {
     const fixture = AgenticStarter.inference().fixture;
-    const toolInput = fixture.tool?.input;
+    const toolInput = fixture?.tool?.input;
 
+    expect(fixture).toBeDefined();
     expect(Note.$model.schema.insert({ body: 'A typed note' })).not.toHaveProperty(
       'problems',
     );

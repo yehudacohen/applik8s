@@ -611,7 +611,7 @@ improvements that make sense for a production-oriented Agentic Start:
 | Search across conversations/artifacts/runs | One logical model search contract with PostgreSQL/OpenSearch providers | Demonstrates provider multiplexing without changing application queries |
 | MCP exposure of authorized tools | The same callable tool handles and operation authority | Makes the starter genuinely agentic rather than merely chat-enabled |
 | Projection-backed live dashboards | `Model.view(...)`, projections, rebuild authority, resumable SSE | Demonstrates the function-native reactive thesis |
-| Complete deployment profiles | Starter, Dedicated, External qualified from one installation schema | Stimp required handwritten local/dev TypeKro files |
+| Complete deployment profiles | Starter, explicit non-production Developer, Dedicated, and External from one installation schema; TypeKro hot reload remains an independent deployment aspect | Stimp required handwritten local/dev TypeKro files |
 
 ## Generated application shape
 

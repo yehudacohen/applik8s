@@ -12,6 +12,8 @@ spec:
       model: product-assistant-v1
       credentialSecretName: product-inference
       credentialKey: apiKey
+      credentialSource:
+        kind: existingSecret
     identity:
       issuer: https://identity.example.test
     objects:
@@ -20,3 +22,5 @@ spec:
       secretName: product-payments
       apiKeyKey: apiKey
       webhookSecretKey: webhookSecret
+      credentialSource:
+        kind: existingSecret

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ApplicationGraph } from "@applik8s/core";
 import {
@@ -23,6 +23,126 @@ afterEach(async () => {
 });
 
 describe("compiler deployment graph emission", () => {
+  it("keeps production-capable host credential values outside portable state", async () => {
+    const directory = await mkdtemp(
+      join(process.env.TMPDIR ?? "/tmp", "applik8s-host-environment-"),
+    );
+    temporaryDirectories.push(directory);
+    const bundlePath = join(directory, "typekro-bundle.json");
+    await writeFile(bundlePath, JSON.stringify({ spec: {} }));
+    await writeFile(
+      join(directory, "resources.json"),
+      JSON.stringify([
+        {
+          apiVersion: "kro.run/v1alpha1",
+          kind: "ResourceGraphDefinition",
+          metadata: { name: "notes" },
+          spec: {
+            schema: {
+              apiVersion: "v1alpha1",
+              kind: "Notes",
+              spec: { name: "string" },
+              status: { ready: "boolean" },
+            },
+            resources: [
+              {
+                id: "applicationHost",
+                template: {
+                  apiVersion: "apps/v1",
+                  kind: "Deployment",
+                  metadata: {
+                    labels: {
+                      "app.kubernetes.io/component": "application-host",
+                    },
+                  },
+                  spec: {
+                    template: {
+                      spec: {
+                        containers: [
+                          {
+                            name: "application",
+                            image: "immutable",
+                            env: [],
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      ]),
+    );
+    await mkdir(join(directory, "application-host"));
+    await writeFile(
+      join(directory, "application-host", "application-host.json"),
+      JSON.stringify({
+        metadata: { name: "notes-app" },
+        spec: {
+          namespace: "notes-system",
+          image: "applik8s.local/notes-app:synthetic",
+          artifactDigest,
+          cursorSecret: { name: "notes-cursor", key: "key" },
+        },
+      }),
+    );
+    const installationSpec = {
+      name: "notes",
+      profile: "dedicated",
+      providers: {
+        inference: {
+          credentialSecretName: "notes-inference",
+          credentialSource: {
+            kind: "hostEnvironment",
+            variable: "SYNTHETIC_INFERENCE_KEY",
+          },
+        },
+        payments: {
+          secretName: "notes-payments",
+          credentialSource: {
+            kind: "hostEnvironment",
+            apiKeyVariable: "SYNTHETIC_STRIPE_KEY",
+            webhookSecretVariable: "SYNTHETIC_STRIPE_WEBHOOK",
+          },
+        },
+      },
+    };
+    const emitted = await emitApplicationDeploymentGraph({
+      bundlePath,
+      projectRoot: directory,
+      graph: {
+        ...applicationGraph(),
+        metadata: { name: "notes", namespace: "notes-system" },
+      },
+      sourceGraphDigest,
+      compilerVersion: "0.7.0",
+      context: "orbstack",
+      controlPlaneNamespace: "default",
+      instance: "notes",
+      profile: "dedicated",
+      strategy: "kro",
+      installationSpec,
+    });
+    const encoded = JSON.stringify(emitted.graph);
+    expect(encoded).toContain("SYNTHETIC_INFERENCE_KEY");
+    expect(encoded).toContain("SYNTHETIC_STRIPE_KEY");
+    expect(encoded).not.toContain("actual-inference-value");
+    expect(
+      emitted.graph.nodes.filter(
+        (node) =>
+          node.kind === "externalProvider"
+          && node.spec.resourceType === "kubernetesGeneratedSecret",
+      ),
+    ).toHaveLength(3);
+    const host = emitted.graph.nodes
+      .find((node) => node.id === "kubernetes.application");
+    expect(host?.kind === "kubernetesComposition"
+      ? JSON.stringify(host.spec.materialized)
+      : "").toContain("STRIPE_SECRET_KEY");
+  });
+
   it("shadow-emits deterministic deployment data without preparing artifacts", async () => {
     const directory = await mkdtemp(join(process.env.TMPDIR ?? "/tmp", "applik8s-deployment-"));
     temporaryDirectories.push(directory);

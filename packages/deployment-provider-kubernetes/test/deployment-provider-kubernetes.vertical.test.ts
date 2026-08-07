@@ -18,6 +18,29 @@ const base: Omit<ApplicationGeneratedSecretProps, "values"> = {
 };
 
 describe("Kubernetes generated-Secret deployment provider", () => {
+  it("resolves host credentials only from the operation environment", () => {
+    const values = { // typecast: preserve literal discriminants for the public codec.
+      apiKey: {
+        kind: "hostEnvironment",
+        name: "SYNTHETIC_PROVIDER_API_KEY",
+      },
+    } as const;
+    expect(() =>
+      validateApplicationGeneratedSecretProps({ ...base, values }),
+    ).not.toThrow();
+    expect(
+      materializeApplicationGeneratedSecretValues(values, {
+        SYNTHETIC_PROVIDER_API_KEY: "provider-value",
+      }),
+    ).toEqual({ apiKey: "provider-value" });
+    expect(() =>
+      materializeApplicationGeneratedSecretValues(values, {}),
+    ).toThrow(/SYNTHETIC_PROVIDER_API_KEY/);
+    expect(JSON.stringify({ ...base, values })).not.toContain(
+      "provider-value",
+    );
+  });
+
   it("accepts random credentials and explicitly public metadata", () => {
     expect(() =>
       validateApplicationGeneratedSecretProps({

@@ -3,6 +3,7 @@ import type {
   KubernetesApplicationBuilder,
 } from './application-builder.js';
 import type { ApplicationProcessorOptions } from './application-processor-policy.js';
+import { isApplicationRelationalModel } from './drizzle.js';
 
 const applicationModuleDefinition = Symbol.for(
   'applik8s.applicationModuleDefinition',
@@ -135,6 +136,21 @@ export function module<
 >;
 export function module<
   const TResult extends Readonly<Record<string, unknown>>,
+  TModel extends object,
+  TSpec extends object = object,
+  TStatus extends object = object,
+>(
+  name: string,
+  model: TModel,
+  setup: ApplicationModuleSetup<TResult, TSpec, TStatus>,
+): ApplicationModuleDefinition<
+  Readonly<TResult>,
+  TSpec,
+  TStatus,
+  ApplicationModuleSetup<Readonly<TResult>, TSpec, TStatus>
+>;
+export function module<
+  const TResult extends Readonly<Record<string, unknown>>,
   const TSchema extends Readonly<Record<string, unknown>>,
   TSpec extends object = object,
   TStatus extends object = object,
@@ -154,6 +170,7 @@ export function module<
   name: string,
   optionsOrSetup:
     | ApplicationModuleOptions
+    | object
     | ApplicationModuleSetup<TResult>,
   maybeSetup?: ApplicationModuleSetup<TResult>,
 ): ApplicationModuleDefinition<
@@ -166,9 +183,17 @@ export function module<
   if (!stableName) {
     throw new Error('Application module name must be a non-empty string.');
   }
+  const model = typeof optionsOrSetup === 'object'
+    && isApplicationRelationalModel(optionsOrSetup)
+      ? optionsOrSetup
+      : undefined;
   const options = typeof optionsOrSetup === 'function'
     ? undefined
-    : optionsOrSetup;
+    : model
+      ? { schema: { [stableName]: model } }
+      // The overload boundary has excluded the directly owned model and callback forms.
+      // typecast: the remaining value has the public module-options shape.
+      : optionsOrSetup as ApplicationModuleOptions;
   const setup = typeof optionsOrSetup === 'function'
     ? optionsOrSetup
     : maybeSetup;

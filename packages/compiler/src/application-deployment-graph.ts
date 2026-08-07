@@ -58,16 +58,20 @@ export async function emitApplicationDeploymentGraph(
     request.bundlePath,
     request.projectRoot,
   );
-  const materialized = await applicationMaterializedComposition(
+  const installationSpec = jsonObject(request.installationSpec, "installation spec");
+  const materialized = withInstallationRuntimeBindings(
+    await applicationMaterializedComposition(
     request.bundlePath,
     request.graph.metadata.name,
+    ),
+    installationSpec,
   );
   const generatedSecrets = await applicationGeneratedSecretRequirements(
     request.bundlePath,
     request.graph.metadata.namespace,
     request.graph,
+    request.installationSpec,
   );
-  const installationSpec = jsonObject(request.installationSpec, "installation spec");
   const profileTransition = request.profileTransition
     ? deploymentRelevantProfileTransition(
         jsonObject(request.profileTransition, "profile transition"),
@@ -113,6 +117,124 @@ export async function emitApplicationDeploymentGraph(
   };
 }
 
+function withInstallationRuntimeBindings(
+  materialized: {
+    readonly resources: readonly DeploymentJsonObject[];
+    readonly status: DeploymentJsonObject;
+    readonly clusterApiPrerequisites: readonly DeploymentJsonObject[];
+  },
+  installationSpec: DeploymentJsonObject,
+): {
+  readonly resources: readonly DeploymentJsonObject[];
+  readonly status: DeploymentJsonObject;
+  readonly clusterApiPrerequisites: readonly DeploymentJsonObject[];
+} {
+  const providers = optionalObject(installationSpec.providers);
+  const payments = optionalObject(providers?.payments);
+  if (!payments) return materialized;
+  const secretName = stringValue(
+    payments.secretName,
+    "Application payments Secret name",
+  );
+  const apiKey = optionalString(payments.apiKeyKey) ?? "apiKey";
+  const webhookSecret =
+    optionalString(payments.webhookSecretKey) ?? "webhookSecret";
+  const environment = [
+    secretEnvironment("STRIPE_SECRET_KEY", secretName, apiKey),
+    secretEnvironment(
+      "STRIPE_WEBHOOK_SECRET",
+      secretName,
+      webhookSecret,
+    ),
+  ];
+  let hostCount = 0;
+  const resources = materialized.resources.map((resource) => {
+    const template = optionalObject(resource.template);
+    if (!template || !isApplicationHostDeployment(template)) return resource;
+    hostCount += 1;
+    const spec = objectValue(template.spec, "ApplicationHost Deployment spec");
+    const podTemplate = objectValue(
+      spec.template,
+      "ApplicationHost Deployment pod template",
+    );
+    const podSpec = objectValue(
+      podTemplate.spec,
+      "ApplicationHost Deployment pod spec",
+    );
+    const containers = arrayValue(podSpec.containers).map((value) => {
+      const container = objectValue(
+        value,
+        "ApplicationHost Deployment container",
+      );
+      if (container.name !== "application") return container;
+      const existing = arrayValue(container.env).map((entry) =>
+        objectValue(entry, "ApplicationHost environment entry"),
+      );
+      const names = new Set(
+        existing.flatMap((entry) =>
+          typeof entry.name === "string" ? [entry.name] : [],
+        ),
+      );
+      return {
+        ...container,
+        env: [
+          ...existing,
+          ...environment.filter((entry) => !names.has(entry.name)),
+        ],
+      };
+    });
+    return {
+      ...resource,
+      template: {
+        ...template,
+        spec: {
+          ...spec,
+          template: {
+            ...podTemplate,
+            spec: {
+              ...podSpec,
+              containers,
+            },
+          },
+        },
+      },
+    };
+  });
+  if (hostCount !== 1) {
+    throw new Error(
+      `Application payments binding requires exactly one ApplicationHost Deployment; found ${hostCount}.`,
+    );
+  }
+  return { ...materialized, resources };
+}
+
+function isApplicationHostDeployment(
+  resource: DeploymentJsonObject,
+): boolean {
+  if (resource.apiVersion !== "apps/v1" || resource.kind !== "Deployment") {
+    return false;
+  }
+  const metadata = optionalObject(resource.metadata);
+  const labels = optionalObject(metadata?.labels);
+  return labels?.["app.kubernetes.io/component"] === "application-host";
+}
+
+function secretEnvironment(
+  name: string,
+  secretName: string,
+  key: string,
+): DeploymentJsonObject & { readonly name: string } {
+  return {
+    name,
+    valueFrom: {
+      secretKeyRef: {
+        name: secretName,
+        key,
+      },
+    },
+  };
+}
+
 /**
  * Fresh and unchanged profile observations have no deployment effect. Keeping
  * their different mode labels in the portable graph makes identical desired
@@ -131,6 +253,7 @@ async function applicationGeneratedSecretRequirements(
   bundlePath: string,
   resolvedApplicationNamespace: string | undefined,
   graph: ApplicationGraph,
+  installationSpec: Readonly<Record<string, unknown>>,
 ): Promise<readonly ApplicationGeneratedSecretRequirement[]> {
   const requirements: ApplicationGeneratedSecretRequirement[] = [];
   let applicationHostConsumer: string | undefined;
@@ -208,6 +331,100 @@ async function applicationGeneratedSecretRequirements(
         ...agents.map((agent) => agent.id),
         ...gatewayConsumers,
       ].sort(),
+    });
+  }
+  return [
+    ...requirements,
+    ...hostEnvironmentSecretRequirements(
+      installationSpec,
+      resolvedApplicationNamespace ?? graph.metadata.namespace ?? "default",
+      applicationHostConsumer,
+    ),
+  ];
+}
+
+/**
+ * Any application-owned provider can explicitly choose operation-host
+ * environment credentials. Only variable names enter the graph; values are
+ * resolved while the Kubernetes provider reconciles stable Secret identities.
+ * External installations remain externally owned and cannot select this path.
+ */
+function hostEnvironmentSecretRequirements(
+  installationSpec: Readonly<Record<string, unknown>>,
+  namespaceValue: unknown,
+  applicationHostConsumer: string | undefined,
+): readonly ApplicationGeneratedSecretRequirement[] {
+  const providers = optionalObject(installationSpec.providers);
+  if (!providers) return [];
+  if (installationSpec.profile === "external") {
+    for (const provider of [providers.inference, providers.payments]) {
+      const source = optionalObject(optionalObject(provider)?.credentialSource);
+      if (source?.kind === "hostEnvironment") {
+        throw new Error(
+          "External Agentic providers cannot use hostEnvironment credentials because their Secret lifecycle is externally owned.",
+        );
+      }
+    }
+    return [];
+  }
+  const namespace = stringValue(
+    namespaceValue,
+    "application namespace",
+  );
+  const requirements: ApplicationGeneratedSecretRequirement[] = [];
+  const inference = optionalObject(providers.inference);
+  const inferenceSource = optionalObject(inference?.credentialSource);
+  if (inference && inferenceSource?.kind === "hostEnvironment") {
+    const name = stringValue(
+      inference.credentialSecretName,
+      "inference credential Secret name",
+    );
+    requirements.push({
+      id: "agentic-managed.inference",
+      namespace,
+      name,
+      referenceMode: "staticIdentity",
+      values: {
+        [optionalString(inference.credentialKey) ?? "apiKey"]: {
+          kind: "hostEnvironment",
+          name:
+            optionalString(inferenceSource.variable)
+            ?? "OPENROUTER_API_KEY",
+        },
+      },
+      consumers: ["provider.AI.inference"],
+    });
+  }
+  const payments = optionalObject(providers.payments);
+  const paymentSource = optionalObject(payments?.credentialSource);
+  if (payments && paymentSource?.kind === "hostEnvironment") {
+    const name = stringValue(
+      payments.secretName,
+      "payments Secret name",
+    );
+    requirements.push({
+      id: "agentic-managed.payments",
+      namespace,
+      name,
+      referenceMode: "staticIdentity",
+      values: {
+        [optionalString(payments.apiKeyKey) ?? "apiKey"]: {
+          kind: "hostEnvironment",
+          name:
+            optionalString(paymentSource.apiKeyVariable)
+            ?? "STRIPE_SECRET_KEY",
+        },
+        [optionalString(payments.webhookSecretKey) ?? "webhookSecret"]: {
+          kind: "hostEnvironment",
+          name:
+            optionalString(paymentSource.webhookSecretVariable)
+            ?? "STRIPE_WEBHOOK_SECRET",
+        },
+      },
+      consumers: [
+        "provider.PaymentProvider.primary",
+        ...(applicationHostConsumer ? [applicationHostConsumer] : []),
+      ],
     });
   }
   return requirements;
@@ -550,6 +767,12 @@ function objectValue(value: unknown, label: string): DeploymentJsonObject {
     throw new Error(`${label} must be a JSON object.`);
   }
   return value as DeploymentJsonObject;
+}
+
+function optionalObject(value: unknown): DeploymentJsonObject | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as DeploymentJsonObject
+    : undefined;
 }
 
 function arrayValue(value: unknown): readonly unknown[] {

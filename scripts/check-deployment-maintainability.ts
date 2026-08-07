@@ -251,6 +251,21 @@ const budgets = [
     reason: "registry discovery",
   },
   {
+    path: "packages/cli/src/application-development-graph.ts",
+    maximum: 125,
+    reason: "development artifact graph pruning",
+  },
+  {
+    path: "packages/cli/src/application-development-aspect.ts",
+    maximum: 250,
+    reason: "development ApplicationHost aspect",
+  },
+  {
+    path: "packages/cli/src/application-development-workspace.ts",
+    maximum: 400,
+    reason: "secure development workspace planning",
+  },
+  {
     path: "packages/deployment-alchemy/src/backend.ts",
     maximum: 550,
     reason: "generic Alchemy coordinator",
@@ -297,8 +312,8 @@ const budgets = [
   },
   {
     path: "packages/deployment-provider-kubernetes/src",
-    maximum: 475,
-    reason: "Kubernetes effect adapter",
+    maximum: 580,
+    reason: "Kubernetes effect adapter including host-environment resolution",
   },
   {
     path: "packages/deployment-provider-kubernetes/src/generated-secret.ts",

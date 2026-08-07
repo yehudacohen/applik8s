@@ -1,8 +1,5 @@
 import { AI } from '@applik8s/ai';
-import {
-  type ApplicationModelViewContext,
-  module,
-} from '@applik8s/applik8s';
+import { module } from '@applik8s/applik8s';
 import { type } from 'arktype';
 import { chat } from '@tanstack/ai';
 import { desc, eq } from 'drizzle-orm';
@@ -10,25 +7,9 @@ import { application } from '../../app';
 import { database, inference } from '../../providers';
 import { Note as NoteTable } from './schema';
 
-async function listNotes(
-  _input: object,
-  context: ApplicationModelViewContext,
-) {
-  return context.database(database)
-    .select({
-      id: NoteTable.id,
-      body: NoteTable.body,
-      createdAt: NoteTable.createdAt,
-    })
-    .from(NoteTable)
-    .where(eq(NoteTable.ownerPrincipalId, context.principal.id))
-    .orderBy(desc(NoteTable.createdAt))
-    .limit(100);
-}
-
 const notes = module(
   'notes',
-  { schema: { Note: NoteTable } },
+  NoteTable,
   (application) => {
     const NoteList = NoteTable.view(
       {
@@ -41,7 +22,18 @@ const notes = module(
         database,
         authorize: ({ principal }) => principal.id.length > 0,
       },
-      listNotes,
+      async function listNotes(_input, context) {
+        return context.database(database)
+        .select({
+          id: NoteTable.id,
+          body: NoteTable.body,
+          createdAt: NoteTable.createdAt,
+        })
+        .from(NoteTable)
+        .where(eq(NoteTable.ownerPrincipalId, context.principal.id))
+        .orderBy(desc(NoteTable.createdAt))
+          .limit(100);
+      },
     );
     const Authenticated = application.role('authenticated');
     const AssistantIdentity = application.serviceIdentity('notes-assistant');

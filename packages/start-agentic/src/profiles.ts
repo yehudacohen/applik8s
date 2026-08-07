@@ -97,7 +97,32 @@ export interface AgenticStripePayments {
   readonly endpoint?: string;
 }
 
-export type AgenticDedicatedInference = AgenticExternalInference;
+export interface AgenticManagedCredentialSource {
+  readonly kind: 'hostEnvironment' | 'existingSecret';
+  /** Canonical default: OPENROUTER_API_KEY. */
+  readonly variable?: string;
+}
+
+export interface AgenticManagedPaymentCredentialSource {
+  readonly kind: 'hostEnvironment' | 'existingSecret';
+  /** Canonical default: STRIPE_SECRET_KEY. */
+  readonly apiKeyVariable?: string;
+  /** Canonical default: STRIPE_WEBHOOK_SECRET. */
+  readonly webhookSecretVariable?: string;
+}
+
+export interface AgenticDedicatedInference extends AgenticExternalInference {
+  readonly credentialSource?: AgenticManagedCredentialSource;
+}
+
+export interface AgenticManagedStripePayments extends AgenticStripePayments {
+  readonly credentialSource?: AgenticManagedPaymentCredentialSource;
+}
+
+export interface AgenticDeveloperProviders {
+  readonly inference: AgenticDedicatedInference;
+  readonly payments: AgenticManagedStripePayments;
+}
 
 /**
  * Cluster capability required by the Rook/Ceph development platform.
@@ -130,6 +155,12 @@ export type AgenticInstallationSpec =
     }
   | {
       readonly name: string;
+      /** Explicit non-production profile backed by operation-host .env credentials. */
+      readonly profile: 'developer';
+      readonly providers: AgenticDeveloperProviders;
+    }
+  | {
+      readonly name: string;
       readonly profile: 'dedicated';
       readonly providers: {
         readonly inference: AgenticDedicatedInference;
@@ -137,7 +168,7 @@ export type AgenticInstallationSpec =
           readonly issuer: string;
         };
         readonly objects: AgenticDedicatedObjects;
-        readonly payments: AgenticStripePayments;
+        readonly payments: AgenticManagedStripePayments;
       };
     }
   | {
@@ -184,7 +215,11 @@ export interface ConfigureAgenticProfilesOptions<
 type DatabaseBinding =
   ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
 
-export type AgenticProfileName = 'starter' | 'dedicated' | 'external';
+export type AgenticProfileName =
+  | 'starter'
+  | 'developer'
+  | 'dedicated'
+  | 'external';
 
 /**
  * Reviewed workload and stateful-capacity defaults for the maintained Start.
@@ -199,53 +234,57 @@ export function agenticCapacity(
 ) {
   const chooseNumber = (
     starter: number,
+    developer: number,
     dedicated: number,
     external: number,
   ): number => application.select(profile, {
     starter,
+    developer,
     dedicated,
     external,
     default: starter,
   });
   const chooseString = (
     starter: string,
+    developer: string,
     dedicated: string,
     external: string,
   ): string => application.select(profile, {
     starter,
+    developer,
     dedicated,
     external,
     default: starter,
   });
   return Object.freeze({
-    webReplicas: chooseNumber(1, 3, 2),
-    webCpuRequest: chooseString('150m', '500m', '250m'),
-    webMemoryRequest: chooseString('192Mi', '512Mi', '256Mi'),
-    webCpuLimit: chooseString('1', '2', '1'),
-    webMemoryLimit: chooseString('512Mi', '1Gi', '768Mi'),
-    gatewayReplicas: chooseNumber(1, 3, 2),
-    commandReplicas: chooseNumber(1, 3, 2),
-    commandConcurrency: chooseNumber(16, 48, 32),
-    commandCpuRequest: chooseString('100m', '500m', '250m'),
-    commandMemoryRequest: chooseString('192Mi', '512Mi', '256Mi'),
-    commandCpuLimit: chooseString('1', '2', '1'),
-    commandMemoryLimit: chooseString('512Mi', '1Gi', '768Mi'),
-    postgresInstances: chooseNumber(1, 3, 1),
-    postgresStorage: chooseString('1Gi', '200Gi', '1Gi'),
-    postgresStorageClass: chooseString('local-path', 'ceph-block', 'local-path'),
-    eventLogReplicas: chooseNumber(1, 3, 1),
-    eventLogStorage: chooseString('8Gi', '100Gi', '8Gi'),
-    eventLogStorageClass: chooseString('', 'ceph-block', ''),
-    workflowDatabaseInstances: chooseNumber(1, 3, 1),
-    workflowDatabaseStorage: chooseString('8Gi', '100Gi', '8Gi'),
-    workflowDatabaseStorageClass: chooseString('local-path', 'ceph-block', 'local-path'),
-    workflowReplicas: chooseNumber(1, 3, 2),
-    analyticsStorage: chooseString('16Gi', '250Gi', '16Gi'),
-    analyticsStorageClass: chooseString('local-path', 'ceph-block', 'local-path'),
-    indexShards: chooseNumber(1, 3, 1),
-    indexReplicas: chooseNumber(0, 1, 0),
-    indexStorage: chooseString('8Gi', '100Gi', '8Gi'),
-    indexStorageClass: chooseString('local-path', 'ceph-block', 'local-path'),
+    webReplicas: chooseNumber(1, 1, 3, 2),
+    webCpuRequest: chooseString('150m', '150m', '500m', '250m'),
+    webMemoryRequest: chooseString('192Mi', '192Mi', '512Mi', '256Mi'),
+    webCpuLimit: chooseString('1', '1', '2', '1'),
+    webMemoryLimit: chooseString('512Mi', '512Mi', '1Gi', '768Mi'),
+    gatewayReplicas: chooseNumber(1, 1, 3, 2),
+    commandReplicas: chooseNumber(1, 1, 3, 2),
+    commandConcurrency: chooseNumber(16, 16, 48, 32),
+    commandCpuRequest: chooseString('100m', '100m', '500m', '250m'),
+    commandMemoryRequest: chooseString('192Mi', '192Mi', '512Mi', '256Mi'),
+    commandCpuLimit: chooseString('1', '1', '2', '1'),
+    commandMemoryLimit: chooseString('512Mi', '512Mi', '1Gi', '768Mi'),
+    postgresInstances: chooseNumber(1, 1, 3, 1),
+    postgresStorage: chooseString('1Gi', '1Gi', '200Gi', '1Gi'),
+    postgresStorageClass: chooseString('local-path', 'local-path', 'ceph-block', 'local-path'),
+    eventLogReplicas: chooseNumber(1, 1, 3, 1),
+    eventLogStorage: chooseString('8Gi', '8Gi', '100Gi', '8Gi'),
+    eventLogStorageClass: chooseString('', '', 'ceph-block', ''),
+    workflowDatabaseInstances: chooseNumber(1, 1, 3, 1),
+    workflowDatabaseStorage: chooseString('8Gi', '8Gi', '100Gi', '8Gi'),
+    workflowDatabaseStorageClass: chooseString('local-path', 'local-path', 'ceph-block', 'local-path'),
+    workflowReplicas: chooseNumber(1, 1, 3, 2),
+    analyticsStorage: chooseString('16Gi', '16Gi', '250Gi', '16Gi'),
+    analyticsStorageClass: chooseString('local-path', 'local-path', 'ceph-block', 'local-path'),
+    indexShards: chooseNumber(1, 1, 3, 1),
+    indexReplicas: chooseNumber(0, 0, 1, 0),
+    indexStorage: chooseString('8Gi', '8Gi', '100Gi', '8Gi'),
+    indexStorageClass: chooseString('local-path', 'local-path', 'ceph-block', 'local-path'),
   });
 }
 
@@ -345,6 +384,23 @@ export const AgenticStarter = Object.freeze({
   },
   payments() {
     return LocalPayments.simulated();
+  },
+});
+
+/**
+ * Local developer profile: Starter-sized stateful dependencies with real
+ * inference and payment adapters backed by operation-host environment
+ * bindings. It is intentionally non-production.
+ */
+export const AgenticDeveloper = Object.freeze({
+  inference(
+    spec: AgenticDedicatedInference,
+    context: AgenticProfileContext,
+  ) {
+    return AgenticDedicated.inference(spec, context);
+  },
+  payments(spec: AgenticManagedStripePayments, context: AgenticProfileContext) {
+    return agenticStripePayments(spec, context);
   },
 });
 
@@ -697,7 +753,14 @@ export function configureAgenticProfiles<
   const deployment = application.profile(
     application.installation.spec,
     'profile',
-    { variants: ['starter', 'dedicated', 'external'] as const },
+    {
+      variants: [
+        'starter',
+        'developer',
+        'dedicated',
+        'external',
+      ] as const,
+    },
   );
   const PrimaryDatabase = TransactionalDatabase.named('primary');
   const AnalyticsStore = AnalyticalDatabase.named('primary');
@@ -718,6 +781,7 @@ export function configureAgenticProfiles<
   deployment
     .provide(PrimaryDatabase)
     .starter(() => AgenticStarter.database(profileContext))
+    .developer(() => AgenticStarter.database(profileContext))
     .dedicated(() => AgenticDedicated.database(profileContext))
     .external((spec) =>
       AgenticExternal.database(spec.providers.database, profileContext),
@@ -729,6 +793,7 @@ export function configureAgenticProfiles<
   deployment
     .provide(AnalyticsStore)
     .starter(() => AgenticStarter.analytics(primaryDatabase))
+    .developer(() => AgenticStarter.analytics(primaryDatabase))
     .dedicated(() => AgenticDedicated.analytics(profileContext))
     .external((spec) =>
       AgenticExternal.analytics(spec.providers.analytics, profileContext),
@@ -738,6 +803,7 @@ export function configureAgenticProfiles<
   deployment
     .provide(EventTransport)
     .starter(() => AgenticStarter.events(profileContext))
+    .developer(() => AgenticStarter.events(profileContext))
     .dedicated(() => AgenticDedicated.events(profileContext))
     .external((spec) =>
       AgenticExternal.events(spec.providers.events, profileContext),
@@ -747,6 +813,7 @@ export function configureAgenticProfiles<
   deployment
     .provide(ApplicationObjects)
     .starter(() => AgenticStarter.objects(profileContext))
+    .developer(() => AgenticStarter.objects(profileContext))
     .dedicated((spec) =>
       AgenticDedicated.objects(profileContext, spec.providers.objects),
     )
@@ -758,6 +825,7 @@ export function configureAgenticProfiles<
   deployment
     .provide(ApplicationWorkflows)
     .starter(() => AgenticStarter.workflows(profileContext))
+    .developer(() => AgenticStarter.workflows(profileContext))
     .dedicated(() => AgenticDedicated.workflows(profileContext))
     .external((spec) =>
       AgenticExternal.workflows(spec.providers.workflows, profileContext),
@@ -767,6 +835,7 @@ export function configureAgenticProfiles<
   deployment
     .provide(ApplicationSearch)
     .starter(() => AgenticStarter.search(primaryDatabase))
+    .developer(() => AgenticStarter.search(primaryDatabase))
     .dedicated(() => AgenticDedicated.search(profileContext))
     .external((spec) =>
       AgenticExternal.search(spec.providers.search, profileContext),
@@ -777,6 +846,9 @@ export function configureAgenticProfiles<
     .provide(Inference)
     .starter(() =>
       options.starterInference?.() ?? AgenticStarter.inference(),
+    )
+    .developer((spec) =>
+      AgenticDeveloper.inference(spec.providers.inference, profileContext),
     )
     .dedicated((spec) =>
       AgenticDedicated.inference(spec.providers.inference, profileContext),
@@ -789,6 +861,12 @@ export function configureAgenticProfiles<
   deployment
     .provide(PrimaryIdentity)
     .starter(() =>
+      agenticIdentityWithDatabase(
+        IdentityProvider.from(authenticateAgenticStarterRequest),
+        primaryDatabase,
+      ),
+    )
+    .developer(() =>
       agenticIdentityWithDatabase(
         IdentityProvider.from(authenticateAgenticStarterRequest),
         primaryDatabase,
@@ -816,6 +894,9 @@ export function configureAgenticProfiles<
   deployment
     .provide(PrimaryPayments)
     .starter(() => AgenticStarter.payments())
+    .developer((spec) =>
+      AgenticDeveloper.payments(spec.providers.payments, profileContext),
+    )
     .dedicated((spec) =>
       AgenticDedicated.payments(spec.providers.payments, profileContext),
     )

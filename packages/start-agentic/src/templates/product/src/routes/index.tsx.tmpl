@@ -1,6 +1,8 @@
+import { createApplicationTanStackConnection } from '@applik8s/ai-tanstack/client';
+import { useChat } from '@tanstack/ai-react';
 import { createFileRoute } from '@tanstack/react-router';
-import { type FormEvent, useState } from 'react';
-import { Note, NoteList } from '../application';
+import { type FormEvent, useMemo, useState } from 'react';
+import { Note, NoteList, NotesAssistant } from '../application';
 
 export const Route = createFileRoute('/')({
   loader: () => NoteList({}).preload(),
@@ -11,41 +13,109 @@ function NotesHome() {
   const notes = NoteList({}).useQuery();
   const createNote = Note.create.useMutation();
   const [body, setBody] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [threadId] = useState(() => crypto.randomUUID());
+  const connection = useMemo(
+    () => createApplicationTanStackConnection({
+      agent: NotesAssistant,
+    }),
+    [],
+  );
+  const {
+    messages,
+    sendMessage,
+    isLoading,
+    error,
+    stop,
+  } = useChat({ connection, threadId });
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await createNote({ body });
     setBody('');
-    await notes.refresh();
+  }
+
+  async function askAssistant(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = prompt.trim();
+    if (!message) return;
+    setPrompt('');
+    await sendMessage(message);
   }
 
   return (
-    <main>
-      <p className="eyebrow">Applik8s Agentic Start</p>
-      <h1>Notes</h1>
-      <p>
-        This authenticated model, reactive view, typed command, and agent tool
-        share one application declaration.
-      </p>
-      <form onSubmit={submit}>
-        <label htmlFor="note-body">Note</label>
-        <textarea
-          id="note-body"
-          value={body}
-          onChange={(event) => setBody(event.currentTarget.value)}
-        />
-        <button type="submit" disabled={!body.trim() || createNote.pending}>
-          {createNote.pending ? 'Saving…' : 'Save note'}
-        </button>
-      </form>
-      <section aria-label="Notes">
-        {notes.data?.map((note) => (
-          <article key={note.id}>
-            <p>{note.body}</p>
-            <small>{note.createdAt}</small>
-          </article>
-        ))}
+    <main className="notes-shell">
+      <section className="notes-intro">
+        <p className="eyebrow">Applik8s Agentic Start</p>
+        <h1>A small app with a real control plane.</h1>
+        <p>
+          Notes, live queries, typed commands, an AI tool, identity, durable
+          infrastructure, and operations share one application declaration.
+        </p>
       </section>
+      <div className="notes-grid">
+        <section className="panel" aria-labelledby="notes-title">
+          <h2 id="notes-title">Your notes</h2>
+          <form onSubmit={submit}>
+            <label htmlFor="note-body">Add a note</label>
+            <textarea
+              id="note-body"
+              value={body}
+              onChange={(event) => setBody(event.currentTarget.value)}
+              placeholder="Something worth remembering"
+            />
+            <button type="submit" disabled={!body.trim() || createNote.pending}>
+              {createNote.pending ? 'Saving…' : 'Save note'}
+            </button>
+          </form>
+          <div aria-label="Notes" aria-live="polite">
+            {notes.data?.map((note) => (
+              <article key={note.id}>
+                <p>{note.body}</p>
+                <small>{note.createdAt}</small>
+              </article>
+            ))}
+          </div>
+        </section>
+        <section className="panel assistant" aria-labelledby="assistant-title">
+          <h2 id="assistant-title">Notes assistant</h2>
+          <p>
+            Ask it to create a note. Its typed tool call updates the same live
+            list without a manual refresh.
+          </p>
+          <div className="conversation" aria-live="polite">
+            {messages.map((message) => (
+              <article key={message.id} data-role={message.role}>
+                <strong>{message.role}</strong>
+                {message.parts.map((part, index) =>
+                  part.type === 'text'
+                    ? <p key={index}>{part.content}</p>
+                    : null,
+                )}
+              </article>
+            ))}
+            {error ? <p role="alert">{error.message}</p> : null}
+          </div>
+          <form onSubmit={askAssistant}>
+            <label htmlFor="assistant-prompt">Message</label>
+            <textarea
+              id="assistant-prompt"
+              value={prompt}
+              onChange={(event) => setPrompt(event.currentTarget.value)}
+              disabled={isLoading}
+              placeholder="Create a note about shipping the first version"
+            />
+            <div className="actions">
+              <button type="submit" disabled={isLoading || !prompt.trim()}>
+                {isLoading ? 'Working…' : 'Send'}
+              </button>
+              {isLoading
+                ? <button type="button" className="secondary" onClick={stop}>Stop</button>
+                : null}
+            </div>
+          </form>
+        </section>
+      </div>
     </main>
   );
 }

@@ -1689,11 +1689,21 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
                 },
               );
               if (metadata.inferReturnedSchema) {
-                const inferredSchema = inferredApplicationModuleSchema(result);
-                if (Object.keys(inferredSchema).length > 0) {
+                const inferred = inferredApplicationModuleSchema(result);
+                if (Object.keys(inferred).length > 0) {
                   const database = soleApplicationDatabase(
                     previewContext.state,
                     `Application module ${moduleName}`,
+                  );
+                  const registeredValues = new Set(
+                    Object.values(database.schema),
+                  );
+                  const inferredSchema = Object.freeze(
+                    Object.fromEntries(
+                      Object.entries(inferred).filter(
+                        ([, value]) => !registeredValues.has(value),
+                      ),
+                    ),
                   );
                   const addedSchema = extendApplicationDatabaseSchema(
                     database,

@@ -1,6 +1,15 @@
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 export type ApplicationGeneratedSecretValue =
   | {
+      /**
+       * Explicit operation-host binding. The environment variable name is
+       * portable state; its value is resolved only while the Kubernetes
+       * provider reconciles, for development or production installations.
+       */
+      readonly kind: "hostEnvironment";
+      readonly name: string;
+    }
+  | {
       readonly kind: "random";
       readonly bytes: number;
       readonly encoding: "base64url";
@@ -62,8 +71,19 @@ export function applicationGeneratedSecretDeploymentNodeLabel(deploymentNodeId: 
     .replace(/[^a-z0-9]+$/g, "");
   return `${readable || "deployment-node"}-${digest}`;
 }
-
-function generatedValue(contract: Exclude<ApplicationGeneratedSecretValue, { kind: "template" }>): string {
+function generatedValue(
+  contract: Exclude<ApplicationGeneratedSecretValue, { kind: "template" }>,
+  environment: Readonly<Record<string, string | undefined>>,
+): string {
+  if (contract.kind === "hostEnvironment") {
+    const value = environment[contract.name];
+    if (!value) {
+      throw new Error(
+        `Generated Secret requires non-empty operation-host environment variable ${contract.name}.`,
+      );
+    }
+    return value;
+  }
   if (contract.kind === "publicLiteral") return contract.value;
   if (contract.kind === "jwkSet") {
     const { privateKey } = generateKeyPairSync("rsa", {
@@ -87,10 +107,13 @@ function generatedValue(contract: Exclude<ApplicationGeneratedSecretValue, { kin
 /** Pure except for cryptographic generation; exported for contract tests. */
 export function materializeApplicationGeneratedSecretValues(
   contracts: Readonly<Record<string, ApplicationGeneratedSecretValue>>,
+  environment: Readonly<Record<string, string | undefined>> = {},
 ): Readonly<Record<string, string>> {
   const generated: Record<string, string> = {};
   for (const [key, contract] of Object.entries(contracts)) {
-    if (contract.kind !== "template") generated[key] = generatedValue(contract);
+    if (contract.kind !== "template") {
+      generated[key] = generatedValue(contract, environment);
+    }
   }
   const pending = new Map(
     Object.entries(contracts).filter((entry) => entry[1].kind === "template"),
@@ -159,6 +182,14 @@ function validateGeneratedSecretValue(props: ApplicationGeneratedSecretProps, ke
   const identity = `${props.namespace}/${props.name} key ${key}`;
   if (!key.trim()) throw new Error("Generated Secret keys must not be empty.");
   if (
+    contract.kind === "hostEnvironment" &&
+    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(contract.name)
+  ) {
+    throw new Error(
+      `Generated Secret ${identity} has an invalid host environment binding.`,
+    );
+  }
+  if (
     contract.kind === "publicLiteral" &&
     (!contract.value.trim() ||
       /(?:password|passwd|token|private[-_]?key|client[-_]?secret|credential)/i.test(
@@ -219,6 +250,8 @@ function validateTemplateDependencies(values: Readonly<Record<string, Applicatio
         key,
         contract.kind === "template"
           ? contract
+          : contract.kind === "hostEnvironment"
+            ? { kind: "publicLiteral", value: `environment-${key}` }
           : { kind: "publicLiteral", value: `generated-${key}` },
       ]),
     ),

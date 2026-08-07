@@ -127,7 +127,7 @@ export const applicationAgenticStartDefinition = Object.freeze({
       mode: 'start-file-router',
       blank: true,
     },
-    maximumApplicationFiles: 24,
+    maximumApplicationFiles: 25,
     maximumIntegrationLines: 600,
     files: [
       '.applik8s/start-lineage.json',
@@ -135,6 +135,7 @@ export const applicationAgenticStartDefinition = Object.freeze({
       'README.md',
       'drizzle.config.ts',
       'kubernetes/application.dedicated.example.yaml',
+      'kubernetes/application.developer.yaml',
       'kubernetes/application.external.example.yaml',
       'kubernetes/application.yaml',
       'src/app.ts',

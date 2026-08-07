@@ -14,6 +14,8 @@ export interface ApplicationDeployCommandOptions {
   readonly skipAppBuild?: boolean;
   readonly skipImageBuild?: boolean;
   readonly planOnly?: boolean;
+  /** Replace the generated ApplicationHost through a TypeKro dev aspect. */
+  readonly development?: boolean;
   /**
    * Permit one reviewed TypeKro root-schema migration during this deployment.
    *

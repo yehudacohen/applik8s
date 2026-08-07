@@ -27,7 +27,7 @@ import { app } from "@applik8s/applik8s";
 export const application = app("research-platform", {
   installation: type({
     name: "string",
-    profile: "'starter' | 'dedicated' | 'external'",
+    profile: "'starter' | 'developer' | 'dedicated' | 'external'",
   }),
 });
 
@@ -40,6 +40,7 @@ const deployment = application.profile(
 deployment
   .provide(PrimaryDatabase)
   .starter(() => Database.postgres({ provider: CNPG, instances: 1 }))
+  .developer(() => Database.postgres({ provider: CNPG, instances: 1 }))
   .dedicated(() => Database.postgres({ provider: CNPG, instances: 3 }))
   .external((spec) => Database.externalPostgres(spec.providers.database))
   .exhaustive();
@@ -161,12 +162,19 @@ must require an explicit variant tuple:
 ```ts
 application.profile(InstallationSpec, {
   discriminator: "profile",
-  variants: ["starter", "dedicated", "external"] as const,
+  variants: ["starter", "developer", "dedicated", "external"] as const,
 });
 ```
 
 The explicit tuple is preferable to unsafe runtime inference. Type-level and runtime variants must be
 proven equal.
+
+`developer` is an explicit, non-production installation variant rather than
+an environment switch. It may reuse Starter-sized stateful providers while
+binding live credentials from the deployment operation host. The same explicit
+`hostEnvironment` credential source is valid for application-owned Dedicated
+providers; enabling TypeKro filesystem hot reload is an independent deployment
+option.
 
 The derived profile descriptor records:
 

@@ -225,6 +225,7 @@ describe('applik8s CLI', () => {
     expect(runner).toContain("APPLIK8S_DISABLE_NODE_DEPLOY_HANDOFF: '1'");
     expect(runner).toContain("APPLIK8S_DISABLE_NODE_STATUS_HANDOFF: '1'");
     expect(runner).toContain("options.allowBreakingChanges ? ['--allow-breaking-changes']");
+    expect(runner).toContain("options.development ? ['--development']");
     expect(runner).not.toContain('kubectl');
   });
 
@@ -261,6 +262,8 @@ describe('applik8s CLI', () => {
     expect(code).toBe(0);
     expect(output.join('\n')).toContain('--strategy <strategy>');
     expect(output.join('\n')).toContain('--allow-breaking-changes');
+    expect(output.join('\n')).toContain('--development');
+    expect(output.join('\n')).toContain('allowlisted local source mount');
     expect(output.join('\n')).toContain('for this deployment only');
     expect(output.join('\n')).not.toContain('migrate-kro-owned');
     expect(output.join('\n')).not.toContain('legacy');

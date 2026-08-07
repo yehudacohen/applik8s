@@ -53,8 +53,10 @@ without scattering one domain concept across application-wide directories. `src/
 thin upstream TanStack Start route tree required by the selected routing convention and imports
 feature-owned route definitions. Shared infrastructure appears only after real reuse justifies it.
 
-The generated project deploys a credential-free starter profile and can transition by explicit plan to
-dedicated or external providers.
+The generated project deploys a credential-free Starter profile, provides an
+explicit non-production Developer installation for live credential-backed
+providers and TypeKro hot reload, and can transition by explicit plan to
+Dedicated or External providers.
 
 The ordinary authored experience should remain compact:
 
@@ -485,7 +487,8 @@ The first distribution supplies:
 - first-run onboarding, safe non-secret configuration, local bootstrap, and a product/control-center
   shell derived from the pinned Stimp baseline;
 - health, readiness, provider, lag, and recovery status;
-- starter, dedicated, and external profile modules.
+- Starter, Developer, Dedicated, and External profile modules. Developer is
+  operational convenience, not a fourth production qualification tier.
 
 Organization/membership and billing integrations may be optional modules. Applications retain their
 own schemas and policy.

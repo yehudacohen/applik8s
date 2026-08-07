@@ -585,6 +585,9 @@ function generatedSecretNode(
     spec: {
       resourceType: "kubernetesGeneratedSecret",
       controller: "applik8s-alchemy-kubernetes-generated-secret/v1",
+      ...(requirement.referenceMode
+        ? { referenceMode: requirement.referenceMode }
+        : {}),
       configuration,
     },
   };

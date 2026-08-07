@@ -173,7 +173,7 @@ import { type } from "arktype";
 export const application = app("research-platform", {
   installation: type({
     name: "string",
-    profile: "'starter' | 'dedicated' | 'external'",
+    profile: "'starter' | 'developer' | 'dedicated' | 'external'",
   }),
 });
 ```

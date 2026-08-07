@@ -163,6 +163,22 @@ describe('application module inclusion', () => {
     )))).toThrow('export "missing" is undefined');
   });
 
+  it('accepts one directly owned model without a structural schema map', () => {
+    const application = app('callback-module-direct-model');
+    application.database.postgres('application', { schema: {} });
+    const Note = model('direct_module_notes', {
+      id: field.uuid('id').defaultRandom().primaryKey(),
+      body: field.text('body').notNull(),
+    });
+    const notes = module('direct-notes', Note, () => {
+      expect(Note.create).toBeTypeOf('function');
+      return { Note };
+    });
+
+    expect(application.include(notes).Note).toBe(Note);
+    expect(Note.$model.database).toBe('application');
+  });
+
   it('fails closed for duplicate module identities and missing schema providers', () => {
     const application = app('callback-module-diagnostics');
     const first = module('same-name', () => ({ value: 'first' }));

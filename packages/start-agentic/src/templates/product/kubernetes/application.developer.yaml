@@ -1,0 +1,25 @@
+apiVersion: applik8s-template-project.applik8s.dev/v1alpha1
+kind: Applik8sTemplateProject
+metadata:
+  name: applik8s-template-project-developer
+  namespace: default
+spec:
+  name: applik8s-template-project
+  profile: developer
+  providers:
+    inference:
+      endpoint: https://openrouter.ai/api/v1
+      model: openai/gpt-4o-mini
+      credentialSecretName: applik8s-template-project-inference
+      credentialKey: apiKey
+      credentialSource:
+        kind: hostEnvironment
+        variable: OPENROUTER_API_KEY
+    payments:
+      secretName: applik8s-template-project-payments
+      apiKeyKey: apiKey
+      webhookSecretKey: webhookSecret
+      credentialSource:
+        kind: hostEnvironment
+        apiKeyVariable: STRIPE_SECRET_KEY
+        webhookSecretVariable: STRIPE_WEBHOOK_SECRET

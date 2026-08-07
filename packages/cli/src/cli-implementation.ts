@@ -139,6 +139,10 @@ function createProgram(io: CliIo): Command {
     .option('--skip-image-build', 'reject image-building deployment work')
     .option('--plan-only', 'compile and preview without applying effects')
     .option(
+      '--development',
+      'run the graph-owned ApplicationHost from an allowlisted local source mount',
+    )
+    .option(
       '--allow-breaking-changes',
       'allow one reviewed TypeKro root-schema migration for this deployment only',
     )

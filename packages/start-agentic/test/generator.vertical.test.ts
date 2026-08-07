@@ -90,7 +90,7 @@ describe('Agentic Start generator', () => {
       version: '0.70.1',
     });
     expect(result.example).toBe('research');
-    expect(result.files).toHaveLength(42);
+    expect(result.files).toHaveLength(43);
     const productCatalog = await readFile(
       join(target, 'drizzle/zzzz_agentic_product_catalog.sql'),
       'utf8',
@@ -307,12 +307,13 @@ describe('Agentic Start generator', () => {
     ) as {
       readonly scripts: Readonly<Record<string, string>>;
       readonly dependencies: Readonly<Record<string, string>>;
+      readonly devDependencies: Readonly<Record<string, string>>;
       readonly applik8s: Readonly<Record<string, string>>;
     };
     expect(manifest.scripts.plan).toBe('bun run build && applik8s plan');
     expect(manifest.scripts.deploy).toBe('bun run build && applik8s deploy');
     expect(manifest.scripts['dev:cluster']).toBe(
-      'bun run deploy && vite dev',
+      'bun run build && applik8s deploy --development --instance kubernetes/application.developer.yaml',
     );
     expect(manifest.scripts.status).toBe('applik8s status');
     expect(manifest.scripts.destroy).toBe('applik8s destroy');
@@ -324,10 +325,16 @@ describe('Agentic Start generator', () => {
     });
     expect(manifest.dependencies['@tanstack/react-start']).toBe('1.168.28');
     expect(manifest.dependencies['@tanstack/react-router']).toBe('1.170.18');
+    expect(manifest.devDependencies.nitro).toBe(
+      'npm:nitro-nightly@3.0.1-20260715-190547-7af4fee3',
+    );
     expect(manifest.dependencies['@applik8s/start-agentic']).toBe(
       'workspace:*',
     );
     expect(manifest.dependencies['@applik8s/operations-ui']).toBe(
+      'workspace:*',
+    );
+    expect(manifest.dependencies['@applik8s/ai-tanstack']).toBe(
       'workspace:*',
     );
     expect(manifest.dependencies['@applik8s/identity']).toBe('workspace:*');
@@ -434,7 +441,7 @@ describe('Agentic Start generator', () => {
     expect(result.files).toEqual(
       expect.arrayContaining(applicationAgenticStartDefinition.generator.files),
     );
-    expect(result.files).toHaveLength(24);
+    expect(result.files).toHaveLength(25);
     expect(result.files.length).toBeLessThanOrEqual(
       applicationAgenticStartDefinition.generator.maximumApplicationFiles,
     );
@@ -477,9 +484,22 @@ describe('Agentic Start generator', () => {
         'utf8',
       ),
     ).toContain('"example": "product"');
-    expect(
-      await readFile(join(target, 'src/features/notes/model.ts'), 'utf8'),
-    ).toContain("const notes = module(");
+    const notesModel = await readFile(
+      join(target, 'src/features/notes/model.ts'),
+      'utf8',
+    );
+    expect(notesModel).toContain("const notes = module(");
+    expect(notesModel).toContain("'notes',\n  NoteTable,");
+    expect(notesModel).not.toContain('ApplicationModelViewContext');
+    expect(notesModel).not.toContain('{ schema: { Note: NoteTable } }');
+    const home = await readFile(
+      join(target, 'src/routes/index.tsx'),
+      'utf8',
+    );
+    expect(home).toContain('createApplicationTanStackConnection');
+    expect(home).toContain('agent: NotesAssistant');
+    expect(home).not.toContain('notes.refresh()');
+    expect(home).toContain('without a manual refresh');
     expect(
       await readFile(join(target, 'src/modules.ts'), 'utf8'),
     ).toContain('application.include(operationsOverview)');

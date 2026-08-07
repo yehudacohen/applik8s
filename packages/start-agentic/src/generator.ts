@@ -11,6 +11,9 @@ import { basename, dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applicationAgenticStartDefinition } from './definition.js';
 
+const agenticStartNitroVersion =
+  'npm:nitro-nightly@3.0.1-20260715-190547-7af4fee3';
+
 export interface ApplicationStartCommand {
   readonly executable: string;
   readonly arguments: readonly string[];
@@ -230,7 +233,7 @@ async function updateGeneratedPackage(
     'db:generate': 'drizzle-kit generate',
     plan: 'bun run build && applik8s plan',
     deploy: 'bun run build && applik8s deploy',
-    'dev:cluster': 'bun run deploy && vite dev',
+    'dev:cluster': 'bun run build && applik8s deploy --development --instance kubernetes/application.developer.yaml',
     status: 'applik8s status',
     destroy: 'applik8s destroy',
   };
@@ -248,6 +251,7 @@ async function updateGeneratedPackage(
     '@tanstack/react-start':
       applicationAgenticStartDefinition.compatibility.tanstackStart,
     '@applik8s/ai': version,
+    '@applik8s/ai-tanstack': version,
     '@applik8s/applik8s': version,
     '@applik8s/operations-ui': version,
     '@applik8s/react': version,
@@ -255,7 +259,6 @@ async function updateGeneratedPackage(
     '@applik8s/tanstack-start': version,
     ...(example === 'research'
       ? {
-          '@applik8s/ai-tanstack': version,
           '@applik8s/approvals': version,
           '@applik8s/artifacts': version,
           '@applik8s/billing': version,
@@ -283,6 +286,7 @@ async function updateGeneratedPackage(
     '@applik8s/testing': version,
     '@biomejs/biome': '^2.2.2',
     'drizzle-kit': '0.31.10',
+    nitro: agenticStartNitroVersion,
     vitest: '^3.2.4',
   };
   await writeFile(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);

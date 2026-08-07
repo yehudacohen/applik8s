@@ -54,6 +54,7 @@ export async function createApplicationAlchemyGraphDeployment<
       immutableFieldPolicy: "fail",
     },
   };
+  const supportingFactory = supportingFactoryOptions(rootFactory);
   const composition = assembleApplicationTypeKroComposition(
     options.graph,
     options.source,
@@ -72,7 +73,7 @@ export async function createApplicationAlchemyGraphDeployment<
             options.source.composition ?? options.source,
             options.spec,
             {
-              factory: rootFactory,
+              factory: supportingFactory,
               instanceNameOverride: options.graph.metadata.identity.instance,
             },
           ),
@@ -83,7 +84,7 @@ export async function createApplicationAlchemyGraphDeployment<
     root,
     direct: bindApplicationTypeKroDirectNodes(
       options.graph,
-      options.factory,
+      supportingFactory,
     ),
   });
   const deployment = createApplicationAlchemyDeployment({
@@ -128,4 +129,18 @@ export async function createApplicationAlchemyGraphDeployment<
       return deployment.destroy();
     },
   };
+}
+
+/**
+ * Aspects are authored against the compiler-materialized application root.
+ * Reapplying them to prerequisite and source-schema compositions would repeat
+ * cardinality checks against unrelated graphs and could mutate shared
+ * infrastructure accidentally.
+ */
+function supportingFactoryOptions(
+  root: PublicFactoryOptions,
+): PublicFactoryOptions {
+  const supporting = { ...root };
+  delete supporting.aspects;
+  return supporting;
 }

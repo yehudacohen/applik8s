@@ -13,7 +13,10 @@ import {
   materializeApplicationGeneratedSecretValues,
   validateApplicationGeneratedSecretProps,
 } from "./generated-secret-contract.js";
-
+import {
+  hostEnvironmentSecretData,
+  hostEnvironmentSecretDrifted,
+} from "./generated-secret-host-environment.js";
 export * from "./generated-secret-contract.js";
 
 type ApplicationGeneratedSecretResource = AlchemyResource<
@@ -74,6 +77,12 @@ async function observeGeneratedSecret(
   const keys = Object.keys(props.values).sort();
   const secretType = props.secretType ?? "Opaque";
   assertGeneratedSecretShape(existing, props, keys, secretType);
+  if (
+    isManagedGeneratedSecret(existing, props) &&
+    hostEnvironmentSecretDrifted(existing, props)
+  ) {
+    return undefined;
+  }
   return attributes(
     props,
     keys,
@@ -92,9 +101,26 @@ async function reconcileGeneratedSecret(
   if (existing) {
     assertGeneratedSecretShape(existing, props, keys, secretType);
     const managed = isManagedGeneratedSecret(existing, props);
+    if (managed && hostEnvironmentSecretDrifted(existing, props)) {
+      const desired = hostEnvironmentSecretData(props);
+      await core.replaceNamespacedSecret({
+        namespace: props.namespace,
+        name: props.name,
+        body: {
+          ...existing,
+          data: {
+            ...(existing.data ?? {}),
+            ...desired,
+          },
+        },
+      });
+    }
     return attributes(props, keys, managed ? "managed" : "external");
   }
-  const generated = materializeApplicationGeneratedSecretValues(props.values);
+  const generated = materializeApplicationGeneratedSecretValues(
+    props.values,
+    process.env,
+  );
   const data = Object.fromEntries(
     Object.entries(generated).map(([key, value]) => [
       key,

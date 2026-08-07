@@ -21,6 +21,10 @@ import type {
   ResolvedApplicationContainerRegistry,
 } from '@applik8s/applik8s/deployment-registry';
 import { APPLICATION_DEPLOYMENT_TIMEOUT_MS } from './application-deployment-timeouts.js';
+import {
+  applicationDevelopmentAspects,
+  applicationDevelopmentGraph,
+} from './application-development-aspect.js';
 import { makeKubernetesApiClient } from './kubernetes-api-client.js';
 
 interface KubernetesSecretCredentialBinding {
@@ -44,6 +48,8 @@ export interface GeneratedApplicationAlchemyDeploymentOptions<
   readonly owner?: string;
   /** One-deployment TypeKro schema-migration acknowledgement. */
   readonly allowBreakingChanges?: boolean;
+  /** Mount a closed source allowlist into the graph-owned ApplicationHost. */
+  readonly development?: boolean;
 }
 
 /**
@@ -57,8 +63,11 @@ export async function createGeneratedApplicationAlchemyDeployment<
 >(
   options: GeneratedApplicationAlchemyDeploymentOptions<TSpec, TStatus>,
 ): Promise<ApplicationAlchemyDeployment> {
-  const graph = await readApplicationDeploymentGraph(options.graphPath);
-  assertDeploymentConnection(graph, options.context);
+  const compiledGraph = await readApplicationDeploymentGraph(options.graphPath);
+  assertDeploymentConnection(compiledGraph, options.context);
+  const graph = options.development
+    ? applicationDevelopmentGraph(compiledGraph)
+    : compiledGraph;
   // static-import-exception: the Bun CLI loads the Node Kubernetes client only after entering deployment execution.
   const kubernetes = await import('@kubernetes/client-node');
   const kubeConfig = new kubernetes.KubeConfig();
@@ -72,6 +81,9 @@ export async function createGeneratedApplicationAlchemyDeployment<
     options.registry,
     options.context,
   );
+  const developmentAspects = options.development
+    ? await applicationDevelopmentAspects(graph, options.projectRoot)
+    : undefined;
   return createApplicationAlchemyGraphDeployment({
     graph,
     source: options.source,
@@ -100,6 +112,7 @@ export async function createGeneratedApplicationAlchemyDeployment<
       alchemyKubeConfig: { source: { kind: 'default' } },
       waitForReady: true,
       timeout: APPLICATION_DEPLOYMENT_TIMEOUT_MS,
+      ...(developmentAspects ? { aspects: developmentAspects } : {}),
       ...(options.allowBreakingChanges
         ? { allowBreakingChanges: true }
         : {}),

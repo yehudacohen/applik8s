@@ -84,7 +84,7 @@ export function AgenticStartOnboarding(
     },
     {
       title: 'Choose production providers deliberately',
-      body: 'Starter is the credential-free, explicitly non-production first-run default. Dedicated and external profiles require reviewed provider configuration.',
+      body: 'Starter is the credential-free, explicitly non-production first-run default. Developer adds operation-host credentials and local hot reload without changing that production boundary; Dedicated and External require reviewed provider configuration.',
       state: 'non-production',
     },
   ];

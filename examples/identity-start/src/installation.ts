@@ -84,8 +84,27 @@ const DedicatedProviders = type({
   },
 });
 
+const DeveloperProviders = type({
+  inference: {
+    endpoint: 'string',
+    model: 'string',
+    credentialSecretName: 'string',
+    'credentialKey?': 'string',
+  },
+  payments: {
+    secretName: 'string',
+    'apiKeyKey?': 'string',
+    'webhookSecretKey?': 'string',
+    'endpoint?': 'string',
+  },
+});
+
 export const Installation = ApplicationIdentity
   .and({ profile: "'starter'" })
+  .or(ApplicationIdentity.and({
+    profile: "'developer'",
+    providers: DeveloperProviders,
+  }))
   .or(ApplicationIdentity.and({
     profile: "'dedicated'",
     providers: DedicatedProviders,

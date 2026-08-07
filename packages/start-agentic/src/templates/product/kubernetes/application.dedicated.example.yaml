@@ -12,6 +12,10 @@ spec:
       model: product-assistant-v1
       credentialSecretName: product-inference
       credentialKey: apiKey
+      # Either bind an already-managed Secret or materialize it from the
+      # operation host without persisting the value in deployment state.
+      credentialSource:
+        kind: existingSecret
     identity:
       issuer: https://identity.example.test
     objects:
@@ -20,3 +24,5 @@ spec:
       secretName: product-payments
       apiKeyKey: apiKey
       webhookSecretKey: webhookSecret
+      credentialSource:
+        kind: existingSecret

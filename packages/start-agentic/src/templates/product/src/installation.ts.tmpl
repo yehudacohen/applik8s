@@ -68,6 +68,10 @@ const DedicatedProviders = type({
     model: 'string',
     credentialSecretName: 'string',
     'credentialKey?': 'string',
+    'credentialSource?': {
+      kind: "'hostEnvironment' | 'existingSecret'",
+      'variable?': 'string',
+    },
   },
   identity: {
     issuer: 'string',
@@ -81,11 +85,44 @@ const DedicatedProviders = type({
     'apiKeyKey?': 'string',
     'webhookSecretKey?': 'string',
     'endpoint?': 'string',
+    'credentialSource?': {
+      kind: "'hostEnvironment' | 'existingSecret'",
+      'apiKeyVariable?': 'string',
+      'webhookSecretVariable?': 'string',
+    },
+  },
+});
+
+const DeveloperProviders = type({
+  inference: {
+    endpoint: 'string',
+    model: 'string',
+    credentialSecretName: 'string',
+    'credentialKey?': 'string',
+    'credentialSource?': {
+      kind: "'hostEnvironment' | 'existingSecret'",
+      'variable?': 'string',
+    },
+  },
+  payments: {
+    secretName: 'string',
+    'apiKeyKey?': 'string',
+    'webhookSecretKey?': 'string',
+    'endpoint?': 'string',
+    'credentialSource?': {
+      kind: "'hostEnvironment' | 'existingSecret'",
+      'apiKeyVariable?': 'string',
+      'webhookSecretVariable?': 'string',
+    },
   },
 });
 
 export const Installation = ApplicationIdentity
   .and({ profile: "'starter'" })
+  .or(ApplicationIdentity.and({
+    profile: "'developer'",
+    providers: DeveloperProviders,
+  }))
   .or(ApplicationIdentity.and({
     profile: "'dedicated'",
     providers: DedicatedProviders,

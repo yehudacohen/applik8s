@@ -48,9 +48,18 @@ export interface ApplicationGeneratedSecretRequirement {
   readonly name: string;
   readonly values: Readonly<Record<string, ApplicationGeneratedSecretValue>>;
   readonly consumers: readonly string[];
+  /**
+   * Stable-name Secrets can order the root composition without injecting an
+   * Alchemy output into the TypeKro schema.
+   */
+  readonly referenceMode?: "staticIdentity";
 }
 
 export type ApplicationGeneratedSecretValue =
+  | {
+      readonly kind: "hostEnvironment";
+      readonly name: string;
+    }
   | {
       readonly kind: "random";
       readonly bytes: number;

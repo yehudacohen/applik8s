@@ -14,14 +14,25 @@ still uses the same typed provider contracts as Dedicated and External.
 ```sh
 bun run check
 bun run deploy       # requires package.json applik8s.context or --context
-bun run dev           # web process; use after the Starter deployment is ready
+bun run dev           # web-only process; useful for UI-only work
+bun run dev:cluster   # live providers + in-cluster Vite hot reload
 bun run status
 bun run destroy
 ```
 
-`bun run dev:cluster` is the convenient full loop: it deploys the selected
-installation and then starts Vite. A Vite process by itself is web-only; routes
-that open authenticated database sessions require the cluster services.
+`bun run dev:cluster` selects `kubernetes/application.developer.yaml`, resolves
+OpenRouter and Stripe credentials from the operation host, and applies a
+TypeKro aspect that runs Vite in the graph-owned ApplicationHost. Only an
+allowlist of source and build files is mounted; `.env`, Git data, and deployment
+state never enter the pod. A local Vite process is web-only because routes that
+open authenticated database sessions require the cluster services.
+
+Environment-backed credentials are not limited to development. A Dedicated
+installation may explicitly set `credentialSource.kind: hostEnvironment` and
+use the same `.env`-to-Kubernetes-Secret flow without enabling the hot-reload
+aspect. Choose `existingSecret` when credentials are managed outside Applik8s.
+In both cases, secret values stay out of YAML, the deployment graph, and Alchemy
+state.
 
 The CLI never adopts kubectl's ambient context. Generate with
 `--context <name>`, add `applik8s.context` to `package.json`, or pass
@@ -30,6 +41,8 @@ The CLI never adopts kubectl's ambient context. Generate with
 ## Profiles
 
 - **Starter** is a local, credential-free, non-production system.
+- **Developer** keeps Starter-sized stateful services while using live
+  OpenRouter and Stripe providers supplied through operation-host bindings.
 - **Dedicated** owns production-grade dependencies in the application graph.
 - **External** binds explicitly external services and never silently adopts
   their lifecycle.

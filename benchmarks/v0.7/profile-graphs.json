@@ -3327,7 +3327,7 @@
           "source": {}
         },
         {
-          "id": "artifact.migration.identity-start-application-migration-de7c28f31bc6",
+          "id": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
           "kind": "artifact",
           "scope": {
             "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
@@ -3732,13 +3732,13 @@
           "relationship": "publishes"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-de7c28f31bc6",
+          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
           "to": "kubernetes.application",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-de7c28f31bc6",
+          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
           "to": "kubernetes.application",
           "relationship": "publishes"
         },
@@ -3989,7 +3989,7 @@
           "source": {}
         },
         {
-          "id": "artifact.migration.identity-start-application-migration-de7c28f31bc6",
+          "id": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
           "kind": "artifact",
           "scope": {
             "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
@@ -4646,13 +4646,13 @@
           "relationship": "publishes"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-de7c28f31bc6",
+          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
           "to": "kubernetes.application",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-de7c28f31bc6",
+          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
           "to": "kubernetes.application",
           "relationship": "publishes"
         },
@@ -5074,7 +5074,7 @@
           "source": {}
         },
         {
-          "id": "artifact.migration.identity-start-application-migration-de7c28f31bc6",
+          "id": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
           "kind": "artifact",
           "scope": {
             "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
@@ -5349,13 +5349,13 @@
           "relationship": "publishes"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-de7c28f31bc6",
+          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
           "to": "kubernetes.application",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
         {
-          "from": "artifact.migration.identity-start-application-migration-de7c28f31bc6",
+          "from": "artifact.migration.identity-start-application-migration-b7f3c05891ca",
           "to": "kubernetes.application",
           "relationship": "publishes"
         },

@@ -12,7 +12,6 @@ export interface GeneratedSecretConfiguration {
   readonly values: Readonly<Record<string, ApplicationGeneratedSecretValue>>;
   readonly consumers: readonly string[];
 }
-
 export function decodeGeneratedSecretConfiguration(
   value: unknown,
   nodeId: string,
@@ -58,12 +57,17 @@ export function decodeGeneratedSecretConfiguration(
       : [],
   };
 }
-
 function generatedSecretValue(
   value: unknown,
   label: string,
 ): ApplicationGeneratedSecretValue {
   const contract = requiredObject(value, label);
+  if (contract.kind === "hostEnvironment") {
+    return {
+      kind: "hostEnvironment",
+      name: requiredString(contract.name, `${label}.name`),
+    };
+  }
   if (contract.kind === "publicLiteral") {
     return {
       kind: "publicLiteral",
@@ -116,7 +120,6 @@ function generatedSecretValue(
   }
   throw new Error(`${label} has an unsupported generated value contract.`);
 }
-
 function generatedSecretTemplateSegment(
   value: unknown,
   label: string,
@@ -136,7 +139,6 @@ function generatedSecretTemplateSegment(
   }
   throw new Error(`${label} has an unsupported generated template segment.`);
 }
-
 function requiredSecretType(
   value: unknown,
   label: string,

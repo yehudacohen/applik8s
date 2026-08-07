@@ -130,6 +130,7 @@ export async function runApplicationDeploy(
     context: options.context,
     registry,
     projectRoot,
+    ...(options.development ? { development: true } : {}),
     ...(options.allowBreakingChanges
       ? { allowBreakingChanges: true }
       : {}),
