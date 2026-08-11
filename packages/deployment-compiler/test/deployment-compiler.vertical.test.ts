@@ -2144,6 +2144,79 @@ describe("Application deployment compiler", () => {
       output: "name",
     });
   });
+
+  it("bounds Envoy AI Gateway's derived ext-proc volume identity", () => {
+    const base = applicationGraph();
+    const graph: ApplicationGraph = {
+      ...base,
+      metadata: { name: "agentic-product-evidence" },
+      nodes: [
+        ...base.nodes,
+        {
+          id: "provider.ai",
+          kind: "provider",
+          name: "AI",
+          stability: "stable",
+          interface: "AI",
+          implementation: "envoy-ai-gateway",
+          config: {
+            ai: {
+              kind: "envoy-ai-gateway",
+              production: true,
+              name: "agentic-product-evidence-inference",
+              namespace: "agentic-product-evidence-system",
+              provision: true,
+              versions: {
+                envoyGateway: "v1.6.0",
+                aiGateway: "v0.6.0",
+                gatewayApi: "v1.4.1",
+              },
+              models: {
+                fast: {
+                  fallback: "disabled",
+                  backends: [{
+                    apiVersion: "applik8s.aiBackend/v1alpha1",
+                    name: "primary",
+                    providerClass: "openai-compatible",
+                    model: "inclusionai/ling-3.0-tiny:free",
+                    endpoint: "https://openrouter.ai/api/v1",
+                    capabilities: ["chat", "tools", "streaming"],
+                  }],
+                },
+              },
+            },
+          },
+        },
+      ],
+    };
+    const result = compileApplicationDeploymentGraph({
+      ...request(),
+      graph,
+      identity: { ...request().identity, profile: "developer" },
+      installationSpec: {
+        name: "agentic-product-evidence",
+        profile: "developer",
+      },
+    });
+    const gateway = result.graph.nodes.find(
+      (node) =>
+        node.kind === "kubernetesDirect"
+        && node.spec.compositionId === "envoy-ai-gateway",
+    );
+    if (gateway?.kind !== "kubernetesDirect") {
+      throw new Error("Expected Envoy AI Gateway deployment node.");
+    }
+    const configuration = gateway.spec.configuration as {
+      readonly name: string;
+      readonly namespace: string;
+      readonly instance: { readonly name: string };
+    };
+    expect(configuration.name).toMatch(/^aigw-[a-f0-9]{12}$/);
+    expect(configuration.instance.name).toBe(configuration.name);
+    expect(
+      `ai-gateway-${configuration.name}-${configuration.namespace}`.length,
+    ).toBeLessThanOrEqual(63);
+  });
 });
 
 function request() {

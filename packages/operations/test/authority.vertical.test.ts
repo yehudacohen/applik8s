@@ -272,6 +272,26 @@ describe('operation authority lifecycle', () => {
       'application-operator',
     ]);
 
+    const successor: ApplicationOperationCatalog = {
+      ...catalog,
+      revision: 'catalog-2',
+      digest: 'sha256:catalog-2',
+      state: 'staged',
+      predecessor: catalog.revision,
+      operations: [{ ...operation, version: '2' }],
+    };
+    const migrated = await authority.migrateCatalogAuthority(
+      catalog,
+      successor,
+      'authority-2',
+    );
+    expect(migrated.grants).toContainEqual(expect.objectContaining({
+      id: first[0]!.id,
+      origin: 'runtime',
+      catalogRevision: successor.revision,
+      lifecycleOwner: `application-role-bootstrap:${bootstrap.roleId}`,
+    }));
+
     await authority.revokeGrant(first[0]!.id, 'operator removed');
     expect(await authority.bootstrapDeclaredRole(
       bootstrap,

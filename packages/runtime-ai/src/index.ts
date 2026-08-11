@@ -511,11 +511,14 @@ async function* durableAgentStream(
         chunk.type === EventType.RUN_FINISHED
         && chunk.finishReason !== 'tool_calls'
       ) {
-        if (!messageId) {
-          throw new Error(
-            `AI attempt ${reservation.attemptId} completed without an assistant message identity.`,
-          );
-        }
+        // Some OpenAI-compatible providers emit an explicit terminal
+        // RUN_FINISHED after a successful tool turn without opening another
+        // text-message envelope. The terminal event is still authoritative
+        // provider evidence; use the physical attempt identity for the empty
+        // canonical assistant turn rather than misclassifying the completed
+        // tool execution as uncertain. Streams that end without RUN_FINISHED
+        // remain fail-closed below.
+        messageId ??= `message-${reservation.attemptId}`;
         reservation = await lifecycle.completeProvider(reservation, {
           messageId,
           ...(chunk.usage

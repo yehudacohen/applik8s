@@ -849,7 +849,16 @@ export class ApplicationAuthorityService {
 
       for (const grant of migratedGrants) {
         this.#validateGrant(grant, grantValidationState, {
-          requireGrantablePermission: grant.origin === 'runtime',
+          // Ordinary runtime grants must continue to derive from explicitly
+          // grantable authority after a catalog migration. Framework-managed
+          // operator bootstrap and break-glass leases are different: they are
+          // intentionally allowed to materialize non-grantable role
+          // permissions through audited, one-shot system paths. Requiring
+          // grantable=true here makes every later catalog rollout fail after
+          // the first operator admission.
+          requireGrantablePermission:
+            grant.origin === 'runtime'
+            && !isFrameworkManagedRoleLease(grant.lifecycleOwner),
         });
       }
       for (const permission of migratedPermissions.values()) {
@@ -1739,6 +1748,11 @@ function sameIdentity(
 
 function applicationRoleBootstrapOwner(roleId: string): string {
   return `application-role-bootstrap:${roleId}`;
+}
+
+function isFrameworkManagedRoleLease(lifecycleOwner: string | undefined): boolean {
+  return lifecycleOwner?.startsWith('application-role-bootstrap:') === true
+    || lifecycleOwner?.startsWith('application-role-break-glass:') === true;
 }
 
 function assertBootstrapIdentity(

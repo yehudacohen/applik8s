@@ -562,7 +562,8 @@ function envoyAIGatewayDirectContribution(
   }
   const application = context.graph.metadata.name;
   const namespace = optionalString(value.namespace) ?? applicationNamespace(context);
-  const name = optionalString(value.name) ?? `${application}-ai`;
+  const requestedName = optionalString(value.name) ?? `${application}-ai`;
+  const name = boundedEnvoyAIGatewayName(requestedName, namespace);
   const versions = requiredObject(value.versions, "Envoy AI Gateway versions");
   const platform = optionalObject(value.platform) ?? {};
   const envoyGatewayNamespace =
@@ -839,6 +840,34 @@ function envoyAIGatewayDirectContribution(
     });
   }
   return { nodes, edges };
+}
+
+/**
+ * Envoy AI Gateway v0.6 derives an ext-proc Unix-socket volume name as
+ * `ai-gateway-${gatewayName}-${gatewayNamespace}`. Kubernetes caps volume
+ * names at 63 characters, so two individually valid DNS names can otherwise
+ * produce an invalid rollout that leaves the previous Envoy pod serving
+ * without the AI extension. Preserve readable names when possible and use a
+ * stable internal identity only when the upstream derived name would exceed
+ * Kubernetes' limit.
+ */
+function boundedEnvoyAIGatewayName(
+  requestedName: string,
+  namespace: string,
+): string {
+  const maximumNameLength = 63 - "ai-gateway-".length - 1 - namespace.length;
+  if (maximumNameLength < 8) {
+    throw new Error(
+      `Envoy AI Gateway namespace ${namespace} is too long for the v0.6 ext-proc volume identity. `
+        + "Use a namespace no longer than 43 characters.",
+    );
+  }
+  if (requestedName.length <= maximumNameLength) return requestedName;
+  const digest = digestApplicationDeploymentValue({
+    requestedName,
+    namespace,
+  }).replace(/^sha256:/, "");
+  return `aigw-${digest.slice(0, Math.min(12, maximumNameLength - 5))}`;
 }
 
 function envoyAIProviders(

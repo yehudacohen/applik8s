@@ -190,6 +190,44 @@ describe('application operation catalog compilation', () => {
     expect(catalog.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
+  it('keeps catalog identity stable across absolute source roots', () => {
+    const withSourceRoot = (root: string): ApplicationGraph => ({
+      ...graph('public'),
+      nodes: graph('public').nodes.map((node) => ({
+        ...node,
+        sourceLocation: {
+          file: `${root}/src/application.ts`,
+          line: 12,
+          column: 3,
+        },
+      })),
+    });
+
+    const workstation = compileApplicationOperationCatalog(
+      withSourceRoot('/Users/developer/workspace/chirp'),
+    );
+    const container = compileApplicationOperationCatalog(
+      withSourceRoot('/applik8s-dev-root/app'),
+    );
+
+    expect(workstation.revision).toBe(container.revision);
+    expect(workstation.digest).toBe(container.digest);
+    expect(workstation.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceLocation: expect.objectContaining({
+          file: '/Users/developer/workspace/chirp/src/application.ts',
+        }),
+      }),
+    ]));
+    expect(container.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourceLocation: expect.objectContaining({
+          file: '/applik8s-dev-root/app/src/application.ts',
+        }),
+      }),
+    ]));
+  });
+
   it('fails production compilation for externally reachable unclassified operations', () => {
     expect(() => compileApplicationOperationCatalog(graph('unclassified'), {
       revision: 'catalog-1',

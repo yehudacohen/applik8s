@@ -202,11 +202,18 @@ export function compileApplicationOperationCatalog(
   const compiledOperations = applyMcpTransportBindings(graph, baseOperations);
   const authorityManifest = applicationStaticAuthorityManifest(graph);
   const operations = applyStaticAuthorityManifest(compiledOperations, authorityManifest);
-  const revision = options.revision ?? digestJson(operations);
+  // Source locations are diagnostic evidence, not executable operation
+  // semantics. Including absolute filenames here made the same application
+  // acquire different catalog identities when compiled on a workstation, in
+  // a development container, or in CI. Keep the locations on the emitted
+  // descriptors for error reporting, but exclude them from both pieces of
+  // catalog identity so every runtime converges on the same revision.
+  const identityOperations = operations.map(({ sourceLocation: _sourceLocation, ...operation }) => operation);
+  const revision = options.revision ?? digestJson(identityOperations);
   const digest = digestJson({
     application: graph.metadata.name,
     revision,
-    operations,
+    operations: identityOperations,
     predecessor: options.predecessor,
   });
   const catalog: ApplicationOperationCatalog = {

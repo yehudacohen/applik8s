@@ -142,6 +142,76 @@ describe('generated application AI runtime', () => {
     });
   });
 
+  it('commits a terminal empty assistant turn after a successful tool turn', async () => {
+    const lifecycleEvents: string[] = [];
+    const handler = createApplicationAIAgentRequestHandler({
+      name: 'researcher',
+      logicalModel: 'fast',
+      instructions: 'Use the declared operation.',
+      provider: { kind: 'deterministic' },
+      tools: [],
+      persistence: persistence(),
+      timeoutMs: 5_000,
+      maximumConcurrency: 1,
+      admit: () => admission(),
+      reserveAttempt: ({ runId }) => ({
+        action: 'dispatch',
+        runId,
+        invocationId: 'invocation-empty-terminal',
+        attemptId: 'attempt-empty-terminal',
+        version: 1,
+      }),
+      recovery: unavailableRecovery(),
+      attemptLifecycle: attemptLifecycle(lifecycleEvents),
+      invoke: async () => ({}),
+      handler: async () => (async function* () {
+        const run = {
+          runId: 'protocol-run-1',
+          threadId: 'conversation-1',
+        };
+        yield { type: 'RUN_STARTED', ...run, timestamp: 0 };
+        yield {
+          type: 'TEXT_MESSAGE_START',
+          messageId: 'message-tool-turn',
+          role: 'assistant',
+          timestamp: 1,
+        };
+        yield {
+          type: 'TEXT_MESSAGE_CONTENT',
+          messageId: 'message-tool-turn',
+          delta: 'I will use the tool.',
+          timestamp: 2,
+        };
+        yield {
+          type: 'TEXT_MESSAGE_END',
+          messageId: 'message-tool-turn',
+          timestamp: 3,
+        };
+        yield {
+          type: 'RUN_FINISHED',
+          ...run,
+          finishReason: 'tool_calls',
+          timestamp: 4,
+        };
+        yield { type: 'RUN_STARTED', ...run, timestamp: 5 };
+        yield {
+          type: 'RUN_FINISHED',
+          ...run,
+          finishReason: 'stop',
+          timestamp: 6,
+        };
+      })(),
+    });
+
+    const response = await handler(agentRequest());
+    expect(response.status).toBe(200);
+    await response.text();
+
+    expect(lifecycleEvents.at(-2)).toMatch(/^complete:/);
+    expect(lifecycleEvents.at(-1)).toBe('commit:message-');
+    expect(lifecycleEvents.some((event) => event.startsWith('fail:'))).toBe(false);
+  });
+
   it('fails closed when admission does not produce a live agent execution principal', async () => {
     const expired = {
       ...principal(),
