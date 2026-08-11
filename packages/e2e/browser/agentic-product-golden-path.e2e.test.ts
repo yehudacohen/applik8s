@@ -49,6 +49,40 @@ test(
 );
 
 test(
+  'admits the Starter operator to Launchpad and operational evidence',
+  async ({ browser, baseURL }) => {
+    const context = await browser.newContext(baseURL ? { baseURL } : {});
+    const page = await context.newPage();
+
+    try {
+      await page.goto('/app/setup');
+      await expect(
+        page.getByRole('heading', {
+          name: 'Deployment intent, evidence, and the next honest action',
+        }),
+      ).toBeVisible();
+      await expect(page.locator('body')).not.toContainText(
+        'Deployment evidence is unavailable',
+      );
+      await expect(page.locator('body')).not.toContainText('HTTP 403');
+
+      await page.goto('/app/operations');
+      await expect(
+        page.getByRole('heading', {
+          name: 'agentic-product-evidence operations',
+        }),
+      ).toBeVisible();
+      await expect(page.locator('body')).not.toContainText(
+        'Operational snapshot failed',
+      );
+      await expect(page.locator('body')).not.toContainText('HTTP 403');
+    } finally {
+      await context.close();
+    }
+  },
+);
+
+test(
   'attributes an agent-created note to its human requester and reactively renders it',
   async ({ page }) => {
     const consoleErrors: string[] = [];
