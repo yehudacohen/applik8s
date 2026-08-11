@@ -59,6 +59,36 @@ describe('browser-safe application query client', () => {
     expect(store.getSnapshot()).toMatchObject({ value: 'newer', cursor: 'cursor-2' });
   });
 
+  test('automatically recovers an initial snapshot after a transient provider failure', async () => {
+    const transport = new FakeTransport();
+    let attempts = 0;
+    transport.snapshotOverride = async (query, input) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('query provider is starting');
+      return snapshot(query, input, [{ id: 'card-recovered' }], 'cursor-recovered');
+    };
+    const client = new ApplicationQueryClient(transport, {
+      reconnect: { initialMs: 0, maxMs: 0, factor: 1 },
+    });
+    const store = client.query('cards.list.v1', {});
+    const states: string[] = [];
+    const unsubscribe = store.subscribe(() => states.push(store.getSnapshot().phase));
+
+    await settle();
+    await settle();
+
+    expect(transport.snapshots).toHaveLength(2);
+    expect(states).toContain('reconnecting');
+    expect(store.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      stale: false,
+      value: [{ id: 'card-recovered' }],
+      cursor: 'cursor-recovered',
+    });
+    expect(store.getSnapshot().error).toBeUndefined();
+    unsubscribe();
+  });
+
   test('deduplicates invalidations and coalesces authoritative requery', async () => {
     const transport = new FakeTransport();
     const client = new ApplicationQueryClient(transport);

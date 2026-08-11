@@ -70,7 +70,9 @@ export class ApplicationQueryClient {
       getSnapshot: () => selected.state,
       subscribe: (listener) => {
         selected.listeners.add(listener);
-        if (selected.state.phase === 'idle') void this.#refresh(selected);
+        if (selected.state.phase === 'idle') {
+          void this.#refresh(selected).catch(() => undefined);
+        }
         else if (selected.state.cursor && !selected.controller) this.#connect(selected);
         return () => {
           selected.listeners.delete(listener);
@@ -116,6 +118,10 @@ export class ApplicationQueryClient {
 
   async #refresh(entry: StoreEntry): Promise<void> {
     if (entry.refresh) return entry.refresh;
+    if (entry.reconnectTimer) {
+      clearTimeout(entry.reconnectTimer);
+      entry.reconnectTimer = undefined;
+    }
     const { error: _error, ...stateWithoutError } = entry.state;
     entry.state = { ...stateWithoutError, phase: entry.state.value === undefined ? 'loading' : 'ready', stale: true, revision: entry.state.revision + 1 };
     this.#notify(entry);
@@ -147,8 +153,16 @@ export class ApplicationQueryClient {
         }
       }
     })().catch((error: unknown) => {
-      entry.state = { ...entry.state, phase: 'error', stale: true, error: error instanceof Error ? error : new Error(String(error)), revision: entry.state.revision + 1 };
+      const normalized = error instanceof Error ? error : new Error(String(error));
+      entry.state = {
+        ...entry.state,
+        phase: entry.listeners.size > 0 ? 'reconnecting' : 'error',
+        stale: true,
+        error: normalized,
+        revision: entry.state.revision + 1,
+      };
       this.#notify(entry);
+      this.#scheduleSnapshotRefresh(entry);
       throw error;
     }).finally(() => { entry.refresh = undefined; });
     entry.refresh = refresh;
@@ -184,7 +198,7 @@ export class ApplicationQueryClient {
       const { cursor: _cursor, ...stateWithoutCursor } = entry.state;
       entry.state = { ...stateWithoutCursor, stale: true, revision: entry.state.revision + 1 };
       this.#disconnect(entry);
-      void this.#refresh(entry);
+      void this.#refresh(entry).catch(() => undefined);
       return;
     }
     if (event.kind === 'invalidate') entry.invalidationEpoch += 1;
@@ -201,7 +215,21 @@ export class ApplicationQueryClient {
       revision: entry.state.revision + 1,
     };
     this.#notify(entry);
-    if (event.kind === 'invalidate') void this.#refresh(entry);
+    if (event.kind === 'invalidate') {
+      void this.#refresh(entry).catch(() => undefined);
+    }
+  }
+
+  #scheduleSnapshotRefresh(entry: StoreEntry): void {
+    if (entry.listeners.size === 0 || entry.reconnectTimer) return;
+    const delay = Math.min(
+      this.#reconnect.maxMs,
+      this.#reconnect.initialMs * this.#reconnect.factor ** entry.reconnectAttempt++,
+    );
+    entry.reconnectTimer = setTimeout(() => {
+      entry.reconnectTimer = undefined;
+      void this.#refresh(entry).catch(() => undefined);
+    }, delay);
   }
 
   #subscriptionError(entry: StoreEntry, error: Error): void {

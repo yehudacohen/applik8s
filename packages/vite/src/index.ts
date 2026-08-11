@@ -49,7 +49,7 @@ export interface Applik8sVitePlugin {
   readonly name: '@applik8s/vite';
   readonly enforce: 'pre';
   config(config: unknown, environment: { readonly command: 'build' | 'serve' }): void;
-  configResolved(config: { readonly root: string; readonly build: { readonly outDir: string; readonly ssr?: boolean | string } }): void;
+  configResolved(config: { readonly root: string; readonly build: { readonly outDir: string; readonly ssr?: boolean | string } }): Promise<void>;
   buildStart(): Promise<void>;
   resolveId(this: { resolve(source: string, importer?: string, options?: { readonly skipSelf?: boolean; readonly ssr?: boolean }): Promise<{ readonly id: string } | null> }, source: string, importer?: string, options?: { readonly ssr?: boolean }): Promise<string | undefined>;
   load(id: string): string | undefined;
@@ -108,10 +108,19 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
         );
       }
     },
-    configResolved(config) {
+    async configResolved(config) {
       root = config.root;
       outDir = config.build.outDir;
       application = resolve(root, options.application ?? 'src/application.ts');
+      // Nitro resolves its configured handlers while Vite is constructing the
+      // development server, before buildStart is guaranteed to run. Generate
+      // the gateway at the first hook where the final application root is known
+      // so a clean workspace cannot briefly serve a handler with a missing
+      // sibling import.
+      if (developmentServer) {
+        discovery ??= discoverAndGenerate();
+        await discovery;
+      }
     },
     async buildStart() {
       discovery ??= discoverAndGenerate();

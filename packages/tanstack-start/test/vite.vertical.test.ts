@@ -12,6 +12,12 @@ describe('TanStack Start Vite adapter', () => {
     const plugins = applik8sStart({ application: 'src/application.ts' }).flat().filter(Boolean);
     expect(plugins.some((plugin) => pluginName(plugin) === '@applik8s/vite')).toBe(true);
     expect(plugins.some((plugin) => pluginName(plugin).includes('nitro'))).toBe(true);
+    expect(plugins.findIndex((plugin) => pluginName(plugin) === '@applik8s/vite')).toBeLessThan(
+      plugins.findIndex((plugin) => pluginName(plugin).includes('nitro')),
+    );
+    expect(plugins.findIndex((plugin) => pluginName(plugin) === '@applik8s/tanstack-start-fetch-adapter')).toBeLessThan(
+      plugins.findIndex((plugin) => pluginName(plugin).includes('nitro')),
+    );
   });
 
   it('does not require the optional fetch.preconnect optimization', () => {

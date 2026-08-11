@@ -27,7 +27,7 @@ describe('framework-neutral Applik8s Vite integration', () => {
       process.env.APPLIK8S_CURSOR_SECRET = 'explicit-cursor-secret-that-is-long-enough';
       const plugin = adapter();
       plugin.config({}, { command: 'serve' });
-      plugin.configResolved({
+      await plugin.configResolved({
         root: fixtureRoot,
         build: { outDir: 'dist/client' },
       });
@@ -51,11 +51,15 @@ describe('framework-neutral Applik8s Vite integration', () => {
 
   it('discovers the ApplicationGraph and generates facades without source regex parsing', async () => {
     const plugin = adapter();
-    plugin.configResolved({ root: fixtureRoot, build: { outDir: 'dist/client' } });
+    plugin.config({}, { command: 'serve' });
     await mkdir(join(fixtureRoot, '.applik8s/generated'), { recursive: true });
     await writeFile(join(fixtureRoot, '.applik8s/generated/stale.generated.ts'), 'throw new Error("stale");\n');
     await writeFile(join(fixtureRoot, '.applik8s/generated/adapter-owned.generated.ts'), 'export const adapter = true;\n');
     await writeFile(join(fixtureRoot, '.applik8s/generated/applik8s-vite-files.json'), '["stale.generated.ts"]\n');
+    await plugin.configResolved({ root: fixtureRoot, build: { outDir: 'dist/client' } });
+    await expect(readFile(join(fixtureRoot, '.applik8s/generated/gateway.generated.ts'), 'utf8')).resolves.toContain(
+      "from '@applik8s/server/kubernetes-gateway'",
+    );
     await plugin.buildStart();
     const importer = join(fixtureRoot, 'routes/index.tsx');
     const context = { resolve: async () => ({ id: join(fixtureRoot, 'application.ts') }) };
@@ -103,7 +107,7 @@ describe('framework-neutral Applik8s Vite integration', () => {
 
   it('emits immutable build metadata and rejects browser server-dependency capture', async () => {
     const plugin = adapter();
-    plugin.configResolved({ root: fixtureRoot, build: { outDir: 'dist/client' } });
+    await plugin.configResolved({ root: fixtureRoot, build: { outDir: 'dist/client' } });
     await plugin.buildStart();
     await plugin.generateBundle({}, {
       'assets/app.js': { type: 'chunk', fileName: 'assets/app.js', code: 'export const app=true;', modules: { [`${fixtureRoot}/application.ts`]: {} } },
@@ -137,7 +141,7 @@ describe('framework-neutral Applik8s Vite integration', () => {
       browserAdapterModule: '@applik8s/react',
       serverArtifact: { outputDirectory: '.missing-output', entrypoint: 'server/index.mjs' },
     });
-    plugin.configResolved({ root: fixtureRoot, build: { outDir: 'dist/server', ssr: true } });
+    await plugin.configResolved({ root: fixtureRoot, build: { outDir: 'dist/server', ssr: true } });
     await plugin.buildStart();
     const source = plugin.load('\0applik8s:browser-facade') ?? '';
     expect(source).toContain("import \"@applik8s/react\";");
@@ -167,7 +171,7 @@ describe('framework-neutral Applik8s Vite integration', () => {
         application: 'application.ts',
         serverArtifact: { outputDirectory: '.output', entrypoint: 'server/index.mjs' },
       }) as unknown as Applik8sVitePlugin;
-      plugin.configResolved({ root, build: { outDir: '.output/server', ssr: true } });
+      await plugin.configResolved({ root, build: { outDir: '.output/server', ssr: true } });
       await plugin.closeBundle();
       expect(JSON.parse(await readFile(manifest, 'utf8'))).toEqual({ sentinel: 'previous-build' });
 
@@ -194,7 +198,7 @@ describe('framework-neutral Applik8s Vite integration', () => {
         application: 'application.ts',
         serverArtifact: { outputDirectory: '.output', entrypoint: 'server/index.mjs' },
       }) as unknown as Applik8sVitePlugin;
-      plugin.configResolved({ root, build: { outDir: '.output/server', ssr: true } });
+      await plugin.configResolved({ root, build: { outDir: '.output/server', ssr: true } });
       await new Promise((resolve) => setTimeout(resolve, 5));
       await writeFile(entrypoint, `//#region #nitro/virtual/public-assets-data
 var public_assets_data_default = {

@@ -76,7 +76,7 @@ function CopilotHome() {
         description="Start with a note yourself, or ask the assistant to use the same typed model operation."
         action={<Badge tone="warning">Local assistant · non-production</Badge>}
       />
-      {notes.error ? (
+      {notes.phase === 'error' ? (
         <RouteState
           tone="warning"
           title="Your notes are temporarily unavailable"
@@ -88,7 +88,9 @@ function CopilotHome() {
           <Card aria-label="Your notes">
             <div className="flex items-center justify-between gap-3">
               <div><p className="eyebrow">Documents</p><h2 id="notes-title" className="mt-1 text-xl font-semibold">Recent work</h2></div>
-              <Badge tone={notes.data?.length ? 'success' : 'neutral'}>{notes.data?.length ?? 0} notes</Badge>
+              <Badge tone={notes.phase === 'reconnecting' ? 'warning' : notes.data?.length ? 'success' : 'neutral'}>
+                {notes.phase === 'reconnecting' ? 'Reconnecting…' : `${notes.data?.length ?? 0} notes`}
+              </Badge>
             </div>
             <form onSubmit={submit} className="mt-5 grid gap-3">
               <label htmlFor="note-body" className="text-sm font-medium">Create manually</label>

@@ -18,43 +18,54 @@ export function applik8sStart(options: Applik8sStartViteOptions = {}): PluginOpt
   let root = process.cwd();
   const generatedHandler = () => resolve(root, '.applik8s/generated/nitro-handler.generated.ts');
   const generatedPlugin = () => resolve(root, '.applik8s/generated/nitro-plugin.generated.ts');
-  return [
-    ...nitro({
-      rollupConfig: { external: [/^@sentry\//] },
-      experimental: { asyncContext: true },
-      plugins: ['.applik8s/generated/nitro-plugin.generated.ts'],
-      handlers: [{ route: '/__applik8s/v1/**', handler: '.applik8s/generated/nitro-handler.generated.ts' }],
-    }),
-    applik8sVite({
+  const writeGeneratedAdapters = async () => {
+    const handlerPath = generatedHandler();
+    await mkdir(dirname(handlerPath), { recursive: true });
+    await writeFile(handlerPath, [
+      "import { defineEventHandler } from 'nitro/h3';",
+      "import { gateway } from './gateway.generated.js';",
+      'export default defineEventHandler((event) => gateway.handle(event.req));',
+      '',
+    ].join('\n'));
+    await writeFile(generatedPlugin(), [
+      "import { installApplik8sNitroRequestRuntime } from '@applik8s/tanstack-start/server';",
+      "import { gateway } from './gateway.generated.js';",
+      'export default () => installApplik8sNitroRequestRuntime({ gateway });',
+      '',
+    ].join('\n'));
+  };
+  const applicationPlugin = applik8sVite({
       ...options,
       // TanStack Start is React-specific. Install the adapter through the
       // generated facade so application authors never need a magic side-effect
       // import while @applik8s/vite remains framework neutral.
       browserAdapterModule: '@applik8s/react',
       serverArtifact: { outputDirectory: '.output', entrypoint: 'server/index.mjs' },
-    }),
-    {
+    });
+  const fetchAdapter = {
       name: '@applik8s/tanstack-start-fetch-adapter',
       enforce: 'pre',
-      configResolved(config) {
+      async configResolved(config) {
         root = config.root;
+        await writeGeneratedAdapters();
       },
       async buildStart() {
-        const handlerPath = generatedHandler();
-        await mkdir(dirname(handlerPath), { recursive: true });
-        await writeFile(handlerPath, [
-          "import { defineEventHandler } from 'nitro/h3';",
-          "import { gateway } from './gateway.generated.js';",
-          'export default defineEventHandler((event) => gateway.handle(event.req));',
-          '',
-        ].join('\n'));
-        await writeFile(generatedPlugin(), [
-          "import { installApplik8sNitroRequestRuntime } from '@applik8s/tanstack-start/server';",
-          "import { gateway } from './gateway.generated.js';",
-          'export default () => installApplik8sNitroRequestRuntime({ gateway });',
-          '',
-        ].join('\n'));
+        await writeGeneratedAdapters();
       },
-    },
+    } satisfies Exclude<PluginOption, false | null | undefined | readonly PluginOption[]>;
+  const nitroPlugins = nitro({
+    rollupConfig: { external: [/^@sentry\//] },
+    experimental: { asyncContext: true },
+    plugins: ['.applik8s/generated/nitro-plugin.generated.ts'],
+    handlers: [{ route: '/__applik8s/v1/**', handler: '.applik8s/generated/nitro-handler.generated.ts' }],
+  });
+  return [
+    // Both framework-owned generators must finish their buildStart hooks before
+    // Nitro resolves the generated handler and plugin. Putting Nitro first can
+    // expose the Start shell while gateway.generated.js is still absent, making
+    // the first pod start return 500 for every Applik8s route.
+    applicationPlugin,
+    fetchAdapter,
+    ...nitroPlugins,
   ];
 }
