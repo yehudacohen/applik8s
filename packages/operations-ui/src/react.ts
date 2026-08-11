@@ -38,13 +38,13 @@ function ApplicationOperationsDashboard(
 ): ReactNode {
   const state = props.snapshot({ limit: props.limit ?? 25 }).useQuery();
   if (state.phase === 'idle' || state.phase === 'loading') {
-    return createElement('main', { style: styles.shell }, [
+    return createElement('section', operationSurfaceProps(props.title), [
       heading(props.title),
       createElement('p', { key: 'loading', role: 'status' }, 'Loading canonical operational state…'),
     ]);
   }
   if (state.error) {
-    return createElement('main', { style: styles.shell }, [
+    return createElement('section', operationSurfaceProps(props.title), [
       heading(props.title),
       createElement('p', { key: 'error', role: 'alert', style: styles.error },
         `Operational snapshot failed: ${state.error.message}`),
@@ -52,7 +52,7 @@ function ApplicationOperationsDashboard(
   }
   const snapshot = state.data;
   if (!snapshot) {
-    return createElement('main', { style: styles.shell }, [
+    return createElement('section', operationSurfaceProps(props.title), [
       heading(props.title),
       createElement('p', { key: 'empty', role: 'status' }, 'No operational snapshot is available.'),
     ]);
@@ -98,7 +98,7 @@ function ApplicationOperationsDashboard(
     .sort((left, right) =>
       attentionPriority(left.row) - attentionPriority(right.row),
     );
-  return createElement('main', { style: styles.shell }, [
+  return createElement('section', operationSurfaceProps(props.title), [
     heading(props.title),
     createElement(
       'p',
@@ -148,6 +148,16 @@ function ApplicationOperationsDashboard(
       ),
     ),
   ]);
+}
+
+function operationSurfaceProps(title?: string): {
+  readonly style: CSSProperties;
+  readonly 'aria-label': string;
+} {
+  return {
+    style: styles.shell,
+    'aria-label': title ?? 'Application operations',
+  };
 }
 
 function heading(title?: string): ReactNode {
@@ -288,13 +298,13 @@ const styles = {
     maxWidth: 1180,
     margin: '0 auto',
     padding: '48px 24px 80px',
-    color: '#13241f',
+    color: 'var(--applik8s-operations-text, var(--text, #13241f))',
     fontFamily: 'Inter, ui-sans-serif, system-ui, sans-serif',
   },
   header: { marginBottom: 24 },
   eyebrow: {
     margin: 0,
-    color: '#25745a',
+    color: 'var(--applik8s-operations-accent, var(--accent, #25745a))',
     fontSize: 12,
     fontWeight: 700,
     letterSpacing: '0.12em',
@@ -304,21 +314,22 @@ const styles = {
   boundary: {
     maxWidth: 800,
     padding: 16,
-    border: '1px solid #b7d8cc',
+    border: '1px solid var(--applik8s-operations-border, var(--border, #b7d8cc))',
     borderRadius: 12,
-    background: '#f1faf6',
+    background: 'var(--applik8s-operations-muted-surface, var(--surface-muted, #f1faf6))',
+    color: 'var(--applik8s-operations-text, var(--text, #13241f))',
     lineHeight: 1.55,
   },
   attention: {
     marginTop: 20,
     padding: 18,
-    border: '1px solid #efc5b8',
+    border: '1px solid var(--applik8s-operations-danger-border, #efc5b8)',
     borderRadius: 16,
-    background: '#fff8f5',
+    background: 'var(--applik8s-operations-danger-surface, var(--surface, #fff8f5))',
   },
   attentionEyebrow: {
     margin: 0,
-    color: '#9a3f28',
+    color: 'var(--applik8s-operations-danger, #9a3f28)',
     fontSize: 11,
     fontWeight: 800,
     letterSpacing: '0.12em',
@@ -339,7 +350,7 @@ const styles = {
     gap: 12,
     padding: 10,
     borderRadius: 10,
-    background: '#fff',
+    background: 'var(--applik8s-operations-surface, var(--surface, #fff))',
   },
   grid: {
     display: 'grid',
@@ -348,10 +359,10 @@ const styles = {
     marginTop: 24,
   },
   card: {
-    border: '1px solid #dce7e2',
+    border: '1px solid var(--applik8s-operations-border, var(--border, #dce7e2))',
     borderRadius: 16,
-    background: '#fff',
-    boxShadow: '0 10px 35px rgba(19, 36, 31, 0.06)',
+    background: 'var(--applik8s-operations-surface, var(--surface, #fff))',
+    boxShadow: 'var(--applik8s-operations-shadow, 0 10px 35px rgba(19, 36, 31, 0.06))',
     overflow: 'hidden',
   },
   cardHeader: {
@@ -359,48 +370,61 @@ const styles = {
     justifyContent: 'space-between',
     gap: 16,
     padding: 18,
-    borderBottom: '1px solid #edf2ef',
+    borderBottom: '1px solid var(--applik8s-operations-border, var(--border, #edf2ef))',
   },
   sectionTitle: { margin: 0, fontSize: 18 },
-  description: { margin: '5px 0 0', color: '#60706a', fontSize: 13 },
+  description: {
+    margin: '5px 0 0',
+    color: 'var(--applik8s-operations-muted-text, var(--text-muted, #60706a))',
+    fontSize: 13,
+  },
   count: {
     alignSelf: 'start',
     minWidth: 30,
     padding: '5px 8px',
     borderRadius: 999,
-    background: '#163b31',
-    color: '#fff',
+    background: 'var(--applik8s-operations-accent, var(--accent, #163b31))',
+    color: 'var(--applik8s-operations-accent-contrast, var(--surface, #fff))',
     textAlign: 'center',
   },
   list: { margin: 0, padding: 0, listStyle: 'none' },
-  row: { padding: '11px 18px', borderTop: '1px solid #f1f4f2', fontSize: 14 },
+  row: {
+    padding: '11px 18px',
+    borderTop: '1px solid var(--applik8s-operations-border, var(--border, #f1f4f2))',
+    fontSize: 14,
+  },
   record: { display: 'grid', gap: 3 },
   state: {
     marginLeft: 8,
     padding: '2px 7px',
     borderRadius: 999,
-    background: '#edf2ef',
-    color: '#45544f',
+    background: 'var(--applik8s-operations-muted-surface, var(--surface-muted, #edf2ef))',
+    color: 'var(--applik8s-operations-muted-text, var(--text-muted, #45544f))',
     fontSize: 11,
   },
   stateAttention: {
     marginLeft: 8,
     padding: '2px 7px',
     borderRadius: 999,
-    background: '#ffe2d8',
-    color: '#8b2f18',
+    background: 'var(--applik8s-operations-danger-surface, #ffe2d8)',
+    color: 'var(--applik8s-operations-danger, #8b2f18)',
     fontSize: 11,
   },
   identifier: {
-    color: '#6a7772',
+    color: 'var(--applik8s-operations-muted-text, var(--text-muted, #6a7772))',
     fontSize: 11,
     overflowWrap: 'anywhere',
   },
-  empty: { margin: 0, padding: 18, color: '#73817c', fontStyle: 'italic' },
+  empty: {
+    margin: 0,
+    padding: 18,
+    color: 'var(--applik8s-operations-muted-text, var(--text-muted, #73817c))',
+    fontStyle: 'italic',
+  },
   error: {
     padding: 16,
     borderRadius: 12,
-    background: '#fff0ef',
-    color: '#8b2420',
+    background: 'var(--applik8s-operations-danger-surface, #fff0ef)',
+    color: 'var(--applik8s-operations-danger, #8b2420)',
   },
 } satisfies Readonly<Record<string, CSSProperties>>;
