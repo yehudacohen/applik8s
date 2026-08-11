@@ -1,0 +1,236 @@
+import {
+  type ApplicationModelViewContext,
+  module,
+} from '@applik8s/applik8s';
+import { type } from 'arktype';
+import { desc, eq } from 'drizzle-orm';
+import { application } from '../../app';
+import { database } from '../../providers';
+import {
+  Administrator,
+  Member,
+  Owner,
+  WorkspaceId,
+} from '../workspaces/model';
+import { DecisionReview as DecisionReviewTable } from './schema';
+
+async function loadDecisionInbox(
+  input: { readonly workspaceId: string },
+  context: ApplicationModelViewContext,
+) {
+  return context.database(database).select({
+    id: DecisionReviewTable.id,
+    workspaceId: DecisionReviewTable.workspaceId,
+    title: DecisionReviewTable.title,
+    state: DecisionReviewTable.state,
+    decisionReceipt: DecisionReviewTable.decisionReceipt,
+    decidedByPrincipalId: DecisionReviewTable.decidedByPrincipalId,
+    createdAt: DecisionReviewTable.createdAt,
+    updatedAt: DecisionReviewTable.updatedAt,
+  }).from(DecisionReviewTable).where(
+    eq(DecisionReviewTable.workspaceId, input.workspaceId),
+  ).orderBy(desc(DecisionReviewTable.createdAt)).limit(100);
+}
+
+const reviews = module(
+  'decision-reviews',
+  { schema: { DecisionReview: DecisionReviewTable } },
+  () => ({ DecisionReview: DecisionReviewTable }),
+);
+
+export const { DecisionReview } = application.include(reviews);
+const workflow = application.workflow;
+
+export const DecisionReviewSignal = workflow.signal(
+  'starter.decision-review.v1',
+  {
+    input: type({
+      reviewId: 'string',
+      workspaceId: 'string',
+      title: 'string',
+    }),
+    actions: {
+      approve: type({ 'comment?': 'string' }),
+      reject: type({ reason: 'string' }),
+    },
+  },
+);
+
+export const DecisionReviewSignals = DecisionReviewSignal.subscribe(
+  'starter-decision-reviews',
+  {
+    delivery: 'sse',
+    authorize: ({ principal }) => principal.roles?.some(
+      role => role === 'workspace-owner' || role === 'workspace-administrator',
+    ) === true,
+  },
+);
+
+export const DecisionInbox = DecisionReview.view(
+  {
+    input: type({ workspaceId: 'string' }),
+    output: type({
+      id: 'string',
+      workspaceId: 'string',
+      title: 'string',
+      state: "'pending' | 'approved' | 'rejected' | 'expired'",
+      decisionReceipt: 'string | null',
+      decidedByPrincipalId: 'string | null',
+      createdAt: 'string',
+      updatedAt: 'string',
+    }).array(),
+    database,
+    authorize: ({ principal }) => principal.id.length > 0,
+    budgets: { timeoutMs: 2_000, maxRows: 100, maxResultBytes: 256_000 },
+  },
+  loadDecisionInbox,
+);
+
+Owner.can(
+  DecisionReviewSignal.read,
+  DecisionReviewSignal.approve,
+  DecisionReviewSignal.reject,
+  DecisionReview.create.where(review => review.workspaceId.eq(WorkspaceId)),
+  DecisionInbox,
+);
+Administrator.can(
+  DecisionReviewSignal.read,
+  DecisionReviewSignal.approve,
+  DecisionReviewSignal.reject,
+  DecisionReview.create.where(review => review.workspaceId.eq(WorkspaceId)),
+  DecisionInbox,
+);
+Member.can(
+  DecisionReview.create.where(review => review.workspaceId.eq(WorkspaceId)),
+  DecisionInbox,
+);
+
+const DecisionWorker = application.serviceIdentity('starter-decision-worker');
+
+export const finalizeDecisionReview = workflow(
+  'starter.decision-review.finalize.v1',
+  {
+    input: type({
+      reviewId: 'string',
+      action: "'approved' | 'rejected' | 'expired'",
+      'actorId?': 'string',
+      'receipt?': 'string',
+    }),
+    output: type({
+      reviewId: 'string',
+      state: "'approved' | 'rejected' | 'expired'",
+      'receipt?': 'string',
+    }),
+  },
+  {
+    authority: [DecisionReview.update.all()],
+    identity: DecisionWorker,
+    retries: 3,
+    idempotencyKey: ({ reviewId, action }) => `${reviewId}:${action}`,
+  },
+  async function persistDecisionReview(input) {
+    await DecisionReview.update({
+      identity: input.reviewId,
+      patch: {
+        state: input.action,
+        ...(input.receipt ? { decisionReceipt: input.receipt } : {}),
+        ...(input.actorId ? { decidedByPrincipalId: input.actorId } : {}),
+        updatedAt: new Date().toISOString(),
+      },
+    });
+    return {
+      reviewId: input.reviewId,
+      state: input.action,
+      ...(input.receipt ? { receipt: input.receipt } : {}),
+    };
+  },
+);
+
+async function waitForDecision(input: {
+  readonly reviewId: string;
+  readonly workspaceId: string;
+  readonly title: string;
+}) {
+  const decision = await workflow.emitSignal(DecisionReviewSignal, {
+    input,
+    expiresIn: '24h',
+    target: {
+      reviewId: input.reviewId,
+      workspaceId: input.workspaceId,
+    },
+    authorize: [
+      { role: 'workspace-owner', scope: { workspaceId: input.workspaceId } },
+      {
+        role: 'workspace-administrator',
+        scope: { workspaceId: input.workspaceId },
+      },
+    ],
+  });
+  const outcome = await decision();
+  return outcome.match({
+    approve: async ({ actor, receipt }) => finalizeDecisionReview({
+      reviewId: input.reviewId,
+      action: 'approved',
+      actorId: actor.id,
+      receipt: receipt.id,
+    }),
+    reject: async ({ actor, receipt }) => finalizeDecisionReview({
+      reviewId: input.reviewId,
+      action: 'rejected',
+      actorId: actor.id,
+      receipt: receipt.id,
+    }),
+    expired: async () => finalizeDecisionReview({
+      reviewId: input.reviewId,
+      action: 'expired',
+    }),
+  });
+}
+
+export const reviewDecision = workflow(
+  'starter.decision-review.v1',
+  {
+    input: type({
+      reviewId: 'string',
+      workspaceId: 'string',
+      title: 'string',
+    }),
+    output: type({
+      reviewId: 'string',
+      state: "'approved' | 'rejected' | 'expired'",
+      'receipt?': 'string',
+    }),
+  },
+  async input => waitForDecision(input),
+);
+
+async function beginDecisionReview(created: {
+  readonly value: {
+    readonly id: string;
+    readonly workspaceId: string;
+    readonly title: string;
+  };
+}) {
+  await reviewDecision.start(
+    {
+      reviewId: created.value.id,
+      workspaceId: created.value.workspaceId,
+      title: created.value.title,
+    },
+    { idempotencyKey: created.value.id },
+  );
+}
+
+export const DecisionReviewCoordinator = DecisionReview.on.create(
+  {
+    processor: { replicas: 1, concurrency: 8 },
+    retry: {
+      maxAttempts: 5,
+      initialDelayMs: 250,
+      maxDelayMs: 5_000,
+      deadLetter: true,
+    },
+    budgets: { timeoutMs: 15_000, maxInputBytes: 32_000 },
+  },
+  beginDecisionReview,
+);

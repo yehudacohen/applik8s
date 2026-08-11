@@ -24,6 +24,11 @@ export interface PassedBrowserTest {
   readonly completedAt: string;
 }
 
+export interface PassedBrowserProjectTest extends PassedBrowserTest {
+  readonly projectName: string;
+  readonly title: string;
+}
+
 export async function runIdentityStartCommand(
   execution: IdentityStartLiveContext,
   label: string,
@@ -273,6 +278,57 @@ export async function passedIdentityStartBrowserTests(
   const output = new Map<string, PassedBrowserTest>();
   collectPassedBrowserTests(nestedArray(report, ['suites']), output);
   return output;
+}
+
+export async function passedIdentityStartBrowserProjectTests(
+  path: string,
+): Promise<Map<string, PassedBrowserProjectTest>> {
+  const report = jsonObject(
+    JSON.parse(await readFile(path, 'utf8')),
+    'Playwright report',
+  );
+  const output = new Map<string, PassedBrowserProjectTest>();
+  collectPassedBrowserProjectTests(nestedArray(report, ['suites']), output);
+  return output;
+}
+
+function collectPassedBrowserProjectTests(
+  suites: readonly Record<string, unknown>[],
+  output: Map<string, PassedBrowserProjectTest>,
+): void {
+  for (const suite of suites) {
+    for (const spec of nestedArray(suite, ['specs'])) {
+      const title = nestedString(spec, ['title']);
+      if (!title) continue;
+      for (const test of nestedArray(spec, ['tests'])) {
+        const projectName = nestedString(test, ['projectName']);
+        const results = nestedArray(test, ['results']);
+        if (
+          !projectName
+          || results.length === 0
+          || results.some((result) => nestedString(result, ['status']) !== 'passed')
+        ) {
+          continue;
+        }
+        const completed = results.map((result) => {
+          const started = Date.parse(nestedString(result, ['startTime']) ?? '');
+          const duration = Number(result.duration);
+          if (!Number.isFinite(started) || !Number.isFinite(duration)) {
+            throw new Error(
+              `Playwright result ${projectName}/${title} has invalid timing.`,
+            );
+          }
+          return started + duration;
+        });
+        output.set(`${projectName}::${title}`, {
+          projectName,
+          title,
+          completedAt: new Date(Math.max(...completed)).toISOString(),
+        });
+      }
+    }
+    collectPassedBrowserProjectTests(nestedArray(suite, ['suites']), output);
+  }
 }
 
 function collectPassedBrowserTests(

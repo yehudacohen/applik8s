@@ -6,7 +6,16 @@ import type {
   JsonObject,
   JsonValue,
 } from '@applik8s/core';
-import { createDeterministicApplicationAdmission } from '@applik8s/identity';
+import {
+  createDeterministicApplicationAdmission,
+} from '@applik8s/identity';
+import {
+  applicationIdentityHttpProtocol,
+  type ApplicationIdentityAccountView,
+  type ApplicationIdentityFlowView,
+  type ApplicationIdentitySessionDeviceView,
+  type ApplicationIdentitySessionView,
+} from '@applik8s/identity/client';
 import { OryKratosIdentityAdapter } from '@applik8s/identity-ory';
 import postgres, { type Sql } from 'postgres';
 
@@ -68,10 +77,9 @@ export async function authenticateAgenticStarterRequest(
       application,
       subject: 'local-developer',
       audience: [application],
-      // Starter is a credential-free, single-operator profile. Its one local
-      // developer is also the platform administrator; workspace authority is
-      // still admitted independently from server-side membership state.
-      roles: ['authenticated', 'administrator'],
+      // Product authentication is provider evidence. Application-operator
+      // authority is bootstrapped separately into the canonical grant store.
+      roles: ['authenticated'],
       trustedContext: { issuer },
       catalogRevision:
         process.env.APPLIK8S_OPERATION_CATALOG_REVISION?.trim()
@@ -80,6 +88,12 @@ export async function authenticateAgenticStarterRequest(
         process.env.APPLIK8S_AUTHORITY_REVISION?.trim()
         || `${application}-authority-v1`,
     });
+  if (isReceiptBackedCommandProgress(request)) {
+    return freezeAdmission(
+      withRoles(admission.principal, ['authenticated']),
+      admission.trustedContext,
+    );
+  }
   const selected = selectedWorkspaceId(request);
   if (selected) {
     return admitAgenticWorkspaceRequest(
@@ -126,11 +140,30 @@ export async function authenticateAgenticProfileRequest(
       process.env.APPLIK8S_AUTHORITY_REVISION?.trim()
       || `${options.application}-authority-v1`,
   });
+  if (isReceiptBackedCommandProgress(request)) {
+    return freezeAdmission(
+      withRoles(principal, ['authenticated']),
+      trustedContext,
+    );
+  }
   return admitAgenticWorkspaceRequest(
     request,
     Object.freeze({ principal, trustedContext }),
     lookupAgenticWorkspaceAccess,
   );
+}
+
+/**
+ * A signed command-progress cursor observes an operation that was authorized
+ * against its persisted issuance receipt. Requiring a mutable workspace
+ * selector to remain valid would make successful workspace deletion
+ * unobservable, so this exact boundary authenticates identity without
+ * promoting the browser cookie into fresh trusted context.
+ */
+function isReceiptBackedCommandProgress(request: Request): boolean {
+  if (request.method !== 'POST') return false;
+  const pathname = new URL(request.url).pathname;
+  return /\/commands\/[^/]+\/progress$/u.test(pathname);
 }
 
 /**
@@ -199,6 +232,478 @@ export async function readyAgenticProfileIdentity(
     adminUrl: options.adminUrl,
     issuer: options.issuer,
   }).ready();
+}
+
+/**
+ * Complete credential-free identity protocol for Starter and Developer.
+ *
+ * Starter has one deterministic local operator, so registration/login flows
+ * resolve to the same admitted identity without inventing production
+ * credentials. The UI remains identical when a live provider is selected.
+ */
+export async function handleAgenticStarterIdentityRequest(
+  request: Request,
+): Promise<Response> {
+  const url = new URL(request.url);
+  const path = agenticIdentityPath(url);
+  try {
+    if (path[0] === 'session' && request.method === 'DELETE') {
+      return identityJson(anonymousIdentitySession());
+    }
+    const admission = await authenticateAgenticStarterRequest(request);
+    if (path[0] === 'account' && path.length === 1 && request.method === 'GET') {
+      return identityJson(identityAccount(admission.principal));
+    }
+    if (
+      path[0] === 'account'
+      && path[1] === 'sessions'
+      && path.length === 2
+      && request.method === 'GET'
+    ) {
+      return identityJson(identitySessionDevices([
+        {
+          id: admission.principal.sessionId ?? 'starter-local-session',
+          current: true,
+          active: true,
+          authenticationMethods: [admission.principal.authenticationMethod],
+          authenticatedAt: admission.principal.admittedAt,
+          ...(admission.principal.expiresAt
+            ? { expiresAt: admission.principal.expiresAt }
+            : {}),
+        },
+      ]));
+    }
+    if (path[0] === 'flows' && path.length === 2 && request.method === 'POST') {
+      return identityJson(starterIdentityFlow(path[1]), 201);
+    }
+    if (
+      path[0] === 'flows'
+      && path[2] === 'transitions'
+      && path.length === 4
+      && request.method === 'POST'
+    ) {
+      return identityJson(identitySession(admission.principal));
+    }
+    return identityError('invalid_request', 'The identity route does not exist.', 404);
+  } catch {
+    return identityError(
+      'provider_unavailable',
+      'The local identity boundary is unavailable.',
+      503,
+      true,
+    );
+  }
+}
+
+/**
+ * Translates Ory's provider-native browser flows into the bounded Applik8s
+ * identity protocol used by every generated frontend.
+ */
+export async function handleAgenticProfileIdentityRequest(
+  request: Request,
+  profile: AgenticOryIdentityProfile,
+): Promise<Response> {
+  const options = agenticRuntimeOryIdentity(profile);
+  const adapter = new OryKratosIdentityAdapter({
+    publicUrl: options.publicUrl,
+    adminUrl: options.adminUrl,
+    issuer: options.issuer,
+  });
+  const url = new URL(request.url);
+  const path = agenticIdentityPath(url);
+  try {
+    if (path[0] === 'session' && request.method === 'DELETE') {
+      const result = await adapter.browserLogout(request, {
+        returnTo: url.origin,
+        signal: request.signal,
+      });
+      return identityJson(
+        anonymousIdentitySession(),
+        200,
+        result.setCookie,
+      );
+    }
+    if (path[0] === 'flows' && path.length === 2 && request.method === 'POST') {
+      const kind = agenticIdentityFlowKind(path[1]);
+      const cookie = request.headers.get('cookie') ?? undefined;
+      const started = await adapter.beginBrowserFlow(kind, {
+        returnTo: url.origin,
+        ...(cookie ? { cookie } : {}),
+        signal: request.signal,
+      });
+      return identityJson(
+        oryIdentityFlow(kind, started.providerFlowId, started.redirectUri),
+        201,
+        started.setCookie,
+      );
+    }
+    if (
+      path[0] === 'flows'
+      && path[2] === 'transitions'
+      && path.length === 4
+      && request.method === 'POST'
+    ) {
+      const parsed = parsedOryIdentityFlow(path[1]);
+      const transition = requiredIdentitySegment(path[3]);
+      const input = await identityRequestObject(request);
+      const cookie = request.headers.get('cookie') ?? undefined;
+      const result = await adapter.submitFlow(
+        parsed.kind,
+        parsed.providerFlowId,
+        {
+          ...jsonIdentityInput(input),
+          method: transition,
+        },
+        {
+          ...(cookie ? { cookie } : {}),
+          signal: request.signal,
+        },
+      );
+      return identityJson(
+        {
+          ...oryIdentityFlow(
+            parsed.kind,
+            parsed.providerFlowId,
+            result.redirectUri,
+          ),
+          state: result.state === 'complete' ? 'complete' : 'active',
+        },
+        200,
+        result.setCookie,
+      );
+    }
+    if (path[0] === 'account' && path.length === 1 && request.method === 'GET') {
+      return identityJson(identityAccountFromOry(await adapter.session(request)));
+    }
+    if (
+      path[0] === 'account'
+      && path[1] === 'sessions'
+      && path.length === 2
+      && request.method === 'GET'
+    ) {
+      const current = await adapter.session(request);
+      const sessions = await adapter.identitySessions(current.identity.subject);
+      return identityJson(identitySessionDevices(sessions.map((session) => ({
+        ...session,
+        current: session.id === current.sessionId,
+      }))));
+    }
+    if (
+      path[0] === 'account'
+      && path[1] === 'sessions'
+      && path.length === 3
+      && request.method === 'DELETE'
+    ) {
+      const current = await adapter.session(request);
+      const sessions = await adapter.identitySessions(current.identity.subject);
+      const target = requiredIdentitySegment(path[2]);
+      if (!sessions.some((session) => session.id === target)) {
+        return identityError(
+          'invalid_request',
+          'The identity session does not exist.',
+          404,
+        );
+      }
+      await adapter.revokeSession(target, 'user-requested session revocation');
+      return identityJson(identitySessionDevices(
+        sessions
+          .filter((session) => session.id !== target)
+          .map((session) => ({
+            ...session,
+            current: session.id === current.sessionId,
+          })),
+      ));
+    }
+    if (
+      path[0] === 'account'
+      && path[1] === 'mfa'
+      && path.length === 2
+      && request.method === 'POST'
+    ) {
+      const body = await identityRequestObject(request);
+      const method = agenticMfaMethod(body.method);
+      const cookie = request.headers.get('cookie') ?? undefined;
+      const started = await adapter.beginBrowserFlow('settings', {
+        ...(cookie ? { cookie } : {}),
+        aal: 'aal2',
+        returnTo: url.origin,
+        signal: request.signal,
+      });
+      return identityJson({
+        protocol: applicationIdentityHttpProtocol,
+        kind: 'mfa-enrollment',
+        id: oryIdentityFlowId('settings', started.providerFlowId),
+        method,
+        expiresAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        setup: { challenge: started.redirectUri },
+      }, 201, started.setCookie);
+    }
+    return identityError('invalid_request', 'The identity route does not exist.', 404);
+  } catch (error) {
+    const status = error && typeof error === 'object'
+      ? Reflect.get(error, 'status')
+      : undefined;
+    return identityError(
+      status === 401 ? 'authentication_required' : 'provider_unavailable',
+      status === 401
+        ? 'Authentication is required.'
+        : 'The identity provider is unavailable.',
+      status === 401 ? 401 : 503,
+      status !== 401,
+    );
+  }
+}
+
+function agenticIdentityPath(url: URL): readonly string[] {
+  const prefix = '/__applik8s/v1/identity/';
+  if (!url.pathname.startsWith(prefix)) return [];
+  return url.pathname.slice(prefix.length).split('/').filter(Boolean)
+    .map(decodeURIComponent);
+}
+
+function identitySession(
+  principal: ApplicationPrincipal,
+): ApplicationIdentitySessionView {
+  return {
+    protocol: applicationIdentityHttpProtocol,
+    kind: 'session',
+    authenticated: true,
+    principal: {
+      id: principal.id,
+      identity: principal.identity,
+      kind: principal.kind,
+      authenticationMethod: principal.authenticationMethod,
+      audience: [...principal.audience],
+      admittedAt: principal.admittedAt,
+      ...(principal.expiresAt ? { expiresAt: principal.expiresAt } : {}),
+      ...(principal.sessionId ? { sessionId: principal.sessionId } : {}),
+    },
+    assurance: [],
+    capabilities: {
+      workspaceAdministration:
+        principal.roles?.includes('workspace-owner') === true
+        || principal.roles?.includes('workspace-administrator') === true,
+      applicationOperations:
+        principal.roles?.includes('application-operator') === true,
+    },
+  };
+}
+
+function anonymousIdentitySession(): ApplicationIdentitySessionView {
+  return {
+    protocol: applicationIdentityHttpProtocol,
+    kind: 'session',
+    authenticated: false,
+    assurance: [],
+  };
+}
+
+function identityAccount(
+  principal: ApplicationPrincipal,
+): ApplicationIdentityAccountView {
+  return {
+    protocol: applicationIdentityHttpProtocol,
+    kind: 'account',
+    identity: principal.identity,
+    authenticationMethods: [principal.authenticationMethod],
+    assurance: [],
+    mfa: [],
+    capabilities: {
+      verification: true,
+      recovery: true,
+      mfaEnrollment: false,
+      sessionRevocation: false,
+    },
+  };
+}
+
+function identityAccountFromOry(
+  session: Awaited<ReturnType<OryKratosIdentityAdapter['session']>>,
+): ApplicationIdentityAccountView {
+  const methods = session.authenticationMethod.replace(/^ory:/u, '')
+    .split('+')
+    .filter(Boolean);
+  return {
+    protocol: applicationIdentityHttpProtocol,
+    kind: 'account',
+    identity: session.identity,
+    authenticationMethods: methods,
+    assurance: [...session.assurance],
+    capabilities: {
+      verification: true,
+      recovery: true,
+      mfaEnrollment: true,
+      sessionRevocation: true,
+    },
+    mfa: methods
+      .filter((method) => method === 'totp' || method === 'webauthn')
+      .map((method) => ({
+        id: `${session.sessionId}:${method}`,
+        kind: method,
+        label: method === 'totp' ? 'Authenticator app' : 'Security key',
+        ...(session.authenticatedAt
+          ? { createdAt: session.authenticatedAt }
+          : {}),
+      })),
+  };
+}
+
+function identitySessionDevices(
+  items: readonly ApplicationIdentitySessionDeviceView[],
+): {
+  readonly protocol: typeof applicationIdentityHttpProtocol;
+  readonly kind: 'session-device-list';
+  readonly items: readonly ApplicationIdentitySessionDeviceView[];
+} {
+  return {
+    protocol: applicationIdentityHttpProtocol,
+    kind: 'session-device-list',
+    items,
+  };
+}
+
+function starterIdentityFlow(kindValue: string | undefined): ApplicationIdentityFlowView {
+  const kind = agenticIdentityFlowKind(kindValue);
+  const now = new Date();
+  return {
+    protocol: applicationIdentityHttpProtocol,
+    kind: 'flow',
+    id: `starter~${kind}`,
+    flowKind: kind,
+    state: 'active',
+    allowedTransitions: ['password'],
+    issuedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
+  };
+}
+
+function oryIdentityFlow(
+  kind: 'register' | 'login' | 'verify' | 'recover' | 'settings',
+  providerFlowId: string,
+  continuationUri?: string,
+): ApplicationIdentityFlowView {
+  const now = new Date();
+  return {
+    protocol: applicationIdentityHttpProtocol,
+    kind: 'flow',
+    id: oryIdentityFlowId(kind, providerFlowId),
+    flowKind: kind === 'settings' ? 'login' : kind,
+    state: 'active',
+    allowedTransitions:
+      kind === 'verify' || kind === 'recover'
+        ? ['code', 'link']
+        : ['password', 'code', 'webauthn'],
+    issuedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 10 * 60_000).toISOString(),
+    ...(continuationUri ? { continuationUri } : {}),
+  };
+}
+
+function oryIdentityFlowId(kind: string, providerFlowId: string): string {
+  return `${kind}~${providerFlowId}`;
+}
+
+function parsedOryIdentityFlow(value: string | undefined): {
+  readonly kind: 'register' | 'login' | 'verify' | 'recover' | 'settings';
+  readonly providerFlowId: string;
+} {
+  const [kindValue, providerFlowId, ...rest] =
+    requiredIdentitySegment(value).split('~');
+  if (rest.length > 0 || !providerFlowId) {
+    throw new Error('Identity flow reference is malformed.');
+  }
+  const kind = kindValue === 'settings'
+    ? 'settings'
+    : agenticIdentityFlowKind(kindValue);
+  return { kind, providerFlowId };
+}
+
+function agenticIdentityFlowKind(
+  value: string | undefined,
+): 'register' | 'login' | 'verify' | 'recover' {
+  if (
+    value === 'register'
+    || value === 'login'
+    || value === 'verify'
+    || value === 'recover'
+  ) return value;
+  throw new Error('Identity flow kind is invalid.');
+}
+
+function agenticMfaMethod(
+  value: unknown,
+): 'totp' | 'webauthn' | 'recovery-code' | 'provider' {
+  if (
+    value === 'totp'
+    || value === 'webauthn'
+    || value === 'recovery-code'
+    || value === 'provider'
+  ) return value;
+  throw new Error('MFA method is invalid.');
+}
+
+function requiredIdentitySegment(value: string | undefined): string {
+  if (!value?.trim() || value.length > 512) {
+    throw new Error('Identity path segment is invalid.');
+  }
+  return value;
+}
+
+async function identityRequestObject(
+  request: Request,
+): Promise<Readonly<Record<string, unknown>>> {
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.byteLength > 128 * 1024) {
+    throw new Error('Identity request is too large.');
+  }
+  if (bytes.byteLength === 0) return {};
+  const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Identity request must be an object.');
+  }
+  // typecast: the object/array check proves a JSON record.
+  return value as Readonly<Record<string, unknown>>;
+}
+
+function jsonIdentityInput(
+  value: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, JsonValue>> {
+  // The Ory transport validates provider payloads. JSON round-tripping drops
+  // prototypes and rejects unsupported request values before forwarding.
+  return JSON.parse(JSON.stringify(value)) as Readonly<Record<string, JsonValue>>;
+}
+
+function identityJson(
+  value: unknown,
+  status = 200,
+  cookies: readonly string[] = [],
+): Response {
+  const headers = new Headers({
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'no-referrer',
+  });
+  for (const cookie of cookies) headers.append('set-cookie', cookie);
+  return new Response(JSON.stringify(value), { status, headers });
+}
+
+function identityError(
+  code:
+    | 'invalid_request'
+    | 'authentication_required'
+    | 'provider_unavailable',
+  message: string,
+  status: number,
+  retryable = false,
+): Response {
+  return identityJson({
+    protocol: applicationIdentityHttpProtocol,
+    kind: 'error',
+    code,
+    message,
+    retryable,
+  }, status);
 }
 
 const databaseClients = new Map<string, Sql>();

@@ -11,7 +11,7 @@ import {
 
 const root = process.cwd();
 const expected = {
-  typekro: "0.33.5",
+  typekro: "0.33.6",
   alchemy: "2.0.0-beta.58",
   effect: "4.0.0-beta.84",
   semanticPlan: 1,

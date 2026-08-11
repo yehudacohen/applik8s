@@ -12,8 +12,9 @@ import {
   transpileApplicationCallbackExpression,
   unsupportedRouteFreeIdentifiers,
 } from './application-route-source.js';
-import type { WorkflowDefinition } from './dsl.js';
 import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
+import type { WorkflowDefinition } from './dsl.js';
+import { validateRuntimeMessage } from './runtime-schema-validation.js';
 
 const workflowHandlerSerializationCache = new WeakMap<(...args: never[]) => unknown, Map<string, {
 	readonly source: string;
@@ -46,11 +47,7 @@ export function declaredSchema<T extends object>(input: SchemaInput<T>, name: st
 }
 
 export function validateMessage<T extends object>(schema: SchemaInput<T>, value: unknown, name: string): T {
-  // typecast: the schema adapter accepts JSON-like unknown input and performs the authoritative runtime validation below.
-  const validated = normalizeSchema(schema, name).validate(value as never);
-  if (!validated.ok) throw new Error(`applik8s-workflow-schema-invalid: ${name}: ${validated.error.message}`);
-  // typecast: successful schema validation is the runtime proof of the generic message type.
-  return validated.value as T;
+  return validateRuntimeMessage(schema, value, name);
 }
 
 export function workflowHandlerSerialization(

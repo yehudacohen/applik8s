@@ -1,5 +1,5 @@
 // typecast-file-boundary: TypeScript compiler nodes are kind-checked before this source-to-source transformer restores their narrower AST types.
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, extname, join, relative } from 'node:path';
 import type { Plugin } from 'esbuild';
@@ -19,11 +19,13 @@ export function handlerSourceMetadataPlugin(entrypoint: string): Plugin {
           || !applicationCallbackModuleIsInstrumentable(args.path)
         ) return undefined;
         const source = await readFile(args.path, 'utf8');
+        const applicationOwned = applicationPackageOwnsModule(entrypoint, args.path);
         const instrumented = instrumentApplicationCallbackRegistrations(
           source,
           args.path,
-          applicationPackageOwnsModule(entrypoint, args.path),
+          applicationCallbackModuleOwnsDependencies(entrypoint, args.path),
           portableApplicationModuleIdentity(entrypoint, args.path),
+          !applicationOwned,
         );
         if (instrumented === source) return undefined;
         const extension = extname(args.path);
@@ -73,6 +75,7 @@ export function instrumentApplicationCallbackRegistrations(
   sourceFile: string,
   attachDependencyMetadata = true,
   moduleIdentity = portableApplicationModuleIdentity(sourceFile, sourceFile),
+  deferDependencyValueReads = false,
 ): string {
   const file = ts.createSourceFile(
     sourceFile,
@@ -92,6 +95,7 @@ export function instrumentApplicationCallbackRegistrations(
         file,
         sourceFile,
         moduleIdentity,
+        deferDependencyValueReads,
       )
     : new Map<string, readonly ts.Statement[]>();
   let changed = false;
@@ -169,6 +173,27 @@ export function applicationPackageOwnsModule(entrypoint: string, sourceFile: str
   return applicationPackageRoot(entrypoint) === applicationPackageRoot(sourceFile);
 }
 
+/**
+ * Recursive callback dependency metadata is trusted for application-authored
+ * modules and maintained Applik8s packages. Workspace source aliases and packed
+ * dependencies must receive the same treatment; otherwise a maintained package
+ * callback can be discovered while its module-local helper graph is discarded.
+ */
+export function applicationCallbackModuleOwnsDependencies(
+  entrypoint: string,
+  sourceFile: string,
+): boolean {
+  if (applicationPackageOwnsModule(entrypoint, sourceFile)) return true;
+  const normalized = sourceFile.replaceAll('\\', '/');
+  const dependencyMarker = '/node_modules/';
+  const dependency = normalized.lastIndexOf(dependencyMarker);
+  if (
+    dependency !== -1
+    && normalized.slice(dependency + dependencyMarker.length).startsWith('@applik8s/')
+  ) return true;
+  return applicationPackageName(sourceFile)?.startsWith('@applik8s/') ?? false;
+}
+
 function applicationPackageRoot(entrypoint: string): string {
   let current = dirname(entrypoint);
   const filesystemRoot = dirname(current) === current ? current : undefined;
@@ -177,6 +202,18 @@ function applicationPackageRoot(entrypoint: string): string {
     const parent = dirname(current);
     if (parent === current || current === filesystemRoot) return dirname(entrypoint);
     current = parent;
+  }
+}
+
+function applicationPackageName(sourceFile: string): string | undefined {
+  const root = applicationPackageRoot(sourceFile);
+  try {
+    const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
+      readonly name?: unknown;
+    };
+    return typeof manifest.name === 'string' ? manifest.name : undefined;
+  } catch {
+    return undefined;
   }
 }
 

@@ -28,7 +28,10 @@ try {
   const allUnits = [
     ...packages.map((name) => ({
       name: `package:${name}`,
-      include: [join(root, 'packages', name, '**/*.ts')],
+      include: [
+        join(root, 'packages', name, '**/*.ts'),
+        join(root, 'packages', name, '**/*.tsx'),
+      ],
     })),
     ...scriptShards.map((files, index) => ({
       name: `scripts:${index + 1}`,

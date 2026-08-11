@@ -81,6 +81,11 @@
       "import": "./dist/query-runtime.js",
       "default": "./dist/query-runtime.js"
     },
+    "./search-runtime": {
+      "types": "./dist/search-runtime-entry.d.ts",
+      "import": "./dist/search-runtime-entry.js",
+      "default": "./dist/search-runtime-entry.js"
+    },
     "./command-gateway-runtime": {
       "types": "./dist/command-gateway-runtime.d.ts",
       "import": "./dist/command-gateway-runtime.js",
@@ -160,6 +165,11 @@
       "types": "./dist/application-provider-runtime.d.ts",
       "import": "./dist/application-provider-runtime.js",
       "default": "./dist/application-provider-runtime.js"
+    },
+    "./internal/historical-model-commands": {
+      "types": "./dist/historical-model-commands.d.ts",
+      "import": "./dist/historical-model-commands.js",
+      "default": "./dist/historical-model-commands.js"
     }
   },
   "dependencies": {
@@ -177,7 +187,7 @@
     "drizzle-orm": "^0.45.1",
     "esbuild": "^0.28.1",
     "hono": "^4.10.7",
-    "typekro": "0.33.5"
+    "typekro": "0.33.6"
   },
   "peerDependencies": {
     "@applik8s/runtime-hatchet": "0.7.0",

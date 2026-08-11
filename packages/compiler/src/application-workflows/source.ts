@@ -96,10 +96,16 @@ export function generatedWorkerSource(contract: WorkflowContract): string {
         : []),
       ...functionNativeTaskCallbackBindingEntries(functionNativeTransaction),
     ]);
-    const functionNativeRuntime = functionNativeTransaction
-      ? `withApplicationNativeModelTransactionRuntime(functionNativeTaskRuntime(${JSON.stringify(handler.id)}, context), () => `
-      : '';
-    const functionNativeRuntimeClose = functionNativeRuntime ? ')' : '';
+    const functionNativeRuntime = !functionNativeTransaction
+      ? ''
+      : functionNativeTransaction.mode === 'read'
+        ? `withApplicationNativeModelReadClients(await functionNativeTaskReadClients(${JSON.stringify(handler.id)}), () => `
+        : `withApplicationNativeModelTransactionRuntime(functionNativeTaskRuntime(${JSON.stringify(handler.id)}, context), async () => withApplicationNativeModelReadClients(await functionNativeTaskReadClients(${JSON.stringify(handler.id)}), () => `;
+    const functionNativeRuntimeClose = !functionNativeTransaction
+      ? ''
+      : functionNativeTransaction.mode === 'read'
+        ? ')'
+        : '))';
     const durableSignalTask = (handler.signalBindings?.length ?? 0) > 0;
     return `
 const ${jsName(task.id)} = hatchet.${durableSignalTask ? 'durableTask' : 'task'}({
@@ -204,7 +210,7 @@ ${contract.operationEffects ? "import { createJetStreamEventLog } from '@applik8
 import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';`
     : '';
   const functionNativeImports = contract.functionNativeTransactions
-    ? `import { createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';`
+    ? `import { applicationPostgresModelReadClients, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';`
     : '';
   const gatewayImports = contract.gatewayCallers.length > 0
     ? `import { createCipheriv, createDecipheriv, createHash as createNodeHash, randomBytes } from 'node:crypto';
@@ -226,6 +232,7 @@ import { readFile } from 'node:fs/promises';
 import { connect as connectTcp } from 'node:net';
 import { HatchetClient } from '@hatchet-dev/typescript-sdk/v1/index.js';
 	import { installApplicationObjectStorageRuntimeResolver, installApplicationProjectionRuntimeResolver, installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';
+import { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';
 import { installApplicationOperationRuntimeResolver } from '@applik8s/client';
 import { normalizeSchema } from '@applik8s/sdk';
 ${capabilityImports}
@@ -372,6 +379,7 @@ async function canonicalTaskPrincipal(principal, context) {
   if (!principal || !operationAuthority) return principal;
   const invocationId = String(context.workflowRunId?.() ?? context.stepRunId?.() ?? 'unknown');
   const authorityRevision = await operationAuthority.authorityRevision();
+  const causalPrincipal = workflowCausalPrincipal(context);
   return canonicalApplicationTaskServicePrincipal(principal, {
     application: ${JSON.stringify(contract.graphName)},
     workerId: ${JSON.stringify(contract.worker.id)},
@@ -379,6 +387,36 @@ async function canonicalTaskPrincipal(principal, context) {
     authorityRevision,
     invocationId,
     contextSecret: requiredEnv('APPLIK8S_TASK_OPERATION_CONTEXT_SECRET'),
+    ...(causalPrincipal ? { causalPrincipal } : {}),
+  });
+}
+
+function workflowCausalPrincipal(context) {
+  const data = typeof context.additionalMetadata === 'function' ? context.additionalMetadata() : {};
+  const serialized = data?.['applik8s.causal-principal'];
+  if (!serialized) return undefined;
+  let value;
+  try { value = JSON.parse(serialized); } catch { throw new Error('applik8s-workflow-causal-principal-invalid'); }
+  if (!value || typeof value !== 'object'
+    || typeof value.id !== 'string' || !value.id.trim()
+    || !value.identity || typeof value.identity !== 'object'
+    || typeof value.identity.id !== 'string' || !value.identity.id.trim()
+    || typeof value.identity.kind !== 'string' || !value.identity.kind.trim()
+    || typeof value.identity.issuer !== 'string' || !value.identity.issuer.trim()
+    || typeof value.identity.subject !== 'string' || !value.identity.subject.trim()
+    || !Array.isArray(value.grantIds)
+    || value.grantIds.some((grantId) => typeof grantId !== 'string' || !grantId.trim())) {
+    throw new Error('applik8s-workflow-causal-principal-invalid');
+  }
+  return Object.freeze({
+    id: value.id,
+    identity: Object.freeze({
+      id: value.identity.id,
+      kind: value.identity.kind,
+      issuer: value.identity.issuer,
+      subject: value.identity.subject,
+    }),
+    grantIds: Object.freeze([...value.grantIds]),
   });
 }
 
@@ -390,7 +428,8 @@ function metadata(context) {
     try { trustedContext = JSON.parse(data['applik8s.trusted-context']); } catch { throw new Error('applik8s-workflow-trusted-context-invalid'); }
     if (!trustedContext || typeof trustedContext !== 'object' || !trustedContext.values || typeof trustedContext.digest !== 'string') throw new Error('applik8s-workflow-trusted-context-invalid');
   }
-  return { invocationId, idempotencyKey: invocationId, attempt: Number(context.retryCount?.() ?? 0) + 1, correlationId: data?.['applik8s.correlation-id'], causationId: data?.['applik8s.causation-id'], traceparent: data?.traceparent, ...(trustedContext ? { trustedContext } : {}), signal: context.abortController?.signal ?? new AbortController().signal };
+  const causalPrincipal = workflowCausalPrincipal(context);
+  return { invocationId, idempotencyKey: invocationId, attempt: Number(context.retryCount?.() ?? 0) + 1, correlationId: data?.['applik8s.correlation-id'], causationId: data?.['applik8s.causation-id'], traceparent: data?.traceparent, ...(trustedContext ? { trustedContext } : {}), ...(causalPrincipal ? { causalPrincipal } : {}), signal: context.abortController?.signal ?? new AbortController().signal };
 }
 function declaredFailure(contractName, errorSchemas, name, payload) {
   const schema = errorSchemas[name];
@@ -458,7 +497,8 @@ function childOptions(options) {
   // Hatchet's durable Context.spawnChild() consumes the public key option
   // and lowers it to childKey internally. Passing childKey directly is
   // overwritten by the SDK and breaks replay identity after worker recovery.
-  return { ...(options?.idempotencyKey ? { key: options.idempotencyKey } : {}), ...(options ? { additionalMetadata: Object.fromEntries(Object.entries({ 'applik8s.idempotency-key': options.idempotencyKey, 'applik8s.tenant': options.tenant, 'applik8s.correlation-id': options.correlationId, 'applik8s.causation-id': options.causationId, traceparent: options.traceparent, 'applik8s.trusted-context': options.trustedContext ? JSON.stringify(options.trustedContext) : undefined }).filter(([, value]) => typeof value === 'string')) } : {}) };
+  const causalPrincipal = options?.causalPrincipal;
+  return { ...(options?.idempotencyKey ? { key: options.idempotencyKey } : {}), ...(options ? { additionalMetadata: Object.fromEntries(Object.entries({ 'applik8s.idempotency-key': options.idempotencyKey, 'applik8s.tenant': options.tenant, 'applik8s.correlation-id': options.correlationId, 'applik8s.causation-id': options.causationId, traceparent: options.traceparent, 'applik8s.trusted-context': options.trustedContext ? JSON.stringify(options.trustedContext) : undefined, 'applik8s.causal-principal': causalPrincipal ? JSON.stringify(causalPrincipal) : undefined }).filter(([, value]) => typeof value === 'string')) } : {}) };
 }
 function childInvocationMetadata(parent, options) {
   // A parent's idempotency key identifies the parent invocation; it must not
@@ -558,13 +598,21 @@ function generatedWorkflowGateway(contract: WorkflowContract): string {
     ...contract.tasks.map(({ task }) => [task.name, task.contract.input.jsonSchema]),
     ...contract.workflows.map(({ workflow }) => [workflow.name, workflow.contract.input.jsonSchema]),
   ].filter(([id]) => allowedContracts.includes(String(id))));
-  const allowedCallers = [...new Set(contract.gatewayCallers.map(
-    (caller) => `system:serviceaccount:${caller.namespace}:${caller.serviceAccount}`,
-  ))].sort();
+  const callerSpecifications = contract.gatewayCallers.map((caller) => ({
+    namespace: caller.namespace.startsWith('${')
+      ? '__APPLIK8S_RUNTIME_NAMESPACE__'
+      : caller.namespace,
+    serviceAccount: caller.serviceAccount,
+  }));
   return `
 const gatewayContracts = new Set(${JSON.stringify(allowedContracts)});
 const gatewayInputSchemas = ${JSON.stringify(inputSchemas)};
-const gatewayCallers = new Set(${JSON.stringify(allowedCallers)});
+const gatewayRuntimeNamespace = requiredEnv('APPLIK8S_WORKFLOW_NAMESPACE');
+const gatewayCallers = new Set(${JSON.stringify(callerSpecifications)}.map((caller) =>
+  'system:serviceaccount:'
+    + (caller.namespace === '__APPLIK8S_RUNTIME_NAMESPACE__' ? gatewayRuntimeNamespace : caller.namespace)
+    + ':' + caller.serviceAccount
+));
 const gatewayKubeConfig = new KubeConfig();
 gatewayKubeConfig.loadFromCluster();
 const gatewayAuthentication = gatewayKubeConfig.makeApiClient(AuthenticationV1Api);
@@ -631,7 +679,7 @@ function openGatewayReference(reference, expectedContract) {
 async function handleGatewayRequest(request, response) {
   try {
     if (!ready || stopping) return gatewayJson(response, 503, { error: 'workflow-gateway-unavailable' });
-    await authenticateGatewayRequest(request);
+    const gatewayCaller = await authenticateGatewayRequest(request);
     const url = new URL(request.url ?? '/', 'http://workflow-gateway.invalid');
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     if (parts[0] !== 'v1' || parts[1] !== 'workflows' || parts[3] !== 'runs') {
@@ -651,7 +699,20 @@ async function handleGatewayRequest(request, response) {
       const metadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
         ? body.metadata
         : {};
-      const run = await gatewayRuntime.start(contract, validInput, { ...metadata, idempotencyKey });
+      const run = await gatewayRuntime.start(contract, validInput, {
+        ...metadata,
+        idempotencyKey,
+        [applicationWorkflowCausalPrincipalMetadata]: {
+          id: gatewayCaller,
+          identity: {
+            id: 'identity:kubernetes:serviceaccount:' + gatewayCaller.slice('system:serviceaccount:'.length),
+            kind: 'service',
+            issuer: 'kubernetes',
+            subject: gatewayCaller,
+          },
+          grantIds: [],
+        },
+      });
       const admittedAt = new Date().toISOString();
       return gatewayJson(response, 202, {
         id: sealGatewayReference({ contract, runId: run.id, admittedAt }),
@@ -920,6 +981,11 @@ function workflowSignalApi(context, execution) {
           executionId: execution.invocationId,
           attempt: execution.attempt,
           workloadIdentity: signalWorkloadIdentity,
+          causalPrincipalId:
+            execution.causalPrincipal?.id ?? signalWorkloadIdentity.id,
+          causalPrincipal:
+            execution.causalPrincipal?.identity ?? signalWorkloadIdentity,
+          causalGrantIds: execution.causalPrincipal?.grantIds ?? [],
           envelopes: [envelope],
           trustedContextDigest,
           audience: envelope.audiences,
@@ -1137,6 +1203,7 @@ function generatedWorkflowFunctionNativeTransactions(
   if (transactions.length === 0) return '';
   const entries = transactions.map((transaction) =>
     `${JSON.stringify(transaction.taskHandlerId)}: Object.freeze({
+      mode: ${JSON.stringify(transaction.mode)},
       model: Object.freeze(${JSON.stringify(transaction.primaryModel.runtime)}),
       models: Object.freeze(${JSON.stringify(
         transaction.models.map((model) => model.runtime),
@@ -1166,6 +1233,11 @@ function functionNativeTaskBindings(handlerId) {
   const transaction = functionNativeTaskTransactions[handlerId];
   if (!transaction) throw new Error('No function-native transaction was declared for task handler ' + handlerId + '.');
   return transaction.bindings;
+}
+function functionNativeTaskReadClients(handlerId) {
+  const transaction = functionNativeTaskTransactions[handlerId];
+  if (!transaction) throw new Error('No function-native read scope was declared for task handler ' + handlerId + '.');
+  return applicationPostgresModelReadClients(transaction.databaseUrl, transaction.models);
 }
 function functionNativeTaskRuntime(handlerId, context) {
   const transaction = functionNativeTaskTransactions[handlerId];
@@ -1395,7 +1467,9 @@ const operationRuntime = createApplicationTaskOperationRuntime({
       attempt: invocation.attempt,
       workloadIdentity: envelope.workloadIdentity,
       ...(envelope.serviceIdentity ? { serviceIdentity: envelope.serviceIdentity } : {}),
-      causalPrincipal: { id: 'identity:causal:' + principal.id, kind: 'external', issuer: 'applik8s.task-principal', subject: principal.id },
+      causalPrincipalId: principal.causalPrincipalId ?? principal.id,
+      causalPrincipal: principal.causalPrincipal ?? principal.identity,
+      causalGrantIds: principal.causalGrantIds ?? [],
       envelopes,
       trustedContextDigest,
       audience: [...new Set(envelopes.flatMap((candidate) => candidate.audiences))],

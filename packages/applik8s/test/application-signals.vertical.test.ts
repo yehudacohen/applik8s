@@ -178,8 +178,7 @@ describe('v0.7 function-native durable signals', () => {
 
   it('persists only an explicitly bounded inert signal reference in a model-backed projection', () => {
     const platform = app('signal-projection-capability');
-    const schema: Record<string, unknown> = {};
-    const database = platform.database.postgres('primary', { schema });
+    const database = platform.database.postgres('primary', { schema: {} });
     const ReviewDecision = platform.workflow.signal('review-decision.v1', {
       input: type({ postId: 'string' }),
       actions: { approve: type({ 'comment?': 'string' }) },
@@ -197,7 +196,6 @@ describe('v0.7 function-native durable signals', () => {
       },
       { name: 'PendingReview', revision: false },
     );
-    schema.PendingReview = PendingReview;
     platform.model(PendingReview, { database, revision: false });
 
     ReviewDecision.project(
@@ -298,8 +296,7 @@ describe('v0.7 function-native durable signals', () => {
 
   it('rejects a mismatched signal contract and indirect capability assignment', () => {
     const platform = app('signal-projection-mismatch');
-    const schema: Record<string, unknown> = {};
-    const database = platform.database.postgres('primary', { schema });
+    const database = platform.database.postgres('primary', { schema: {} });
     const ReviewDecision = platform.workflow.signal('review-decision.v1', {
       input: type({ postId: 'string' }),
       actions: { approve: type({}) },
@@ -324,7 +321,6 @@ describe('v0.7 function-native durable signals', () => {
       },
       { name: 'PendingEscalation', revision: false },
     );
-    schema.PendingEscalation = PendingEscalation;
     platform.model(PendingEscalation, { database, revision: false });
 
     expect(() =>

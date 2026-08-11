@@ -9,6 +9,46 @@ import { type Applik8sVitePlugin, applik8sVite } from '../src/index.js';
 const fixtureRoot = join(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
 describe('framework-neutral Applik8s Vite integration', () => {
+  it('hydrates framework-owned local runtime values for serve without overriding explicit environment', async () => {
+    const names = [
+      'APPLIK8S_APPLICATION_NAME',
+      'APPLIK8S_NAMESPACE',
+      'APPLIK8S_PROFILE_VARIANT',
+      'APPLIK8S_CURSOR_SECRET',
+      'APPLIK8S_INTERNAL_OPERATION_SECRET',
+      'APPLIK8S_OBJECT_STORAGE_ENABLED',
+      'APPLIK8S_OBJECT_STORAGE_BUCKET',
+      'APPLIK8S_OBJECT_STORAGE_REGION',
+      'APPLIK8S_INSTALLATION_SPEC',
+    ] as const;
+    const previous = Object.fromEntries(names.map(name => [name, process.env[name]]));
+    try {
+      for (const name of names) delete process.env[name];
+      process.env.APPLIK8S_CURSOR_SECRET = 'explicit-cursor-secret-that-is-long-enough';
+      const plugin = adapter();
+      plugin.config({}, { command: 'serve' });
+      plugin.configResolved({
+        root: fixtureRoot,
+        build: { outDir: 'dist/client' },
+      });
+      await plugin.buildStart();
+      expect(process.env.APPLIK8S_APPLICATION_NAME).toBe('vite-facade-fixture');
+      expect(process.env.APPLIK8S_NAMESPACE).toBe('vite-facade-fixture-system');
+      expect(process.env.APPLIK8S_PROFILE_VARIANT).toBe('starter');
+      expect(process.env.APPLIK8S_CURSOR_SECRET).toBe(
+        'explicit-cursor-secret-that-is-long-enough',
+      );
+      expect(process.env.APPLIK8S_INTERNAL_OPERATION_SECRET).toHaveLength(64);
+      expect(process.env.APPLIK8S_OBJECT_STORAGE_ENABLED).toBe('false');
+    } finally {
+      for (const name of names) {
+        const value = previous[name];
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  }, 60_000);
+
   it('discovers the ApplicationGraph and generates facades without source regex parsing', async () => {
     const plugin = adapter();
     plugin.configResolved({ root: fixtureRoot, build: { outDir: 'dist/client' } });
@@ -101,7 +141,7 @@ describe('framework-neutral Applik8s Vite integration', () => {
     await plugin.buildStart();
     const source = plugin.load('\0applik8s:browser-facade') ?? '';
     expect(source).toContain("import \"@applik8s/react\";");
-    expect(source.indexOf('import \"@applik8s/react\";')).toBeLessThan(
+    expect(source.indexOf('import "@applik8s/react";')).toBeLessThan(
       source.indexOf('export const GuestBookEntry'),
     );
     expect(source.indexOf('configureDefaultApplicationBrowserRuntime')).toBeLessThan(source.indexOf('export const GuestBookEntry'));

@@ -26,3 +26,13 @@ spec:
       webhookSecretKey: webhookSecret
       credentialSource:
         kind: existingSecret
+    notifications:
+      host: smtp.example.test
+      port: 587
+      secretName: product-notifications
+      usernameKey: username
+      passwordKey: password
+      senderEmail: notifications@example.test
+      senderName: Product
+      credentialSource:
+        kind: existingSecret

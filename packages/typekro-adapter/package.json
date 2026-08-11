@@ -33,6 +33,6 @@
     "@applik8s/sdk": "0.7.0",
     "@applik8s/typetainer": "0.7.0",
     "arktype": "^2.1.20",
-    "typekro": "0.33.5"
+    "typekro": "0.33.6"
   }
 }

@@ -1,6 +1,6 @@
 # RFP: Applik8s v0.7 — Schema-Derived Profiles and Starts
 
-**Status:** Proposed; maintainer review required
+**Status:** Accepted v0.7 contract; implementation evidence remains governed by the release scorecard
 
 **Charter:** [`charter-v07-agentic-platform.md`](charter-v07-agentic-platform.md)
 
@@ -146,6 +146,17 @@ transactions, constraints, command/outbox atomicity, change capture, and bounded
 `AnalyticalDatabase` promises projection ingestion, checkpointing, rebuild, and declared analytical
 queries. PostgreSQL may satisfy both through separately declared adapters; ClickHouse may satisfy only
 the analytical capability.
+
+`NotificationDelivery` is a separately qualified external-effect capability. It accepts an
+idempotent application-owned rendered message outside the committing model transaction and returns a
+redacted delivery receipt. Starter binds a deterministic inspectable sink; Dedicated and External bind
+an explicit provider. The v0.7 Dedicated reference adapter is SMTP with Secret-reference credentials,
+required transport security, sender policy, bounded retries, and authenticated delivery observations
+where the server supports them; it does not install or claim ownership of a mail server. External may
+bind another compatible provider. Identity-provider courier flows remain part of the qualified identity
+provider because verification and recovery are provider protocol state, not application notification
+state. A deployment may derive both SMTP bindings from one Secret reference without serializing its
+contents or collapsing their delivery authorities.
 
 Because no supported external consumers require compatibility, v0.7 source and manifests use the new
 names directly. The implementation increment must migrate existing graph nodes, diagnostics, examples,
@@ -574,15 +585,17 @@ server-only.
 - Hatchet installation resources are emitted by the released TypeKro integration, not handwritten
   compiler manifests.
 
-## Open questions
+## Closed v0.7 decisions
 
-1. Can ArkType expose the discriminated variants through a stable supported API, or should v0.7 require
-   the explicit variant tuple?
-2. Which provider transitions must be executable in v0.7 versus diagnostics-only?
-3. Should the public package be `@applik8s/start-agentic` or a broader Start package selected by
-   `--start agentic`?
-4. Which analytical capabilities are sufficiently provider-neutral for the initial
-   `AnalyticalDatabase` contract, and which remain explicit refinements?
+1. v0.7 uses the explicit variant tuple whenever ArkType cannot expose a stable supported discriminator
+   API. No private ArkType AST dependency enters the public contract.
+2. Fresh Starter, Developer, Dedicated, and External installations are executable. In-place transitions
+   are executable only when the plan proves ownership and state migration; otherwise they are
+   diagnostics-only and fail before mutation.
+3. The public distribution is `@applik8s/start-agentic`, selected by `--start agentic`.
+4. The base analytical contract covers bounded append, idempotent event identity, checkpoints, rebuild,
+   lag, and aggregate query. Provider-specific joins, materialized-view syntax, and advanced ClickHouse
+   features remain explicit refinements.
 
 ## Definition of done
 

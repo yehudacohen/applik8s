@@ -26,6 +26,7 @@ import {
   type ApplicationStreamProcessHandler,
   type ApplicationStreamProcessOptions,
   type ApplicationStreamProcessorBinding,
+  registerApplicationLifecycleStreamProcessor,
   registerApplicationStream,
   registerApplicationStreamProcessor,
 } from './application-reactive.js';
@@ -618,7 +619,7 @@ export function registerApplicationNativeCreateProcessor<TTable extends AnyPgTab
   handler: import('./native-models.js').ApplicationModelCreateEventHandler<import('drizzle-orm').InferSelectModel<TTable>, import('./native-models.js').ConventionalTableIdentity<TTable>>,
 ): ApplicationStreamProcessorBinding<ApplicationModelCreateEvent<import('drizzle-orm').InferSelectModel<TTable>, import('./native-models.js').ConventionalTableIdentity<TTable>>> {
   const contracts = applicationNativeCreateContracts(model);
-  return registerApplicationNativeProcessor(state, database, contracts.event, name, options, handler, (value) => String(value.identity));
+  return registerApplicationNativeProcessor(state, model, database, contracts.event, name, options, handler, (value) => String(value.identity));
 }
 
 export function registerApplicationNativeUpdateProcessor<TTable extends AnyPgTable>(
@@ -630,7 +631,7 @@ export function registerApplicationNativeUpdateProcessor<TTable extends AnyPgTab
   handler: import('./native-models.js').ApplicationModelUpdateEventHandler<import('drizzle-orm').InferSelectModel<TTable>, import('./native-models.js').ConventionalTableIdentity<TTable>>,
 ): ApplicationStreamProcessorBinding<ApplicationModelUpdateEvent<import('drizzle-orm').InferSelectModel<TTable>, import('./native-models.js').ConventionalTableIdentity<TTable>>> {
   const contracts = applicationNativeUpdateContracts(model);
-  return registerApplicationNativeProcessor(state, database, contracts.event, name, options, handler, (value) => String(value.identity));
+  return registerApplicationNativeProcessor(state, model, database, contracts.event, name, options, handler, (value) => String(value.identity));
 }
 
 export function registerApplicationNativeDeleteProcessor<TTable extends AnyPgTable>(
@@ -642,7 +643,7 @@ export function registerApplicationNativeDeleteProcessor<TTable extends AnyPgTab
   handler: import('./native-models.js').ApplicationModelDeleteEventHandler<import('drizzle-orm').InferSelectModel<TTable>, import('./native-models.js').ConventionalTableIdentity<TTable>>,
 ): ApplicationStreamProcessorBinding<ApplicationModelDeleteEvent<import('drizzle-orm').InferSelectModel<TTable>, import('./native-models.js').ConventionalTableIdentity<TTable>>> {
   const contracts = applicationNativeDeleteContracts(model);
-  return registerApplicationNativeProcessor(state, database, contracts.event, name, options, handler, (value) => String(value.identity));
+  return registerApplicationNativeProcessor(state, undefined, database, contracts.event, name, options, handler, (value) => String(value.identity));
 }
 
 export function registerApplicationNativeActionProcessor<TPayload extends object>(
@@ -655,6 +656,7 @@ export function registerApplicationNativeActionProcessor<TPayload extends object
 ): ApplicationStreamProcessorBinding<TPayload> {
   return registerApplicationNativeProcessor(
     state,
+    undefined,
     database,
     definition,
     name,
@@ -683,6 +685,7 @@ function applicationUuidFromDurableMessageIdentity(messageId: string): string {
 
 function registerApplicationNativeProcessor<TPayload extends object>(
   state: ApplicationNativeModelState,
+  sourceModel: object | undefined,
   database: ApplicationDatabaseBinding,
   definition: EventDefinition<TPayload>,
   name: string,
@@ -701,5 +704,14 @@ function registerApplicationNativeProcessor<TPayload extends object>(
     });
     state.modelLifecycleStreams.set(streamKey, stream as unknown as ApplicationStreamBinding<object>);
   }
-  return registerApplicationStreamProcessor(state, name, stream, options, handler);
+  return sourceModel
+    ? registerApplicationLifecycleStreamProcessor(
+        state,
+        name,
+        stream,
+        options,
+        handler,
+        sourceModel,
+      )
+    : registerApplicationStreamProcessor(state, name, stream, options, handler);
 }

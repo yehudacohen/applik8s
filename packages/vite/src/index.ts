@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, extname, relative, resolve } from 'node:path';
+import { basename, dirname, extname, relative, resolve } from 'node:path';
 import {
   type ApplicationFacadeManifest,
   applicationFacadeManifest,
@@ -48,6 +48,7 @@ type ViteOutputLike = ViteOutputChunkLike | ViteOutputAssetLike;
 export interface Applik8sVitePlugin {
   readonly name: '@applik8s/vite';
   readonly enforce: 'pre';
+  config(config: unknown, environment: { readonly command: 'build' | 'serve' }): void;
   configResolved(config: { readonly root: string; readonly build: { readonly outDir: string; readonly ssr?: boolean | string } }): void;
   buildStart(): Promise<void>;
   resolveId(this: { resolve(source: string, importer?: string, options?: { readonly skipSelf?: boolean; readonly ssr?: boolean }): Promise<{ readonly id: string } | null> }, source: string, importer?: string, options?: { readonly ssr?: boolean }): Promise<string | undefined>;
@@ -85,6 +86,8 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
   let root = process.cwd();
   let outDir = 'dist';
   let application = resolve(root, options.application ?? 'src/application.ts');
+  let developmentServer = false;
+  const managedDevelopmentEnvironment = new Set<string>();
   let facade: ApplicationFacadeManifest | undefined;
   let discovery: Promise<void> | undefined;
   const browserFacadeId = '\0applik8s:browser-facade';
@@ -92,6 +95,19 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
   const plugin: Applik8sVitePlugin = {
     name: '@applik8s/vite',
     enforce: 'pre',
+    config(_config, environment) {
+      developmentServer = environment.command === 'serve';
+      if (developmentServer) {
+        // Nitro may import the generated gateway before Vite reaches
+        // buildStart. Seed only framework-owned, non-production values here;
+        // graph discovery replaces the adapter-owned identity below.
+        installApplicationViteDevelopmentEnvironment(
+          basename(process.cwd()),
+          process.cwd(),
+          managedDevelopmentEnvironment,
+        );
+      }
+    },
     configResolved(config) {
       root = config.root;
       outDir = config.build.outDir;
@@ -176,6 +192,13 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
       options.compositionName,
     );
     if (!discovered.ok) throw new Error(`Applik8s Vite could not discover the ApplicationGraph: ${discovered.error.message}`);
+    if (developmentServer) {
+      installApplicationViteDevelopmentEnvironment(
+        discovered.value.graph.metadata.name,
+        root,
+        managedDevelopmentEnvironment,
+      );
+    }
     facade = applicationFacadeManifest(discovered.value.graph, {
       operationExports: discovered.value.operationExports,
       modelExports: discovered.value.modelExports,
@@ -206,6 +229,47 @@ export function applik8sVite(options: Applik8sViteOptions = {}): PluginOption {
       await writeFile(target, source);
     }));
     await writeFile(ownedFilesPath, `${JSON.stringify(currentFiles, null, 2)}\n`);
+  }
+}
+
+function installApplicationViteDevelopmentEnvironment(
+  applicationName: string,
+  root: string,
+  managed: Set<string>,
+): void {
+  const namespace = applicationName
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 56)
+    .replace(/-+$/g, '');
+  if (!namespace) {
+    throw new Error(
+      `Applik8s Vite cannot derive a local Kubernetes namespace from application ${JSON.stringify(applicationName)}.`,
+    );
+  }
+  const localSecret = (purpose: string) => createHash('sha256')
+    .update(`applik8s:vite-development:${purpose}:${root}:${applicationName}`)
+    .digest('hex');
+  const defaults = {
+    APPLIK8S_APPLICATION_NAME: applicationName,
+    APPLIK8S_NAMESPACE: `${namespace}-system`,
+    APPLIK8S_PROFILE_VARIANT: 'starter',
+    APPLIK8S_CURSOR_SECRET: localSecret('cursor'),
+    APPLIK8S_INTERNAL_OPERATION_SECRET: localSecret('internal-operation'),
+    APPLIK8S_OBJECT_STORAGE_ENABLED: 'false',
+    // The generated object runtime is constructed eagerly, while the disabled
+    // binding rejects every object operation before provider I/O. These values
+    // are deliberately non-secret and cannot name a production bucket.
+    APPLIK8S_OBJECT_STORAGE_BUCKET: 'applik8s-local-disabled',
+    APPLIK8S_OBJECT_STORAGE_REGION: 'local',
+    APPLIK8S_INSTALLATION_SPEC: '{}',
+  } as const;
+  for (const [name, value] of Object.entries(defaults)) {
+    if (managed.has(name) || !process.env[name]?.trim()) {
+      process.env[name] = value;
+      managed.add(name);
+    }
   }
 }
 

@@ -26,6 +26,7 @@ import { applicationGraphStringValue } from '../application-installation-values.
 import { kubernetesName, objectConfig, stringConfig } from './utilities.js';
 
 const DEFAULT_WORKER_IMAGE = 'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
+const APPLICATION_RUNTIME_NAMESPACE_MARKER = '__APPLIK8S_RUNTIME_NAMESPACE__';
 
 export interface WorkflowContract {
   readonly graphName: string;
@@ -55,6 +56,7 @@ export interface WorkflowContract {
 
 export interface WorkflowFunctionNativeTransactionContract {
   readonly taskHandlerId: string;
+  readonly mode: 'read' | 'write';
   readonly primaryModel: ApplicationModelNode & {
     readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
   };
@@ -253,7 +255,13 @@ export function workflowContract(
     ...tasks.map(({ task }) => task.name),
     ...workflows.map(({ workflow }) => workflow.name),
   ]);
-  for (const caller of gatewayCallers) {
+  const normalizedGatewayCallers = gatewayCallers.map((caller) => ({
+    ...caller,
+    namespace: caller.namespace === APPLICATION_RUNTIME_NAMESPACE_MARKER
+      ? namespace
+      : applicationGraphStringValue(caller.namespace) ?? caller.namespace,
+  }));
+  for (const caller of normalizedGatewayCallers) {
     if (caller.namespace !== namespace) {
       throw new Error(
         `Workflow worker ${worker.id} gateway caller ${caller.operator} is in namespace ${caller.namespace}; private workflow gateways require a shared namespace.`,
@@ -294,7 +302,7 @@ export function workflowContract(
     tokenKey: stringConfig(config.tokenKey) || (stringConfig(workerToken.name) || config.provision !== false ? 'HATCHET_CLIENT_TOKEN' : 'token'),
     image: stringConfig(objectConfig(config.worker).image) || DEFAULT_WORKER_IMAGE,
     contractNames: Object.fromEntries(graph.nodes.flatMap((node) => node.kind === 'task' || node.kind === 'workflow' ? [[node.id, node.name]] : [])),
-    gatewayCallers: [...gatewayCallers].sort((left, right) =>
+    gatewayCallers: normalizedGatewayCallers.sort((left, right) =>
       `${left.namespace}/${left.serviceAccount}/${left.operator}`.localeCompare(
         `${right.namespace}/${right.serviceAccount}/${right.operator}`,
       )),
@@ -374,6 +382,7 @@ function workflowFunctionNativeTransactions(
     });
     return [{
       taskHandlerId: handler.id,
+      mode: transaction.mode ?? 'write',
       primaryModel: primary as ApplicationModelNode & {
         readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
       },

@@ -1,6 +1,6 @@
 # RFP: Applik8s v0.7 — Relationship-Aware Search Projections
 
-**Status:** Proposed; maintainer review required
+**Status:** Accepted v0.7 contract; implementation evidence remains governed by the release scorecard
 
 **Charter:** [`charter-v07-agentic-platform.md`](charter-v07-agentic-platform.md)
 
@@ -447,13 +447,17 @@ external service or snapshots.
 - A fresh packed Agentic Start reaches search through canonical writes and committed changes without
   manual document insertion.
 
-## Open questions
+## Closed v0.7 decisions
 
-1. Which minimum relevance, facet, and highlight capabilities belong in the provider-neutral contract?
-2. Should vector retrieval extend `Index` in v0.7 or remain a follow-on provider refinement?
-3. Which fan-out estimates can be derived statically and which require declared runtime ceilings?
-4. Which complete candidate universes are small and predictable enough to permit fully recomputed
-   gateway authorization in v0.7?
+1. The provider-neutral contract includes lexical relevance, exact typed facets, bounded highlights,
+   filtering, stable pagination, and total-count capability reporting. Unsupported features fail
+   qualification rather than degrading silently.
+2. Vector retrieval is deferred beyond v0.7 as a provider refinement.
+3. Static relationship cardinality and bounded schema constraints may derive fan-out. Every remaining
+   path requires a declared ceiling and fails closed when it is exceeded.
+4. Fully recomputed gateway authorization is permitted only for a statically bounded candidate universe
+   whose maximum is recorded in the plan. Larger searches require provider-side candidate restriction
+   plus canonical result authorization.
 
 ## Definition of done
 

@@ -119,6 +119,12 @@ function applicationTypeKroExpression(value: unknown): string | undefined {
   if (typeof value === 'string' && value.startsWith('${') && value.endsWith('}')) {
     return value.slice(2, -1);
   }
+  const serializedSchemaReference = typeof value === 'string'
+    ? value.match(/^__KUBERNETES_REF___schema___([A-Za-z0-9_.]+)__$/)
+    : undefined;
+  if (serializedSchemaReference?.[1]) {
+    return `schema.${serializedSchemaReference[1]}`;
+  }
   if (!value || (typeof value !== 'object' && typeof value !== 'function')) return undefined;
   if (Reflect.get(value, Symbol.for('TypeKro.KubernetesRef')) === true) {
     const resourceId = Reflect.get(value, 'resourceId');

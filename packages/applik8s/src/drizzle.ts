@@ -1,4 +1,7 @@
 // typecast-file-boundary: Drizzle's generic table metadata is promoted into an equivalent model type after runtime table validation.
+// biome-ignore lint/suspicious/noRedundantUseStrict: Explicit ESM strictness prevents esbuild from alternating equivalent bundle output and artifact identities.
+'use strict';
+
 import {
   type BuildColumns,
   type BuildExtraConfigColumns,
@@ -35,12 +38,12 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
-import type { ApplicationRelationalModel } from './native-models.js';
 import type {
   ApplicationSignalBinding,
   ApplicationSignalDefinition,
   ApplicationSignalReference,
 } from './application-signals.js';
+import type { ApplicationRelationalModel } from './native-models.js';
 
 export interface ApplicationSignalFieldOptions {
   readonly visibility: 'same-as-issuance';
@@ -294,8 +297,7 @@ export const field = Object.freeze({
   },
 });
 
-export { index, pgEnum, primaryKey, uniqueIndex };
-export { relations };
+export { index, pgEnum, primaryKey, relations, uniqueIndex };
 
 const authenticatedPrincipalDefault = Symbol.for('@applik8s/drizzle-authenticated-principal-default');
 const causalPrincipalDefault = Symbol.for(

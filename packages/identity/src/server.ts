@@ -8,6 +8,7 @@ import type {
   ApplicationIdentityMfaMethodView,
   ApplicationIdentityPublicError,
   ApplicationIdentitySessionView,
+  ApplicationIdentitySessionDeviceView,
   ApplicationOAuthClientCredential,
   ApplicationOAuthClientView,
   ApplicationOAuthConsentView,
@@ -61,6 +62,13 @@ export interface ApplicationIdentityHttpOperations {
     context: ApplicationIdentityHttpContext,
   ): Promise<ApplicationIdentityAccountView>;
   removeMfa(methodId: string, context: ApplicationIdentityHttpContext): Promise<ApplicationIdentityAccountView>;
+  sessions?(
+    context: ApplicationIdentityHttpContext,
+  ): Promise<readonly ApplicationIdentitySessionDeviceView[]>;
+  revokeSession?(
+    sessionId: string,
+    context: ApplicationIdentityHttpContext,
+  ): Promise<readonly ApplicationIdentitySessionDeviceView[]>;
   consent(consentId: string, context: ApplicationIdentityHttpContext): Promise<ApplicationOAuthConsentView>;
   decideConsent(
     consentId: string,
@@ -130,6 +138,13 @@ export function createApplicationIdentitySessionHandler(
           ...(principal.sessionId ? { sessionId: principal.sessionId } : {}),
         },
         assurance: [],
+        capabilities: {
+          workspaceAdministration:
+            principal.roles?.includes('workspace-owner') === true
+            || principal.roles?.includes('workspace-administrator') === true,
+          applicationOperations:
+            principal.roles?.includes('application-operator') === true,
+        },
       });
     } catch {
       return json(anonymousApplicationIdentitySession());
@@ -194,6 +209,29 @@ export function createApplicationIdentityHttpHandler(
       }
       if (path[0] === 'account' && path[1] === 'mfa' && path.length === 3 && request.method === 'DELETE') {
         return json(await options.operations.removeMfa(requiredSegment(path[2]), context));
+      }
+      if (path[0] === 'account' && path[1] === 'sessions' && path.length === 2 && request.method === 'GET') {
+        if (!options.operations.sessions) {
+          return publicError('provider_unavailable', 'Session administration is unavailable.', 503);
+        }
+        return json({
+          protocol: applicationIdentityHttpProtocol,
+          kind: 'session-device-list',
+          items: await options.operations.sessions(context),
+        });
+      }
+      if (path[0] === 'account' && path[1] === 'sessions' && path.length === 3 && request.method === 'DELETE') {
+        if (!options.operations.revokeSession) {
+          return publicError('provider_unavailable', 'Session administration is unavailable.', 503);
+        }
+        return json({
+          protocol: applicationIdentityHttpProtocol,
+          kind: 'session-device-list',
+          items: await options.operations.revokeSession(
+            requiredSegment(path[2]),
+            context,
+          ),
+        });
       }
       if (path[0] === 'consents' && path.length === 2 && request.method === 'GET') {
         return json(await options.operations.consent(requiredSegment(path[1]), context));

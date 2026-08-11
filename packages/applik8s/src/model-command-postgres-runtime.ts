@@ -4,7 +4,11 @@ import { createHash } from 'node:crypto';
 import type { ApplicationMutationOperation } from '@applik8s/client';
 import type { ApplicationAuthorizationReceipt, ApplicationRetryPolicy, JsonObject, JsonValue } from '@applik8s/core';
 import { normalizeSchema } from '@applik8s/sdk/schema-runtime';
-import type { ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationRuntimeModelContract } from './application-models.js';
+import { withApplicationManagedEffects } from './application-managed-effects.js';
+import {
+  isApplicationModelPolicyRejectedError,
+} from './application-model-policy.js';
+import type { ApplicationModelCommandContext, ApplicationModelCommandHandler, ApplicationModelCommandParticipantClient, ApplicationModelCommandTarget, ApplicationModelObject, ApplicationModelPatch, ApplicationModelQueryOptions, ApplicationModelQueryPage, ApplicationModelRef, ApplicationRuntimeModelContract } from './application-models.js';
 import { applicationPublicStreamCommitScope } from './application-stream-commit.js';
 import {
   applicationCommandCausalPrincipalId,
@@ -13,19 +17,15 @@ import {
 } from './command-principal.js';
 import { applicationCommandScope, canonicalApplicationCommandKey } from './command-runtime-contract.js';
 import type { ApplicationCommandObservation, ApplicationMessageEnvelope, ApplicationStateRevisionRef, CommandDefinition, EventDefinition } from './dsl.js';
-import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from './postgres-runtime-contract.js';
-import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
-import { applicationRelationalChangeScopeDigest } from './relational-runtime.js';
-import { applicationModelChangeCommitScope } from './relational-runtime-contract.js';
-import { withApplicationNativeModelClients } from './native-model-execution.js';
 import type {
   ApplicationNativeModelEditTarget,
   ApplicationNativeModelTransactionRequest,
 } from './native-model-execution.js';
-import { withApplicationManagedEffects } from './application-managed-effects.js';
-import {
-  isApplicationModelPolicyRejectedError,
-} from './application-model-policy.js';
+import { withApplicationNativeModelClients } from './native-model-execution.js';
+import type { ApplicationPostgresSql, ApplicationPostgresTransactionSql } from './postgres-runtime-contract.js';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import { applicationRelationalChangeScopeDigest } from './relational-runtime.js';
+import { applicationModelChangeCommitScope } from './relational-runtime-contract.js';
 
 export { canonicalApplicationCommandKey } from './command-runtime-contract.js';
 
@@ -90,6 +90,8 @@ export interface PostgresModelCommandExecution<
    */
   readonly completionEvent?: PostgresModelCommandEventDefinition;
   readonly commands?: readonly CommandDefinition<object, object, Readonly<Record<string, object>>>[];
+  /** Compiler-proven same-authority operations callable by the handler. */
+  readonly atomicOperations?: readonly FunctionNativePostgresNestedOperation[];
   readonly ordering?: 'serial' | 'concurrent';
   readonly missingRoute?: string;
   readonly initialize?: (input: TInput, targetKey: string) => TSpec;
@@ -111,6 +113,8 @@ export interface PostgresModelCommandExecution<
     | { readonly allowed: false; readonly code: string; readonly message: string }
   >;
   readonly databaseUrl?: string;
+  /** Compiler-owned shared transaction for awaited operation composition. */
+  readonly transaction?: ApplicationPostgresTransactionSql;
 }
 
 /**
@@ -137,6 +141,8 @@ export interface FunctionNativePostgresModelEditExecution {
   readonly model: ApplicationRuntimeModelContract;
   readonly models: readonly ApplicationRuntimeModelContract[];
   readonly outbox: readonly PostgresModelCommandEventDefinition[];
+  readonly commands?: readonly CommandDefinition<object, object, Readonly<Record<string, object>>>[];
+  readonly atomicOperations?: readonly FunctionNativePostgresNestedOperation[];
   readonly databaseUrl: string;
   readonly delivery: {
     readonly id: string;
@@ -153,6 +159,38 @@ export interface FunctionNativePostgresModelEditExecution {
       'revalidateAuthorization'
     ]
   >;
+}
+
+export interface FunctionNativePostgresNestedOperation {
+  readonly operationId: string;
+  readonly bindingId: string;
+  readonly operation: 'create' | 'update' | 'delete' | 'custom';
+  readonly command: { readonly name: string; readonly version: string };
+  readonly errors: readonly string[];
+  readonly schemas: NonNullable<PostgresModelCommandExecution<object, object, object, object>['schemas']>;
+  readonly model: ApplicationRuntimeModelContract;
+  readonly models: readonly ApplicationRuntimeModelContract[];
+  readonly selfRead: boolean;
+  readonly historyModels: readonly string[];
+  readonly retry: ApplicationRetryPolicy;
+  readonly history: boolean;
+  readonly outbox: readonly PostgresModelCommandEventDefinition[];
+  readonly completionEvent?: PostgresModelCommandEventDefinition;
+  readonly commands: readonly CommandDefinition<object, object, Readonly<Record<string, object>>>[];
+  readonly ordering: 'serial' | 'concurrent';
+  readonly missingRoute?: string;
+  readonly initialize?: (input: object, targetKey: string) => object;
+  readonly handler: ApplicationModelCommandHandler<object, object, object, object>;
+  readonly revalidateAuthorization?: PostgresModelCommandExecution<object, object, object, object>['revalidateAuthorization'];
+}
+
+export interface FunctionNativePostgresTransactionExecution {
+  readonly bindingId: string;
+  readonly databaseUrl: string;
+  readonly connectionModel: ApplicationRuntimeModelContract;
+  readonly operations: readonly FunctionNativePostgresNestedOperation[];
+  readonly delivery: FunctionNativePostgresModelEditExecution['delivery'];
+  readonly retry?: ApplicationRetryPolicy;
 }
 
 interface FunctionNativeModelEditResult {
@@ -279,10 +317,18 @@ export async function executePostgresModelCommand<
 >(execution: PostgresModelCommandExecution<TSpec, TStatus, TInput, TOutput>): Promise<PostgresModelCommandResult<TSpec, TStatus, TOutput>> {
   installCommandEffectGuards();
   validateJsonMessageSchema(execution.schemas?.input, execution.message.input, `${execution.command.name}.${execution.command.version}.input`);
-  const sql = await postgresCommandDatabase(execution.model, execution.databaseUrl);
+  const sql = execution.transaction
+    ? undefined
+    : await postgresCommandDatabase(execution.model, execution.databaseUrl);
   const scope = commandScope(execution);
   const recordedAt = execution.message.recordedAt ?? new Date().toISOString();
-  const outcome: PostgresModelCommandResult<TSpec, TStatus, TOutput> | RejectedCommandOutcome = await retryPostgresCommandTransaction(() => sql.begin(async (transaction) => {
+  const execute = () => {
+    const run = async (
+      transaction: ApplicationPostgresTransactionSql,
+    ): Promise<
+      | PostgresModelCommandResult<TSpec, TStatus, TOutput>
+      | RejectedCommandOutcome
+    > => {
     await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [scope]);
     if (execution.message.context?.digest) {
       await transaction.unsafe('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [applicationModelChangeCommitScope(execution.message.context.digest)]);
@@ -414,6 +460,13 @@ export async function executePostgresModelCommand<
     const emitted: EmittedEvent[] = [];
     const allowedEvents = new Set((execution.outbox ?? []).map((definition) => definition.id));
     const allowedCommands = new Map((execution.commands ?? []).map((definition) => [definition.id, definition]));
+    const atomicOperations = new Map(
+      (execution.atomicOperations ?? []).map((operation) => [
+        operation.operationId,
+        operation,
+      ]),
+    );
+    let atomicOperationSequence = 0;
     const emittedCommands: EmittedCommand[] = [];
     const target = commandTarget<TSpec, TStatus>(before, (patch) => {
       stagedSpec = { ...stagedSpec, ...(patch.spec ?? {}) };
@@ -527,6 +580,75 @@ export async function executePostgresModelCommand<
                   sequence,
                 };
               },
+              ...(atomicOperations.size > 0
+                ? {
+                    async invokeAtomic(operation, input, route) {
+                      const nested = atomicOperations.get(operation.id);
+                      if (!nested) {
+                        throw new Error(
+                          `applik8s-function-native-operation-undeclared: Transaction ${execution.bindingId} attempted ${operation.id}, but the compiler did not prove that dependency.`,
+                        );
+                      }
+                      if (
+                        nested.model.connectionEnvName
+                        !== execution.model.connectionEnvName
+                      ) {
+                        throw new Error(
+                          `applik8s-function-native-cross-authority: Operation ${operation.id} uses ${nested.model.connectionEnvName}, while transaction ${execution.bindingId} uses ${execution.model.connectionEnvName}. Use a workflow or a post-commit event handler across database authorities.`,
+                        );
+                      }
+                      const sequence = atomicOperationSequence;
+                      atomicOperationSequence += 1;
+                      const messageId = commandDeterministicId(
+                        scope,
+                        `atomic-command:${sequence}:${operation.id}`,
+                      );
+                      const delivery = route(messageId);
+                      const nestedTargetKey = canonicalApplicationCommandKey(
+                        delivery.targetKey,
+                      );
+                      if (
+                        nested.model.name === execution.model.name
+                        && nestedTargetKey === effectiveTargetKey
+                      ) {
+                        throw new Error(
+                          `applik8s-function-native-reentrant-target: Transaction ${execution.bindingId} cannot invoke ${operation.id} against its own locked target ${execution.model.name}/${effectiveTargetKey}. Mutate the current edit target directly.`,
+                        );
+                      }
+                      const {
+                        revalidateAuthorization,
+                        ...nestedExecution
+                      } = nested;
+                      const nestedResult = await executePostgresModelCommand({
+                        ...nestedExecution,
+                        ...(revalidateAuthorization
+                          ? { revalidateAuthorization }
+                          : {}),
+                        message: {
+                          id: messageId,
+                          input,
+                          targetKey: nestedTargetKey,
+                          idempotencyKey:
+                            delivery.idempotencyKey
+                            ?? commandDeterministicId(
+                              scope,
+                              `atomic-idempotency:${sequence}:${operation.id}`,
+                            ),
+                          correlationId:
+                            execution.message.correlationId
+                            ?? execution.message.id,
+                          causationId: execution.message.id,
+                          recordedAt,
+                          ...(execution.message.context
+                            ? { context: execution.message.context }
+                            : {}),
+                        },
+                        transaction,
+                      });
+                      return nestedResult.output;
+                    },
+                  }
+                : {}),
             },
             () => execution.handler(target, execution.message.input, context),
           ),
@@ -722,7 +844,18 @@ export async function executePostgresModelCommand<
       ...(deleteTarget ? { deleted: true } : {}),
       events: envelopes,
     };
-  }), execution.retry);
+    };
+    if (execution.transaction) return run(execution.transaction);
+    if (!sql) {
+      throw new Error(
+        `applik8s-command-database-unavailable: Command ${execution.bindingId} has neither a compiler-owned transaction nor a database connection.`,
+      );
+    }
+    return sql.begin(run);
+  };
+  const outcome: PostgresModelCommandResult<TSpec, TStatus, TOutput> | RejectedCommandOutcome = execution.transaction
+    ? await execute()
+    : await retryPostgresCommandTransaction(execute, execution.retry);
   if ('rejected' in outcome) {
     throw new DurableCommandRejectedError(
       outcome.rejection,
@@ -731,6 +864,120 @@ export async function executePostgresModelCommand<
     );
   }
   return outcome;
+}
+
+/**
+ * Runs an ordinary callback in one PostgreSQL transaction and exposes only
+ * compiler-proven nested operations. Nested results are observable by the
+ * callback, but remain provisional until the outer callback succeeds.
+ */
+export async function executeFunctionNativePostgresTransaction<TResult>(
+  execution: FunctionNativePostgresTransactionExecution,
+  handler: () => TResult | Promise<TResult>,
+): Promise<TResult> {
+  const duplicateIds = execution.operations
+    .map(({ operationId }) => operationId)
+    .filter((id, index, all) => all.indexOf(id) !== index);
+  if (duplicateIds.length > 0) {
+    throw new Error(
+      `applik8s-function-native-operation-ambiguous: Transaction ${execution.bindingId} contains duplicate operation bindings ${[...new Set(duplicateIds)].join(', ')}.`,
+    );
+  }
+  const operations = new Map(
+    execution.operations.map((operation) => [operation.operationId, operation]),
+  );
+  const sql = await postgresCommandDatabase(
+    execution.connectionModel,
+    execution.databaseUrl,
+  );
+  const outerScope = `function-native:${execution.bindingId}:${execution.delivery.id}:${execution.delivery.idempotencyKey}:${execution.delivery.context?.digest ?? 'unscoped'}`;
+  return retryPostgresCommandTransaction(
+    () => sql.begin(async (transaction) => {
+      let sequence = 0;
+      const principal = applicationCommandPrincipal(execution.delivery.context);
+      return withApplicationManagedEffects(
+        {
+          commandId: execution.delivery.id,
+          routingContext: {
+            ...(principal ? { principal } : {}),
+            trustedContext: applicationCommandTrustedContext(
+              execution.delivery.context,
+            ),
+          },
+          emit(contract) {
+            throw new Error(
+              `applik8s-function-native-event-without-model-edit: Event ${contract.id} needs an explicit Model.edit(...) transaction boundary.`,
+            );
+          },
+          invoke(operation) {
+            throw new Error(
+              `applik8s-function-native-staged-command-invalid: Operation ${operation.id} must be awaited so it can compose into the active transaction.`,
+            );
+          },
+          async invokeAtomic(operation, input, route) {
+            const nested = operations.get(operation.id);
+            if (!nested) {
+              throw new Error(
+                `applik8s-function-native-operation-undeclared: Transaction ${execution.bindingId} attempted ${operation.id}, but the compiler did not prove that dependency.`,
+              );
+            }
+            if (
+              nested.model.connectionEnvName
+              !== execution.connectionModel.connectionEnvName
+            ) {
+              throw new Error(
+                `applik8s-function-native-cross-authority: Operation ${operation.id} uses ${nested.model.connectionEnvName}, while transaction ${execution.bindingId} uses ${execution.connectionModel.connectionEnvName}. Use a workflow or a post-commit event handler across database authorities.`,
+              );
+            }
+            const invocation = sequence;
+            sequence += 1;
+            const messageId = commandDeterministicId(
+              outerScope,
+              `atomic-command:${invocation}:${operation.id}`,
+            );
+            const delivery = route(messageId);
+            const {
+              revalidateAuthorization,
+              ...nestedExecution
+            } = nested;
+            const result = await executePostgresModelCommand({
+              ...nestedExecution,
+              ...(revalidateAuthorization
+                ? { revalidateAuthorization }
+                : {}),
+              message: {
+                id: messageId,
+                input,
+                targetKey: canonicalApplicationCommandKey(delivery.targetKey),
+                idempotencyKey:
+                  delivery.idempotencyKey
+                  ?? commandDeterministicId(
+                    outerScope,
+                    `atomic-idempotency:${invocation}:${operation.id}`,
+                  ),
+                correlationId:
+                  execution.delivery.correlationId ?? execution.delivery.id,
+                causationId: execution.delivery.id,
+                ...(execution.delivery.recordedAt
+                  ? { recordedAt: execution.delivery.recordedAt }
+                  : {}),
+                ...(execution.delivery.attempt
+                  ? { attempt: execution.delivery.attempt }
+                  : {}),
+                ...(execution.delivery.context
+                  ? { context: execution.delivery.context }
+                  : {}),
+              },
+              transaction,
+            });
+            return result.output;
+          },
+        },
+        handler,
+      );
+    }),
+    execution.retry,
+  );
 }
 
 /**
@@ -800,6 +1047,10 @@ export async function executeFunctionNativePostgresModelEdit<
         : {}),
     },
     outbox: execution.outbox,
+    ...(execution.commands ? { commands: execution.commands } : {}),
+    ...(execution.atomicOperations
+      ? { atomicOperations: execution.atomicOperations }
+      : {}),
     ordering: 'serial',
     ...(execution.revalidateAuthorization
       ? {
@@ -842,6 +1093,52 @@ export async function executeFunctionNativePostgresModelEdit<
   // typecast: the transaction stores only JSON and restores the same generic
   // result contract; undefined is represented by returned:false.
   return (output.returned ? output.value : undefined) as TResult;
+}
+
+/**
+ * Creates the lock-free model readers installed around a managed callback.
+ * Mutations remain available only through the durable command/edit kernels.
+ */
+export async function applicationPostgresModelReadClients(
+  database: ApplicationPostgresSql | string,
+  models: readonly ApplicationRuntimeModelContract[],
+): Promise<Readonly<Record<string, ApplicationModelCommandParticipantClient>>> {
+  const firstModel = models[0];
+  if (!firstModel) return Object.freeze({});
+  const sql = typeof database === 'string'
+    ? await postgresCommandDatabase(firstModel, database)
+    : database;
+  const clients: Record<string, ApplicationModelCommandParticipantClient> = {};
+  const mutationError = () => {
+    throw new Error(
+      'applik8s-function-native-read-client-mutation: Direct model reads cannot mutate outside a durable Model.edit or model operation boundary.',
+    );
+  };
+  for (const model of models) {
+    const client: ApplicationModelCommandParticipantClient = Object.freeze({
+      get: (reference: ApplicationModelRef) => lockedModelObject<object, object>(
+        sql,
+        model,
+        reference.id,
+        false,
+      ),
+      query: (
+        options: ApplicationModelQueryOptions<object> & {
+          readonly limit: number;
+        },
+      ) => lockedModelObjects<object, object>(
+        sql,
+        model,
+        options,
+        false,
+      ),
+      create: mutationError,
+      patch: mutationError,
+      delete: mutationError,
+    });
+    clients[model.name] = client;
+  }
+  return Object.freeze(clients);
 }
 
 function applicationEventPartitionKey(
@@ -1338,7 +1635,7 @@ function postgresCommandDatabase(model: ApplicationRuntimeModelContract, databas
 
 // typecast-boundary: PostgreSQL's untyped row is converted through the registered native column contract before returning generic model data.
 async function lockedModelObject<TSpec extends object, TStatus extends object>(
-  transaction: ApplicationPostgresTransactionSql,
+  transaction: Pick<ApplicationPostgresTransactionSql, 'unsafe'>,
   model: ApplicationRuntimeModelContract,
   targetKey: string,
   lock: boolean,
@@ -1374,9 +1671,10 @@ async function lockedModelObject<TSpec extends object, TStatus extends object>(
 }
 
 async function lockedModelObjects<TSpec extends object, TStatus extends object>(
-  transaction: ApplicationPostgresTransactionSql,
+  transaction: Pick<ApplicationPostgresTransactionSql, 'unsafe'>,
   model: ApplicationRuntimeModelContract,
   query: ApplicationModelQueryOptions<TSpec> & { readonly limit: number },
+  lock = true,
 ): Promise<ApplicationModelQueryPage<TSpec, TStatus>> {
   if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 100) throw new Error(`applik8s-command-participant-query-limit-invalid: Model ${model.name} requires a limit between 1 and 100.`);
   if (query.cursor || (query.orderBy?.length ?? 0) > 0) throw new Error(`applik8s-command-participant-query-unsupported: Model ${model.name} transaction queries currently support only bounded equality filters.`);
@@ -1392,7 +1690,7 @@ async function lockedModelObjects<TSpec extends object, TStatus extends object>(
       return `${quoteIdentifier(column)} = $${parameters.length}`;
     });
     const where = predicates.length > 0 ? ` WHERE ${predicates.join(' AND ')}` : '';
-    const rows = await transaction.unsafe(`SELECT * FROM ${qualifiedModelTable(model)}${where} ORDER BY ${quoteIdentifier(native.identity.column)} ASC LIMIT ${query.limit} FOR UPDATE`, parameters as never[]);
+    const rows = await transaction.unsafe(`SELECT * FROM ${qualifiedModelTable(model)}${where} ORDER BY ${quoteIdentifier(native.identity.column)} ASC LIMIT ${query.limit}${lock ? ' FOR UPDATE' : ''}`, parameters as never[]);
     return {
       items: rows.map((row) => {
         const value = nativeRowToProperties(model, row as NativeModelRow) as TSpec;
@@ -1404,7 +1702,7 @@ async function lockedModelObjects<TSpec extends object, TStatus extends object>(
   }
   const where = query.where && Object.keys(query.where).length > 0 ? ' WHERE spec @> $1::jsonb' : '';
   const parameters = where ? [JSON.stringify(query.where)] : [];
-  const rows = await transaction.unsafe(`SELECT id, spec, status, revision FROM ${qualifiedModelTable(model)}${where} ORDER BY id ASC LIMIT ${query.limit} FOR UPDATE`, parameters);
+  const rows = await transaction.unsafe(`SELECT id, spec, status, revision FROM ${qualifiedModelTable(model)}${where} ORDER BY id ASC LIMIT ${query.limit}${lock ? ' FOR UPDATE' : ''}`, parameters);
   return {
     items: rows.map((row) => {
       // postgres.js deliberately exposes a broad Row & Iterable<Row> result

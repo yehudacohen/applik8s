@@ -22,7 +22,7 @@ const BillingDashboardResult = type({
   subscription: type({
     planId: 'string',
     provider: 'string',
-    status: "'active' | 'past_due' | 'cancelled'",
+    status: "'trialing' | 'active' | 'past_due' | 'paused' | 'unpaid' | 'cancelled' | 'incomplete'",
     periodEnd: 'string',
   }).or('null'),
   usage: {
@@ -141,7 +141,71 @@ const PortalOutput = type({
   url: 'string',
   mode: "'simulated' | 'live'",
 });
+const ChangeSubscriptionInput = type({
+  plan: 'string > 0',
+  timing: "'immediate' | 'periodEnd'",
+});
+const ChangeSubscriptionOutput = type({
+  provider: 'string',
+  providerSubscriptionId: 'string',
+  state: "'applied' | 'scheduled'",
+  effectiveAt: 'string',
+});
+const CancelSubscriptionInput = type({
+  timing: "'immediate' | 'periodEnd'",
+});
+const CancelSubscriptionOutput = type({
+  provider: 'string',
+  providerSubscriptionId: 'string',
+  cancelled: 'boolean',
+  effectiveAt: 'string',
+});
+const ResumeSubscriptionInput = type({});
+const PaymentEvent = type({
+  provider: 'string > 0',
+  id: 'string > 0',
+  customerId: 'string > 0',
+  subscriptionId: 'string > 0',
+  principalScope: 'string > 0',
+  plan: 'string > 0',
+  status: "'active' | 'pastDue' | 'cancelled'",
+  occurredAt: 'string > 0',
+  periodStart: 'string > 0',
+  periodEnd: 'string > 0',
+  rawType: 'string > 0',
+});
+const PaymentWebhookResult = type({
+  received: 'true',
+  eventId: 'string > 0',
+});
 const billingApi = application.http('billing');
+
+export const ReceivePaymentWebhook = billingApi.webhook(
+  'receive-payment-webhook',
+  '/webhooks/payments',
+  {
+    event: PaymentEvent,
+    output: PaymentWebhookResult,
+    authenticate: request => Billing.verifyWebhook({
+      body: request.body,
+      headers: request.headers,
+    }),
+  },
+  async function receivePaymentWebhook(request) {
+    const event = request.input;
+    await Billing.PaymentEvent.create({
+      id: event.id,
+      provider: event.provider,
+      providerEventId: event.id,
+      principalScope: event.principalScope,
+      providerSubscriptionId: event.subscriptionId,
+      type: event.rawType,
+      occurredAt: event.occurredAt,
+      payload: event,
+    });
+    return { received: true, eventId: event.id };
+  },
+);
 
 export const StartCheckout = billingApi.post(
   'start-checkout',
@@ -180,6 +244,73 @@ export const OpenBillingPortal = billingApi.post(
       ),
       returnTo: request.input.returnTo,
       idempotencyKey: `${context.principal.id}:portal`,
+    });
+  },
+);
+
+export const ChangeSubscription = billingApi.post(
+  'change-subscription',
+  '/subscription/change',
+  {
+    input: ChangeSubscriptionInput,
+    output: ChangeSubscriptionOutput,
+    authorize: (_request, context) => context.principal.id.length > 0,
+  },
+  async function changeSubscription(request, context) {
+    const principalScope = applicationAIConversationPrincipalScope(
+      context.principal,
+      context.trustedContext,
+    );
+    return Billing.changeSubscription({
+      principalScope,
+      plan: request.input.plan,
+      timing: request.input.timing,
+      proration: 'createProrations',
+      idempotencyKey:
+        `${principalScope}:change:${request.input.timing}:${request.input.plan}`,
+    });
+  },
+);
+
+export const CancelSubscription = billingApi.post(
+  'cancel-subscription',
+  '/subscription/cancel',
+  {
+    input: CancelSubscriptionInput,
+    output: CancelSubscriptionOutput,
+    authorize: (_request, context) => context.principal.id.length > 0,
+  },
+  async function cancelSubscription(request, context) {
+    const principalScope = applicationAIConversationPrincipalScope(
+      context.principal,
+      context.trustedContext,
+    );
+    return Billing.cancelSubscription({
+      principalScope,
+      timing: request.input.timing,
+      idempotencyKey:
+        `${principalScope}:cancel:${request.input.timing}`,
+    });
+  },
+);
+
+export const ResumeSubscription = billingApi.post(
+  'resume-subscription',
+  '/subscription/resume',
+  {
+    input: ResumeSubscriptionInput,
+    output: CancelSubscriptionOutput,
+    authorize: (_request, context) => context.principal.id.length > 0,
+  },
+  async function resumeSubscription(request, context) {
+    const principalScope = applicationAIConversationPrincipalScope(
+      context.principal,
+      context.trustedContext,
+    );
+    return Billing.resumeSubscription({
+      principalScope,
+      idempotencyKey:
+        `${principalScope}:resume`,
     });
   },
 );

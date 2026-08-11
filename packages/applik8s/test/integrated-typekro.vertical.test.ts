@@ -2988,10 +2988,10 @@ describe('integrated TypeKro package surface', () => {
     const adapterPackage = JSON.parse(await readFile('packages/typekro-adapter/package.json', 'utf8'));
     const installedPackage = JSON.parse(await readFile('node_modules/typekro/package.json', 'utf8'));
 
-    expect(workspacePackage.dependencies.typekro).toBe('0.33.5');
-    expect(applik8sPackage.dependencies.typekro).toBe('0.33.5');
-    expect(adapterPackage.dependencies.typekro).toBe('0.33.5');
-    expect(installedPackage.version).toBe('0.33.5');
+    expect(workspacePackage.dependencies.typekro).toBe('0.33.6');
+    expect(applik8sPackage.dependencies.typekro).toBe('0.33.6');
+    expect(adapterPackage.dependencies.typekro).toBe('0.33.6');
+    expect(installedPackage.version).toBe('0.33.6');
   });
 
   it('builds generated app infrastructure on existing TypeKro Kubernetes factories', async () => {

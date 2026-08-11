@@ -212,6 +212,178 @@ describe('operation authority lifecycle', () => {
     ]);
   });
 
+  it('bootstraps an exact admitted identity once and does not reopen after revocation', async () => {
+    const repository = new InMemoryApplicationAuthorityRepository();
+    const authority = new ApplicationAuthorityService(repository, {
+      now: () => new Date('2026-07-29T00:00:00.000Z'),
+      id: () => 'operator-bootstrap-audit',
+    });
+    const applicationIdentity: ApplicationIdentityReference = {
+      id: 'identity:chirp:application',
+      kind: 'service',
+      issuer: 'applik8s://chirp',
+      subject: 'application-authority',
+    };
+    const operatorIdentity: ApplicationIdentityReference = {
+      id: 'identity:operator',
+      kind: 'human',
+      issuer: 'https://identity.example.test',
+      subject: 'operator-1',
+    };
+    const bootstrap = {
+      id: 'bootstrap:chirp:role:application-operator',
+      roleId: 'role:chirp:application-operator',
+      identity: operatorIdentity,
+      issuedBy: applicationIdentity,
+      reason: 'Initial operator bootstrap.',
+    };
+    await authority.reconcileStaticAuthorityManifest({
+      apiVersion: 'applik8s.authorityManifest/v1alpha1',
+      application: 'chirp',
+      revision: 'sha256:operator-bootstrap',
+      identities: [applicationIdentity, operatorIdentity],
+      permissions: [{
+        id: 'permission:chirp:operations',
+        name: 'operations',
+        operationIds: [operation.id],
+        scope: { kind: 'all' },
+        grantable: false,
+      }],
+      roles: [{
+        id: bootstrap.roleId,
+        name: 'application-operator',
+        permissionIds: ['permission:chirp:operations'],
+      }],
+      grants: [],
+      roleBootstraps: [bootstrap],
+      outcomes: [],
+    }, catalog.revision);
+
+    const first = await authority.bootstrapDeclaredRole(
+      bootstrap,
+      operatorIdentity,
+    );
+    const second = await authority.bootstrapDeclaredRole(
+      bootstrap,
+      operatorIdentity,
+    );
+    expect(second).toEqual(first);
+    expect(await authority.grantedRolesForIdentity(operatorIdentity)).toEqual([
+      'application-operator',
+    ]);
+
+    await authority.revokeGrant(first[0]!.id, 'operator removed');
+    expect(await authority.bootstrapDeclaredRole(
+      bootstrap,
+      operatorIdentity,
+    )).toEqual([]);
+    expect(await authority.grantedRolesForIdentity(operatorIdentity)).toEqual([]);
+  });
+
+  it('shares one role bootstrap lease across provider subjects and supports bounded break-glass recovery', async () => {
+    const repository = new InMemoryApplicationAuthorityRepository();
+    const now = new Date('2026-07-29T00:00:00.000Z');
+    const authority = new ApplicationAuthorityService(repository, {
+      now: () => now,
+      id: () => 'authority-audit',
+    });
+    const applicationIdentity: ApplicationIdentityReference = {
+      id: 'identity:chirp:application',
+      kind: 'service',
+      issuer: 'applik8s://chirp',
+      subject: 'application-authority',
+    };
+    const firstOperator: ApplicationIdentityReference = {
+      id: 'identity:operator:first',
+      kind: 'human',
+      issuer: 'https://identity.example.test',
+      subject: 'operator-1',
+    };
+    const replacementOperator: ApplicationIdentityReference = {
+      id: 'identity:operator:replacement',
+      kind: 'human',
+      issuer: 'https://identity.example.test',
+      subject: 'operator-2',
+    };
+    const roleId = 'role:chirp:application-operator';
+    await authority.reconcileStaticAuthorityManifest({
+      apiVersion: 'applik8s.authorityManifest/v1alpha1',
+      application: 'chirp',
+      revision: 'sha256:operator-cli',
+      identities: [applicationIdentity],
+      permissions: [{
+        id: 'permission:chirp:operations',
+        name: 'operations',
+        operationIds: [operation.id],
+        scope: { kind: 'all' },
+        grantable: false,
+      }],
+      roles: [{
+        id: roleId,
+        name: 'application-operator',
+        permissionIds: ['permission:chirp:operations'],
+      }],
+      grants: [],
+      outcomes: [],
+    }, catalog.revision);
+
+    const initial = await authority.bootstrapRole({
+      id: 'bootstrap:provider-subject',
+      roleId,
+      identity: firstOperator,
+      issuedBy: applicationIdentity,
+      reason: 'Initial provider-verified operator.',
+    });
+    expect(initial).toHaveLength(1);
+    expect(await authority.bootstrapRole({
+      id: 'bootstrap:different-command-id',
+      roleId,
+      identity: replacementOperator,
+      issuedBy: applicationIdentity,
+      reason: 'Must remain inert.',
+    })).toEqual([]);
+
+    await authority.revokeRoleForIdentity(
+      roleId,
+      firstOperator,
+      'Operator rotated.',
+    );
+    expect(await authority.grantedRolesForIdentity(firstOperator)).toEqual([]);
+
+    const recovery = await authority.assignBreakGlassRole({
+      id: 'incident-42',
+      roleId,
+      identity: replacementOperator,
+      issuedBy: applicationIdentity,
+      reason: 'Restore operator access during incident 42.',
+      acknowledgement: 'I understand this grants exceptional production authority.',
+      expiresAt: '2026-07-29T04:00:00.000Z',
+    });
+    expect(recovery).toHaveLength(1);
+    expect(recovery[0]).toMatchObject({
+      identity: replacementOperator,
+      expiresAt: '2026-07-29T04:00:00.000Z',
+    });
+    expect(await authority.grantedRolesForIdentity(replacementOperator)).toEqual([
+      'application-operator',
+    ]);
+    await expect(authority.assignBreakGlassRole({
+      id: 'incident-too-long',
+      roleId,
+      identity: replacementOperator,
+      issuedBy: applicationIdentity,
+      reason: 'Invalid duration.',
+      acknowledgement: 'Acknowledged.',
+      expiresAt: '2026-08-01T00:00:00.000Z',
+    })).rejects.toMatchObject({
+      code: 'AUTHORITY_BREAK_GLASS_ACKNOWLEDGEMENT_REQUIRED',
+    });
+    expect(repository.audit()).toContainEqual(expect.objectContaining({
+      kind: 'break-glass',
+      details: expect.objectContaining({ requestId: 'incident-42', roleId }),
+    }));
+  });
+
   it('authorizes only provider-admitted principal roles through static role permissions', async () => {
     const repository = new InMemoryApplicationAuthorityRepository();
     const authority = new ApplicationAuthorityService(repository, {

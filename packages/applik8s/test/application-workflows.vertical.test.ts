@@ -239,7 +239,7 @@ describe('v0.5 durable task and workflow contracts', () => {
         return { endpoint: 'https://tenant-a.example.test' } as never;
       },
       async start() {
-        return { id: 'run-1', async result() {
+        return { id: 'run-1', __idempotencyKey: 'request-2', async result() {
           // typecast: the generic fake returns the caller-selected test output.
           return { endpoint: 'unused' } as never;
         }, async observe() {
@@ -267,6 +267,7 @@ describe('v0.5 durable task and workflow contracts', () => {
         run: 'run-1',
       });
       expect(started.workflowRevision).toBe('v1');
+      expect(started.__idempotencyKey).toBe('request-2');
       await expect(started.observe()).resolves.toEqual({
         reference: started.reference,
         workflowRevision: 'v1',

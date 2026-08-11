@@ -366,6 +366,12 @@ export interface ApplicationIdentityProvider {
   /** Compiler-readable fixed admission for the explicitly starter-only deterministic provider. */
   readonly deterministicAdmission?: ApplicationRequestAdmission;
   authenticate(request: Request): ApplicationRequestAdmission | Promise<ApplicationRequestAdmission>;
+  /**
+   * Optional complete provider-neutral identity HTTP surface. The generated
+   * application host routes the bounded framework identity protocol here;
+   * provider-native payloads remain behind this callback.
+   */
+  handle?(request: Request): Response | Promise<Response>;
   /** Bounded credential-free capability probe used by generated workload readiness. */
   ready?(): void | Promise<void>;
 }
@@ -875,6 +881,7 @@ export interface ApplicationIdentityProviderToken extends ApplicationQualifiable
     options?: {
       readonly infrastructure?: ApplicationIdentityInfrastructure;
       readonly ready?: NonNullable<ApplicationIdentityProvider['ready']>;
+      readonly handle?: NonNullable<ApplicationIdentityProvider['handle']>;
       readonly dependencies?: ApplicationIdentityProviderDependencies;
     },
   ): ApplicationIdentityProvider;
@@ -1432,6 +1439,7 @@ export const IdentityProvider: ApplicationIdentityProviderToken = applicationQua
   from(authenticate, options) {
     if (options?.infrastructure) assertApplicationIdentityInfrastructure(options.infrastructure);
     if (options?.ready !== undefined && typeof options.ready !== 'function') throw new Error('IdentityProvider.from({ ready }) must be a function.');
+    if (options?.handle !== undefined && typeof options.handle !== 'function') throw new Error('IdentityProvider.from({ handle }) must be a function.');
     if (
       options?.dependencies?.database
       && (
@@ -1450,6 +1458,7 @@ export const IdentityProvider: ApplicationIdentityProviderToken = applicationQua
       authenticate,
       ...(options?.infrastructure ? { infrastructure: options.infrastructure } : {}),
       ...(options?.ready ? { ready: options.ready } : {}),
+      ...(options?.handle ? { handle: options.handle } : {}),
     };
     if (options?.dependencies) {
       applicationIdentityProviderDependencies.set(
@@ -3253,6 +3262,7 @@ export function applicationProviderInterface(tokenName: string | undefined): App
 export function isApplicationIdentityProvider(value: unknown): value is ApplicationIdentityProvider {
   if (!value || typeof value !== 'object' || Reflect.get(value, 'kind') !== 'identity-provider' || typeof Reflect.get(value, 'authenticate') !== 'function') return false;
   if (Reflect.get(value, 'ready') !== undefined && typeof Reflect.get(value, 'ready') !== 'function') return false;
+  if (Reflect.get(value, 'handle') !== undefined && typeof Reflect.get(value, 'handle') !== 'function') return false;
   const infrastructure = Reflect.get(value, 'infrastructure');
   if (infrastructure === undefined) return true;
   try {

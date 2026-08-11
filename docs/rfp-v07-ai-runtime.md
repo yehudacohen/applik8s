@@ -1,6 +1,6 @@
 # RFP: Applik8s v0.7 — AI Runtime, Agents, and Durable Attempts
 
-**Status:** Proposed; maintainer review required
+**Status:** Accepted v0.7 contract; implementation evidence remains governed by the release scorecard
 
 **Charter:** [`charter-v07-agentic-platform.md`](charter-v07-agentic-platform.md)
 
@@ -597,15 +597,20 @@ evaluation and operations experiences ship by default.
 - The starter deterministic provider is visibly non-production and cannot satisfy dedicated
   qualification.
 
-## Open questions
+## Closed v0.7 decisions
 
-1. Which TanStack AI beta version becomes the v0.7 compatibility baseline?
-2. Which provider protocols expose enough request identity for recovery after connection loss?
-3. Which logical constraints are hard requirements versus routing preferences?
-4. Should the first evaluation package be required for v0.7 or remain a Start module layered on the
-   canonical run and artifact models?
-5. Which non-text modalities must the v0.7 logical model and artifact contracts preserve even when the
-   first acceptance slice uses primarily text?
+1. The compatibility baseline is `@tanstack/ai@0.42.0`, `@tanstack/ai-client@0.22.1`, and
+   `@tanstack/ai-react@0.18.1`; changing it requires an explicit compatibility review and regenerated
+   acceptance evidence.
+2. Provider request identity is used when it can prove recovery. When it cannot, connection loss after
+   dispatch produces an explicit uncertain-completion outcome; the framework does not infer success or
+   retry an external effect blindly.
+3. Authorization, data residency, modality, safety, and declared maximum-cost constraints are hard.
+   latency, preferred provider, and price within the hard ceiling are routing preferences.
+4. Evaluation contracts and the maintained package ship in v0.7, but evaluation dashboards are
+   operator-authorized optional UI rather than default product-member navigation.
+5. v0.7 qualifies text plus opaque, typed artifact references. First-class audio, video, and generated
+   media protocols are deferred while the logical model retains an extensible modality discriminator.
 
 ## Definition of done
 

@@ -70,6 +70,30 @@ describe("compiler deployment graph emission", () => {
                   },
                 },
               },
+              generatedDeployment(
+                "billingHttp",
+                "billing",
+                "typed-http",
+                "http",
+              ),
+              generatedDeployment(
+                "usageProcessor",
+                "notes-deliver-billable-usage-create",
+                "stream-processor",
+                "runtime",
+              ),
+              generatedDeployment(
+                "notificationProcessor",
+                "notes-deliver-requested-notification-create",
+                "stream-processor",
+                "runtime",
+              ),
+              generatedDeployment(
+                "unrelatedProcessor",
+                "notes-unrelated",
+                "stream-processor",
+                "runtime",
+              ),
             ],
           },
         },
@@ -107,15 +131,25 @@ describe("compiler deployment graph emission", () => {
             webhookSecretVariable: "SYNTHETIC_STRIPE_WEBHOOK",
           },
         },
+        notifications: {
+          host: "smtp.example.test",
+          port: 587,
+          secure: false,
+          secretName: "notes-notifications",
+          senderEmail: "notices@example.test",
+          senderName: "Notes",
+          credentialSource: {
+            kind: "hostEnvironment",
+            usernameVariable: "SYNTHETIC_SMTP_USERNAME",
+            passwordVariable: "SYNTHETIC_SMTP_PASSWORD",
+          },
+        },
       },
     };
     const emitted = await emitApplicationDeploymentGraph({
       bundlePath,
       projectRoot: directory,
-      graph: {
-        ...applicationGraph(),
-        metadata: { name: "notes", namespace: "notes-system" },
-      },
+      graph: paymentApplicationGraph(),
       sourceGraphDigest,
       compilerVersion: "0.7.0",
       context: "orbstack",
@@ -128,6 +162,8 @@ describe("compiler deployment graph emission", () => {
     const encoded = JSON.stringify(emitted.graph);
     expect(encoded).toContain("SYNTHETIC_INFERENCE_KEY");
     expect(encoded).toContain("SYNTHETIC_STRIPE_KEY");
+    expect(encoded).toContain("SYNTHETIC_SMTP_USERNAME");
+    expect(encoded).toContain("SYNTHETIC_SMTP_PASSWORD");
     expect(encoded).not.toContain("actual-inference-value");
     expect(
       emitted.graph.nodes.filter(
@@ -135,12 +171,69 @@ describe("compiler deployment graph emission", () => {
           node.kind === "externalProvider"
           && node.spec.resourceType === "kubernetesGeneratedSecret",
       ),
-    ).toHaveLength(3);
+    // Inference, both Stripe credentials, and the typed HTTP context key are
+    // all represented as generated-secret effects rather than portable values.
+    ).toHaveLength(5);
     const host = emitted.graph.nodes
       .find((node) => node.id === "kubernetes.application");
-    expect(host?.kind === "kubernetesComposition"
+    const materialized = host?.kind === "kubernetesComposition"
       ? JSON.stringify(host.spec.materialized)
-      : "").toContain("STRIPE_SECRET_KEY");
+      : "";
+    expect(materialized).toContain("APPLIK8S_PAYMENT_API_KEY");
+    expect(materialized).toContain("APPLIK8S_PAYMENT_WEBHOOK_SECRET");
+    expect(materialized).toContain("APPLIK8S_NOTIFICATION_SMTP_USERNAME");
+    expect(materialized).toContain("APPLIK8S_NOTIFICATION_SMTP_PASSWORD");
+    expect(materialized).not.toContain("STRIPE_SECRET_KEY");
+    expect(materialized).not.toContain("actual-smtp-password");
+    const resources = host?.kind === "kubernetesComposition"
+      ? host.spec.materialized?.resources ?? []
+      : [];
+    expect(deploymentEnvironment(resources, "billing")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "APPLIK8S_PROFILE_VARIANT", value: "dedicated" }),
+        expect.objectContaining({ name: "APPLIK8S_PAYMENT_API_KEY" }),
+      ]),
+    );
+    expect(
+      deploymentEnvironment(
+        resources,
+        "notes-deliver-billable-usage-create",
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "APPLIK8S_PAYMENT_API_KEY" }),
+      ]),
+    );
+    expect(
+      deploymentEnvironment(
+        resources,
+        "notes-deliver-requested-notification-create",
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "APPLIK8S_PROFILE_VARIANT",
+          value: "dedicated",
+        }),
+        expect.objectContaining({
+          name: "APPLIK8S_NOTIFICATION_DELIVERY_KIND",
+          value: "smtp",
+        }),
+        expect.objectContaining({
+          name: "APPLIK8S_NOTIFICATION_SMTP_HOST",
+          value: "smtp.example.test",
+        }),
+        expect.objectContaining({
+          name: "APPLIK8S_NOTIFICATION_SMTP_USERNAME",
+        }),
+      ]),
+    );
+    expect(deploymentEnvironment(resources, "billing"))
+      .not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "APPLIK8S_NOTIFICATION_SMTP_PASSWORD" }),
+      ]));
+    expect(deploymentEnvironment(resources, "notes-unrelated")).toEqual([]);
+    expect(deploymentEnvironment(resources, "application-host")).toEqual([]);
   });
 
   it("shadow-emits deterministic deployment data without preparing artifacts", async () => {
@@ -368,6 +461,151 @@ function applicationGraph(): ApplicationGraph {
       labels: [],
     },
   };
+}
+
+function paymentApplicationGraph(): ApplicationGraph {
+  return {
+    ...applicationGraph(),
+    metadata: { name: "notes", namespace: "notes-system" },
+    // typecast: this focused deployment test supplies only the node fields
+    // consumed by credential placement; graph construction tests validate the
+    // complete producer contracts separately.
+    nodes: [
+      {
+        id: "provider.payment-provider.v1alpha1.primary",
+        kind: "provider",
+        name: "PaymentProvider",
+        stability: "stable",
+        interface: "PaymentProvider",
+        implementation: "stripe",
+        config: {
+          profile: {
+            branches: [{
+              variant: "dedicated",
+              implementation: "stripe",
+            }],
+          },
+        },
+      },
+      {
+        id: "server.billing",
+        kind: "server",
+        name: "billing",
+        stability: "stable",
+      },
+      {
+        id: "streamProcessor.deliver-billable-usage-create",
+        kind: "streamProcessor",
+        name: "deliver-billable-usage-create",
+        stability: "stable",
+      },
+      {
+        id: "streamProcessor.unrelated",
+        kind: "streamProcessor",
+        name: "unrelated",
+        stability: "stable",
+      },
+      {
+        id: "provider.notification-delivery.v1alpha1.transactional",
+        kind: "provider",
+        name: "NotificationDelivery",
+        stability: "stable",
+        interface: "NotificationDelivery",
+        implementation: "smtp",
+        config: {},
+      },
+      {
+        id: "streamProcessor.deliver-requested-notification-create",
+        kind: "streamProcessor",
+        name: "deliver-requested-notification-create",
+        stability: "stable",
+      },
+    ] as unknown as ApplicationGraph["nodes"],
+    edges: [
+      {
+        from: { nodeId: "provider.payment-provider.v1alpha1.primary" },
+        to: { nodeId: "server.billing" },
+        relationship: "provides",
+      },
+      {
+        from: {
+          nodeId: "provider.notification-delivery.v1alpha1.transactional",
+        },
+        to: {
+          nodeId: "streamProcessor.deliver-requested-notification-create",
+        },
+        relationship: "provides",
+      },
+      {
+        from: { nodeId: "provider.payment-provider.v1alpha1.primary" },
+        to: { nodeId: "streamProcessor.deliver-billable-usage-create" },
+        relationship: "provides",
+      },
+    ],
+  };
+}
+
+function generatedDeployment(
+  id: string,
+  name: string,
+  component: string,
+  containerName: string,
+) {
+  return {
+    id,
+    template: {
+      apiVersion: "apps/v1",
+      kind: "Deployment",
+      metadata: {
+        name,
+        namespace: "notes-system",
+        labels: {
+          "app.kubernetes.io/name": name,
+          "app.kubernetes.io/component": component,
+        },
+      },
+      spec: {
+        template: {
+          spec: {
+            containers: [{
+              name: containerName,
+              image: "immutable",
+              env: [],
+            }],
+          },
+        },
+      },
+    },
+  };
+}
+
+function deploymentEnvironment(
+  resources: readonly Record<string, unknown>[],
+  name: string,
+): readonly Record<string, unknown>[] {
+  const resource = resources.find((candidate) => {
+    const template = candidate.template;
+    if (!template || typeof template !== "object") return false;
+    const metadata = Reflect.get(template, "metadata");
+    return metadata && typeof metadata === "object"
+      && Reflect.get(metadata, "name") === name;
+  });
+  if (!resource?.template || typeof resource.template !== "object") return [];
+  const containers = Reflect.get(
+    Reflect.get(
+      Reflect.get(
+        Reflect.get(resource.template, "spec"),
+        "template",
+      ),
+      "spec",
+    ),
+    "containers",
+  );
+  if (!Array.isArray(containers)) return [];
+  return containers.flatMap((container) => {
+    const environment = Reflect.get(container, "env");
+    return Array.isArray(environment) ? environment : [];
+  });
 }
 
 function applicationOwnedCrd() {

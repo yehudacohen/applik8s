@@ -1,0 +1,13 @@
+import { ApplicationOperationsControlCenter } from '@applik8s/operations-ui/react';
+import { useApplicationIdentitySession } from '@applik8s/react/identity';
+import { createFileRoute } from '@tanstack/react-router';
+import { OperationsSnapshot } from '../application';
+import { RouteState } from '../components/ui';
+
+export const Route = createFileRoute('/app/operations')({ component: Operations });
+
+function Operations() {
+  const session = useApplicationIdentitySession();
+  if (!session.data?.capabilities?.applicationOperations) return <RouteState title="Operations is not available" description="Application-operator authority is separate from product membership and workspace ownership." />;
+  return <ApplicationOperationsControlCenter snapshot={OperationsSnapshot} title="applik8s-template-project operations" />;
+}

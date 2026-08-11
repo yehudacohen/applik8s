@@ -4,6 +4,13 @@ import {
   type ReactNode,
 } from 'react';
 
+export {
+  AgenticAccountSession,
+  AgenticAccountSettings,
+  type AgenticAccountSessionProps,
+  type AgenticAccountSettingsProps,
+} from './account.js';
+
 const workspaceCookieName = 'applik8s_workspace';
 
 /**

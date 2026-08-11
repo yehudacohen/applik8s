@@ -1,6 +1,6 @@
 # RFP: Applik8s v0.7 — MCP Transport and External Tools
 
-**Status:** Proposed; maintainer review required
+**Status:** Accepted v0.7 contract; implementation evidence remains governed by the release scorecard
 
 **Charter:** [`charter-v07-agentic-platform.md`](charter-v07-agentic-platform.md)
 
@@ -258,13 +258,14 @@ one released TypeKro integration.
 - Enabled MCP wire eras pass the selected SDK conformance and interoperability matrix.
 - Optional Envoy routing does not change canonical operation authorization outcomes.
 
-## Open questions
+## Closed v0.7 decisions
 
-1. Is final `2026-07-28` interoperability sufficient to replace the `2025-11-25` default before v0.7 RC,
-   or should v0.7 negotiate both eras?
-2. Which MCP Apps capabilities, if any, belong in the first Agentic Start operations UI?
-3. Which external server discovery changes may be accepted automatically versus requiring reviewed
-   schema replacement?
+1. v0.7 pins MCP `2025-11-25`. `2026-07-28` remains an explicitly experimental wire era and may not be
+   negotiated silently.
+2. The first Agentic Start exposes operation discovery, invocation, cancellation, denial, latency, and
+   catalog/session evidence. MCP Apps UI extensions are deferred.
+3. Exact compatible metadata refreshes may be adopted automatically. Tool additions, removals, schema
+   changes, authority changes, and protocol-era changes require a reviewed catalog replacement.
 
 ## Definition of done
 

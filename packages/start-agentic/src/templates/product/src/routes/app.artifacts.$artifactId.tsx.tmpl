@@ -1,0 +1,27 @@
+import { Link, createFileRoute } from '@tanstack/react-router';
+import { ArtifactDetail } from '../application';
+import { Alert, Badge, Card, PageHeader, Skeleton } from '../components/ui';
+
+export const Route = createFileRoute('/app/artifacts/$artifactId')({
+  component: ArtifactDetailRoute,
+});
+
+function ArtifactDetailRoute() {
+  const { artifactId } = Route.useParams();
+  const detail = ArtifactDetail({ id: artifactId }).useQuery();
+  return <div>
+    <Link to="/app/library" className="text-sm font-semibold text-emerald-800">← Back to Library</Link>
+    <PageHeader eyebrow="Immutable run output" title={detail.data?.kind ?? 'Artifact'} description="Digest, production lineage, and retention belong to the artifact record. Store credentials and raw object keys never enter this page." action={detail.data ? <Badge tone={detail.data.state === 'available' ? 'success' : 'warning'}>{detail.data.state}</Badge> : null} />
+    {detail.error ? <Alert tone="warning" title="Artifact unavailable">The library remains usable. Retry after its authoritative provider recovers.</Alert> : null}
+    {detail.data === undefined ? <Skeleton className="h-72" /> : null}
+    {detail.data === null ? <Alert tone="warning" title="Artifact not found">It may have expired, been deleted, or belong to another admitted scope.</Alert> : null}
+    {detail.data ? <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
+      <Card><p className="eyebrow">Content identity</p><dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2"><Fact label="Media type" value={detail.data.mediaType} /><Fact label="Size" value={`${detail.data.size.toLocaleString()} bytes`} /><Fact label="Created" value={new Date(detail.data.createdAt).toLocaleString()} /><Fact label="Retention" value={detail.data.retentionUntil ? new Date(detail.data.retentionUntil).toLocaleString() : 'Application policy'} /></dl><code className="mt-5 block break-all rounded-xl bg-stone-100 p-3 text-xs">sha256:{detail.data.sha256}</code></Card>
+      <aside className="space-y-4"><Card><p className="eyebrow">Producing execution</p><div className="mt-3 grid gap-3 text-sm">{detail.data.agentRunId ? <Fact label="Agent run" value={detail.data.agentRunId} /> : null}{detail.data.workflowRunId ? <Fact label="Workflow run" value={detail.data.workflowRunId} /> : null}{detail.data.protocolRunId ? <Fact label="Protocol run" value={detail.data.protocolRunId} /> : null}{detail.data.invocationId ? <Fact label="Invocation" value={detail.data.invocationId} /> : null}{detail.data.conversationId ? <Link to="/app/conversations/$conversationId" params={{ conversationId: detail.data.conversationId }} className="font-semibold text-emerald-800">Open related conversation →</Link> : null}</div></Card><Card><p className="text-sm leading-6 text-stone-600">Downloads require a fresh signed object intent. This metadata is safe to retain after an intent expires.</p></Card></aside>
+    </div> : null}
+  </div>;
+}
+
+function Fact({ label, value }: { readonly label: string; readonly value: string }) {
+  return <div><dt className="text-stone-500">{label}</dt><dd className="mt-1 break-all font-medium text-stone-900">{value}</dd></div>;
+}

@@ -8,6 +8,8 @@ import type {
 
 const applicationNativeModelClients =
   new AsyncLocalStorage<Readonly<Record<string, ApplicationModelCommandParticipantClient>>>();
+const applicationNativeModelReadClients =
+  new AsyncLocalStorage<Readonly<Record<string, ApplicationModelCommandParticipantClient>>>();
 const applicationNativeModelTransactionRuntime =
   new AsyncLocalStorage<ApplicationNativeModelTransactionRuntime>();
 
@@ -92,6 +94,14 @@ export function withApplicationNativeModelClients<TResult>(
   operation: () => TResult,
 ): TResult {
   return applicationNativeModelClients.run(clients, operation);
+}
+
+/** Installs trigger-scoped lock-free clients for reads before a model edit. */
+export function withApplicationNativeModelReadClients<TResult>(
+  clients: Readonly<Record<string, ApplicationModelCommandParticipantClient>>,
+  operation: () => TResult,
+): TResult {
+  return applicationNativeModelReadClients.run(clients, operation);
 }
 
 /** Installs one trigger-scoped lowering behind direct Model.edit(...) calls. */
@@ -211,7 +221,8 @@ export async function editApplicationNativeModelObject<
 }
 
 function requiredClient(model: string): ApplicationModelCommandParticipantClient {
-  const client = applicationNativeModelClients.getStore()?.[model];
+  const client = applicationNativeModelClients.getStore()?.[model]
+    ?? applicationNativeModelReadClients.getStore()?.[model];
   if (!client) {
     throw unavailableApplicationNativeModel(model);
   }

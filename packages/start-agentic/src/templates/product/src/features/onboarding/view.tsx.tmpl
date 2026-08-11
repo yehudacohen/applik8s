@@ -1,0 +1,129 @@
+import { Link } from '@tanstack/react-router';
+import { useEffect, useRef, useState } from 'react';
+import { OnboardingProgress, OnboardingState } from '../../application';
+import { Alert, Button, Card, Progress } from '../../components/ui';
+
+export const productJourneySteps = [
+  { id: 'first-document', label: 'Create something with the assistant', to: '/app' },
+  { id: 'open-library', label: 'Review the document in your library', to: '/app/library' },
+  { id: 'review-inbox', label: 'See durable decisions in Inbox', to: '/app/inbox' },
+  { id: 'resume-conversation', label: 'Resume a conversation after reload', to: '/app' },
+] as const;
+
+export type ProductJourneyStepId = typeof productJourneySteps[number]['id'];
+
+export function ProductJourney({ documentCount }: { readonly documentCount: number }) {
+  const state = OnboardingState({}).useQuery();
+  const create = OnboardingProgress.create.useMutation();
+  const update = OnboardingProgress.update.useMutation();
+  const [notice, setNotice] = useState<string>();
+  const recording = useRef<ReadonlySet<string>>(new Set());
+  const completed = new Set(state.data?.completedSteps ?? []);
+  if (documentCount > 0) completed.add('first-document');
+  const percent = completed.size / productJourneySteps.length * 100;
+
+  useEffect(() => {
+    if (documentCount < 1 || state.data === undefined || state.data?.completedSteps.includes('first-document')) return;
+    if (recording.current.has('first-document')) return;
+    recording.current = new Set([...recording.current, 'first-document']);
+    const completedSteps = [...new Set([...(state.data?.completedSteps ?? []), 'first-document'])];
+    const now = new Date().toISOString();
+    const progress = {
+      completedSteps,
+      dismissed: state.data?.dismissed ?? false,
+      updatedAt: now,
+      ...(completedSteps.length === productJourneySteps.length ? { completedAt: now } : {}),
+    };
+    const save = state.data
+      ? update({ identity: state.data.principalId, patch: progress })
+      : create(progress);
+    void save
+      .then(() => state.refresh())
+      .catch(() => {
+        recording.current = new Set([...recording.current].filter(step => step !== 'first-document'));
+        setNotice('Progress could not be saved. The product remains available.');
+      });
+  }, [documentCount, state.data]);
+
+  if (state.data?.dismissed || state.data?.completedAt) return null;
+
+  async function persist(dismissed = false, step?: ProductJourneyStepId) {
+    const completedSteps = [...new Set([...completed, ...(step ? [step] : [])])];
+    const now = new Date().toISOString();
+    const progress = {
+      completedSteps,
+      dismissed,
+      updatedAt: now,
+      ...(completedSteps.length === productJourneySteps.length ? { completedAt: now } : {}),
+    };
+    try {
+      if (state.data) {
+        await update({
+          identity: state.data.principalId,
+          patch: progress,
+        });
+      } else {
+        await create(progress);
+      }
+      await state.refresh();
+    } catch {
+      setNotice('Progress could not be saved. The product remains available.');
+    }
+  }
+
+  const next = productJourneySteps.find(step => !completed.has(step.id));
+  return (
+    <Card surface="unstyled" className="mb-6 overflow-hidden border-emerald-900/10 bg-gradient-to-br from-emerald-950 to-emerald-800 text-white">
+      <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+        <div className="max-w-2xl">
+          <p className="eyebrow !text-emerald-300">Your app is running</p>
+          <h2 className="mt-2 text-2xl font-semibold tracking-tight">Make the first useful loop visible.</h2>
+          <p className="mt-2 text-sm leading-6 text-emerald-100/80">Use the real copilot, then follow its committed result through the library and durable product surfaces.</p>
+        </div>
+        <span className="text-sm font-semibold text-emerald-100">{completed.size} of {productJourneySteps.length}</span>
+      </div>
+      <div className="mt-5 [&_span]:text-emerald-100 [&_[role=progressbar]]:bg-white/15 [&_[role=progressbar]>div]:bg-emerald-300">
+        <Progress value={percent} label="Product activation" />
+      </div>
+      <div className="mt-5 flex flex-wrap gap-3">
+        {next ? <Link className="button-link !bg-white !text-emerald-950" to={next.to}>{next.label}</Link> : null}
+        {next ? <Button type="button" variant="ghost" className="text-emerald-50 hover:bg-white/10" onClick={() => void persist(false, next.id)}>Skip this step</Button> : null}
+        <Button type="button" variant="ghost" className="text-emerald-50 hover:bg-white/10" onClick={() => void persist(true)}>Dismiss tour</Button>
+      </div>
+      {notice ? <div className="mt-4"><Alert tone="warning" title="Progress unavailable">{notice}</Alert></div> : null}
+    </Card>
+  );
+}
+
+/**
+ * Records an ordinary product outcome as onboarding progress. Feature routes
+ * opt in at the point the outcome becomes authoritative; the framework does
+ * not own or infer application-product progress.
+ */
+export function useProductJourneyStep(step: ProductJourneyStepId, ready = true) {
+  const state = OnboardingState({}).useQuery();
+  const create = OnboardingProgress.create.useMutation();
+  const update = OnboardingProgress.update.useMutation();
+  const recording = useRef(false);
+
+  useEffect(() => {
+    if (!ready || recording.current || state.data === undefined || state.data?.completedSteps.includes(step)) return;
+    recording.current = true;
+    const completedSteps = [...new Set([...(state.data?.completedSteps ?? []), step])];
+    const now = new Date().toISOString();
+    const progress = {
+      completedSteps,
+      dismissed: state.data?.dismissed ?? false,
+      updatedAt: now,
+      ...(completedSteps.length === productJourneySteps.length ? { completedAt: now } : {}),
+    };
+    const save = state.data
+      ? update({ identity: state.data.principalId, patch: progress })
+      : create(progress);
+    void save
+      .then(() => state.refresh())
+      .catch(() => {
+        recording.current = false;
+      });
+  }, [ready, state.data, step]);
+}

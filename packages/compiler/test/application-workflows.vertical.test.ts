@@ -212,6 +212,9 @@ export const workflowProof = platform.composition;
       expect(source).toContain('applik8s-workflow-startup-wait');
       expect(source).toContain('applik8s-workflow-startup-timeout');
       expect(source).toContain('applik8s-workflow-credential-timeout');
+      expect(source).toContain('APPLIK8S_WORKFLOW_NAMESPACE');
+      expect(generatedSource).toContain("requiredEnv('APPLIK8S_WORKFLOW_NAMESPACE')");
+      expect(generatedSource).toContain('system:serviceaccount:');
       expect(source).toContain('process.argv.includes');
       expect(source).toContain('credential-preflight');
       expect(source).toContain('Hatchet engine');
@@ -236,7 +239,17 @@ export const workflowProof = platform.composition;
       expect(generatedSource).toContain(
         'childOptions(childInvocationMetadata(execution, metadata))',
       );
-      expect(source).toContain('system:serviceaccount:workflow-proof:tenant-controller-controller');
+      expect(generatedSource).toContain(
+        "'applik8s.causal-principal'",
+      );
+      expect(generatedSource).toContain(
+        'const causalPrincipal = workflowCausalPrincipal(context)',
+      );
+      expect(generatedSource).toContain(
+        '[applicationWorkflowCausalPrincipalMetadata]',
+      );
+      expect(source).toContain('system:serviceaccount:');
+      expect(source).toContain('serviceAccount:"tenant-controller-controller"');
       expect(source).toContain('structured-generation-deterministic');
       expect(source).toContain('structured-generation-http');
       expect(source).not.toContain('runThreaded');

@@ -1,0 +1,4 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { UsageDashboardView } from '../features/billing-view';
+
+export const Route = createFileRoute('/app/usage')({ component: UsageDashboardView });

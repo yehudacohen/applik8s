@@ -1,7 +1,8 @@
 // typecast-file-boundary: heterogeneous snapshots erase value generics to test cache isolation and hydration.
+
+import { describe, expect, test } from 'vitest';
 import type { ApplicationQueryEvent, ApplicationQuerySnapshot, ApplicationQueryTransport } from '../src/protocol.js';
 import { ApplicationQueryClient, queryInputKey } from '../src/store.js';
-import { describe, expect, test } from 'vitest';
 
 class FakeTransport implements ApplicationQueryTransport {
   readonly snapshots: { query: string; input: unknown }[] = [];
@@ -119,6 +120,42 @@ describe('browser-safe application query client', () => {
     await settle();
     expect(store.getSnapshot().cursor).toBe('cursor-8');
     expect(transport.snapshots).toHaveLength(1);
+    unsubscribe();
+  });
+
+  test('returns a retained snapshot to ready after a resumed stream keepalive', async () => {
+    const transport = new FakeTransport();
+    const client = new ApplicationQueryClient(transport, {
+      reconnect: { initialMs: 0, maxMs: 0, factor: 1 },
+    });
+    const store = client.query('cards.list.v1', {});
+    const unsubscribe = store.subscribe(() => undefined);
+    await settle();
+
+    transport.subscriptions[0]?.onError(new Error('connection reset'));
+    expect(store.getSnapshot()).toMatchObject({
+      phase: 'reconnecting',
+      stale: true,
+      error: expect.any(Error),
+    });
+    await settle();
+    expect(transport.subscriptions).toHaveLength(2);
+
+    transport.subscriptions[1]?.onEvent({
+      kind: 'keepalive',
+      protocol: 'applik8s.query/v1alpha1',
+      id: 'resume-confirmed',
+      sequence: 2,
+      query: 'cards.list.v1',
+      cursor: 'cursor-2',
+    });
+    expect(store.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      stale: false,
+      cursor: 'cursor-2',
+      value: [{ id: 'card-1', name: 'First' }],
+    });
+    expect(store.getSnapshot().error).toBeUndefined();
     unsubscribe();
   });
 

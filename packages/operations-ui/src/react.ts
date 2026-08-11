@@ -85,6 +85,7 @@ function ApplicationOperationsDashboard(
     ['Object stores', snapshot.objectStores, 'Object authority and provider readiness'],
     ['Databases', snapshot.databases, 'Canonical database readiness and recovery state'],
     ['Gateways', snapshot.gateways, 'Admission and exposure readiness'],
+    ['Go-live obligations', snapshot.goLive, 'Graph-derived production duties; intent remains Unknown until independent evidence arrives'],
     ['Audit', snapshot.audit, 'Searchable redacted causal authority timeline'],
     ['Operational observations', snapshot.operational, 'Authority-classified readiness, delivery, provider, and inferred state'],
   ] as const;

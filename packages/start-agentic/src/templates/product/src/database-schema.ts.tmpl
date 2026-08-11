@@ -1,2 +1,17 @@
+export * from '@applik8s/approvals/schema';
+export * from '@applik8s/artifacts/schema';
+export * from '@applik8s/billing/schema';
+export * from '@applik8s/conversations/schema';
+export * from '@applik8s/evals/schema';
+export * from '@applik8s/notifications/schema';
 export * from '@applik8s/operations-ui/schema';
+export * from '@applik8s/usage/schema';
 export { Note } from './features/notes/schema';
+export { DecisionReview, decisionReviewState } from './features/inbox/schema';
+export {
+  DataLifecycleRequest,
+  dataLifecycleScope,
+  dataLifecycleState,
+} from './features/lifecycle/schema';
+export { OnboardingProgress } from './features/onboarding/schema';
+export * from './features/workspaces/schema';

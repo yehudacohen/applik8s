@@ -1,0 +1,34 @@
+import {
+  authenticatedPrincipalId,
+  field,
+  model,
+  pgEnum,
+} from '@applik8s/applik8s/drizzle';
+import { Workspace } from '../workspaces/schema';
+
+export const decisionReviewState = pgEnum('decision_review_state', [
+  'pending',
+  'approved',
+  'rejected',
+  'expired',
+]);
+
+export const DecisionReview = model('decision_reviews', {
+  id: field.uuid('id').defaultRandom().primaryKey(),
+  workspaceId: field.uuid('workspace_id').notNull()
+    .references(() => Workspace.id, { onDelete: 'cascade' }),
+  title: field.text('title').notNull(),
+  requestedByPrincipalId: field.text('requested_by_principal_id').notNull()
+    .default(authenticatedPrincipalId),
+  state: decisionReviewState('state').notNull().default('pending'),
+  decisionReceipt: field.text('decision_receipt'),
+  decidedByPrincipalId: field.text('decided_by_principal_id'),
+  createdAt: field.timestamp('created_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull().defaultNow(),
+  updatedAt: field.timestamp('updated_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull().defaultNow(),
+});

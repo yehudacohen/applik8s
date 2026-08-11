@@ -1,9 +1,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { transformSync } from 'esbuild';
 import type { JsonObject } from '@applik8s/core';
-import { blockCommentEnd, escapeRegExp, isDeclarationIdentifier, isRegexLiteralStart, lineCommentEnd, nextNonWhitespace, previousNonWhitespace, regexLiteralEnd, unique } from './application-route-source-utilities.js';
+import { transformSync } from 'esbuild';
+import { blockCommentEnd, escapeRegExp, isDeclarationIdentifier, isRegexLiteralStart, lineCommentEnd, matchingDelimiter, nextNonWhitespace, previousNonWhitespace, quotedSourceEnd, regexLiteralEnd, splitTopLevelArguments, templateSourceEnd, unique } from './application-route-source-utilities.js';
+
+export { matchingDelimiter, splitTopLevelArguments } from './application-route-source-utilities.js';
 export interface ApplicationRouteSourceLocation {
   readonly file: string;
   readonly line: number;
@@ -153,6 +155,7 @@ export function routeDynamicBindingAccesses(analysis: ApplicationServerRouteSour
 
 export function unsupportedRouteFreeIdentifiers(analysis: ApplicationServerRouteSourceAnalysis, bindingNames: ReadonlySet<string>): readonly string[] {
   const allowed = new Set([
+    'Buffer',
     ...bindingNames,
     ...analysis.declaredIdentifiers,
     'Array',
@@ -251,6 +254,25 @@ function resolveApplicationRouteSourceDependencies(file: string, unsupported: re
     }
     included.set(name, binding);
     if (binding.kind === 'declaration') {
+      // Maintained modules are promoted through application.include(...).
+      // Replaying only the selected module handle is not equivalent to the
+      // authored module when its application profile/database binding is a
+      // sibling declaration. Discover the provider selection from its value
+      // expression rather than a conventional local identifier: `db`,
+      // `primaryStore`, and `database` are semantically equivalent here.
+      if (/\.\s*include\s*\(/.test(binding.analysisSource)) {
+        for (const prerequisite of topLevelBindings.values()) {
+          if (
+            prerequisite.kind === 'declaration'
+            && applicationDatabaseProviderPrerequisite(
+              prerequisite.analysisSource,
+            )
+            && !included.has(prerequisite.name)
+          ) {
+            queue.push(prerequisite.name);
+          }
+        }
+      }
       const nested = unsupportedRouteFreeIdentifiers(analyzeApplicationServerRouteSource(binding.analysisSource), new Set([...bindingNames, ...included.keys()]));
       for (const nestedName of nested) {
         if (!included.has(nestedName) && !unresolved.has(nestedName)) {
@@ -268,14 +290,57 @@ function resolveApplicationRouteSourceDependencies(file: string, unsupported: re
   const ordered = [...new Map([...included.values()].map((binding) => [`${binding.kind}:${binding.position}:${binding.source}`, binding])).values()].sort((left, right) => left.position - right.position);
   const imports = ordered.filter((binding) => binding.kind === 'import').map((binding) => binding.source);
   const declarations = ordered.filter((binding) => binding.kind === 'declaration').map((binding) => binding.source);
-  const analysisDeclarations = declarations.filter((declaration) =>
-    !isDirectApplicationWorkflowHandleRegistration(declaration)
-  );
+  const analysisDeclarations = applicationRouteAnalysisBindings(
+    unsupported,
+    bindingNames,
+    topLevelBindings,
+  ).map((binding) => binding.source);
   return {
     source: [...imports, ...declarations].join('\n\n'),
     analysisSource: analysisDeclarations.join('\n\n'),
     resolveDir: dirname(file),
   };
+}
+
+function applicationRouteAnalysisBindings(
+  roots: readonly string[],
+  bindingNames: ReadonlySet<string>,
+  topLevelBindings: ReadonlyMap<string, ApplicationRouteTopLevelBinding>,
+): readonly ApplicationRouteTopLevelBinding[] {
+  const included = new Map<string, ApplicationRouteTopLevelBinding>();
+  const queue = [...roots];
+  for (let index = 0; index < queue.length; index += 1) {
+    const name = queue[index] ?? '';
+    if (!name || bindingNames.has(name) || included.has(name)) continue;
+    const binding = topLevelBindings.get(name);
+    if (!binding || binding.kind === 'import') continue;
+    // A referenced durable handle is executable setup, but its callback owns
+    // an independent purity/admission check. Re-scanning that implementation
+    // as part of the caller would reject the ordinary function-native pattern
+    // where orchestration calls an effect workflow or emits a typed signal.
+    if (isDirectApplicationWorkflowHandleRegistration(binding.source)
+      || isDirectApplicationSignalHandleRegistration(binding.source)) {
+      continue;
+    }
+    included.set(name, binding);
+    const nested = unsupportedRouteFreeIdentifiers(
+      analyzeApplicationServerRouteSource(binding.analysisSource),
+      new Set([...bindingNames, ...included.keys()]),
+    );
+    for (const nestedName of nested) {
+      if (!included.has(nestedName)) queue.push(nestedName);
+    }
+  }
+  return [...included.values()].sort(
+    (left, right) => left.position - right.position,
+  );
+}
+
+function applicationDatabaseProviderPrerequisite(source: string): boolean {
+  const analysis = analyzeApplicationServerRouteSource(source);
+  return analysis.memberCalls.some(
+    (call) => call.methodName === 'database',
+  ) || /\.\s*database\s*(?:;|$)/.test(analysis.strippedSource);
 }
 
 /**
@@ -292,7 +357,20 @@ function resolveApplicationRouteSourceDependencies(file: string, unsupported: re
 function isDirectApplicationWorkflowHandleRegistration(source: string): boolean {
   const stripped = stripCommentsAndStrings(source);
   const match = stripped.match(
-    /^(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*\.\s*workflow\s*\(/,
+    /^(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*(?:workflow|[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*\.\s*workflow)\s*\(/,
+  );
+  if (!match) return false;
+  const open = stripped.lastIndexOf('(', match[0].length - 1);
+  if (open < 0) return false;
+  const close = matchingDelimiter(stripped, open, '(', ')');
+  if (close === undefined) return false;
+  return /^;?\s*$/.test(stripped.slice(close + 1));
+}
+
+function isDirectApplicationSignalHandleRegistration(source: string): boolean {
+  const stripped = stripCommentsAndStrings(source);
+  const match = stripped.match(
+    /^(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=\s*[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*\s*\.\s*signal\s*\(/,
   );
   if (!match) return false;
   const open = stripped.lastIndexOf('(', match[0].length - 1);
@@ -360,94 +438,6 @@ export function extractApplicationCallObjectFunctionSource(methodName: string, a
   return undefined;
 }
 
-export function splitTopLevelArguments(source: string): readonly string[] {
-  const args: string[] = [];
-  let start = 0;
-  let index = 0;
-  let parens = 0;
-  let braces = 0;
-  let brackets = 0;
-  while (index < source.length) {
-    const character = source[index];
-    if (character === '\'' || character === '"') {
-      index = quotedSourceEnd(source, index, character);
-      continue;
-    }
-    if (character === '`') {
-      index = templateSourceEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '/') {
-      index = lineCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '*') {
-      index = blockCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && isRegexLiteralStart(source, index)) {
-      index = regexLiteralEnd(source, index);
-      continue;
-    }
-    if (character === '(') {
-      parens += 1;
-    } else if (character === ')') {
-      parens -= 1;
-    } else if (character === '{') {
-      braces += 1;
-    } else if (character === '}') {
-      braces -= 1;
-    } else if (character === '[') {
-      brackets += 1;
-    } else if (character === ']') {
-      brackets -= 1;
-    } else if (character === ',' && parens === 0 && braces === 0 && brackets === 0) {
-      args.push(source.slice(start, index));
-      start = index + 1;
-    }
-    index += 1;
-  }
-  args.push(source.slice(start));
-  return args;
-}
-
-export function matchingDelimiter(source: string, openIndex: number, open: string, close: string): number | undefined {
-  let depth = 0;
-  let index = openIndex;
-  while (index < source.length) {
-    const character = source[index];
-    if (character === '\'' || character === '"') {
-      index = quotedSourceEnd(source, index, character);
-      continue;
-    }
-    if (character === '`') {
-      index = templateSourceEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '/') {
-      index = lineCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '*') {
-      index = blockCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && isRegexLiteralStart(source, index)) {
-      index = regexLiteralEnd(source, index);
-      continue;
-    }
-    if (character === open) {
-      depth += 1;
-    } else if (character === close) {
-      depth -= 1;
-      if (depth === 0) {
-        return index;
-      }
-    }
-    index += 1;
-  }
-  return undefined;
-}
 
 function routeMemberCalls(source: string): readonly ApplicationServerMemberCall[] {
   const calls: ApplicationServerMemberCall[] = [];
@@ -714,6 +704,7 @@ const routeKeywords = new Set([
   'delete',
   'do',
   'else',
+  'extends',
   'false',
   'finally',
   'for',
@@ -728,6 +719,8 @@ const routeKeywords = new Set([
   'of',
   'return',
   'switch',
+  'super',
+  'this',
   'throw',
   'true',
   'try',
@@ -874,8 +867,15 @@ function declaredRouteIdentifiers(source: string): ReadonlySet<string> {
     const end = statementSourceEnd(source, start);
     for (const name of variableDeclarationNames(source.slice(start, end))) declared.add(name);
   }
-  for (const match of source.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)/g)) {
+  for (const match of source.matchAll(/\bfunction(?:\s+([A-Za-z_$][\w$]*))?\s*\(/g)) {
     declared.add(match[1] ?? '');
+    const open = source.indexOf('(', match.index ?? 0);
+    const close = open >= 0
+      ? matchingDelimiter(source, open, '(', ')')
+      : undefined;
+    if (open >= 0 && close !== undefined) {
+      addParameterIdentifiers(declared, source.slice(open + 1, close));
+    }
   }
   for (const match of source.matchAll(/\bcatch\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g)) {
     declared.add(match[1] ?? '');
@@ -883,8 +883,61 @@ function declaredRouteIdentifiers(source: string): ReadonlySet<string> {
   for (const match of source.matchAll(/\bfor\s*\(\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) {
     declared.add(match[1] ?? '');
   }
+  addClassRouteIdentifiers(declared, source);
   declared.delete('');
   return declared;
+}
+
+function addClassRouteIdentifiers(
+  declared: Set<string>,
+  source: string,
+): void {
+  for (const match of source.matchAll(/\bclass\s+([A-Za-z_$][\w$]*)[^{]*\{/g)) {
+    const className = match[1];
+    if (className) declared.add(className);
+    const open = source.indexOf('{', match.index ?? 0);
+    const close = open >= 0
+      ? matchingDelimiter(source, open, '{', '}')
+      : undefined;
+    if (open < 0 || close === undefined) continue;
+    let position = open + 1;
+    while (position < close) {
+      while (position < close && /\s/.test(source[position] ?? '')) {
+        position += 1;
+      }
+      if (position >= close) break;
+      const memberStart = position;
+      let parentheses = 0;
+      while (position < close) {
+        const character = source[position] ?? '';
+        if (character === '(') parentheses += 1;
+        else if (character === ')') parentheses = Math.max(0, parentheses - 1);
+        if (parentheses === 0 && (character === ';' || character === '{')) {
+          const header = source.slice(memberStart, position).trim();
+          const method = header.match(
+            /^(?:(?:static|async|get|set)\s+)*([A-Za-z_$][\w$]*)\s*\((.*)\)$/s,
+          );
+          if (method) {
+            if (method[1]) declared.add(method[1]);
+            addParameterIdentifiers(declared, method[2] ?? '');
+          } else {
+            const field = header.match(
+              /^(?:(?:static|readonly|declare)\s+)*([A-Za-z_$][\w$]*)\b/,
+            );
+            if (field?.[1]) declared.add(field[1]);
+          }
+          if (character === '{') {
+            const memberClose = matchingDelimiter(source, position, '{', '}');
+            position = memberClose === undefined ? close : memberClose + 1;
+          } else {
+            position += 1;
+          }
+          break;
+        }
+        position += 1;
+      }
+    }
+  }
 }
 
 function addArrowParameterIdentifiers(declared: Set<string>, source: string): void {
@@ -1157,76 +1210,4 @@ export function transpileApplicationCallbackExpression(source: string): string {
     throw new Error('Generated server route source transform did not produce the expected wrapper.');
   }
   return output.slice(start + prefix.length, end).trim();
-}
-
-function quotedSourceEnd(source: string, start: number, quote: string): number {
-  let index = start + 1;
-  while (index < source.length) {
-    if (source[index] === '\\') {
-      index += 2;
-      continue;
-    }
-    if (source[index] === quote) {
-      return index + 1;
-    }
-    index += 1;
-  }
-  return source.length;
-}
-
-function templateSourceEnd(source: string, start: number): number {
-  let index = start + 1;
-  while (index < source.length) {
-    if (source[index] === '\\') {
-      index += 2;
-      continue;
-    }
-    if (source[index] === '$' && source[index + 1] === '{') {
-      index = templateExpressionSourceEnd(source, index + 2);
-      continue;
-    }
-    if (source[index] === '`') {
-      return index + 1;
-    }
-    index += 1;
-  }
-  return source.length;
-}
-
-function templateExpressionSourceEnd(source: string, start: number): number {
-  let depth = 1;
-  let index = start;
-  while (index < source.length) {
-    const character = source[index];
-    if (character === '\'' || character === '"') {
-      index = quotedSourceEnd(source, index, character);
-      continue;
-    }
-    if (character === '`') {
-      index = templateSourceEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '/') {
-      index = lineCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && source[index + 1] === '*') {
-      index = blockCommentEnd(source, index);
-      continue;
-    }
-    if (character === '/' && isRegexLiteralStart(source, index)) {
-      index = regexLiteralEnd(source, index);
-      continue;
-    }
-    if (character === '{') {
-      depth += 1;
-    } else if (character === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return index + 1;
-      }
-    }
-    index += 1;
-  }
-  return source.length;
 }

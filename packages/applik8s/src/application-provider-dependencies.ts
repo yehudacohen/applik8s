@@ -1,0 +1,235 @@
+import type { ApplicationProviderRef } from '@applik8s/core';
+import { applicationProviderGraphNodeId } from './application-identifiers.js';
+import type { ApplicationProviderBinding } from './application-providers.js';
+import {
+  applicationProviderQualificationFor,
+  applicationProviderTokenName,
+  isApplicationQualifiedProviderToken,
+} from './application-providers.js';
+
+const applicationProviderDependencyRegistry =
+  new WeakMap<object, readonly unknown[]>();
+const applicationProviderDependenciesSymbol = Symbol.for(
+  'applik8s.applicationProviderDependencies',
+);
+const applicationCallbackDependenciesSymbol = Symbol.for(
+  'applik8s.applicationCallbackDependencies',
+);
+
+export interface ApplicationMaintainedCallableDependency {
+  readonly identifier: string;
+  readonly value: unknown;
+  readonly awaited?: boolean;
+  readonly returned?: boolean;
+}
+
+export interface ApplicationMaintainedCallableRuntime {
+  /** Compiler-recognized runtime factory; arbitrary graph-supplied modules are never loaded. */
+  readonly id: 'notifications.request.v1';
+}
+
+const applicationCallableRuntimeSymbol = Symbol.for(
+  'applik8s.applicationCallableRuntime',
+);
+
+/**
+ * Attaches the exact capability leaves reached by an ordinary maintained-
+ * module function. This is the hand-authored equivalent of the compiler's
+ * recursive local-helper metadata for code that is already distributed as a
+ * package when an application is compiled.
+ *
+ * @internal Framework and maintained-module integration seam.
+ */
+export function bindApplicationCallableDependencies<
+  TCallable extends CallableFunction,
+>(
+  callable: TCallable,
+  dependencies: readonly ApplicationMaintainedCallableDependency[],
+  runtime?: ApplicationMaintainedCallableRuntime,
+): TCallable {
+  const existing = Reflect.get(callable, applicationCallbackDependenciesSymbol);
+  const normalizedDependencies = dependencies.map((dependency) =>
+    Object.freeze({
+      identifier: dependency.identifier,
+      value: dependency.value,
+      awaited: dependency.awaited ?? true,
+      returned: dependency.returned ?? false,
+    }));
+  const merged = [
+    ...(Array.isArray(existing) ? existing : []),
+    ...normalizedDependencies,
+  ];
+  for (const candidate of merged) {
+    const conflicting = merged.find(
+      (other) =>
+        other !== candidate
+        && Reflect.get(other, 'identifier') === Reflect.get(candidate, 'identifier')
+        && Reflect.get(other, 'value') !== Reflect.get(candidate, 'value'),
+    );
+    if (conflicting) {
+      throw new Error(
+        `Application maintained callable dependency ${String(Reflect.get(candidate, 'identifier'))} resolves to multiple values.`,
+      );
+    }
+  }
+  const normalized = Object.freeze(
+    merged.filter(
+      (candidate, index, all) =>
+        all.findIndex(
+          (other) =>
+            Reflect.get(other, 'identifier') === Reflect.get(candidate, 'identifier')
+            && Reflect.get(other, 'value') === Reflect.get(candidate, 'value'),
+        ) === index,
+    ),
+  );
+  Object.defineProperty(callable, applicationCallbackDependenciesSymbol, {
+    configurable: true,
+    enumerable: false,
+    writable: false,
+    value: normalized,
+  });
+  if (runtime) {
+    Object.defineProperty(callable, applicationCallableRuntimeSymbol, {
+      configurable: true,
+      enumerable: false,
+      writable: false,
+      value: Object.freeze({ ...runtime }),
+    });
+  }
+  return callable;
+}
+
+/** @internal Compiler/runtime hydration metadata for an ordinary maintained callable. */
+export function applicationCallableRuntimeFor(
+  value: unknown,
+): ApplicationMaintainedCallableRuntime | undefined {
+  if (
+    !value
+    || (typeof value !== 'object' && typeof value !== 'function')
+  ) {
+    return undefined;
+  }
+  const runtime = Reflect.get(value, applicationCallableRuntimeSymbol);
+  if (!runtime || typeof runtime !== 'object') return undefined;
+  const id = Reflect.get(runtime, 'id');
+  return id === 'notifications.request.v1'
+    ? { id }
+    : undefined;
+}
+
+/**
+ * Maintained modules attach provider requirements to their ordinary callable
+ * functions. The compiler then hydrates only the workloads that actually call
+ * those functions; application authors never thread or select providers.
+ *
+ * @internal Framework and maintained-module integration seam.
+ */
+export function bindApplicationProviderDependencies<
+  TCallable extends CallableFunction,
+>(
+  callable: TCallable,
+  dependencies: readonly unknown[],
+): TCallable {
+  applicationProviderDependencyRegistry.set(
+    callable,
+    Object.freeze([...dependencies]),
+  );
+  Object.defineProperty(callable, applicationProviderDependenciesSymbol, {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: Object.freeze([...dependencies]),
+  });
+  bindApplicationCallableDependencies(
+    callable,
+    dependencies.map((dependency, index) => ({
+      identifier: `providerDependency${index + 1}`,
+      value: dependency,
+    })),
+  );
+  return callable;
+}
+
+/** @internal Compiler dependency discovery. */
+export function applicationProviderDependenciesFor(
+  value: unknown,
+): readonly unknown[] {
+  if (
+    !value
+    || (typeof value !== 'object' && typeof value !== 'function')
+  ) {
+    return [];
+  }
+  const registered = applicationProviderDependencyRegistry.get(value);
+  if (registered) return registered;
+  const portable = Reflect.get(value, applicationProviderDependenciesSymbol);
+  return Array.isArray(portable) ? portable : [];
+}
+
+export interface ApplicationCallableProviderDependency {
+  readonly identifier: string;
+  readonly provider: ApplicationProviderRef;
+}
+
+/**
+ * Converts maintained-module dependency metadata into portable graph
+ * references. The qualified provider binding remains the runtime value in the
+ * callback bundle; this contract exists solely for placement and least-
+ * privilege credential hydration.
+ *
+ * @internal Compiler dependency discovery.
+ */
+export function applicationCallableProviderDependencies(
+  bindings: Readonly<Record<string, unknown>>,
+): readonly ApplicationCallableProviderDependency[] {
+  const discovered: ApplicationCallableProviderDependency[] = [];
+  for (const [identifier, callable] of Object.entries(bindings)) {
+    const dependencies = [
+      ...(isApplicationProviderBinding(callable) ? [callable] : []),
+      ...applicationProviderDependenciesFor(callable),
+    ];
+    for (const dependency of dependencies) {
+      const token = isApplicationProviderBinding(dependency)
+        ? dependency.token
+        : isApplicationQualifiedProviderToken(dependency)
+          ? dependency
+          : undefined;
+      if (!token) continue;
+      const tokenName = applicationProviderTokenName(token);
+      const qualification = applicationProviderQualificationFor(dependency);
+      discovered.push({
+        identifier,
+        provider: {
+          interface: tokenName,
+          nodeId: applicationProviderGraphNodeId(tokenName, qualification),
+          ...(qualification ? { qualification } : {}),
+        },
+      });
+    }
+  }
+  return discovered
+    .filter(
+      (dependency, index, dependencies) =>
+        dependencies.findIndex(
+          (candidate) =>
+            candidate.identifier === dependency.identifier
+            && candidate.provider.nodeId === dependency.provider.nodeId,
+        ) === index,
+    )
+    .sort((left, right) =>
+      `${left.identifier}:${left.provider.nodeId}`.localeCompare(
+        `${right.identifier}:${right.provider.nodeId}`,
+      ));
+}
+
+function isApplicationProviderBinding(
+  value: unknown,
+): value is ApplicationProviderBinding<unknown> {
+  return Boolean(
+    value
+      && typeof value === 'object'
+      && (Reflect.get(value, 'kind') === 'applicationProvider'
+        || Reflect.get(value, 'kind') === 'applicationHost')
+      && Reflect.get(value, 'token'),
+  );
+}

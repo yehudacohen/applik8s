@@ -1,0 +1,4 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { PublicIdentityFlow } from '../features/account/identity-flow';
+
+export const Route = createFileRoute('/verify')({ component: () => <PublicIdentityFlow kind="verify" /> });

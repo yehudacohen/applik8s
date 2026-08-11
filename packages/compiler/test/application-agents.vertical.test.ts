@@ -485,10 +485,28 @@ describe('generated application AI agents', () => {
     );
     expect(generatedSource).toContain('await conversationStore.prepare()');
     expect(generatedSource).toContain('persistence: conversationPersistence');
+    expect(generatedSource).toContain(
+      'applicationCausalPrincipalContext',
+    );
+    expect(generatedSource).toContain(
+      'causalPrincipalId: causalPrincipal.id',
+    );
+    expect(generatedSource).toContain(
+      '...causalPrincipal.grantIds',
+    );
     expect(generatedSource).not.toContain(
       'pending-tanstack-server-persistence',
     );
     expect(normalizedSource).toContain('completion-uncertain');
+    expect(generatedSource).toContain(
+      "source: 'application-ai-attempt-runtime'",
+    );
+    expect(generatedSource).toContain(
+      "'operator-review-required'",
+    );
+    expect(generatedSource).toContain(
+      "quarantine: failure.classification === 'completion-uncertain'",
+    );
     expect(generatedSource).toContain('applik8s-agent-startup-wait');
     expect(generatedSource).toContain('agent_dependencies_unavailable');
     expect(generatedSource).toContain('initializationController.abort()');

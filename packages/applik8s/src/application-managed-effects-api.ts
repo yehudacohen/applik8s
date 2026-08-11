@@ -23,6 +23,19 @@ export interface ApplicationManagedEffects {
       readonly idempotencyKey?: string;
     },
   ): ApplicationStagedEffectReference;
+  /**
+   * Executes one compiler-proven operation in the active database transaction.
+   * Only function-native transaction envelopes install this capability;
+   * ordinary command handlers retain staged `context.send(...)` semantics.
+   */
+  readonly invokeAtomic?: (
+    operation: ApplicationOperationContract,
+    input: object,
+    route: (messageId: string) => {
+      readonly targetKey: import('./application-models.js').ApplicationCommandKey;
+      readonly idempotencyKey?: string;
+    },
+  ) => Promise<unknown>;
 }
 
 type ApplicationManagedEffectsResolver =

@@ -1,6 +1,9 @@
 // typecast-file-boundary: Agent gateway request and response records are validated before typed routing and audit use.
 import { createHash } from 'node:crypto';
-import type { ApplicationRequestAdmission } from '@applik8s/core';
+import {
+  applicationCausalPrincipalContext,
+  type ApplicationRequestAdmission,
+} from '@applik8s/core';
 import {
   applicationExecutionAdmissionProtocol,
   encodeApplicationExecutionAdmission,
@@ -120,6 +123,9 @@ export function createApplicationAIAgentGateway(
           threadId,
           runId,
         });
+        const causalPrincipal = applicationCausalPrincipalContext(
+          admission.principal,
+        );
         const token = encodeApplicationExecutionAdmission(options.secret, {
           apiVersion: applicationExecutionAdmissionProtocol,
           id: `agent-admission:${executionDigest}`,
@@ -130,7 +136,7 @@ export function createApplicationAIAgentGateway(
           serviceIdentityId: target.serviceIdentityId,
           admission,
           audience: target.audience,
-          causalGrantIds: [],
+          causalGrantIds: [...causalPrincipal.grantIds],
           cancellationRevision:
             `agent-cancellation:${digest({
               authority: admission.principal.authorityRevision,

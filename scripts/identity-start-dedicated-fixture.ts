@@ -39,6 +39,9 @@ const inferenceSecretName = 'identity-start-inference';
 const paymentsSecretName = externalLifecycle
   ? 'identity-external-payments'
   : 'identity-start-payments';
+const notificationsSecretName = externalLifecycle
+  ? 'identity-external-notifications'
+  : 'identity-start-notifications';
 const labels = {
   'app.kubernetes.io/name': serverName,
   'app.kubernetes.io/managed-by': 'typekro',
@@ -100,6 +103,21 @@ function createDedicatedFixture() {
       });
       if (applicationNs) {
         paymentCredentials.dependsOn(applicationNs);
+      }
+      const notificationCredentials = secret({
+        id: 'notificationCredentials',
+        metadata: {
+          name: notificationsSecretName,
+          namespace: applicationNamespace,
+          labels,
+        },
+        stringData: {
+          username: 'v07-identity-fixture',
+          password: 'v07-identity-fixture-password',
+        },
+      });
+      if (applicationNs) {
+        notificationCredentials.dependsOn(applicationNs);
       }
 
       const server = deployment({

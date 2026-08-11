@@ -124,14 +124,14 @@ describe('maintained operations control center', () => {
       ),
       authority: {
         classification: 'assigned',
-        permissionIds: [expect.stringMatching(/^permission:operations-ui-fixture:role-administrator-/)],
+        permissionIds: [expect.stringMatching(/^permission:operations-ui-fixture:role-application-operator-/)],
       },
     });
     expect(authorityNode).toMatchObject({
       manifest: {
         roles: [{
-          name: 'administrator',
-          permissionIds: [expect.stringMatching(/^permission:operations-ui-fixture:role-administrator-/)],
+          name: 'application-operator',
+          permissionIds: [expect.stringMatching(/^permission:operations-ui-fixture:role-application-operator-/)],
         }],
       },
     });
@@ -141,6 +141,16 @@ describe('maintained operations control center', () => {
           category: 'database',
           state: 'unknown',
           authority: 'inferred',
+        }),
+        expect.objectContaining({
+          category: 'goLive',
+          id: 'obligation:database-migrations',
+          state: 'unknown',
+          authority: 'inferred',
+        }),
+        expect.objectContaining({
+          category: 'goLive',
+          id: 'obligation:rollback-destruction',
         }),
       ]),
     );
@@ -248,6 +258,32 @@ describe('maintained operations control center', () => {
     expect(JSON.stringify(rows)).not.toMatch(
       /private|grant-private|credential-private/,
     );
+  });
+
+  it('surfaces uncertain AI completion as redacted operator attention without provider content', () => {
+    const rows = applicationOperationsRedactedDomainRecords('ai', 'ai', [{
+      id: 'ai:attempt:attempt-1',
+      domain: 'ai',
+      subject: 'agent:researcher',
+      state: 'degraded',
+      reason: 'completion-uncertain',
+      authority: 'canonical',
+      observedAt: '2026-08-10T12:00:00.000Z',
+      evidence: {
+        quarantine: true,
+        prompt: 'private prompt',
+        providerResponse: 'private completion',
+      },
+    }]);
+    expect(rows).toEqual([{
+      category: 'ai',
+      id: 'ai:attempt:attempt-1',
+      label: 'agent:researcher',
+      state: 'degraded',
+      authority: 'canonical',
+      observedAt: '2026-08-10T12:00:00.000Z',
+    }]);
+    expect(JSON.stringify(rows)).not.toMatch(/prompt|completion|private/u);
   });
 
   it('downgrades expired provider observations instead of presenting stale readiness', () => {

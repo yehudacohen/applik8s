@@ -80,6 +80,40 @@ let recoveryEvidence: { readonly result: ProjectionRebuildResult; readonly evide
     expect(html).toContain('Chirp · built with Applik8s');
     expect(html).toContain('Why this feed matters');
 
+    const initialPolicy = await waitForModerationPolicyTracking();
+    const initialTracking = required(moderationPolicyTracking(initialPolicy));
+    expect(objectField(initialPolicy, 'status')).toMatchObject({
+      phase: 'Ready',
+      applik8s: { trackedExecutions: { 'apply-policy': {
+        phase: 'Succeeded',
+        workflow: 'moderation.apply-policy.v1',
+        resourceGeneration: numberField(objectField(initialPolicy, 'metadata'), 'generation'),
+      } } },
+    });
+    const currentMaxRisk = numberField(objectField(initialPolicy, 'spec'), 'maxRisk');
+    const patchedPolicy = jsonObject((await kubectl([
+      'patch', 'moderationpolicy/default', '--namespace', namespace,
+      '--type=merge', '--patch', JSON.stringify({ spec: { maxRisk: currentMaxRisk === 0.7 ? 0.8 : 0.7 } }),
+      '--output=json',
+    ])).stdout);
+    const patchedGeneration = numberField(objectField(patchedPolicy, 'metadata'), 'generation');
+    const reconciledPolicy = await waitForModerationPolicyTracking(patchedGeneration);
+    const reconciledTracking = required(moderationPolicyTracking(reconciledPolicy));
+    const reconciledGeneration = numberField(objectField(reconciledPolicy, 'metadata'), 'generation');
+    // The policy is an owned TypeKro child. The deliberate live drift above
+    // can therefore be followed immediately by a second generation when KRO
+    // restores the graph-authored spec. Tracking must converge to whichever
+    // generation is current, never remain attached to the transient one.
+    expect(reconciledGeneration).toBeGreaterThanOrEqual(patchedGeneration);
+    expect(reconciledTracking).toMatchObject({
+      phase: 'Succeeded',
+      workflow: 'moderation.apply-policy.v1',
+      resourceGeneration: reconciledGeneration,
+      onGenerationChange: 'supersede',
+      onDelete: { action: 'cancel', onTimeout: 'detach' },
+    });
+    expect(reconciledTracking.run).not.toBe(initialTracking.run);
+
     const registrationPrincipal = `live-account-${Date.now()}`;
     const registrationHeaders = { 'content-type': 'application/json', 'x-chirp-user': registrationPrincipal };
     const registrationBefore = await querySnapshot(endpoint, 'Account.me', {}, registrationHeaders);
@@ -827,6 +861,14 @@ function stringField(value: Record<string, unknown>, field: string): string {
   return result;
 }
 
+function numberField(value: Record<string, unknown>, field: string): number {
+  const fieldValue = value[field];
+  if (typeof fieldValue !== 'number' || !Number.isFinite(fieldValue)) {
+    throw new Error(`Expected ${field} to be a finite number.`);
+  }
+  return fieldValue;
+}
+
 function collectStrings(value: unknown): string[] {
   if (typeof value === 'string') return [value];
   if (Array.isArray(value)) return value.flatMap(collectStrings);
@@ -883,6 +925,7 @@ async function writeCompleteChirpEvidenceReceipt(): Promise<void> {
     'clickhouse-projection',
     'clickhouse-product-query',
     'frozen-microbatch-durable-receipt',
+    'resource-workflow-tracking-generation-convergence',
     'schema-complete-status',
     'harbor-digest-images',
     'declared-nodeport-exposure',
@@ -936,4 +979,51 @@ async function writeCompleteChirpEvidenceReceipt(): Promise<void> {
       sourceKind: recovery.evidence.manifest.sourceKind,
     },
   });
+}
+
+async function waitForModerationPolicyTracking(minimumGeneration?: number): Promise<Record<string, unknown>> {
+  let last: Record<string, unknown> | undefined;
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    last = jsonObject((await kubectl([
+      'get', 'moderationpolicy/default', '--namespace', namespace, '--output=json',
+    ])).stdout);
+    const metadata = objectField(last, 'metadata');
+    const statusValue = last.status;
+    const status = statusValue && typeof statusValue === 'object' && !Array.isArray(statusValue)
+      ? statusValue as Record<string, unknown>
+      : {};
+    const tracking = moderationPolicyTracking(last, false);
+    const currentGeneration = numberField(metadata, 'generation');
+    if (
+      status.phase === 'Ready'
+      && tracking?.phase === 'Succeeded'
+      && tracking.resourceGeneration === currentGeneration
+      && (minimumGeneration === undefined
+        || currentGeneration >= minimumGeneration)
+    ) return last;
+    await sleep(1_000);
+  }
+  throw new Error(`ModerationPolicy did not converge through canonical workflow tracking: ${JSON.stringify(last)}`);
+}
+
+function moderationPolicyTracking(
+  policy: Record<string, unknown>,
+  required = true,
+): Record<string, unknown> | undefined {
+  const statusValue = policy.status;
+  const status = statusValue && typeof statusValue === 'object' && !Array.isArray(statusValue)
+    ? statusValue as Record<string, unknown>
+    : {};
+  const applik8s = status.applik8s;
+  const trackedExecutions = applik8s && typeof applik8s === 'object' && !Array.isArray(applik8s)
+    ? Reflect.get(applik8s, 'trackedExecutions')
+    : undefined;
+  const tracking = trackedExecutions && typeof trackedExecutions === 'object' && !Array.isArray(trackedExecutions)
+    ? Reflect.get(trackedExecutions, 'apply-policy')
+    : undefined;
+  if (tracking && typeof tracking === 'object' && !Array.isArray(tracking)) {
+    return tracking as Record<string, unknown>;
+  }
+  if (required) throw new Error(`ModerationPolicy is missing canonical apply-policy tracking state: ${JSON.stringify(policy)}`);
+  return undefined;
 }

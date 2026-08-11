@@ -1,4 +1,7 @@
-import type { ApplicationWorkflowInvocationMetadata } from '@applik8s/applik8s/workflow-runtime';
+import {
+  applicationWorkflowCausalPrincipalMetadata,
+  type ApplicationWorkflowInvocationMetadata,
+} from '@applik8s/applik8s/workflow-runtime';
 import { Priority } from '@hatchet-dev/typescript-sdk/v1/index.js';
 
 export function hatchetRunOptions(
@@ -34,6 +37,20 @@ export function applicationMetadata(
       'Workflow trusted context exceeds the bounded 8192-byte durable metadata limit.',
     );
   }
+  const causalPrincipal = metadata?.[
+    applicationWorkflowCausalPrincipalMetadata
+  ];
+  const serializedCausalPrincipal = causalPrincipal
+    ? JSON.stringify(causalPrincipal)
+    : undefined;
+  if (
+    serializedCausalPrincipal
+    && Buffer.byteLength(serializedCausalPrincipal) > 8_192
+  ) {
+    throw new Error(
+      'Workflow causal principal exceeds the bounded 8192-byte durable metadata limit.',
+    );
+  }
   return Object.fromEntries(
     Object.entries({
       'applik8s.idempotency-key': metadata?.idempotencyKey,
@@ -42,6 +59,7 @@ export function applicationMetadata(
       'applik8s.causation-id': metadata?.causationId,
       traceparent: metadata?.traceparent,
       'applik8s.trusted-context': trustedContext,
+      'applik8s.causal-principal': serializedCausalPrincipal,
     }).filter(
       (entry): entry is [string, string] =>
         typeof entry[1] === 'string' && entry[1].length > 0,

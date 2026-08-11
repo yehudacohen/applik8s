@@ -35,6 +35,16 @@ describe('task operation runtime', () => {
       authorityRevision: 'authority-11',
       invocationId: 'run-42',
       contextSecret: 'a-stable-secret-containing-at-least-thirty-two-characters',
+      causalPrincipal: {
+        id: 'principal:chirp:human:user-7',
+        identity: {
+          id: 'identity:chirp:human:user-7',
+          kind: 'human',
+          issuer: 'applik8s://chirp',
+          subject: 'user-7',
+        },
+        grantIds: ['grant:chirp:publish'],
+      },
       now: () => new Date('2026-07-31T12:00:00.000Z'),
     });
 
@@ -57,6 +67,14 @@ describe('task operation runtime', () => {
       trustedContext: { tenantId: 'tenant-a' },
       admittedAt: '2026-07-31T12:00:00.000Z',
       sessionId: 'run-42',
+      causalPrincipalId: 'principal:chirp:human:user-7',
+      causalPrincipal: {
+        id: 'identity:chirp:human:user-7',
+        kind: 'human',
+        issuer: 'applik8s://chirp',
+        subject: 'user-7',
+      },
+      causalGrantIds: ['grant:chirp:publish'],
       trustedContextDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(JSON.stringify(principal)).not.toContain(

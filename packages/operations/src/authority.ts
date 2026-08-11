@@ -21,6 +21,7 @@ import type {
   ApplicationRoleRecord,
   ApplicationScopeExpression,
   ApplicationStaticAuthorityManifest,
+  ApplicationStaticRoleBootstrapDefinition,
 } from '@applik8s/core';
 import {
   intersectApplicationScopes,
@@ -108,6 +109,20 @@ export interface ApplicationAuthorityManifest {
 export interface ApplicationGrantDecision {
   readonly approval: ApplicationApprovalRecord;
   readonly grant?: ApplicationGrantRecord;
+}
+
+export interface ApplicationRoleBootstrapRequest {
+  readonly id: string;
+  readonly roleId: string;
+  readonly identity: ApplicationIdentityReference;
+  readonly issuedBy: ApplicationIdentityReference;
+  readonly reason: string;
+}
+
+export interface ApplicationBreakGlassRoleRequest
+  extends ApplicationRoleBootstrapRequest {
+  readonly expiresAt: string;
+  readonly acknowledgement: string;
 }
 
 export type ApplicationAuthorizationDenialCode =
@@ -475,6 +490,296 @@ export class ApplicationAuthorityService {
         details: { grantId: record.id, identityId: record.identity.id },
       });
       return record;
+    });
+  }
+
+  /**
+   * Materializes an application-declared one-time role bootstrap only after
+   * the identity provider has admitted the exact identity. The first active
+   * assignee closes the bootstrap permanently; ordinary revocation cannot
+   * accidentally reopen it for a different subject.
+   */
+  async bootstrapDeclaredRole(
+    bootstrap: ApplicationStaticRoleBootstrapDefinition,
+    admittedIdentity: ApplicationIdentityReference,
+  ): Promise<readonly ApplicationGrantRecord[]> {
+    return this.#repository.transaction(async () => {
+      if (!sameIdentity(bootstrap.identity, admittedIdentity)) return [];
+      const state = await this.#repository.snapshot();
+      const role = state.roles.find(
+        (candidate) => candidate.id === bootstrap.roleId && !candidate.retiredAt,
+      );
+      if (!role) {
+        throw new ApplicationAuthorityError(
+          'AUTHORITY_PERMISSION_UNAVAILABLE',
+          `Role bootstrap ${bootstrap.id} references unavailable role ${bootstrap.roleId}.`,
+        );
+      }
+      if (role.permissionIds.length === 0) {
+        throw new ApplicationAuthorityError(
+          'AUTHORITY_PERMISSION_UNAVAILABLE',
+          `Role bootstrap ${bootstrap.id} cannot assign role ${role.name} before it has permissions.`,
+        );
+      }
+      const now = this.#now();
+      const lifecycleOwner = applicationRoleBootstrapOwner(bootstrap.roleId);
+      const historicalRoleGrants = state.grants.filter(
+        (grant) => grant.lifecycleOwner === lifecycleOwner,
+      );
+      if (historicalRoleGrants.length > 0) {
+        return historicalRoleGrants.every((grant) =>
+          sameIdentity(grant.identity, admittedIdentity))
+          ? historicalRoleGrants.filter(
+              (grant) => !grant.revokedAt && !isExpired(grant.expiresAt, now),
+            )
+          : [];
+      }
+      const createdAt = now.toISOString();
+      const grants: ApplicationGrantRecord[] = [];
+      for (const permissionId of role.permissionIds) {
+        const permission = state.permissions.find(
+          (candidate) => candidate.id === permissionId && !candidate.retiredAt,
+        );
+        if (!permission) {
+          throw new ApplicationAuthorityError(
+            'AUTHORITY_PERMISSION_UNAVAILABLE',
+            `Role bootstrap ${bootstrap.id} references unavailable permission ${permissionId}.`,
+          );
+        }
+        const grant: ApplicationGrantRecord = {
+          apiVersion: 'applik8s.grant/v1alpha1',
+          id: `${bootstrap.id}:${permission.id}`,
+          origin: 'runtime',
+          identity: admittedIdentity,
+          permissionId: permission.id,
+          operationIds: permission.operationIds,
+          scope: permission.scope,
+          ...(permission.audiences
+            ? { audiences: permission.audiences }
+            : {}),
+          ...(permission.transports
+            ? { transports: permission.transports }
+            : {}),
+          issuedBy: bootstrap.issuedBy,
+          lifecycleOwner,
+          reason: bootstrap.reason,
+          catalogRevision: permission.catalogRevision,
+          authorityRevision: state.revision,
+          createdAt,
+        };
+        this.#validateGrant(grant, state, {
+          requireGrantablePermission: false,
+        });
+        await this.#putGrant(grant);
+        await this.#audit('grant.assigned', grant.authorityRevision, {
+          principal: bootstrap.issuedBy,
+          details: {
+            grantId: grant.id,
+            identityId: admittedIdentity.id,
+            bootstrapId: bootstrap.id,
+            roleId: role.id,
+          },
+        });
+        grants.push(grant);
+      }
+      return grants;
+    });
+  }
+
+  /**
+   * Deployment-owner bootstrap for Dedicated and External installations. It
+   * shares the same role-level one-shot lease as a declared local bootstrap,
+   * so changing provider subjects or revoking the initial owner can never
+   * reopen bootstrap implicitly.
+   */
+  bootstrapRole(
+    request: ApplicationRoleBootstrapRequest,
+  ): Promise<readonly ApplicationGrantRecord[]> {
+    if (!request.reason.trim()) {
+      throw new ApplicationAuthorityError(
+        'AUTHORITY_GRANT_CONFLICT',
+        'Application role bootstrap requires a non-empty audited reason.',
+      );
+    }
+    assertBootstrapIdentity(request.identity, 'bootstrap identity');
+    assertBootstrapIdentity(request.issuedBy, 'bootstrap issuer');
+    return this.bootstrapDeclaredRole({
+      id: request.id,
+      roleId: request.roleId,
+      identity: request.identity,
+      issuedBy: request.issuedBy,
+      reason: request.reason,
+    }, request.identity);
+  }
+
+  /**
+   * Explicit bounded recovery authority. Break-glass never reopens or mutates
+   * the one-time bootstrap lease and is capped at twenty-four hours.
+   */
+  async assignBreakGlassRole(
+    request: ApplicationBreakGlassRoleRequest,
+  ): Promise<readonly ApplicationGrantRecord[]> {
+    assertBootstrapIdentity(request.identity, 'break-glass identity');
+    assertBootstrapIdentity(request.issuedBy, 'break-glass issuer');
+    if (!request.reason.trim() || !request.acknowledgement.trim()) {
+      throw new ApplicationAuthorityError(
+        'AUTHORITY_GRANT_CONFLICT',
+        'Break-glass authority requires an explicit acknowledgement and audited reason.',
+      );
+    }
+    return this.#repository.transaction(async () => {
+      const state = await this.#repository.snapshot();
+      const now = this.#now();
+      const expiresAt = new Date(request.expiresAt);
+      const maximumExpiry = now.getTime() + 24 * 60 * 60 * 1_000;
+      if (
+        Number.isNaN(expiresAt.getTime())
+        || expiresAt.getTime() <= now.getTime()
+        || expiresAt.getTime() > maximumExpiry
+      ) {
+        throw new ApplicationAuthorityError(
+          'AUTHORITY_BREAK_GLASS_ACKNOWLEDGEMENT_REQUIRED',
+          'Break-glass expiry must be in the future and no more than 24 hours from issuance.',
+        );
+      }
+      const role = state.roles.find(
+        (candidate) => candidate.id === request.roleId && !candidate.retiredAt,
+      );
+      if (!role || role.permissionIds.length === 0) {
+        throw new ApplicationAuthorityError(
+          'AUTHORITY_PERMISSION_UNAVAILABLE',
+          `Break-glass request ${request.id} references unavailable or empty role ${request.roleId}.`,
+        );
+      }
+      const lifecycleOwner = `application-role-break-glass:${request.roleId}:${request.id}`;
+      const existing = state.grants.filter(
+        (grant) => grant.lifecycleOwner === lifecycleOwner,
+      );
+      if (existing.length > 0) {
+        const sameTerms = existing.every(
+          (grant) =>
+            sameIdentity(grant.identity, request.identity)
+            && grant.expiresAt === expiresAt.toISOString(),
+        );
+        if (!sameTerms) {
+          throw new ApplicationAuthorityError(
+            'AUTHORITY_GRANT_CONFLICT',
+            `Break-glass request ${request.id} already exists with different terms.`,
+          );
+        }
+        return existing;
+      }
+      const grants: ApplicationGrantRecord[] = [];
+      for (const permissionId of role.permissionIds) {
+        const permission = state.permissions.find(
+          (candidate) => candidate.id === permissionId && !candidate.retiredAt,
+        );
+        if (!permission) {
+          throw new ApplicationAuthorityError(
+            'AUTHORITY_PERMISSION_UNAVAILABLE',
+            `Break-glass role ${role.id} references unavailable permission ${permissionId}.`,
+          );
+        }
+        const grant: ApplicationGrantRecord = {
+          apiVersion: 'applik8s.grant/v1alpha1',
+          id: `${lifecycleOwner}:${permission.id}`,
+          origin: 'runtime',
+          identity: request.identity,
+          permissionId: permission.id,
+          operationIds: permission.operationIds,
+          scope: permission.scope,
+          ...(permission.audiences ? { audiences: permission.audiences } : {}),
+          ...(permission.transports ? { transports: permission.transports } : {}),
+          issuedBy: request.issuedBy,
+          lifecycleOwner,
+          reason: request.reason,
+          expiresAt: expiresAt.toISOString(),
+          catalogRevision: permission.catalogRevision,
+          authorityRevision: state.revision,
+          createdAt: now.toISOString(),
+        };
+        this.#validateGrant(grant, state, { requireGrantablePermission: false });
+        await this.#putGrant(grant);
+        grants.push(grant);
+      }
+      await this.#audit('break-glass', state.revision, {
+        principal: request.issuedBy,
+        details: {
+          requestId: request.id,
+          roleId: role.id,
+          identityId: request.identity.id,
+          expiresAt: expiresAt.toISOString(),
+          acknowledgement: request.acknowledgement,
+          grantIds: grants.map((grant) => grant.id),
+        },
+      });
+      return grants;
+    });
+  }
+
+  /** Revokes every active permission grant that currently backs one role. */
+  async revokeRoleForIdentity(
+    roleId: string,
+    identity: ApplicationIdentityReference,
+    reason: string,
+  ): Promise<readonly ApplicationGrantRecord[]> {
+    if (!reason.trim()) {
+      throw new ApplicationAuthorityError(
+        'AUTHORITY_GRANT_CONFLICT',
+        'Role revocation requires a non-empty audited reason.',
+      );
+    }
+    return this.#repository.transaction(async () => {
+      const state = await this.#repository.snapshot();
+      const role = state.roles.find((candidate) => candidate.id === roleId);
+      if (!role) {
+        throw new ApplicationAuthorityError(
+          'AUTHORITY_PERMISSION_UNAVAILABLE',
+          `Cannot revoke unavailable role ${roleId}.`,
+        );
+      }
+      const permissionIds = new Set(role.permissionIds);
+      const grants = state.grants.filter(
+        (grant) =>
+          !grant.revokedAt
+          && sameIdentity(grant.identity, identity)
+          && Boolean(grant.permissionId && permissionIds.has(grant.permissionId)),
+      );
+      const revoked: ApplicationGrantRecord[] = [];
+      for (const grant of grants) {
+        revoked.push(await this.#revokeGrant(grant.id, reason));
+      }
+      return revoked;
+    });
+  }
+
+  /** Returns only roles fully backed by active canonical grants. */
+  async grantedRolesForIdentity(
+    identity: ApplicationIdentityReference,
+  ): Promise<readonly string[]> {
+    return this.#repository.transaction(async () => {
+      const state = await this.#repository.snapshot();
+      const now = this.#now();
+      const permissionIds = new Set(
+        state.grants
+          .filter(
+            (grant) =>
+              sameIdentity(grant.identity, identity)
+              && !grant.revokedAt
+              && !isExpired(grant.expiresAt, now),
+          )
+          .flatMap((grant) => grant.permissionId ? [grant.permissionId] : []),
+      );
+      return state.roles
+        .filter(
+          (role) =>
+            !role.retiredAt
+            && role.permissionIds.length > 0
+            && role.permissionIds.every((permissionId) =>
+              permissionIds.has(permissionId)),
+        )
+        .map((role) => role.name)
+        .sort();
     });
   }
 
@@ -1099,18 +1404,20 @@ export class ApplicationAuthorityService {
   }
 
   async revokeGrant(grantId: string, reason: string): Promise<ApplicationGrantRecord> {
-    return this.#repository.transaction(async () => {
-      const grant = (await this.#repository.snapshot()).grants.find((candidate) => candidate.id === grantId);
-      if (!grant) throw new ApplicationAuthorityError('AUTHORITY_GRANT_UNAVAILABLE', `Grant ${grantId} does not exist.`);
-      if (grant.revokedAt) return grant;
-      const revoked = { ...grant, revokedAt: this.#now().toISOString(), reason: grant.reason ?? reason };
-      await this.#putGrant(revoked);
-      await this.#audit('grant.revoked', grant.authorityRevision, {
-        principal: grant.issuedBy,
-        details: { grantId, reason },
-      });
-      return revoked;
+    return this.#repository.transaction(() => this.#revokeGrant(grantId, reason));
+  }
+
+  async #revokeGrant(grantId: string, reason: string): Promise<ApplicationGrantRecord> {
+    const grant = (await this.#repository.snapshot()).grants.find((candidate) => candidate.id === grantId);
+    if (!grant) throw new ApplicationAuthorityError('AUTHORITY_GRANT_UNAVAILABLE', `Grant ${grantId} does not exist.`);
+    if (grant.revokedAt) return grant;
+    const revoked = { ...grant, revokedAt: this.#now().toISOString(), reason: grant.reason ?? reason };
+    await this.#putGrant(revoked);
+    await this.#audit('grant.revoked', grant.authorityRevision, {
+      principal: grant.issuedBy,
+      details: { grantId, reason },
     });
+    return revoked;
   }
 
   async #audit(
@@ -1418,6 +1725,39 @@ function assertReservationTransition(
 
 function isExpired(expiresAt: string | undefined, now: Date): boolean {
   return expiresAt !== undefined && Date.parse(expiresAt) <= now.getTime();
+}
+
+function sameIdentity(
+  left: ApplicationIdentityReference,
+  right: ApplicationIdentityReference,
+): boolean {
+  return left.id === right.id
+    && left.kind === right.kind
+    && left.issuer === right.issuer
+    && left.subject === right.subject;
+}
+
+function applicationRoleBootstrapOwner(roleId: string): string {
+  return `application-role-bootstrap:${roleId}`;
+}
+
+function assertBootstrapIdentity(
+  identity: ApplicationIdentityReference,
+  label: string,
+): void {
+  if (
+    !identity.id.trim()
+    || !identity.issuer.trim()
+    || !identity.subject.trim()
+    || identity.kind === 'execution'
+    || identity.kind === 'pre-authentication-flow'
+    || identity.kind === 'oauth-authorization-flow'
+  ) {
+    throw new ApplicationAuthorityError(
+      'AUTHORITY_GRANT_CONFLICT',
+      `Application ${label} must be one exact provider-verified non-framework identity.`,
+    );
+  }
 }
 
 function deny(

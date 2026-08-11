@@ -712,10 +712,20 @@ export function deterministicApplicationIdentityPrincipal(
   input: Parameters<ApplicationIdentityPrincipalAdmitter>[0],
 ): ApplicationPrincipal {
   const now = input.context.now ?? new Date();
+  const kind = input.completion.providerIdentity.kind;
+  if (
+    kind === 'execution'
+    || kind === 'pre-authentication-flow'
+    || kind === 'oauth-authorization-flow'
+  ) {
+    throw new Error(
+      'Deterministic identity completion cannot admit framework-managed principal kinds.',
+    );
+  }
   return {
     id: `principal:${input.context.application}:${input.completion.providerIdentity.id}`,
     identity: input.completion.providerIdentity,
-    kind: input.completion.providerIdentity.kind,
+    kind,
     authenticationMethod: input.completion.authenticationMethod,
     audience: [...input.context.audience],
     trustedContextDigest: input.context.trustedContextDigest,

@@ -65,6 +65,8 @@ export async function emitApplicationDeploymentGraph(
     request.graph.metadata.name,
     ),
     installationSpec,
+    request.graph,
+    request.profile,
   );
   const generatedSecrets = await applicationGeneratedSecretRequirements(
     request.bundlePath,
@@ -124,6 +126,8 @@ function withInstallationRuntimeBindings(
     readonly clusterApiPrerequisites: readonly DeploymentJsonObject[];
   },
   installationSpec: DeploymentJsonObject,
+  graph: ApplicationGraph,
+  profile: string,
 ): {
   readonly resources: readonly DeploymentJsonObject[];
   readonly status: DeploymentJsonObject;
@@ -131,44 +135,133 @@ function withInstallationRuntimeBindings(
 } {
   const providers = optionalObject(installationSpec.providers);
   const payments = optionalObject(providers?.payments);
-  if (!payments) return materialized;
-  const secretName = stringValue(
-    payments.secretName,
-    "Application payments Secret name",
+  const notifications = optionalObject(providers?.notifications);
+  const paymentEnvironment: Array<
+    DeploymentJsonObject & { readonly name: string }
+  > = payments
+      ? (() => {
+          const secretName = stringValue(
+            payments.secretName,
+            "Application payments Secret name",
+          );
+          return [
+            secretEnvironment(
+              "APPLIK8S_PAYMENT_API_KEY",
+              secretName,
+              optionalString(payments.apiKeyKey) ?? "apiKey",
+            ),
+            secretEnvironment(
+              "APPLIK8S_PAYMENT_WEBHOOK_SECRET",
+              secretName,
+              optionalString(payments.webhookSecretKey) ?? "webhookSecret",
+            ),
+          ];
+        })()
+      : [];
+  const notificationEnvironment: Array<
+    DeploymentJsonObject & { readonly name: string }
+  > = notifications
+      ? (() => {
+          const secretName = stringValue(
+            notifications.secretName,
+            "Application notification Secret name",
+          );
+          const port = typeof notifications.port === "number"
+            && Number.isSafeInteger(notifications.port)
+            && notifications.port >= 1
+            && notifications.port <= 65_535
+            ? notifications.port
+            : notifications.secure === true ? 465 : 587;
+          return [
+            {
+              name: "APPLIK8S_NOTIFICATION_DELIVERY_KIND",
+              value: "smtp",
+            },
+            {
+              name: "APPLIK8S_NOTIFICATION_SMTP_HOST",
+              value: stringValue(
+                notifications.host,
+                "Application notification SMTP host",
+              ),
+            },
+            {
+              name: "APPLIK8S_NOTIFICATION_SMTP_PORT",
+              value: String(port),
+            },
+            {
+              name: "APPLIK8S_NOTIFICATION_SMTP_SECURE",
+              value: notifications.secure === true ? "true" : "false",
+            },
+            {
+              name: "APPLIK8S_NOTIFICATION_SENDER_EMAIL",
+              value: stringValue(
+                notifications.senderEmail,
+                "Application notification sender email",
+              ),
+            },
+            ...(optionalString(notifications.senderName)
+              ? [{
+                  name: "APPLIK8S_NOTIFICATION_SENDER_NAME",
+                  value: optionalString(notifications.senderName) as string,
+                }]
+              : []),
+            secretEnvironment(
+              "APPLIK8S_NOTIFICATION_SMTP_USERNAME",
+              secretName,
+              optionalString(notifications.usernameKey) ?? "username",
+            ),
+            secretEnvironment(
+              "APPLIK8S_NOTIFICATION_SMTP_PASSWORD",
+              secretName,
+              optionalString(notifications.passwordKey) ?? "password",
+            ),
+          ];
+        })()
+      : [{ name: "APPLIK8S_NOTIFICATION_DELIVERY_KIND", value: "local" }];
+  const paymentConsumers = providerConsumerWorkloads(graph, "PaymentProvider");
+  const notificationConsumers = providerConsumerWorkloads(
+    graph,
+    "NotificationDelivery",
   );
-  const apiKey = optionalString(payments.apiKeyKey) ?? "apiKey";
-  const webhookSecret =
-    optionalString(payments.webhookSecretKey) ?? "webhookSecret";
-  const environment = [
-    secretEnvironment("STRIPE_SECRET_KEY", secretName, apiKey),
-    secretEnvironment(
-      "STRIPE_WEBHOOK_SECRET",
-      secretName,
-      webhookSecret,
-    ),
-  ];
-  let hostCount = 0;
+  const consumers = new Set([...paymentConsumers, ...notificationConsumers]);
+  if (consumers.size === 0) return materialized;
   const resources = materialized.resources.map((resource) => {
     const template = optionalObject(resource.template);
-    if (!template || !isApplicationHostDeployment(template)) return resource;
-    hostCount += 1;
-    const spec = objectValue(template.spec, "ApplicationHost Deployment spec");
+    if (!template || !isProviderConsumerDeployment(template, consumers)) {
+      return resource;
+    }
+    const workloadName = stringValue(
+      objectValue(template.metadata, "provider consumer Deployment metadata").name,
+      "provider consumer Deployment name",
+    );
+    const environment: Array<
+      DeploymentJsonObject & { readonly name: string }
+    > = [
+      { name: "APPLIK8S_PROFILE_VARIANT", value: profile },
+      ...(paymentConsumers.has(workloadName) ? paymentEnvironment : []),
+      ...(notificationConsumers.has(workloadName)
+        ? notificationEnvironment
+        : []),
+    ];
+    const spec = objectValue(template.spec, "payment consumer Deployment spec");
     const podTemplate = objectValue(
       spec.template,
-      "ApplicationHost Deployment pod template",
+      "payment consumer Deployment pod template",
     );
     const podSpec = objectValue(
       podTemplate.spec,
-      "ApplicationHost Deployment pod spec",
+      "payment consumer Deployment pod spec",
     );
     const containers = arrayValue(podSpec.containers).map((value) => {
       const container = objectValue(
         value,
-        "ApplicationHost Deployment container",
+        "payment consumer Deployment container",
       );
-      if (container.name !== "application") return container;
+      if (container.name !== "http" && container.name !== "runtime") {
+        return container;
+      }
       const existing = arrayValue(container.env).map((entry) =>
-        objectValue(entry, "ApplicationHost environment entry"),
+        objectValue(entry, "payment consumer environment entry"),
       );
       const names = new Set(
         existing.flatMap((entry) =>
@@ -200,23 +293,51 @@ function withInstallationRuntimeBindings(
       },
     };
   });
-  if (hostCount !== 1) {
-    throw new Error(
-      `Application payments binding requires exactly one ApplicationHost Deployment; found ${hostCount}.`,
-    );
-  }
   return { ...materialized, resources };
 }
 
-function isApplicationHostDeployment(
+function providerConsumerWorkloads(
+  graph: ApplicationGraph,
+  providerInterface: string,
+): ReadonlySet<string> {
+  const providers = new Set(
+    graph.nodes.flatMap((node) =>
+      node.kind === "provider" && node.interface === providerInterface
+        ? [node.id]
+        : []),
+  );
+  const consumerIds = new Set(
+    graph.edges.flatMap((edge) =>
+      edge.relationship === "provides" && providers.has(edge.from.nodeId)
+        ? [edge.to.nodeId]
+        : []),
+  );
+  return new Set(
+    graph.nodes.flatMap((node) => {
+      if (!consumerIds.has(node.id)) return [];
+      if (node.kind === "server") return [kubernetesName(node.name)];
+      if (node.kind === "streamProcessor") {
+        return [kubernetesName(`${graph.metadata.name}-${node.name}`)];
+      }
+      return [];
+    }),
+  );
+}
+
+function isProviderConsumerDeployment(
   resource: DeploymentJsonObject,
+  consumers: ReadonlySet<string>,
 ): boolean {
   if (resource.apiVersion !== "apps/v1" || resource.kind !== "Deployment") {
     return false;
   }
   const metadata = optionalObject(resource.metadata);
   const labels = optionalObject(metadata?.labels);
-  return labels?.["app.kubernetes.io/component"] === "application-host";
+  const component = labels?.["app.kubernetes.io/component"];
+  const name = labels?.["app.kubernetes.io/name"];
+  return typeof name === "string"
+    && consumers.has(name)
+    && (component === "typed-http" || component === "stream-processor");
 }
 
 function secretEnvironment(
@@ -357,7 +478,11 @@ function hostEnvironmentSecretRequirements(
   const providers = optionalObject(installationSpec.providers);
   if (!providers) return [];
   if (installationSpec.profile === "external") {
-    for (const provider of [providers.inference, providers.payments]) {
+    for (const provider of [
+      providers.inference,
+      providers.payments,
+      providers.notifications,
+    ]) {
       const source = optionalObject(optionalObject(provider)?.credentialSource);
       if (source?.kind === "hostEnvironment") {
         throw new Error(
@@ -423,6 +548,40 @@ function hostEnvironmentSecretRequirements(
       },
       consumers: [
         "provider.PaymentProvider.primary",
+        ...(applicationHostConsumer ? [applicationHostConsumer] : []),
+      ],
+    });
+  }
+  const notifications = optionalObject(providers.notifications);
+  const notificationSource = optionalObject(
+    notifications?.credentialSource,
+  );
+  if (notifications && notificationSource?.kind === "hostEnvironment") {
+    const name = stringValue(
+      notifications.secretName,
+      "notification Secret name",
+    );
+    requirements.push({
+      id: "agentic-managed.notifications",
+      namespace,
+      name,
+      referenceMode: "staticIdentity",
+      values: {
+        [optionalString(notifications.usernameKey) ?? "username"]: {
+          kind: "hostEnvironment",
+          name:
+            optionalString(notificationSource.usernameVariable)
+            ?? "SMTP_USERNAME",
+        },
+        [optionalString(notifications.passwordKey) ?? "password"]: {
+          kind: "hostEnvironment",
+          name:
+            optionalString(notificationSource.passwordVariable)
+            ?? "SMTP_PASSWORD",
+        },
+      },
+      consumers: [
+        "provider.NotificationDelivery.transactional",
         ...(applicationHostConsumer ? [applicationHostConsumer] : []),
       ],
     });

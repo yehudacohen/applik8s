@@ -1,6 +1,9 @@
 // typecast-file-boundary: Gateway tests deliberately inspect signed and untrusted protocol fixtures after validation.
 import { createHash } from 'node:crypto';
-import type { ApplicationRequestAdmission } from '@applik8s/core';
+import type {
+  ApplicationExecutionPrincipal,
+  ApplicationRequestAdmission,
+} from '@applik8s/core';
 import { decodeApplicationExecutionAdmission } from '@applik8s/operations';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -106,6 +109,50 @@ describe('application AI agent gateway', () => {
     expect(decoded.admission).toEqual(admission());
     expect(decoded.executionId).toMatch(/^agent-run:[a-f0-9]{64}$/u);
     expect(await internal?.json()).toEqual(body);
+  });
+
+  it('preserves the original human lineage and causal grants across a nested agent gateway hop', async () => {
+    let forwarded: Request | undefined;
+    const gateway = createApplicationAIAgentGateway({
+      application: 'research',
+      secret,
+      targets: [target],
+      authenticate: async () => nestedExecutionAdmission(),
+      authorize: async () => true,
+      now: () => new Date('2026-07-30T12:00:00.000Z'),
+      fetch: Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+        forwarded = input instanceof Request ? input : new Request(input, init);
+        return new Response('event: RUN_FINISHED\n\n');
+      }, { preconnect: vi.fn() }),
+    });
+
+    await expect(gateway.handle(agentRequest())).resolves.toMatchObject({
+      status: 200,
+    });
+    const token = forwarded?.headers.get(
+      'x-applik8s-execution-admission',
+    );
+    expect(token).toBeTruthy();
+    const decoded = decodeApplicationExecutionAdmission(secret, token!, {
+      executionKind: 'agent',
+      workloadIdentityId: target.workloadIdentityId,
+      serviceIdentityId: target.serviceIdentityId,
+      audience: target.audience,
+      binding: {
+        agentId: target.nodeId,
+        threadId: 'conversation-1',
+        runId: 'protocol-run-1',
+      },
+      now: new Date('2026-07-30T12:00:01.000Z'),
+    });
+    expect(decoded.admission.principal).toMatchObject({
+      kind: 'execution',
+      causalPrincipalId: 'principal:research:human:user-1',
+      causalPrincipal: {
+        id: 'identity:research:human:user-1',
+      },
+    });
+    expect(decoded.causalGrantIds).toEqual(['grant:research:human-delegation']);
   });
 
   it('fails closed for unknown agents, denied requests, and oversized bodies', async () => {
@@ -258,5 +305,51 @@ function admission(): ApplicationRequestAdmission {
       expiresAt: '2026-07-30T12:10:00.000Z',
     },
     trustedContext,
+  };
+}
+
+function nestedExecutionAdmission(): ApplicationRequestAdmission {
+  const base = admission();
+  const principal = {
+    ...base.principal,
+    id: 'principal:research:execution:agent:planner:1',
+    identity: {
+      id: 'identity:research:service:planner',
+      kind: 'service',
+      issuer: 'applik8s://research',
+      subject: 'planner',
+    },
+    kind: 'execution',
+    executionKind: 'agent',
+    executionId: 'planner-run-1',
+    attempt: 1,
+    workloadIdentity: {
+      id: 'identity:research:workload:planner',
+      kind: 'workload',
+      issuer: 'applik8s://research',
+      subject: 'planner',
+    },
+    serviceIdentity: {
+      id: 'identity:research:service:planner',
+      kind: 'service',
+      issuer: 'applik8s://research',
+      subject: 'planner',
+    },
+    causalPrincipalId: 'principal:research:human:user-1',
+    causalPrincipal: {
+      id: 'identity:research:human:user-1',
+      kind: 'human',
+      issuer: 'https://identity.example.test',
+      subject: 'user-1',
+    },
+    causalGrantIds: ['grant:research:human-delegation'],
+    deadline: '2026-07-30T12:05:00.000Z',
+    cancellationRevision: 'active:planner-run-1',
+    bindings: [],
+    effectiveAuthority: [],
+  } satisfies ApplicationExecutionPrincipal;
+  return {
+    ...base,
+    principal,
   };
 }

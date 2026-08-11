@@ -19,6 +19,7 @@ import {
   type ApplicationStaticGrantDefinition,
   type ApplicationStaticPermissionDefinition,
   type ApplicationStaticRoleDefinition,
+  type ApplicationStaticRoleBootstrapDefinition,
   applicationOperationId,
   intersectApplicationScopes,
 } from '@applik8s/core';
@@ -65,6 +66,15 @@ export interface ApplicationRoleBinding {
   readonly id: string;
   readonly name: string;
   can(...selections: readonly ApplicationAuthoritySelection[]): ApplicationRoleBinding;
+  /**
+   * Declares the exact provider-verified identity eligible for the role's
+   * one-time canonical bootstrap. It does not trust email addresses, browser
+   * input, environment allowlists, or workspace ownership.
+   */
+  bootstrap(
+    identity: ApplicationIdentityReference,
+    options?: { readonly reason?: string },
+  ): ApplicationRoleBinding;
 }
 
 export interface ApplicationOutcomeBinding {
@@ -158,6 +168,33 @@ export function applicationAuthorityRegistrar(
                 candidate.id === id ? role : candidate),
             };
           });
+          return binding;
+        },
+        bootstrap(identity, options = {}) {
+          assertBootstrapIdentity(identity, normalized);
+          const issuedBy = applicationIdentity(state.authorityApplicationName);
+          const bootstrap: ApplicationStaticRoleBootstrapDefinition = {
+            id: `bootstrap:${state.authorityApplicationName}:role:${normalized}`,
+            roleId: id,
+            identity,
+            issuedBy,
+            reason:
+              options.reason?.trim()
+              || `One-time ${normalized} bootstrap declared by ${state.authorityApplicationName}.`,
+          };
+          updateManifest(state, (manifest) => ({
+            ...manifest,
+            identities: uniqueBy(
+              [...manifest.identities, identity, issuedBy],
+              (candidate) => candidate.id,
+            ),
+            roleBootstraps: uniqueCompatible(
+              manifest.roleBootstraps ?? [],
+              [bootstrap],
+              (candidate) => candidate.id,
+              'role bootstrap',
+            ),
+          }));
           return binding;
         },
       };
@@ -485,6 +522,7 @@ function emptyManifest(application: string): ApplicationStaticAuthorityManifest 
     permissions: [],
     roles: [],
     grants: [],
+    roleBootstraps: [],
     outcomes: [],
   };
 }
@@ -498,9 +536,28 @@ function withManifestRevision(manifest: ApplicationStaticAuthorityManifest): App
       permissions: manifest.permissions,
       roles: manifest.roles,
       grants: manifest.grants,
+      roleBootstraps: manifest.roleBootstraps ?? [],
       outcomes: manifest.outcomes,
     })}`,
   });
+}
+
+function assertBootstrapIdentity(
+  identity: ApplicationIdentityReference,
+  role: string,
+): void {
+  if (
+    !identity.id.trim()
+    || !identity.issuer.trim()
+    || !identity.subject.trim()
+    || identity.kind === 'execution'
+    || identity.kind === 'pre-authentication-flow'
+    || identity.kind === 'oauth-authorization-flow'
+  ) {
+    throw new Error(
+      `Application role ${role} bootstrap requires one exact provider-verified identity reference.`,
+    );
+  }
 }
 
 function applicationIdentity(application: string): ApplicationIdentityReference {

@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "release": "v0.6",
+  "evidenceClass": "local-build-artifacts",
+  "limitations": [
+    "OCI context bytes are exact generated build-input sizes, not compressed registry layer or pulled image sizes.",
+    "Build durations are local wall-clock observations and exclude container build, registry push/pull, Kubernetes scheduling, and startup."
+  ],
+  "generatedAt": "2026-08-09T13:41:48.393Z",
+  "git": {
+    "commit": "d2fd5b3ab154e6b2dd855abd02d8d1fc8a9fb059",
+    "dirty": true,
+    "workingTreeDigest": "sha256:fd1cd47e51dd91cef09aa6356636ee32b477f73b01533cde6210d7bdb2b46874"
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "cpuModel": "Apple M5 Max",
+    "cpuCount": 18,
+    "runtime": "node-v22.22.1"
+  },
+  "build": {
+    "webDurationMs": 0,
+    "compilerDurationMs": 0
+  },
+  "graph": {
+    "nodes": 310,
+    "resourceGraphDefinitionBytes": 283615,
+    "generatedArtifacts": 451,
+    "prerequisiteInstances": 2
+  },
+  "web": {
+    "browserJavaScriptGzipBytes": 123685,
+    "serverFiles": 53,
+    "serverOutputBytes": 2679024
+  },
+  "containers": {
+    "count": 19,
+    "totalContextBytes": 20788253,
+    "maximumContextBytes": 4712289,
+    "contexts": [
+      {
+        "path": "dist/examples/chirp/typekro/application-host",
+        "files": 67,
+        "bytes": 3087791
+      },
+      {
+        "path": "dist/examples/chirp/typekro/migrations/chirp-chirp-migration-9d67a3e06ae2/container",
+        "files": 3,
+        "bytes": 36151
+      },
+      {
+        "path": "dist/examples/chirp/typekro/processors/chirp-commands/container",
+        "files": 3,
+        "bytes": 1766594
+      },
+      {
+        "path": "dist/examples/chirp/typekro/workflows/chirp-workflows/container",
+        "files": 3,
+        "bytes": 4712289
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-account/container",
+        "files": 3,
+        "bytes": 593705
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-administration/container",
+        "files": 3,
+        "bytes": 1784786
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-follow-analytics-hourly/container",
+        "files": 3,
+        "bytes": 176054
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-home-timeline/container",
+        "files": 3,
+        "bytes": 193627
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-persist-engagement-batch/container",
+        "files": 3,
+        "bytes": 2053116
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-post-analytics-hourly/container",
+        "files": 3,
+        "bytes": 176099
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-reaction-analytics-hourly/container",
+        "files": 3,
+        "bytes": 176169
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-reconcile-automation-schedules/container",
+        "files": 3,
+        "bytes": 2051239
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-social/container",
+        "files": 3,
+        "bytes": 638451
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-system/container",
+        "files": 3,
+        "bytes": 567501
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-validate-created-account-create/container",
+        "files": 3,
+        "bytes": 180548
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-validate-deleted-post-delete/container",
+        "files": 3,
+        "bytes": 181154
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-validate-published-post-create/container",
+        "files": 3,
+        "bytes": 180843
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-validate-updated-post-update/container",
+        "files": 3,
+        "bytes": 181499
+      },
+      {
+        "path": "dist/examples/chirp/typekro/reactive/chirp-verify-uploaded-media/container",
+        "files": 3,
+        "bytes": 2050637
+      }
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+import {
+  authenticatedPrincipalId,
+  field,
+  model,
+  pgEnum,
+} from '@applik8s/applik8s/drizzle';
+
+export const dataLifecycleScope = pgEnum('data_lifecycle_scope', [
+  'account',
+  'workspace',
+]);
+
+export const dataLifecycleState = pgEnum('data_lifecycle_state', [
+  'queued',
+  'running',
+  'actionRequired',
+  'completed',
+  'failed',
+]);
+
+export const DataLifecycleRequest = model('data_lifecycle_requests', {
+  id: field.uuid('id').defaultRandom().primaryKey(),
+  scope: dataLifecycleScope('scope').notNull(),
+  targetId: field.text('target_id').notNull(),
+  requestedByPrincipalId: field.text('requested_by_principal_id')
+    .notNull()
+    .default(authenticatedPrincipalId),
+  // The command policy replaces this sentinel inside the authoritative
+  // transaction. The default keeps the browser input limited to user intent.
+  principalScope: field.text('principal_scope').notNull().default('pending'),
+  state: dataLifecycleState('state').notNull().default('queued'),
+  deletedDocuments: field.integer('deleted_documents').notNull().default(0),
+  archivedConversations: field.integer('archived_conversations').notNull().default(0),
+  retainedArtifacts: field.integer('retained_artifacts').notNull().default(0),
+  consequence: field.text('consequence'),
+  requestedAt: field.timestamp('requested_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull().defaultNow(),
+  startedAt: field.timestamp('started_at', {
+    withTimezone: true,
+    mode: 'string',
+  }),
+  completedAt: field.timestamp('completed_at', {
+    withTimezone: true,
+    mode: 'string',
+  }),
+});

@@ -1,9 +1,39 @@
 // typecast-file-boundary: Hatchet adapter tests construct SDK-shaped fakes and decoded task payloads to verify the provider boundary.
 import { ApplicationDurableError, ApplicationWorkflowObservationError } from '@applik8s/applik8s';
+import { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';
 import { createHatchetWorkflowRuntimeFromClient, createHatchetWorkflowRuntimeFromClientFactory, durableErrorFromMessage, observeHatchetWorkflowRun, reconcileHatchetWorkflowSchedule, waitForHatchetResult } from '@applik8s/runtime-hatchet';
 import { describe, expect, it, vi } from 'vitest';
+import { applicationMetadata } from '../src/workflow-runtime-hatchet-metadata.js';
 
 describe('Hatchet workflow result observation', () => {
+  it('durably serializes framework-owned causal attribution without adding an application option', () => {
+    expect(applicationMetadata({
+      idempotencyKey: 'workflow-1',
+      [applicationWorkflowCausalPrincipalMetadata]: {
+        id: 'principal:human:user-1',
+        identity: {
+          id: 'identity:human:user-1',
+          kind: 'human',
+          issuer: 'https://identity.example.test',
+          subject: 'user-1',
+        },
+        grantIds: ['grant:workflow-1'],
+      },
+    })).toMatchObject({
+      'applik8s.idempotency-key': 'workflow-1',
+      'applik8s.causal-principal': JSON.stringify({
+        id: 'principal:human:user-1',
+        identity: {
+          id: 'identity:human:user-1',
+          kind: 'human',
+          issuer: 'https://identity.example.test',
+          subject: 'user-1',
+        },
+        grantIds: ['grant:workflow-1'],
+      }),
+    });
+  });
+
   it('decodes declared durable errors into structured application errors', () => {
     const error = durableErrorFromMessage('worker failed: applik8s-durable-error:{"name":"providerUnavailable","payload":{"retryAfterSeconds":10}}');
     expect(error).toBeInstanceOf(ApplicationDurableError);

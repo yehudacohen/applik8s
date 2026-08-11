@@ -87,7 +87,7 @@ describe('v0.3 infrastructure-from-code product story', () => {
     expect(tenantPlatformSource).toContain("migrations: 'generated-job'");
     expect(tenantPlatformSource).not.toContain('TransactionalDatabase.postgres');
     expect(tenantPlatformSource).not.toContain('tenantPlatform.model(AccountEntity, {\n    store:');
-    expect(tenantPlatformSource).toContain('tenantPlatform.http');
+    expect(tenantPlatformSource).toContain('tenantPlatform.server');
     expect(tenantPlatformSource).toContain('Tenant.on.reconcile');
     expect(guestbookSource).toMatch(/from ['"]@applik8s\/applik8s['"]/);
     expect(guestbookSource).toMatch(/from ['"]@applik8s\/applik8s\/dsl['"]/);

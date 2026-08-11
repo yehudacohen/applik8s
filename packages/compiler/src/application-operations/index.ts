@@ -591,6 +591,7 @@ export function applicationStaticAuthorityManifest(
     permissions: [],
     roles: [],
     grants: [],
+    roleBootstraps: [],
     outcomes: [],
   };
   const combined = {
@@ -615,6 +616,7 @@ export function applicationStaticAuthorityManifest(
       permissions: combined.permissions,
       roles: combined.roles,
       grants: combined.grants,
+      roleBootstraps: combined.roleBootstraps ?? [],
       outcomes: combined.outcomes,
     }),
   };

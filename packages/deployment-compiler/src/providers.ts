@@ -51,6 +51,8 @@ const builtinProviderRegistrations: readonly BuiltinProviderRegistration[] = [
   { interface: "TransactionalDatabase", implementation: "postgres", execution: "root-composition" },
   { interface: "ObjectStorage", implementation: "kubernetes-configmap-objects", execution: "runtime-only" },
   { interface: "ObjectStorage", implementation: "s3", execution: "root-composition" },
+  { interface: "NotificationDelivery", implementation: "local", execution: "runtime-only" },
+  { interface: "NotificationDelivery", implementation: "smtp", execution: "runtime-only" },
   { interface: "AnalyticalDatabase", implementation: "clickhouse", execution: "root-composition" },
   { interface: "Queue", implementation: "kubernetes-configmap-queue", execution: "runtime-only" },
   { interface: "IdentityProvider", implementation: "identity-provider", execution: "runtime-only" },

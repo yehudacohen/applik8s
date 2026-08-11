@@ -1,4 +1,5 @@
 import { applicationCallbackSourceMatchesRuntime } from './application-callback-source-equivalence.js';
+import { applicationCallableRuntimeFor } from './application-provider-dependencies.js';
 import {
   type ApplicationRouteSourceLocation,
   analyzeApplicationServerRouteSource,
@@ -40,6 +41,11 @@ export interface ExpandedApplicationCallbackDependencies {
   readonly calls: readonly unknown[];
   readonly bindings: Readonly<Record<string, unknown>>;
   readonly awaited: Readonly<Record<string, unknown>>;
+  readonly callables: readonly {
+    readonly identifier: string;
+    readonly runtime: 'notifications.request.v1';
+    readonly dependencies: readonly string[];
+  }[];
 }
 
 const applicationCallbackDependenciesSymbol = Symbol.for(
@@ -58,6 +64,11 @@ export function expandApplicationCallbackDependencies(options: {
   readonly awaited?: Readonly<Record<string, unknown>> | undefined;
 }): ExpandedApplicationCallbackDependencies {
   const leaves: InstrumentedApplicationCallbackDependency[] = [];
+  const callables: {
+    readonly identifier: string;
+    readonly runtime: 'notifications.request.v1';
+    readonly dependencies: readonly string[];
+  }[] = [];
   const roots: InstrumentedApplicationCallbackDependency[] = [];
   const boundValues = new Set(Object.values(options.bindings ?? {}));
   for (const [identifier, value] of Object.entries(options.bindings ?? {})) {
@@ -103,6 +114,14 @@ export function expandApplicationCallbackDependencies(options: {
         `Application callback dependency graph contains a cycle through ${dependency.identifier}.`,
       );
     }
+    const runtime = applicationCallableRuntimeFor(dependency.value);
+    if (runtime && !/^generatedCall\d+$/.test(dependency.identifier)) {
+      callables.push({
+        identifier: dependency.identifier,
+        runtime: runtime.id,
+        dependencies: metadata.map((nested) => nested.identifier),
+      });
+    }
     visiting.add(dependency.value);
     for (const nested of metadata) {
       visit(
@@ -136,6 +155,16 @@ export function expandApplicationCallbackDependencies(options: {
     calls: Object.freeze(calls),
     bindings: Object.freeze(bindings),
     awaited: Object.freeze(awaited),
+    callables: Object.freeze(
+      callables.filter(
+        (candidate, index, all) =>
+          all.findIndex(
+            (other) =>
+              other.identifier === candidate.identifier
+              && other.runtime === candidate.runtime,
+          ) === index,
+      ),
+    ),
   };
 }
 
@@ -196,13 +225,14 @@ export function serializeApplicationCallback(options: {
   const runtimeSource = Function.prototype.toString.call(options.callback);
   const instrumented = instrumentedApplicationCallbackSource(options.callback);
   if (instrumented?.generated && instrumented.source) {
+    const durableLocation = durableApplicationCallbackLocation({
+      file: instrumented.file,
+      line: instrumented.line,
+      column: instrumented.column,
+    });
     const serialized = {
       source: instrumented.source,
-      location: {
-        file: instrumented.file,
-        line: instrumented.line,
-        column: instrumented.column,
-      },
+      ...(durableLocation ? { location: durableLocation } : {}),
     };
     const entries = callbackCache.get(options.callback) ?? new Map<string, SerializedApplicationCallback>();
     entries.set(cacheKey, serialized);
@@ -219,6 +249,9 @@ export function serializeApplicationCallback(options: {
     || applicationCallbackSourceMatchesRuntime(candidate.source, runtimeSource)
   )
     ? candidate
+    : undefined;
+  const durableLocation = extracted
+    ? durableApplicationCallbackLocation(extracted.location)
     : undefined;
   const source = normalizeSerializableFunctionSource((extracted?.source ?? runtimeSource).trim());
   if (!source || source.includes('[native code]')) throw new Error(`${options.label} must be a serializable JavaScript function.`);
@@ -239,7 +272,7 @@ export function serializeApplicationCallback(options: {
       path: `/${options.registrar}/${options.property}`,
       handlerSource: source,
       handlerSourceKind: extracted ? 'source' : 'functionToString',
-      ...(extracted ? { handlerSourceLocation: extracted.location } : {}),
+      ...(durableLocation ? { handlerSourceLocation: durableLocation } : {}),
     }, unsupported, injectedIdentifiers);
   } catch (error) {
     if (!options.allowDeferredResolution) throw error;
@@ -248,15 +281,32 @@ export function serializeApplicationCallback(options: {
     throw new Error(serializedCallbackClosureMessage({
       label: options.label,
       identifiers: unsupported,
-      ...(extracted ? { sourceLocation: extracted.location } : {}),
+      ...(durableLocation ? { sourceLocation: durableLocation } : {}),
       guidance: 'Move referenced helpers, tables, and imports to module scope so Applik8s can include them in the generated runtime.',
     }));
   }
-  const serialized = { source, ...(dependencies ? { dependencies } : {}), ...(extracted ? { location: extracted.location } : {}), ...(!dependencies && unsupported.length > 0 ? { unresolved: unsupported } : {}) };
+  const serialized = { source, ...(dependencies ? { dependencies } : {}), ...(durableLocation ? { location: durableLocation } : {}), ...(!dependencies && unsupported.length > 0 ? { unresolved: unsupported } : {}) };
   const entries = callbackCache.get(options.callback) ?? new Map<string, SerializedApplicationCallback>();
   entries.set(cacheKey, serialized);
   callbackCache.set(options.callback, entries);
   return serialized;
+}
+
+/**
+ * Discovery bundles are compiler scratch space. Their process, timestamp, and
+ * cache-busting query are intentionally unique on every compile, so persisting
+ * them as callback provenance makes otherwise identical application graphs
+ * nondeterministic. Authored module locations remain available for dependency
+ * resolution and diagnostics; scratch-bundle locations carry neither value
+ * once discovery has completed.
+ */
+function durableApplicationCallbackLocation(
+  location: ApplicationRouteSourceLocation,
+): ApplicationRouteSourceLocation | undefined {
+  return /(?:^|\/)\.applik8s-tmp\/discovery-[^/]+\/entrypoint\.mjs(?:\?.*)?$/u
+    .test(location.file)
+    ? undefined
+    : location;
 }
 
 export function instrumentedApplicationCallbackSource(callback: (...args: never[]) => unknown): InstrumentedApplicationCallbackSource | undefined {

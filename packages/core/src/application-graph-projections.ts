@@ -17,6 +17,8 @@ import type { SourceLocation } from "./common.js";
  * identity; application authors never declare this dependency list.
  */
 export interface ApplicationFunctionNativeTransactionContract {
+	/** Read scopes hydrate bounded reads; write scopes also install the durable edit kernel. */
+	readonly mode?: "read" | "write";
 	readonly primaryModel: ApplicationGraphNodeRef;
 	readonly models: readonly ApplicationGraphNodeRef[];
 	readonly modelBindings: readonly {
@@ -58,6 +60,47 @@ export interface ApplicationStreamProcessorNode
 	 * application code never authors this dependency list.
 	 */
 	readonly functionNativeTransaction?: ApplicationFunctionNativeTransactionContract;
+	/**
+	 * Durable model mutations reached through ordinary callback/helper calls.
+	 * Generated workers rehydrate these exact leaves through the authorized
+	 * command runtime; application authors never declare an operation map.
+	 */
+	readonly operationBindings?: readonly {
+		readonly identifier: string;
+		readonly operationId: string;
+		readonly runtimeOperationId?: string;
+		readonly operation: {
+			readonly apiVersion: "applik8s.operation/v1alpha1";
+			readonly kind: "applicationOperation";
+			readonly id: string;
+			readonly model: string;
+			readonly name: string;
+			readonly operation: "create" | "update" | "delete";
+			readonly transport: "command";
+		};
+		readonly command: ApplicationGraphNodeRef;
+		readonly handler: ApplicationGraphNodeRef;
+	}[];
+	/**
+	 * Bounded application views reached through ordinary callback/helper calls.
+	 * The generated processor executes only these exact query nodes and retains
+	 * their declared authorization, schemas, read authority, and budgets.
+	 */
+	readonly queryBindings?: readonly {
+		readonly identifier: string;
+		readonly query: ApplicationGraphNodeRef;
+	}[];
+	/** Portable package-owned wrappers reconstructed from their admitted operation leaves. */
+	readonly callableBindings?: readonly {
+		readonly identifier: string;
+		readonly runtime: "notifications.request.v1";
+		readonly dependencies: readonly string[];
+	}[];
+	/** Provider capabilities inferred through ordinary maintained-module calls. */
+	readonly providerBindings?: readonly {
+		readonly identifier: string;
+		readonly provider: ApplicationProviderRef;
+	}[];
 	/** Recurring workflow/task schedules explicitly available to this effect handler. */
 	readonly schedules?: readonly {
 		readonly alias: string;

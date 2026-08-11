@@ -7,8 +7,14 @@ import type {
   ApplicationResourceEventOperatorController,
 } from './application-events.js';
 import { kubernetesNameSegment } from './application-identifiers.js';
-import { applicationTypeKroString } from './application-typekro-values.js';
+import {
+  applicationTypeKroExpressionValue,
+  applicationTypeKroString,
+  applicationTypeKroValueIdentity,
+} from './application-typekro-values.js';
 import { applicationWorkflowGatewayBindingMetadata } from './application-workflows.js';
+
+const applicationRuntimeNamespaceMarker = '__APPLIK8S_RUNTIME_NAMESPACE__';
 
 export function createApplicationResourceEventOperatorController<TSpec extends object, TStatus extends object>(
   resource: ResourceDefinition<TSpec, TStatus>,
@@ -35,7 +41,13 @@ export function createApplicationResourceEventOperatorController<TSpec extends o
   ).map((registration) => withApplicationResourceControllerAuthority(resource, registration));
   const callbacks = [...callbacksInput];
   const operatorName = name ?? `${kubernetesNameSegment(resource.kind)}-controller`;
-  const namespace = typeof deployment.namespace === 'string' ? deployment.namespace : undefined;
+  // applicationTypeKroString deliberately returns a string-shaped branded CEL
+  // value in graph mode. Preserve that value as the shared deployment and
+  // gateway namespace instead of dropping it via a typeof check.
+  const namespace = deployment.namespace;
+  const manifestDeployment = namespace !== undefined && applicationTypeKroExpressionValue(namespace)
+    ? { ...deployment, namespace: applicationRuntimeNamespaceMarker }
+    : deployment;
   const serviceAccount = deployment.serviceAccountName ?? `${operatorName}-controller`;
   const resolvedSecondaryWatches = typeof secondaryWatches === 'function'
     ? secondaryWatches(resource)
@@ -53,7 +65,10 @@ export function createApplicationResourceEventOperatorController<TSpec extends o
       : {}),
     capabilities,
     ...(permissions && permissions.length > 0 ? { permissions } : {}),
-    ...(Object.keys(deployment).length > 0 ? { deployment } : {}),
+    // The immutable operator bundle cannot contain TypeKro expression
+    // objects. Keep its deployment identity portable while the invoked
+    // deployment binding below retains the actual graph-derived namespace.
+    ...(Object.keys(manifestDeployment).length > 0 ? { deployment: manifestDeployment } : {}),
   });
   const deployed = operator(deployment);
   return {
@@ -105,27 +120,50 @@ function resourceWorkflowGatewayCapabilities(
   for (const [capability, entries] of grouped) {
     const first = entries[0];
     if (!first) continue;
+    const firstNamespaceIdentity = first.namespace === undefined
+      ? undefined
+      : applicationTypeKroValueIdentity(first.namespace);
     if (entries.some((entry) =>
-      entry.worker !== first.worker || entry.port !== first.port || entry.namespace !== first.namespace)) {
+      entry.worker !== first.worker
+      || entry.port !== first.port
+      || (entry.namespace === undefined
+        ? undefined
+        : applicationTypeKroValueIdentity(entry.namespace)) !== firstNamespaceIdentity)) {
       throw new Error(`Resource handler workflow gateway ${capability} resolves to conflicting worker authority.`);
     }
-    const namespace = first.namespace ?? operatorNamespace;
+    const endpointNamespace = first.namespace ?? operatorNamespace;
+    const namespace = first.namespace === undefined
+      ? operatorNamespace
+      : applicationTypeKroString(first.namespace);
     if (!namespace) {
       throw new Error(`Resource handler calls workflow ${first.contract}, but its operator and WorkflowEngine do not declare a concrete shared namespace.`);
     }
-    if (operatorNamespace && namespace !== operatorNamespace) {
+    if (
+      operatorNamespace
+      && applicationTypeKroValueIdentity(namespace)
+        !== applicationTypeKroValueIdentity(operatorNamespace)
+    ) {
       throw new Error(`Resource handler workflow gateway ${capability} is in namespace ${namespace}, but the operator is deployed in ${operatorNamespace}. Cross-namespace workflow gateways are intentionally unsupported.`);
     }
+    const dynamicNamespace = applicationTypeKroExpressionValue(namespace) !== undefined;
+    const manifestNamespace = dynamicNamespace
+      ? applicationRuntimeNamespaceMarker
+      : namespace;
     descriptors[capability] = {
       name: capability,
       kind: 'http',
-      endpoint: `http://${first.worker}.${namespace}.svc:${first.port}`,
+      // A private workflow gateway is deliberately colocated with its caller.
+      // Short Kubernetes service DNS keeps the immutable bundle independent
+      // of an installation-derived namespace while remaining unambiguous.
+      endpoint: dynamicNamespace
+        ? `http://${first.worker}:${first.port}`
+        : `http://${first.worker}.${endpointNamespace}.svc:${first.port}`,
       auth: { type: 'serviceAccount' },
       workflowGateway: {
         protocol: 'applik8s.workflow-gateway/v1alpha1',
         worker: first.worker,
         contracts: [...new Set(entries.map((entry) => entry.contract))].sort(),
-        caller: { operator: operatorName, namespace, serviceAccount },
+        caller: { operator: operatorName, namespace: manifestNamespace, serviceAccount },
       },
       policy: {
         timeoutMs: 15_000,

@@ -1,16 +1,73 @@
 import { application } from './app';
 import {
+  BillingDashboard,
+  CancelSubscription,
+  ChangeSubscription,
+  OpenBillingPortal,
+  ResumeSubscription,
+  ReceivePaymentWebhook,
+  StartCheckout,
+} from './features/billing';
+import {
   Note,
+  NoteDetail,
   NoteList,
   NotesAssistant,
 } from './features/notes/model';
-import { OperationsSnapshot } from './modules';
+import { Conversation, ConversationDetail, ConversationList } from './features/conversations/model';
+import {
+  DecisionInbox,
+  DecisionReview,
+  DecisionReviewSignal,
+} from './features/inbox/model';
+import { ArtifactDetail, WorkspaceLibrary } from './features/library/model';
+import {
+  DataLifecycleRequest,
+  DataLifecycleRequests,
+} from './features/lifecycle/model';
+import { OnboardingProgress, OnboardingState } from './features/onboarding/model';
+import {
+  AcceptInvitation,
+  Invitation,
+  Membership,
+  Workspace,
+  WorkspaceDashboard,
+  WorkspaceList,
+} from './features/workspaces/model';
+import { Notifications, OperationsSnapshot } from './modules';
 
 export {
+  BillingDashboard,
+  CancelSubscription,
+  ChangeSubscription,
   Note,
+  NoteDetail,
   NoteList,
   NotesAssistant,
+  Conversation,
+  ConversationDetail,
+  ConversationList,
+  DecisionInbox,
+  DecisionReview,
+  DecisionReviewSignal,
+  DataLifecycleRequest,
+  DataLifecycleRequests,
+  ArtifactDetail,
+  WorkspaceLibrary,
+  OnboardingProgress,
+  OnboardingState,
+  OpenBillingPortal,
+  ResumeSubscription,
+  ReceivePaymentWebhook,
   OperationsSnapshot,
+  Notifications,
+  StartCheckout,
+  AcceptInvitation,
+  Invitation,
+  Membership,
+  Workspace,
+  WorkspaceDashboard,
+  WorkspaceList,
 };
 
 export { application };

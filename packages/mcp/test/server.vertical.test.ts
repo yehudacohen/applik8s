@@ -5,9 +5,9 @@ import {
   ListToolsResultSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import type {
+  ApplicationAdmittedPrincipal,
   ApplicationOperationCatalog,
   ApplicationOperationDescriptor,
-  ApplicationPrincipal,
   ApplicationRequestAdmission,
   JsonValue,
 } from '@applik8s/core';
@@ -352,7 +352,7 @@ function runtimeFixture(options: {
 }
 
 function admissionFixture(
-  override: Partial<ApplicationPrincipal> = {},
+  override: Partial<ApplicationAdmittedPrincipal> = {},
 ): ApplicationRequestAdmission {
   return {
     principal: {

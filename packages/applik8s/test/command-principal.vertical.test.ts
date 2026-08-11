@@ -5,6 +5,9 @@ import type {
 import { describe, expect, test } from 'vitest';
 import {
   applicationCommandCausalPrincipalId,
+  applicationCommandPrincipal,
+  applicationCommandPrincipalValues,
+  applicationCommandTrustedContext,
 } from '../src/command-principal.js';
 
 const human: ApplicationPrincipal = {
@@ -68,5 +71,21 @@ describe('durable command ownership attribution', () => {
     expect(
       applicationCommandCausalPrincipalId(unattributed),
     ).toBeUndefined();
+  });
+
+  test('framework delivery restores the principal without leaking the reserved key to handlers', () => {
+    const delivered = {
+      ...applicationCommandPrincipalValues(agent),
+      tenantId: 'tenant-1',
+    };
+    expect(applicationCommandPrincipal({ values: delivered })).toMatchObject({
+      id: agent.id,
+      causalPrincipalId: human.id,
+    });
+    const handlerVisible = applicationCommandTrustedContext({
+      values: delivered,
+    });
+    expect('applik8s.dev/principal' in handlerVisible).toBe(false);
+    expect(handlerVisible.tenantId).toBe('tenant-1');
   });
 });

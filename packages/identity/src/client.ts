@@ -43,6 +43,14 @@ export interface ApplicationIdentitySessionView {
     | 'sessionId'
   >;
   readonly assurance: readonly string[];
+  /**
+   * Deliberately coarse UI-shaping decisions. Raw roles, grants, permissions,
+   * provider claims, and trusted-context attributes never enter this view.
+   */
+  readonly capabilities?: {
+    readonly workspaceAdministration: boolean;
+    readonly applicationOperations: boolean;
+  };
 }
 
 export interface ApplicationIdentityFlowView {
@@ -64,6 +72,13 @@ export interface ApplicationIdentityAccountView {
   readonly authenticationMethods: readonly string[];
   readonly assurance: readonly string[];
   readonly mfa: readonly ApplicationIdentityMfaMethodView[];
+  /** Provider-neutral actions that this selected identity profile can execute. */
+  readonly capabilities: {
+    readonly verification: boolean;
+    readonly recovery: boolean;
+    readonly mfaEnrollment: boolean;
+    readonly sessionRevocation: boolean;
+  };
 }
 
 export interface ApplicationIdentityMfaMethodView {
@@ -85,6 +100,16 @@ export interface ApplicationIdentityMfaEnrollmentView {
     readonly recoveryCodes?: readonly string[];
     readonly challenge?: string;
   };
+}
+
+export interface ApplicationIdentitySessionDeviceView {
+  readonly id: string;
+  readonly current: boolean;
+  readonly active: boolean;
+  readonly authenticationMethods: readonly string[];
+  readonly authenticatedAt?: string;
+  readonly issuedAt?: string;
+  readonly expiresAt?: string;
 }
 
 export interface ApplicationOAuthConsentView {
@@ -161,6 +186,11 @@ export interface ApplicationIdentityClient {
     options?: { readonly signal?: AbortSignal },
   ): Promise<ApplicationIdentityAccountView>;
   removeMfa(methodId: string, options?: { readonly signal?: AbortSignal }): Promise<ApplicationIdentityAccountView>;
+  sessions(options?: { readonly signal?: AbortSignal }): Promise<readonly ApplicationIdentitySessionDeviceView[]>;
+  revokeSession(
+    sessionId: string,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<readonly ApplicationIdentitySessionDeviceView[]>;
   consent(consentId: string, options?: { readonly signal?: AbortSignal }): Promise<ApplicationOAuthConsentView>;
   decideConsent(
     consentId: string,
@@ -267,6 +297,26 @@ export function createApplicationIdentityClient(
       ),
     removeMfa: (methodId, invoke) =>
       request<ApplicationIdentityAccountView>(`/account/mfa/${pathSegment(methodId)}`, { method: 'DELETE' }, invoke?.signal),
+    sessions: async (invoke) => {
+      const result = await request<{
+        readonly protocol: typeof applicationIdentityHttpProtocol;
+        readonly kind: 'session-device-list';
+        readonly items: readonly ApplicationIdentitySessionDeviceView[];
+      }>('/account/sessions', {}, invoke?.signal);
+      return result.items;
+    },
+    revokeSession: async (sessionId, invoke) => {
+      const result = await request<{
+        readonly protocol: typeof applicationIdentityHttpProtocol;
+        readonly kind: 'session-device-list';
+        readonly items: readonly ApplicationIdentitySessionDeviceView[];
+      }>(
+        `/account/sessions/${pathSegment(sessionId)}`,
+        { method: 'DELETE' },
+        invoke?.signal,
+      );
+      return result.items;
+    },
     consent: (consentId, invoke) =>
       request<ApplicationOAuthConsentView>(`/consents/${pathSegment(consentId)}`, {}, invoke?.signal),
     decideConsent: (consentId, decision, invoke) =>

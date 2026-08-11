@@ -54,10 +54,42 @@ export interface ApplicationHttpRequest<TInput extends object> {
   readonly query: Readonly<Record<string, string | undefined>>;
 }
 
+export interface ApplicationHttpWebhookRequest {
+  readonly body: Uint8Array;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly signal: AbortSignal;
+}
+
 export interface ApplicationHttpContext {
   readonly principal: ApplicationPrincipal;
   readonly trustedContext: Readonly<Record<string, JsonValue>>;
   readonly signal: AbortSignal;
+}
+
+export type ApplicationHttpWebhookAuthentication<
+  TEvent extends { readonly id: string },
+> = (
+  request: ApplicationHttpWebhookRequest,
+) => TEvent | Promise<TEvent>;
+
+export interface ApplicationHttpWebhookContract<
+  TEvent extends { readonly id: string },
+  TOutput extends object,
+> {
+  /** Schema for the provider-authenticated event returned by authenticate. */
+  readonly event: SchemaInput<TEvent>;
+  readonly output: SchemaInput<TOutput>;
+  /**
+   * Authenticates the exact raw request before JSON parsing. A provider
+   * signature or equivalent receipt is the admission boundary.
+   */
+  readonly authenticate: ApplicationHttpWebhookAuthentication<TEvent>;
+  /** @internal Compiler-injected semantic callback leaves. */
+  readonly __generatedCalls?: readonly unknown[];
+  /** @internal Compiler-injected semantic callback leaves keyed by source path. */
+  readonly __generatedBindings?: Readonly<Record<string, unknown>>;
+  /** @internal Compiler-injected awaited callback leaves keyed by source path. */
+  readonly __generatedAwaitedCalls?: Readonly<Record<string, unknown>>;
 }
 
 export type ApplicationHttpAuthorization<TInput extends object> = (
@@ -77,6 +109,15 @@ export interface ApplicationHttpServer {
     contract: ApplicationHttpRouteContract<TInput, TOutput>,
     handler: ApplicationHttpHandler<TInput, TOutput>,
   ): ApplicationOperation<TInput, TOutput>;
+  webhook<
+    TEvent extends { readonly id: string },
+    TOutput extends object,
+  >(
+    name: string,
+    path: string,
+    contract: ApplicationHttpWebhookContract<TEvent, TOutput>,
+    handler: ApplicationHttpHandler<TEvent, TOutput>,
+  ): ApplicationOperation<TEvent, TOutput>;
 }
 
 export type ApplicationHttpRegistrar = (
@@ -116,6 +157,22 @@ export interface ApplicationHttpRouteDeclaration {
   };
   /** @internal Original authorization callback retained until compilation. */
   readonly authorize?: ApplicationHttpAuthorization<object>;
+  readonly webhookAuthentication?: {
+    readonly source: string;
+    readonly dependencies?: {
+      readonly source: string;
+      readonly resolveDir: string;
+    };
+    readonly location?: {
+      readonly file: string;
+      readonly line: number;
+      readonly column: number;
+    };
+  };
+  /** @internal Original raw-request authenticator retained until compilation. */
+  readonly webhookAuthenticate?: ApplicationHttpWebhookAuthentication<{
+    readonly id: string;
+  }>;
   /** @internal Semantic dependencies retained until transaction inference. */
   readonly handlerDependencyGraph: ExpandedApplicationCallbackDependencies;
   /** @internal Original function identity retained only until compilation. */
@@ -230,7 +287,120 @@ export function createApplicationHttpServer(
       onRoute(route);
       return operation;
     },
+    webhook<
+      TEvent extends { readonly id: string },
+      TOutput extends object,
+    >(
+      name: string,
+      path: string,
+      contract: ApplicationHttpWebhookContract<TEvent, TOutput>,
+      handler: ApplicationHttpHandler<TEvent, TOutput>,
+    ): ApplicationOperation<TEvent, TOutput> {
+      assertApplicationHttpRoute(serverName, name, path, ids);
+      const input = declaredSchema(
+        contract.event,
+        `app.http(${serverName}).${name}.event`,
+      );
+      const output = declaredSchema(
+        contract.output,
+        `app.http(${serverName}).${name}.output`,
+      );
+      const serializedHandler = serializeApplicationCallback({
+        registrar: 'app.http.webhook',
+        argumentIndex: 3,
+        property: 'handler',
+        label: `HTTP webhook ${serverName}.${name}`,
+        callback: handler as (...args: never[]) => unknown,
+        allowDeferredResolution: true,
+      });
+      const serializedAuthentication = serializeApplicationCallback({
+        registrar: 'app.http.webhook',
+        argumentIndex: 2,
+        property: 'authenticate',
+        label: `HTTP webhook ${serverName}.${name} authentication`,
+        callback: contract.authenticate as (...args: never[]) => unknown,
+        allowDeferredResolution: true,
+      });
+      const handlerDependencies = expandApplicationCallbackDependencies({
+        calls: [
+          handler,
+          contract.authenticate,
+          ...(contract.__generatedCalls ?? []),
+        ],
+        bindings: contract.__generatedBindings,
+        awaited: contract.__generatedAwaitedCalls,
+      });
+      const authority: ApplicationOperationAuthorityGraphContract = {
+        classification: 'public',
+        permissionIds: [],
+        grantable: false,
+        delegable: false,
+        scope: {
+          kind: 'target',
+          model: serverName,
+          identity: { key: name },
+        },
+        transports: ['http'],
+      };
+      const route: ApplicationHttpRouteDeclaration = {
+        id: name,
+        method: 'POST',
+        path,
+        input: input.jsonSchema,
+        output: output.jsonSchema,
+        inputSchema: contract.event as SchemaInput<object>,
+        outputSchema: contract.output as SchemaInput<object>,
+        handler:
+          handler as unknown as ApplicationHttpHandler<object, object>,
+        handlerSource: serializedHandler.source,
+        ...(serializedHandler.dependencies
+          ? { handlerDependencies: serializedHandler.dependencies }
+          : {}),
+        ...(serializedHandler.location
+          ? { handlerLocation: serializedHandler.location }
+          : {}),
+        webhookAuthentication: {
+          source: serializedAuthentication.source,
+          ...(serializedAuthentication.dependencies
+            ? { dependencies: serializedAuthentication.dependencies }
+            : {}),
+          ...(serializedAuthentication.location
+            ? { location: serializedAuthentication.location }
+            : {}),
+        },
+        webhookAuthenticate:
+          contract.authenticate as ApplicationHttpWebhookAuthentication<{
+            readonly id: string;
+          }>,
+        handlerDependencyGraph: handlerDependencies,
+        authority,
+      };
+      const operation = createApplicationRuntimeOperation<TEvent, TOutput>({
+        apiVersion: 'applik8s.operation/v1alpha1',
+        kind: 'applicationOperation',
+        id: `applik8s://http/${encodeURIComponent(serverName)}/operations/${encodeURIComponent(name)}`,
+        model: serverName,
+        name,
+        operation: 'custom',
+        transport: 'runtime',
+        version: 'v1',
+      }, async () => {
+        throw new Error(
+          'Authenticated webhook operations execute only through their generated raw-request boundary.',
+        );
+      });
+      applyWebhookOperationAuthority(operation);
+      onRoute(route);
+      ids.add(name);
+      return operation;
+    },
   });
+}
+
+function applyWebhookOperationAuthority<TInput, TOutput>(
+  operation: ApplicationOperation<TInput, TOutput>,
+): void {
+  operation.public();
 }
 
 function assertApplicationHttpRoute(

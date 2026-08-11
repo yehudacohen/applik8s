@@ -1,0 +1,393 @@
+import {
+  type ApplicationModelViewContext,
+  module,
+  trustedContext,
+} from '@applik8s/applik8s';
+import { type } from 'arktype';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { application } from '../../app';
+import { Notifications } from '../../modules';
+import { database } from '../../providers';
+import {
+  Invitation as InvitationTable,
+  InvitationRelations,
+  Membership as MembershipTable,
+  MembershipRelations,
+  Workspace as WorkspaceTable,
+  WorkspaceRelations,
+} from './schema';
+
+export const WorkspaceId = trustedContext('workspaceId', {
+  schema: type('string'),
+});
+
+const WorkspaceSummary = type({
+  id: 'string',
+  slug: 'string',
+  name: 'string',
+  role: 'string',
+});
+
+const WorkspaceDashboardResult = type({
+  workspace: WorkspaceSummary,
+  members: type({
+    id: 'string',
+    identityId: 'string',
+    role: "'workspace-owner' | 'workspace-administrator' | 'workspace-member'",
+    createdAt: 'string',
+  }).array(),
+  invitations: type({
+    id: 'string',
+    email: 'string',
+    role: 'string',
+    state: 'string',
+    expiresAt: 'string',
+    deliveryState: "'queued' | 'pending' | 'delivering' | 'delivered' | 'failed' | 'unknown'",
+    deliveryAttempts: 'number',
+    deliveryProvider: 'string | null',
+  }).array(),
+}).or('null');
+
+async function listWorkspaces(
+  _input: object,
+  context: ApplicationModelViewContext,
+) {
+  const client = context.database(database);
+  return client.select({
+    id: WorkspaceTable.id,
+    slug: WorkspaceTable.slug,
+    name: WorkspaceTable.name,
+    role: sql<string>`CASE
+      WHEN ${WorkspaceTable.ownerPrincipalId} = ${context.principal.id}
+        THEN 'workspace-owner'
+      ELSE ${MembershipTable.role}
+    END`,
+  })
+    .from(WorkspaceTable)
+    .leftJoin(
+      MembershipTable,
+      and(
+        eq(MembershipTable.workspaceId, WorkspaceTable.id),
+        eq(MembershipTable.identityId, context.principal.id),
+      ),
+    )
+    .where(or(
+      eq(WorkspaceTable.ownerPrincipalId, context.principal.id),
+      eq(MembershipTable.identityId, context.principal.id),
+    ))
+    .limit(100);
+}
+
+async function loadWorkspaceDashboard(
+  input: { readonly workspaceId: string },
+  context: ApplicationModelViewContext,
+) {
+  const client = context.database(database);
+  const [workspace] = await client.select({
+    id: WorkspaceTable.id,
+    slug: WorkspaceTable.slug,
+    name: WorkspaceTable.name,
+    ownerPrincipalId: WorkspaceTable.ownerPrincipalId,
+    createdAt: WorkspaceTable.createdAt,
+    role: sql<string>`CASE
+      WHEN ${WorkspaceTable.ownerPrincipalId} = ${context.principal.id}
+        THEN 'workspace-owner'
+      ELSE ${MembershipTable.role}
+    END`,
+  })
+    .from(WorkspaceTable)
+    .leftJoin(
+      MembershipTable,
+      and(
+        eq(MembershipTable.workspaceId, WorkspaceTable.id),
+        eq(MembershipTable.identityId, context.principal.id),
+      ),
+    )
+    .where(and(
+      eq(WorkspaceTable.id, input.workspaceId),
+      or(
+        eq(WorkspaceTable.ownerPrincipalId, context.principal.id),
+        eq(MembershipTable.identityId, context.principal.id),
+      ),
+    ))
+    .limit(1);
+  if (!workspace) return null;
+
+  const storedMembers = await client.select({
+    id: MembershipTable.id,
+    identityId: MembershipTable.identityId,
+    role: MembershipTable.role,
+    createdAt: MembershipTable.createdAt,
+  })
+    .from(MembershipTable)
+    .where(eq(MembershipTable.workspaceId, workspace.id))
+    .limit(250);
+  const members = storedMembers.some(
+    member => member.identityId === workspace.ownerPrincipalId,
+  )
+    ? storedMembers
+    : [{
+        id: workspace.id,
+        identityId: workspace.ownerPrincipalId,
+        role: 'workspace-owner' as const,
+        createdAt: workspace.createdAt,
+      }, ...storedMembers];
+  const invitations = ['workspace-owner', 'workspace-administrator']
+    .includes(workspace.role)
+    ? await client.select({
+        id: InvitationTable.id,
+        email: InvitationTable.email,
+        role: InvitationTable.role,
+        state: InvitationTable.state,
+        expiresAt: InvitationTable.expiresAt,
+      })
+        .from(InvitationTable)
+        .where(eq(InvitationTable.workspaceId, workspace.id))
+        .limit(250)
+    : [];
+  const notificationIds = invitations.map(
+    invitation => `workspace-invitation:${invitation.id}`,
+  );
+  const notificationRows = notificationIds.length > 0
+    ? await client.select({
+        id: Notifications.NotificationRequest.id,
+        state: Notifications.NotificationRequest.state,
+        attempts: Notifications.NotificationRequest.attempts,
+        provider: Notifications.NotificationRequest.provider,
+      })
+        .from(Notifications.NotificationRequest)
+        .where(inArray(Notifications.NotificationRequest.id, notificationIds))
+        .limit(250)
+    : [];
+  const notificationsById = new Map(
+    notificationRows.map(notification => [notification.id, notification]),
+  );
+
+  return {
+    workspace: {
+      id: workspace.id,
+      slug: workspace.slug,
+      name: workspace.name,
+      role: workspace.role,
+    },
+    members,
+    invitations: invitations.map(invitation => {
+      const notification = notificationsById.get(
+        `workspace-invitation:${invitation.id}`,
+      );
+      return {
+        ...invitation,
+        deliveryState: notification?.state ?? 'pending',
+        deliveryAttempts: notification?.attempts ?? 0,
+        deliveryProvider: notification?.provider ?? null,
+      };
+    }),
+  };
+}
+
+const workspaces = module(
+  'workspaces',
+  {
+    schema: {
+      Workspace: WorkspaceTable,
+      Membership: MembershipTable,
+      Invitation: InvitationTable,
+      WorkspaceRelations,
+      MembershipRelations,
+      InvitationRelations,
+    },
+  },
+  currentApplication => {
+    const WorkspaceMembershipBootstrap = WorkspaceTable.on.create(
+      {
+        processor: { replicas: 1, concurrency: 8 },
+        retry: {
+          maxAttempts: 5,
+          initialDelayMs: 100,
+          maxDelayMs: 5_000,
+          deadLetter: true,
+        },
+        budgets: { timeoutMs: 5_000, maxInputBytes: 32_000 },
+      },
+      async function createOwningMembership(created) {
+        await MembershipTable.create({
+          workspaceId: created.value.id,
+          identityId: created.value.ownerPrincipalId,
+          role: 'workspace-owner',
+        });
+      },
+    );
+    const InvitationDelivery = InvitationTable.on.create(
+      {
+        processor: { replicas: 1, concurrency: 8 },
+        retry: {
+          maxAttempts: 8,
+          initialDelayMs: 500,
+          maxDelayMs: 30_000,
+          deadLetter: true,
+        },
+        budgets: { timeoutMs: 5_000, maxInputBytes: 32_000 },
+      },
+      async function requestInvitationDelivery(created) {
+        await Notifications.request({
+          id: `workspace-invitation:${created.value.id}`,
+          idempotencyKey: `workspace-invitation:${created.value.id}:created`,
+          recipient: { email: created.value.email },
+          content: {
+            subject: 'You have been invited to a workspace',
+            text: [
+              'A workspace owner invited you to join their application workspace.',
+              `Invitation: ${created.value.id}`,
+              `Role: ${created.value.role}`,
+              `Expires: ${created.value.expiresAt}`,
+              'Open the application invitation link supplied by the workspace owner.',
+            ].join('\n'),
+          },
+          template: { id: 'workspace-invitation', version: 'v1' },
+          tags: { workspaceId: created.value.workspaceId },
+        });
+      },
+    );
+    InvitationTable.update.beforeCommit(
+      { history: true },
+      async function acceptWorkspaceInvitation(invitation, input, context) {
+        const principal = context.principal;
+        if (!principal) {
+          throw new Error('Accepting an invitation requires an authenticated identity.');
+        }
+        const patchKeys = Object.keys(input.patch);
+        const accepting = patchKeys.length === 1
+          && patchKeys[0] === 'state'
+          && invitation.value.state === 'accepted';
+        if (!accepting) {
+          if (
+            context.trustedContext.workspaceId === invitation.value.workspaceId
+            && (
+              principal.roles?.includes('workspace-owner')
+              || principal.roles?.includes('workspace-administrator')
+            )
+          ) return;
+          throw new Error(
+            'Invitation recipients may only perform the single-use acceptance transition.',
+          );
+        }
+        if (Date.parse(invitation.value.expiresAt) <= Date.parse(context.now)) {
+          throw new Error('This workspace invitation has expired.');
+        }
+        if (invitation.value.acceptedByPrincipalId) {
+          throw new Error('This workspace invitation was already accepted.');
+        }
+        invitation.patch({
+          spec: {
+            acceptedByPrincipalId: principal.id,
+            acceptedAt: context.now,
+          },
+        });
+        context.send(
+          MembershipTable.create,
+          {
+            workspaceId: invitation.value.workspaceId,
+            identityId: principal.id,
+            role: invitation.value.role,
+          },
+          {
+            targetKey: `${invitation.value.workspaceId}:${principal.id}`,
+          },
+        );
+      },
+    );
+    const WorkspaceList = WorkspaceTable.view(
+      {
+        input: type({}),
+        output: WorkspaceSummary.array(),
+        database,
+        authorize: ({ principal }) => principal.id.length > 0,
+        budgets: { timeoutMs: 2_000, maxRows: 100, maxResultBytes: 128_000 },
+      },
+      listWorkspaces,
+    );
+    const WorkspaceDashboard = WorkspaceTable.view(
+      {
+        input: type({ workspaceId: 'string' }),
+        output: WorkspaceDashboardResult,
+        database,
+        reads: [
+          MembershipTable,
+          InvitationTable,
+          Notifications.NotificationRequest,
+        ],
+        authorize: ({ principal }) => principal.id.length > 0,
+        budgets: { timeoutMs: 2_000, maxRows: 500, maxResultBytes: 256_000 },
+      },
+      loadWorkspaceDashboard,
+    );
+
+    const Authenticated = currentApplication.role('authenticated');
+    const Owner = currentApplication.role('workspace-owner');
+    const Administrator = currentApplication.role('workspace-administrator');
+    const Member = currentApplication.role('workspace-member');
+    Authenticated.can(
+      WorkspaceTable.create.all(),
+      InvitationTable.update.all(),
+      WorkspaceList,
+      // This view performs its own principal-scoped membership join. Direct
+      // SSR navigation must not depend on a browser selector cookie already
+      // existing; workspace mutations remain trusted-context constrained.
+      WorkspaceDashboard,
+    );
+    Owner.can(
+      WorkspaceTable.update.where(workspace => workspace.id.eq(WorkspaceId)),
+      WorkspaceTable.delete.where(workspace => workspace.id.eq(WorkspaceId)),
+      MembershipTable.create.where(member => member.workspaceId.eq(WorkspaceId)),
+      MembershipTable.update.where(member => member.workspaceId.eq(WorkspaceId)),
+      MembershipTable.delete.where(member => member.workspaceId.eq(WorkspaceId)),
+      InvitationTable.create.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
+      InvitationTable.update.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
+      InvitationTable.delete.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
+      WorkspaceList,
+      WorkspaceDashboard,
+    );
+    Administrator.can(
+      WorkspaceTable.update.where(workspace => workspace.id.eq(WorkspaceId)),
+      MembershipTable.create.where(member => member.workspaceId.eq(WorkspaceId)),
+      MembershipTable.update.where(member => member.workspaceId.eq(WorkspaceId)),
+      MembershipTable.delete.where(member => member.workspaceId.eq(WorkspaceId)),
+      InvitationTable.create.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
+      InvitationTable.update.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
+      InvitationTable.delete.where(invitation => invitation.workspaceId.eq(WorkspaceId)),
+      WorkspaceList,
+      WorkspaceDashboard,
+    );
+    Member.can(WorkspaceList, WorkspaceDashboard);
+
+    return {
+      Workspace: WorkspaceTable,
+      Membership: MembershipTable,
+      Invitation: InvitationTable,
+      AcceptInvitation: InvitationTable.update,
+      WorkspaceList,
+      WorkspaceDashboard,
+      WorkspaceMembershipBootstrap,
+      InvitationDelivery,
+      Authenticated,
+      Owner,
+      Administrator,
+      Member,
+    };
+  },
+);
+
+export const Workspaces = application.include(workspaces);
+export const {
+  Workspace,
+  Membership,
+  Invitation,
+  AcceptInvitation,
+  WorkspaceDashboard,
+  WorkspaceList,
+  InvitationDelivery,
+  Authenticated,
+  Owner,
+  Administrator,
+  Member,
+} = Workspaces;

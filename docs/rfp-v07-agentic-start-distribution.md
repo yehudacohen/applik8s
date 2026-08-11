@@ -1,6 +1,6 @@
 # RFP: Applik8s v0.7 — Agentic Start Distribution and Acceptance Applications
 
-**Status:** Accepted direction; implementation and release qualification in progress
+**Status:** Accepted v0.7 distribution contract; implementation and release qualification in progress
 
 **Charter:** [`charter-v07-agentic-platform.md`](charter-v07-agentic-platform.md)
 
@@ -69,11 +69,14 @@ export const application = app("research-platform", {
 });
 ```
 
-The default generated product includes the lightweight operations overview
-without silently installing unrelated product domains. The explicit
-`--example research` application composes the complete maintained suite rather
-than hiding it in the constructor or threading provider dependencies through
-every module call:
+The default generated product includes the provider-neutral operations control
+center, identity, workspaces, conversations, approvals, artifacts,
+evaluations, billing, usage delivery, object storage, and a small
+application-owned catalog. This is the production-oriented SaaS baseline, not
+framework-owned tenancy or pricing policy. The explicit `--example research`
+application adds a cohesive research/review product journey over the same
+maintained suite rather than hiding dependencies in the constructor or
+threading provider implementations through every module call:
 
 ```ts
 // src/modules.ts
@@ -400,9 +403,11 @@ bun applik8s status
 bun applik8s destroy
 ```
 
-`dev` starts the upstream Vite/TanStack development experience plus only the credential-free starter
-dependencies required by the application graph. The generated local installation selects the starter
-profile, so the first loop requires no profile flag; explicit dedicated/external selection appears in a
+`dev` starts the upstream Vite/TanStack development experience and performs no Kubernetes mutation.
+`dev:cluster` explicitly deploys the credential-free Starter graph and may apply reviewed TypeKro
+development aspects for compatible local filesystem mounts and watch commands. `dev:live` opts into only
+the selected credential-backed providers. The generated local installation selects the Starter profile,
+so the first cluster loop requires no profile flag; explicit Dedicated/External selection appears in a
 later deployment tutorial. `plan` is effect-free and reports provider, workload,
 authority, data-lifecycle, and destructive changes. `deploy`, `status`, and `destroy` operate through the
 application graph, TypeKro, and Alchemy; they do not wrap generated imperative `kubectl` lifecycle
@@ -482,6 +487,10 @@ The first distribution supplies:
 - provider-neutral billing, local non-production billing, checkout/portal
   operations, signed webhook ingestion, and entitlement projection;
 - identity, OAuth, permissions, grants, sessions, and client administration;
+- provider-neutral transactional notification delivery for application invitations and product mail,
+  with a deterministic Starter sink, an SMTP Dedicated reference adapter, and an external production
+  binding; identity-provider verification and recovery mail may remain owned by the qualified identity
+  provider courier;
 - MCP server/client integration;
 - named relationship-aware search indexes;
 - first-run onboarding, safe non-secret configuration, local bootstrap, and a product/control-center
@@ -512,6 +521,8 @@ The initial package boundaries should permit independent adoption and browser/se
 @applik8s/evals
 @applik8s/billing
 @applik8s/billing-stripe
+@applik8s/notifications
+@applik8s/notifications-smtp
 @applik8s/operations
 ```
 
@@ -595,26 +606,33 @@ record:
 Generated source must remain understandable in one maintainer review session. Large generated runtime,
 registry, provider, auth, workflow, SSE, or deployment implementations fail the Start boundary.
 
-The v0.7 release budget is:
+The v0.7 release budget is categorized rather than optimized for a misleading total file count:
 
-- at most 24 generated application-owned files for the default product shell,
-  including tests, copyable installation examples, README, and lineage;
-- at most 600 non-generated nonblank lines for the Start integration shell;
-- ordinary thin TanStack route adapters are counted and reviewed separately
-  from the application-owned shell;
+- each generated application-domain or route-composition file remains below 400 nonblank lines unless a
+  reviewed exception explains why splitting would obscure one domain concept;
+- the default product separately records application-domain, visual primitive, route-adapter,
+  installation/example, and test file/line counts;
+- only used source-owned visual primitives are emitted;
+- at most 600 non-generated nonblank lines belong to the Start integration shell;
+- upstream scaffold and ignored generated output are reported but do not disguise copied framework
+  implementations as application code;
 - no copied provider client, registry, workflow engine, auth service, event gateway, SSE runtime, or
   deployment reconciler;
 - generated route trees, manifests, facades, and container contexts live under ignored build output;
 - one command identifies which lines/files are application-owned versus package/generated.
 
-The full `--example research` acceptance application is an explicit reviewed
-exception: at most 42 emitted overlay files and 2,600 template lines. It exists
-to exercise Stimp parity and distributed product behavior, not as the default
-“start building” experience. The default and research budgets are asserted
-separately.
+After the first cohesive reference implementation is independently reviewed,
+its categorized file/line inventory becomes the checked v0.7 baseline. The
+release candidate may not exceed any category by more than 15% without a
+maintainer-reviewed ownership explanation, and may not increase the largest
+application file beyond the 400-line ceiling. This prevents both unbounded
+small-file sprawl and artificial compression into monoliths without inventing
+budgets before the final product topology exists.
 
-Exceeding the numeric budget requires a maintainer-approved exception explaining why the code is
-application policy rather than package responsibility.
+The full `--example research` acceptance application is reported separately. It exists to exercise
+Stimp parity and distributed product behavior, not as the default “start building” experience. Budget
+review prioritizes readable feature boundaries, largest-file size, dependency direction, and ownership;
+it must not be satisfied by collapsing many concerns into a few monolithic templates.
 
 ## Generated project contracts
 
@@ -648,12 +666,12 @@ and TanStack Start version. Template source lives as independently reviewable
 assets in `@applik8s/start-agentic`; the generator does not embed an opaque
 multi-thousand-line source map.
 
-The future `applik8s start update --check` command is read-only. It will load
-that lineage, render the corresponding old and current templates, classify
+The v0.7 `applik8s start update --check` command is read-only. It loads
+that lineage, renders the corresponding old and current templates, classifies
 each path as unchanged, application-modified, template-added, template-removed,
-or conflicting, and print a deterministic drift report. It must never overwrite
-application-owned changes. An apply/update workflow is intentionally outside
-v0.7 until ownership and three-way-merge policy receive separate review.
+or conflicting, and prints a deterministic drift report including compatibility and security-relevant
+template changes. It must never overwrite application-owned changes. An apply/update workflow is
+intentionally outside v0.7 until ownership and three-way-merge policy receive separate review.
 
 ### Signal-event delivery in Start applications
 
@@ -885,10 +903,13 @@ must maintain:
 4. an explicit ledger of improved, deferred, and rejected Stimp behavior with rationale and replacement
    guidance.
 
-The onboarding experience is framework-maintained rather than copied into each
-generated application. `@applik8s/start-agentic/react` owns the browser-safe
-first-run component; the generated product route supplies only its application
-identity and ordinary operations/documentation links. The
+The framework maintains browser-safe, stateless onboarding/readiness
+controllers plus provider-neutral sign-in/session and account-security
+integrations. The generated application owns its visual shell, journey
+definitions, and canonical `OnboardingProgress` product model. Generated routes
+compose the maintained identity controllers; they do not copy identity flow,
+MFA, recovery, session-revocation, provider client, or transport protocol code.
+The
 surface must lead with the usable product, identify Starter as credential-free
 and non-production **as the generated first-run default**, expose `bun run
 plan` as the side-effect-free deployment preview, and progressively disclose
@@ -897,6 +918,42 @@ default as the authoritative runtime-selected profile. Authoritative profile
 visibility belongs to the authenticated operations/status surface. The
 component must not receive provider credentials, server-only handles, TypeKro
 objects, or deployment runtime state.
+
+The complete product-quality contract, route reliability matrix, generated
+design-system ownership, guided first-run journey, safe setup center, and
+release gates are normative in
+[`v07-agentic-start-product-readiness-plan.md`](./v07-agentic-start-product-readiness-plan.md).
+The maintained first-run component is a domain-aware controller and integration
+surface, not a framework-owned theme or static checklist. Generated source owns
+its shadcn-style visual primitives, application shell, product copy, and
+onboarding presentation. Every supported first-run state must render without an
+unexpected server error before visual acceptance can pass.
+
+The generated experience keeps three authorities distinct even when one local
+bootstrap user holds all of them: product members use the copilot,
+conversations, mutable Documents, immutable Artifacts, and Inbox; workspace owners additionally administer
+members, usage, billing, and workspace policy; application operators separately
+receive Launchpad, Setup, Operations, provider, and deployment visibility.
+Workspace ownership never implies application-operator authority. Operator
+navigation and routes are absent when unauthorized. Product/owner onboarding is
+generated application source and can be removed without changing the product
+graph; maintained Launchpad and Operations integrations remain independently
+composable and authorized.
+
+The public shell owns landing, sign-up/sign-in, verification, recovery, MFA,
+invitation continuation, and intended-route resumption. Application invitations
+commit a typed notification request through the existing outbox and use the
+selected `NotificationDelivery` provider; identity-provider verification and
+recovery courier flows remain owned by the selected identity provider. Starter
+needs no out-of-band verification for its deterministic local identity; its
+delivery sink is operator-only in Launchpad, and workspace owners may copy a
+bounded invitation link rather than pretending to send mail.
+
+Application-operator access is a canonical typed grant with explicit bootstrap,
+revocation, expiry, audit, and break-glass recovery. Launchpad reads only public
+compiled graph metadata, redacted digest-bound CLI/deployment receipts, and
+authorized operations projections. It receives no kubeconfig or browser-side
+deployment authority.
 
 Generated projects expose `bun run dev` as the upstream side-effect-free local
 web loop, `bun run dev:cluster` as the credential-free Starter cluster loop,
@@ -908,6 +965,13 @@ context, or silently destroy the installation when the web process exits. Live
 payment credentials are required only when a billing-capable application
 selects Stripe. Infrastructure changes are applied by restarting the explicit
 command or invoking `bun run deploy`.
+
+Generated projects also expose `bun run doctor`. Doctor is read-only: it checks
+the declared entrypoint and instance, explicit kubeconfig context, cluster
+reachability, storage prerequisites, and observable TypeKro/Flux APIs. It may
+report which `.env.example` names are exported by the operation-host process,
+but it must not open `.env`, inspect a credential value, serialize a value, or
+infer the ambient kubectl context.
 
 The local-source aspect admits only clusters whose nodes are known to share
 the operation host's filesystem. Maintained desktop clusters work without
@@ -1084,17 +1148,20 @@ Release evidence records:
 - Recorded performance history includes cold start, throughput, latency, lag, contention, memory,
   storage, and cost-relevant signals.
 
-## Open questions
+## Closed v0.7 decisions
 
-1. Which evaluation and memory views are required for v0.7 versus optional maintained modules?
-2. What minimum entitlement model avoids future replacement without turning the Start into a billing
-   product?
-3. Should Chirp remain a v0.6 regression application or also become a non-blocking Start conformance
-   fixture?
-4. Is ClickHouse required in every dedicated acceptance run, or may its complete provider qualification
-   run separately while the product slices use PostgreSQL analytics?
-5. Which local S3-compatible implementation best preserves object-intent semantics without making
-   starter installation unreasonably heavy?
+1. Memory is user-inspectable and deletable from the product/account experience. Evaluations ship as a
+   maintained module but appear only in separately authorized operator tooling by default.
+2. The Start includes application-owned plans and entitlements, provider-neutral usage/subscription
+   operations, deterministic Starter billing, and an optional Stripe adapter. It does not own pricing.
+3. Chirp remains the required composition/scale acceptance application and must exercise every
+   function-native capability the scorecard attributes to it. It is not presented as the default Start.
+4. Dedicated provider qualification includes ClickHouse. Smaller product journeys may use PostgreSQL
+   analytics only when the scorecard does not use them as ClickHouse evidence.
+5. Starter uses the existing bounded S3-compatible object-intent implementation selected by the profile;
+   the particular implementation is not a public application contract.
+6. Automated source rewriting, vector search, multi-use signals, and seamless stateful profile migration
+   are deferred. Read-only lineage/update detection and fail-closed transition diagnostics remain v0.7.
 
 ## Definition of done
 

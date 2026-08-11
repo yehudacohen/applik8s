@@ -1,5 +1,99 @@
-import { operationsOverview } from '@applik8s/operations-ui';
+import { approvals } from '@applik8s/approvals';
+import { artifacts } from '@applik8s/artifacts';
+import { billing } from '@applik8s/billing';
+import { conversations } from '@applik8s/conversations';
+import { evaluations } from '@applik8s/evals';
+import { notifications } from '@applik8s/notifications';
+import { operationsControlCenter } from '@applik8s/operations-ui';
+import { usage } from '@applik8s/usage';
 import { application } from './app';
+import { objects, providers } from './providers';
 
-export const Operations = application.include(operationsOverview);
-export const OperationsSnapshot = Operations.snapshot;
+function billingDimensions(
+  value: unknown,
+): Readonly<Record<string, string>> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const entries = Object.entries(value)
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string');
+  return entries.length > 0 ? Object.freeze(Object.fromEntries(entries)) : undefined;
+}
+
+// Reading the maintained profile result makes the database-before-module
+// dependency explicit to both JavaScript evaluation and static discovery.
+export const database = providers.database;
+export const Conversations = application.include(conversations);
+export const Approvals = application.include(approvals);
+export const Artifacts = application.include(artifacts);
+export const Billing = application.include(billing);
+export const Evaluations = application.include(evaluations);
+export const Notifications = application.include(notifications);
+export const Usage = application.include(usage);
+export const UsageDelivery = Usage.UsageFact.on.create(
+  {
+    processor: { replicas: 1, concurrency: 8 },
+    retry: {
+      maxAttempts: 8,
+      initialDelayMs: 500,
+      maxDelayMs: 30_000,
+      deadLetter: true,
+    },
+    budgets: { timeoutMs: 15_000, maxInputBytes: 64_000 },
+  },
+  async function deliverBillableUsage(created) {
+    const quantity =
+      Number(created.value.inputTokens ?? 0)
+      + Number(created.value.outputTokens ?? 0);
+    if (quantity < 1) return;
+    const idempotencyKey = `usage:${created.value.id}`;
+    const dimensions = billingDimensions(created.value.dimensions);
+    const delivered = await Billing.reportUsage({
+      principalScope: created.value.principalScope,
+      meter: 'agentic_tokens',
+      quantity,
+      occurredAt: created.value.occurredAt,
+      idempotencyKey,
+      dimensions,
+    });
+    await Billing.BillingUsageLedgerEntry.create({
+      id: created.value.id,
+      idempotencyKey,
+      principalScope: created.value.principalScope,
+      meterKey: 'agentic_tokens',
+      quantity,
+      billableQuantity: quantity,
+      occurredAt: created.value.occurredAt,
+      dimensions: dimensions ?? {},
+      deliveryState: 'delivered',
+      deliveryAttempts: 1,
+      providerEventId: delivered.providerEventId,
+    });
+  },
+);
+export const ArtifactObjects = application.objectStore('agentic-artifacts', {
+  provider: objects,
+  maxObjectBytes: 25_000_000,
+  contentTypes: [
+    'application/json',
+    'application/octet-stream',
+    'text/plain',
+  ],
+  mode: 'immutable',
+  browser: {
+    upload: 'signed',
+    download: { mode: 'signed', access: 'owner' },
+    ttlSeconds: 300,
+  },
+  deletion: 'explicit',
+});
+export const Operations = application.include(operationsControlCenter);
+export const OperationsSnapshot = Operations.Conversation.operationsSnapshot;
+application.role('application-operator').bootstrap({
+  id: 'identity:deterministic:local-developer',
+  kind: 'human',
+  issuer: `applik8s://${application.name}/identity/deterministic`,
+  subject: 'local-developer',
+}, {
+  reason: 'Credential-free Starter operator bootstrap.',
+});

@@ -1,0 +1,10 @@
+import { AgenticAccountSettings } from '@applik8s/start-agentic/react';
+import { createFileRoute } from '@tanstack/react-router';
+import { Card, PageHeader } from '../components/ui';
+import { AccountDataControls } from '../features/account/identity-flow';
+
+export const Route = createFileRoute('/app/account')({ component: Account });
+
+function Account() {
+  return <div><PageHeader eyebrow="Identity and security" title="Account" description="Provider-supported methods and sessions are loaded through the maintained identity boundary." /><Card className="account-surface"><AgenticAccountSettings title="Account security" /></Card><AccountDataControls /></div>;
+}

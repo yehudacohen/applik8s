@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type {
+  ApplicationAdmittedPrincipal,
   ApplicationIdentityKind,
-  ApplicationPrincipal,
   ApplicationRequestAdmission,
   JsonValue,
 } from '@applik8s/core';
@@ -34,7 +34,7 @@ export interface ApplicationDeterministicIdentityOptions {
  */
 export function createDeterministicApplicationPrincipal(
   options: ApplicationDeterministicIdentityOptions,
-): ApplicationPrincipal {
+): ApplicationAdmittedPrincipal {
   const application = required(options.application, 'application');
   const subject = required(options.subject, 'subject');
   const catalogRevision = required(options.catalogRevision, 'catalogRevision');

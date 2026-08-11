@@ -157,6 +157,75 @@ function serializedIdentityAuthentication(
   };
 }
 
+function applicationIdentityHttpGraphValue(
+  implementation: unknown,
+): JsonValue | undefined {
+  const selection = applicationProviderSelectionFor(implementation);
+  if (!selection) {
+    const callback = serializedIdentityHttp(implementation);
+    return callback
+      ? applicationTypeKroGraphValue(callback) as JsonValue
+      : undefined;
+  }
+  const entries = Object.entries(selection.cases).map(
+    ([variant, provider]) => [
+      variant,
+      serializedIdentityHttp(provider),
+    ] as const,
+  );
+  const fallback = serializedIdentityHttp(selection.default);
+  if (entries.every(([, callback]) => callback === undefined) && !fallback) {
+    return undefined;
+  }
+  const missing = entries.find(([, callback]) => callback === undefined)?.[0];
+  if (missing || !fallback) {
+    throw new Error(
+      `Application IdentityProvider profile ${
+        missing ? `branch ${missing}` : 'default'
+      } has no serializable identity HTTP callback while another branch exposes one.`,
+    );
+  }
+  const cases = Object.fromEntries(
+    entries.flatMap(([variant, callback]) =>
+      callback ? [[variant, callback] as const] : []),
+  );
+  return applicationTypeKroGraphValue({
+    identityHttpProfile: {
+      selector: selection.selector,
+      cases,
+      default: fallback,
+    },
+  }) as JsonValue;
+}
+
+function serializedIdentityHttp(
+  implementation: unknown,
+): Readonly<Record<string, JsonValue>> | undefined {
+  if (!implementation || typeof implementation !== 'object') return undefined;
+  const handle = Reflect.get(implementation, 'handle');
+  if (typeof handle !== 'function') return undefined;
+  const callback = serializeApplicationCallback({
+    registrar: 'IdentityProvider',
+    argumentIndex: 1,
+    property: 'handle',
+    label: 'Identity provider HTTP protocol',
+    callback: handle as (...args: never[]) => unknown,
+    allowDeferredResolution: true,
+  });
+  return {
+    identityHttpSource: callback.source,
+    ...(callback.dependencies
+      ? { identityHttpDependencies: callback.dependencies as unknown as JsonValue }
+      : {}),
+    ...(callback.location
+      ? { identityHttpLocation: callback.location as unknown as JsonValue }
+      : {}),
+    ...(callback.unresolved
+      ? { identityHttpUnresolved: callback.unresolved as unknown as JsonValue }
+      : {}),
+  };
+}
+
 export function emitApplicationConfig(
   state: ApplicationInfrastructureState,
   name: string,
@@ -494,6 +563,10 @@ export function recordApplicationProviderGraph(
     tokenName === 'IdentityProvider'
       ? applicationIdentityAuthenticationGraphValue(implementation)
       : undefined;
+  const identityProviderHttp =
+    tokenName === 'IdentityProvider'
+      ? applicationIdentityHttpGraphValue(implementation)
+      : undefined;
   const identityDatabaseDependency =
     tokenName === 'IdentityProvider'
       ? applicationIdentityProviderDatabaseDependency(implementation)
@@ -531,8 +604,11 @@ export function recordApplicationProviderGraph(
       ...(qualification
         ? { qualification: qualification as unknown as JsonValue }
         : {}),
-      ...(identityProviderAuthentication ? {
-        identity: identityProviderAuthentication,
+      ...(identityProviderAuthentication || identityProviderHttp ? {
+        identity: {
+          ...(identityProviderAuthentication as JsonObject | undefined),
+          ...(identityProviderHttp as JsonObject | undefined),
+        },
       } : {}),
       ...(identityDatabaseDependency ? {
         identityRuntime: {

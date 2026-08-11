@@ -1,0 +1,41 @@
+{
+  "name": "@applik8s/notifications",
+  "version": "0.7.0",
+  "description": "Provider-neutral transactional application notification delivery for Applik8s.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist"],
+  "publishConfig": { "access": "public" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yehudacohen/applik8s.git",
+    "directory": "packages/notifications"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./schema": {
+      "types": "./dist/schema.d.ts",
+      "import": "./dist/schema.js",
+      "default": "./dist/schema.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js",
+      "default": "./dist/runtime.js"
+    }
+  },
+  "dependencies": {
+    "@applik8s/applik8s": "0.7.0",
+    "drizzle-orm": "^0.45.1"
+  },
+  "peerDependencies": {
+    "@applik8s/notifications-smtp": "0.7.0"
+  },
+  "peerDependenciesMeta": {
+    "@applik8s/notifications-smtp": { "optional": true }
+  }
+}

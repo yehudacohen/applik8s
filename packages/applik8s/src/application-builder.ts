@@ -40,11 +40,13 @@ import { generatedApplicationAggregateSource, generatedValkeyIndexerSource } fro
 import { type ApplicationGraphState, addApplicationGraphEdge, addApplicationGraphNode, applicationGraphFromState, isApplicationGraph } from './application-graph-state.js';
 import {
   type ApplicationHttpOptions,
+  type ApplicationHttpHandler,
   type ApplicationHttpRegistrar,
   type ApplicationHttpRouteDeclaration,
   createApplicationHttpServer,
 } from './application-http.js';
 import { inferApplicationFunctionNativeTransaction } from './application-function-native-transactions.js';
+import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
 import { apiGroupForApiVersion, applicationProviderGraphNodeId, graphResourceId, kubernetesNameSegment, pascalCase, pluralizeKubernetesKind, unique } from './application-identifiers.js';
 import {
   emitApplicationConfig,
@@ -148,7 +150,7 @@ import type { ApplicationPostgresRlsPolicy } from './trusted-context.js';
 export type { ApplicationAgentBinding, ApplicationAgentDeploymentOptions, ApplicationAgentHandler, ApplicationAgentOptions, ApplicationAgentTool } from './application-ai.js';
 export type { ApplicationModuleContext, ApplicationModuleDefinition, ApplicationModuleMetadata, ApplicationModuleOptions, ApplicationModuleSetup } from './application-modules.js';
 export { defineApplicationModule, module } from './application-modules.js';
-export type { ApplicationHttpAuthorization, ApplicationHttpContext, ApplicationHttpHandler, ApplicationHttpOptions, ApplicationHttpRegistrar, ApplicationHttpRequest, ApplicationHttpRouteContract, ApplicationHttpServer } from './application-http.js';
+export type { ApplicationHttpAuthorization, ApplicationHttpContext, ApplicationHttpHandler, ApplicationHttpOptions, ApplicationHttpRegistrar, ApplicationHttpRequest, ApplicationHttpRouteContract, ApplicationHttpServer, ApplicationHttpWebhookAuthentication, ApplicationHttpWebhookContract, ApplicationHttpWebhookRequest } from './application-http.js';
 export type { ApplicationAuthorityRegistrar, ApplicationAuthoritySelection, ApplicationOAuthClientIdentityBinding, ApplicationOAuthClientIdentityOptions, ApplicationOutcomeBinding, ApplicationOutcomeOptions, ApplicationPermissionBinding, ApplicationServiceIdentityBinding } from './application-authority.js';
 export type { ApplicationFinalizeEventHandler, ApplicationResourceControllerOptions, ApplicationResourceControllerBinding, ApplicationResourceEventHandler, ApplicationResourceObject } from './application-events.js';
 export type { ApplicationJobBinding, ApplicationJobOptions, ApplicationScheduleOptions } from './application-generated-job-resources.js';
@@ -744,9 +746,22 @@ export interface ApplicationServerRoute {
       readonly resolveDir: string;
     };
     readonly authorizeLocation?: ApplicationRouteSourceLocation;
+    readonly webhookAuthentication?: {
+      readonly source: string;
+      readonly dependencies?: {
+        readonly source: string;
+        readonly resolveDir: string;
+      };
+      readonly location?: ApplicationRouteSourceLocation;
+    };
     readonly operationBindings?: NonNullable<
       import('@applik8s/core').ApplicationFunctionNativeHttpRouteContract[
         'operationBindings'
+      ]
+    >;
+    readonly providerBindings?: NonNullable<
+      import('@applik8s/core').ApplicationFunctionNativeHttpRouteContract[
+        'providerBindings'
       ]
     >;
     readonly transaction?: import('@applik8s/core').ApplicationFunctionNativeTransactionContract;
@@ -1572,22 +1587,47 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
     terminalReplays.push((scope) => {
       const server = scope.http(serverName, normalizedOptions);
       for (const route of routes) {
-        const operation = server.post(
-          route.id,
-          route.path,
-          {
-            input: route.inputSchema,
-            output: route.outputSchema,
-            ...(route.authorize
-              ? { authorize: route.authorize }
-              : {}),
-            __generatedCalls: route.handlerDependencyGraph.calls,
-            __generatedBindings: route.handlerDependencyGraph.bindings,
-            __generatedAwaitedCalls: route.handlerDependencyGraph.awaited,
-          },
-          route.handler,
+        const operation = route.webhookAuthenticate
+          ? server.webhook(
+              route.id,
+              route.path,
+              {
+                // typecast: webhook declarations validate the required string
+                // event id before this type-erased replay boundary.
+                event: route.inputSchema as SchemaInput<{
+                  readonly id: string;
+                }>,
+                output: route.outputSchema,
+                authenticate: route.webhookAuthenticate,
+                __generatedCalls: route.handlerDependencyGraph.calls,
+                __generatedBindings: route.handlerDependencyGraph.bindings,
+                __generatedAwaitedCalls: route.handlerDependencyGraph.awaited,
+              },
+              route.handler as ApplicationHttpHandler<{
+                readonly id: string;
+              }, object>,
+            )
+          : server.post(
+              route.id,
+              route.path,
+              {
+                input: route.inputSchema,
+                output: route.outputSchema,
+                ...(route.authorize
+                  ? { authorize: route.authorize }
+                  : {}),
+                __generatedCalls: route.handlerDependencyGraph.calls,
+                __generatedBindings: route.handlerDependencyGraph.bindings,
+                __generatedAwaitedCalls: route.handlerDependencyGraph.awaited,
+              },
+              route.handler,
+            );
+        // typecast: authority mutation is independent of the replayed route's
+        // erased input schema association.
+        applyApplicationHttpRouteAuthority(
+          operation as unknown as ApplicationOperation<object, object>,
+          route.authority,
         );
-        applyApplicationHttpRouteAuthority(operation, route.authority);
       }
     });
     return binding;
@@ -1968,10 +2008,10 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
         resource,
         invalidate,
       );
-      bindApplicationModelViews(resource, (viewName, viewOptions) => {
-        const operation = previewViewRegistrar(viewName, viewOptions);
+      bindApplicationModelViews(resource, (viewName, viewOptions, operationKind) => {
+        const operation = previewViewRegistrar(viewName, viewOptions, operationKind);
         // typecast: the replay queue intentionally erases per-view generics while preserving each opaque option object unchanged.
-        viewReplays.push([viewName, viewOptions] as never);
+        viewReplays.push([viewName, viewOptions, operationKind] as never);
         invalidate();
         return operation;
       });
@@ -2061,9 +2101,9 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
             previewModel,
             invalidate,
           );
-          bindApplicationModelViews(previewModel, (viewName, viewOptions) => {
-            const operation = previewViewRegistrar(viewName, viewOptions);
-            viewReplays.push([viewName, viewOptions] as never);
+          bindApplicationModelViews(previewModel, (viewName, viewOptions, operationKind) => {
+            const operation = previewViewRegistrar(viewName, viewOptions, operationKind);
+            viewReplays.push([viewName, viewOptions, operationKind] as never);
             invalidate();
             return operation;
           });
@@ -2149,10 +2189,10 @@ function createKubernetesApplicationBuilder<TSpec extends KroCompatibleType = Re
             },
           };
         }) as typeof previewRegistrar);
-        bindApplicationModelViews(previewModel, (viewName, viewOptions) => {
-          const operation = previewViewRegistrar(viewName, viewOptions);
+        bindApplicationModelViews(previewModel, (viewName, viewOptions, operationKind) => {
+          const operation = previewViewRegistrar(viewName, viewOptions, operationKind);
           // typecast: heterogeneous view generics are replayed opaquely through the same registrar.
-          viewReplays.push([viewName, viewOptions] as never);
+          viewReplays.push([viewName, viewOptions, operationKind] as never);
           invalidate();
           return operation;
         });
@@ -3106,13 +3146,17 @@ function applicationFunctionNativeHttpServerRoute(
         `HTTP route ${serverName}.${route.id} reaches ${binding.model}.${operation.name}, but its generated command handler is absent from the application graph.`,
       );
     }
+    const canonicalOperationId = applicationOperationId({
+      domain: 'models',
+      owner: binding.model,
+      operation: operation.name,
+    });
     return [{
       identifier,
-      operationId: applicationOperationId({
-        domain: 'models',
-        owner: binding.model,
-        operation: operation.name,
-      }),
+      operationId: canonicalOperationId,
+      ...(operation.id !== canonicalOperationId
+        ? { runtimeOperationId: operation.id }
+        : {}),
       command: {
         nodeId: commandNodeId,
       },
@@ -3132,6 +3176,9 @@ function applicationFunctionNativeHttpServerRoute(
     `${left.identifier}:${left.operationId}`.localeCompare(
       `${right.identifier}:${right.operationId}`,
     ));
+  const providerBindings = applicationCallableProviderDependencies(
+    route.handlerDependencyGraph.bindings,
+  );
   return {
     id: route.id,
     named: true,
@@ -3152,6 +3199,7 @@ function applicationFunctionNativeHttpServerRoute(
       input: route.input,
       output: route.output,
       ...(operationBindings.length > 0 ? { operationBindings } : {}),
+      ...(providerBindings.length > 0 ? { providerBindings } : {}),
       ...(route.authorizeSource
         ? { authorizeSource: route.authorizeSource }
         : {}),
@@ -3160,6 +3208,9 @@ function applicationFunctionNativeHttpServerRoute(
         : {}),
       ...(route.authorizeLocation
         ? { authorizeLocation: route.authorizeLocation }
+        : {}),
+      ...(route.webhookAuthentication
+        ? { webhookAuthentication: route.webhookAuthentication }
         : {}),
       ...(transaction ? { transaction } : {}),
     },
@@ -3777,7 +3828,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
     collectApplicationResources(state, { [entity.name]: modelResource });
     recordApplicationCrdGraph(state, entity.name, modelResource);
     bindSearch(modelResource);
-    bindApplicationModelViews(modelResource, (viewName, viewOptions) => registerApplicationModelView(state, modelResource, viewName, viewOptions));
+    bindApplicationModelViews(modelResource, (viewName, viewOptions, operationKind) => registerApplicationModelView(state, modelResource, viewName, viewOptions, operationKind));
     bindNativeKubernetesLifecycle(modelResource, {
       create: (name, lifecycleOptions, handler) => registerApplicationResourceController(modelResource, { created: handler }, { ...lifecycleOptions, name }),
       update: (name, lifecycleOptions, handler) => registerApplicationResourceController(modelResource, { updated: handler }, { ...lifecycleOptions, name }),
@@ -3881,12 +3932,13 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
             state,
             nativeOptions.database,
           );
-          bindApplicationModelViews(promoted, (viewName, viewOptions) =>
+          bindApplicationModelViews(promoted, (viewName, viewOptions, operationKind) =>
             registerApplicationModelView(
               state,
               promoted,
               viewName,
               viewOptions,
+              operationKind,
             ));
           return promoted;
         }
@@ -3894,6 +3946,13 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
           nativeOptions as ApplicationNativeDrizzleModelOptions<AnyPgTable> | undefined;
         const databaseBinding = resolveApplicationDatabase(state, transactionalOptions?.database);
         validateNativeModelAccess(entityOrName, databaseBinding, transactionalOptions?.access);
+        if (!Object.values(databaseBinding.schema).includes(entityOrName)) {
+          extendApplicationDatabaseSchema(
+            databaseBinding,
+            { [getTableName(entityOrName)]: entityOrName },
+            `native model ${getTableName(entityOrName)}`,
+          );
+        }
         const promoted = promoteDrizzleTable(entityOrName, {
           ...transactionalOptions,
           database: databaseBinding.name,
@@ -3947,7 +4006,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
         state.models[runtimeModel.name] = runtimeModel;
         const commandModel = applicationNativeCommandModelBinding(promoted, runtimeModel);
         bindNativeApplicationModelBinding(promoted, commandModel as ApplicationModelBinding<object, object>);
-        bindApplicationModelViews(promoted, (viewName, viewOptions) => registerApplicationModelView(state, promoted, viewName, viewOptions));
+        bindApplicationModelViews(promoted, (viewName, viewOptions, operationKind) => registerApplicationModelView(state, promoted, viewName, viewOptions, operationKind));
         bindNativeApplicationModelCommands(promoted, (command, commandOptions, handler) => recordApplicationModelCommandGraph(
           state,
           commandModel,
@@ -4937,10 +4996,22 @@ function recordApplicationServerGraph(state: ApplicationScopeState, name: string
                     },
                   }
                 : {}),
+              ...(route.functionNative.webhookAuthentication
+                ? {
+                    webhookAuthentication:
+                      route.functionNative.webhookAuthentication,
+                  }
+                : {}),
               ...(route.functionNative.operationBindings
                 ? {
                     operationBindings:
                       route.functionNative.operationBindings,
+                  }
+                : {}),
+              ...(route.functionNative.providerBindings
+                ? {
+                    providerBindings:
+                      route.functionNative.providerBindings,
                   }
                 : {}),
               ...(route.functionNative.transaction
@@ -4953,7 +5024,9 @@ function recordApplicationServerGraph(state: ApplicationScopeState, name: string
               requestBoundary: {
                 durableValues: 'schema-normalized-only' as const,
                 rawRequestCapture: 'rejected' as const,
-                principal: 'framework-authenticated' as const,
+                principal: route.functionNative.webhookAuthentication
+                  ? 'provider-authenticated' as const
+                  : 'framework-authenticated' as const,
               },
             },
           }
@@ -4978,6 +5051,15 @@ function recordApplicationServerGraph(state: ApplicationScopeState, name: string
   }
   for (const ref of secretRefs) {
     addApplicationGraphEdge(state, { from: { nodeId }, to: ref, relationship: 'reads' });
+  }
+  for (const provider of routes.flatMap(
+    (route) => route.functionNative?.providerBindings ?? [],
+  )) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId: provider.provider.nodeId },
+      to: { nodeId },
+      relationship: 'provides',
+    });
   }
   recordApplicationCounterGraphs(state, name, options.resources ?? {}, routes);
   const permissions = inferApplicationServerPermissions({ routes, resources: options.resources ?? {}, indexes: options.indexes ?? {}, indexBackend: runtimeIndexBackendConfig(options.indexBackend, options.namespace, options.resourceName ?? name), cache: options.cache ?? [], explicit: options.permissions ?? [] });

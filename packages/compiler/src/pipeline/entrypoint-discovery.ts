@@ -14,6 +14,7 @@ import { handlerSourceMetadataPlugin } from './entrypoint-handler-instrumentatio
 
 export {
   applicationCallbackModuleIsInstrumentable,
+  applicationCallbackModuleOwnsDependencies,
   applicationPackageOwnsModule,
   instrumentApplicationCallbackRegistrations,
 } from './entrypoint-handler-instrumentation.js';

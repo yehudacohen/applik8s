@@ -1,8 +1,13 @@
 import type { ApplicationQualifiedProviderBinding } from './application-profiles.js';
 import {
-  applicationProviderSelectionFor,
   type ApplicationProviderSelectionValue,
+  applicationProviderSelectionFor,
 } from './application-providers.js';
+
+export {
+  bindApplicationCallableDependencies,
+  bindApplicationProviderDependencies,
+} from './application-provider-dependencies.js';
 
 export class ApplicationProviderRuntimeSelectionError extends Error {
   readonly code = 'APPLIK8S_PROVIDER_RUNTIME_SELECTION';

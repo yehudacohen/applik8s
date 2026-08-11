@@ -1006,7 +1006,7 @@ export interface ApplicationQueryNode extends ApplicationGraphNodeBase<'query'> 
   readonly modelOperation?: {
     readonly model: ApplicationGraphNodeRef;
     readonly name: string;
-    readonly kind: 'view';
+    readonly kind: 'query' | 'view';
   };
   readonly version: string;
   readonly input: ApplicationMessageContractSchema;
@@ -1794,6 +1794,11 @@ export interface ApplicationFunctionNativeHttpRouteContract {
   readonly handler: ApplicationSerializedCallbackContract;
   readonly authorize?: ApplicationSerializedCallbackContract;
   /**
+   * Provider-authenticated raw request boundary. The callback receives exact
+   * bytes and headers and must return the schema-normalized route input.
+   */
+  readonly webhookAuthentication?: ApplicationSerializedCallbackContract;
+  /**
    * Compiler-owned publication metadata. A typed route remains internal until
    * its callable handle is exported from the application entrypoint.
    */
@@ -1808,8 +1813,20 @@ export interface ApplicationFunctionNativeHttpRouteContract {
   readonly operationBindings?: readonly {
     readonly identifier: string;
     readonly operationId: string;
+    /**
+     * Authoring-time operation identity retained by a packaged maintained
+     * callable. The canonical operationId remains the authority/catalog
+     * identity; generated runtimes accept this alias only inside the exact
+     * callback scope that proved the dependency.
+     */
+    readonly runtimeOperationId?: string;
     readonly command: ApplicationGraphNodeRef;
     readonly handler: ApplicationGraphNodeRef;
+  }[];
+  /** Provider capabilities inferred through ordinary maintained-module calls. */
+  readonly providerBindings?: readonly {
+    readonly identifier: string;
+    readonly provider: ApplicationProviderRef;
   }[];
   readonly transaction?: ApplicationFunctionNativeTransactionContract;
   readonly idempotency: {
@@ -1819,7 +1836,7 @@ export interface ApplicationFunctionNativeHttpRouteContract {
   readonly requestBoundary: {
     readonly durableValues: 'schema-normalized-only';
     readonly rawRequestCapture: 'rejected';
-    readonly principal: 'framework-authenticated';
+    readonly principal: 'framework-authenticated' | 'provider-authenticated';
   };
 }
 
@@ -3771,9 +3788,17 @@ function applicationFunctionNativeTransactionMessages(
       .filter((binding) => binding.access === 'write')
       .map((binding) => binding.model.nodeId),
   );
-  if (
-    writeModels.size !== 1
-    || !writeModels.has(transaction.primaryModel.nodeId)
+  const transactionMode = transaction.mode ?? 'write';
+  if (transactionMode === 'read' && writeModels.size > 0) {
+    messages.push(
+      `${label} function-native read scope cannot contain writable model bindings.`,
+    );
+  } else if (
+    transactionMode === 'write'
+    && (
+      writeModels.size !== 1
+      || !writeModels.has(transaction.primaryModel.nodeId)
+    )
   ) {
     messages.push(
       `${label} function-native transaction must infer exactly one writable primary model.`,
@@ -3854,6 +3879,14 @@ function applicationServerRouteStructureDiagnostics(
           ));
         }
         operationIdentifiers.add(binding.identifier);
+        if (
+          binding.runtimeOperationId !== undefined
+          && !binding.runtimeOperationId.trim()
+        ) {
+          diagnostics.push(applicationGraphStructureDiagnostic(
+            `Application server route ${node.id}.${route.id} operation ${binding.operationId} has an empty runtime operation alias.`,
+          ));
+        }
         const command = graph.nodes.find(
           (candidate) => candidate.id === binding.command.nodeId,
         );
@@ -3883,7 +3916,9 @@ function applicationServerRouteStructureDiagnostics(
           !== 'schema-normalized-only'
         || route.functionNative.requestBoundary.rawRequestCapture !== 'rejected'
         || route.functionNative.requestBoundary.principal
-          !== 'framework-authenticated'
+          !== (route.functionNative.webhookAuthentication
+            ? 'provider-authenticated'
+            : 'framework-authenticated')
       ) {
         diagnostics.push(applicationGraphStructureDiagnostic(
           `Application server route ${node.id}.${route.id} must retain the function-native request boundary.`,

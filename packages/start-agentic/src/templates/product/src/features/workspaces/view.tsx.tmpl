@@ -1,0 +1,181 @@
+import { selectAgenticWorkspace } from '@applik8s/start-agentic/react';
+import { type FormEvent, useState } from 'react';
+import { Badge, Button, Card, EmptyState, PageHeader, RouteState } from '../../components/ui';
+import {
+  DataLifecycleRequest,
+  Invitation,
+  Workspace,
+  WorkspaceDashboard,
+  WorkspaceList,
+} from '../../application';
+
+export function WorkspaceHome() {
+  const workspaces = WorkspaceList({}).useQuery();
+  const createWorkspace = Workspace.create.useMutation();
+  const [name, setName] = useState('');
+  const [slug, setSlug] = useState('');
+
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const created = await createWorkspace({ name, slug });
+    const workspaceId = String(created.value.id);
+    selectAgenticWorkspace(workspaceId);
+    globalThis.location.assign(`/app/workspaces/${workspaceId}`);
+  }
+
+  return (
+    <div>
+      <PageHeader eyebrow="Application-owned collaboration" title="Workspaces" description="Identity is framework-owned. Workspace policy and membership remain ordinary application models with typed authority." />
+      <div className="grid gap-5 lg:grid-cols-[1fr_22rem]"><section aria-label="Your workspaces" className="space-y-3">
+        {workspaces.data?.length === 0 ? <EmptyState title="Create your first workspace" description="A workspace scopes collaboration and policy without changing your identity provider." /> : null}
+        {workspaces.data?.map(workspace => (
+          <Card key={workspace.id} className="flex items-center justify-between gap-4">
+            <a
+              className="font-semibold text-emerald-900"
+              href={`/app/workspaces/${workspace.id}`}
+              onClick={() => selectAgenticWorkspace(workspace.id)}
+            >
+              {workspace.name}
+            </a>
+            <Badge>{workspace.role}</Badge>
+          </Card>
+        ))}
+      </section>
+      <Card><form onSubmit={create} className="grid gap-3">
+        <h2 className="text-lg font-semibold">Create a workspace</h2>
+        <label htmlFor="workspace-name">Name</label>
+        <input
+          id="workspace-name"
+          value={name}
+          onChange={event => setName(event.currentTarget.value)}
+        />
+        <label htmlFor="workspace-slug">Slug</label>
+        <input
+          id="workspace-slug"
+          value={slug}
+          onChange={event => setSlug(event.currentTarget.value)}
+        />
+        <Button
+          type="submit"
+          disabled={createWorkspace.pending || !name.trim() || !slug.trim()}
+        >
+          {createWorkspace.pending ? 'Creating…' : 'Create workspace'}
+        </Button>
+      </form></Card></div>
+    </div>
+  );
+}
+
+export function WorkspaceDashboardView(
+  { workspaceId }: { readonly workspaceId: string },
+) {
+  const dashboard = WorkspaceDashboard({ workspaceId }).useQuery();
+  const createInvitation = Invitation.create.useMutation();
+  const requestLifecycle = DataLifecycleRequest.create.useMutation();
+  const [email, setEmail] = useState('');
+  const [notice, setNotice] = useState<string>();
+  const [deleteConfirmation, setDeleteConfirmation] = useState('');
+
+  async function invite(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1_000)
+      .toISOString();
+    const invitation = await createInvitation({
+      workspaceId,
+      email: email.trim(),
+      role: 'workspace-member',
+      state: 'pending',
+      expiresAt,
+    });
+    setEmail('');
+    setNotice(
+      `${globalThis.location.origin}/invitations/${invitation.value.id}`,
+    );
+  }
+
+  async function requestWorkspaceDeletion() {
+    if (deleteConfirmation !== dashboard.data?.workspace.name) return;
+    const request = await requestLifecycle({
+      scope: 'workspace',
+      targetId: workspaceId,
+    });
+    setDeleteConfirmation('');
+    setNotice(`Workspace lifecycle request ${request.value.id} was admitted. Personal content and retained evidence are not silently deleted.`);
+  }
+
+  if (dashboard.error) {
+    return <RouteState tone="warning" title="Workspace unavailable" description="The selector may be stale or the workspace provider may be recovering." />;
+  }
+  if (!dashboard.data) {
+    return <RouteState title="Loading workspace" description="Membership is being validated before trusted context is admitted." />;
+  }
+
+  return (
+    <div>
+      <PageHeader eyebrow="Trusted workspace context" title={dashboard.data.workspace.name} action={<Badge tone="info">{dashboard.data.workspace.role}</Badge>} />
+      <div className="grid gap-5 lg:grid-cols-2"><Card aria-label="Members">
+        <h2 className="text-lg font-semibold">Members</h2>
+        {dashboard.data.members.map(member => (
+          <p key={member.id}>{member.identityId} · {member.role}</p>
+        ))}
+      </Card>
+      <Card aria-label="Invitations">
+        <h2 className="text-lg font-semibold">Invitations</h2>
+        {dashboard.data.invitations.map(invitation => (
+          <article
+            key={invitation.id}
+            role="group"
+            aria-label={`Invitation ${invitation.email}`}
+            className="my-3 rounded-xl border border-stone-200 p-3"
+          >
+            <p>{invitation.email} · {invitation.role} · {invitation.state}</p>
+            <p className="mt-1 flex flex-wrap items-center gap-2 text-xs text-stone-600">
+              Delivery
+              <Badge
+                tone={
+                  invitation.deliveryState === 'delivered'
+                    ? 'success'
+                    : invitation.deliveryState === 'failed'
+                    ? 'danger'
+                    : 'warning'
+                }
+              >
+                {invitation.deliveryState}
+              </Badge>
+              {invitation.deliveryProvider
+                ? `${invitation.deliveryProvider} · ${invitation.deliveryAttempts} attempt${invitation.deliveryAttempts === 1 ? '' : 's'}`
+                : 'Waiting for the configured application notification provider'}
+            </p>
+          </article>
+        ))}
+        <form onSubmit={invite}>
+          <label htmlFor="invitation-email">Invite by email</label>
+          <input
+            id="invitation-email"
+            type="email"
+            value={email}
+            onChange={event => setEmail(event.currentTarget.value)}
+          />
+          <Button
+            type="submit"
+            disabled={createInvitation.pending || !email.trim()}
+          >
+            Invite member
+          </Button>
+        </form>
+        {notice ? (
+          <p role="status">
+            Single-use invitation: <a href={notice}>{notice}</a>
+          </p>
+        ) : null}
+      </Card></div>
+      {dashboard.data.workspace.role === 'workspace-owner' ? <Card className="mt-5 border-rose-200">
+        <h2 className="text-lg font-semibold">Delete workspace</h2>
+        <p className="mt-2 text-sm leading-6 text-stone-600">This asynchronous application request removes workspace membership and invitations. Principal-owned documents, conversations, billing, immutable artifacts, and required audit evidence retain their own lifecycle.</p>
+        <label className="mt-4 block text-sm font-semibold" htmlFor="workspace-delete-confirmation">Type {dashboard.data.workspace.name} to continue</label>
+        <input id="workspace-delete-confirmation" className="mt-2" value={deleteConfirmation} onChange={event => setDeleteConfirmation(event.currentTarget.value)} />
+        <Button className="mt-3" variant="danger" type="button" disabled={deleteConfirmation !== dashboard.data.workspace.name || requestLifecycle.pending} onClick={() => void requestWorkspaceDeletion()}>Request workspace deletion</Button>
+      </Card> : null}
+    </div>
+  );
+}

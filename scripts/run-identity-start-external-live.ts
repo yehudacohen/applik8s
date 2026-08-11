@@ -190,7 +190,7 @@ try {
   const session = await createIdentityStartOrySession({
     publicUrl: kratosPublicUrl,
     adminUrl: kratosAdminUrl,
-    roles: ['reviewer', 'administrator'],
+    roles: ['reviewer', 'administrator', 'application-operator'],
   });
   await runIdentityStartCommand(
     execution,

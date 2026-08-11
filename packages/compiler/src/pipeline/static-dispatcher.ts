@@ -144,9 +144,12 @@ function staticHandlerSource(handler: (...args: never[]) => unknown, handlerId: 
   }
   const freeIdentifiers = freeCandidates.filter((identifier) => !captureExpressions.has(identifier) && !staticHandlerCapturedImports.has(identifier));
   if (freeIdentifiers.length > 0) {
+    const provenance = sourceModule
+      ? ` Source provenance: ${sourceModule}.`
+      : ' Source provenance was unavailable.';
     return error(
       'BUNDLE_INVALID',
-      `Handler ${handlerId} cannot be statically bundled. The reconcile callback references closure-local identifier(s) that cannot be recovered from the module: ${freeIdentifiers.join(', ')}. Move captured values and helper functions to top-level declarations, keep them inside the handler, or pass literal data through the reconciled resource spec/status. Top-level reachable helpers and imports are serialized into the WASM dispatcher; factory-local lexical state fails closed.`
+      `Handler ${handlerId} cannot be statically bundled. The reconcile callback references closure-local identifier(s) that cannot be recovered from the module: ${freeIdentifiers.join(', ')}.${provenance} Move captured values and helper functions to top-level declarations, keep them inside the handler, or pass literal data through the reconciled resource spec/status. Top-level reachable helpers and imports are serialized into the WASM dispatcher; factory-local lexical state fails closed.`
     );
   }
   const validation = ts.transpileModule(`const __applik8sHandler = (${source});`, {
@@ -426,7 +429,15 @@ function staticEntrypointCaptures(entrypoint: string): StaticEntrypointCaptures 
       );
       return candidates.size === 1 ? [...candidates][0] : undefined;
     },
-    createSession: (handlerId, sourceModule) => createStaticCaptureSession(handlerId, sourceModule, modulesByPath, declarationOrigins),
+    createSession: (handlerId, sourceModule) => {
+      if (sourceModule) visitModule(sourceModule.replace(/^file:\/\//, ''));
+      return createStaticCaptureSession(
+        handlerId,
+        sourceModule,
+        modulesByPath,
+        declarationOrigins,
+      );
+    },
   };
 }
 

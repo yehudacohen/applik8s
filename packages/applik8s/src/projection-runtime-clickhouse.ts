@@ -188,22 +188,39 @@ export function createClickHouseAnalyticalProjectionWriter<TRow extends object>(
   const columns = clickHouseColumns(options.schema, `${options.projection}.output`);
   const qualifiedTable = `${quoteIdentifier(database)}.${quoteIdentifier(table)}`;
   const qualifiedCheckpoints = `${quoteIdentifier(database)}.${quoteIdentifier(checkpointTable)}`;
+  let preparation: Promise<void> | undefined;
+
+  async function prepareProjection(): Promise<void> {
+    // A provisioned ClickHouse installation starts with only the default
+    // database. The projection store owns its configured logical database
+    // and must be able to bootstrap it on a clean cluster.
+    await request(`CREATE DATABASE IF NOT EXISTS ${quoteIdentifier(database)}`);
+    await request(`CREATE TABLE IF NOT EXISTS ${qualifiedTable} (${[
+      '`_applik8s_event_id` String',
+      '`_applik8s_row_index` UInt32',
+      '`_applik8s_source_sequence` UInt64',
+      '`_applik8s_partition_key` String',
+      "`_applik8s_recorded_at` DateTime64(3, 'UTC')",
+      ...columns.map((column) => `${quoteIdentifier(column.name)} ${column.type}`),
+    ].join(', ')}) ENGINE = ReplacingMergeTree(_applik8s_source_sequence) ORDER BY (_applik8s_event_id, _applik8s_row_index)`);
+    // Projection schemas may grow additively. CREATE TABLE IF NOT EXISTS
+    // leaves an existing durable table untouched, so reconcile every
+    // declared application column before processing the next event.
+    if (columns.length > 0) {
+      await request(`ALTER TABLE ${qualifiedTable} ${columns
+        .map((column) => `ADD COLUMN IF NOT EXISTS ${quoteIdentifier(column.name)} ${column.type}`)
+        .join(', ')}`);
+    }
+    await request(`CREATE TABLE IF NOT EXISTS ${qualifiedCheckpoints} (\`projection\` String, \`stream\` String, \`sequence\` UInt64, \`updated_at\` DateTime64(3, 'UTC')) ENGINE = ReplacingMergeTree(\`sequence\`) ORDER BY (\`projection\`, \`stream\`)`);
+  }
 
   return {
-    async prepare() {
-      // A provisioned ClickHouse installation starts with only the default
-      // database. The projection store owns its configured logical database
-      // and must be able to bootstrap it on a clean cluster.
-      await request(`CREATE DATABASE IF NOT EXISTS ${quoteIdentifier(database)}`);
-      await request(`CREATE TABLE IF NOT EXISTS ${qualifiedTable} (${[
-        '`_applik8s_event_id` String',
-        '`_applik8s_row_index` UInt32',
-        '`_applik8s_source_sequence` UInt64',
-        '`_applik8s_partition_key` String',
-        "`_applik8s_recorded_at` DateTime64(3, 'UTC')",
-        ...columns.map((column) => `${quoteIdentifier(column.name)} ${column.type}`),
-      ].join(', ')}) ENGINE = ReplacingMergeTree(_applik8s_source_sequence) ORDER BY (_applik8s_event_id, _applik8s_row_index)`);
-      await request(`CREATE TABLE IF NOT EXISTS ${qualifiedCheckpoints} (\`projection\` String, \`stream\` String, \`sequence\` UInt64, \`updated_at\` DateTime64(3, 'UTC')) ENGINE = ReplacingMergeTree(\`sequence\`) ORDER BY (\`projection\`, \`stream\`)`);
+    prepare() {
+      preparation ??= prepareProjection().catch((error: unknown) => {
+        preparation = undefined;
+        throw error;
+      });
+      return preparation;
     },
     async checkpoint(projection, stream) {
       const body = await request(`SELECT coalesce(max(\`sequence\`), 0) AS sequence FROM ${qualifiedCheckpoints} FINAL WHERE \`projection\` = {projection:String} AND \`stream\` = {stream:String} FORMAT JSONEachRow`, { projection, stream });

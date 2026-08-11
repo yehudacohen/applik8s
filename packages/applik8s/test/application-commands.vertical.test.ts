@@ -160,10 +160,19 @@ describe('v0.4 application behavior contracts', () => {
     expect(processor).toMatchObject({
       kind: 'processor',
       deployment: {
-        replicas: expect.stringMatching(/^\$\{schema\.spec\.profile/),
-        concurrency: expect.stringMatching(/^\$\{schema\.spec\.profile/),
+        replicas: expect.stringMatching(/^\$\{\(?schema\.spec\.profile\)?/),
+        concurrency: expect.stringMatching(/^\$\{\(?schema\.spec\.profile\)?/),
         maxAckPending: expect.stringMatching(/^\$\{\(.+\) \* \(.+\)\}$/),
-        resources: { requests: { memory: expect.stringMatching(/^\$\{schema\.spec\.profile/) } },
+        resources: { requests: { memory: expect.stringMatching(/^\$\{\(?schema\.spec\.profile\)?/) } },
+      },
+    });
+    expect(processor?.kind === 'processor' ? processor.deployment : undefined).toMatchObject({
+      replicas: expect.stringMatching(/\? \(1\).*\? \(3\)/),
+      concurrency: expect.stringMatching(/\? \(8\).*\? \(32\)/),
+      resources: {
+        requests: {
+          memory: expect.stringMatching(/\? \(\"128Mi\"\).*\? \(\"512Mi\"\)/),
+        },
       },
     });
   });

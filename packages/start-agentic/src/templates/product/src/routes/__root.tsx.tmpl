@@ -2,14 +2,18 @@ import { Applik8sProvider } from '@applik8s/react';
 import { ApplicationIdentityProvider } from '@applik8s/react/identity';
 import {
   HeadContent,
-  Link,
   Outlet,
   Scripts,
   createRootRoute,
 } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
-import { AccountSession } from '../features/account/session';
+import { AppShell } from '../components/app-shell';
 import { getApplicationIdentitySession } from '../features/account/session-loader';
+import {
+  RouteErrorBoundary,
+  RouteNotFound,
+  RoutePending,
+} from './-route-state';
 import '../styles.css';
 
 export const Route = createRootRoute({
@@ -21,6 +25,9 @@ export const Route = createRootRoute({
     ],
   }),
   loader: () => getApplicationIdentitySession(),
+  pendingComponent: RoutePending,
+  errorComponent: RouteErrorBoundary,
+  notFoundComponent: RouteNotFound,
   component: Root,
 });
 
@@ -30,7 +37,7 @@ function Root() {
     <ApplicationIdentityProvider initialSession={initialSession}>
       <Document>
         <Applik8sProvider>
-          <Outlet />
+          <AppShell><Outlet /></AppShell>
         </Applik8sProvider>
       </Document>
     </ApplicationIdentityProvider>
@@ -44,13 +51,6 @@ function Document({ children }: { readonly children: ReactNode }) {
         <HeadContent />
       </head>
       <body>
-        <header>
-          <nav aria-label="Application">
-            <Link to="/">Notes</Link>
-            <Link to="/operations">Operations</Link>
-          </nav>
-          <AccountSession />
-        </header>
         {children}
         <Scripts />
       </body>

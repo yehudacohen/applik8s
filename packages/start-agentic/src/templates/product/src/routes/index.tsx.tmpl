@@ -1,121 +1,49 @@
-import { createApplicationTanStackConnection } from '@applik8s/ai-tanstack/client';
-import { useChat } from '@tanstack/ai-react';
-import { createFileRoute } from '@tanstack/react-router';
-import { type FormEvent, useMemo, useState } from 'react';
-import { Note, NoteList, NotesAssistant } from '../application';
+import { useApplicationIdentitySession } from '@applik8s/react/identity';
+import { Link, createFileRoute } from '@tanstack/react-router';
+import { Badge, Card } from '../components/ui';
 
 export const Route = createFileRoute('/')({
-  loader: () => NoteList({}).preload(),
-  component: NotesHome,
+  component: Landing,
 });
 
-function NotesHome() {
-  const notes = NoteList({}).useQuery();
-  const createNote = Note.create.useMutation();
-  const [body, setBody] = useState('');
-  const [prompt, setPrompt] = useState('');
-  const [threadId] = useState(() => crypto.randomUUID());
-  const connection = useMemo(
-    () => createApplicationTanStackConnection({
-      agent: NotesAssistant,
-    }),
-    [],
-  );
-  const {
-    messages,
-    sendMessage,
-    isLoading,
-    error,
-    stop,
-  } = useChat({ connection, threadId });
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await createNote({ body });
-    setBody('');
-  }
-
-  async function askAssistant(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const message = prompt.trim();
-    if (!message) return;
-    setPrompt('');
-    await sendMessage(message);
-  }
-
+function Landing() {
+  const session = useApplicationIdentitySession();
+  const destination = session.data?.authenticated ? '/app' : '/sign-up';
   return (
-    <main className="notes-shell">
-      <section className="notes-intro">
-        <p className="eyebrow">Applik8s Agentic Start</p>
-        <h1>A small app with a real control plane.</h1>
-        <p>
-          Notes, live queries, typed commands, an AI tool, identity, durable
-          infrastructure, and operations share one application declaration.
+    <div className="py-6 sm:py-12">
+      <div className="mx-auto max-w-4xl text-center">
+        <Badge tone="success">Agentic SaaS, already connected</Badge>
+        <h1 className="mt-6 text-balance text-5xl font-semibold tracking-[-0.06em] text-stone-950 sm:text-7xl">
+          Build the product.<br />Keep the control plane.
+        </h1>
+        <p className="mx-auto mt-6 max-w-2xl text-pretty text-lg leading-8 text-stone-600">
+          A production-shaped workspace copilot with typed models, live UI,
+          durable execution, identity, billing, and explainable infrastructure.
         </p>
-      </section>
-      <div className="notes-grid">
-        <section className="panel" aria-labelledby="notes-title">
-          <h2 id="notes-title">Your notes</h2>
-          <form onSubmit={submit}>
-            <label htmlFor="note-body">Add a note</label>
-            <textarea
-              id="note-body"
-              value={body}
-              onChange={(event) => setBody(event.currentTarget.value)}
-              placeholder="Something worth remembering"
-            />
-            <button type="submit" disabled={!body.trim() || createNote.pending}>
-              {createNote.pending ? 'Saving…' : 'Save note'}
-            </button>
-          </form>
-          <div aria-label="Notes" aria-live="polite">
-            {notes.data?.map((note) => (
-              <article key={note.id}>
-                <p>{note.body}</p>
-                <small>{note.createdAt}</small>
-              </article>
-            ))}
-          </div>
-        </section>
-        <section className="panel assistant" aria-labelledby="assistant-title">
-          <h2 id="assistant-title">Notes assistant</h2>
-          <p>
-            Ask it to create a note. Its typed tool call updates the same live
-            list without a manual refresh.
-          </p>
-          <div className="conversation" aria-live="polite">
-            {messages.map((message) => (
-              <article key={message.id} data-role={message.role}>
-                <strong>{message.role}</strong>
-                {message.parts.map((part, index) =>
-                  part.type === 'text'
-                    ? <p key={index}>{part.content}</p>
-                    : null,
-                )}
-              </article>
-            ))}
-            {error ? <p role="alert">{error.message}</p> : null}
-          </div>
-          <form onSubmit={askAssistant}>
-            <label htmlFor="assistant-prompt">Message</label>
-            <textarea
-              id="assistant-prompt"
-              value={prompt}
-              onChange={(event) => setPrompt(event.currentTarget.value)}
-              disabled={isLoading}
-              placeholder="Create a note about shipping the first version"
-            />
-            <div className="actions">
-              <button type="submit" disabled={isLoading || !prompt.trim()}>
-                {isLoading ? 'Working…' : 'Send'}
-              </button>
-              {isLoading
-                ? <button type="button" className="secondary" onClick={stop}>Stop</button>
-                : null}
-            </div>
-          </form>
-        </section>
+        <div className="mt-8 flex flex-wrap justify-center gap-3">
+          <Link to={destination} className="button-link">
+            {session.data?.authenticated ? 'Open your workspace' : 'Get started'}
+          </Link>
+          <a href="https://github.com/yehudacohen/applik8s" className="button-link secondary">View the source</a>
+        </div>
       </div>
-    </main>
+      <div className="mt-14 grid gap-4 md:grid-cols-3">
+        <Card>
+          <p className="eyebrow">Function native</p>
+          <h2 className="mt-2 text-lg font-semibold">Ordinary TypeScript</h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600">Models, agents, events, workflows, and projections remain direct callable values.</p>
+        </Card>
+        <Card>
+          <p className="eyebrow">Live by default</p>
+          <h2 className="mt-2 text-lg font-semibold">One authoritative loop</h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600">Committed model changes invalidate typed queries and reconcile the browser without hand-built glue.</p>
+        </Card>
+        <Card>
+          <p className="eyebrow">Deployable</p>
+          <h2 className="mt-2 text-lg font-semibold">Inferred infrastructure</h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600">The same application graph explains and deploys its providers through TypeKro and Alchemy.</p>
+        </Card>
+      </div>
+    </div>
   );
 }

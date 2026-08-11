@@ -131,6 +131,9 @@ function workflowRun<TOutput extends object>(
     id: providerRun.id,
     reference,
     workflowRevision,
+    ...(providerRun.__idempotencyKey
+      ? { __idempotencyKey: providerRun.__idempotencyKey }
+      : {}),
     result: (options?: ApplicationWorkflowResultOptions) =>
       providerRun.result(options),
     cancel: (

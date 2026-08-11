@@ -1,0 +1,119 @@
+import { useApplicationIdentitySession } from '@applik8s/react/identity';
+import type { ApplicationOperationsSnapshot } from '@applik8s/operations-ui';
+import { createFileRoute, Link } from '@tanstack/react-router';
+import { OperationsSnapshot } from '../application';
+import { Badge, Card, PageHeader, RouteState } from '../components/ui';
+
+export const Route = createFileRoute('/app/setup')({ component: Launchpad });
+
+const obligationGroups = [
+  ['Identity and authority', 'identity', 'Provider admission, canonical operator grants, and recovery'],
+  ['Application database', 'databases', 'Transactional authority, migration, backup, and restore evidence'],
+  ['Event delivery', 'eventConsumers', 'JetStream delivery, checkpoints, retries, and dead letters'],
+  ['Durable workflows', 'workflows', 'Hatchet workers, waits, signals, cancellation, and recovery'],
+  ['Object storage', 'objectStores', 'Object authority, retention, and provider readiness'],
+  ['AI runtime', 'ai', 'Logical model resolution, provider boundary, budget, and uncertain completion'],
+  ['Public gateway', 'gateways', 'Exposure, DNS, TLS, identity admission, and route readiness'],
+] as const;
+
+function Launchpad() {
+  const session = useApplicationIdentitySession();
+  if (!session.data?.capabilities?.applicationOperations) {
+    return <RouteState title="Launchpad is not available" description="A separately audited application-operator grant is required. Workspace ownership is intentionally insufficient." />;
+  }
+  return <AuthorizedLaunchpad />;
+}
+
+function AuthorizedLaunchpad() {
+  const snapshot = OperationsSnapshot({ limit: 100 }).useQuery();
+  if (snapshot.phase === 'idle' || snapshot.phase === 'loading') {
+    return <RouteState title="Loading deployment evidence" description="Launchpad is reconciling graph intent with authorized operational receipts." />;
+  }
+  if (snapshot.error || !snapshot.data) {
+    return <RouteState title="Deployment evidence is unavailable" description={snapshot.error?.message ?? 'No authorized operational snapshot is available.'} />;
+  }
+  const data = snapshot.data;
+  const obligations = obligationGroups
+    .map(([name, key, description]) => ({
+      name,
+      description,
+      records: data[key],
+    }))
+    .filter(({ records }) => records.length > 0);
+  return <div>
+    <PageHeader
+      eyebrow="Builder Launchpad"
+      title="Deployment intent, evidence, and the next honest action"
+      description="Every row comes from the compiled application graph or a bounded, digest-bound operational receipt. Missing evidence remains Unknown. Cluster mutation stays in the CLI."
+      action={<Badge tone="warning">Operator authority</Badge>}
+    />
+    <div className="grid gap-5 lg:grid-cols-[1fr_22rem]">
+      <section className="space-y-3" aria-label="Graph-derived go-live obligations">
+        <Card>
+          <p className="eyebrow">Production obligations</p>
+          <h2 className="mt-2 font-semibold">Derived from this application graph</h2>
+          <ul className="mt-3 grid gap-2 text-sm text-stone-600">
+            {data.goLive.map(obligation => {
+              const state = goLiveObligationState(data, obligation.id);
+              return <li key={obligation.id} className="flex items-start justify-between gap-3 border-t border-stone-100 pt-2"><span>{obligation.label}</span><Badge tone={state === 'Ready' ? 'success' : state === 'Action required' ? 'danger' : 'warning'}>{state}</Badge></li>;
+            })}
+          </ul>
+        </Card>
+        {obligations.length === 0
+          ? <Card><h2 className="font-semibold">No graph obligations discovered</h2><p className="mt-2 text-sm text-stone-600">Build the application candidate before treating any capability as ready.</p></Card>
+          : obligations.map(({ name, description, records }) => {
+              const state = obligationState(records);
+              return <Card key={name} className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="font-semibold">{name}</h2>
+                  <p className="mt-1 text-sm text-stone-600">{description}</p>
+                  <p className="mt-2 text-xs text-stone-500">{records.length} graph or receipt record{records.length === 1 ? '' : 's'}</p>
+                </div>
+                <Badge tone={state === 'Ready' ? 'success' : state === 'Action required' ? 'danger' : 'warning'}>{state}</Badge>
+              </Card>;
+            })}
+      </section>
+      <aside className="space-y-4">
+        <Card>
+          <p className="eyebrow">Safe sequence</p>
+          <ol className="mt-3 space-y-3 text-sm text-stone-700">
+            <li><code>bun run doctor</code></li>
+            <li><code>bun run plan</code></li>
+            <li><code>bun run deploy</code></li>
+            <li><code>bun run status</code></li>
+          </ol>
+          <p className="mt-4 text-xs leading-5 text-stone-500">The CLI writes immutable local receipts and publishes their redacted projection only when the explicit application database environment is available. Launchpad receives neither kubeconfig nor Alchemy mutation authority.</p>
+        </Card>
+        <Card>
+          <h2 className="font-semibold">Operational truth</h2>
+          <p className="mt-2 text-sm leading-6 text-stone-600">Graph presence proves intent, never readiness. Expired provider evidence is stale; an absent receipt is Unknown.</p>
+          <Link to="/app/operations" className="mt-4 inline-block text-sm font-semibold text-emerald-800">Inspect evidence →</Link>
+        </Card>
+      </aside>
+    </div>
+  </div>;
+}
+
+function obligationState(records: readonly { readonly state?: string; readonly authority?: string }[]): 'Ready' | 'Action required' | 'Unknown' {
+  const states = records.map(({ state }) => state?.toLowerCase());
+  if (states.some((state) => state && /failed|degraded|blocked|denied/.test(state))) return 'Action required';
+  if (records.some(({ state, authority }) => authority !== 'inferred' && state?.toLowerCase() === 'ready')) return 'Ready';
+  return 'Unknown';
+}
+
+function goLiveObligationState(snapshot: ApplicationOperationsSnapshot, id: string): 'Ready' | 'Action required' | 'Unknown' {
+  const evidence = id.endsWith('database-migrations') || id.endsWith('backup-restore')
+    ? snapshot.databases
+    : id.endsWith('dns-tls')
+      ? snapshot.gateways
+      : id.endsWith('notification-courier')
+        ? snapshot.eventConsumers
+        : id.endsWith('billing-webhooks') || id.endsWith('quotas-budgets')
+          ? [...snapshot.usage, ...snapshot.entitlements, ...snapshot.providers]
+          : id.endsWith('ai-trust')
+            ? snapshot.ai
+            : id.endsWith('rollback-destruction')
+              ? snapshot.installations
+              : snapshot.operational;
+  return obligationState(evidence);
+}

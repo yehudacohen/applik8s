@@ -1,5 +1,19 @@
 // typecast-file-boundary: provider-neutral workflow runs preserve output/error generics across runtime registration and validated reference hydration.
+import type {
+  ApplicationCausalPrincipalContext,
+  ApplicationPrincipal,
+} from '@applik8s/core';
+import { applicationCausalPrincipalContext } from '@applik8s/core';
 import type { ApplicationWorkflowEngineProvider } from './application-providers.js';
+
+/**
+ * Framework-only causal metadata attached to provider-neutral workflow
+ * invocations. A symbol keeps it out of the application-facing metadata
+ * vocabulary while adapters can serialize it into their durable history.
+ */
+export const applicationWorkflowCausalPrincipalMetadata = Symbol.for(
+  '@applik8s/workflow-causal-principal',
+);
 
 export interface ApplicationWorkflowInvocationMetadata {
   readonly idempotencyKey?: string;
@@ -14,6 +28,21 @@ export interface ApplicationWorkflowInvocationMetadata {
     readonly digest: string;
     readonly changeScopes?: Readonly<Record<string, string>>;
   };
+  /** @internal Framework-owned causal attribution; application input cannot set it. */
+  readonly [applicationWorkflowCausalPrincipalMetadata]?:
+    ApplicationCausalPrincipalContext;
+}
+
+/** @internal Attaches admitted causal attribution without exposing a public option. */
+export function withApplicationWorkflowCausalPrincipal(
+  metadata: ApplicationWorkflowInvocationMetadata | undefined,
+  principal: ApplicationPrincipal,
+): ApplicationWorkflowInvocationMetadata {
+  return Object.freeze({
+    ...(metadata ?? {}),
+    [applicationWorkflowCausalPrincipalMetadata]:
+      applicationCausalPrincipalContext(principal),
+  });
 }
 
 export interface ApplicationDurableErrorDescriptor<TName extends string = string, TPayload extends object = object> {

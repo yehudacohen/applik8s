@@ -1,0 +1,40 @@
+import { Link, createFileRoute } from '@tanstack/react-router';
+import { type FormEvent, useEffect, useState } from 'react';
+import { Note, NoteDetail } from '../application';
+import { Alert, Badge, Button, Card, PageHeader, Skeleton } from '../components/ui';
+
+export const Route = createFileRoute('/app/documents/$documentId')({
+  component: DocumentDetailRoute,
+});
+
+function DocumentDetailRoute() {
+  const { documentId } = Route.useParams();
+  const detail = NoteDetail({ id: documentId }).useQuery();
+  const update = Note.update.useMutation();
+  const [body, setBody] = useState('');
+  const [notice, setNotice] = useState<string>();
+  useEffect(() => setBody(detail.data?.body ?? ''), [detail.data?.body]);
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      await update({ identity: documentId, patch: { body } });
+      await detail.refresh();
+      setNotice('Document committed. Subscribers now observe the authoritative revision.');
+    } catch {
+      setNotice('The document was not changed. Check your authority and retry.');
+    }
+  }
+
+  return <div>
+    <Link to="/app/library" className="text-sm font-semibold text-emerald-800">← Back to Library</Link>
+    <PageHeader eyebrow="Mutable document" title="Document" description="This application model can change through the same typed operation whether a human or an admitted agent acts." action={<Badge tone="info">Authoritative model</Badge>} />
+    {detail.error ? <Alert tone="warning" title="Document unavailable">The library remains usable. Retry after the query provider recovers.</Alert> : null}
+    {detail.data === undefined ? <Skeleton className="h-72" /> : null}
+    {detail.data === null ? <Alert tone="warning" title="Document not found">It may have been removed or belong to another admitted scope.</Alert> : null}
+    {detail.data ? <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+      <Card><form onSubmit={save} className="grid gap-3"><label htmlFor="document-body" className="text-sm font-semibold">Content</label><textarea id="document-body" className="min-h-64" value={body} onChange={event => setBody(event.currentTarget.value)} /><Button type="submit" disabled={update.pending || !body.trim()}>{update.pending ? 'Saving…' : 'Save document'}</Button></form>{notice ? <p role="status" className="mt-3 text-sm text-stone-600">{notice}</p> : null}</Card>
+      <aside className="space-y-4"><Card><p className="eyebrow">Provenance</p><dl className="mt-3 grid gap-3 text-sm"><div><dt className="text-stone-500">Owner</dt><dd className="mt-1 break-all font-medium">{detail.data.ownerPrincipalId}</dd></div><div><dt className="text-stone-500">Acting creator</dt><dd className="mt-1 break-all font-medium">{detail.data.createdByPrincipalId}</dd></div><div><dt className="text-stone-500">Created</dt><dd className="mt-1 font-medium">{new Date(detail.data.createdAt).toLocaleString()}</dd></div></dl></Card><Card><p className="text-sm leading-6 text-stone-600">Ownership comes from the framework-admitted causal principal. Agent provenance remains distinct from human ownership.</p></Card></aside>
+    </div> : null}
+  </div>;
+}

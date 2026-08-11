@@ -1,6 +1,8 @@
 import { agenticProfiles } from '@applik8s/start-agentic';
 import { application } from './app';
 
+export const providers = application.include(agenticProfiles);
+
 export const {
   database,
   analytics,
@@ -11,6 +13,7 @@ export const {
   inference,
   identity,
   payments,
+  notifications,
   capacity,
   host,
-} = application.include(agenticProfiles);
+} = providers;

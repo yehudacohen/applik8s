@@ -45,6 +45,7 @@ describe('pinned Stimp product-contract parity', () => {
       await readFile(join(first, 'package.json'), 'utf8'),
     );
     expect(manifest.scripts).toMatchObject({
+      doctor: 'applik8s doctor',
       plan: 'bun run build && applik8s plan',
       deploy: 'bun run build && applik8s deploy',
       'dev:cluster': 'bun run build && applik8s deploy --development --instance kubernetes/application.yaml',
@@ -154,11 +155,8 @@ describe('pinned Stimp product-contract parity', () => {
     expect(allSource).toContain(
       'eq(MembershipTable.identityId, context.principal.id)',
     );
-    expect(allSource).toContain("client.beginFlow(mode, { email })");
-    expect(allSource).toContain(
-      "client.transitionFlow(flow.id, transition, { email, password })",
-    );
-    expect(allSource).toContain('session.logout()');
+    expect(allSource).toContain('<AgenticAccountSession />');
+    expect(allSource).not.toContain("client.beginFlow(mode, { email })");
     expect(allSource).not.toContain('createWorkspace.mutate');
     expect(allSource).not.toContain('pgTable(');
     expect(allSource).not.toContain('application.model(');

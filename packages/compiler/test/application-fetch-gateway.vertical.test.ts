@@ -34,6 +34,18 @@ describe("application host Fetch gateway", () => {
 			{ input: type({}), output: type({ ok: "boolean" }) },
 			async () => ({ ok: true }),
 		);
+		http.webhook(
+			"provider-event",
+			"/webhooks/provider",
+			{
+				event: type({ id: "string > 0" }),
+				output: type({ received: "true" }),
+				authenticate: async (request) => ({
+					id: new TextDecoder().decode(request.body),
+				}),
+			},
+				async () => ({ received: true }) satisfies { readonly received: true },
+		);
 		const ask = http.post(
 			"ask",
 			"/ask",
@@ -71,6 +83,12 @@ describe("application host Fetch gateway", () => {
 		expect(gateway).toContain(`runtime:${operationId}`);
 		expect(gateway).not.toContain(
 			"applik8s://http/public-assistant/operations/internal",
+		);
+		expect(gateway).toContain(
+			'["webhook:/webhooks/provider","http://public-assistant.assistant-system.svc:80"]',
+		);
+		expect(gateway).toContain(
+			"remoteRoutes.has('webhook:' + pathname)",
 		);
 		expect(gateway).toContain(
 			"http://public-assistant.assistant-system.svc:80",
@@ -114,6 +132,74 @@ describe("application host Fetch gateway", () => {
 		expect(source).not.toContain(
 			"authorityRevision: principal.authorityRevision",
 		);
+	});
+
+	it("re-admits identity-provider roles through canonical application-operator grants", () => {
+		const account = app("operator-account", { namespace: "operator-system" });
+		const records = pgTable("operator_records", {
+			id: text("id").primaryKey(),
+		});
+		const database = account.database.postgres("application", {
+			schema: { records },
+		});
+		const Record = account.model(records, { name: "Record", database });
+		account.provide(
+			IdentityProvider,
+			IdentityProvider.deterministic({
+				...identityOptions("local-developer"),
+				roles: ["application-operator"],
+			}),
+		);
+		account.role("application-operator")
+			.can(Record.delete.all())
+			.bootstrap({
+				id: "identity:deterministic:local-developer",
+				kind: "human",
+				issuer: "applik8s://operator-account/identity/deterministic",
+				subject: "local-developer",
+			});
+		const graph = applicationGraphFor(account.composition);
+		if (!graph) throw new Error("Expected operator application graph.");
+
+		const source = generatedApplicationFetchGatewayModules(graph)?.files[
+			"gateway.generated.ts"
+		];
+		expect(source).toContain(
+			"import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';",
+		);
+		expect(source).toContain(
+			"postgres(requiredEnv(\"APPLIK8S_DATABASE_APPLICATION_URL\")",
+		);
+		expect(source).toContain("async function admitApplicationIdentity(request)");
+		expect(source).toContain("principal: await operationAuthority.admitPrincipal({");
+		expect(source).toContain("roleBootstraps");
+		expect(source).toContain("authenticate: (request) => admitApplicationIdentity(request)");
+	});
+
+	it("routes the complete framework identity protocol through the selected provider callback", () => {
+		const account = app("account-http", { namespace: "account-system" });
+		account.provide(
+			IdentityProvider,
+			{
+				...IdentityProvider.deterministic(identityOptions("member")),
+				handle: async () =>
+					Response.json({
+						protocol: "applik8s.identityHttp/v1alpha1",
+						kind: "account",
+					}),
+			},
+		);
+		const graph = applicationGraphFor(account.composition);
+		if (!graph) throw new Error("Expected account application graph.");
+
+		const source =
+			generatedApplicationFetchGatewayModules(graph)?.files[
+				"gateway.generated.ts"
+			];
+		expect(source).toContain(
+			"url.pathname.startsWith('/__applik8s/v1/identity/')",
+		);
+		expect(source).toContain("identity-http");
 	});
 
 	it("generates authenticated logical object-store routes without exposing provider credentials", () => {

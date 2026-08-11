@@ -49,6 +49,18 @@ const compilerBuildDurationMs = performance.now() - compilerBuildStarted;
 
 const graph = await json(join(output, 'typekro/application-graph.json'));
 assert(!JSON.stringify(graph).includes('[object Object]'), 'Chirp ApplicationGraph must preserve installation-derived values instead of coercing TypeKro references to [object Object].');
+const workflowGatewaySource = await readFile(
+  join(output, 'typekro/workflows/chirp-workflows/workflow-worker.generated.ts'),
+  'utf8',
+);
+assert(
+  workflowGatewaySource.includes("requiredEnv('APPLIK8S_WORKFLOW_NAMESPACE')"),
+  'The private workflow gateway must derive its caller namespace from the running Pod.',
+);
+assert(
+  !workflowGatewaySource.includes('system:serviceaccount:${schema.spec.name}:'),
+  'The immutable workflow worker must not embed a TypeKro installation expression as a literal service-account subject.',
+);
 const qualifiedProvider = (providerInterface, qualifier) =>
   graph.nodes.find(
     (node) =>
@@ -111,6 +123,20 @@ assert(
     && moderationPolicyQuery.budgets?.timeoutMs === 2_000
     && moderationPolicyQuery.budgets?.maxRows === 1,
   'ModerationPolicy.current must use one installation-scoped, bounded Kubernetes snapshot/watch authority.',
+);
+const moderationPolicyOperator = graph.nodes.find(
+  (node) => node.kind === 'operator' && node.name === 'moderation-policy-controller',
+);
+const moderationPolicyWorkflow = graph.nodes.find(
+  (node) => node.kind === 'workflowHandler' && node.name === 'moderation.apply-policy.v1',
+);
+assert(
+  moderationPolicyOperator?.resources?.some(
+    (resource) =>
+      resource.apiVersion === 'chirp.applik8s.dev/v1alpha1'
+      && resource.kind === 'ModerationPolicy',
+  ) && moderationPolicyWorkflow,
+  'ModerationPolicy.on.reconcile(...) must lower to one inferred operator that invokes its typed durable workflow.',
 );
 for (const processor of ['validate-published-post-create', 'validate-updated-post-update', 'validate-deleted-post-delete']) {
   assert(graph.nodes.some((node) => node.kind === 'streamProcessor' && node.name === processor), `Post.${processor} must lower through the canonical typed lifecycle-event processor path.`);
@@ -464,9 +490,10 @@ const workflowResources = chirpRgd.spec.resources.filter((resource) =>
   ['chirp-workflows', 'chirp-workflows-db', 'chirp-workflows-repository'].includes(resource.template?.metadata?.name));
 assert(
   workflowProvider?.config?.enabled === true
-    && workflowResources.length === 3
+    && workflowResources.map((resource) => resource.template?.kind).sort().join(',')
+      === 'Deployment,NetworkPolicy,PodDisruptionBudget,Service'
     && workflowResources.every((resource) => !JSON.stringify(resource.includeWhen ?? []).includes('features.automatedAccounts')),
-  'The direct TypeKro Hatchet provider and root worker resources must remain available for core projection recovery independently of automated accounts.',
+  'The direct TypeKro Hatchet provider, private workflow gateway, and root worker resources must remain available for core projection recovery and resource tracking independently of automated accounts.',
 );
 const graphOwnedWorkloadNamespaces = chirpRgd.spec.resources
   .map((resource) => resource.template)
@@ -543,13 +570,13 @@ const nackReference = chirpRgd.spec.resources.find((resource) =>
   resource.externalRef?.kind === 'HelmRelease'
   && resource.externalRef?.metadata?.name === 'nack');
 assert(
-  nackReference?.externalRef?.metadata?.namespace === installationNamespace
+  nackReference?.externalRef?.metadata?.namespace === 'typekro-nack-system'
     && jetStreamResources
       .filter((resource) => resource.template?.kind === 'Stream')
       .every((resource) =>
       Object.values(resource.template?.metadata?.annotations ?? {})
         .includes('${applik8sEventsNackHelmRelease.metadata.name}')),
-  'Chirp must observe the direct NACK prerequisite and order every KRO-owned JetStream resource behind it.',
+  'Chirp must observe the TypeKro-owned NACK singleton and order every KRO-owned JetStream resource behind it.',
 );
 const embeddedRuntimeBundle = chirpRgd.spec.resources.find((resource) => resource.template?.kind === 'ConfigMap' && Object.keys({ ...resource.template.data, ...resource.template.binaryData }).some((key) => /\.(?:mjs|cjs|js)(?:\.gz)?$/.test(key)));
 assert(!embeddedRuntimeBundle, 'Chirp must not transport executable JavaScript through ConfigMaps.');
@@ -661,6 +688,7 @@ assert(workflowWorkerSource.includes('http://chirp-social:8080/') && workflowWor
 assert(!workflowWorkerSource.includes('http://chirp-social.${schema.spec.name}') && !workflowWorkerSource.includes('http://chirp-administration.${schema.spec.name}'), 'Generated Node workers must never receive unevaluated KRO namespace expressions.');
 const workflowCallingStreamSource = await readFile(workflowCallingStreamRuntimePath, 'utf8');
 for (const authoringOnlyMarker of ['typekro', '@kubernetes/client-node', 'ObservableAPI', 'CoreV1Api']) {
+  assert(!workflowWorkerSource.includes(authoringOnlyMarker), `Workflow workers must not bundle authoring-only dependency ${authoringOnlyMarker}.`);
   assert(!workflowCallingStreamSource.includes(authoringOnlyMarker), `Workflow-calling stream processors must not bundle authoring-only dependency ${authoringOnlyMarker}.`);
 }
 const socialGatewaySource = await readFile(join(output, 'typekro/reactive/chirp-social/runtime.mjs'), 'utf8');

@@ -11,7 +11,7 @@
     "maximumTotalContainerContextBytes": 41943040,
     "maximumCommandProcessorBytes": 2097152,
     "maximumFocusedQueryGatewayBytes": 786432,
-    "maximumWorkflowWorkerBytes": 4194304,
+    "maximumWorkflowWorkerBytes": 5242880,
     "maximumWorkflowCallingStreamProcessorBytes": 3145728
   }
 }

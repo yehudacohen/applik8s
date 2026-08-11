@@ -2,7 +2,8 @@
 // resources after discriminating their runtime metadata and graph kinds.
 import { app, applicationGraphFor } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
-import { text, pgTable } from 'drizzle-orm/pg-core';
+import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
+import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
 describe('function-native HTTP authoring', () => {
@@ -113,6 +114,49 @@ describe('function-native HTTP authoring', () => {
     expect(() => application.http('public-api')).toThrow('already declared');
   });
 
+  it('models signed webhooks as raw provider admission followed by typed input', () => {
+    const application = app('typed-webhook', { namespace: 'typed-webhook' });
+    const api = application.http('provider-events');
+    const receive = api.webhook(
+      'receive-event',
+      '/webhooks/provider',
+      {
+        event: type({ id: 'string > 0', state: "'ready' | 'failed'" }),
+        output: type({ received: 'true', id: 'string > 0' }),
+        authenticate: async request => {
+          if (!request.headers['provider-signature']) {
+            throw new Error('signature missing');
+          }
+          return {
+            id: new TextDecoder().decode(request.body),
+            state: 'ready' as const,
+          };
+        },
+      },
+      async ({ input }) => ({ received: true as const, id: input.id }),
+    );
+
+    const server = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.kind === 'server' && node.name === 'provider-events',
+    );
+    expect(server?.kind === 'server' ? server.routes[0] : undefined)
+      .toMatchObject({
+        path: '/webhooks/provider',
+        authority: { classification: 'public' },
+        functionNative: {
+          webhookAuthentication: {
+            source: expect.stringContaining('provider-signature'),
+          },
+          requestBoundary: {
+            durableValues: 'schema-normalized-only',
+            rawRequestCapture: 'rejected',
+            principal: 'provider-authenticated',
+          },
+        },
+      });
+    expect(typeof receive).toBe('function');
+  });
+
   it('captures direct model operations without an author-declared dependency map', () => {
     const posts = pgTable('function_native_http_posts', {
       id: text('id').primaryKey(),
@@ -150,8 +194,92 @@ describe('function-native HTTP authoring', () => {
       {
         identifier: 'Post.create',
         operationId: 'applik8s://models/Post/operations/create',
+        runtimeOperationId: 'Post.create',
         command: { nodeId: 'command.models.post.create.v1' },
         handler: { nodeId: 'command-handler.post-models.post.create.v1' },
+      },
+    ]);
+  });
+
+  it('infers a managed read scope for direct model reads reached through helpers', () => {
+    const posts = pgTable('function_native_http_read_posts', {
+      id: text('id').primaryKey(),
+      body: text('body').notNull(),
+      revision: text('revision').notNull().default(''),
+    });
+    const application = app('typed-http-model-read', {
+      namespace: 'typed-http-model-read',
+    });
+    const Database = application.database.postgres('main', {
+      schema: { posts },
+    });
+    const Post = application.model(posts, { name: 'Post', database: Database });
+    const api = application.http('public-api');
+    api.post(
+      'list-posts',
+      '/posts/list',
+      {
+        input: type({}),
+        output: type({ count: 'number' }),
+        // Compiler-equivalent transitive helper metadata.
+        __generatedBindings: { 'Post.find': Post.find },
+      },
+      async () => ({ count: (await Post.find({ limit: 10 })).length }),
+    );
+
+    const route = applicationGraphFor(application.composition)?.nodes
+      .find((node) => node.kind === 'server')
+      ?.routes[0];
+    expect(route?.functionNative?.transaction).toMatchObject({
+      primaryModel: { nodeId: 'model.post' },
+      models: [{ nodeId: 'model.post' }],
+      modelBindings: [{
+        identifier: 'Post.find',
+        model: { nodeId: 'model.post' },
+        access: 'read',
+      }],
+    });
+  });
+
+  it('expands maintained-module callable metadata without exposing dependency ceremony', () => {
+    const records = pgTable('maintained_callable_records', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull().default(''),
+    });
+    const application = app('maintained-callable-dependencies');
+    const Database = application.database.postgres('main', {
+      schema: { records },
+    });
+    const Record = application.model(records, {
+      name: 'Record',
+      database: Database,
+    });
+    const listRecords = async () => Record.find({ limit: 10 });
+    bindApplicationCallableDependencies(
+      listRecords as (...args: never[]) => unknown,
+      [{ identifier: 'Record.find', value: Record.find }],
+    );
+    const api = application.http('public-api');
+    api.post(
+      'count-records',
+      '/records/count',
+      {
+        input: type({}),
+        output: type({ count: 'number' }),
+        // Compiler instrumentation records only the ordinary maintained call.
+        __generatedCalls: [listRecords],
+      },
+      async () => ({ count: (await listRecords()).length }),
+    );
+
+    const route = applicationGraphFor(application.composition)?.nodes
+      .find((node) => node.kind === 'server')
+      ?.routes[0];
+    expect(route?.functionNative?.transaction?.modelBindings).toEqual([
+      {
+        identifier: 'Record.find',
+        model: { nodeId: 'model.record' },
+        access: 'read',
       },
     ]);
   });

@@ -1,7 +1,7 @@
 # v0.7 TypeKro/Alchemy lifecycle evidence
 
 This receipt records the first focused live qualification of the v0.7
-`ApplicationDeploymentGraph` → TypeKro 0.33.5 → Alchemy beta.58 engine. It is
+`ApplicationDeploymentGraph` → TypeKro 0.33.6 → Alchemy beta.58 engine. It is
 evidence for the engine seam, not a substitute for the final full GuestBook,
 Chirp, identity, and provider acceptance run.
 
@@ -16,7 +16,7 @@ bun run test:v07:lifecycle:orbstack
 Environment:
 
 - Kubernetes context: `orbstack`
-- TypeKro: `0.33.5`
+- TypeKro: `0.33.6`
 - Alchemy: `2.0.0-beta.58`
 - Effect: `4.0.0-beta.84`
 - test file:

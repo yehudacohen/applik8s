@@ -209,6 +209,7 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
   const workspaceRoot = process.env.APPLIK8S_WORKSPACE_ROOT ?? sourceWorkspaceRoot;
   const packageAliases = new Map<string, string>([
     ['@applik8s/applik8s', resolve(workspaceRoot, 'packages/applik8s/src/index.ts')],
+    ['@applik8s/applik8s/internal/historical-model-commands', resolve(workspaceRoot, 'packages/applik8s/src/historical-model-commands.ts')],
     ['@applik8s/applik8s/processor-runtime', resolve(workspaceRoot, 'packages/applik8s/src/processor-runtime.ts')],
     ['@applik8s/applik8s/event-log-runtime', resolve(workspaceRoot, 'packages/applik8s/src/event-log-runtime.ts')],
     ['@applik8s/applik8s/postgres-runtime-contract', resolve(workspaceRoot, 'packages/applik8s/src/postgres-runtime-contract.ts')],
@@ -246,9 +247,14 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/billing', resolve(workspaceRoot, 'packages/billing/src/index.ts')],
     ['@applik8s/billing/schema', resolve(workspaceRoot, 'packages/billing/src/schema.ts')],
     ['@applik8s/billing-stripe', resolve(workspaceRoot, 'packages/billing-stripe/src/index.ts')],
+    ['@applik8s/notifications', resolve(workspaceRoot, 'packages/notifications/src/index.ts')],
+    ['@applik8s/notifications/schema', resolve(workspaceRoot, 'packages/notifications/src/schema.ts')],
+    ['@applik8s/notifications/runtime', resolve(workspaceRoot, 'packages/notifications/src/runtime.ts')],
+    ['@applik8s/notifications-smtp', resolve(workspaceRoot, 'packages/notifications-smtp/src/index.ts')],
     ['@applik8s/start-agentic', resolve(workspaceRoot, 'packages/start-agentic/src/index.ts')],
     ['@applik8s/start-agentic/identity-runtime', resolve(workspaceRoot, 'packages/start-agentic/src/identity-runtime.ts')],
     ['@applik8s/start-agentic/payments-runtime', resolve(workspaceRoot, 'packages/start-agentic/src/payments-runtime.ts')],
+    ['@applik8s/start-agentic/notifications-runtime', resolve(workspaceRoot, 'packages/start-agentic/src/notifications-runtime.ts')],
     ['@applik8s/evals', resolve(workspaceRoot, 'packages/evals/src/index.ts')],
     ['@applik8s/evals/schema', resolve(workspaceRoot, 'packages/evals/src/schema.ts')],
     ['@applik8s/usage', resolve(workspaceRoot, 'packages/usage/src/index.ts')],

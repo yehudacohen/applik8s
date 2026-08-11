@@ -32,11 +32,12 @@ export const FollowAnalytics = FollowChanges.project(
 );
 
 export const ReactionAnalytics = ReactionChanges.project(
-  type({ eventId: 'string', hour: 'string', postId: 'string', kind: 'string', delta: 'number' }),
+  type({ eventId: 'string', hour: 'string', changedAtEpoch: 'number', postId: 'string', kind: 'string', delta: 'number' }),
   function reactionAnalyticsHourly(event, output) {
     return output.append({
       eventId: output.sourceId,
       hour: event.changedAt.slice(0, 13),
+      changedAtEpoch: Date.parse(event.changedAt),
       postId: event.postId,
       kind: event.kind,
       delta: event.state === 'active' ? 1 : -1,

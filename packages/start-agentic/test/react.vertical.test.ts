@@ -1,8 +1,10 @@
 import {
+  AgenticAccountSettings,
   AgenticStartOnboarding,
   clearAgenticWorkspaceSelection,
   selectAgenticWorkspace,
 } from '@applik8s/start-agentic/react';
+import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,6 +13,17 @@ afterEach(() => {
 });
 
 describe('Agentic Start onboarding', () => {
+  it('owns provider-neutral account security without generated provider plumbing', () => {
+    const html = renderToStaticMarkup(createElement(AgenticAccountSettings));
+
+    expect(html).toContain('Provider-neutral identity');
+    expect(html).toContain('Account security');
+    expect(html).toContain('Multi-factor authentication');
+    expect(html).toContain('Verification and recovery');
+    expect(html).not.toContain('<main');
+    expect(html).not.toContain('Ory');
+  });
+
   it('makes the credential-free boundary and progressive next steps explicit', () => {
     const html = renderToStaticMarkup(AgenticStartOnboarding({
       application: 'research',

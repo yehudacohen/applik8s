@@ -997,7 +997,7 @@ export const installableProof = platform;
             kind: 'HelmRelease',
             metadata: expect.objectContaining({
               name: 'nack',
-              namespace: 'installable-proof',
+              namespace: 'typekro-nack-system',
             }),
           }),
         }),
@@ -2526,6 +2526,105 @@ export const capabilityOperator = sdk.operator({
         'may use serviceAccount auth only for a compiler-issued workflow gateway',
       );
     }
+  });
+
+  it('accepts an equivalent cloned installation namespace for a compiler-issued workflow gateway', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: imageSpecSchema,
+      status: imageStatusSchema,
+    });
+    // typecast: application compilation lowers installation expressions into
+    // portable JSON values even though the legacy operator type names this a
+    // NamespaceName. The two independently cloned values are semantically the
+    // same installation namespace.
+    // typecast: clone one JSON expression through the public string boundary to test structural equivalence.
+    const deploymentNamespace = { expression: 'schema.spec.name' } as unknown as string;
+    // typecast: clone a second expression through the string boundary so object identity cannot make validation pass.
+    const callerNamespace = { expression: 'schema.spec.name' } as unknown as string;
+    const descriptor: CapabilityDescriptor = {
+      ...sdk.external.http({
+        baseUrl: 'http://workflow-worker.__KUBERNETES_REF___schema___spec.name__.svc:8002',
+        auth: 'none',
+      }),
+      auth: { type: 'serviceAccount' },
+      workflowGateway: {
+        protocol: 'applik8s.workflow-gateway/v1alpha1',
+        worker: 'workflow-worker',
+        contracts: ['image.process.v1'],
+        caller: {
+          operator: 'dynamic-namespace-pipeline',
+          namespace: callerNamespace,
+          serviceAccount: 'dynamic-namespace-pipeline-controller',
+        },
+      },
+    };
+    const operator = sdk.operator({
+      name: 'dynamic-namespace-pipeline',
+      deployment: { namespace: deploymentNamespace },
+      resources: { ImageJob },
+      capabilities: { workflow: descriptor },
+      handlers: [],
+    });
+
+    const manifest = buildOperatorManifest({
+      operator: operator.definition,
+      handlerArtifactPath: 'wasm/handler.wasm',
+      handlerArtifactDigest: `sha256:${'a'.repeat(64)}`,
+      runtimeContractPath: 'runtime-contract.json',
+      runtimeContractDigest: `sha256:${'b'.repeat(64)}`,
+    });
+
+    expect(manifest.ok).toBe(true);
+  });
+
+  it('keeps runtime namespace markers string-shaped in immutable workflow gateway bundles', () => {
+    const ImageJob = sdk.crd<ImageSpec, ImageStatus>({
+      apiVersion: 'media.applik8s.dev/v1alpha1',
+      kind: 'ImageJob',
+      spec: imageSpecSchema,
+      status: imageStatusSchema,
+    });
+    const runtimeNamespace = '__APPLIK8S_RUNTIME_NAMESPACE__';
+    const operator = sdk.operator({
+      name: 'portable-namespace-pipeline',
+      deployment: { namespace: runtimeNamespace },
+      resources: { ImageJob },
+      capabilities: {
+        workflow: {
+          ...sdk.external.http({ baseUrl: 'http://workflow-worker:8002', auth: 'none' }),
+          auth: { type: 'serviceAccount' },
+          workflowGateway: {
+            protocol: 'applik8s.workflow-gateway/v1alpha1',
+            worker: 'workflow-worker',
+            contracts: ['image.process.v1'],
+            caller: {
+              operator: 'portable-namespace-pipeline',
+              namespace: runtimeNamespace,
+              serviceAccount: 'portable-namespace-pipeline-controller',
+            },
+          },
+        },
+      },
+      handlers: [],
+    });
+
+    const manifest = buildOperatorManifest({
+      operator: operator.definition,
+      handlerArtifactPath: 'wasm/handler.wasm',
+      handlerArtifactDigest: `sha256:${'a'.repeat(64)}`,
+      runtimeContractPath: 'runtime-contract.json',
+      runtimeContractDigest: `sha256:${'b'.repeat(64)}`,
+    });
+
+    expect(manifest.ok).toBe(true);
+    if (!manifest.ok) return;
+    expect(manifest.value.metadata.annotations?.['applik8s.dev/namespace']).toBe(runtimeNamespace);
+    expect(manifest.value.spec.capabilities?.workflow).toMatchObject({
+      endpoint: 'http://workflow-worker:8002',
+      workflowGateway: { caller: { namespace: runtimeNamespace } },
+    });
   });
 
   it('uses supported tools to emit bundle, ABI, manifest, and Kubernetes YAML artifacts', async () => {

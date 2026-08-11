@@ -2,6 +2,8 @@ import {
   AgenticWorkspaceAdmissionError,
   authenticateAgenticProfileRequest,
   authenticateAgenticStarterRequest,
+  handleAgenticProfileIdentityRequest,
+  handleAgenticStarterIdentityRequest,
   readyAgenticProfileIdentity,
 } from '@applik8s/start-agentic/identity-runtime';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -44,7 +46,6 @@ describe('Agentic Start identity runtime', () => {
     });
     expect(admission.principal.roles).toEqual([
       'authenticated',
-      'administrator',
       'workspace-administrator',
     ]);
     expect(admission.principal.trustedContextDigest).toMatch(/^[a-f0-9]{64}$/);
@@ -64,6 +65,29 @@ describe('Agentic Start identity runtime', () => {
       code: 'APPLIK8S_WORKSPACE_ACCESS_DENIED',
       workspaceId,
     } satisfies Partial<AgenticWorkspaceAdmissionError>);
+  });
+
+  it('authenticates receipt-backed command progress without re-admitting a consumed workspace selector', async () => {
+    vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'research');
+    const workspaceId = '9d389c54-4e6e-4e69-995f-c663946cef3e';
+    const lookup = vi.fn(async () => undefined);
+
+    const admission = await authenticateAgenticStarterRequest(
+      new Request(
+        'http://research.example.test/__applik8s/v1/commands/models.Workspace.delete.v1/progress',
+        {
+          method: 'POST',
+          headers: { cookie: `applik8s_workspace=${workspaceId}` },
+        },
+      ),
+      { lookup },
+    );
+
+    expect(lookup).not.toHaveBeenCalled();
+    expect(admission.trustedContext).toEqual({
+      issuer: 'applik8s://research/identity/deterministic',
+    });
+    expect(admission.principal.roles).toEqual(['authenticated']);
   });
 
   it('rejects malformed selectors before consulting the membership authority', async () => {
@@ -89,10 +113,57 @@ describe('Agentic Start identity runtime', () => {
     expect(admission.trustedContext).toEqual({
       issuer: 'applik8s://notes/identity/deterministic',
     });
-    expect(admission.principal.roles).toEqual([
-      'authenticated',
-      'administrator',
-    ]);
+    expect(admission.principal.roles).toEqual(['authenticated']);
+  });
+
+  it('serves one provider-neutral Starter account and flow protocol', async () => {
+    vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'notes');
+
+    const account = await handleAgenticStarterIdentityRequest(
+      new Request(
+        'http://notes.example.test/__applik8s/v1/identity/account',
+      ),
+    );
+    await expect(account.json()).resolves.toMatchObject({
+      protocol: 'applik8s.identityHttp/v1alpha1',
+      kind: 'account',
+      identity: {
+        subject: 'local-developer',
+      },
+      capabilities: {
+        verification: true,
+        recovery: true,
+        mfaEnrollment: false,
+        sessionRevocation: false,
+      },
+    });
+
+    const flow = await handleAgenticStarterIdentityRequest(
+      new Request(
+        'http://notes.example.test/__applik8s/v1/identity/flows/login',
+        { method: 'POST' },
+      ),
+    );
+    await expect(flow.json()).resolves.toMatchObject({
+      kind: 'flow',
+      flowKind: 'login',
+      allowedTransitions: ['password'],
+    });
+
+    const sessions = await handleAgenticStarterIdentityRequest(
+      new Request(
+        'http://notes.example.test/__applik8s/v1/identity/account/sessions',
+      ),
+    );
+    await expect(sessions.json()).resolves.toMatchObject({
+      protocol: 'applik8s.identityHttp/v1alpha1',
+      kind: 'session-device-list',
+      items: [{
+        id: 'starter-local-session',
+        current: true,
+        active: true,
+      }],
+    });
   });
 
   it('supports an explicit product-owned Starter workspace bootstrap', async () => {
@@ -119,7 +190,6 @@ describe('Agentic Start identity runtime', () => {
     });
     expect(admission.principal.roles).toEqual([
       'authenticated',
-      'administrator',
       'workspace-owner',
     ]);
   });
@@ -167,6 +237,46 @@ describe('Agentic Start identity runtime', () => {
         identity: { subject: 'human-1' },
       },
     });
+  });
+
+  it('translates Ory browser flows without returning provider-native payloads', async () => {
+    vi.stubEnv('APPLIK8S_INSTALLATION_SPEC', JSON.stringify({
+      name: 'research-dedicated',
+      profile: 'dedicated',
+      providers: {
+        identity: { issuer: 'https://identity.research.example.test' },
+      },
+    }));
+    vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'research');
+    vi.stubEnv('APPLIK8S_NAMESPACE', 'research-system');
+    vi.stubGlobal('fetch', async () => new Response(JSON.stringify({
+      id: 'flow-1',
+      request_url:
+        'https://identity.research.example.test/self-service/login?flow=flow-1',
+      ui: {
+        nodes: [{ attributes: { name: 'csrf_token', value: 'private' } }],
+      },
+    }), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'set-cookie': 'ory_flow=private; HttpOnly; SameSite=Lax',
+      },
+    }));
+
+    const response = await handleAgenticProfileIdentityRequest(
+      new Request(
+        'https://research.example.test/__applik8s/v1/identity/flows/login',
+        { method: 'POST' },
+      ),
+      'dedicated',
+    );
+    const body = await response.text();
+    expect(response.status).toBe(201);
+    expect(response.headers.get('set-cookie')).toContain('HttpOnly');
+    expect(body).toContain('"flowKind":"login"');
+    expect(body).not.toContain('csrf_token');
+    expect(body).not.toContain('private');
   });
 
   it('probes the chart service ports for the dedicated Ory boundary', async () => {

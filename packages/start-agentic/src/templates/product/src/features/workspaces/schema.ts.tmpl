@@ -1,0 +1,85 @@
+import {
+  authenticatedPrincipalId,
+  field,
+  model,
+  pgEnum,
+  relations,
+  uniqueIndex,
+} from '@applik8s/applik8s/drizzle';
+
+export const workspaceRole = pgEnum('workspace_role', [
+  'workspace-owner',
+  'workspace-administrator',
+  'workspace-member',
+]);
+
+export const Workspace = model('workspaces', {
+  id: field.uuid('id').defaultRandom().primaryKey(),
+  slug: field.text('slug').notNull(),
+  name: field.text('name').notNull(),
+  ownerPrincipalId: field.text('owner_principal_id')
+    .notNull()
+    .default(authenticatedPrincipalId),
+  createdAt: field.timestamp('created_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull().defaultNow(),
+}, table => [
+  uniqueIndex('workspaces_slug_uidx').on(table.slug),
+]);
+
+export const Membership = model('workspace_memberships', {
+  id: field.uuid('id').defaultRandom().primaryKey(),
+  workspaceId: field.uuid('workspace_id').notNull()
+    .references(() => Workspace.id, { onDelete: 'cascade' }),
+  identityId: field.text('identity_id').notNull(),
+  role: workspaceRole('role').notNull(),
+  createdAt: field.timestamp('created_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull().defaultNow(),
+}, table => [
+  uniqueIndex('workspace_memberships_identity_uidx')
+    .on(table.workspaceId, table.identityId),
+]);
+
+export const Invitation = model('workspace_invitations', {
+  id: field.uuid('id').defaultRandom().primaryKey(),
+  workspaceId: field.uuid('workspace_id').notNull()
+    .references(() => Workspace.id, { onDelete: 'cascade' }),
+  email: field.text('email').notNull(),
+  role: workspaceRole('role').notNull(),
+  state: field.text('state').notNull().default('pending'),
+  acceptedByPrincipalId: field.text('accepted_by_principal_id'),
+  acceptedAt: field.timestamp('accepted_at', {
+    withTimezone: true,
+    mode: 'string',
+  }),
+  expiresAt: field.timestamp('expires_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull(),
+  createdAt: field.timestamp('created_at', {
+    withTimezone: true,
+    mode: 'string',
+  }).notNull().defaultNow(),
+});
+
+export const WorkspaceRelations = relations(Workspace, ({ many }) => ({
+  memberships: many(Membership),
+  invitations: many(Invitation),
+}));
+
+export const MembershipRelations = relations(Membership, ({ one }) => ({
+  workspace: one(Workspace, {
+    fields: [Membership.workspaceId],
+    references: [Workspace.id],
+  }),
+}));
+
+export const InvitationRelations = relations(Invitation, ({ one }) => ({
+  workspace: one(Workspace, {
+    fields: [Invitation.workspaceId],
+    references: [Workspace.id],
+  }),
+}));

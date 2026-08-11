@@ -1,0 +1,57 @@
+{
+  "apiVersion": "applik8s.acceptanceManifest/v1alpha1",
+  "release": "v0.7",
+  "capabilities": [
+    {
+      "id": "frozen-stream-batches",
+      "scorecardItem": "frozen-stream-batches",
+      "rfpCapability": "Frozen whole-acknowledgement `Stream.onBatch(...)`",
+      "acceptanceApplication": "Chirp",
+      "evidenceScripts": ["check:v06:chirp-build", "test:v06:full-live"],
+      "sourceAssertions": [
+        {
+          "path": "examples/chirp-start/src/streams/engagement.ts",
+          "includes": "ReactionChanges.onBatch"
+        },
+        {
+          "path": "packages/e2e/test/chirp-start-live.e2e.test.ts",
+          "includes": "frozen-microbatch-durable-receipt"
+        }
+      ]
+    },
+    {
+      "id": "typed-durable-signals",
+      "scorecardItem": "typed-durable-signals",
+      "rfpCapability": "Typed signal event plus callable one-shot decision",
+      "acceptanceApplication": "Chirp",
+      "evidenceScripts": ["test:v06:chirp-browser", "test:v06:full-live"],
+      "sourceAssertions": [
+        {
+          "path": "examples/chirp-start/src/automation/workflow.ts",
+          "includes": "emitSignal"
+        },
+        {
+          "path": "packages/e2e/browser/chirp-golden-path.e2e.test.ts",
+          "includes": "receives a risky automation signal over SSE"
+        }
+      ]
+    },
+    {
+      "id": "resource-workflow-tracking",
+      "scorecardItem": "resource-workflow-tracking",
+      "rfpCapability": "Canonical resource/workflow tracking",
+      "acceptanceApplication": "Chirp",
+      "evidenceScripts": ["check:v06:chirp-build", "test:v06:full-live"],
+      "sourceAssertions": [
+        {
+          "path": "examples/chirp-start/src/domain/moderation.ts",
+          "includes": "policy.track('apply-policy'"
+        },
+        {
+          "path": "packages/e2e/test/chirp-start-live.e2e.test.ts",
+          "includes": "resource-workflow-tracking-generation-convergence"
+        }
+      ]
+    }
+  ]
+}

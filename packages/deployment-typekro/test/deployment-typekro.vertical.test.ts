@@ -1281,7 +1281,7 @@ describe("TypeKro deployment adapter", () => {
       });
 
       expect(adapted.adapter).toEqual({
-        typekro: "0.33.5",
+        typekro: "0.33.6",
         semanticPlanVersion: 1,
         artifactPlanVersion: 1,
       });
@@ -1617,10 +1617,31 @@ describe("TypeKro deployment adapter", () => {
           && declaration.props.resource.metadata?.name === "nack",
       ),
     ).toBe(true);
+    const nack = declarations?.find(
+      (declaration) =>
+        declaration.props.resource.kind === "HelmRelease"
+        && declaration.props.resource.metadata?.name === "nack",
+    );
+    const server = declarations?.find(
+      (declaration) =>
+        declaration.props.resource.kind === "HelmRelease"
+        && declaration.props.resource.metadata?.name === "adapter-events",
+    );
+    expect(nack?.props.retain).toBe(true);
+    expect(server?.props.retain).not.toBe(true);
+    const retained = declarations?.filter(
+      (declaration) => declaration.props.retain === true,
+    ) ?? [];
     expect(
-      declarations?.every(
-        (declaration) => declaration.props.retain !== true,
+      retained.every(
+        (declaration) => declaration.id.toLowerCase().includes("nack"),
       ),
+      JSON.stringify(retained.map((declaration) => ({
+        id: declaration.id,
+        kind: declaration.props.resource.kind,
+        name: declaration.props.resource.metadata?.name,
+        namespace: declaration.props.resource.metadata?.namespace,
+      }))),
     ).toBe(true);
   });
 

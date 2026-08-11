@@ -10,6 +10,19 @@ This backlog prioritizes correctness, excellence, and the public developer exper
 
 The order below is intentional. Later packaging, CLI, and extension work should not outrun reconciliation correctness, observability, and ABI discipline.
 
+## v0.7 Function-native and Agentic Start release
+
+Status: active release qualification
+
+Completed:
+
+- Function-native one-shot `Model.query(contract, implementation)` across
+  relational, analytical, and Kubernetes models, with graph-visible
+  distinction from persistent `Model.view(...)` declarations.
+
+Remaining release work is authoritative in `goal.md`, the v0.7 charter, and
+the machine-readable v0.7 scorecard.
+
 ## v0.4 Durable Application Behavior Release
 
 Status: release candidate

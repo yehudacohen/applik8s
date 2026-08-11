@@ -1,0 +1,126 @@
+import type { ApplicationModelViewContext } from '@applik8s/applik8s';
+import { applicationAIConversationPrincipalScope } from '@applik8s/conversations/runtime';
+import { type } from 'arktype';
+import { and, desc, eq } from 'drizzle-orm';
+import { Artifacts } from '../../modules';
+import { database } from '../../providers';
+import { Authenticated } from '../workspaces/model';
+import { Note } from '../notes/schema';
+
+export const WorkspaceLibrary = Note.view({
+  input: type({}),
+  output: type({
+    documents: type({
+      id: 'string',
+      body: 'string',
+      ownerPrincipalId: 'string',
+      createdByPrincipalId: 'string',
+      createdAt: 'string',
+    }).array(),
+    artifacts: type({
+      id: 'string',
+      kind: 'string',
+      mediaType: 'string',
+      state: 'string',
+      sha256: 'string',
+      size: 'number',
+      'conversationId?': 'string',
+      createdAt: 'string',
+    }).array(),
+  }),
+  database,
+  reads: [Artifacts.Artifact],
+  authorize: ({ principal }: { readonly principal: { readonly id: string } }) => principal.id.length > 0,
+  budgets: { timeoutMs: 2_000, maxRows: 200, maxResultBytes: 512_000 },
+}, async function loadWorkspaceLibrary(_input, context: ApplicationModelViewContext) {
+  const client = context.database(database);
+  const principalScope = applicationAIConversationPrincipalScope(context.principal, context.trustedContext);
+  const [documents, artifacts] = await Promise.all([
+    client.select({
+      id: Note.id,
+      body: Note.body,
+      ownerPrincipalId: Note.ownerPrincipalId,
+      createdByPrincipalId: Note.createdByPrincipalId,
+      createdAt: Note.createdAt,
+    }).from(Note).where(eq(Note.ownerPrincipalId, context.principal.id)).orderBy(desc(Note.createdAt)).limit(100),
+    client.select({
+      id: Artifacts.Artifact.id,
+      kind: Artifacts.Artifact.kind,
+      mediaType: Artifacts.Artifact.mediaType,
+      state: Artifacts.Artifact.state,
+      sha256: Artifacts.Artifact.sha256,
+      size: Artifacts.Artifact.size,
+      conversationId: Artifacts.Artifact.conversationId,
+      createdAt: Artifacts.Artifact.createdAt,
+    }).from(Artifacts.Artifact).where(eq(Artifacts.Artifact.principalScope, principalScope)).orderBy(desc(Artifacts.Artifact.createdAt)).limit(100),
+  ]);
+  return {
+    documents,
+    artifacts: artifacts.map(item => ({ ...item, ...(item.conversationId ? { conversationId: item.conversationId } : {}) })),
+  };
+});
+
+Authenticated.can(WorkspaceLibrary);
+
+export const ArtifactDetail = Artifacts.Artifact.view({
+  input: type({ id: 'string' }),
+  output: type({
+    id: 'string',
+    kind: 'string',
+    mediaType: 'string',
+    state: 'string',
+    sha256: 'string',
+    size: 'number',
+    'conversationId?': 'string',
+    'protocolRunId?': 'string',
+    'agentRunId?': 'string',
+    'workflowRunId?': 'string',
+    'invocationId?': 'string',
+    'retentionUntil?': 'string',
+    createdAt: 'string',
+    updatedAt: 'string',
+  }).or('null'),
+  database,
+  authorize: ({ principal }: { readonly principal: { readonly id: string } }) => principal.id.length > 0,
+  budgets: { timeoutMs: 2_000, maxRows: 1, maxResultBytes: 64_000 },
+}, async function loadArtifact(input: { readonly id: string }, context: ApplicationModelViewContext) {
+  const scope = applicationAIConversationPrincipalScope(context.principal, context.trustedContext);
+  const [artifact] = await context.database(database).select({
+    id: Artifacts.Artifact.id,
+    kind: Artifacts.Artifact.kind,
+    mediaType: Artifacts.Artifact.mediaType,
+    state: Artifacts.Artifact.state,
+    sha256: Artifacts.Artifact.sha256,
+    size: Artifacts.Artifact.size,
+    conversationId: Artifacts.Artifact.conversationId,
+    protocolRunId: Artifacts.Artifact.protocolRunId,
+    agentRunId: Artifacts.Artifact.agentRunId,
+    workflowRunId: Artifacts.Artifact.workflowRunId,
+    invocationId: Artifacts.Artifact.invocationId,
+    retentionUntil: Artifacts.Artifact.retentionUntil,
+    createdAt: Artifacts.Artifact.createdAt,
+    updatedAt: Artifacts.Artifact.updatedAt,
+  }).from(Artifacts.Artifact).where(and(
+    eq(Artifacts.Artifact.id, input.id),
+    eq(Artifacts.Artifact.principalScope, scope),
+  )).limit(1);
+  if (!artifact) return null;
+  return {
+    id: artifact.id,
+    kind: artifact.kind,
+    mediaType: artifact.mediaType,
+    state: artifact.state,
+    sha256: artifact.sha256,
+    size: artifact.size,
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+    ...(artifact.conversationId ? { conversationId: artifact.conversationId } : {}),
+    ...(artifact.protocolRunId ? { protocolRunId: artifact.protocolRunId } : {}),
+    ...(artifact.agentRunId ? { agentRunId: artifact.agentRunId } : {}),
+    ...(artifact.workflowRunId ? { workflowRunId: artifact.workflowRunId } : {}),
+    ...(artifact.invocationId ? { invocationId: artifact.invocationId } : {}),
+    ...(artifact.retentionUntil ? { retentionUntil: artifact.retentionUntil } : {}),
+  };
+});
+
+Authenticated.can(ArtifactDetail);

@@ -35,6 +35,11 @@
       "types": "./dist/payments-runtime.d.ts",
       "import": "./dist/payments-runtime.js",
       "default": "./dist/payments-runtime.js"
+    },
+    "./notifications-runtime": {
+      "types": "./dist/notifications-runtime.d.ts",
+      "import": "./dist/notifications-runtime.js",
+      "default": "./dist/notifications-runtime.js"
     }
   },
   "dependencies": {
@@ -44,11 +49,14 @@
     "@applik8s/artifacts": "0.7.0",
     "@applik8s/billing": "0.7.0",
     "@applik8s/billing-stripe": "0.7.0",
+    "@applik8s/notifications": "0.7.0",
+    "@applik8s/notifications-smtp": "0.7.0",
     "@applik8s/conversations": "0.7.0",
     "@applik8s/core": "0.7.0",
     "@applik8s/evals": "0.7.0",
     "@applik8s/identity": "0.7.0",
     "@applik8s/identity-ory": "0.7.0",
+    "@applik8s/react": "0.7.0",
     "@applik8s/operations-ui": "0.7.0",
     "@applik8s/usage": "0.7.0",
     "postgres": "^3.4.7"

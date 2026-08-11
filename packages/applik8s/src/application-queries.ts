@@ -333,10 +333,11 @@ export interface ApplicationQueryOptions<
     readonly maxResultBytes?: number;
     readonly maxRows?: number;
   };
-  /** Compiler-owned metadata for direct model-native named views. */
+  /** Compiler-owned metadata for direct model-native named queries and views. */
   readonly modelOperation?: {
     readonly model: object;
     readonly name: string;
+    readonly kind: 'query' | 'view';
   };
   /** Compiler-owned replay bridge; never serialized into the application graph. */
   readonly __authorityState?: ApplicationQueryAuthorityState;
@@ -374,6 +375,14 @@ export type ApplicationModelViewContract<
   TSource extends ApplicationQuerySourceBinding | undefined = undefined,
 > = Omit<ApplicationModelViewOptions<TInput, TOutput, TPrincipal, TSource>, 'run'>;
 
+/** Declarative half of the function-native one-shot Model.query API. */
+export type ApplicationModelQueryContract<
+  TInput,
+  TOutput,
+  TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
+  TSource extends ApplicationQuerySourceBinding | undefined = undefined,
+> = ApplicationModelViewContract<TInput, TOutput, TPrincipal, TSource>;
+
 /**
  * Schema-first view contract used by the function-native overload.
  *
@@ -393,6 +402,13 @@ export type ApplicationModelViewSchemaContract<
   readonly output: TOutputSchema;
 };
 
+export type ApplicationModelQuerySchemaContract<
+  TInputSchema extends Type,
+  TOutputSchema extends Type,
+  TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
+  TSource extends ApplicationQuerySourceBinding | undefined = undefined,
+> = ApplicationModelViewSchemaContract<TInputSchema, TOutputSchema, TPrincipal, TSource>;
+
 /** Executable half of the function-native Model.view(contract, implementation) API. */
 export type ApplicationModelViewImplementation<
   TInput,
@@ -403,6 +419,13 @@ export type ApplicationModelViewImplementation<
   input: TInput,
   context: ApplicationModelViewContext<TPrincipal, TSource>,
 ) => TOutput | Promise<TOutput>;
+
+export type ApplicationModelQueryImplementation<
+  TInput,
+  TOutput,
+  TPrincipal extends ApplicationQueryPrincipal = ApplicationQueryPrincipal,
+  TSource extends ApplicationQuerySourceBinding | undefined = undefined,
+> = ApplicationModelViewImplementation<TInput, TOutput, TPrincipal, TSource>;
 
 /** Execution-scoped facts available to a function-native view implementation. */
 export type ApplicationModelViewContext<
@@ -517,7 +540,7 @@ export function registerApplicationQuery<
   };
   if (budgets.timeoutMs < 1 || budgets.maxResultBytes < 1 || budgets.maxRows < 1)
     throw new Error(`Application query ${id} budgets must be positive and bounded.`);
-  const registrar = options.modelOperation ? 'view' : 'query';
+  const registrar = options.modelOperation?.kind ?? 'query';
   // typecast: callback serialization erases only generic parameter names; runtime schemas remain authoritative for their values.
   const authorization =
     options.__generatedSources?.authorize ??
@@ -563,7 +586,7 @@ export function registerApplicationQuery<
           modelOperation: {
             model: queryReadContract(state, options.modelOperation.model, id).model,
             name: options.modelOperation.name,
-            kind: 'view',
+            kind: options.modelOperation.kind,
           },
         }
       : {}),
@@ -652,17 +675,18 @@ export function registerApplicationModelView<
   model: object,
   name: string,
   options: ApplicationModelViewOptions<TInput, TOutput, TPrincipal, TSource>,
+  operationKind: 'query' | 'view' = 'view',
 ): ApplicationQueryOperation<TInput, TOutput> {
   const facet = getApplicationModelFacet<object, unknown, unknown, unknown>(model);
-  if (!facet) throw new Error('Application model views require a promoted application model.');
+  if (!facet) throw new Error('Application model queries and views require a promoted application model.');
   if (!/^[a-z][A-Za-z0-9]*$/.test(name))
-    throw new Error(`Application model view ${JSON.stringify(name)} must be a lowerCamelCase identifier.`);
+    throw new Error(`Application model ${operationKind} ${JSON.stringify(name)} must be a lowerCamelCase identifier.`);
   const id = `${facet.name}.${name}`;
   const authorityState = authorityStateFor(options);
   const binding = registerApplicationQuery(state, id, {
     ...options,
     reads: [model, ...(options.reads ?? [])],
-    modelOperation: { model, name },
+    modelOperation: { model, name, kind: operationKind },
     __authorityState: authorityState,
   });
   const operation = createApplicationQueryOperation<TInput, TOutput>(
@@ -689,7 +713,7 @@ export function registerApplicationModelView<
     const nodeId = `query.${id}`;
     const query = state.graphNodes.find((node) => node.id === nodeId && node.kind === 'query');
     if (query?.kind !== 'query')
-      throw new Error(`Application model view ${id} cannot classify a missing query graph node.`);
+      throw new Error(`Application model ${operationKind} ${id} cannot classify a missing query graph node.`);
     addApplicationGraphNode(state, { ...query, authority });
   });
   return operation;

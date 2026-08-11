@@ -65,3 +65,153 @@ export function isDeclarationIdentifier(source: string, index: number, name: str
   const prefix = source.slice(Math.max(0, index - 32), index);
   return /(?:const|let|var|function)\s+$/.test(prefix) || /catch\s*\(\s*$/.test(prefix) || /for\s*\(\s*(?:const|let|var)\s+$/.test(prefix) || prefix.endsWith(`${name}.`);
 }
+
+export function splitTopLevelArguments(source: string): readonly string[] {
+  const args: string[] = [];
+  let start = 0;
+  let index = 0;
+  let parens = 0;
+  let braces = 0;
+  let brackets = 0;
+  while (index < source.length) {
+    const character = source[index];
+    if (character === '\'' || character === '"') {
+      index = quotedSourceEnd(source, index, character);
+      continue;
+    }
+    if (character === '`') {
+      index = templateSourceEnd(source, index);
+      continue;
+    }
+    if (character === '/' && source[index + 1] === '/') {
+      index = lineCommentEnd(source, index);
+      continue;
+    }
+    if (character === '/' && source[index + 1] === '*') {
+      index = blockCommentEnd(source, index);
+      continue;
+    }
+    if (character === '/' && isRegexLiteralStart(source, index)) {
+      index = regexLiteralEnd(source, index);
+      continue;
+    }
+    if (character === '(') parens += 1;
+    else if (character === ')') parens -= 1;
+    else if (character === '{') braces += 1;
+    else if (character === '}') braces -= 1;
+    else if (character === '[') brackets += 1;
+    else if (character === ']') brackets -= 1;
+    else if (character === ',' && parens === 0 && braces === 0 && brackets === 0) {
+      args.push(source.slice(start, index));
+      start = index + 1;
+    }
+    index += 1;
+  }
+  args.push(source.slice(start));
+  return args;
+}
+
+export function matchingDelimiter(
+  source: string,
+  openIndex: number,
+  open: string,
+  close: string,
+): number | undefined {
+  let depth = 0;
+  let index = openIndex;
+  while (index < source.length) {
+    const character = source[index];
+    if (character === '\'' || character === '"') {
+      index = quotedSourceEnd(source, index, character);
+      continue;
+    }
+    if (character === '`') {
+      index = templateSourceEnd(source, index);
+      continue;
+    }
+    if (character === '/' && source[index + 1] === '/') {
+      index = lineCommentEnd(source, index);
+      continue;
+    }
+    if (character === '/' && source[index + 1] === '*') {
+      index = blockCommentEnd(source, index);
+      continue;
+    }
+    if (character === '/' && isRegexLiteralStart(source, index)) {
+      index = regexLiteralEnd(source, index);
+      continue;
+    }
+    if (character === open) depth += 1;
+    else if (character === close) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+    index += 1;
+  }
+  return undefined;
+}
+
+export function quotedSourceEnd(source: string, start: number, quote: string): number {
+  let index = start + 1;
+  while (index < source.length) {
+    if (source[index] === '\\') {
+      index += 2;
+      continue;
+    }
+    if (source[index] === quote) return index + 1;
+    index += 1;
+  }
+  return source.length;
+}
+
+export function templateSourceEnd(source: string, start: number): number {
+  let index = start + 1;
+  while (index < source.length) {
+    if (source[index] === '\\') {
+      index += 2;
+      continue;
+    }
+    if (source[index] === '$' && source[index + 1] === '{') {
+      index = templateExpressionSourceEnd(source, index + 2);
+      continue;
+    }
+    if (source[index] === '`') return index + 1;
+    index += 1;
+  }
+  return source.length;
+}
+
+function templateExpressionSourceEnd(source: string, start: number): number {
+  let depth = 1;
+  let index = start;
+  while (index < source.length) {
+    const character = source[index];
+    if (character === '\'' || character === '"') {
+      index = quotedSourceEnd(source, index, character);
+      continue;
+    }
+    if (character === '`') {
+      index = templateSourceEnd(source, index);
+      continue;
+    }
+    if (character === '/' && source[index + 1] === '/') {
+      index = lineCommentEnd(source, index);
+      continue;
+    }
+    if (character === '/' && source[index + 1] === '*') {
+      index = blockCommentEnd(source, index);
+      continue;
+    }
+    if (character === '/' && isRegexLiteralStart(source, index)) {
+      index = regexLiteralEnd(source, index);
+      continue;
+    }
+    if (character === '{') depth += 1;
+    else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
+    index += 1;
+  }
+  return source.length;
+}

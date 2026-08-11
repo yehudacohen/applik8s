@@ -1,5 +1,6 @@
 import { Applik8sProvider } from '@applik8s/react';
 import { ApplicationIdentityProvider } from '@applik8s/react/identity';
+import { AgenticAccountSession } from '@applik8s/start-agentic/react';
 import {
   HeadContent,
   Link,
@@ -8,7 +9,6 @@ import {
   createRootRoute,
 } from '@tanstack/react-router';
 import type { ReactNode } from 'react';
-import { AccountSession } from '../features/account/session';
 import { getApplicationIdentitySession } from '../features/account/session-loader';
 import '../styles.css';
 
@@ -50,7 +50,7 @@ function Document({ children }: { readonly children: ReactNode }) {
             <Link to="/workspaces">Workspaces</Link>
             <Link to="/operations">Operations</Link>
           </nav>
-          <AccountSession />
+          <AgenticAccountSession />
         </header>
         {children}
         <Scripts />

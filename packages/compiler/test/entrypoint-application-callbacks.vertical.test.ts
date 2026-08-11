@@ -1,8 +1,9 @@
-import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   applicationCallbackModuleIsInstrumentable,
+  applicationCallbackModuleOwnsDependencies,
   applicationPackageOwnsModule,
   instrumentApplicationCallbackRegistrations,
 } from '../src/pipeline/entrypoint-discovery.js';
@@ -32,6 +33,37 @@ api.post(
     expect(instrumented).toContain('registrar: "app.http.post"');
     expect(instrumented).toContain('property: "authorize"');
     expect(instrumented).toContain('property: "handler"');
+  });
+
+  it('captures maintained provider calls from app.http webhook authentication', () => {
+    const source = `
+const api = application.http("billing");
+api.webhook(
+  "receive-payment",
+  "/webhooks/payments",
+  {
+    event: PaymentEvent,
+    output: PaymentResult,
+    authenticate: request => Billing.verifyWebhook(request),
+  },
+  async ({ input }) => Billing.PaymentEvent.create(input),
+);
+`;
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/billing.ts',
+      true,
+      'src/billing.ts',
+    );
+
+    expect(instrumented).toContain(
+      '__generatedCalls: [Billing.PaymentEvent.create, Billing.verifyWebhook]',
+    );
+    expect(instrumented).toContain(
+      '"Billing.verifyWebhook": Billing.verifyWebhook',
+    );
+    expect(instrumented).toContain('registrar: "app.http.webhook"');
+    expect(instrumented).toContain('property: "authenticate"');
   });
 
   it('decorates an ordinary typed domain function before same-module authority and tool registration', () => {
@@ -167,6 +199,69 @@ async function publish(
     expect(applicationCallbackModuleIsInstrumentable(
       '/workspace/src/application.ts',
     )).toBe(true);
+  });
+
+  it('retains recursive helper metadata for maintained workspace and packed packages only', () => {
+    const rootEntrypoint = join(process.cwd(), 'application.ts');
+
+    expect(applicationCallbackModuleOwnsDependencies(
+      rootEntrypoint,
+      join(process.cwd(), 'packages', 'notifications', 'src', 'index.ts'),
+    )).toBe(true);
+    expect(applicationCallbackModuleOwnsDependencies(
+      rootEntrypoint,
+      '/tmp/consumer/node_modules/@applik8s/notifications/dist/index.js',
+    )).toBe(true);
+    expect(applicationCallbackModuleOwnsDependencies(
+      rootEntrypoint,
+      '/tmp/consumer/node_modules/unrelated-framework/dist/index.js',
+    )).toBe(false);
+    expect(applicationCallbackModuleOwnsDependencies(
+      rootEntrypoint,
+      join(process.cwd(), 'src', 'application-helper.ts'),
+    )).toBe(true);
+  });
+
+  it('can defer maintained-package dependency reads until after module initialization', () => {
+    const source = `
+export function validate() {
+  return transports.has('command');
+}
+const transports = new Set(['command']);
+`;
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/packages/core/src/authority.ts',
+      true,
+      'src/authority.ts',
+      true,
+    );
+
+    expect(instrumented).toContain('get: () => [{ identifier: "transports.has"');
+    expect(instrumented.indexOf('get: () =>')).toBeLessThan(
+      instrumented.indexOf('const transports'),
+    );
+  });
+
+  it('does not mistake mutable maintained-package runtime state for an application dependency', () => {
+    const source = `
+let cachedProvider: { deliver(input: unknown): Promise<unknown> } | undefined;
+export async function deliver(input: unknown) {
+  cachedProvider ??= createProvider();
+  return cachedProvider.deliver(input);
+}
+const createProvider = () => Provider.create();
+`;
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/packages/notifications/src/runtime.ts',
+      true,
+      'src/runtime.ts',
+      true,
+    );
+
+    expect(instrumented).not.toContain('identifier: "cachedProvider.deliver"');
+    expect(instrumented).toContain('identifier: "Provider.create"');
   });
 
   it('preserves stream.process handler source without capturing the transpiler Symbol', () => {
@@ -543,6 +638,36 @@ workflow('media.verify.v1', Contract, async input => {
     expect(instrumented).not.toContain('value: expected.toLowerCase');
   });
 
+  it('preserves typed delete operations while retaining opaque handle ownership', () => {
+    const source = `
+Post.on.create({}, async created => {
+  await Note.delete({ identity: created.value.noteId });
+  await Attachments.delete(created.value.objectKey);
+});
+`;
+
+    const instrumented = instrumentApplicationCallbackRegistrations(
+      source,
+      '/workspace/src/lifecycle.ts',
+    );
+
+    expect(instrumented).toContain(
+      '__generatedCalls: [Note, Note.delete, Attachments, Attachments.delete]',
+    );
+    expect(instrumented).toContain(
+      '"Note.delete": Note.delete',
+    );
+    expect(instrumented).toContain(
+      '"Attachments": Attachments',
+    );
+    expect(instrumented).toContain(
+      'identifier: "Note.delete", value: Note.delete, awaited: true',
+    );
+    expect(instrumented).toContain(
+      'identifier: "Attachments.delete", value: Attachments.delete, awaited: true',
+    );
+  });
+
   it('carries imported callback dependencies through module-owned metadata', async () => {
     const directory = new URL(
       './fixtures/recursive-application-callback/',
@@ -702,6 +827,28 @@ Post.view(
     expect(instrumented).toContain('property: "run"');
     expect(instrumented).toContain('name: "timeline"');
     expect(instrumented).toContain('source: "async function timeline(input)');
+  });
+
+  it('instruments the function-native one-shot Model.query contract and implementation separately', () => {
+    const source = `
+Post.query(
+  {
+    input: TimelineInput,
+    output: TimelineOutput,
+    authorize: canReadTimeline,
+  },
+  async function timelineSnapshot(input) {
+    return Post.where(post => post.authorId.in(input.authorIds)).all();
+  },
+);
+`;
+
+    const instrumented = instrumentApplicationCallbackRegistrations(source, '/workspace/src/queries.ts');
+
+    expect(instrumented).toContain('registrar: "query"');
+    expect(instrumented).toContain('property: "authorize"');
+    expect(instrumented).toContain('property: "run"');
+    expect(instrumented).toContain('name: "timelineSnapshot"');
   });
 
   it('instruments function-native Kubernetes selection and projection callbacks separately', () => {

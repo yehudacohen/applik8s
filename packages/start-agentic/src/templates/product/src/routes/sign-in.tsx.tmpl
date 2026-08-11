@@ -1,0 +1,27 @@
+import { AgenticAccountSession } from '@applik8s/start-agentic/react';
+import { useApplicationIdentitySession } from '@applik8s/react/identity';
+import { Link, createFileRoute } from '@tanstack/react-router';
+import { useEffect } from 'react';
+import { Card } from '../components/ui';
+
+export const Route = createFileRoute('/sign-in')({
+  validateSearch: (search: Record<string, unknown>) => ({
+    returnTo: safeReturnTo(search.returnTo),
+  }),
+  component: () => <Admission mode="login" />,
+});
+
+function Admission({ mode }: { readonly mode: 'login' | 'register' }) {
+  const session = useApplicationIdentitySession();
+  const { returnTo } = Route.useSearch();
+  useEffect(() => {
+    if (session.data?.authenticated) globalThis.location.replace(returnTo);
+  }, [returnTo, session.data?.authenticated]);
+  return <div className="mx-auto max-w-md py-12"><Card><p className="eyebrow">Welcome back</p><h1 className="mt-2 text-3xl font-semibold">Enter your workspace</h1><p className="mt-2 mb-6 text-sm leading-6 text-stone-600">Your identity is admitted once and reused by typed product operations.</p><AgenticAccountSession defaultMode={mode} /><p className="mt-5 text-sm"><Link to="/recover" className="font-semibold text-emerald-800">Forgot your password?</Link></p></Card></div>;
+}
+
+function safeReturnTo(value: unknown): string {
+  return typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
+    ? value
+    : '/app';
+}

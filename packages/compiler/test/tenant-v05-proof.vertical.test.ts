@@ -47,9 +47,24 @@ it('compiles the Tenant Platform v0.5 durable onboarding and decommissioning pro
       source: expect.objectContaining({ kind: 'DNSEndpoint' }),
       mapper: { mode: 'targetNameFromSourceField', source: { kind: 'annotation', key: 'dns.applik8s.dev/source-name' }, namespace: 'source' },
     }));
-    const releases = result.value.artifacts.resources.filter((resource) => resource.kind === 'HelmRelease' && resource.metadata?.name === 'tenant-v05-workflows');
-    expect(releases).toHaveLength(1);
-    expect(releases[0]?.spec).toMatchObject({ values: { postgres: { enabled: false }, rabbitmq: { enabled: false } } });
+    expect(applicationGraph?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'provider',
+        interface: 'WorkflowEngine',
+        implementation: 'hatchet',
+        config: expect.objectContaining({
+          name: 'tenant-v05-workflows',
+          namespace: 'tenant-v05',
+          provision: true,
+        }),
+      }),
+    ]));
+    // Provider infrastructure is now one deployment-graph side effect lowered
+    // through TypeKro's Hatchet integration. The legacy compiler artifact must
+    // retain only application workloads and never emit a competing Helm owner.
+    expect(result.value.artifacts.resources).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'HelmRelease', metadata: expect.objectContaining({ name: 'tenant-v05-workflows' }) }),
+    ]));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

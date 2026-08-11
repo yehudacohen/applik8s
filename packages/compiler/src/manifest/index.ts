@@ -9,6 +9,8 @@ import { validateOperatorManifest } from './validation.js';
 
 export { validateOperatorManifest } from './validation.js';
 
+const APPLICATION_RUNTIME_NAMESPACE_MARKER = '__APPLIK8S_RUNTIME_NAMESPACE__';
+
 export interface ManifestBuildRequest {
   readonly operator: OperatorDefinition;
   readonly handlerArtifactPath: string;
@@ -103,7 +105,10 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
     ...secondaryWatchPermissions(request.operator.secondaryWatches ?? []),
     ...(request.operator.permissions ?? []),
   ]));
-  const capabilities = normalizedCapabilities(request.operator.capabilities ?? {});
+  const capabilities = normalizedCapabilities(
+    request.operator.capabilities ?? {},
+    request.operator.deployment?.namespace,
+  );
   const hasKubernetesConnections = Object.values(capabilities).some((descriptor) => descriptor.kind === 'kubernetes');
   const schemaDigests = payloadSchemaDigests(contract.payloadSchemas);
   const ownedCrds = ownedResources.map(ownedCrdManifestEntry);
@@ -156,7 +161,9 @@ export function buildOperatorManifest(request: ManifestBuildRequest): Result<Ope
         ? {
             annotations: {
               ...(request.operator.deployment.annotations ?? {}),
-              ...(request.operator.deployment.namespace ? { 'applik8s.dev/namespace': request.operator.deployment.namespace } : {}),
+              ...(request.operator.deployment.namespace
+                ? { 'applik8s.dev/namespace': manifestNamespace(request.operator.deployment.namespace) }
+                : {}),
             },
           }
         : {}),
@@ -341,16 +348,62 @@ function securityContract(operator: OperatorDefinition, permissions: readonly Pe
   };
 }
 
-function normalizedCapabilities(capabilities: Readonly<Record<string, CapabilityDescriptor>>): Readonly<Record<string, CapabilityDescriptor>> {
+function normalizedCapabilities(
+  capabilities: Readonly<Record<string, CapabilityDescriptor>>,
+  deploymentNamespace: unknown,
+): Readonly<Record<string, CapabilityDescriptor>> {
   const normalized: Record<string, CapabilityDescriptor> = {};
   for (const [name, descriptor] of Object.entries(capabilities)) {
+    const workflowGateway = descriptor.workflowGateway;
+    const dynamicWorkflowNamespace = workflowGateway
+      && isPortableInstallationExpression(deploymentNamespace);
     normalized[name] = {
       ...descriptor,
       name,
+      ...(dynamicWorkflowNamespace
+        ? {
+            endpoint: colocatedWorkflowGatewayEndpoint(descriptor),
+            workflowGateway: {
+              ...workflowGateway,
+              caller: {
+                ...workflowGateway.caller,
+                namespace: APPLICATION_RUNTIME_NAMESPACE_MARKER,
+              },
+            },
+          }
+        : {}),
       execution: descriptor.execution ?? disabledCapabilityExecutionPolicy(),
     };
   }
   return normalized;
+}
+
+function manifestNamespace(namespace: unknown): string {
+  return isPortableInstallationExpression(namespace)
+    ? APPLICATION_RUNTIME_NAMESPACE_MARKER
+    : String(namespace);
+}
+
+function isPortableInstallationExpression(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return value.startsWith('${')
+      || value.startsWith('__KUBERNETES_REF___');
+  }
+  if (!value || (typeof value !== 'object' && typeof value !== 'function')) return false;
+  if (Reflect.get(value, Symbol.for('TypeKro.KubernetesRef')) === true) return true;
+  return typeof Reflect.get(value, 'expression') === 'string';
+}
+
+function colocatedWorkflowGatewayEndpoint(descriptor: CapabilityDescriptor): string {
+  const endpoint = descriptor.endpoint;
+  const worker = descriptor.workflowGateway?.worker;
+  if (!endpoint || !worker) return endpoint ?? '';
+  try {
+    const parsed = new URL(endpoint);
+    return `${parsed.protocol}//${worker}${parsed.port ? `:${parsed.port}` : ''}${parsed.pathname === '/' ? '' : parsed.pathname}`;
+  } catch {
+    return endpoint;
+  }
 }
 
 function disabledCapabilityExecutionPolicy(): CapabilityExecutionPolicy {
@@ -729,7 +782,7 @@ function validateCapabilityDescriptors(operator: OperatorDefinition): Result<nev
       if (
         caller.operator !== operator.name
         ||
-        caller.namespace !== deploymentNamespace
+        !portableValueEquals(caller.namespace, deploymentNamespace)
         || caller.serviceAccount !== deploymentServiceAccount
       ) {
         return capabilityError(operator, name, `Workflow gateway ${name} caller identity must exactly match this operator deployment namespace and service account.`);
@@ -1043,6 +1096,15 @@ function canonicalJsonValue<T>(value: T): T {
     return sorted as T;
   }
   return value;
+}
+
+/**
+ * Installation expressions are JSON-like portable values. Compilation may
+ * clone them while deriving a handler-scoped workflow gateway, so authority
+ * validation must compare their value rather than JavaScript object identity.
+ */
+function portableValueEquals(left: unknown, right: unknown): boolean {
+  return JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
 }
 
 function hasResourceHandlerIdentity(handler: AnyHandlerRegistration): handler is AnyHandlerRegistration & ResourceHandlerIdentity {

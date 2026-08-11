@@ -1,6 +1,6 @@
 # RFP: Applik8s v0.7 — External Identity and OAuth
 
-**Status:** Proposed; maintainer review required
+**Status:** Accepted v0.7 contract; implementation evidence remains governed by the release scorecard
 
 **Charter:** [`charter-v07-agentic-platform.md`](charter-v07-agentic-platform.md)
 
@@ -347,13 +347,15 @@ run migrations through handwritten deployment code, or delete instances with ad 
 - Browser artifacts contain no raw provider session, credential, Secret, provider SDK, or authority
   implementation.
 
-## Open questions
+## Closed v0.7 decisions
 
-1. Should client ID metadata documents be the preferred dynamic client path, with RFC 7591 retained as a
-   compatibility option?
-2. Should Keto be a default dedicated relationship projection or an optional qualification after the
-   PostgreSQL authority path is proven?
-3. Which assurance levels and authentication methods belong in the first provider-neutral vocabulary?
+1. Client ID metadata documents are the preferred dynamic-client path. RFC 7591 is an explicit
+   compatibility capability rather than an inferred default.
+2. PostgreSQL remains canonical for application grants and relationships. Keto is an optional qualified
+   projection and never admission authority by itself.
+3. The provider-neutral v0.7 vocabulary distinguishes authenticated, verified-email, multi-factor, and
+   phishing-resistant assurance, with password, passkey/WebAuthn, TOTP, recovery code, and provider
+   methods where supported. Unsupported methods remain absent rather than simulated.
 
 ## Definition of done
 

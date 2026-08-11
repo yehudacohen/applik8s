@@ -87,6 +87,10 @@ export function workflowResources(contract: WorkflowContract, name: string, imag
             name: 'worker', image, imagePullPolicy: 'IfNotPresent', command: ['node', '/app/workflow-worker.mjs'],
             env: uniqueWorkflowEnvironment([
               { name: 'HATCHET_CLIENT_TOKEN', valueFrom: { secretKeyRef: { name: contract.workerTokenSecret, key: contract.tokenKey } } },
+              ...(gatewayEnabled ? [{
+                name: 'APPLIK8S_WORKFLOW_NAMESPACE',
+                valueFrom: { fieldRef: { fieldPath: 'metadata.namespace' } },
+              }] : []),
               ...workflowConnectionEnvironment,
               ...workflowCapabilityEnvironment(contract),
               ...workflowOperationEnvironment(contract),

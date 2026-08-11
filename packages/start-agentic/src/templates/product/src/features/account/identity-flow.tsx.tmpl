@@ -1,0 +1,144 @@
+import {
+  useApplicationIdentityFlow,
+  useApplicationIdentitySession,
+} from '@applik8s/react/identity';
+import { Link } from '@tanstack/react-router';
+import { type FormEvent, useState } from 'react';
+import {
+  DataLifecycleRequest,
+  DataLifecycleRequests,
+  WorkspaceLibrary,
+} from '../../application';
+import { Alert, Button, Card, Input } from '../../components/ui';
+
+export function PublicIdentityFlow({ kind }: { readonly kind: 'verify' | 'recover' }) {
+  const flow = useApplicationIdentityFlow(kind);
+  const [email, setEmail] = useState('');
+  const [sent, setSent] = useState(false);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSent(false);
+    try {
+      const started = await flow.begin({ email });
+      if (started.continuationUri) {
+        globalThis.location.assign(started.continuationUri);
+        return;
+      }
+      setSent(true);
+    } catch {
+      // The headless flow exposes a public-safe error below.
+    }
+  }
+
+  const verification = kind === 'verify';
+  return <div className="mx-auto max-w-md py-12"><Card>
+    <p className="eyebrow">Identity recovery</p>
+    <h1 className="mt-2 text-3xl font-semibold">{verification ? 'Verify your identity' : 'Recover your account'}</h1>
+    <p className="mt-2 text-sm leading-6 text-stone-600">{verification ? 'Continue through the selected identity provider without exposing its protocol to application code.' : 'Start a bounded provider-neutral recovery flow. Responses do not reveal whether an account exists.'}</p>
+    <form className="mt-6 grid gap-3" onSubmit={submit}>
+      <label htmlFor={`${kind}-email`} className="text-sm font-semibold">Email address</label>
+      <input id={`${kind}-email`} type="email" autoComplete="email" required value={email} onChange={event => setEmail(event.currentTarget.value)} />
+      <Button type="submit" disabled={flow.pending || !email.trim()}>{flow.pending ? 'Starting…' : verification ? 'Continue verification' : 'Continue recovery'}</Button>
+    </form>
+    {sent ? <div className="mt-4"><Alert tone="success" title="Continue from the delivery surface">If the identity is eligible, the selected provider has created the next step. Starter keeps this deterministic and local.</Alert></div> : null}
+    {flow.error ? <div className="mt-4"><Alert tone="warning" title="The flow could not start">Retry shortly or contact the application operator if identity is degraded.</Alert></div> : null}
+    <p className="mt-5 text-sm text-stone-600"><Link to="/sign-in" search={{ returnTo: '/app' }} className="font-semibold text-emerald-800">Return to sign in</Link></p>
+  </Card></div>;
+}
+
+export function AccountDataControls() {
+  const session = useApplicationIdentitySession();
+  const library = WorkspaceLibrary({}).useQuery();
+  const requests = DataLifecycleRequests({}).useQuery();
+  const requestLifecycle = DataLifecycleRequest.create.useMutation();
+  const [confirmation, setConfirmation] = useState('');
+  const [notice, setNotice] = useState<string>();
+
+  function downloadExport() {
+    if (!library.data) return;
+    const exportedAt = new Date().toISOString();
+    const payload = JSON.stringify({
+      protocol: 'applik8s.product-export/v1alpha1',
+      exportedAt,
+      mutableDocuments: library.data.documents,
+      immutableArtifactMetadata: library.data.artifacts,
+      exclusions: [
+        'conversation bodies and messages',
+        'provider credentials',
+        'object-store keys',
+        'authorization receipt bodies',
+        'retained audit evidence',
+      ],
+    }, null, 2);
+    const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `application-export-${exportedAt.slice(0, 10)}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function requestMutableDataRemoval() {
+    const principalId = session.data?.principal?.id;
+    if (confirmation !== 'DELETE MY DATA' || !principalId) return;
+    setNotice(undefined);
+    const request = await requestLifecycle({
+      scope: 'account',
+      targetId: principalId,
+    });
+    setConfirmation('');
+    setNotice(`Lifecycle request ${request.value.id} was admitted. The application will process it asynchronously and publish retained-data consequences below.`);
+    await requests.refresh();
+  }
+
+  const loading = !library.data || !session.data?.principal;
+  return (
+    <Card className="mt-5">
+      <h2 className="font-semibold text-stone-950">Application data</h2>
+      <p className="mt-2 text-sm leading-6 text-stone-600">
+        Export product data visible to this identity, or submit one typed asynchronous removal request. The application validates ownership, checks subscription and workspace blockers, processes bounded batches, and records what remains.
+      </p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Button type="button" variant="secondary" disabled={loading} onClick={downloadExport}>
+          Export visible data
+        </Button>
+      </div>
+      <div className="mt-5 border-t border-stone-200 pt-5">
+        <label className="text-sm font-semibold text-stone-800" htmlFor="mutable-data-confirmation">
+          Type DELETE MY DATA to continue
+        </label>
+        <Input
+          id="mutable-data-confirmation"
+          className="mt-2"
+          value={confirmation}
+          onChange={event => setConfirmation(event.currentTarget.value)}
+          autoComplete="off"
+        />
+        <Button
+          type="button"
+          variant="danger"
+          className="mt-3"
+          disabled={loading || confirmation !== 'DELETE MY DATA' || requestLifecycle.pending}
+          onClick={() => void requestMutableDataRemoval()}
+        >
+          Request account-data removal
+        </Button>
+      </div>
+      {notice ? <div className="mt-4"><Alert title="Data lifecycle request admitted" tone="success">{notice}</Alert></div> : null}
+      {requestLifecycle.error ? <div className="mt-4"><Alert title="Data lifecycle request was not admitted" tone="danger">No deletion is claimed. Resolve the reported ownership or operation boundary and retry.</Alert></div> : null}
+      {requests.data?.map(request => (
+        <div className="mt-4 rounded-xl border border-stone-200 p-4" key={request.id}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <strong>{request.scope === 'account' ? 'Account data' : 'Workspace'} · {request.state}</strong>
+            <span className="text-xs text-stone-500">{new Date(request.requestedAt).toLocaleString()}</span>
+          </div>
+          <p className="mt-2 text-sm text-stone-600">
+            {request.deletedDocuments} documents deleted · {request.archivedConversations} conversations archived · {request.retainedArtifacts} immutable artifacts retained
+          </p>
+          {request.consequence ? <p className="mt-2 text-sm leading-6 text-stone-600">{request.consequence}</p> : null}
+        </div>
+      ))}
+    </Card>
+  );
+}

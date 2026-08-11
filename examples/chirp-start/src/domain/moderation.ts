@@ -1,8 +1,7 @@
 // typecast-file-boundary: validated model payloads are narrowed to the declared moderation states before domain decisions.
-import type { ModelEvent } from '@applik8s/applik8s';
 import { entity, type } from '@applik8s/applik8s/dsl';
 import { desc, eq } from 'drizzle-orm';
-import { app, namespace } from '../app';
+import { app, namespace, workflow } from '../app';
 import { AutomationPostReview } from '../automation/workflow';
 import { Database } from '../providers/database';
 import { moderationCases, reports } from '../schema/moderation';
@@ -204,7 +203,7 @@ export const moderationPolicyKind = 'ModerationPolicy';
 const ModerationPolicyResource = app.crd(
   entity(moderationPolicyKind, {
     spec: type({ maxRisk: 'number', blockedTerms: 'string[]' }),
-    status: type({ 'phase?': "'Ready' | 'Invalid'", 'message?': 'string' }),
+    status: type({ 'phase?': "'Applying' | 'Ready' | 'Invalid'", 'message?': 'string' }),
   }),
   { apiVersion: moderationPolicyApiVersion },
 );
@@ -216,7 +215,7 @@ export const ModerationPolicyCurrent = ModerationPolicy.view({
     name: 'string',
     maxRisk: 'number',
     blockedTerms: 'string[]',
-    phase: "'Ready' | 'Invalid'",
+    phase: "'Applying' | 'Ready' | 'Invalid'",
     message: 'string',
   }).array(),
   authorize: ({ principal }) => principal.roles?.includes('moderator') === true,
@@ -240,15 +239,55 @@ export const ModerationPolicyCurrent = ModerationPolicy.view({
   budgets: { maxRows: 1, maxResultBytes: 16_000, timeoutMs: 2_000 },
 });
 
-type ModerationPolicyScope = ModelEvent<typeof ModerationPolicy, 'create'>;
+const ApplyModerationPolicy = workflow(
+  'moderation.apply-policy.v1',
+  {
+    input: type({ name: 'string', maxRisk: 'number', blockedTerms: 'string[]' }),
+    output: type({ phase: "'Ready' | 'Invalid'", message: 'string' }),
+  },
+  async function applyModerationPolicy(input) {
+    if (input.maxRisk < 0 || input.maxRisk > 1) {
+      return { phase: 'Invalid' as const, message: 'maxRisk must be between zero and one.' };
+    }
+    return {
+      phase: 'Ready' as const,
+      message: `Policy applied with ${input.blockedTerms.length} blocked term${input.blockedTerms.length === 1 ? '' : 's'}.`,
+    };
+  },
+);
 
-async function applyModerationPolicy(policy: ModerationPolicyScope) {
-  policy.status.phase = policy.spec.maxRisk >= 0 && policy.spec.maxRisk <= 1 ? 'Ready' : 'Invalid';
-  policy.status.message = policy.status.phase === 'Ready' ? 'Policy applied.' : 'maxRisk must be between zero and one.';
-}
-
-ModerationPolicy.on.create({ namespace }, applyModerationPolicy);
-ModerationPolicy.on.update({ namespace }, applyModerationPolicy);
+ModerationPolicy.on.reconcile(async function reconcileModerationPolicy(policy) {
+  const run = await ApplyModerationPolicy.start(
+    {
+      name: policy.metadata.name,
+      maxRisk: policy.spec.maxRisk,
+      blockedTerms: policy.spec.blockedTerms,
+    },
+    { idempotencyKey: `${policy.metadata.uid}:${policy.metadata.generation}` },
+  );
+  const observation = await policy.track('apply-policy', run, {
+    onGenerationChange: 'supersede',
+    onDelete: { action: 'cancel', timeout: '30s', onTimeout: 'detach' },
+    updates: { phases: true, minInterval: '1s' },
+  });
+  if (observation.phase === 'Succeeded' && observation.result) {
+    policy.status.phase = observation.result.phase;
+    policy.status.message = observation.result.message;
+    return;
+  }
+  if (
+    observation.phase === 'Failed'
+    || observation.phase === 'Cancelled'
+    || observation.phase === 'TimedOut'
+  ) {
+    policy.status.phase = 'Invalid';
+    policy.status.message = observation.error?.message
+      ?? `Policy workflow ${observation.phase.toLowerCase()}.`;
+    return;
+  }
+  policy.status.phase = 'Applying';
+  policy.status.message = 'Policy workflow is still running.';
+});
 
 /**
  * The identity provider admits the typed role; the application owns what that

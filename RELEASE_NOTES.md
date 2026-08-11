@@ -1,5 +1,61 @@
 # Release Notes
 
+## v0.7.0 (unreleased)
+
+v0.7 makes model reads function-native without collapsing their lifecycle
+semantics. Promoted relational, analytical, and Kubernetes models now expose
+`Model.query(contract, implementation)` for one-shot authorized snapshots and
+retain `Model.view(contract, implementation)` for persistent,
+invalidation-aware observation. Named implementations provide deterministic
+operation identity, and the application graph records `query` versus `view`
+while reusing the established schema, provider, authority, dependency, budget,
+compiler-capture, and generated gateway machinery.
+
+The function-native model now extends across ordinary callable operations,
+agents, typed HTTP routes, event and frozen-batch processors, durable workflows,
+and one-shot signals. Managed closures infer the application handles reachable
+through local helper graphs; durable execution preserves the initiating causal
+principal without inheriting its authority. Signal issuance is an application
+event and a serializable capability: authorized browser consumers hydrate the
+exact instance, submit only action input, and receive a one-shot outcome whose
+actor and authorization receipt are derived by the framework.
+
+Generated callback capture preserves typed model deletion just like create,
+update, and read operations, including calls reached through application-local
+helpers. Generated query and search workloads lower runtime-safe helpers to
+focused package entrypoints instead of initializing the authoring umbrella or
+TypeKro inside application containers. Durable command progress authenticates
+the current principal and revalidates current result-read authority against the
+persisted admission receipt. An operation may therefore consume the mutable
+workspace context that admitted it without making its signed terminal result
+unobservable; unrelated requests continue to reject stale workspace selectors.
+
+Committed model lifecycle handlers can await ordinary CRUD operations against
+the same PostgreSQL authority. The call returns its typed provisional snapshot,
+and the framework commits or rolls back the source callback, nested model
+writes, command results, history, transitions, and outboxes as one transaction.
+Unawaited direct operations and cross-authority composition fail during
+discovery or compilation; `context.send(...)` remains the explicit post-commit
+asynchronous boundary. Named lifecycle callbacks no longer require an empty
+options object: `Workspace.on.create(createOwningMembership)` is canonical.
+
+The maintained Agentic Start is generated over the pinned official TanStack
+scaffold. It provides a responsive source-owned light/dark shell, public
+identity and recovery routes, persistent workspace onboarding, resumable
+conversations, a mutable-document/immutable-artifact Library, durable Inbox,
+provider-neutral billing and usage, account security, bounded product export
+and deletion controls, and redacted operations integration. Starter remains
+credential-free; explicit `.env` values remain valid in development and
+production. Plain Vite development receives only deterministic framework-owned
+fallbacks and never deploys infrastructure implicitly. CLI plan/deploy/destroy
+remain the Alchemy and TypeKro lifecycle boundary.
+
+The release remains gated on the exact generated product, Chirp, and profile
+acceptance paths. A final tag must additionally prove the route matrix, durable
+decision reload/recovery, application-operator authority and read-only
+Launchpad evidence, packed generation, cross-browser/accessibility behavior,
+and graph-backed OrbStack teardown for the exact source candidate.
+
 ## v0.6.0
 
 v0.6 adds native relational models and the reactive application layer. A Drizzle table remains the single relational schema and relationship authority while Applik8s derives ArkType select, insert, and update contracts and attaches a provider-neutral model facet. The same table continues to work in ordinary Drizzle expressions; applications do not maintain a second field map.

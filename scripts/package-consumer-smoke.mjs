@@ -25,6 +25,7 @@ const publicEntrypoints = [
   '@applik8s/applik8s/processor-runtime',
   '@applik8s/applik8s/event-log-runtime',
   '@applik8s/applik8s/postgres-runtime-contract',
+  '@applik8s/applik8s/search-runtime',
   '@applik8s/applik8s/dns',
   '@applik8s/client',
   '@applik8s/react',
@@ -171,9 +172,11 @@ try {
     '@types/react-dom',
     '@tanstack/ai',
     '@tanstack/ai-react',
+    '@tailwindcss/vite',
     '@vitejs/plugin-react',
     'drizzle-kit',
     'react-dom',
+    'tailwindcss',
     'vitest',
   ]) {
     externalPackages.set(
@@ -431,15 +434,25 @@ export function getRouter() {
   if (!compiledAgenticStart.ok) {
     throw new Error(`Packed Agentic Start compilation failed: ${compiledAgenticStart.error.message}`);
   }
+  const packedAgenticModelIds = new Set(
+    discoveredAgenticStart.value.nodes
+      .filter((node) => node.kind === 'model')
+      .map((node) => node.id),
+  );
   if (
-    discoveredAgenticStart.value.nodes.some(
-      (node) =>
-        node.kind === 'model'
-        && ['model.conversation', 'model.approval-review'].includes(node.id),
-    )
+    ![
+      'model.note',
+      'model.workspace',
+      'model.conversation',
+      'model.approval-review',
+      'model.artifact',
+      'model.evaluation-run',
+      'model.billing-plan',
+      'model.usage-fact',
+    ].every((id) => packedAgenticModelIds.has(id))
   ) {
     throw new Error(
-      'The default packed Agentic Start installed research-only product domains.',
+      'The default packed Agentic Start omitted part of its maintained SaaS product baseline.',
     );
   }
   const packedAgenticGraph = JSON.parse(await readFile(
@@ -465,7 +478,7 @@ export function getRouter() {
       'Packed Agentic Start did not infer its ApplicationHost Deployment and Service from the built Start server artifact.',
     );
   }
-  if (!(await readFile(join(agenticStartTarget, 'src', 'routes', 'operations.tsx'), 'utf8')).includes('ApplicationOperationsControlCenter')) {
+  if (!(await readFile(join(agenticStartTarget, 'src', 'routes', 'app.operations.tsx'), 'utf8')).includes('ApplicationOperationsControlCenter')) {
     throw new Error('Packed Agentic Start omitted the maintained operations route.');
   }
   await execFileAsync(
@@ -476,6 +489,45 @@ export function getRouter() {
       maxBuffer: 20 * 1024 * 1024,
     },
   );
+  const firstPackedRouteTree = await readFile(
+    join(agenticStartTarget, 'src', 'routeTree.gen.ts'),
+    'utf8',
+  );
+  await execFileAsync(
+    join(root, 'node_modules', '.bin', 'tsr'),
+    ['generate'],
+    {
+      cwd: agenticStartTarget,
+      maxBuffer: 20 * 1024 * 1024,
+    },
+  );
+  const secondPackedRouteTree = await readFile(
+    join(agenticStartTarget, 'src', 'routeTree.gen.ts'),
+    'utf8',
+  );
+  if (secondPackedRouteTree !== firstPackedRouteTree) {
+    throw new Error(
+      'Packed Agentic Start route generation is not reproducible with its pinned TanStack compatibility tuple.',
+    );
+  }
+  const packedUpdateCheck = await execFileAsync(
+    executable,
+    ['start', 'update', '--check', '--json'],
+    {
+      cwd: agenticStartTarget,
+      maxBuffer: 20 * 1024 * 1024,
+    },
+  );
+  const packedUpdateReport = JSON.parse(packedUpdateCheck.stdout);
+  if (
+    packedUpdateReport.updateAvailable !== false
+    || packedUpdateReport.conflicts !== false
+    || packedUpdateReport.paths.some(({ state }) => state !== 'unchanged')
+  ) {
+    throw new Error(
+      `Packed Agentic Start update check did not recognize a clean generated consumer: ${packedUpdateCheck.stdout}`,
+    );
+  }
   await execFileAsync(
     join(root, 'node_modules', '.bin', 'tsc'),
     ['--project', join(agenticStartTarget, 'tsconfig.json')],

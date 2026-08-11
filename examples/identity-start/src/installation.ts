@@ -60,6 +60,16 @@ const ExternalProviders = type({
     'webhookSecretKey?': 'string',
     'endpoint?': 'string',
   },
+  notifications: {
+    host: 'string',
+    'port?': '1 <= number.integer <= 65535',
+    'secure?': 'boolean',
+    secretName: 'string',
+    'usernameKey?': 'string',
+    'passwordKey?': 'string',
+    senderEmail: 'string',
+    'senderName?': 'string',
+  },
 });
 
 const DedicatedProviders = type({
@@ -82,6 +92,21 @@ const DedicatedProviders = type({
     'webhookSecretKey?': 'string',
     'endpoint?': 'string',
   },
+  notifications: {
+    host: 'string',
+    'port?': '1 <= number.integer <= 65535',
+    'secure?': 'boolean',
+    secretName: 'string',
+    'usernameKey?': 'string',
+    'passwordKey?': 'string',
+    senderEmail: 'string',
+    'senderName?': 'string',
+    'credentialSource?': {
+      kind: "'hostEnvironment' | 'existingSecret'",
+      'usernameVariable?': 'string',
+      'passwordVariable?': 'string',
+    },
+  },
 });
 
 const DeveloperProviders = type({
@@ -96,6 +121,21 @@ const DeveloperProviders = type({
     'apiKeyKey?': 'string',
     'webhookSecretKey?': 'string',
     'endpoint?': 'string',
+  },
+  'notifications?': {
+    host: 'string',
+    'port?': '1 <= number.integer <= 65535',
+    'secure?': 'boolean',
+    secretName: 'string',
+    'usernameKey?': 'string',
+    'passwordKey?': 'string',
+    senderEmail: 'string',
+    'senderName?': 'string',
+    'credentialSource?': {
+      kind: "'hostEnvironment' | 'existingSecret'",
+      'usernameVariable?': 'string',
+      'passwordVariable?': 'string',
+    },
   },
 });
 

@@ -335,6 +335,17 @@ export const Usage = application.include(usage);
 export const Billing = application.include(billing);
 ```
 
+Billing strategy is exhaustive at the profile boundary:
+
+- Starter uses a clearly simulated provider with production-shaped contracts.
+- Developer remains simulated unless the application opts into a live
+  test-mode provider.
+- Dedicated requires a live provider; Stripe is maintained by default.
+- External binds an externally owned live provider.
+- `agenticProfilesWith({ developerPayments, dedicatedPayments,
+  externalPayments })` replaces those live adapters without changing product
+  models, operations, routes, usage delivery, or entitlement policy.
+
 The uncommon module-local provider override still uses ordinary application
 injection. Maintained modules export typed capability ports for dependencies
 that may be rebound:
@@ -505,6 +516,8 @@ ImportJob.on.reconcile(async job => {
 Status values describe the current Applik8s worktree, not the intended release:
 
 - **Implemented** means the primitive and generated product path exist.
+- **Qualified** means the implementation also has exact generated-application
+  browser or live-cluster evidence.
 - **Partial** means useful implementation exists but the generated product or
   end-to-end evidence is incomplete.
 - **Missing** means v0.7 implementation work remains.
@@ -515,10 +528,13 @@ Status values describe the current Applik8s worktree, not the intended release:
 | --- | --- | --- | --- | --- |
 | Deterministic generation | `.stimp/registry.ts`, app config, registry test | `ApplicationStartDefinition`, deterministic generator plan, collision refusal | Run official TanStack CLI, apply deterministic feature packs, produce identical output twice | Implemented |
 | Official web foundation | `router.ts`, `ssr.tsx`, `client.tsx`, `vite.config.ts` | `@applik8s/vite`, `@applik8s/tanstack-start` | Preserve the official TanStack Start scaffold and file router | Implemented |
-| Feature-first organization | agents, tools, workflows, inbox, billing, routes | Maintained modules plus application feature directories | Generated account, research, and workspace source is organized by product feature; runtime artifacts remain compiler-owned | Complete |
+| Feature-first organization | agents, tools, workflows, inbox, billing, routes | Maintained modules plus application feature directories | Generated research and workspace source is organized by product feature; account protocol plumbing and runtime artifacts remain framework-owned | Implemented |
 | Explicit lifecycle | `deployment.example`, TypeKro local/dev files | Applik8s CLI plan/deploy/status/destroy over one application graph | `bun run plan`, `deploy`, `status`, and `destroy` require no handwritten TypeKro | Implemented |
 | Credential-free first run | local auth, billing, inference, onboarding | Starter profile and deterministic providers | One command produces a clearly non-production local application without provider credentials; the generated application is built, deployed, exercised through its owner, assistant, billing, and conversation browser journeys, and graph-destroyed on OrbStack | Implemented |
-| Progressive onboarding | onboarding guide/configuration and onboarding component | `AgenticStartOnboarding`, profile diagnostics, redacted operational observations | Tutorial → application setup → operations control center without exposing secrets | Implemented |
+| Progressive onboarding | onboarding guide/configuration and onboarding component | Stateless Start controllers plus application-owned `OnboardingProgress`, profile diagnostics, and redacted operational observations | Product-member, workspace-owner, and separately authorized operator journeys; resume/skip/remove without exposing secrets | Partial — normative product journey and exact browser evidence remain |
+| Public acquisition and admission | public landing and auth routes | Provider-neutral identity/session contracts plus generated application routes | Landing, sign-up/sign-in, verification, recovery, MFA, invitation continuation, and intended-route resumption | Partial — complete route/state matrix remains |
+| Application notification delivery | invitation and transactional email seams | Existing transaction/outbox plus a bounded `NotificationDelivery` provider capability | Deterministic Starter inbox and external production delivery; identity courier remains provider-owned | Partial — capability, adapter, and live evidence remain |
+| Generated-source update awareness | generator/config lineage | `.applik8s/start-lineage.json` and deterministic template ownership | `applik8s start update --check` reports drift, compatibility, and security relevance without rewriting source | Partial — read-only command remains |
 | Safe provider configuration | onboarding configuration and runtime status | Qualified provider tokens, installation schema, profile validation | Typed Starter/Dedicated/External choices with redacted readiness and corrective diagnostics | Implemented |
 | Database migrations | Drizzle migrations and `migrate.ts` | Single-definition models, generated Drizzle schema/migrations, deployment migration workload | Generated app can create, upgrade, and verify its authoritative schema | Implemented |
 
@@ -610,11 +626,11 @@ improvements that make sense for a production-oriented Agentic Start:
 
 | Extension | Primitive implementation | Reason |
 | --- | --- | --- |
-| Email verification and password recovery | Identity-provider operations with single-use, expiring, redacted tokens | A production identity start should not stop at sign-up/sign-in parity |
-| MFA and recovery codes | Provider-neutral identity capability; Ory implementation; Starter deterministic test provider | Dedicated profile already claims production identity |
-| Session/device administration | Identity model views and typed revoke operations | Users need visibility and bounded revocation |
+| Email verification and password recovery | Maintained `AgenticAccountSettings` calls provider-neutral bounded flows; Ory/native data remains server-side | A production identity start should not stop at sign-up/sign-in parity |
+| MFA and recovery codes | Maintained `AgenticAccountSettings` uses the provider-neutral enrollment capability; Dedicated/External translate to Ory and Starter remains deterministic | Dedicated profile already claims production identity |
+| Session/device administration | Provider-neutral session views and typed revoke operations validate ownership before provider revocation | Users need visibility and bounded revocation |
 | Workspace invitations | Application-owned Invitation model, typed signal/event delivery, single-use acceptance operation | Natural completion of the committed workspace baseline |
-| Versioned plan/catalog and metering | Application-owned billing models, usage facts, idempotent delivery outbox | Keeps pricing/product policy out of the framework while making billing usable |
+| Versioned plan/catalog and metering | Provider-neutral version, price, customer, item, meter, and idempotent delivery-ledger models; application-owned seeded plans | Keeps pricing/product policy out of the framework while making billing usable |
 | Search across conversations/artifacts/runs | One logical model search contract with PostgreSQL/OpenSearch providers | Demonstrates provider multiplexing without changing application queries |
 | MCP exposure of authorized tools | The same callable tool handles and operation authority | Makes the starter genuinely agentic rather than merely chat-enabled |
 | Projection-backed live dashboards | `Model.view(...)`, projections, rebuild authority, resumable SSE | Demonstrates the function-native reactive thesis |
@@ -653,37 +669,46 @@ Conversations, approvals, artifacts, evaluations, usage, operations, identity
 runtime, billing provider plumbing, AI transport, search runtime, object
 transport, and workflow provider glue remain maintained packages.
 
-## Current generator convergence gaps
+## Generator convergence achieved
 
-The current generator is useful implementation evidence but is not the target
-surface. Before v0.7 freezes, it must remove:
+The v0.7 generator now enforces the target authoring surface:
 
-- `conversations(application, { database, processor })` and equivalent
-  dependency-threading calls in favor of module inclusion plus `provide(...)`;
-- manual spreading of every maintained module's database schema;
-- the `maintainedCommands` CRUD flattening registry;
-- manually authored gateway `commands`, `queries`, and `subscriptions` arrays
-  for handles already imported by the web application;
-- `gateway.authorizeCommand` as application authorization;
-- manually constructed principal-shaped objects;
-- provider clients or infrastructure options in feature and route modules;
-- explicit processor deployment settings where the selected profile/capacity
-  policy can supply safe defaults.
-- an explicitly authored `ApplicationHost.kubernetes(...)` and container
-  configuration in every generated TanStack application instead of Vite-owned
-  host inference;
-- global-like use of capability tokens instead of app-scoped bindings returned
-  by `provide(...)` or exhaustive profile provisions;
-- `configureAgenticProfiles(application, { schema, migrations, ... })`
-  assembly when module inclusion and the application installation already
-  contain that information;
-- any required `application.model(...)` promotion after an Applik8s
-  `model(...)` declaration, or required `application.crd(entity(...))`
-  ceremony when an app-owned CRD can use the one-call overload;
+- maintained modules are included directly and hydrate their declared
+  dependencies from the selected application profile;
+- model declarations contribute their relational schema without a second
+  registration or promotion call;
+- imported callable handles are discovered by the compiler, so application
+  authors do not maintain command, query, subscription, or authorization
+  registries;
+- identity, authority, idempotency, provider selection, and trusted context are
+  framework-derived at the managed boundary;
+- Vite and the selected profile infer the application host, processors,
+  containers, and infrastructure graph;
+- `provide(...)` and typed qualifiers bind application-scoped capabilities
+  without string selection or provider imports in feature code;
+- account security is a maintained component, leaving the generated account
+  route as a replaceable three-line adapter;
+- Starter, Developer, Dedicated, and External use one installation schema;
+  local source mounting remains an explicit deployment aspect rather than an
+  application runtime fork.
 
-Transport-level admission may remain an internal generated boundary, but the
-golden-path application author sees typed roles, callable handles, and
-framework-derived identity rather than a second authorization API.
+Transport-level admission remains compiler-owned. The application author sees
+typed roles, callable handles, framework-derived principals, and ordinary
+TanStack routes.
+
+## Remaining release qualification
+
+The implementation surface is converged. The remaining v0.7 work is evidence
+and product hardening rather than new framework capability:
+
+1. retain exact packed-consumer and official TanStack generation/build gates;
+2. keep the research starter's workspace, assistant, billing, conversation,
+   workflow/signal, artifact, usage, and operations journeys green on OrbStack;
+3. keep the smaller product starter's causal agent, simulated billing, and
+   maintained account journeys green on OrbStack;
+4. run browser zoning, identity profile, TypeKro/Alchemy lifecycle, performance,
+   and release-scorecard gates against the same commit;
+5. publish no v0.7 tag until those receipts are current and explicitly reviewed.
 
 ## Acceptance matrix
 

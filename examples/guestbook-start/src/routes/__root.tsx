@@ -1,5 +1,10 @@
-import { HeadContent, Outlet, Scripts, createRootRoute } from '@tanstack/react-router';
 import { Applik8sProvider } from '@applik8s/react';
+import {
+  HeadContent,
+  Outlet,
+  Scripts,
+  createRootRoute,
+} from '@tanstack/react-router';
 import type { ReactNode } from 'react';
 import '../styles.css';
 
@@ -27,7 +32,9 @@ function Root() {
 function Document({ children }: { readonly children: ReactNode }) {
   return (
     <html lang="en">
-      <head><HeadContent /></head>
+      <head>
+        <HeadContent />
+      </head>
       <body>
         {children}
         <Scripts />

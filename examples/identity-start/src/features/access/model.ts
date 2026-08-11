@@ -144,6 +144,31 @@ Administrator.can(
   AccessRequestQueue,
 );
 
+// Starter authority is deliberately a different role from the
+// provider-issued Administrator role. The exact-identity bootstrap therefore
+// cannot turn a trusted Dedicated/External `administrator` claim into a
+// canonical-only role name, while both roles receive the same product policy.
+export const StarterAdministrator = application.role(
+  'starter-administrator',
+);
+StarterAdministrator.can(
+  AccessRequest.create.all(),
+  AccessRequest.delete.all(),
+  AccessRequestQueue,
+);
+StarterAdministrator.bootstrap(
+  {
+    id: 'identity:deterministic:local-developer',
+    kind: 'human',
+    issuer: 'applik8s://identity-start/identity/deterministic',
+    subject: 'local-developer',
+  },
+  {
+    reason:
+      'Credential-free Starter access-review administrator bootstrap.',
+  },
+);
+
 /**
  * A provider-issued client-credentials token for this exact issuer and client
  * ID may invoke the same typed operation through MCP. No Ory-specific
@@ -157,7 +182,9 @@ ReleaseAutomation.can(AccessRequest.create.all());
 
 function isReviewer(principal: ApplicationPrincipal | undefined): boolean {
   return principal?.roles?.some((role) =>
-    role === 'reviewer' || role === 'administrator',
+    role === 'reviewer'
+    || role === 'administrator'
+    || role === 'starter-administrator',
   ) === true;
 }
 

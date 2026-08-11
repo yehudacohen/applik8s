@@ -1,0 +1,81 @@
+import type { ErrorComponentProps } from '@tanstack/react-router';
+import { Link } from '@tanstack/react-router';
+import { Button, RouteState, Skeleton } from '../components/ui';
+
+export function RoutePending() {
+  return (
+    <div aria-label="Loading page" className="space-y-4">
+      <Skeleton className="h-4 w-28" />
+      <Skeleton className="h-10 w-80 max-w-full" />
+      <Skeleton className="h-32 w-full" />
+    </div>
+  );
+}
+
+export function RouteNotFound() {
+  return (
+    <RouteState
+      title="That page is not here"
+      description="The address may be outdated, or this capability is not part of the selected application profile."
+      action={<Link to="/app" className="button-link">Return to the product</Link>}
+    />
+  );
+}
+
+export function RouteErrorBoundary({ error, reset }: ErrorComponentProps) {
+  const failure = classifyRouteFailure(error);
+  return (
+    <RouteState
+      tone={failure.tone}
+      title={failure.title}
+      description={<><p>{failure.description}</p><p className="mt-2 text-xs text-stone-500">Reference: {failure.reference}</p></>}
+      action={<Button type="button" variant="secondary" onClick={reset}>Try again</Button>}
+    />
+  );
+}
+
+function classifyRouteFailure(error: unknown): {
+  readonly title: string;
+  readonly description: string;
+  readonly reference: string;
+  readonly tone: 'warning' | 'danger';
+} {
+  const code = publicFailureCode(error);
+  if (/AUTH|IDENTITY|SESSION|401/u.test(code)) {
+    return {
+      title: 'Sign in to continue',
+      description: 'Your session is missing or no longer valid. Sign in, then retry this page.',
+      reference: 'identity-required',
+      tone: 'warning',
+    };
+  }
+  if (/FORBIDDEN|DENIED|403/u.test(code)) {
+    return {
+      title: 'This area is not available to you',
+      description: 'The application kept this route outside your admitted authority.',
+      reference: 'authority-denied',
+      tone: 'warning',
+    };
+  }
+  if (/PROVIDER|UNAVAILABLE|TIMEOUT|MIGRATION|DATABASE/u.test(code)) {
+    return {
+      title: 'A dependency is not ready',
+      description: 'Your product is still available. Retry this capability after its provider or migration is ready.',
+      reference: 'dependency-unavailable',
+      tone: 'warning',
+    };
+  }
+  return {
+    title: 'This page could not be rendered',
+    description: 'No application data was changed. Retry the request; if it continues, inspect the server correlation log.',
+    reference: 'unexpected-route-error',
+    tone: 'danger',
+  };
+}
+
+function publicFailureCode(error: unknown): string {
+  if (!error || typeof error !== 'object') return '';
+  const code = Reflect.get(error, 'code');
+  const status = Reflect.get(error, 'status');
+  return `${typeof code === 'string' ? code : ''} ${typeof status === 'number' ? status : ''}`.toUpperCase();
+}

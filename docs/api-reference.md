@@ -26,6 +26,7 @@ and the v0.7 function-native execution and Agentic Start contracts.
 - `@applik8s/server`: framework-neutral authenticated request scope and Fetch-compatible Kubernetes gateway.
 - `@applik8s/vite`: graph discovery, dual-runtime facade partitioning, dependency-zone enforcement, and web-artifact recording.
 - `@applik8s/tanstack-start`: the thin Nitro/TanStack adapter; it does not re-export application providers.
+- `@applik8s/applik8s/search-runtime`: focused PostgreSQL search runtime used by generated gateways and projection workers; application authoring should normally use the umbrella model/search APIs.
 
 The umbrella package is the normal application-authoring and integration surface. Code that must be captured inside a minimal WASM reconciliation closure should import focused handler-safe APIs from `@applik8s/sdk` or an explicitly documented handler-safe subpath. The compiler follows the reachable closure and fails closed on unsupported Node or integration dependencies; it does not promise that importing the umbrella entrypoint from inside a handler is minimal or portable.
 
@@ -284,6 +285,15 @@ transactional-outbox machinery. Authors do not maintain `.actions({...})`,
 `.operation(...)`, or `.action(...)` registries. Public type and runtime tests
 enforce that those registries are absent.
 
+A promoted relational, analytical, or Kubernetes model exposes two
+function-native read declarations. `Model.query(contract, implementation)` is
+a one-shot authorized snapshot; `Model.view(contract, implementation)` is the
+persistent invalidation-aware form used by live clients. Both infer stable
+identity from a named implementation and share typed input/output schemas,
+read dependencies, provider authority, trusted context, and hard budgets. The
+application graph records `query` versus `view` explicitly rather than making
+the runtime infer lifecycle semantics from client usage.
+
 ## Maintained Operations UI
 
 `application.include(operationsOverview)` installs the bounded,
@@ -319,7 +329,7 @@ The defaults are deliberately bounded: Postgres/CNPG for models; Valkey for inde
 
 “Broad provider implementations” can also mean multiple production-scale adapters behind each contract—for example S3 and GCS, several hosted queues, multiple SQL databases, secret managers, and several gateway choices. v0.3 does not require that catalog: it requires one working zero-configuration default for every native interface. `defaultApplicationProviders` exposes those choices, while `app.defaults(...)` and `app.provide(...)` remain override points.
 
-Applik8s qualifies TypeKro 0.33.5 and consumes its production Valkey,
+Applik8s qualifies TypeKro 0.33.6 and consumes its production Valkey,
 Rook/Ceph, NATS/JetStream, Harbor, Hatchet, OpenSearch, Ory, and deployment
 planning surfaces through the focused deployment packages. These are explicit
 profile scale-up paths rather than unconditional defaults: operators and

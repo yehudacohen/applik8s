@@ -1,22 +1,24 @@
 // typecast-file-boundary: PostgreSQL vertical fixtures decode controlled fake result rows into the same runtime shapes used by the adapter.
 
-import { type } from 'arktype';
 import type { ApplicationExecutionPrincipal } from '@applik8s/core';
+import { type } from 'arktype';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import postgres from 'postgres';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { testApplicationPrincipal } from '../../../test-support/application-principal.js';
 import { app } from '../src/application.js';
+import { withApplicationManagedEffects } from '../src/application-managed-effects.js';
+import { runApplicationModelBeforeCommit } from '../src/application-model-policy.js';
 import { type ApplicationRuntimeModelContract, applicationModelMigrationPreflightSql, applicationModelMigrationSql } from '../src/application-models.js';
 import { generatedApplicationRuntimeModuleSource } from '../src/application-runtime-modules.js';
-import { runApplicationModelBeforeCommit } from '../src/application-model-policy.js';
 import { applicationRequestContextValues } from '../src/command-principal.js';
 import { command, event } from '../src/dsl.js';
-import { closePostgresModelCommandRuntime, executeFunctionNativePostgresModelEdit, executePostgresModelCommand, isRetryablePostgresTransactionError, type PostgresModelCommandEventDefinition, normalizePostgresNativeModelValue, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
+import { closePostgresModelCommandRuntime, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, executePostgresModelCommand, type FunctionNativePostgresNestedOperation, isRetryablePostgresTransactionError, normalizePostgresNativeModelValue, type PostgresModelCommandEventDefinition, recordPostgresModelCommandTerminalFailure } from '../src/model-command-postgres-runtime.js';
 import { applicationModelCommandBindingForOperation, nativeApplicationModelBindingFor, nativeApplicationModelCommandRegistrar } from '../src/native-models.js';
 import { cleanupPostgresCommandData, observePostgresOutboxLag, relayPostgresCommandOutbox, relayPostgresEventOutbox } from '../src/postgres-outbox-runtime.js';
 import { applicationRelationalFrameworkMigrationSql } from '../src/relational-runtime.js';
+import { createApplicationFunctionNativeOperationHandle } from '../src/stream-worker-runtime.js';
 import { closePostgresModelClients, createPostgresModelClient } from '../src/transactional-database-postgres-runtime.js';
 
 const liveDatabaseUrl = process.env.APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL;
@@ -50,6 +52,43 @@ describe('Postgres TransactionalDatabase script runtime', () => {
     expect(isRetryablePostgresTransactionError({ code: '40001' })).toBe(true);
     expect(isRetryablePostgresTransactionError({ code: '23505' })).toBe(false);
     expect(isRetryablePostgresTransactionError(new Error('connection failed'))).toBe(false);
+  });
+
+  it('passes the compiler-owned durable message identity to inferred operation routing', async () => {
+    const operation = {
+      apiVersion: 'applik8s.operation/v1alpha1',
+      kind: 'applicationOperation',
+      id: 'GeneratedIdentity.create',
+      model: 'GeneratedIdentity',
+      name: 'create',
+      operation: 'create',
+      transport: 'command',
+    } as const;
+    const handle = createApplicationFunctionNativeOperationHandle<
+      { readonly value: string },
+      { readonly identity: string }
+    >({
+      operation,
+      command: { id: 'models.GeneratedIdentity.create.v1' },
+      key: (_input, _context, messageId) => messageId,
+    });
+
+    const result = await withApplicationManagedEffects({
+      commandId: 'source-event',
+      routingContext: {},
+      emit: () => {
+        throw new Error('not used');
+      },
+      invoke: () => {
+        throw new Error('not used');
+      },
+      async invokeAtomic(_operation, _input, route) {
+        const routed = route('deterministic-nested-message');
+        return { identity: routed.targetKey };
+      },
+    }, () => handle({ value: 'created' }));
+
+    expect(result).toEqual({ identity: 'deterministic-nested-message' });
   });
 
   it('normalizes provider-native timestamps to the logical JSON model representation', () => {
@@ -654,6 +693,203 @@ describe.runIf(liveDatabaseUrl)('Postgres TransactionalDatabase script runtime l
       'DELETE FROM applik8s_command_inbox WHERE binding_id = $1',
       [bindingId],
     );
+  });
+
+  it('returns provisional nested-operation results and commits or rolls them back with the lifecycle transaction', async () => {
+    if (!liveDatabaseUrl) {
+      throw new Error('Function-native nested-operation test requires APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_RUNTIME_DATABASE_URL.');
+    }
+    const atomicModel = {
+      ...scriptNoteModel(
+        `applik8s_function_native_atomic_${process.pid}`,
+        'APPLIK8S_TRANSACTIONAL_DATABASE_SCRIPT_LIVE_NOTE_DATABASE_URL',
+      ),
+      name: 'ScriptAtomicNote',
+    };
+    const createBindingId = `function-native-atomic-create-${process.pid}`;
+    const updateBindingId = `function-native-atomic-update-${process.pid}`;
+    await sql.unsafe(applicationModelMigrationSql(atomicModel));
+    await sql.unsafe(
+      'DELETE FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[])',
+      [[createBindingId, updateBindingId]],
+    );
+    const client = createPostgresModelClient<{ readonly message: string }>(
+      atomicModel,
+    );
+    const admittedPrincipal = testApplicationPrincipal('atomic-author', {
+      authorityRevision: 'atomic-authority-v1',
+      trustedContext: { tenantId: 'atomic-tenant' },
+    });
+    const admittedContext = {
+      values: applicationRequestContextValues(
+        admittedPrincipal,
+        'atomic-authority-v1',
+        { tenantId: 'atomic-tenant' },
+      ),
+      digest: 'e'.repeat(64),
+    } as const;
+    let createInvocations = 0;
+    let updateInvocations = 0;
+    const observedPrincipals: string[] = [];
+    const observedTenants: string[] = [];
+    const operation = (
+      operationId: string,
+      bindingId: string,
+      kind: 'create' | 'update',
+    ): FunctionNativePostgresNestedOperation => ({
+      operationId,
+      bindingId,
+      operation: kind,
+      command: { name: operationId.slice(0, -3), version: 'v1' },
+      errors: [],
+      schemas: {
+        input: {},
+        output: {},
+        errors: {},
+        events: {},
+        commands: {},
+      },
+      model: atomicModel,
+      models: [atomicModel],
+      selfRead: false,
+      historyModels: [],
+      retry: { mode: 'boundedExponentialBackoff', maxAttempts: 3, initialDelayMs: 1, maxDelayMs: 10 },
+      history: false,
+      outbox: [],
+      commands: [],
+      ordering: 'serial',
+      ...(kind === 'create'
+        ? {
+            initialize: (input: object) => ({ message: String(Reflect.get(input, 'message')) }),
+          }
+        : {}),
+      async handler(target, input, context) {
+        const message = String(Reflect.get(input, 'message'));
+        if (context.principal?.id) observedPrincipals.push(context.principal.id);
+        const tenantId = context.trustedContext.tenantId;
+        if (typeof tenantId === 'string') observedTenants.push(tenantId);
+        if (kind === 'create') createInvocations += 1;
+        else {
+          updateInvocations += 1;
+          target.patch({ spec: { message } });
+        }
+        return { identity: target.id, value: target.spec };
+      },
+    });
+    const createId = 'models.ScriptAtomicNote.create.v1';
+    const updateId = 'models.ScriptAtomicNote.update.v1';
+    const operations = [
+      operation(createId, createBindingId, 'create'),
+      operation(updateId, updateBindingId, 'update'),
+    ];
+    const createNote = createApplicationFunctionNativeOperationHandle<
+      { readonly id: string; readonly message: string },
+      { readonly identity: string; readonly value: { readonly message: string }; readonly revision?: string }
+    >({
+      operation: {
+        apiVersion: 'applik8s.operation/v1alpha1',
+        kind: 'applicationOperation',
+        id: createId,
+        model: atomicModel.name,
+        name: 'create',
+        operation: 'create',
+        transport: 'command',
+      },
+      command: { id: createId },
+      key: (input) => input.id,
+    });
+    const updateNote = createApplicationFunctionNativeOperationHandle<
+      { readonly id: string; readonly message: string },
+      { readonly identity: string; readonly value: { readonly message: string }; readonly revision?: string }
+    >({
+      operation: {
+        apiVersion: 'applik8s.operation/v1alpha1',
+        kind: 'applicationOperation',
+        id: updateId,
+        model: atomicModel.name,
+        name: 'update',
+        operation: 'update',
+        transport: 'command',
+      },
+      command: { id: updateId },
+      key: (input) => input.id,
+    });
+    const execution = {
+      bindingId: `function-native-atomic-lifecycle-${process.pid}`,
+      databaseUrl: liveDatabaseUrl,
+      connectionModel: atomicModel,
+      operations,
+      delivery: {
+        id: 'function-native-atomic-event-1',
+        idempotencyKey: 'function-native-atomic-event-1',
+        recordedAt: '2026-08-09T00:00:00.000Z',
+        context: admittedContext,
+      },
+    };
+    const invoke = () => executeFunctionNativePostgresTransaction(
+      execution,
+      async () => {
+        const created = await createNote({ id: 'atomic-note', message: 'created' });
+        expect(created).toMatchObject({
+          identity: 'atomic-note',
+          value: { message: 'created' },
+          revision: expect.any(String),
+        });
+        const updated = await updateNote({ id: created.identity, message: 'updated' });
+        expect(updated).toMatchObject({
+          identity: 'atomic-note',
+          value: { message: 'updated' },
+          revision: expect.any(String),
+        });
+        return updated;
+      },
+    );
+
+    await expect(invoke()).resolves.toMatchObject({
+      identity: 'atomic-note',
+      value: { message: 'updated' },
+      revision: expect.any(String),
+    });
+    await expect(invoke()).resolves.toMatchObject({
+      identity: 'atomic-note',
+      value: { message: 'updated' },
+      revision: expect.any(String),
+    });
+    expect(createInvocations).toBe(1);
+    expect(updateInvocations).toBe(1);
+    expect(observedPrincipals).toEqual([
+      admittedPrincipal.id,
+      admittedPrincipal.id,
+    ]);
+    expect(observedTenants).toEqual(['atomic-tenant', 'atomic-tenant']);
+    await expect(client.get({ id: 'atomic-note' })).resolves.toMatchObject({
+      spec: { message: 'updated' },
+    });
+
+    await expect(executeFunctionNativePostgresTransaction(
+      {
+        ...execution,
+        delivery: {
+          id: 'function-native-atomic-event-rollback',
+          idempotencyKey: 'function-native-atomic-event-rollback',
+        },
+      },
+      async () => {
+        await createNote({ id: 'rolled-back-note', message: 'temporary' });
+        throw new Error('rollback-after-provisional-result');
+      },
+    )).rejects.toThrow(/rollback-after-provisional-result/);
+    await expect(client.get({ id: 'rolled-back-note' })).resolves.toBeUndefined();
+    await expect(sql.unsafe(
+      'SELECT count(*)::int AS count FROM applik8s_command_inbox WHERE binding_id = $1 AND target_key = $2',
+      [createBindingId, 'rolled-back-note'],
+    )).resolves.toEqual([{ count: 0 }]);
+
+    await sql.unsafe(
+      'DELETE FROM applik8s_command_inbox WHERE binding_id = ANY($1::text[])',
+      [[createBindingId, updateBindingId]],
+    );
+    await sql.unsafe(`DROP TABLE IF EXISTS ${quoteIdentifier(atomicModel.tableName)}`);
   });
 
   it('executes direct native create, update, and delete operations with committed lifecycle events and replay', async () => {

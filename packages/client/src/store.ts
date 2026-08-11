@@ -188,7 +188,18 @@ export class ApplicationQueryClient {
       return;
     }
     if (event.kind === 'invalidate') entry.invalidationEpoch += 1;
-    entry.state = { ...entry.state, cursor: event.cursor, stale: event.kind === 'invalidate' || entry.state.stale, revision: entry.state.revision + 1 };
+    const { error: _error, ...stateWithoutError } = entry.state;
+    entry.reconnectAttempt = 0;
+    entry.state = {
+      ...stateWithoutError,
+      phase: 'ready',
+      cursor: event.cursor,
+      // A keepalive on a resumed stream proves the server accepted the resume
+      // cursor and has delivered every intervening frame. Do not clear stale
+      // while an authoritative requery is still in flight.
+      stale: event.kind === 'invalidate' || entry.refresh !== undefined,
+      revision: entry.state.revision + 1,
+    };
     this.#notify(entry);
     if (event.kind === 'invalidate') void this.#refresh(entry);
   }

@@ -311,6 +311,9 @@ describe('authenticated command gateway', () => {
     });
     let resultReadAllowed = true;
     let currentAuthorityRevision = 'authority-1';
+    let currentTrustedContext: Readonly<Record<string, string>> = {
+      organizationId: 'organization-1',
+    };
     const authorizeOperation = vi.fn(async (request: Parameters<NonNullable<Parameters<typeof createApplicationCommandGateway>[0]['authorizeOperation']>>[0]) => ({
       allowed: true as const,
       receipt: {
@@ -356,7 +359,7 @@ describe('authenticated command gateway', () => {
           // receive this admission revision.
           authorityRevision: 'identity-admission-7',
         },
-        trustedContext: { organizationId: 'organization-1' },
+        trustedContext: currentTrustedContext,
       }),
       admitPrincipal: async () => ({
         ...principalContract,
@@ -409,6 +412,7 @@ describe('authenticated command gateway', () => {
     // revision and must be revalidated rather than rejected as a malformed
     // cursor.
     currentAuthorityRevision = 'authority-2';
+    currentTrustedContext = {};
     const progress = await gateway.handle(new Request(
       'https://catalog.test/commands/cards.rename.v1/progress',
       { method: 'POST', body: JSON.stringify({ cursor: submission.progressCursor }) },
@@ -421,6 +425,10 @@ describe('authenticated command gateway', () => {
     expect(revalidateOperation).toHaveBeenCalledWith(expect.objectContaining({
       boundary: 'result-read',
       receipt: expect.objectContaining({ id: 'receipt-1' }),
+      trustedContextDigest: Reflect.get(
+        durableReceipt as object,
+        'trustedContextDigest',
+      ),
       principal: expect.objectContaining({
         id: 'principal:user-1',
         authorityRevision: 'authority-2',

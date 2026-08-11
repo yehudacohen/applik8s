@@ -95,6 +95,41 @@ describe('application static authority declarations', () => {
     });
   });
 
+  it('declares an exact provider-verified one-time role bootstrap', () => {
+    const application = app('operator-bootstrap');
+    const database = application.database.postgres('application', {
+      schema: {},
+    });
+    const records = pgTable('operator_records', {
+      id: text('id').primaryKey(),
+    });
+    const Record = application.model(records, { name: 'Record', database });
+    application.role('application-operator')
+      .can(Record.delete.all())
+      .bootstrap({
+        id: 'identity:deterministic:local-developer',
+        kind: 'human',
+        issuer: 'applik8s://operator-bootstrap/identity/deterministic',
+        subject: 'local-developer',
+      });
+
+    const authority = applicationGraphFor(application)?.nodes.find(
+      (node) => node.kind === 'authorityManifest',
+    );
+    expect(authority).toMatchObject({
+      manifest: {
+        roleBootstraps: [{
+          id: 'bootstrap:operator-bootstrap:role:application-operator',
+          roleId: 'role:operator-bootstrap:application-operator',
+          identity: {
+            id: 'identity:deterministic:local-developer',
+            subject: 'local-developer',
+          },
+        }],
+      },
+    });
+  });
+
   it('binds an OAuth workload client to its exact issuer and typed operation', () => {
     const requests = pgTable('oauth_authority_requests', {
       id: text('id').primaryKey(),

@@ -120,9 +120,8 @@ assert(
   generatedIdentitySources.some(
     ({ name, source }) =>
       name.startsWith('identity-starter-')
-      && source.includes(
-        'runtime.authenticateAgenticStarterRequest(request)',
-      ),
+      && source.includes('@applik8s/start-agentic/identity-runtime')
+      && source.includes('authenticateAgenticStarterRequest(request)'),
   ),
   'Identity Start Starter admission must use the maintained deterministic administrator and authoritative workspace-membership boundary.',
 );
@@ -168,6 +167,51 @@ for (const kind of [
     `Identity Start application graph is missing ${kind}.`,
   );
 }
+const authorityManifest = graph.nodes.find(
+  (node) => node.kind === 'authorityManifest',
+)?.manifest;
+const administrator = authorityManifest?.roles?.find(
+  (role) => role.name === 'administrator',
+);
+const starterAdministrator = authorityManifest?.roles?.find(
+  (role) => role.name === 'starter-administrator',
+);
+const applicationOperator = authorityManifest?.roles?.find(
+  (role) => role.name === 'application-operator',
+);
+const bootstrap = authorityManifest?.roleBootstraps?.find(
+  (candidate) => candidate.roleId === starterAdministrator?.id,
+);
+assert(
+  administrator
+    && starterAdministrator
+    && bootstrap?.identity?.id === 'identity:deterministic:local-developer'
+    && !authorityManifest.roleBootstraps.some(
+      (candidate) => candidate.roleId === administrator.id,
+    ),
+  'Identity Start must keep provider-issued administrator authority separate from the exact Starter identity bootstrap.',
+);
+const operationsForRole = (role) => [
+  ...new Set(
+    authorityManifest.permissions
+      .filter((permission) => role.permissionIds.includes(permission.id))
+      .flatMap((permission) => permission.operationIds),
+  ),
+].sort();
+assert(
+  JSON.stringify(operationsForRole(administrator))
+    === JSON.stringify(operationsForRole(starterAdministrator)),
+  'Identity Start provider and Starter administrators must receive the same product-operation policy.',
+);
+const operationsSnapshotId =
+  'applik8s://queries/Conversation/operations/operationsSnapshot';
+assert(
+  applicationOperator
+    && operationsForRole(applicationOperator).includes(operationsSnapshotId)
+    && !operationsForRole(administrator).includes(operationsSnapshotId)
+    && !operationsForRole(starterAdministrator).includes(operationsSnapshotId),
+  'Identity Start must keep application-operator visibility separate from product administration.',
+);
 assert(
   graph.nodes.some(
     (node) =>

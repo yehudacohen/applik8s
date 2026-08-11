@@ -13,6 +13,7 @@ still uses the same typed provider contracts as Dedicated and External.
 
 ```sh
 bun run check
+bun run doctor       # read-only project, environment-name, and cluster checks
 bun run deploy       # requires package.json applik8s.context or --context
 bun run dev           # web-only process; useful for UI-only work
 bun run dev:cluster   # credential-free Starter + in-cluster Vite hot reload
@@ -86,6 +87,7 @@ bun run typecheck
 bun run test
 bun run lint
 bun run check         # types, graph build, migrations, and focused tests
+bun run doctor        # check prerequisites without reading .env values
 bun run plan          # inspect .applik8s/deploy before applying
 bun run deploy
 bun run status

@@ -194,7 +194,7 @@ try {
   session = await createIdentityStartOrySession({
     publicUrl: kratosPublicUrl,
     adminUrl: kratosAdminUrl,
-    roles: ['reviewer', 'administrator'],
+    roles: ['reviewer', 'administrator', 'application-operator'],
   });
   record(
     'ory-human-session-admission',
@@ -224,7 +224,7 @@ try {
   }
   observed.set('provider-derived-role-authority', {
     test:
-      'Ory provider metadata admitted reviewer and administrator authority for maintained browser journeys',
+      'Ory provider metadata admitted separate reviewer, administrator, and application-operator authority for maintained browser journeys',
     observedAt: human.completedAt,
   });
   observed.set('durable-human-approval', {

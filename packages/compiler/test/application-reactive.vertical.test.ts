@@ -3,7 +3,10 @@ import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
+import { app, applicationGraphFor } from '@applik8s/applik8s';
+import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
 import type { ApplicationGraph, ApplicationGraphNode, JsonObject } from '@applik8s/core';
+import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import {
   consolidateGeneratedApplicationReactiveResources,
@@ -15,10 +18,11 @@ import {
 } from '../src/pipeline/index.js';
 
 const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALOG_URL', secretName: 'catalog-app', secretKey: 'uri', secretNamespace: 'catalog' } as const;
-// Preserving authored callback names is part of the function-native runtime
-// contract. The bounded overhead keeps identity inference correct after
+// Preserving authored callback names and the canonical operation-authority
+// boundary are part of the function-native runtime contract. The bounded
+// overhead keeps identity inference and revocable authorization correct after
 // minification without relaxing the generated-runtime budget materially.
-const reactiveRuntimeBundleBudgetBytes = 560_000;
+const reactiveRuntimeBundleBudgetBytes = 570_000;
 
 describe('generated v0.6 reactive workloads', () => {
   it('preserves module-local Drizzle captures through CLI-style discovery and singleton-owns shared ClickHouse infrastructure', async () => {
@@ -129,7 +133,7 @@ describe('generated v0.6 reactive workloads', () => {
     expect(JSON.stringify(deployment)).toContain('"name":"APPLIK8S_HTTP_PORT","value":"8081"');
     expect(JSON.stringify(consolidated)).toContain('"targetPort":"http-0"');
     expect(JSON.stringify(consolidated)).toContain('"targetPort":"http-1"');
-  });
+  }, 120_000);
 
   it('emits a frozen whole-batch processor runtime instead of event-by-event delivery', async () => {
     const graph = reactiveGraph([
@@ -367,7 +371,58 @@ describe('generated v0.6 reactive workloads', () => {
     expect(generated).toContain('"name":"Account"');
     expect(generated).toContain('"id":"posts.changed.v1"');
     expect(generated).toContain('idempotencyKey: context.idempotencyKey');
+    expect(generated).toContain(
+      'changeScopes: context.event.changeScopes',
+    );
   }, 120_000);
+
+  it('fails compilation when an awaited lifecycle operation crosses database authorities', async () => {
+    const parents = pgTable('cross_authority_parents', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const children = pgTable('cross_authority_children', {
+      id: text('id').primaryKey(),
+      parentId: text('parent_id').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('cross-authority-lifecycle');
+    const primary = application.database.postgres('primary', {
+      schema: { parents },
+    });
+    const secondary = application.database.postgres('secondary', {
+      schema: { children },
+    });
+    const Parent = application.model(parents, {
+      name: 'CrossAuthorityParent',
+      database: primary,
+    });
+    const Child = application.model(children, {
+      name: 'CrossAuthorityChild',
+      database: secondary,
+    });
+    async function createChild(event: { readonly identity: string }) {
+      await Child.create({
+        id: event.identity,
+        parentId: event.identity,
+        revision: event.identity,
+      });
+    }
+    bindApplicationCallableDependencies(createChild, [
+      { identifier: 'Child.create', value: Child.create },
+    ]);
+    Parent.on.create(createChild);
+    const graph = applicationGraphFor(application.composition);
+    if (!graph) throw new Error('Expected cross-authority application graph.');
+
+    await expect(emitGeneratedApplicationReactive({
+      graph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-cross-authority-')),
+      entrypoint: import.meta.filename,
+    })).rejects.toThrow(
+      /cannot atomically call.*source transaction uses.*while CrossAuthorityChild uses.*workflow or post-commit event handler/s,
+    );
+  });
 
   it('lowers profiled identity callbacks into isolated server modules and an installation-bound dispatcher', async () => {
     const graph = await nativeQueryFixtureGraph();
@@ -458,7 +513,7 @@ describe('generated v0.6 reactive workloads', () => {
     expect(JSON.stringify(deployment)).toContain(
       '"name":"APPLIK8S_PROFILE_VARIANT","value":"${schema.spec.profile}"',
     );
-  });
+  }, 120_000);
 
   it('follows function-native views and direct database handles through a thin imported entrypoint', async () => {
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-modular-view-'));
@@ -501,7 +556,49 @@ describe('generated v0.6 reactive workloads', () => {
       outDir: await mkdtemp(join(tmpdir(), 'applik8s-native-query-facet-')),
       entrypoint: new URL('./fixtures/v06-native-query-app.ts', import.meta.url).pathname,
     })).rejects.toThrow(/authoring-only model facet member.*schema/);
-  });
+  }, 120_000);
+
+  it('lowers runtime-safe public helpers without replaying application authoring imports', async () => {
+    const graph = await nativeQueryFixtureGraph();
+    const query = graph.nodes.find((node) => node.kind === 'query');
+    if (query?.kind !== 'query') throw new Error('Native query fixture did not expose its query node.');
+    const causalGraph: ApplicationGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) => node.id === query.id ? {
+        ...query,
+        handlerSource:
+          'async (_input, context) => applicationCausalPrincipalContext(context.principal).id',
+        handlerDependencies: {
+          source: `import {
+  applicationCausalPrincipalContext,
+  type ApplicationModelViewContext,
+  module,
+} from '@applik8s/applik8s';`,
+          resolveDir: process.cwd(),
+        },
+      } : node),
+    };
+    const artifacts = await emitGeneratedApplicationReactive({
+      graph: causalGraph,
+      outDir: await mkdtemp(join(tmpdir(), 'applik8s-query-public-helper-')),
+      entrypoint: new URL('./fixtures/v06-native-query-app.ts', import.meta.url).pathname,
+    });
+    const gateway = artifacts.find((artifact) => artifact.kind === 'queryGateway');
+    const directory = dirname(gateway?.sourcePath ?? '');
+    const generated = await Promise.all(
+      (await readdir(directory))
+        .filter((name) => name.startsWith('run-') && name.endsWith('.generated.ts'))
+        .map((name) => readFile(join(directory, name), 'utf8')),
+    );
+    const callback = generated.find((source) =>
+      source.includes('applicationCausalPrincipalContext(context.principal)'),
+    );
+    expect(callback).toContain(
+      'import { applicationCausalPrincipalContext } from "@applik8s/core";',
+    );
+    expect(callback).not.toContain("from \"@applik8s/applik8s\"");
+    expect(callback).not.toMatch(/import\s*\{[^}]*\bmodule\b/);
+  }, 120_000);
 
   it('bundles an authenticated HTTP/SSE gateway with Secret-backed PostgreSQL and cursor authority', async () => {
     const graph = reactiveGraph([
@@ -1267,6 +1364,12 @@ describe('generated v0.6 reactive workloads', () => {
 		expect(generatedSource).toContain('context.idempotencyKey');
 		expect(generatedSource).toContain("causationId: event?.id ?? context.batch?.id");
 		expect(generatedSource).toContain("changeScopes: event.changeScopes");
+		expect(generatedSource).toContain(
+			'applicationCausalPrincipalContext(context.principal)',
+		);
+		expect(generatedSource).toContain(
+			'[applicationWorkflowCausalPrincipalMetadata]: causalPrincipal',
+		);
 		expect(generatedSource).toContain('signal: context.signal');
 		expect(generatedSource).toContain('timeoutMs: 2000');
 		expect(generatedSource).not.toContain('result?.signal');

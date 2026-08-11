@@ -1,11 +1,12 @@
 // typecast-file-boundary: schema-normalized streams, projections, and subscriptions cross erased graph registries and regain declaration-time generics by stable IDs.
 
 import {
-  getApplicationOperationContract,
   type ApplicationOperationAuthorizationContract,
   type ApplicationOperationLike,
+  getApplicationOperationContract,
 } from '@applik8s/client';
-import type { ApplicationMessageContractSchema, ApplicationProfiledCallbackContract, ApplicationProviderNode, ApplicationProviderRef, ApplicationRetryPolicy, ApplicationStreamNode, JsonObject, JsonValue } from '@applik8s/core';
+import type { ApplicationMessageContractSchema, ApplicationProfiledCallbackContract, ApplicationProviderNode, ApplicationProviderRef, ApplicationRetryPolicy, ApplicationStreamNode, ApplicationStreamProcessorNode, JsonObject, JsonValue } from '@applik8s/core';
+import { applicationOperationId } from '@applik8s/core';
 import type { SchemaInput } from '@applik8s/sdk';
 import { normalizeSchema } from '@applik8s/sdk';
 import type { ApplicationDatabaseBinding } from './application.js';
@@ -14,23 +15,24 @@ import {
   type SerializedApplicationCallback,
   serializeApplicationCallback,
 } from './application-callback.js';
+import { inferApplicationFunctionNativeTransaction } from './application-function-native-transactions.js';
 import type { ApplicationGraphState } from './application-graph-state.js';
 import { addApplicationGraphEdge, addApplicationGraphNode, addApplicationProviderBinding, addApplicationProviderRequirement } from './application-graph-state.js';
-import { inferApplicationFunctionNativeTransaction } from './application-function-native-transactions.js';
 import { applicationProviderGraphNodeId } from './application-identifiers.js';
 import type { ApplicationModelCommandBinding } from './application-models.js';
 import { registerApplicationObjectStore } from './application-object-storage.js';
+import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions } from './application-processor-policy.js';
 import {
   applicationProjectionRuntime,
   attachApplicationProjectionRebuildTarget,
 } from './application-projection-binding.js';
-import { type ApplicationProcessorOptions, normalizeApplicationProcessorOptions } from './application-processor-policy.js';
+import { applicationCallableProviderDependencies } from './application-provider-dependencies.js';
 import type { ApplicationAnalyticalDatabaseProvider, ApplicationIdentityProvider, ApplicationIndexBackend, ApplicationIndexStoreProviderToken, ApplicationProviderBinding, ApplicationProviderQualification, ApplicationProviderSelectionValue, ApplicationProviderState } from './application-providers.js';
 import { applicationAnalyticalDatabaseImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationProviderImplementationName, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationTransactionalDatabaseImplementation, defaultApplicationIndexProvider, IndexStore, isApplicationAnalyticalDatabaseProvider, isApplicationIdentityProvider, isClickHouseAnalyticalDatabaseProvider, isPostgresAnalyticalDatabaseProvider } from './application-providers.js';
 import type { ApplicationQueryBinding, ApplicationQueryPrincipal } from './application-queries.js';
 import { applicationQueryBindingForOperation } from './application-queries.js';
 import { applicationTypeKroGraphValue, applicationTypeKroSerializedValue, applicationTypeKroString } from './application-typekro-values.js';
-import { applicationGeneratedDependencyAlias, type ApplicationTaskBinding, type ApplicationWorkflowBinding, type ApplicationWorkflowState, recordApplicationWorkflowEngine } from './application-workflows.js';
+import { type ApplicationTaskBinding, type ApplicationWorkflowBinding, type ApplicationWorkflowState, applicationGeneratedDependencyAlias, recordApplicationWorkflowEngine } from './application-workflows.js';
 import { applicationRelationalModelOptionsFor } from './drizzle.js';
 import type { EventDefinition, StreamDefinition } from './dsl.js';
 import { applicationModelCommandBindingForOperation, applicationModelFacet, type CommonApplicationModelFacet, getApplicationModelFacet } from './native-models.js';
@@ -1127,6 +1129,28 @@ export function registerApplicationStreamProcessor<
   return registerApplicationStreamProcessorInternal(state, name, source, options, handler, 'event');
 }
 
+/** @internal Lifecycle registrations may use their source model as the durable command-staging boundary. */
+export function registerApplicationLifecycleStreamProcessor<
+  TPayload extends object,
+>(
+  state: ApplicationReactiveState,
+  name: string,
+  source: ApplicationStreamBinding<TPayload>,
+  options: ApplicationStreamProcessOptions,
+  handler: ApplicationStreamProcessHandler<TPayload>,
+  sourceModel: object,
+): ApplicationStreamProcessorBinding<TPayload> {
+  return registerApplicationStreamProcessorInternal(
+    state,
+    name,
+    source,
+    options,
+    handler,
+    'event',
+    sourceModel,
+  );
+}
+
 export function registerApplicationStreamBatchProcessor<
   TPayload extends object,
   TSchedules extends ApplicationStreamScheduleTargets = Readonly<Record<never, never>>,
@@ -1146,6 +1170,7 @@ function registerApplicationStreamProcessorInternal<
   options: ApplicationStreamProcessOptions<TSchedules, TTasks> | ApplicationStreamBatchOptions<TSchedules, TTasks>,
   handler: ApplicationStreamProcessHandler<TPayload, TSchedules, TTasks> | ApplicationStreamBatchHandler<TPayload, TSchedules, TTasks>,
   invocation: 'event' | 'batch',
+  implicitSourceModel?: object,
 ): ApplicationStreamProcessorBinding<TPayload, TSchedules, TTasks> {
   const nodeId = reactiveNodeId('streamProcessor', name);
   if (!/^[a-z][a-z0-9-]*$/.test(name)) throw new Error(`Application stream processor ${JSON.stringify(name)} must be a lowercase DNS-style identifier.`);
@@ -1180,14 +1205,49 @@ function registerApplicationStreamProcessorInternal<
   const schedules = recordApplicationStreamSchedules(state, nodeId, options.schedules ?? {});
   if (options.tasks && options.workflows) throw new Error(`Application stream processor ${name} must use workflows or deprecated tasks, not both.`);
   const inferred = expandApplicationCallbackDependencies({
-    calls: options.__generatedCalls,
+    // Maintained packages can attach their private dependency graph directly
+    // to the registered handler. Including the handler as a root preserves
+    // that metadata without requiring application-facing __generatedCalls.
+    calls: [handler, ...(options.__generatedCalls ?? [])],
     bindings: options.__generatedBindings,
   });
-  const functionNativeTransaction = inferApplicationFunctionNativeTransaction(
+  const discoveredTransaction = inferApplicationFunctionNativeTransaction(
     state,
     `Application stream processor ${name}`,
     inferred,
     invocation === 'batch' ? 'frozen-batch-id' : 'source-event-id',
+  );
+  const operationBindings = applicationStreamOperationBindings(
+    state,
+    name,
+    inferred.bindings,
+  );
+  const queryBindings = applicationStreamQueryBindings(
+    state,
+    name,
+    inferred.bindings,
+  );
+  const awaitedValues = new Set(Object.values(inferred.awaited));
+  const unawaitedOperations = Object.entries(inferred.bindings)
+    .filter(([, value]) => applicationModelCommandBindingForOperation(value))
+    .filter(([, value]) => !awaitedValues.has(value))
+    .map(([identifier]) => identifier);
+  if (unawaitedOperations.length > 0) {
+    throw new Error(
+      `Application stream processor ${name} must await direct model operations (${unawaitedOperations.join(', ')}). Awaiting returns a provisional result and lets Applik8s roll back every same-database write if the callback later fails. Use context.send(...) explicitly for post-commit asynchronous delivery.`,
+    );
+  }
+  if (operationBindings.length > 0 && !implicitSourceModel) {
+    throw new Error(
+      `Application stream processor ${name} reaches direct model operations outside a model lifecycle callback. Use Model.on.create/update/delete for atomic composition, or context.send(...) for post-commit delivery.`,
+    );
+  }
+  const functionNativeTransaction = discoveredTransaction;
+  const providerBindings = applicationCallableProviderDependencies(
+    {
+      ...inferred.bindings,
+      generatedHandlerProviderDependencies: handler,
+    },
   );
   const inferredTasks = Object.fromEntries(
     inferred.calls
@@ -1218,6 +1278,8 @@ function registerApplicationStreamProcessorInternal<
       .map(({ identifier }) => identifier),
     ...(functionNativeTransaction?.eventBindings ?? [])
       .map(({ identifier }) => identifier),
+    ...operationBindings.map(({ identifier }) => identifier),
+    ...queryBindings.map(({ identifier }) => identifier),
   ]
     .flatMap((identifier) => [
       identifier,
@@ -1249,6 +1311,12 @@ function registerApplicationStreamProcessorInternal<
     ...(serialized.location ? { handlerLocation: serialized.location } : {}),
     ...(serialized.unresolved ? { handlerUnresolved: serialized.unresolved } : {}),
     ...(functionNativeTransaction ? { functionNativeTransaction } : {}),
+    ...(operationBindings.length > 0 ? { operationBindings } : {}),
+    ...(queryBindings.length > 0 ? { queryBindings } : {}),
+    ...(inferred.callables.length > 0
+      ? { callableBindings: inferred.callables }
+      : {}),
+    ...(providerBindings.length > 0 ? { providerBindings } : {}),
     ...(schedules.length > 0 ? {
       schedules,
     } : {}),
@@ -1280,6 +1348,27 @@ function registerApplicationStreamProcessorInternal<
       });
     }
   }
+  for (const operation of operationBindings) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId },
+      to: operation.handler,
+      relationship: 'dependsOn',
+    });
+  }
+  for (const query of queryBindings) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId },
+      to: query.query,
+      relationship: 'reads',
+    });
+  }
+  for (const provider of providerBindings) {
+    addApplicationGraphEdge(state, {
+      from: { nodeId: provider.provider.nodeId },
+      to: { nodeId },
+      relationship: 'provides',
+    });
+  }
   addApplicationGraphEdge(state, { from: { nodeId }, to: sourceRef, relationship: 'reads' });
   for (const schedule of schedules) addApplicationGraphEdge(state, { from: { nodeId }, to: schedule.target, relationship: 'dependsOn' });
 	for (const task of tasks) addApplicationGraphEdge(state, { from: { nodeId }, to: task.target, relationship: 'dependsOn' });
@@ -1288,6 +1377,103 @@ function registerApplicationStreamProcessorInternal<
   // handler shapes; the erased graph binding intentionally exposes one
   // processor identity to deployment code.
   return { kind: 'applicationStreamProcessor', name, source, handler: handler as ApplicationStreamProcessHandler<TPayload, TSchedules, TTasks>, options };
+}
+
+function applicationStreamQueryBindings(
+  _state: ApplicationReactiveState,
+  _processorName: string,
+  bindings: Readonly<Record<string, unknown>>,
+): NonNullable<ApplicationStreamProcessorNode['queryBindings']> {
+  return Object.entries(bindings)
+    .flatMap(([identifier, value]) => {
+      const binding = applicationQueryBindingForOperation(value);
+      if (!binding) return [];
+      // Module replay can register the processor before the containing module's
+      // query nodes are merged into the root graph. The operation binding is
+      // already canonical proof that this is a registered view; final graph
+      // validation and compiler resolution fail closed if the exact node never
+      // appears, matching workflow query capture semantics.
+      return [{ identifier, query: { nodeId: `query.${binding.id}` } }];
+    })
+    .filter(
+      (binding, index, all) =>
+        !/^generatedCall\d+$/.test(binding.identifier)
+        && all.findIndex(
+          (candidate) =>
+            candidate.identifier === binding.identifier
+            && candidate.query.nodeId === binding.query.nodeId,
+        ) === index,
+    )
+    .sort((left, right) =>
+      `${left.identifier}:${left.query.nodeId}`.localeCompare(
+        `${right.identifier}:${right.query.nodeId}`,
+      ));
+}
+
+function applicationStreamOperationBindings(
+  state: ApplicationReactiveState,
+  processorName: string,
+  bindings: Readonly<Record<string, unknown>>,
+): NonNullable<ApplicationStreamProcessorNode['operationBindings']> {
+  return Object.entries(bindings)
+    .flatMap(([identifier, value]) => {
+      const binding = applicationModelCommandBindingForOperation(value);
+      const operation = getApplicationOperationContract(value);
+      if (!binding || !operation) return [];
+      const commandNode = state.graphNodes.find(
+        (candidate) =>
+          candidate.kind === 'command'
+          && candidate.name === binding.command,
+      );
+      const handler = commandNode
+        ? state.graphNodes.find(
+            (candidate) =>
+              candidate.kind === 'commandHandler'
+              && candidate.command.nodeId === commandNode.id,
+          )
+        : undefined;
+      if (commandNode?.kind !== 'command' || handler?.kind !== 'commandHandler') {
+        throw new Error(
+          `Application stream processor ${processorName} reaches ${binding.model}.${operation.name}, but its generated command handler is absent from the application graph.`,
+        );
+      }
+      const canonicalOperationId = applicationOperationId({
+        domain: 'models',
+        owner: binding.model,
+        operation: operation.name,
+      });
+      return [{
+        identifier,
+        operationId: canonicalOperationId,
+        ...(operation.id !== canonicalOperationId
+          ? { runtimeOperationId: operation.id }
+          : {}),
+        operation: {
+          apiVersion: 'applik8s.operation/v1alpha1' as const,
+          kind: 'applicationOperation' as const,
+          id: operation.id,
+          model: operation.model,
+          name: operation.name,
+          operation: operation.operation as 'create' | 'update' | 'delete',
+          transport: 'command' as const,
+        },
+        command: { nodeId: commandNode.id },
+        handler: { nodeId: handler.id },
+      }];
+    })
+    .filter(
+      (binding, index, all) =>
+        !/^generatedCall\d+$/.test(binding.identifier)
+        && all.findIndex(
+          (candidate) =>
+            candidate.identifier === binding.identifier
+            && candidate.operationId === binding.operationId,
+        ) === index,
+    )
+    .sort((left, right) =>
+      `${left.identifier}:${left.operationId}`.localeCompare(
+        `${right.identifier}:${right.operationId}`,
+      ));
 }
 
 function normalizeApplicationStreamBatchOptions(

@@ -1,12 +1,6 @@
 // typecast-file-boundary: persisted signal rows, provider receipts, and schema-validated action payloads cross erased storage records before typed hydration.
 import { createHash, randomUUID } from 'node:crypto';
 import type { JsonValue } from '@applik8s/core';
-import { validateMessage } from './application-workflow-serialization.js';
-import type {
-  ApplicationPostgresSql,
-  ApplicationPostgresTransactionSql,
-} from './postgres-runtime-contract.js';
-import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
 import type {
   ApplicationMatchedSignalOutcome,
   ApplicationSignal,
@@ -18,11 +12,17 @@ import type {
   ApplicationSignalDecision,
   ApplicationSignalDefinition,
   ApplicationSignalEmitOptions,
+  ApplicationSignalIssuance,
   ApplicationSignalOutcome,
   ApplicationSignalReference,
-  ApplicationSignalIssuance,
   ApplicationWorkflowSignalRuntime,
 } from './application-signals.js';
+import type {
+  ApplicationPostgresSql,
+  ApplicationPostgresTransactionSql,
+} from './postgres-runtime-contract.js';
+import { createApplicationPostgresSql } from './postgres-runtime-loader.js';
+import { validateRuntimeMessage } from './runtime-schema-validation.js';
 import type { ApplicationStreamPayloadDecoder } from './stream-processor-runtime.js';
 
 export interface ApplicationSignalIssueRequest<
@@ -303,7 +303,7 @@ export function createApplicationWorkflowSignalRuntime(
       const expiresAt = new Date(
         now.getTime() + applicationSignalDurationMs(emitOptions.expiresIn),
       ).toISOString();
-      const input = validateMessage(
+      const input = validateRuntimeMessage(
         definition.input,
         emitOptions.input,
         `${definition.id}.input`,
@@ -374,7 +374,7 @@ export function hydrateApplicationSignal<
         }
         let validated: object;
         try {
-          validated = validateMessage(
+          validated = validateRuntimeMessage(
             actionSchema,
             input,
             `${options.definition.id}.actions.${action}`,

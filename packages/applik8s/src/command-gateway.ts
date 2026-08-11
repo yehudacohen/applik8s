@@ -291,18 +291,25 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
           // receipt-less cursors retain revision-bound invalidation.
           || (cursor.version === 2
             && cursor.authorizationBinding !== cursorBinding(options.cursorSecret, 'authorization', principal.authorityRevision))) return json({ error: 'cursor_invalid' }, 400);
-        if (cursor.contextBinding !== cursorBinding(options.cursorSecret, 'context', contextDigest)) return json({ error: 'cursor_invalid' }, 400);
         const sql = command.sql ?? await database(databases, command.databaseUrl);
         if (cursor.version === 3) {
           if (!options.revalidateOperation) {
             throw new Error('Application command gateway cannot revalidate a protected result without canonical operation authority.');
           }
           const receipt = await readCommandAdmission(sql, cursor.durableScope);
+          // Receipt-backed progress is an observation of an already admitted
+          // operation. Its original trusted context may have been consumed by
+          // the operation itself (for example, deleting a workspace removes
+          // the caller's membership). Bind the signed cursor and result-read
+          // revalidation to the persisted issuance receipt while still
+          // authenticating the current principal above.
+          const issuanceContextDigest = receipt.trustedContextDigest;
+          if (cursor.contextBinding !== cursorBinding(options.cursorSecret, 'context', issuanceContextDigest)) return json({ error: 'cursor_invalid' }, 400);
           assertCommandAuthorizationReceipt(
             receipt,
             command,
             principal,
-            contextDigest,
+            issuanceContextDigest,
             receipt.inputDigest,
             'http',
             { allowHistoricalAuthorityRevision: true },
@@ -313,9 +320,11 @@ export function createApplicationCommandGateway<TPrincipal extends ApplicationQu
             boundary: 'result-read',
             principal,
             command,
-            trustedContextDigest: contextDigest,
+            trustedContextDigest: issuanceContextDigest,
           });
           if (!authorization.allowed) return json({ error: 'forbidden', code: authorization.code }, 403);
+        } else if (cursor.contextBinding !== cursorBinding(options.cursorSecret, 'context', contextDigest)) {
+          return json({ error: 'cursor_invalid' }, 400);
         }
         const rows = await sql.unsafe('SELECT output, error, model_revision FROM applik8s_command_results WHERE scope = $1 LIMIT 1', [cursor.durableScope]);
         const row = rows[0] as { readonly output?: unknown; readonly error?: unknown; readonly model_revision?: unknown } | undefined;

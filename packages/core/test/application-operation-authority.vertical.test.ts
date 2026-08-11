@@ -1,8 +1,10 @@
 // typecast-file-boundary: authority fixtures intentionally assemble erased JSON and branded identities to exercise canonical validation.
 import { describe, expect, it } from 'vitest';
 import {
+  type ApplicationExecutionPrincipal,
   type ApplicationOperationCatalog,
   type ApplicationScopeExpression,
+  applicationCausalPrincipalContext,
   applicationOperationId,
   intersectApplicationScopes,
   normalizeApplicationScope,
@@ -29,6 +31,65 @@ function catalog(operations: ApplicationOperationCatalog['operations']): Applica
 }
 
 describe('application operation and authority contracts', () => {
+  it('preserves original causal lineage across nested execution principals and fails closed when it is absent', () => {
+    const execution = {
+      id: 'principal:application:execution:agent:child:1',
+      identity: {
+        id: 'identity:application:service:child',
+        kind: 'service',
+        issuer: 'applik8s://application',
+        subject: 'child',
+      },
+      kind: 'execution',
+      executionKind: 'agent',
+      executionId: 'child-run-1',
+      attempt: 1,
+      workloadIdentity: {
+        id: 'identity:application:workload:child',
+        kind: 'workload',
+        issuer: 'applik8s://application',
+        subject: 'child',
+      },
+      causalPrincipalId: 'principal:application:human:user-1',
+      causalPrincipal: {
+        id: 'identity:application:human:user-1',
+        kind: 'human',
+        issuer: 'https://identity.example.test',
+        subject: 'user-1',
+      },
+      causalGrantIds: ['grant:application:child'],
+      authenticationMethod: 'workload-identity',
+      audience: ['identity:application:workload:child'],
+      trustedContextDigest: 'digest',
+      catalogRevision: 'catalog-1',
+      authorityRevision: 'authority-1',
+      admittedAt: '2026-08-07T12:00:00.000Z',
+      deadline: '2026-08-07T12:05:00.000Z',
+      cancellationRevision: 'active:child-run-1',
+      bindings: [],
+      effectiveAuthority: [],
+    } satisfies ApplicationExecutionPrincipal;
+
+    expect(applicationCausalPrincipalContext(execution)).toEqual({
+      id: 'principal:application:human:user-1',
+      identity: {
+        id: 'identity:application:human:user-1',
+        kind: 'human',
+        issuer: 'https://identity.example.test',
+        subject: 'user-1',
+      },
+      grantIds: ['grant:application:child'],
+    });
+    const {
+      causalPrincipalId: _causalPrincipalId,
+      causalPrincipal: _causalPrincipal,
+      ...unattributedExecution
+    } = execution;
+    expect(() => applicationCausalPrincipalContext(
+      unattributedExecution,
+    )).toThrow(/has no admitted causal principal/);
+  });
+
   it('constructs stable operation identities without retaining action vocabulary', () => {
     expect(applicationOperationId({
       domain: 'models',

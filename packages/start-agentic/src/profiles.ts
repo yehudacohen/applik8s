@@ -5,30 +5,36 @@ import {
   type ApplicationAIDeterministicProvider,
 } from '@applik8s/ai';
 import {
-  LocalPayments,
-  PaymentProvider,
-  type ApplicationPaymentProvider,
-} from '@applik8s/billing';
-import { StripePayments } from '@applik8s/billing-stripe';
-import {
   AnalyticalDatabase,
   Analytics,
+  ApplicationHost,
   type ApplicationIdentityInfrastructure,
   type ApplicationIdentityProvider,
   type ApplicationProviderBinding,
   type ApplicationTransactionalDatabaseProvider,
-  ApplicationHost,
   Database,
-  module,
   EventLog,
   IdentityProvider,
+  type KubernetesApplicationBuilder,
+  type KubernetesApplicationScope,
+  module,
   ObjectStorage,
   Search,
   TransactionalDatabase,
   WorkflowEngine,
-  type KubernetesApplicationBuilder,
-  type KubernetesApplicationScope,
 } from '@applik8s/applik8s';
+import {
+  type ApplicationPaymentProvider,
+  LocalPayments,
+  PaymentProvider,
+} from '@applik8s/billing';
+import { StripePayments } from '@applik8s/billing-stripe';
+import {
+  type ApplicationNotificationDeliveryProvider,
+  LocalNotificationDelivery,
+  NotificationDelivery,
+} from '@applik8s/notifications';
+import { SmtpNotificationDelivery } from '@applik8s/notifications-smtp';
 
 export interface AgenticExternalDatabase {
   readonly clusterName: string;
@@ -119,6 +125,26 @@ export interface AgenticManagedStripePayments extends AgenticStripePayments {
   readonly credentialSource?: AgenticManagedPaymentCredentialSource;
 }
 
+export interface AgenticSmtpNotifications {
+  readonly host: string;
+  readonly port?: number;
+  readonly secure?: boolean;
+  readonly secretName: string;
+  readonly usernameKey?: string;
+  readonly passwordKey?: string;
+  readonly senderEmail: string;
+  readonly senderName?: string;
+}
+
+export interface AgenticManagedSmtpNotifications
+  extends AgenticSmtpNotifications {
+  readonly credentialSource?: {
+    readonly kind: 'hostEnvironment' | 'existingSecret';
+    readonly usernameVariable?: string;
+    readonly passwordVariable?: string;
+  };
+}
+
 export interface AgenticDeveloperProviders {
   readonly inference: AgenticDedicatedInference;
   /**
@@ -126,6 +152,7 @@ export interface AgenticDeveloperProviders {
    * remain credential-free; omitted payments use the simulated provider.
    */
   readonly payments?: AgenticManagedStripePayments;
+  readonly notifications?: AgenticManagedSmtpNotifications;
 }
 
 /**
@@ -150,6 +177,7 @@ export interface AgenticExternalProviders {
   readonly inference: AgenticExternalInference;
   readonly identity: AgenticExternalIdentity;
   readonly payments: AgenticStripePayments;
+  readonly notifications: AgenticSmtpNotifications;
 }
 
 export type AgenticInstallationSpec =
@@ -173,6 +201,7 @@ export type AgenticInstallationSpec =
         };
         readonly objects: AgenticDedicatedObjects;
         readonly payments: AgenticManagedStripePayments;
+        readonly notifications: AgenticManagedSmtpNotifications;
       };
     }
   | {
@@ -214,7 +243,43 @@ export interface ConfigureAgenticProfilesOptions<
   readonly externalIdentity?: (
     spec: Extract<AgenticInstallationSpec, { readonly profile: 'external' }>,
   ) => ApplicationIdentityProvider;
+  /**
+   * Optional provider-neutral payment adapters. The maintained installation
+   * schema ships a Stripe implementation, while applications may replace any
+   * live profile without changing billing feature code.
+   */
+  readonly developerPayments?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'developer' }>,
+  ) => ApplicationPaymentProvider;
+  readonly dedicatedPayments?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'dedicated' }>,
+  ) => ApplicationPaymentProvider;
+  readonly externalPayments?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'external' }>,
+  ) => ApplicationPaymentProvider;
+  readonly developerNotifications?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'developer' }>,
+  ) => ApplicationNotificationDeliveryProvider;
+  readonly dedicatedNotifications?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'dedicated' }>,
+  ) => ApplicationNotificationDeliveryProvider;
+  readonly externalNotifications?: (
+    spec: Extract<AgenticInstallationSpec, { readonly profile: 'external' }>,
+  ) => ApplicationNotificationDeliveryProvider;
 }
+
+export type AgenticProfilesOptions = Pick<
+  ConfigureAgenticProfilesOptions,
+  | 'starterInference'
+  | 'dedicatedIdentity'
+  | 'externalIdentity'
+  | 'developerPayments'
+  | 'dedicatedPayments'
+  | 'externalPayments'
+  | 'developerNotifications'
+  | 'dedicatedNotifications'
+  | 'externalNotifications'
+>;
 
 type DatabaseBinding =
   ApplicationProviderBinding<ApplicationTransactionalDatabaseProvider>;
@@ -389,6 +454,9 @@ export const AgenticStarter = Object.freeze({
   payments() {
     return LocalPayments.simulated();
   },
+  notifications() {
+    return LocalNotificationDelivery.inspectable();
+  },
 });
 
 /**
@@ -405,6 +473,9 @@ export const AgenticDeveloper = Object.freeze({
   },
   payments(spec: AgenticManagedStripePayments, context: AgenticProfileContext) {
     return agenticStripePayments(spec, context);
+  },
+  notifications(spec: AgenticManagedSmtpNotifications, context: AgenticProfileContext) {
+    return agenticSmtpNotifications(spec, context);
   },
 });
 
@@ -584,12 +655,16 @@ export const AgenticDedicated = Object.freeze({
       authenticateAgenticDedicatedRequest,
       {
         infrastructure,
+        handle: handleAgenticDedicatedIdentityRequest,
         ready: readyAgenticDedicatedIdentity,
       },
     );
   },
   payments(spec: AgenticStripePayments, context: AgenticProfileContext) {
     return agenticStripePayments(spec, context);
+  },
+  notifications(spec: AgenticSmtpNotifications, context: AgenticProfileContext) {
+    return agenticSmtpNotifications(spec, context);
   },
 });
 
@@ -729,11 +804,17 @@ export const AgenticExternal = Object.freeze({
   identity(_spec: AgenticExternalIdentity) {
     return IdentityProvider.from(
       authenticateAgenticExternalRequest,
-      { ready: readyAgenticExternalIdentity },
+      {
+        handle: handleAgenticExternalIdentityRequest,
+        ready: readyAgenticExternalIdentity,
+      },
     );
   },
   payments(spec: AgenticStripePayments, context: AgenticProfileContext) {
     return agenticStripePayments(spec, context);
+  },
+  notifications(spec: AgenticSmtpNotifications, context: AgenticProfileContext) {
+    return agenticSmtpNotifications(spec, context);
   },
 });
 
@@ -774,6 +855,7 @@ export function configureAgenticProfiles<
   const ApplicationWorkflows = WorkflowEngine.named('primary');
   const PrimaryIdentity = IdentityProvider.named('primary');
   const PrimaryPayments = PaymentProvider.named('primary');
+  const TransactionalNotifications = NotificationDelivery.named('transactional');
   const Inference = AI.named('inference');
   const applicationName = options.application ?? application.name;
   const namespace = options.namespace ?? `${application.name}-system`;
@@ -866,13 +948,17 @@ export function configureAgenticProfiles<
     .provide(PrimaryIdentity)
     .starter(() =>
       agenticIdentityWithDatabase(
-        IdentityProvider.from(authenticateAgenticStarterRequest),
+        IdentityProvider.from(authenticateAgenticStarterRequest, {
+          handle: handleAgenticStarterIdentityRequest,
+        }),
         primaryDatabase,
       ),
     )
     .developer(() =>
       agenticIdentityWithDatabase(
-        IdentityProvider.from(authenticateAgenticStarterRequest),
+        IdentityProvider.from(authenticateAgenticStarterRequest, {
+          handle: handleAgenticStarterIdentityRequest,
+        }),
         primaryDatabase,
       ),
     )
@@ -900,14 +986,45 @@ export function configureAgenticProfiles<
     .starter(() => AgenticStarter.payments())
     .developer((spec) =>
       spec.providers.payments
-        ? AgenticDeveloper.payments(spec.providers.payments, profileContext)
+        ? options.developerPayments?.(spec)
+          ?? AgenticDeveloper.payments(spec.providers.payments, profileContext)
         : AgenticStarter.payments(),
     )
     .dedicated((spec) =>
-      AgenticDedicated.payments(spec.providers.payments, profileContext),
+      options.dedicatedPayments?.(spec)
+        ?? AgenticDedicated.payments(spec.providers.payments, profileContext),
     )
     .external((spec) =>
-      AgenticExternal.payments(spec.providers.payments, profileContext),
+      options.externalPayments?.(spec)
+        ?? AgenticExternal.payments(spec.providers.payments, profileContext),
+    )
+    .exhaustive();
+
+  deployment
+    .provide(TransactionalNotifications)
+    .starter(() => AgenticStarter.notifications())
+    .developer((spec) =>
+      spec.providers.notifications
+        ? options.developerNotifications?.(spec)
+          ?? AgenticDeveloper.notifications(
+            spec.providers.notifications,
+            profileContext,
+          )
+        : AgenticStarter.notifications(),
+    )
+    .dedicated((spec) =>
+      options.dedicatedNotifications?.(spec)
+        ?? AgenticDedicated.notifications(
+          spec.providers.notifications,
+          profileContext,
+        ),
+    )
+    .external((spec) =>
+      options.externalNotifications?.(spec)
+        ?? AgenticExternal.notifications(
+          spec.providers.notifications,
+          profileContext,
+        ),
     )
     .exhaustive();
 
@@ -919,6 +1036,7 @@ export function configureAgenticProfiles<
   const inference = application.inject(Inference);
   const identity = application.inject(PrimaryIdentity);
   const payments = application.inject(PrimaryPayments);
+  const notifications = application.inject(TransactionalNotifications);
 
   application.defaults({
     database: primaryDatabase,
@@ -961,6 +1079,7 @@ export function configureAgenticProfiles<
     inference,
     identity,
     payments,
+    notifications,
   });
 }
 
@@ -973,6 +1092,7 @@ function agenticIdentityWithDatabase(
       ? { infrastructure: provider.infrastructure }
       : {}),
     ...(provider.ready ? { ready: provider.ready } : {}),
+    ...(provider.handle ? { handle: provider.handle } : {}),
     dependencies: { database },
   });
 }
@@ -1006,24 +1126,58 @@ function agenticStripePayments(
   });
 }
 
+function agenticSmtpNotifications(
+  spec: AgenticSmtpNotifications,
+  context: AgenticProfileContext,
+): ApplicationNotificationDeliveryProvider {
+  return SmtpNotificationDelivery.fromSecret({
+    host: spec.host,
+    port: spec.port ?? (spec.secure ? 465 : 587),
+    ...(spec.secure !== undefined ? { secure: spec.secure } : {}),
+    sender: {
+      email: spec.senderEmail,
+      ...(spec.senderName ? { name: spec.senderName } : {}),
+    },
+    username: {
+      name: spec.secretName,
+      namespace: context.namespace,
+      key: spec.usernameKey ?? 'username',
+    },
+    password: {
+      name: spec.secretName,
+      namespace: context.namespace,
+      key: spec.passwordKey ?? 'password',
+    },
+    async resolveSecret(reference) {
+      // static-import-exception: load credentials only inside the admitted server workload selected by dependency capture.
+      const runtime = await import('@applik8s/start-agentic/notifications-runtime');
+      return runtime.resolveAgenticNotificationSecret(reference);
+    },
+  });
+}
+
 /**
  * Maintained provider/profile pack. Application identity, namespace, schema
  * registry, and processor placement are derived by the framework; modules add
  * their tables and relations to the bound database when included.
  */
-export const agenticProfiles = module(
-  'agenticProfiles',
-  (
-    application: KubernetesApplicationBuilder<
-      AgenticInstallationSpec,
-      { readonly ready: boolean }
-    >,
-  ) => {
+export function agenticProfilesWith(
+  options: AgenticProfilesOptions = {},
+) {
+  return module(
+    'agenticProfiles',
+    (
+      application: KubernetesApplicationBuilder<
+        AgenticInstallationSpec,
+        { readonly ready: boolean }
+      >,
+    ) => {
     const capacity = agenticCapacity(
       application,
       application.installation.spec.profile,
     );
     const configured = configureAgenticProfiles(application, {
+      ...options,
       migrations: { path: '../drizzle' },
       processor: {
         group: 'agentic-commands',
@@ -1053,8 +1207,11 @@ export const agenticProfiles = module(
       }),
     );
     return { ...configured, capacity, host };
-  },
-);
+    },
+  );
+}
+
+export const agenticProfiles = agenticProfilesWith();
 
 async function authenticateAgenticDedicatedRequest(
   request: Request,
@@ -1062,6 +1219,14 @@ async function authenticateAgenticDedicatedRequest(
   // static-import-exception: load the server-only identity adapter only at request admission so the profile declaration remains browser-safe and serializable.
   const runtime = await import('@applik8s/start-agentic/identity-runtime');
   return runtime.authenticateAgenticProfileRequest(request, 'dedicated');
+}
+
+async function handleAgenticDedicatedIdentityRequest(
+  request: Request,
+): Promise<Response> {
+  // static-import-exception: the provider-neutral identity HTTP boundary is server-only.
+  const runtime = await import('@applik8s/start-agentic/identity-runtime');
+  return runtime.handleAgenticProfileIdentityRequest(request, 'dedicated');
 }
 
 async function authenticateAgenticStarterRequest(
@@ -1072,12 +1237,28 @@ async function authenticateAgenticStarterRequest(
   return runtime.authenticateAgenticStarterRequest(request);
 }
 
+async function handleAgenticStarterIdentityRequest(
+  request: Request,
+): Promise<Response> {
+  // static-import-exception: the deterministic identity HTTP boundary remains server-only.
+  const runtime = await import('@applik8s/start-agentic/identity-runtime');
+  return runtime.handleAgenticStarterIdentityRequest(request);
+}
+
 async function authenticateAgenticExternalRequest(
   request: Request,
 ): Promise<import('@applik8s/core').ApplicationRequestAdmission> {
   // static-import-exception: load the server-only identity adapter only at request admission so the profile declaration remains browser-safe and serializable.
   const runtime = await import('@applik8s/start-agentic/identity-runtime');
   return runtime.authenticateAgenticProfileRequest(request, 'external');
+}
+
+async function handleAgenticExternalIdentityRequest(
+  request: Request,
+): Promise<Response> {
+  // static-import-exception: the provider-neutral identity HTTP boundary is server-only.
+  const runtime = await import('@applik8s/start-agentic/identity-runtime');
+  return runtime.handleAgenticProfileIdentityRequest(request, 'external');
 }
 
 async function readyAgenticDedicatedIdentity(): Promise<void> {
@@ -1091,3 +1272,62 @@ async function readyAgenticExternalIdentity(): Promise<void> {
   const runtime = await import('@applik8s/start-agentic/identity-runtime');
   await runtime.readyAgenticProfileIdentity('external');
 }
+
+function preserveAgenticIdentityCallbackSource<
+  TArgs extends readonly unknown[],
+  TResult,
+>(
+  callback: (...args: TArgs) => TResult,
+  source: string,
+): void {
+  Object.defineProperty(
+    callback,
+    Symbol.for('applik8s.applicationCallbackSource'),
+    {
+      configurable: false,
+      value: Object.freeze({
+        file: import.meta.url,
+        line: 1,
+        column: 1,
+        source,
+        generated: true,
+      }),
+    },
+  );
+}
+
+// Maintained profile callbacks cross a publish/bundle boundary before the
+// application compiler serializes them. Preserve their authored, closure-free
+// dynamic-import source instead of relying on bundler-generated helper names.
+preserveAgenticIdentityCallbackSource(
+  authenticateAgenticDedicatedRequest,
+  `async request => (await import('@applik8s/start-agentic/identity-runtime')).authenticateAgenticProfileRequest(request, 'dedicated')`,
+);
+preserveAgenticIdentityCallbackSource(
+  handleAgenticDedicatedIdentityRequest,
+  `async request => (await import('@applik8s/start-agentic/identity-runtime')).handleAgenticProfileIdentityRequest(request, 'dedicated')`,
+);
+preserveAgenticIdentityCallbackSource(
+  authenticateAgenticStarterRequest,
+  `async request => (await import('@applik8s/start-agentic/identity-runtime')).authenticateAgenticStarterRequest(request)`,
+);
+preserveAgenticIdentityCallbackSource(
+  handleAgenticStarterIdentityRequest,
+  `async request => (await import('@applik8s/start-agentic/identity-runtime')).handleAgenticStarterIdentityRequest(request)`,
+);
+preserveAgenticIdentityCallbackSource(
+  authenticateAgenticExternalRequest,
+  `async request => (await import('@applik8s/start-agentic/identity-runtime')).authenticateAgenticProfileRequest(request, 'external')`,
+);
+preserveAgenticIdentityCallbackSource(
+  handleAgenticExternalIdentityRequest,
+  `async request => (await import('@applik8s/start-agentic/identity-runtime')).handleAgenticProfileIdentityRequest(request, 'external')`,
+);
+preserveAgenticIdentityCallbackSource(
+  readyAgenticDedicatedIdentity,
+  `async () => (await import('@applik8s/start-agentic/identity-runtime')).readyAgenticProfileIdentity('dedicated')`,
+);
+preserveAgenticIdentityCallbackSource(
+  readyAgenticExternalIdentity,
+  `async () => (await import('@applik8s/start-agentic/identity-runtime')).readyAgenticProfileIdentity('external')`,
+);

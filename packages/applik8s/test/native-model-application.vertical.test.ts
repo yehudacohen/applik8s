@@ -491,6 +491,42 @@ describe('v0.6 app-scoped native model promotion', () => {
     })).toThrow(/requires a named implementation/);
   });
 
+  test('declares a distinct function-native one-shot model query', () => {
+    const schema = catalogSchema();
+    const catalog = app('function-native-query-fixture');
+    const Database = catalog.database.postgres('catalog', { schema });
+    const Card = catalog.model(schema.cards, { name: 'Card', database: Database });
+    const PublishedCards = Card.query(
+      {
+        input: type({ limit: 'number.integer >= 1' }),
+        output: type({ id: 'string', name: 'string' }).array(),
+        database: Database,
+        authorize: () => true,
+        budgets: { timeoutMs: 2_000, maxRows: 100 },
+      },
+      async function publishedCards(input) {
+        return [{ id: String(input.limit), name: 'published' }];
+      },
+    );
+
+    expect(PublishedCards.operation).toMatchObject({
+      id: 'Card.publishedCards',
+      model: 'Card',
+      name: 'publishedCards',
+      operation: 'query',
+    });
+    expect(applicationGraphFor(catalog.composition)?.nodes.find(
+      (node) => node.kind === 'query' && node.publicId === 'Card.publishedCards',
+    )).toMatchObject({
+      modelOperation: {
+        model: { nodeId: 'model.card' },
+        name: 'publishedCards',
+        kind: 'query',
+      },
+      budgets: { timeoutMs: 2_000, maxRows: 100 },
+    });
+  });
+
   test('uses compiler-instrumented view identity after bundling removes the function name', () => {
     const schema = catalogSchema();
     const catalog = app('instrumented-function-native-view-fixture');

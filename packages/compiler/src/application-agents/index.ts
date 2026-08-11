@@ -381,12 +381,13 @@ import { createServer } from 'node:http';
 import postgres from 'postgres';
 import { createApplicationAIAttemptRuntime } from '@applik8s/ai';
 import { createApplicationAIAgentConversationPersistence, createPostgresApplicationConversationStore } from '@applik8s/conversations/runtime';
+import { applicationCausalPrincipalContext } from '@applik8s/core';
 import { createApplicationOperationAuthorityRuntime, decodeApplicationExecutionAdmission } from '@applik8s/operations';
 import { createApplicationAIAgentRequestHandler, createApplicationAIOperationExecutor, createPostgresApplicationAIAttemptStore } from '@applik8s/runtime-ai';
 import { callback as handler } from './handler.generated.js';
 ${localToolImports}
 ${contract.tools.some((tool) => tool.local)
-    ? "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';\nimport { applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
+    ? "import { normalizeSchema } from '@applik8s/sdk/schema-runtime';\nimport { applicationPostgresModelReadClients, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
     : ''}
 ${contract.agent.instructions.kind === 'closure'
     ? "import { callback as instructions } from './instructions.generated.js';"
@@ -590,15 +591,23 @@ const handle = createApplicationAIAgentRequestHandler({
         },
       },
     );
+    const causalPrincipal = applicationCausalPrincipalContext(
+      invocation.admission.principal,
+    );
     const principal = await operationAuthority.admitExecutionPrincipal({
       executionKind: 'agent',
       executionId: invocation.executionId,
       attempt: invocation.attempt,
       workloadIdentity: ${JSON.stringify(workloadIdentity)},
       serviceIdentity: contract.serviceIdentity,
-      causalPrincipalId: invocation.admission.principal.id,
-      causalPrincipal: invocation.admission.principal.identity,
-      causalGrantIds: invocation.causalGrantIds,
+      causalPrincipalId: causalPrincipal.id,
+      causalPrincipal: causalPrincipal.identity,
+      causalGrantIds: [
+        ...new Set([
+          ...causalPrincipal.grantIds,
+          ...invocation.causalGrantIds,
+        ]),
+      ],
       envelopes: contract.tools.map((tool) => tool.workloadAuthority),
       trustedContextDigest: invocation.admission.principal.trustedContextDigest,
       audience: invocation.audience,
@@ -640,6 +649,23 @@ const handle = createApplicationAIAgentRequestHandler({
       retry: contract.executionPolicy.uncertainCompletion === 'retry-if-replay-safe'
         ? 'if-replay-safe'
         : 'never',
+    });
+    await operationAuthority.observe({
+      id: 'ai:attempt:' + decision.attempt.id,
+      domain: 'ai',
+      subject: 'agent:' + contract.name,
+      authority: 'canonical',
+      state: 'running',
+      source: 'application-ai-attempt-runtime',
+      causalId: invocationId,
+      evidence: {
+        logicalModel,
+        invocationId,
+        attemptId: decision.attempt.id,
+        recovery: decision.attempt.recovery,
+        quarantine: false,
+      },
+      observedAt: new Date().toISOString(),
     });
     return {
       action: decision.action,
@@ -710,6 +736,23 @@ const handle = createApplicationAIAgentRequestHandler({
         reservation.attemptId,
         terminal.messageId,
       );
+      await operationAuthority.observe({
+        id: 'ai:attempt:' + reservation.attemptId,
+        domain: 'ai',
+        subject: 'agent:' + contract.name,
+        authority: 'canonical',
+        state: 'succeeded',
+        source: 'application-ai-attempt-runtime',
+        causalId: reservation.invocationId,
+        evidence: {
+          logicalModel: contract.model.name,
+          invocationId: reservation.invocationId,
+          attemptId: reservation.attemptId,
+          canonicalMessageId: terminal.messageId,
+          quarantine: false,
+        },
+        observedAt: new Date().toISOString(),
+      });
       return { ...reservation, version: attempt.version };
     },
     async fail(reservation, failure) {
@@ -718,6 +761,23 @@ const handle = createApplicationAIAgentRequestHandler({
           reservation.invocationId,
           failure.reason,
         );
+        await operationAuthority.observe({
+          id: 'ai:attempt:' + reservation.attemptId,
+          domain: 'ai',
+          subject: 'agent:' + contract.name,
+          authority: 'canonical',
+          state: 'cancelled',
+          reason: 'cancelled',
+          source: 'application-ai-attempt-runtime',
+          causalId: reservation.invocationId,
+          evidence: {
+            logicalModel: contract.model.name,
+            invocationId: reservation.invocationId,
+            attemptId: reservation.attemptId,
+            quarantine: false,
+          },
+          observedAt: new Date().toISOString(),
+        });
         return { ...reservation, version: reservation.version + 1 };
       }
       const attempt = await attemptRuntime.transition(
@@ -732,6 +792,28 @@ const handle = createApplicationAIAgentRequestHandler({
           terminalReason: failure.reason,
         },
       );
+      await operationAuthority.observe({
+        id: 'ai:attempt:' + reservation.attemptId,
+        domain: 'ai',
+        subject: 'agent:' + contract.name,
+        authority: 'canonical',
+        state: failure.classification === 'completion-uncertain'
+          ? 'degraded'
+          : 'failed',
+        reason: failure.classification,
+        source: 'application-ai-attempt-runtime',
+        causalId: reservation.invocationId,
+        evidence: {
+          logicalModel: contract.model.name,
+          invocationId: reservation.invocationId,
+          attemptId: reservation.attemptId,
+          recovery: failure.classification === 'completion-uncertain'
+            ? 'operator-review-required'
+            : 'terminal',
+          quarantine: failure.classification === 'completion-uncertain',
+        },
+        observedAt: new Date().toISOString(),
+      });
       return { ...reservation, version: attempt.version };
     },
   },
@@ -902,7 +984,14 @@ function generatedLocalAgentToolRuntime(
   localAgentTools.set(${JSON.stringify(tool.operation.id)}, Object.freeze({
     async invoke(input, context) {
       const validInput = validateLocalToolValue(${JSON.stringify(local.input.jsonSchema)}, input, ${JSON.stringify(`${tool.operation.id}.input`)});
-      const result = await withApplicationNativeModelTransactionRuntime(
+      const invokeWithModelReads = async () => withApplicationNativeModelReadClients(
+        await applicationPostgresModelReadClients(
+          requiredEnv(${JSON.stringify(primary.runtime.connectionEnvName)}),
+          ${JSON.stringify(models)},
+        ),
+        () => authored(validInput),
+      );
+      const result = await ${transaction.mode === 'read' ? 'invokeWithModelReads()' : `withApplicationNativeModelTransactionRuntime(
         Object.freeze({
           edit: request => executeFunctionNativePostgresModelEdit({
             bindingId: ${JSON.stringify(`${contract.agent.id}:${tool.operation.id}`)},
@@ -935,8 +1024,8 @@ function generatedLocalAgentToolRuntime(
               ),
           }, request),
         }),
-        () => authored(validInput),
-      );
+        invokeWithModelReads,
+      )`};
       return validateLocalToolValue(${JSON.stringify(local.output.jsonSchema)}, result, ${JSON.stringify(`${tool.operation.id}.output`)});
     },
   }));

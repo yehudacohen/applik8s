@@ -7,8 +7,8 @@ import { gzipSync } from 'node:zlib';
 import type { ApplicationAIAgentNode, ApplicationCommandHandlerNode, ApplicationCommandNode, ApplicationGatewayNode, ApplicationGraph, ApplicationHandlerDependencies, ApplicationIndexNode, ApplicationModelNode, ApplicationOperationCatalog, ApplicationProfiledCallbackContract, ApplicationProjectionNode, ApplicationProviderNode, ApplicationQueryNode, ApplicationReactiveDatabaseRuntimeContract, ApplicationSearchIndexPlan, ApplicationSerializedCallbackContract, ApplicationStreamNode, ApplicationStreamProcessorNode, ApplicationSubscriptionNode, ApplicationWorkloadAuthorityEnvelope, JsonObject } from '@applik8s/core';
 import { build } from 'esbuild';
 import ts from 'typescript';
-import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { generatedCallbackFactoryModule } from '../application-callback-module.js';
+import type { GeneratedApplicationContainerArtifact } from '../application-containers/index.js';
 import { emitGeneratedApplicationContainer } from '../application-containers/index.js';
 import { applicationGraphAllConditions, applicationGraphBooleanCondition, applicationGraphJsonStringArray, applicationGraphNumberValue, applicationGraphServiceHost, applicationGraphStringValue } from '../application-installation-values.js';
 import type { ApplicationOperationPlacementReceiver } from '../application-mcp/index.js';
@@ -215,7 +215,13 @@ export async function emitGeneratedApplicationReactive(options: { readonly graph
     ))),
     ...await Promise.all(projections.map((projection) => emitProjection(options.graph, projection, options.outDir))),
     ...await Promise.all(searchProjections.map((projection) => emitSearchProjection(options.graph, projection, options.outDir))),
-    ...await Promise.all(streamProcessors.map((processor) => emitStreamProcessor(options.graph, processor, options.outDir))),
+    ...await Promise.all(streamProcessors.map((processor) =>
+      emitStreamProcessor(
+        options.graph,
+        processor,
+        operationCatalog,
+        options.outDir,
+      ))),
   ].sort((left, right) => left.name.localeCompare(right.name));
 }
 
@@ -617,7 +623,12 @@ async function emitSearchProjection(
   });
 }
 
-async function emitStreamProcessor(graph: ApplicationGraph, processor: ApplicationStreamProcessorNode, outDir: string): Promise<GeneratedApplicationReactiveArtifact> {
+async function emitStreamProcessor(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+  operationCatalog: ApplicationOperationCatalog,
+  outDir: string,
+): Promise<GeneratedApplicationReactiveArtifact> {
   assertResolved(processor.id, 'handler', processor.handlerUnresolved);
   const nodes = graphNodes(graph);
   const stream = requiredNode(nodes, processor.source.nodeId, 'stream', processor.id);
@@ -626,10 +637,39 @@ async function emitStreamProcessor(graph: ApplicationGraph, processor: Applicati
   const namespace = applicationGraphStringValue(processor.database.secretNamespace) || applicationGraphStringValue(graph.metadata.namespace) || 'default';
   assertSecretNamespace(processor.database, namespace, `stream processor ${processor.id}`);
   const workflow = streamProcessorWorkflowContract(graph, processor, namespace);
+  const operations = streamProcessorOperationContracts(
+    graph,
+    processor,
+    operationCatalog,
+  );
+  const queries = streamProcessorQueryContracts(graph, processor);
+  if (processor.invocation === 'batch' && operations.length > 0) {
+    throw new Error(
+      `Generated batch processor ${processor.id} reaches durable model operations. Batch command authority requires an explicit per-item identity and is not inferred from one frozen batch.`,
+    );
+  }
   const name = kubernetesName(`${graph.metadata.name}-${processor.name}`);
   const artifactDir = join(outDir, name);
   await mkdir(artifactDir, { recursive: true });
-  await writeStreamHandlerModule(artifactDir, processor);
+  await writeStreamHandlerModule(artifactDir, processor, operations, queries);
+  for (const binding of queries) {
+    await writeQueryCallbackModule(
+      artifactDir,
+      callbackName(binding.query.id, 'authorize'),
+      binding.query.authorizationSource,
+      binding.query.authorizationDependencies,
+      binding.query,
+      graph,
+    );
+    await writeQueryCallbackModule(
+      artifactDir,
+      callbackName(binding.query.id, 'run'),
+      binding.query.handlerSource,
+      binding.query.handlerDependencies,
+      binding.query,
+      graph,
+    );
+  }
   const entrypoint = join(artifactDir, 'stream-processor.generated.ts');
   await writeFile(
     entrypoint,
@@ -638,7 +678,9 @@ async function emitStreamProcessor(graph: ApplicationGraph, processor: Applicati
       processor,
       stream,
       workflow,
-      compileApplicationOperationCatalog(graph),
+      operationCatalog,
+      operations,
+      queries,
     ),
   );
   const includeWhen = applicationGraphAllConditions(processor.enabled, workflow?.provider.config?.enabled);
@@ -657,9 +699,121 @@ async function emitStreamProcessor(graph: ApplicationGraph, processor: Applicati
       { name: 'APPLIK8S_PROCESSOR_CONCURRENCY', value: reactiveEnvironmentInteger(processor.deployment.concurrency) },
       { name: 'APPLIK8S_PROCESSOR_MAX_ACK_PENDING', value: reactiveEnvironmentInteger(processor.deployment.maxAckPending) },
       ...streamProcessorScheduleEnvironment(workflow),
+      ...(queries.length > 0 ? [{
+        name: 'APPLIK8S_CONTEXT_SECRET',
+        valueFrom: {
+          secretKeyRef: {
+            name: `${kubernetesName(graph.metadata.name)}-context`,
+            key: 'key',
+          },
+        },
+      }] : []),
     ],
     ...(workflow ? { workflowToken: streamProcessorWorkflowCredential(workflow) } : {}),
     ...(includeWhen !== undefined ? { includeWhen } : {}),
+  });
+}
+
+interface StreamProcessorQueryContract {
+  readonly identifier: string;
+  readonly query: ApplicationQueryNode & {
+    readonly database: NonNullable<ApplicationQueryNode['database']>;
+  };
+}
+
+function streamProcessorQueryContracts(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+): readonly StreamProcessorQueryContract[] {
+  const nodes = graphNodes(graph);
+  return (processor.queryBindings ?? []).map((binding) => {
+    const query = requiredNode(nodes, binding.query.nodeId, 'query', processor.id);
+    if (!query.database || query.kubernetes || query.projection || query.search) {
+      throw new Error(
+        `Generated stream processor ${processor.id} view ${query.id} must use one local relational authority. Projection, search, and Kubernetes views require a generated gateway boundary.`,
+      );
+    }
+    if (query.database.connectionEnvName !== processor.database.connectionEnvName) {
+      throw new Error(
+        `Generated stream processor ${processor.id} cannot call ${query.id}: the source uses ${processor.database.connectionEnvName}, while the view uses ${query.database.connectionEnvName}. Use a workflow or generated gateway across database authorities.`,
+      );
+    }
+    assertResolved(query.id, 'authorization', query.authorizationUnresolved);
+    assertResolved(query.id, 'handler', query.handlerUnresolved);
+    return {
+      identifier: binding.identifier,
+      query: query as ApplicationQueryNode & {
+        readonly database: NonNullable<ApplicationQueryNode['database']>;
+      },
+    };
+  });
+}
+
+interface StreamProcessorOperationContract {
+  readonly identifier: string;
+  readonly operationId: string;
+  readonly runtimeOperationId?: string;
+  readonly operation: NonNullable<ApplicationStreamProcessorNode['operationBindings']>[number]['operation'];
+  readonly handler: ApplicationCommandHandlerNode;
+  readonly command: ApplicationCommandNode;
+  readonly model: ApplicationModelNode & {
+    readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+  };
+}
+
+function streamProcessorOperationContracts(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+  operationCatalog: ApplicationOperationCatalog,
+): readonly StreamProcessorOperationContract[] {
+  const nodes = graphNodes(graph);
+  return (processor.operationBindings ?? []).map((binding) => {
+    const command = requiredNode(
+      nodes,
+      binding.command.nodeId,
+      'command',
+      processor.id,
+    );
+    const handler = requiredNode(
+      nodes,
+      binding.handler.nodeId,
+      'commandHandler',
+      processor.id,
+    );
+    const model = requiredNode(nodes, handler.model.nodeId, 'model', handler.id);
+    if (!model.runtime) {
+      throw new Error(
+        `Generated stream processor ${processor.id} operation ${binding.operationId} has no PostgreSQL model runtime.`,
+      );
+    }
+    if (
+      model.runtime.connectionEnvName
+      !== processor.database.connectionEnvName
+    ) {
+      throw new Error(
+        `Generated stream processor ${processor.id} cannot atomically call ${binding.operationId}: the source transaction uses ${processor.database.connectionEnvName}, while ${model.name} uses ${model.runtime.connectionEnvName}. Use a workflow or post-commit event handler across database authorities.`,
+      );
+    }
+    if (!operationCatalog.operations.some(
+      (operation) => operation.id === binding.operationId,
+    )) {
+      throw new Error(
+        `Generated stream processor ${processor.id} operation ${binding.operationId} is absent from the canonical operation catalog.`,
+      );
+    }
+    return {
+      identifier: binding.identifier,
+      operationId: binding.operationId,
+      ...(binding.runtimeOperationId
+        ? { runtimeOperationId: binding.runtimeOperationId }
+        : {}),
+      operation: binding.operation,
+      command,
+      handler,
+      model: model as ApplicationModelNode & {
+        readonly runtime: NonNullable<ApplicationModelNode['runtime']>;
+      },
+    };
   });
 }
 
@@ -765,7 +919,7 @@ function generatedGatewaySource(
     ...(analyticalSources.length > 0 ? ["import { createClickHouseAnalyticalProjectionReader } from '@applik8s/applik8s/projection-worker-runtime';"] : []),
     ...(searchContracts.length > 0
       ? [
-          "import { createPostgresApplicationSearchRuntime } from '@applik8s/applik8s';",
+          "import { createPostgresApplicationSearchRuntime } from '@applik8s/applik8s/search-runtime';",
           "import { createApplicationRelationalSearchSources } from '@applik8s/search';",
           "import { createOpenSearchApplicationSearchRuntime } from '@applik8s/runtime-opensearch';",
         ]
@@ -1029,7 +1183,7 @@ function generatedSearchProjectionSource(
   }
   return `import { createServer } from 'node:http';
 import postgres from 'postgres';
-import { ApplicationSearchHistoryLossError, createPostgresApplicationSearchRuntime } from '@applik8s/applik8s';
+import { ApplicationSearchHistoryLossError, createPostgresApplicationSearchRuntime } from '@applik8s/applik8s/search-runtime';
 import { createApplicationRelationalSearchSources } from '@applik8s/search';
 import { createOpenSearchApplicationSearchRuntime } from '@applik8s/runtime-opensearch';
 
@@ -2259,10 +2413,38 @@ function generatedStreamProcessorSource(
   stream: ApplicationStreamNode,
   workflow: StreamProcessorWorkflowContract | undefined,
   operationCatalog: ApplicationOperationCatalog,
+  operations: readonly StreamProcessorOperationContract[],
+  queries: readonly StreamProcessorQueryContract[],
 ): string {
-  const workflowImport = workflow ? "import { AsyncLocalStorage } from 'node:async_hooks';\nimport { installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
-  const functionNativeImport = processor.functionNativeTransaction
-    ? "import { createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
+  const workflowImport = workflow ? "import { AsyncLocalStorage } from 'node:async_hooks';\nimport { applicationWorkflowCausalPrincipalMetadata } from '@applik8s/applik8s/workflow-runtime';\nimport { installApplicationWorkflowRuntimeResolver } from '@applik8s/applik8s/workflow-runtime-resolvers';\nimport { createHatchetWorkflowRuntime } from '@applik8s/runtime-hatchet';\nimport { normalizeSchema } from '@applik8s/sdk/schema-runtime';" : '';
+  const causalImport = workflow || queries.length > 0
+    ? "import { applicationCausalPrincipalContext } from '@applik8s/core';"
+    : '';
+  const postgresImport = queries.length > 0 || Boolean(stream.signal)
+    ? "import postgres from 'postgres';"
+    : '';
+  const hasFunctionNativeRuntime = Boolean(
+    processor.functionNativeTransaction || operations.length > 0,
+  );
+  const queryImports = queries.length > 0
+    ? `import { drizzle } from 'drizzle-orm/postgres-js';
+import { normalizeSchema as normalizeQuerySchema } from '@applik8s/sdk/schema-runtime';
+${hasFunctionNativeRuntime ? '' : "import { applicationCommandPrincipalValues } from '@applik8s/applik8s/stream-worker-runtime';"}
+import { createApplicationRelationalContext, withApplicationDatabaseRuntimeResolver } from '@applik8s/applik8s/query-runtime';`
+    : '';
+  const queryCallbackImports = [...new Map(
+    queries.map(({ query }) => [query.id, query] as const),
+  ).values()].flatMap((query) => [
+    `import { callback as ${callbackVariable(query.id, 'authorize')} } from './${callbackName(query.id, 'authorize')}.generated.js';`,
+    `import { callback as ${callbackVariable(query.id, 'run')} } from './${callbackName(query.id, 'run')}.generated.js';`,
+  ]).join('\n');
+  const functionNativeImport = hasFunctionNativeRuntime
+    ? "import { applicationCommandPrincipalValues, applicationPostgresModelReadClients, createApplicationFunctionNativeEventHandle, createApplicationFunctionNativeOperationHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, executeFunctionNativePostgresTransaction, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';\nimport { runApplicationModelBeforeCommit } from '@applik8s/applik8s/processor-runtime';"
+    : '';
+  const callableImports = (processor.callableBindings ?? []).some(
+    (binding) => binding.runtime === 'notifications.request.v1',
+  )
+    ? "import { createApplicationNotificationRequestCallable } from '@applik8s/notifications';"
     : '';
   const workflowDeclarations = workflow ? `
 const workflowRuntime = createHatchetWorkflowRuntime({ kind: 'hatchet', tls: process.env.HATCHET_CLIENT_TLS_STRATEGY === 'tls' });
@@ -2280,7 +2462,7 @@ ${workflow.tasks.map((binding) => `  ${JSON.stringify(binding.alias)}: Object.as
   }),`).join('\n')}
 }); }
 const directWorkflowContracts = new Set(${JSON.stringify(workflow.tasks.map((binding) => `${binding.contract.name}.${binding.contract.version}`))});
-function directWorkflowMetadata(context, contract, metadata) { const callerKey = metadata?.idempotencyKey; const event = context.event; return { ...metadata, idempotencyKey: context.idempotencyKey + ':' + contract + (callerKey ? ':' + callerKey : ''), causationId: event?.id ?? context.batch?.id, ...(!event?.contextDigest ? {} : { trustedContext: { values: context.trustedContext, digest: event.contextDigest, ...(event.changeScopes ? { changeScopes: event.changeScopes } : {}) } }) }; }
+function directWorkflowMetadata(context, contract, metadata) { const callerKey = metadata?.idempotencyKey; const event = context.event; const causalPrincipal = context.principal ? applicationCausalPrincipalContext(context.principal) : undefined; return { ...metadata, idempotencyKey: context.idempotencyKey + ':' + contract + (callerKey ? ':' + callerKey : ''), causationId: event?.id ?? context.batch?.id, ...(!event?.contextDigest ? {} : { trustedContext: { values: context.trustedContext, digest: event.contextDigest, ...(event.changeScopes ? { changeScopes: event.changeScopes } : {}) } }), ...(causalPrincipal ? { [applicationWorkflowCausalPrincipalMetadata]: causalPrincipal } : {}) }; }
 function directWorkflowRuntime(context) { const requireContract = (contract) => { if (!directWorkflowContracts.has(contract)) throw new Error('Stream processor attempted to call undeclared workflow ' + JSON.stringify(contract)); return contract; }; return {
   run: (contract, input, metadata, result) => workflowRuntime.run(requireContract(contract), input, directWorkflowMetadata(context, contract, metadata), { signal: context.signal, timeoutMs: ${processor.budgets.timeoutMs}, ...result }),
   start: (contract, input, metadata) => workflowRuntime.start(requireContract(contract), input, directWorkflowMetadata(context, contract, metadata)),
@@ -2292,11 +2474,18 @@ function directWorkflowRuntime(context) { const requireContract = (contract) => 
   const functionNativeDeclarations = generatedFunctionNativeStreamTransaction(
     graph,
     processor,
+    operations,
+  );
+  const queryDeclarations = generatedStreamProcessorQueries(
+    graph,
+    processor,
+    queries,
   );
   const authoredHandlerInvocation =
     generatedStreamProcessorAuthoredHandlerInvocation(
       Boolean(workflow),
-      Boolean(processor.functionNativeTransaction),
+      hasFunctionNativeRuntime,
+      queries.length > 0,
     );
   const runtimeFunction = processor.invocation === 'batch'
     ? 'runApplicationStreamBatchProcessor'
@@ -2308,8 +2497,7 @@ function directWorkflowRuntime(context) { const requireContract = (contract) => 
     ? processor.batch?.maxWaitMs ?? 1_000
     : 1_000;
   const signalImports = stream.signal
-    ? `import postgres from 'postgres';
-import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
+    ? `import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';
 import { applicationOperationInputDigest } from '@applik8s/applik8s/operation-runtime';
 import { applicationSignalAccessAllows, createApplicationSignalIssuanceDecoder, createPostgresApplicationSignalStore } from '@applik8s/applik8s/signal-runtime';`
     : '';
@@ -2321,10 +2509,15 @@ import { applicationSignalAccessAllows, createApplicationSignalIssuanceDecoder, 
   );
   return `import { createServer } from 'node:http';
 import { createPostgresApplicationStream, createPostgresApplicationStreamProcessorStore, enforcePostgresApplicationStreamRetention, ${runtimeFunction} } from '@applik8s/applik8s/stream-worker-runtime';
+${postgresImport}
+${causalImport}
 ${workflowImport}
+${queryImports}
 ${functionNativeImport}
+${callableImports}
 ${signalImports}
 import { createCallback as createHandleEvent } from './handle.generated.js';
+${queryCallbackImports}
 function requiredEnv(name) { const value = process.env[name]; if (!value) throw new Error('Missing required environment variable ' + name); return value; }
 function requiredIntegerEnv(name, minimum, maximum) { const value = Number(requiredEnv(name)); if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error(name + ' must be an integer between ' + minimum + ' and ' + maximum + '.'); return value; }
 function schema(json) { return { kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:stream-processor' }, schema: json }; }
@@ -2338,6 +2531,7 @@ ${signalRuntime.declarations}
 const processorConcurrency = requiredIntegerEnv('APPLIK8S_PROCESSOR_CONCURRENCY', 1, 64);
 const processorMaxAckPending = requiredIntegerEnv('APPLIK8S_PROCESSOR_MAX_ACK_PENDING', processorConcurrency, 65536);
 ${workflowDeclarations}
+${queryDeclarations}
 ${functionNativeDeclarations}
 ${authoredHandlerInvocation}
 let ready = false; let stopping = false; let lastError; let checkpoint = 0; let processed = 0; let deadLettered = 0; let lastSuccessfulCycleAt = 0;
@@ -2347,7 +2541,7 @@ server.listen(Number(process.env.APPLIK8S_HEALTH_PORT ?? '8080'), '0.0.0.0');
 async function loop() { while (!stopping) { try { const result = await ${runtimeFunction}({ processor: ${JSON.stringify(processor.name)}, streamName: ${JSON.stringify(`${stream.name}.${stream.version}`)}, source, store, handle: invokeHandler, ${signalRuntime.runtimeOption}${runtimeOptions}, retry: ${JSON.stringify(processor.retry)}, failure: ${JSON.stringify(processor.failure)}, timeoutMs: ${processor.budgets.timeoutMs}, maxInputBytes: ${processor.budgets.maxInputBytes} }); checkpoint = result.checkpoint; processed += result.processed; deadLettered += result.deadLettered; await enforcePostgresApplicationStreamRetention({ stream, databaseUrl, batchSize: 1000 }); lastError = undefined; ready = true; lastSuccessfulCycleAt = Date.now(); await abortableSleep(result.exhausted ? ${exhaustedWaitMs} : 10, loopController.signal); } catch (error) { lastError = error instanceof Error ? error.message : String(error); ready = false; await source.close().catch(() => undefined); if (!stopping) { source = createSource(); console.error(error); } await abortableSleep(5000, loopController.signal); } } }
 function abortableSleep(ms, signal) { if (signal.aborted) return Promise.resolve(); return new Promise((resolve) => { const timeout = setTimeout(done, ms); const abort = () => done(); function done() { clearTimeout(timeout); signal.removeEventListener('abort', abort); resolve(); } signal.addEventListener('abort', abort, { once: true }); }); }
 const loopTask = loop();
-async function shutdown() { if (stopping) return; stopping = true; ready = false; loopController.abort(); await new Promise((resolve) => server.close(resolve)); await loopTask; await Promise.all([source.close(), store.close()${signalRuntime.shutdown}]); }
+async function shutdown() { if (stopping) return; stopping = true; ready = false; loopController.abort(); await new Promise((resolve) => server.close(resolve)); await loopTask; await Promise.all([source.close(), store.close()${queries.length > 0 ? ', processorQuerySql.end({ timeout: 5 })' : ''}${signalRuntime.shutdown}]); }
 process.once('SIGTERM', () => { void shutdown(); }); process.once('SIGINT', () => { void shutdown(); });
 await loopTask;
 `;
@@ -2356,31 +2550,48 @@ await loopTask;
 function generatedFunctionNativeStreamTransaction(
   graph: ApplicationGraph,
   processor: ApplicationStreamProcessorNode,
+  operations: readonly StreamProcessorOperationContract[],
 ): string {
   const transaction = processor.functionNativeTransaction;
-  if (!transaction) return 'const functionNativeBindings = Object.freeze({});';
+  if (!transaction && operations.length === 0) {
+    return 'const functionNativeBindings = Object.freeze({});';
+  }
   const nodes = graphNodes(graph);
-  const primary = requiredNode(
-    nodes,
-    transaction.primaryModel.nodeId,
-    'model',
-    processor.id,
+  const executableOperations = uniqueStreamProcessorRuntimeOperations(
+    processor,
+    operations,
   );
+  const primary = transaction
+    ? requiredNode(
+        nodes,
+        transaction.primaryModel.nodeId,
+        'model',
+        processor.id,
+      )
+    : operations[0]?.model;
+  if (!primary) {
+    throw new Error(
+      `Function-native stream processor ${processor.id} has no transaction authority model.`,
+    );
+  }
   if (!primary.runtime) {
     throw new Error(
       `Function-native stream processor ${processor.id} primary model ${primary.id} has no PostgreSQL runtime contract.`,
     );
   }
-  const models = transaction.models.map((reference) => {
-    const model = requiredNode(nodes, reference.nodeId, 'model', processor.id);
-    if (!model.runtime) {
-      throw new Error(
-        `Function-native stream processor ${processor.id} participant ${model.id} has no PostgreSQL runtime contract.`,
-      );
-    }
-    return model.runtime;
-  });
-  const outbox = transaction.outbox.map((reference) => {
+  const models = [...new Map([
+    ...(transaction?.models ?? []).map((reference) => {
+      const model = requiredNode(nodes, reference.nodeId, 'model', processor.id);
+      if (!model.runtime) {
+        throw new Error(
+          `Function-native stream processor ${processor.id} participant ${model.id} has no PostgreSQL runtime contract.`,
+        );
+      }
+      return [model.runtime.name, model.runtime] as const;
+    }),
+    ...operations.map(({ model }) => [model.runtime.name, model.runtime] as const),
+  ]).values()];
+  const outbox = (transaction?.outbox ?? []).map((reference) => {
     const event = requiredNode(nodes, reference.nodeId, 'event', processor.id);
     return {
       kind: 'applik8sEvent',
@@ -2397,18 +2608,36 @@ function generatedFunctionNativeStreamTransaction(
       },
     };
   });
-  const modelBindings = functionNativeModelRuntimeBindings(
-    graph,
-    processor,
-  );
-  const eventBindings = functionNativeEventRuntimeBindings(
-    graph,
-    processor,
-  );
   return `
 const functionNativePrimaryModel = Object.freeze(${JSON.stringify(primary.runtime)});
 const functionNativeModels = Object.freeze(${JSON.stringify(models)});
 const functionNativeOutbox = Object.freeze(${JSON.stringify(outbox)});
+${streamProcessorNestedOperationsSource(graph, processor, executableOperations)}
+const functionNativeCommands = Object.freeze(${JSON.stringify(executableOperations.map(({ command }) => ({
+    kind: 'applik8sCommand',
+    id: `${command.contract.name}.${command.contract.version}`,
+    name: command.contract.name,
+    version: command.contract.version,
+    input: {
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', uri: `generated:${command.id}.input` },
+      schema: command.contract.input.jsonSchema,
+    },
+    output: {
+      kind: 'jsonSchema',
+      ref: { kind: 'jsonSchema', uri: `generated:${command.id}.output` },
+      schema: command.contract.output.jsonSchema,
+    },
+    errors: Object.fromEntries(command.contract.errors.map((error) => [
+      error.name,
+      {
+        kind: 'jsonSchema',
+        ref: { kind: 'jsonSchema', uri: `generated:${command.id}.errors.${error.name}` },
+        schema: error.schema.jsonSchema,
+      },
+    ])),
+  })))});
+const functionNativeReadClients = await applicationPostgresModelReadClients(databaseUrl, functionNativeModels);
 function functionNativeModelSnapshot(value) { return value ? { identity: value.id, value: value.spec, ...(value.revision ? { revision: value.revision } : {}) } : undefined; }
 function functionNativeModelHandle(name) { return Object.freeze({
   get: async identity => functionNativeModelSnapshot(await getApplicationNativeModelObject(name, identity)),
@@ -2416,57 +2645,634 @@ function functionNativeModelHandle(name) { return Object.freeze({
   require: async identity => functionNativeModelSnapshot(await requireApplicationNativeModelObject(name, identity)),
   edit: (identity, handler) => editApplicationNativeModelObject(name, identity, handler),
 }); }
-const functionNativeBindings = Object.freeze({
-${modelBindings.map(({ identifier, model }) => `  ${JSON.stringify(identifier)}: functionNativeModelHandle(${JSON.stringify(model.name)}),`).join('\n')}
-${eventBindings.map(({ identifier, event }) => `  ${JSON.stringify(identifier)}: createApplicationFunctionNativeEventHandle(${JSON.stringify(`${event.contract.name}.${event.contract.version}`)}, { payload: schema(${JSON.stringify(event.contract.payload.jsonSchema)}) }),`).join('\n')}
-});
-function functionNativeRuntime(context) {
+const functionNativeLeafBindings = Object.freeze(${streamProcessorCallbackBindingsSource(graph, processor, operations)});
+${streamProcessorCallableBindingsSource(processor)}
+function functionNativeDelivery(context) {
   const sourceId = context.event?.id ?? context.batch?.id;
   if (!sourceId) throw new Error('Function-native transaction requires a durable source event or frozen batch identity.');
+  return {
+    id: sourceId,
+    idempotencyKey: context.idempotencyKey,
+    correlationId: sourceId,
+    causationId: sourceId,
+    recordedAt: context.event?.recordedAt ?? context.batch?.recordedAt,
+    ...(context.event?.contextDigest ? {
+      context: {
+        values: { ...context.trustedContext, ...(context.principal ? applicationCommandPrincipalValues(context.principal) : {}) },
+        digest: context.event.contextDigest,
+        ...(context.event.changeScopes ? { changeScopes: context.event.changeScopes } : {}),
+      },
+    } : {}),
+  };
+}
+
+function functionNativeRuntime(context) {
   return Object.freeze({
     edit: request => executeFunctionNativePostgresModelEdit({
       bindingId: ${JSON.stringify(processor.id)},
       model: functionNativePrimaryModel,
       models: functionNativeModels,
       outbox: functionNativeOutbox,
+      commands: functionNativeCommands,
+      atomicOperations: functionNativeOperations,
       databaseUrl,
-      delivery: {
-        id: sourceId,
-        idempotencyKey: context.idempotencyKey,
-        correlationId: sourceId,
-        causationId: sourceId,
-        recordedAt: context.event?.recordedAt ?? context.batch?.recordedAt,
-        ...(context.event?.contextDigest ? {
-          context: {
-            values: context.trustedContext ?? {},
-            digest: context.event.contextDigest,
-          },
-        } : {}),
-      },
+      delivery: functionNativeDelivery(context),
     }, request),
   });
 }
-const invokeHandler = (input, context) =>
-  withApplicationNativeModelTransactionRuntime(
-    functionNativeRuntime(context),
+const invokeWithModelReads = (input, context) =>
+  withApplicationNativeModelReadClients(
+    functionNativeReadClients,
     () => invokeAuthoredHandler(input, context),
-  );`;
+  );
+const invokeHandler = (input, context) =>
+  ${operations.length > 0 && transaction?.mode !== 'write'
+    ? `executeFunctionNativePostgresTransaction({ bindingId: ${JSON.stringify(processor.id)}, databaseUrl, connectionModel: functionNativePrimaryModel, operations: functionNativeOperations, delivery: functionNativeDelivery(context), retry: ${JSON.stringify(processor.retry)} }, () => invokeWithModelReads(input, context))`
+    : transaction?.mode === 'read' ? 'invokeWithModelReads(input, context)' : `withApplicationNativeModelTransactionRuntime(
+    functionNativeRuntime(context),
+    () => invokeWithModelReads(input, context),
+  )`};`;
+}
+
+function streamProcessorCallableBindingsSource(
+  processor: ApplicationStreamProcessorNode,
+): string {
+  const callables = processor.callableBindings ?? [];
+  if (callables.length === 0) {
+    return 'const functionNativeBindings = functionNativeLeafBindings;';
+  }
+  const declarations = callables.map((binding) => {
+    const segments = binding.identifier.split('.');
+    if (
+      segments.length === 0
+      || segments.some(
+        (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
+      )
+    ) {
+      throw new Error(
+        `Stream processor ${processor.id} callable binding ${binding.identifier} must be a serializable property path.`,
+      );
+    }
+    const factory = binding.runtime === 'notifications.request.v1'
+      ? 'createApplicationNotificationRequestCallable'
+      : undefined;
+    if (!factory) {
+      throw new Error(
+        `Stream processor ${processor.id} callable binding ${binding.identifier} uses unsupported runtime ${String(binding.runtime)}.`,
+      );
+    }
+    return `hydrateApplicationCallable(functionNativeBindingsMutable, ${JSON.stringify(segments)}, ${factory}(functionNativeLeafBindings));`;
+  }).join('\n');
+  return `const functionNativeBindingsMutable = { ...functionNativeLeafBindings };
+function hydrateApplicationCallable(root, path, callable) {
+  if (typeof callable !== 'function') throw new Error('Portable callable factory did not return a function.');
+  let target = root;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const segment = path[index];
+    const existing = target[segment];
+    if (existing !== undefined && (typeof existing !== 'object' || existing === null || Array.isArray(existing))) {
+      throw new Error('Portable callable binding collides with runtime handle ' + path.slice(0, index + 1).join('.'));
+    }
+    target[segment] = { ...(existing ?? {}) };
+    target = target[segment];
+  }
+  const leaf = path[path.length - 1];
+  if (Object.hasOwn(target, leaf)) throw new Error('Portable callable binding collides with runtime handle ' + path.join('.'));
+  target[leaf] = callable;
+}
+${declarations}
+const functionNativeBindings = Object.freeze(functionNativeBindingsMutable);`;
+}
+
+function uniqueStreamProcessorRuntimeOperations(
+  processor: ApplicationStreamProcessorNode,
+  operations: readonly StreamProcessorOperationContract[],
+): readonly StreamProcessorOperationContract[] {
+  const unique = new Map<string, StreamProcessorOperationContract>();
+  for (const operation of operations) {
+    const runtimeId = operation.runtimeOperationId ?? operation.operationId;
+    const existing = unique.get(runtimeId);
+    if (!existing) {
+      unique.set(runtimeId, operation);
+      continue;
+    }
+    if (
+      existing.handler.id !== operation.handler.id
+      || existing.command.id !== operation.command.id
+      || existing.model.id !== operation.model.id
+    ) {
+      throw new Error(
+        `Stream processor ${processor.id} resolves runtime operation ${runtimeId} to both ${existing.handler.id} and ${operation.handler.id}.`,
+      );
+    }
+  }
+  return [...unique.values()];
+}
+
+function streamProcessorNestedOperationsSource(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+  operations: readonly StreamProcessorOperationContract[],
+): string {
+  const nodes = graphNodes(graph);
+  const imports = operations.flatMap(({ handler }) => {
+    if (!handler.beforeCommit) return [];
+    const suffix = createHash('sha256').update(handler.id).digest('hex').slice(0, 12);
+    return [
+      `import { createCallback as createNestedBeforeCommit_${suffix} } from './nested-before-commit-${suffix}.generated.js';`,
+    ];
+  });
+  const sources = operations.map((operation) => {
+    const { handler, command, model } = operation;
+    const eventBindings = (handler.eventBindings ?? []).map((binding) => {
+      const event = requiredNode(nodes, binding.event.nodeId, 'event', handler.id);
+      return {
+        identifier: binding.identifier,
+        event,
+        variable: nestedCallbackVariable(binding.identifier),
+      };
+    });
+    const commandBindings = (handler.commandBindings ?? []).map((binding) => {
+      const nestedCommand = requiredNode(nodes, binding.command.nodeId, 'command', handler.id);
+      const owner = graph.nodes.find(
+        (candidate): candidate is ApplicationCommandHandlerNode =>
+          candidate.kind === 'commandHandler'
+          && candidate.command.nodeId === nestedCommand.id,
+      );
+      return {
+        identifier: binding.identifier,
+        command: nestedCommand,
+        owner,
+        variable: nestedCallbackVariable(binding.identifier),
+      };
+    });
+    const modelBindings = (handler.transaction.modelBindings ?? []).map((binding) => {
+      const participant = requiredNode(nodes, binding.model.nodeId, 'model', handler.id);
+      if (!participant.runtime) {
+        throw new Error(
+          `Generated nested operation ${operation.operationId} model binding ${binding.identifier} has no PostgreSQL runtime.`,
+        );
+      }
+      return {
+        identifier: binding.identifier,
+        model: participant,
+        variable: nestedCallbackVariable(binding.identifier),
+      };
+    });
+    const participantModels = handler.transaction.models.map((reference) => {
+      const participant = requiredNode(nodes, reference.nodeId, 'model', handler.id);
+      if (!participant.runtime) {
+        throw new Error(
+          `Generated nested operation ${operation.operationId} participant ${participant.id} has no PostgreSQL runtime.`,
+        );
+      }
+      if (
+        participant.runtime.connectionEnvName
+        !== processor.database.connectionEnvName
+      ) {
+        throw new Error(
+          `Generated nested operation ${operation.operationId} participant ${participant.name} crosses from ${processor.database.connectionEnvName} to ${participant.runtime.connectionEnvName}. Use a workflow or post-commit event handler across database authorities.`,
+        );
+      }
+      return participant;
+    });
+    const eventDeclarations = eventBindings.map(({ event, variable }) =>
+      `const ${variable}Contract = Object.freeze(${JSON.stringify(nestedEventDefinition(event))});\n      const ${variable} = Object.freeze({ ...${variable}Contract, emit: payload => context.emit(${variable}Contract, payload) });`,
+    ).join('\n      ');
+    const modelDeclarations = modelBindings.map(({ model: participant, variable }) =>
+      `const ${variable} = Object.freeze({
+        async get(identity) { const value = await context.models[${JSON.stringify(participant.name)}].get({ id: String(identity) }); return value ? { identity: value.id, value: value.spec, ...(value.revision ? { revision: value.revision } : {}) } : undefined; },
+        async find(options) { const page = await context.models[${JSON.stringify(participant.name)}].query(options); return page.items.map(value => ({ identity: value.id, value: value.spec, ...(value.revision ? { revision: value.revision } : {}) })); },
+      });`,
+    ).join('\n      ');
+    const commandDeclarations = commandBindings.map(({ command: nestedCommand, owner, variable }) => {
+      if (!owner) {
+        return `const ${variable} = () => { throw new Error(${JSON.stringify(`Nested operation ${operation.operationId} references outbound command ${nestedCommand.id} without a local owning handler.`)}); };`;
+      }
+      return `const ${variable}Contract = Object.freeze(${JSON.stringify(nestedCommandDefinition(nestedCommand))});
+      const ${variable} = input => {
+        const idempotencyKey = ${owner.idempotencyKey ? `(${owner.idempotencyKey.source})(input)` : `context.id(${JSON.stringify(`nested-command:${nestedCommand.id}`)})`};
+        context.send(${variable}Contract, input, { targetKey: (${owner.key.source})(input, undefined, idempotencyKey), idempotencyKey });
+      };`;
+    }).join('\n      ');
+    const bindingEntries = [
+      ...modelBindings.map(({ identifier, variable }) => ({ path: identifier, value: variable })),
+      ...eventBindings.map(({ identifier, variable }) => ({ path: identifier, value: variable })),
+      ...commandBindings.map(({ identifier, variable }) => ({ path: identifier, value: variable })),
+    ];
+    const beforeCommit = handler.beforeCommit
+      ? (() => {
+          const suffix = createHash('sha256').update(handler.id).digest('hex').slice(0, 12);
+          return `const __applik8sBeforeCommit = createNestedBeforeCommit_${suffix}(${nestedCallbackObjectSource(bindingEntries)});`;
+        })()
+      : '';
+    const outbox = handler.transaction.outbox.map((reference) => {
+      const event = requiredNode(nodes, reference.nodeId, 'event', handler.id);
+      return nestedEventDefinition(event);
+    });
+    const completionEvent = handler.completionEvent
+      ? nestedEventDefinition(requiredNode(nodes, handler.completionEvent.nodeId, 'event', handler.id))
+      : undefined;
+    return `Object.freeze({
+      operationId: ${JSON.stringify(operation.runtimeOperationId ?? operation.operationId)},
+      bindingId: ${JSON.stringify(handler.name)},
+      operation: ${JSON.stringify(nestedModelOperation(operation))},
+      command: ${JSON.stringify({ name: command.contract.name, version: command.contract.version })},
+      errors: ${JSON.stringify(command.contract.errors.map(({ name }) => name))},
+      schemas: ${JSON.stringify({
+        input: command.contract.input.jsonSchema,
+        output: command.contract.output.jsonSchema,
+        errors: Object.fromEntries(command.contract.errors.map((error) => [error.name, error.schema.jsonSchema])),
+        events: Object.fromEntries(eventBindings.map(({ event }) => [`${event.contract.name}.${event.contract.version}`, event.contract.payload.jsonSchema])),
+        commands: Object.fromEntries(commandBindings.map(({ command: nestedCommand }) => [`${nestedCommand.contract.name}.${nestedCommand.contract.version}`, nestedCommand.contract.input.jsonSchema])),
+      })},
+      model: ${JSON.stringify(model.runtime)},
+      models: ${JSON.stringify(participantModels.map(({ runtime }) => runtime))},
+      selfRead: ${String(handler.transaction.selfRead === true)},
+      historyModels: ${JSON.stringify(handler.transaction.history.map((reference) => participantModels.find(({ id }) => id === reference.nodeId)?.name).filter(Boolean))},
+      retry: ${JSON.stringify(handler.retry)},
+      history: ${String(handler.transaction.history.some((reference) => reference.nodeId === model.id))},
+      outbox: ${JSON.stringify(outbox)},
+      ${completionEvent ? `completionEvent: ${JSON.stringify(completionEvent)},` : ''}
+      commands: ${JSON.stringify(commandBindings.map(({ command: nestedCommand }) => nestedCommandDefinition(nestedCommand)))},
+      ordering: ${JSON.stringify(handler.ordering)},
+      ${handler.missingRoute ? `missingRoute: ${JSON.stringify(handler.missingRoute)},` : ''}
+      ${handler.initializeSource ? `initialize: (${handler.initializeSource}),` : ''}
+      handler: async (model, input, context) => {
+        ${eventDeclarations}
+        ${modelDeclarations}
+        ${commandDeclarations}
+        ${handler.beforeCommit ? 'const __applik8sRunBeforeCommit = runApplicationModelBeforeCommit;' : ''}
+        ${beforeCommit}
+        return (${handler.handlerSource})(model, input, context);
+      },
+    })`;
+  });
+  return `${imports.join('\n')}
+const functionNativeOperations = Object.freeze([${sources.join(',\n')}]);`;
+}
+
+function nestedModelOperation(
+  operation: StreamProcessorOperationContract,
+): 'create' | 'update' | 'delete' | 'custom' {
+  if (operation.operation.operation === 'create') return 'create';
+  if (operation.operation.operation === 'update') return 'update';
+  if (operation.operation.operation === 'delete') return 'delete';
+  return 'custom';
+}
+
+function nestedEventDefinition(event: import('@applik8s/core').ApplicationEventNode) {
+  return {
+    kind: 'applik8sEvent' as const,
+    id: `${event.contract.name}.${event.contract.version}`,
+    name: event.contract.name,
+    version: event.contract.version,
+    payload: {
+      kind: 'jsonSchema' as const,
+      ref: { kind: 'jsonSchema' as const, uri: `generated:${event.id}.payload` },
+      schema: event.contract.payload.jsonSchema,
+    },
+  };
+}
+
+function nestedCommandDefinition(command: ApplicationCommandNode) {
+  return {
+    kind: 'applik8sCommand' as const,
+    id: `${command.contract.name}.${command.contract.version}`,
+    name: command.contract.name,
+    version: command.contract.version,
+    input: {
+      kind: 'jsonSchema' as const,
+      ref: { kind: 'jsonSchema' as const, uri: `generated:${command.id}.input` },
+      schema: command.contract.input.jsonSchema,
+    },
+    output: {
+      kind: 'jsonSchema' as const,
+      ref: { kind: 'jsonSchema' as const, uri: `generated:${command.id}.output` },
+      schema: command.contract.output.jsonSchema,
+    },
+    errors: Object.fromEntries(command.contract.errors.map((error) => [
+      error.name,
+      {
+        kind: 'jsonSchema' as const,
+        ref: { kind: 'jsonSchema' as const, uri: `generated:${command.id}.errors.${error.name}` },
+        schema: error.schema.jsonSchema,
+      },
+    ])),
+  };
+}
+
+function nestedCallbackVariable(identifier: string): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(identifier)
+    ? identifier
+    : `nestedBinding_${createHash('sha256').update(identifier).digest('hex').slice(0, 12)}`;
+}
+
+function nestedCallbackObjectSource(
+  entries: readonly { readonly path: string; readonly value: string }[],
+): string {
+  interface NestedCallbackNode {
+    direct?: string;
+    readonly children: Map<string, NestedCallbackNode>;
+  }
+  const root: NestedCallbackNode = { children: new Map() };
+  for (const entry of entries) {
+    const segments = entry.path.split('.');
+    if (
+      segments.length === 0
+      || segments.some(
+        (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
+      )
+    ) {
+      continue;
+    }
+    let current = root;
+    for (const segment of segments) {
+      const child = current.children.get(segment) ?? {
+        children: new Map<string, NestedCallbackNode>(),
+      };
+      current.children.set(segment, child);
+      current = child;
+    }
+    current.direct = entry.value;
+  }
+  const render = (node: NestedCallbackNode): string => {
+    if (node.direct && node.children.size === 0) return node.direct;
+    const values = [
+      ...(node.direct ? [`...(${node.direct})`] : []),
+      ...[...node.children.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(
+          ([property, child]) => `${JSON.stringify(property)}: ${render(child)}`,
+        ),
+    ];
+    return `{ ${values.join(', ')} }`;
+  };
+  return render(root);
+}
+
+function streamProcessorCallbackBindingsSource(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+  operations: readonly StreamProcessorOperationContract[],
+): string {
+  interface StreamCallbackRootBinding {
+      readonly model?: { readonly id: string; readonly name: string };
+      readonly event?: {
+        readonly id: string;
+        readonly name: string;
+        readonly version: string;
+        readonly schema: JsonObject;
+      };
+      readonly operations: Map<string, StreamProcessorOperationContract>;
+  }
+  const emptyRootBinding = (): StreamCallbackRootBinding => ({
+    operations: new Map<string, StreamProcessorOperationContract>(),
+  });
+  const roots = new Map<string, StreamCallbackRootBinding>();
+  for (const { identifier, model } of functionNativeModelRuntimeBindings(
+    graph,
+    processor,
+  )) {
+    const root = functionNativeCallbackBindingRoot(identifier, processor.id);
+    const existing = roots.get(root) ?? emptyRootBinding();
+    if (existing.model && existing.model.id !== model.id) {
+      throw new Error(
+        `Stream processor ${processor.id} callback root ${root} is ambiguous between ${existing.model.id} and ${model.id}.`,
+      );
+    }
+    roots.set(root, {
+      ...existing,
+      model: { id: model.id, name: model.name },
+    });
+  }
+  for (const { identifier, event } of functionNativeEventRuntimeBindings(
+    graph,
+    processor,
+  )) {
+    const root = functionNativeCallbackBindingRoot(identifier, processor.id);
+    const existing = roots.get(root) ?? emptyRootBinding();
+    if (existing.model || existing.event) {
+      throw new Error(
+        `Stream processor ${processor.id} callback root ${root} cannot hydrate as both an event and another runtime handle.`,
+      );
+    }
+    roots.set(root, {
+      ...existing,
+      event: {
+        id: event.id,
+        name: event.contract.name,
+        version: event.contract.version,
+        schema: event.contract.payload.jsonSchema,
+      },
+    });
+  }
+  for (const operation of operations) {
+    const segments = operation.identifier.split('.');
+    const root = functionNativeCallbackBindingRoot(
+      operation.identifier,
+      processor.id,
+    );
+    if (
+      segments.length < 2
+      || segments.some(
+        (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
+      )
+    ) {
+      throw new Error(
+        `Stream processor ${processor.id} operation binding ${operation.identifier} must identify a promoted-model method through a serializable property path.`,
+      );
+    }
+    const existing = roots.get(root) ?? emptyRootBinding();
+    if (existing.event) {
+      throw new Error(
+        `Stream processor ${processor.id} callback root ${root} cannot hydrate as both an event and an operation.`,
+      );
+    }
+    const operationPath = segments.slice(1).join('.');
+    const previous = existing.operations.get(operationPath);
+    if (previous && previous.operationId !== operation.operationId) {
+      throw new Error(
+        `Stream processor ${processor.id} operation binding ${operation.identifier} is ambiguous.`,
+      );
+    }
+    existing.operations.set(operationPath, operation);
+    roots.set(root, existing);
+  }
+  return `{ ${[...roots.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([root, binding]) => {
+      if (binding.event) {
+        return `${JSON.stringify(root)}: createApplicationFunctionNativeEventHandle(${JSON.stringify(`${binding.event.name}.${binding.event.version}`)}, { payload: schema(${JSON.stringify(binding.event.schema)}) })`;
+      }
+      const operationEntries = [...binding.operations.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([path, operation]) => ({
+          path,
+          value: `createApplicationFunctionNativeOperationHandle({ operation: ${JSON.stringify(operation.operation)}, command: { id: ${JSON.stringify(`${operation.command.contract.name}.${operation.command.contract.version}`)} }, key: (${operation.handler.key.source})${operation.handler.idempotencyKey ? `, idempotencyKey: (${operation.handler.idempotencyKey.source})` : ''} })`,
+        }));
+      const operationObject = nestedCallbackObjectSource(operationEntries);
+      const properties = [
+        ...(binding.model
+          ? [`...functionNativeModelHandle(${JSON.stringify(binding.model.name)})`]
+          : []),
+        ...(operationEntries.length > 0 ? [`...(${operationObject})`] : []),
+      ];
+      return `${JSON.stringify(root)}: Object.freeze({ ${properties.join(', ')} })`;
+    })
+    .join(', ')} }`;
+}
+
+function generatedStreamProcessorQueries(
+  graph: ApplicationGraph,
+  processor: ApplicationStreamProcessorNode,
+  bindings: readonly StreamProcessorQueryContract[],
+): string {
+  if (bindings.length === 0) {
+    return 'const processorQueries = () => Object.freeze({});';
+  }
+  if (processor.invocation === 'batch') {
+    throw new Error(
+      `Generated batch processor ${processor.id} calls application views, but one frozen batch has no single principal for query authorization. Move the read into a per-event handler or a durable workflow.`,
+    );
+  }
+  const uniqueQueries = [...new Map(
+    bindings.map((binding) => [binding.query.id, binding.query] as const),
+  ).values()];
+  const database = uniqueQueries[0]?.database;
+  if (!database) {
+    throw new Error(`Generated stream processor ${processor.id} has no relational query database.`);
+  }
+  const queryContracts = uniqueQueries.map((query) => {
+    const id = query.publicId ?? `${query.name}.${query.version}`;
+    const invocation = query.handlerInvocation === 'input-context'
+      ? `${callbackVariable(query.id, 'run')}(input, Object.assign(relational, { principal }))`
+      : `${callbackVariable(query.id, 'run')}({ context: relational, principal, input, database: processorQueryDatabaseBinding })`;
+    return `${JSON.stringify(query.id)}: Object.freeze({
+      id: ${JSON.stringify(id)},
+      input: processorQuerySchema(${JSON.stringify(query.input.jsonSchema)}, ${JSON.stringify(`${id}.input`)}),
+      output: processorQuerySchema(${JSON.stringify(query.output.jsonSchema)}, ${JSON.stringify(`${id}.output`)}),
+      budgets: ${JSON.stringify(query.budgets)},
+      authorize: ${callbackVariable(query.id, 'authorize')},
+      run: (input, relational, principal) => withApplicationDatabaseRuntimeResolver((binding) => relational.database(binding), () => ${invocation}),
+    })`;
+  }).join(',\n');
+  const callbackEntries = bindings.map((binding) => ({
+    path: binding.identifier,
+    value: `(input) => runProcessorQuery(${JSON.stringify(binding.query.id)}, input, context)`,
+  }));
+  return `
+const processorQueryDatabaseBinding = ${databaseBindingSource(database)};
+const processorQuerySql = postgres(requiredEnv(${JSON.stringify(database.connectionEnvName)}), { max: Math.max(2, processorConcurrency), idle_timeout: 20, connect_timeout: 10, prepare: false });
+const processorQueryDb = drizzle(processorQuerySql);
+const processorQueryContextSecret = requiredEnv('APPLIK8S_CONTEXT_SECRET');
+function processorQuerySchema(json, name) {
+  const normalized = normalizeQuerySchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', uri: 'generated:' + name }, schema: json }, name);
+  return value => {
+    const result = normalized.validate(value);
+    if (!result.ok) throw new Error('applik8s-processor-query-schema-invalid: ' + name + ': ' + result.error.message);
+    return result.value;
+  };
+}
+const processorQueryContracts = Object.freeze({ ${queryContracts} });
+function processorQueryPrincipal(context) {
+  const source = context.principal;
+  const event = context.event;
+  if (!source || !event?.id) throw new Error('applik8s-processor-query-principal-required');
+  const causal = applicationCausalPrincipalContext(source);
+  const executionId = ${JSON.stringify(processor.id)} + ':' + event.id;
+  return Object.freeze({
+    id: 'execution:' + executionId,
+    identity: Object.freeze({ id: 'identity:' + executionId, kind: 'execution', issuer: ${JSON.stringify(`applik8s://${graph.metadata.name}`)}, subject: executionId }),
+    kind: 'execution',
+    executionKind: 'processor',
+    executionId,
+    attempt: context.attempt,
+    workloadIdentity: Object.freeze({ id: ${JSON.stringify(`workload:${processor.id}`)}, kind: 'workload', issuer: ${JSON.stringify(`applik8s://${graph.metadata.name}`)}, subject: ${JSON.stringify(processor.id)} }),
+    causalPrincipalId: causal.id,
+    causalPrincipal: causal.identity,
+    causalGrantIds: Object.freeze([...causal.grantIds]),
+    authenticationMethod: 'applik8s-stream-processor/v1',
+    audience: Object.freeze([${JSON.stringify(processor.id)}]),
+    trustedContextDigest: event.contextDigest ?? source.trustedContextDigest,
+    catalogRevision: source.catalogRevision,
+    authorityRevision: source.authorityRevision,
+    admittedAt: new Date().toISOString(),
+    deadline: new Date(Date.now() + ${processor.budgets.timeoutMs}).toISOString(),
+    cancellationRevision: 'active:' + executionId,
+    bindings: Object.freeze(${JSON.stringify(bindings.map((binding) => ({ kind: 'query', alias: binding.identifier, target: binding.query })))}),
+    effectiveAuthority: Object.freeze([]),
+  });
+}
+async function runProcessorQuery(id, rawInput, context) {
+  const contract = processorQueryContracts[id];
+  if (!contract) throw new Error('applik8s-processor-query-undeclared: ' + id);
+  const input = contract.input(rawInput);
+  const principal = processorQueryPrincipal(context);
+  const allowed = await contract.authorize({ principal, context: context.trustedContext, input });
+  if (!allowed) throw new Error('applik8s-processor-query-denied: ' + contract.id);
+  const relational = createApplicationRelationalContext({
+    databases: [{ binding: processorQueryDatabaseBinding, db: processorQueryDb }],
+    admittedContext: {
+      values: { ...context.trustedContext, ...applicationCommandPrincipalValues(principal) },
+      digestSecret: processorQueryContextSecret,
+    },
+  });
+  let timeout;
+  try {
+    const result = await Promise.race([
+      relational.run(processorQueryDatabaseBinding, () => contract.run(input, relational, principal)),
+      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('applik8s-processor-query-timeout: ' + contract.id)), contract.budgets.timeoutMs); }),
+    ]);
+    const output = contract.output(result);
+    if (Array.isArray(output) && output.length > contract.budgets.maxRows) throw new Error('applik8s-processor-query-row-limit: ' + contract.id);
+    const bytes = Buffer.byteLength(JSON.stringify(output));
+    if (bytes > contract.budgets.maxResultBytes) throw new Error('applik8s-processor-query-result-too-large: ' + contract.id);
+    return output;
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+function mergeProcessorBindings(...sources) {
+  const output = {};
+  const merge = (target, source, path = []) => {
+    for (const [key, value] of Object.entries(source)) {
+      const previous = target[key];
+      if (previous === undefined) { target[key] = value; continue; }
+      if (previous && value && typeof previous === 'object' && typeof value === 'object' && !Array.isArray(previous) && !Array.isArray(value)) {
+        merge(previous, value, [...path, key]);
+        continue;
+      }
+      if (previous !== value) throw new Error('Processor runtime binding collision at ' + [...path, key].join('.'));
+    }
+    return target;
+  };
+  for (const source of sources) merge(output, source);
+  return Object.freeze(output);
+}
+function processorQueries(context) { return ${nestedCallbackObjectSource(callbackEntries)}; }
+`;
 }
 
 function generatedStreamProcessorAuthoredHandlerInvocation(
   workflow: boolean,
   functionNative: boolean,
+  queries: boolean,
 ): string {
   const bindings = functionNative
     ? 'functionNativeBindings'
     : 'Object.freeze({})';
-  if (!workflow) {
+  if (!workflow && !queries) {
     return `const invokeAuthoredHandler = createHandleEvent(${bindings});
+${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
+  }
+  if (!workflow) {
+    return `const invokeAuthoredHandler = (input, context) => createHandleEvent(mergeProcessorBindings(${bindings}, processorQueries(context)))(input, context);
 ${functionNative ? '' : 'const invokeHandler = invokeAuthoredHandler;'}`;
   }
   return `const invokeAuthoredHandler = (input, context) => {
   const workflows = processorWorkflows(context);
-  const handleEvent = createHandleEvent({ ...${bindings}, ...workflows });
+  const handleEvent = createHandleEvent(${queries ? `mergeProcessorBindings(${bindings}, processorQueries(context), workflows)` : `{ ...${bindings}, ...workflows }`});
   return directWorkflowScope.run(
     directWorkflowRuntime(context),
     () => handleEvent(input, { ...context, schedules, workflows, tasks: workflows }),
@@ -2727,6 +3533,8 @@ const decodeSignalIssuance = createApplicationSignalIssuanceDecoder({
 async function writeStreamHandlerModule(
   directory: string,
   processor: ApplicationStreamProcessorNode,
+  operations: readonly StreamProcessorOperationContract[],
+  queries: readonly StreamProcessorQueryContract[],
 ): Promise<void> {
   const identifiers = [
     ...(processor.tasks ?? []).map((binding) => binding.alias),
@@ -2736,6 +3544,13 @@ async function writeStreamHandlerModule(
     ...(processor.functionNativeTransaction?.eventBindings ?? []).map(
       (binding) => binding.identifier,
     ),
+    ...(processor.operationBindings ?? []).map(
+      (binding) => binding.identifier,
+    ),
+    ...queries.map((binding) => binding.identifier),
+    ...(processor.callableBindings ?? []).map(
+      (binding) => binding.identifier,
+    ),
   ]
     .map((identifier) => identifier.split('.')[0] ?? identifier)
     .filter(
@@ -2743,17 +3558,47 @@ async function writeStreamHandlerModule(
         /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(identifier)
         && values.indexOf(identifier) === index,
     );
-  await writeFile(
-    join(directory, 'handle.generated.ts'),
-    generatedCallbackFactoryModule({
-      source: processor.handlerSource,
-      ...(processor.handlerDependencies
-        ? { dependencies: processor.handlerDependencies }
-        : {}),
-      injectedIdentifiers: identifiers,
-      exportName: 'createCallback',
+  await Promise.all([
+    writeFile(
+      join(directory, 'handle.generated.ts'),
+      generatedCallbackFactoryModule({
+        source: processor.handlerSource,
+        ...(processor.handlerDependencies
+          ? { dependencies: processor.handlerDependencies }
+          : {}),
+        injectedIdentifiers: identifiers,
+        exportName: 'createCallback',
+      }),
+    ),
+    ...operations.flatMap(({ handler }) => {
+      if (!handler.beforeCommit) return [];
+      const suffix = createHash('sha256').update(handler.id).digest('hex').slice(0, 12);
+      const beforeCommitIdentifiers = [
+        ...(handler.transaction.modelBindings ?? []).map(({ identifier }) => identifier),
+        ...(handler.eventBindings ?? []).map(({ identifier }) => identifier),
+        ...(handler.commandBindings ?? []).map(({ identifier }) => identifier),
+      ]
+        .map((identifier) => identifier.split('.')[0] ?? identifier)
+        .filter(
+          (identifier, index, values) =>
+            /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(identifier)
+            && values.indexOf(identifier) === index,
+        );
+      return [
+        writeFile(
+          join(directory, `nested-before-commit-${suffix}.generated.ts`),
+          generatedCallbackFactoryModule({
+            source: handler.beforeCommit.source,
+            ...(handler.beforeCommit.dependencies
+              ? { dependencies: handler.beforeCommit.dependencies }
+              : {}),
+            injectedIdentifiers: beforeCommitIdentifiers,
+            exportName: 'createCallback',
+          }),
+        ),
+      ];
     }),
-  );
+  ]);
 }
 
 async function writeCallbackModule(directory: string, name: string, source: string, dependencies?: ApplicationHandlerDependencies): Promise<void> {
@@ -2959,7 +3804,11 @@ function rewriteQueryRuntimeDependencies(source: string, query: ApplicationQuery
   const models = graph.nodes.filter((node): node is ApplicationModelNode => node.kind === 'model' && node.runtime?.storageShape === 'native-relational');
   for (const statement of file.statements) {
     if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier) && (statement.moduleSpecifier.text === '@applik8s/applik8s' || statement.moduleSpecifier.text.startsWith('@applik8s/applik8s/'))) {
-      edits.push({ start: statement.getFullStart(), end: statement.getEnd(), replacement: '' });
+      edits.push({
+        start: statement.getFullStart(),
+        end: statement.getEnd(),
+        replacement: focusedQueryRuntimeImport(statement),
+      });
       continue;
     }
     if (!ts.isVariableStatement(statement) || statement.declarationList.declarations.length !== 1) continue;
@@ -2992,6 +3841,54 @@ function rewriteQueryRuntimeDependencies(source: string, query: ApplicationQuery
   return focused.includes('applicationDatabaseHandle(')
     ? `import { applicationDatabaseHandle } from '@applik8s/applik8s/query-runtime';\n${focused}`
     : focused;
+}
+
+/**
+ * Author callbacks may import the cohesive public surface while generated
+ * query workers must avoid evaluating its application-authoring exports. Keep
+ * type-only imports (which erase during bundling) and lower the small set of
+ * admitted runtime helpers to their focused implementation package.
+ */
+function focusedQueryRuntimeImport(
+  statement: ts.ImportDeclaration,
+): string {
+  if (
+    !ts.isStringLiteral(statement.moduleSpecifier)
+    || statement.moduleSpecifier.text !== '@applik8s/applik8s'
+  ) return '';
+  const clause = statement.importClause;
+  if (!clause?.namedBindings || !ts.isNamedImports(clause.namedBindings)) {
+    return '';
+  }
+  const typeImports: string[] = [];
+  const focusedImports = new Map<string, string[]>();
+  const runtimeModules = new Map<string, string>([
+    ['applicationCausalPrincipalContext', '@applik8s/core'],
+  ]);
+  for (const element of clause.namedBindings.elements) {
+    const imported = element.propertyName?.text ?? element.name.text;
+    const binding = element.propertyName
+      ? `${element.propertyName.text} as ${element.name.text}`
+      : element.name.text;
+    if (clause.isTypeOnly || element.isTypeOnly) {
+      typeImports.push(binding);
+      continue;
+    }
+    const runtimeModule = runtimeModules.get(imported);
+    if (!runtimeModule) continue;
+    const bindings = focusedImports.get(runtimeModule) ?? [];
+    bindings.push(binding);
+    focusedImports.set(runtimeModule, bindings);
+  }
+  return [
+    ...(typeImports.length > 0
+      ? [`import type { ${typeImports.join(', ')} } from ${JSON.stringify(statement.moduleSpecifier.text)};`]
+      : []),
+    ...[...focusedImports.entries()].map(
+      ([specifier, bindings]) =>
+        `import { ${bindings.join(', ')} } from ${JSON.stringify(specifier)};`,
+    ),
+  ].join('\n');
 }
 
 interface ImportedQueryModelExport {

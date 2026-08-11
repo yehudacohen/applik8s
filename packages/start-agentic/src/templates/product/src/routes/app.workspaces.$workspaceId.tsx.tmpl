@@ -1,0 +1,54 @@
+import { createServerFn } from '@tanstack/react-start';
+import {
+  getCookie,
+  getRequestProtocol,
+  setCookie,
+} from '@tanstack/react-start/server';
+import { createFileRoute } from '@tanstack/react-router';
+import { WorkspaceDashboardView } from '../features/workspaces/view';
+
+const workspaceCookieName = 'applik8s_workspace';
+const workspaceIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Establishes the untrusted workspace selector before this route renders.
+ * Server admission still verifies membership before promoting the cookie into
+ * trusted context; route selection grants no authority by itself.
+ */
+const selectWorkspaceForRoute = createServerFn({ method: 'POST' })
+  .validator((input: unknown) => {
+    if (!input || typeof input !== 'object') {
+      throw new Error('Workspace route selection requires an input object.');
+    }
+    const workspaceId = Reflect.get(input, 'workspaceId');
+    if (typeof workspaceId !== 'string' || !workspaceIdPattern.test(workspaceId)) {
+      throw new Error('Workspace route selection requires a UUID.');
+    }
+    return { workspaceId: workspaceId.toLowerCase() };
+  })
+  .handler(({ data }) => {
+    if (getCookie(workspaceCookieName) === data.workspaceId) {
+      return Object.freeze({ workspaceId: data.workspaceId, changed: false });
+    }
+    setCookie(workspaceCookieName, data.workspaceId, {
+      httpOnly: false,
+      path: '/',
+      sameSite: 'lax',
+      secure: getRequestProtocol() === 'https',
+      maxAge: 60 * 60 * 24 * 365,
+    });
+    return Object.freeze({ workspaceId: data.workspaceId, changed: true });
+  });
+
+export const Route = createFileRoute('/app/workspaces/$workspaceId')({
+  beforeLoad: ({ params }) => selectWorkspaceForRoute({
+    data: { workspaceId: params.workspaceId },
+  }),
+  component: WorkspaceRoute,
+});
+
+function WorkspaceRoute() {
+  const { workspaceId } = Route.useParams();
+  return <WorkspaceDashboardView workspaceId={workspaceId} />;
+}

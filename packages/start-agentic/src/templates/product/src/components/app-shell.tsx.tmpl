@@ -1,0 +1,183 @@
+import { useApplicationIdentitySession } from '@applik8s/react/identity';
+import { AgenticAccountSession } from '@applik8s/start-agentic/react';
+import { Link, useRouterState } from '@tanstack/react-router';
+import { type ReactNode, useEffect, useState } from 'react';
+import { brand } from '../brand';
+import { Badge, RouteState, cn } from './ui';
+
+const productNavigation = [
+  { to: '/app', label: 'Copilot', icon: '✦' },
+  { to: '/app/library', label: 'Library', icon: '▤' },
+  { to: '/app/inbox', label: 'Inbox', icon: '◎' },
+] as const;
+
+export function AppShell({ children }: { readonly children: ReactNode }) {
+  const session = useApplicationIdentitySession();
+  const pathname = useRouterState({ select: state => state.location.pathname });
+  const authenticated = session.data?.authenticated === true;
+  const workspaceAdministrator = session.data?.capabilities?.workspaceAdministration === true;
+  const operator = session.data?.capabilities?.applicationOperations === true;
+
+  if (!authenticated) {
+    return (
+      <div className="min-h-screen bg-[var(--canvas)] text-stone-900">
+        <a className="skip-link" href="#main-content">Skip to content</a>
+        <header className="border-b border-stone-200/80 bg-white/70 px-4 py-4 backdrop-blur">
+          <div className="mx-auto flex max-w-6xl items-center justify-between gap-4">
+            <Brand />
+            <nav aria-label="Admission" className="flex items-center gap-2">
+              <ThemeControl compact />
+              <Link to="/sign-in" search={{ returnTo: '/app' }} className="px-3 py-2 text-sm font-semibold text-stone-700 no-underline">Sign in</Link>
+              <Link to="/sign-up" className="button-link">Get started</Link>
+            </nav>
+          </div>
+        </header>
+        <main id="main-content" className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-7 lg:px-10">
+          {pathname.startsWith('/app') ? (
+            <div className="py-12"><RouteState title="Sign in to continue" description="Your intended product destination is preserved. Authentication is established before workspace queries or mutations can mount." action={<Link to="/sign-in" search={{ returnTo: pathname }} className="button-link">Continue to sign in</Link>} /></div>
+          ) : children}
+        </main>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[var(--canvas)] text-stone-900">
+      <a className="skip-link" href="#main-content">Skip to content</a>
+      <header className="sticky top-0 z-40 border-b border-stone-200/80 bg-[color:var(--canvas)]/95 px-4 py-3 backdrop-blur lg:hidden">
+        <div className="flex items-center justify-between gap-3">
+          <Brand />
+          <div className="flex items-center gap-2"><ThemeControl compact /><AgenticAccountSession /></div>
+        </div>
+        {authenticated ? (
+          <nav aria-label="Application" className="mt-3 flex gap-1 overflow-x-auto pb-1">
+            {productNavigation.map(item => <NavLink key={item.to} {...item} compact />)}
+            {operator ? <NavLink to="/app/setup" label="Launchpad" icon="△" compact /> : null}
+          </nav>
+        ) : null}
+      </header>
+      <div className="mx-auto flex min-h-screen w-full max-w-[96rem]">
+        <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col border-r border-stone-200/80 bg-white/70 px-4 py-6 backdrop-blur lg:flex">
+          <Brand />
+          {authenticated ? (
+            <nav aria-label="Application" className="mt-9 flex flex-1 flex-col">
+              <p className="nav-label">Product</p>
+              {productNavigation.map(item => <NavLink key={item.to} {...item} />)}
+              <NavLink to="/app/workspaces" label="Workspaces" icon="◇" />
+              <NavLink to="/app/account" label="Account" icon="○" />
+              {workspaceAdministrator ? (
+                <div className="mt-7">
+                  <p className="nav-label">Manage</p>
+                  <NavLink to="/app/usage" label="Usage" icon="◒" />
+                  <NavLink to="/app/billing" label="Billing" icon="◫" />
+                </div>
+              ) : null}
+              {operator ? (
+                <div className="mt-7">
+                  <p className="nav-label">Operator</p>
+                  <NavLink to="/app/setup" label="Launchpad" icon="△" />
+                  <NavLink to="/app/operations" label="Operations" icon="⌁" />
+                </div>
+              ) : null}
+            </nav>
+          ) : <div className="mt-9 text-sm leading-6 text-stone-600">Sign in to enter your workspace copilot.</div>}
+          <div className="mt-auto border-t border-stone-200 pt-4">
+            {operator ? <Badge tone="warning">Starter · non-production</Badge> : null}
+            <div className="mt-3"><ThemeControl /></div>
+            <div className="mt-3"><AgenticAccountSession /></div>
+          </div>
+        </aside>
+        <div className="min-w-0 flex-1">
+          <main id="main-content" className="mx-auto w-full max-w-6xl px-4 py-8 sm:px-7 lg:px-10 lg:py-10">
+            {children}
+          </main>
+        </div>
+      </div>
+      {authenticated ? (
+        <nav aria-label="Mobile application" className="fixed inset-x-3 bottom-3 z-50 grid grid-cols-4 rounded-2xl border border-stone-200 bg-white/95 p-1.5 shadow-xl backdrop-blur lg:hidden">
+          <NavLink to="/app" label="Copilot" icon="✦" compact />
+          <NavLink to="/app/library" label="Library" icon="▤" compact />
+          <NavLink to="/app/inbox" label="Inbox" icon="◎" compact />
+          <NavLink to="/app/account" label="Account" icon="○" compact />
+        </nav>
+      ) : null}
+    </div>
+  );
+}
+
+type ThemePreference = 'light' | 'dark' | 'system';
+
+function ThemeControl({ compact = false }: { readonly compact?: boolean }) {
+  const [preference, setPreference] = useState<ThemePreference>('system');
+  useEffect(() => {
+    const stored = globalThis.localStorage?.getItem('applik8s.theme');
+    const initial = stored === 'light' || stored === 'dark' ? stored : 'system';
+    setPreference(initial);
+    applyTheme(initial);
+  }, []);
+
+  function cycle() {
+    const next = preference === 'system' ? 'light' : preference === 'light' ? 'dark' : 'system';
+    setPreference(next);
+    if (next === 'system') globalThis.localStorage?.removeItem('applik8s.theme');
+    else globalThis.localStorage?.setItem('applik8s.theme', next);
+    applyTheme(next);
+  }
+
+  return (
+    <button
+      type="button"
+      className={cn(
+        'inline-flex min-h-10 items-center justify-center rounded-xl border border-stone-200 bg-white text-sm font-semibold text-stone-700 transition hover:bg-stone-50',
+        compact ? 'size-10' : 'w-full gap-2 px-3',
+      )}
+      onClick={cycle}
+      aria-label={`Theme: ${preference}. Activate to change.`}
+    >
+      <span aria-hidden="true">{preference === 'dark' ? '☾' : preference === 'light' ? '☀' : '◐'}</span>
+      {!compact ? <span className="capitalize">{preference} theme</span> : null}
+    </button>
+  );
+}
+
+function applyTheme(preference: ThemePreference) {
+  const dark = preference === 'dark'
+    || (preference === 'system' && globalThis.matchMedia?.('(prefers-color-scheme: dark)').matches);
+  globalThis.document?.documentElement.classList.toggle('dark', dark);
+  globalThis.document?.documentElement.style.setProperty('color-scheme', dark ? 'dark' : 'light');
+}
+
+function Brand() {
+  return (
+    <Link to="/" className="flex items-center gap-3 font-semibold tracking-tight text-stone-950 no-underline">
+      <span className="grid size-9 place-items-center rounded-xl bg-emerald-900 text-sm text-white shadow-sm" aria-hidden="true">A8</span>
+      <span>{brand.name}</span>
+    </Link>
+  );
+}
+
+function NavLink({
+  to,
+  label,
+  icon,
+  compact = false,
+}: {
+  readonly to: '/' | '/app' | '/app/library' | '/app/inbox' | '/app/workspaces' | '/app/usage' | '/app/billing' | '/app/account' | '/app/setup' | '/app/operations';
+  readonly label: string;
+  readonly icon: string;
+  readonly compact?: boolean;
+}) {
+  return (
+    <Link
+      to={to}
+      activeOptions={{ exact: to === '/app' }}
+      className={cn(
+        'flex items-center gap-3 rounded-xl text-sm font-medium text-stone-600 no-underline transition hover:bg-stone-100 hover:text-stone-950 [&.active]:bg-emerald-50 [&.active]:text-emerald-900',
+        compact ? 'shrink-0 px-3 py-2' : 'px-3 py-2.5',
+      )}
+    >
+      <span aria-hidden="true" className="w-4 text-center">{icon}</span>
+      {label}
+    </Link>
+  );
+}

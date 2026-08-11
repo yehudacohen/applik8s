@@ -6,6 +6,7 @@ import {
 import { type } from 'arktype';
 import { and, eq, or, sql } from 'drizzle-orm';
 import { application } from '../../app';
+import { Notifications } from '../../modules';
 import { database } from '../../providers';
 import {
   Invitation as InvitationTable,
@@ -178,6 +179,37 @@ const workspaces = module(
           });
         },
       );
+      const InvitationDelivery = InvitationTable.on.create(
+        {
+          processor: { replicas: 1, concurrency: 8 },
+          retry: {
+            maxAttempts: 8,
+            initialDelayMs: 500,
+            maxDelayMs: 30_000,
+            deadLetter: true,
+          },
+          budgets: { timeoutMs: 5_000, maxInputBytes: 32_000 },
+        },
+        async function requestInvitationDelivery(created) {
+          await Notifications.request({
+            id: `workspace-invitation:${created.value.id}`,
+            idempotencyKey: `workspace-invitation:${created.value.id}:created`,
+            recipient: { email: created.value.email },
+            content: {
+              subject: 'You have been invited to a workspace',
+              text: [
+                'A workspace owner invited you to join their application workspace.',
+                `Invitation: ${created.value.id}`,
+                `Role: ${created.value.role}`,
+                `Expires: ${created.value.expiresAt}`,
+                'Open the application invitation link supplied by the workspace owner.',
+              ].join('\n'),
+            },
+            template: { id: 'workspace-invitation', version: 'v1' },
+            tags: { workspaceId: created.value.workspaceId },
+          });
+        },
+      );
       const WorkspaceList = WorkspaceTable.view(
         {
           input: type({}),
@@ -212,6 +244,7 @@ const workspaces = module(
       Authenticated.can(
         WorkspaceTable.create.all(),
         WorkspaceList,
+        WorkspaceDashboard,
       );
       Owner.can(
         WorkspaceTable.update.where(
@@ -274,6 +307,7 @@ const workspaces = module(
         WorkspaceList,
         WorkspaceDashboard,
         WorkspaceMembershipBootstrap,
+        InvitationDelivery,
         Authenticated,
         Owner,
         Administrator,
@@ -289,6 +323,7 @@ export const {
   Invitation,
   WorkspaceDashboard,
   WorkspaceList,
+  InvitationDelivery,
   Authenticated,
   Owner,
   Administrator,

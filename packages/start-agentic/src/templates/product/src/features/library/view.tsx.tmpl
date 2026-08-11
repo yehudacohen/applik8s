@@ -1,0 +1,18 @@
+import { Link } from '@tanstack/react-router';
+import { WorkspaceLibrary } from '../../application';
+import { Badge, Card, EmptyState, PageHeader, Skeleton } from '../../components/ui';
+import { useProductJourneyStep } from '../onboarding/view';
+
+export function LibraryView() {
+  const library = WorkspaceLibrary({}).useQuery();
+  useProductJourneyStep('open-library', library.data !== undefined);
+  return (
+    <div>
+      <PageHeader eyebrow="Workspace library" title="Documents and artifacts" description="Mutable application models and immutable run outputs stay distinct, even when they appear in one useful place." />
+      {!library.data ? <div className="grid gap-4 sm:grid-cols-2"><Skeleton className="h-40" /><Skeleton className="h-40" /></div> : null}
+      {library.data && library.data.documents.length + library.data.artifacts.length === 0 ? <EmptyState title="Your library is ready" description="Start a copilot conversation or create a document manually. Committed work will appear here without a refresh." action={<Link to="/app" className="button-link">Open Copilot</Link>} /> : null}
+      {library.data?.documents.length ? <section aria-labelledby="documents-title"><div className="mb-3 flex items-center gap-3"><h2 id="documents-title" className="text-xl font-semibold">Documents</h2><Badge>{library.data.documents.length}</Badge></div><div className="grid gap-4 sm:grid-cols-2">{library.data.documents.map(document => <Link key={document.id} to="/app/documents/$documentId" params={{ documentId: document.id }} className="text-stone-950 no-underline"><Card className="h-full transition hover:border-emerald-300"><div className="flex items-center justify-between"><Badge tone="info">Mutable document</Badge><span className="text-xs text-stone-500">{new Date(document.createdAt).toLocaleDateString()}</span></div><p className="mt-4 line-clamp-5 whitespace-pre-wrap text-sm leading-6">{document.body}</p><p className="mt-4 text-xs text-stone-500">Owner {document.ownerPrincipalId === document.createdByPrincipalId ? 'created this directly' : 'received an agent-created result'}</p></Card></Link>)}</div></section> : null}
+      {library.data?.artifacts.length ? <section className="mt-8" aria-labelledby="artifacts-title"><div className="mb-3 flex items-center gap-3"><h2 id="artifacts-title" className="text-xl font-semibold">Artifacts</h2><Badge>{library.data.artifacts.length}</Badge></div><div className="grid gap-4 sm:grid-cols-2">{library.data.artifacts.map(artifact => <Link key={artifact.id} to="/app/artifacts/$artifactId" params={{ artifactId: artifact.id }} className="text-stone-950 no-underline"><Card className="h-full transition hover:border-emerald-300"><div className="flex items-center justify-between"><Badge tone="success">Immutable artifact</Badge><Badge tone={artifact.state === 'available' ? 'success' : 'warning'}>{artifact.state}</Badge></div><h3 className="mt-4 font-semibold">{artifact.kind}</h3><p className="mt-1 text-sm text-stone-600">{artifact.mediaType} · {artifact.size.toLocaleString()} bytes</p><code className="mt-4 block truncate rounded-lg bg-stone-100 p-2 text-xs">sha256:{artifact.sha256}</code></Card></Link>)}</div></section> : null}
+    </div>
+  );
+}

@@ -2,7 +2,7 @@
 
 ## v0.7 deployment boundary
 
-Applik8s v0.7 pins TypeKro `0.33.5`, Alchemy `2.0.0-beta.58`, and Effect
+Applik8s v0.7 pins TypeKro `0.33.6`, Alchemy `2.0.0-beta.58`, and Effect
 `4.0.0-beta.84` as one reviewed deployment cohort. Ordinary application
 authors do not import any of them. The compiler lowers one portable
 `ApplicationDeploymentGraph`; `@applik8s/deployment-typekro` turns its
@@ -38,7 +38,7 @@ Secret bindings, retained singleton ownership, direct-only provider lowering,
 canonical declaration identity, and Alchemy ordering without rewriting
 TypeKro-owned dependency edges.
 
-TypeKro `0.33.5` resolves the two released upstream seams discovered by the
+TypeKro `0.33.6` resolves the two released upstream seams discovered by the
 External-profile and lifecycle matrices. Singleton-owner graphs now expose a
 scheduling-only barrier without changing a consumer's canonical artifact
 dependencies. Legacy artifact-binding migrations replace the complete

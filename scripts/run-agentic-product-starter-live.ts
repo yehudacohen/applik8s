@@ -1,16 +1,21 @@
 // typecast-file-boundary: the release runner validates generated manifests,
 // Kubernetes objects, and Playwright reports before using their fields.
-import { randomUUID } from 'node:crypto';
-import { readdir, rm } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createApplicationAgenticStart } from '../packages/start-agentic/src/index.js';
 import {
+  writeOfficialTanStackScaffold,
+} from './generated-agentic-start-live-support.js';
+import {
+  captureIdentityStartCommand,
+  type IdentityStartServiceTunnel,
   identityStartResourceExists,
   identityStartServiceTunnel,
+  passedIdentityStartBrowserProjectTests,
   passedIdentityStartBrowserTests,
   runIdentityStartCommand,
   waitForIdentityStartAbsent,
-  type IdentityStartServiceTunnel,
 } from './identity-start-live-support.js';
 import {
   collectV06ArtifactIdentity,
@@ -21,9 +26,6 @@ import {
   discardV06Evidence,
   writeV06EvidenceReceipt,
 } from './v06-evidence.js';
-import {
-  writeOfficialTanStackScaffold,
-} from './generated-agentic-start-live-support.js';
 
 const root = process.cwd();
 const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
@@ -55,25 +57,6 @@ let deployed = false;
 let tunnel: IdentityStartServiceTunnel | undefined;
 
 await discardV06Evidence(evidencePath);
-await rm(target, { recursive: true, force: true });
-await createApplicationAgenticStart({
-  targetDirectory: target,
-  projectName,
-  applik8sVersion: 'workspace:*',
-  example: 'product',
-  install: false,
-  async run(command) {
-    if (
-      command.executable !== 'bunx'
-      || command.arguments[0] !== '@tanstack/cli@0.70.1'
-    ) {
-      throw new Error(
-        `Generated product invoked an unexpected scaffold command: ${command.executable} ${command.arguments.join(' ')}`,
-      );
-    }
-    await writeOfficialTanStackScaffold(target, projectName);
-  },
-});
 
 try {
   if (
@@ -107,6 +90,26 @@ try {
     );
   }
 
+  await rm(target, { recursive: true, force: true });
+  await createApplicationAgenticStart({
+    targetDirectory: target,
+    projectName,
+    applik8sVersion: 'workspace:*',
+    example: 'product',
+    install: false,
+    async run(command) {
+      if (
+        command.executable !== 'bunx'
+        || command.arguments[0] !== '@tanstack/cli@0.70.1'
+      ) {
+        throw new Error(
+          `Generated product invoked an unexpected scaffold command: ${command.executable} ${command.arguments.join(' ')}`,
+        );
+      }
+      await writeOfficialTanStackScaffold(target, projectName);
+    },
+  });
+
   await runIdentityStartCommand(
     execution,
     'build publishable Applik8s packages and the CLI',
@@ -115,6 +118,17 @@ try {
     root,
     { NODE_OPTIONS: '--max-old-space-size=8192' },
   );
+  await runIdentityStartCommand(
+    execution,
+    'run read-only generated product prerequisite diagnostics',
+    cli,
+    ['doctor', '--context', context],
+    target,
+  );
+  observed.set('doctor', {
+    test: 'applik8s doctor verified project and cluster prerequisites without reading .env values',
+    observedAt: new Date().toISOString(),
+  });
   await runIdentityStartCommand(
     execution,
     'generate the product relational migration',
@@ -174,6 +188,42 @@ try {
     test: 'Alchemy and TypeKro deployed the generated product graph',
     observedAt: new Date().toISOString(),
   });
+  const firstDeploymentGraphDigest = createHash('sha256')
+    .update(await readFile(deploymentGraphPath))
+    .digest('hex');
+  console.log(
+    `\n[${execution.label}] reapply the exact generated product to prove graph idempotency`,
+  );
+  const reapply = await captureIdentityStartCommand(
+    cli,
+    ['deploy', '--context', context, '--skip-app-build'],
+    target,
+    { NODE_OPTIONS: '--max-old-space-size=8192' },
+  );
+  process.stdout.write(reapply.stdout);
+  process.stderr.write(reapply.stderr);
+  if (reapply.code !== 0) {
+    throw new Error(
+      `Exact generated product reapply failed with exit ${reapply.code}.`,
+    );
+  }
+  if (!/Alchemy plan: \d+ resources, 0 changes,/u.test(reapply.stdout)) {
+    throw new Error(
+      'Exact generated product reapply was not a no-op according to the Alchemy plan.',
+    );
+  }
+  const secondDeploymentGraphDigest = createHash('sha256')
+    .update(await readFile(deploymentGraphPath))
+    .digest('hex');
+  if (secondDeploymentGraphDigest !== firstDeploymentGraphDigest) {
+    throw new Error(
+      `Exact generated product compilation changed its deployment graph (${firstDeploymentGraphDigest} -> ${secondDeploymentGraphDigest}).`,
+    );
+  }
+  observed.set('graph-noop-redeploy', {
+    test: 'the exact generated product graph reapplied without drift or migration conflict',
+    observedAt: new Date().toISOString(),
+  });
 
   tunnel = await identityStartServiceTunnel(
     execution,
@@ -183,32 +233,107 @@ try {
   );
   await runIdentityStartCommand(
     execution,
-    'execute the causal agent-owned Notes browser journey',
+    'execute the generated product browser journeys',
     join(root, 'node_modules/.bin/playwright'),
     ['test', '--config', 'playwright.agentic-product.config.ts'],
     root,
     { APPLIK8S_AGENTIC_PRODUCT_BASE_URL: tunnel.url },
   );
-  const journey =
-    'attributes an agent-created note to its human requester and reactively renders it';
+  const journeys = new Map([
+    [
+      'renders every first-run route without an unexpected server or hydration failure',
+      'route-reliability',
+    ],
+    [
+      'attributes an agent-created note to its human requester and reactively renders it',
+      'causal-agent-note',
+    ],
+    [
+      'uses the provider-neutral Starter billing path without Stripe credentials',
+      'starter-billing',
+    ],
+    [
+      'renders maintained provider-neutral account security without generated provider plumbing',
+      'maintained-account',
+    ],
+    [
+      'delivers and resolves a durable workspace decision across browser reload',
+      'durable-decision',
+    ],
+    [
+      'persists the product journey, explains AI trust, and enforces bounded data lifecycle controls',
+      'product-lifecycle-trust',
+    ],
+    [
+      'delivers an authenticated workspace invitation through the configured notification provider',
+      'application-notification-delivery',
+    ],
+  ] as const);
   const results = await passedIdentityStartBrowserTests(
     join(
       root,
       '.applik8s-tmp/evidence/v0.7/agentic-product-browser-results.json',
     ),
   );
-  if (results.size !== 1 || !results.has(journey)) {
+  if ([...journeys.keys()].some((journey) => !results.has(journey))) {
     throw new Error(
       `Generated Agentic product browser evidence is incomplete: ${[
         ...results.keys(),
       ].join(', ') || '<none>'}.`,
     );
   }
-  const browser = results.get(journey);
-  if (!browser) throw new Error('Generated product browser evidence vanished.');
-  observed.set('causal-agent-note', {
-    test: journey,
-    observedAt: browser.completedAt,
+  for (const [journey, evidenceId] of journeys) {
+    const browser = results.get(journey);
+    if (!browser) {
+      throw new Error(`Generated product browser evidence vanished for ${journey}.`);
+    }
+    observed.set(evidenceId, {
+      test: journey,
+      observedAt: browser.completedAt,
+    });
+  }
+  const projectResults = await passedIdentityStartBrowserProjectTests(
+    join(
+      root,
+      '.applik8s-tmp/evidence/v0.7/agentic-product-browser-results.json',
+    ),
+  );
+  const qualityJourneys = [
+    'keeps the representative product surface responsive and free of browser failures',
+    'exposes a keyboard-usable, semantically named first-run experience',
+    'preserves product meaning in dark mode and reduced motion',
+    'preserves SSR content, bounded navigation, and live-query recovery on a degraded connection',
+  ] as const;
+  const qualityProjects = [
+    'chromium-product-quality',
+    'firefox-product-quality',
+    'webkit-product-quality',
+    'mobile-product-quality',
+  ] as const;
+  const missingQualityEvidence: string[] = [];
+  let qualityCompletedAtMs = 0;
+  for (const project of qualityProjects) {
+    for (const journey of qualityJourneys) {
+      const result = projectResults.get(`${project}::${journey}`);
+      if (!result) {
+        missingQualityEvidence.push(`${project}/${journey}`);
+        continue;
+      }
+      qualityCompletedAtMs = Math.max(
+        qualityCompletedAtMs,
+        Date.parse(result.completedAt),
+      );
+    }
+  }
+  if (missingQualityEvidence.length > 0) {
+    throw new Error(
+      `Generated Agentic product cross-browser evidence is incomplete: ${missingQualityEvidence.join(', ')}.`,
+    );
+  }
+  const qualityCompletedAt = new Date(qualityCompletedAtMs).toISOString();
+  observed.set('cross-browser-product-quality', {
+    test: 'Chromium, Firefox, WebKit, and mobile product quality journeys',
+    observedAt: qualityCompletedAt,
   });
 
   const [git, cluster, installation, artifacts] = await Promise.all([
@@ -250,10 +375,15 @@ try {
   });
 
   const required = [
+    'doctor',
     'migration-generation',
     'production-build',
     'graph-backed-deploy',
+    'graph-noop-redeploy',
     'causal-agent-note',
+    'application-notification-delivery',
+    'product-lifecycle-trust',
+    'cross-browser-product-quality',
     'graph-backed-destroy',
   ];
   const completedAt = new Date().toISOString();
@@ -289,6 +419,48 @@ try {
   await discardV06Evidence(evidencePath);
   await tunnel?.close();
   if (deployed && await Bun.file(deploymentGraphPath).exists()) {
+    const lifecycleLogs = await captureIdentityStartCommand(
+      'kubectl',
+      [
+        '--context',
+        context,
+        'logs',
+        '--selector',
+        `applik8s.dev/graph=${projectName},app.kubernetes.io/component=reactive-worker`,
+        '--namespace',
+        namespace,
+        '--container',
+        `${projectName}-process-data-lifecycle-request-create`,
+        '--tail=200',
+      ],
+      root,
+    );
+    if (lifecycleLogs.stdout.trim() || lifecycleLogs.stderr.trim()) {
+      console.error('\n[agentic-product-starter] lifecycle processor diagnostics');
+      process.stderr.write(lifecycleLogs.stdout);
+      process.stderr.write(lifecycleLogs.stderr);
+    }
+    const queryGatewayLogs = await captureIdentityStartCommand(
+      'kubectl',
+      [
+        '--context',
+        context,
+        'logs',
+        '--selector',
+        `applik8s.dev/graph=${projectName},app.kubernetes.io/component=query-gateway`,
+        '--namespace',
+        namespace,
+        '--container',
+        `${projectName}-web`,
+        '--tail=200',
+      ],
+      root,
+    );
+    if (queryGatewayLogs.stdout.trim() || queryGatewayLogs.stderr.trim()) {
+      console.error('\n[agentic-product-starter] query gateway diagnostics');
+      process.stderr.write(queryGatewayLogs.stdout);
+      process.stderr.write(queryGatewayLogs.stderr);
+    }
     try {
       await runIdentityStartCommand(
         execution,

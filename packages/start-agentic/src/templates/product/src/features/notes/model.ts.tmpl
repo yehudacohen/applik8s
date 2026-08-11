@@ -1,8 +1,8 @@
 import { AI } from '@applik8s/ai';
-import { module } from '@applik8s/applik8s';
+import { applicationCausalPrincipalContext, module } from '@applik8s/applik8s';
 import { type } from 'arktype';
 import { chat } from '@tanstack/ai';
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { application } from '../../app';
 import { database, inference } from '../../providers';
 import { Note as NoteTable } from './schema';
@@ -39,6 +39,70 @@ const notes = module(
           .limit(100);
       },
     );
+    const NoteDetail = NoteTable.view(
+      {
+        input: type({ id: 'string' }),
+        output: type({
+          id: 'string',
+          ownerPrincipalId: 'string',
+          createdByPrincipalId: 'string',
+          body: 'string',
+          createdAt: 'string',
+        }).or('null'),
+        database,
+        authorize: ({ principal }) => principal.id.length > 0,
+      },
+      async function loadNote(input, context) {
+        const [note] = await context.database(database)
+          .select({
+            id: NoteTable.id,
+            ownerPrincipalId: NoteTable.ownerPrincipalId,
+            createdByPrincipalId: NoteTable.createdByPrincipalId,
+            body: NoteTable.body,
+            createdAt: NoteTable.createdAt,
+          })
+          .from(NoteTable)
+          .where(and(
+            eq(NoteTable.id, input.id),
+            eq(NoteTable.ownerPrincipalId, context.principal.id),
+          ))
+          .limit(1);
+        return note ?? null;
+      },
+    );
+    NoteTable.create.beforeCommit({ history: true }, async (note, input, context) => {
+      if (!context.principal) throw new Error('Document creation requires an admitted principal.');
+      if (
+        input.ownerPrincipalId !== undefined
+        || input.createdByPrincipalId !== undefined
+        || input.createdAt !== undefined
+      ) throw new Error('Document ownership, provenance, and timestamps are server-owned.');
+      const causal = applicationCausalPrincipalContext(context.principal);
+      if (note.value.ownerPrincipalId !== causal.id) {
+        throw new Error('The document owner must match the admitted causal principal.');
+      }
+      if (note.value.createdByPrincipalId !== context.principal.id) {
+        throw new Error('Document creator provenance must match the acting principal.');
+      }
+    });
+    NoteTable.update.beforeCommit({ history: true }, async (note, input, context) => {
+      if (!context.principal) throw new Error('Document updates require an admitted principal.');
+      if (
+        'id' in input.patch
+        || 'ownerPrincipalId' in input.patch
+        || 'createdByPrincipalId' in input.patch
+        || 'createdAt' in input.patch
+      ) throw new Error('Document identity, ownership, provenance, and timestamps are immutable.');
+      if (note.value.ownerPrincipalId !== applicationCausalPrincipalContext(context.principal).id) {
+        throw new Error('Only the document owner, or an admitted execution acting for that owner, may update it.');
+      }
+    });
+    NoteTable.delete.beforeCommit({ history: true }, async (note, _input, context) => {
+      if (!context.principal) throw new Error('Document deletion requires an admitted principal.');
+      if (note.value.ownerPrincipalId !== applicationCausalPrincipalContext(context.principal).id) {
+        throw new Error('Only the document owner, or an admitted execution acting for that owner, may delete it.');
+      }
+    });
     const Authenticated = application.role('authenticated');
     const AssistantIdentity = application.serviceIdentity('notes-assistant');
     const FastModel = AI.model('fast', {
@@ -51,7 +115,7 @@ const notes = module(
         identity: AssistantIdentity,
         model: FastModel,
         instructions: 'Help the user organize concise notes.',
-        tools: [NoteTable.create],
+        tools: [NoteTable.create, NoteTable.update],
       },
       async (request, context) => chat({
         adapter: context.tanstack.adapter,
@@ -63,12 +127,13 @@ const notes = module(
       }),
     );
 
-    Authenticated.can(NoteTable.create, NoteList);
-    AssistantIdentity.can(NoteTable.create);
+    Authenticated.can(NoteTable.create, NoteTable.update, NoteTable.delete, NoteList, NoteDetail);
+    AssistantIdentity.can(NoteTable.create, NoteTable.update);
 
     return {
       Note: NoteTable,
       NoteList,
+      NoteDetail,
       NotesAssistant,
       Authenticated,
       AssistantIdentity,
@@ -79,6 +144,7 @@ const notes = module(
 export const {
   Note,
   NoteList,
+  NoteDetail,
   NotesAssistant,
   Authenticated,
   AssistantIdentity,

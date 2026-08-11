@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readFile,
   rm,
+  stat,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -202,6 +203,13 @@ describe('Agentic Start generator', () => {
     expect(workspaceView).toContain(
       'selectAgenticWorkspace(workspaceId)',
     );
+    expect(workspaceView).toContain('useEffect(() => {');
+    expect(workspaceModel).toContain(
+      'Authenticated.can(',
+    );
+    expect(workspaceModel).toContain(
+      'WorkspaceDashboard,',
+    );
     const reviewRoute = await readFile(
       join(target, 'src/routes/workspaces.$workspaceId_.reviews.tsx'),
       'utf8',
@@ -299,6 +307,12 @@ describe('Agentic Start generator', () => {
     expect(modules).toContain(
       'export const OperationsSnapshot = Operations.Conversation.operationsSnapshot;',
     );
+    expect(modules).toContain(
+      "application.role('application-operator').bootstrap({",
+    );
+    expect(modules).toContain(
+      "id: 'identity:deterministic:local-developer'",
+    );
     expect(modules).not.toContain('conversations: Conversations,');
     expect(modules).not.toContain('maintainedCommands');
     expect(modules).not.toContain('Conversation: Conversations.Conversation');
@@ -365,7 +379,10 @@ describe('Agentic Start generator', () => {
     expect(rootRoute).toContain(
       '<ApplicationIdentityProvider initialSession={initialSession}>',
     );
-    expect(rootRoute).toContain('<AccountSession />');
+    expect(rootRoute).toContain(
+      "import { AgenticAccountSession } from '@applik8s/start-agentic/react';",
+    );
+    expect(rootRoute).toContain('<AgenticAccountSession />');
     expect(rootRoute).toContain('<Outlet />');
     expect(rootRoute).toMatch(
       /<ApplicationIdentityProvider[\s\S]*<Document>[\s\S]*<\/Document>[\s\S]*<\/ApplicationIdentityProvider>/,
@@ -380,18 +397,9 @@ describe('Agentic Start generator', () => {
     expect(accountSessionServer).toContain(
       ".handler(() => loadApplicationIdentitySession())",
     );
-    const accountSession = await readFile(
-      join(target, 'src/features/account/session.tsx'),
-      'utf8',
-    );
-    expect(accountSession).toContain(
-      'useApplicationIdentitySession',
-    );
-    expect(accountSession).toContain(
-      "session.phase === 'loading'",
-    );
-    expect(accountSession).not.toContain('Ory');
-    expect(accountSession).not.toContain('Kratos');
+    await expect(
+      stat(join(target, 'src/features/account/session.tsx')),
+    ).rejects.toThrow();
     expect(
       await readFile(join(target, 'src/styles.css'), 'utf8'),
     ).toContain('font-synthesis: none');
@@ -444,11 +452,60 @@ describe('Agentic Start generator', () => {
     expect(result.files).toEqual(
       expect.arrayContaining(applicationAgenticStartDefinition.generator.files),
     );
-    expect(result.files).toHaveLength(25);
+    expect(result.files).toHaveLength(67);
     expect(result.files.length).toBeLessThanOrEqual(
       applicationAgenticStartDefinition.generator.maximumApplicationFiles,
     );
     expect(progress).toEqual(['scaffold', 'templates', 'validation']);
+    const accountRoute = await readFile(
+      join(target, 'src/routes/app.account.tsx'),
+      'utf8',
+    );
+    expect(accountRoute).toContain(
+      "import { AgenticAccountSettings } from '@applik8s/start-agentic/react';",
+    );
+    expect(accountRoute).toContain('<AgenticAccountSettings');
+    await expect(
+      stat(join(target, 'src/features/account/settings.tsx')),
+    ).rejects.toThrow();
+    const conversationModel = await readFile(
+      join(target, 'src/features/conversations/model.ts'),
+      'utf8',
+    );
+    expect(conversationModel).toContain(
+      'Conversations.Conversation.update.beforeCommit(',
+    );
+    expect(conversationModel).toContain(
+      'Conversations.Conversation.update.all()',
+    );
+    expect(conversationModel).toContain(
+      "field !== 'title' && field !== 'archivedAt'",
+    );
+    const lifecycleModel = await readFile(
+      join(target, 'src/features/lifecycle/model.ts'),
+      'utf8',
+    );
+    expect(lifecycleModel).toContain(
+      'DataLifecycleRequestTable.create.beforeCommit(',
+    );
+    expect(lifecycleModel).toContain(
+      'DataLifecycleRequestTable.on.create(',
+    );
+    expect(lifecycleModel).toContain(
+      "state: 'actionRequired'",
+    );
+    expect(lifecycleModel).toContain('await Note.delete({ identity });');
+    expect(lifecycleModel).toContain(
+      'await Conversations.Conversation.update({',
+    );
+    const lifecycleUi = await readFile(
+      join(target, 'src/features/account/identity-flow.tsx'),
+      'utf8',
+    );
+    expect(lifecycleUi).toContain(
+      "await requestLifecycle({\n      scope: 'account'",
+    );
+    expect(lifecycleUi).not.toContain('for (const document');
 
     const manifest = JSON.parse(
       await readFile(join(target, 'package.json'), 'utf8'),
@@ -456,23 +513,41 @@ describe('Agentic Start generator', () => {
       readonly scripts: Readonly<Record<string, string>>;
       readonly applik8s: Readonly<Record<string, string>>;
       readonly dependencies: Readonly<Record<string, string>>;
+      readonly devDependencies: Readonly<Record<string, string>>;
     };
     expect(manifest.applik8s.context).toBe('orbstack');
     expect(manifest.scripts).toMatchObject({
+      'generate-routes': 'tsr generate',
       typecheck: 'bun run generate-routes && tsc --noEmit',
       test: 'vitest run',
       lint: 'biome lint src test vite.config.ts vitest.config.ts',
+      doctor: 'applik8s doctor',
       check:
         'bun run typecheck && bun run lint && bun run test && bun run app:check && bun run db:check',
     });
     expect(manifest.dependencies['@applik8s/operations-ui']).toBe(
       'workspace:*',
     );
-    expect(manifest.dependencies).not.toHaveProperty(
-      '@applik8s/conversations',
+    expect(manifest.dependencies['@applik8s/conversations']).toBe(
+      'workspace:*',
     );
-    expect(manifest.dependencies).not.toHaveProperty('@applik8s/approvals');
-    expect(manifest.dependencies).not.toHaveProperty('@applik8s/billing');
+    expect(manifest.dependencies['@applik8s/approvals']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/artifacts']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/evals']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/runtime-s3']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/billing']).toBe('workspace:*');
+    expect(manifest.dependencies['@applik8s/billing-stripe']).toBe(
+      'workspace:*',
+    );
+    expect(manifest.dependencies['@applik8s/notifications']).toBe(
+      'workspace:*',
+    );
+    expect(manifest.dependencies['@applik8s/runtime-hatchet']).toBe(
+      'workspace:*',
+    );
+    expect(manifest.dependencies['@applik8s/usage']).toBe('workspace:*');
+    expect(manifest.devDependencies['tailwindcss']).toBe('4.3.3');
+    expect(manifest.devDependencies['@tailwindcss/vite']).toBe('4.3.3');
     const readme = await readFile(join(target, 'README.md'), 'utf8');
     expect(readme).toContain('Starter profile is credential-free');
     expect(readme).toContain('web-only');
@@ -485,12 +560,40 @@ describe('Agentic Start generator', () => {
     const environment = await readFile(join(target, '.env.example'), 'utf8');
     expect(environment).not.toContain('APPLIK8S_PROFILE=');
     expect(environment).not.toContain('APPLIK8S_CONTEXT=');
-    expect(
+    const databaseSchema = await readFile(
+      join(target, 'src/database-schema.ts'),
+      'utf8',
+    );
+    expect(databaseSchema).toContain(
+      'export { DecisionReview, decisionReviewState }',
+    );
+    const onboardingSchema = await readFile(
+      join(target, 'src/features/onboarding/schema.ts'),
+      'utf8',
+    );
+    expect(onboardingSchema).toContain(
+      "field.text('completed_steps').array()",
+    );
+    expect(onboardingSchema).not.toContain("field.jsonb('completed_steps')");
+    const lineage = JSON.parse(
       await readFile(
         join(target, '.applik8s/start-lineage.json'),
         'utf8',
       ),
-    ).toContain('"example": "product"');
+    ) as {
+      readonly example: string;
+      readonly projectName: string;
+      readonly templateRevision: string;
+      readonly files: Readonly<Record<string, string>>;
+    };
+    expect(lineage).toMatchObject({
+      example: 'product',
+      projectName: 'notes-product',
+      templateRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
+    });
+    expect(lineage.files['src/routes/index.tsx']).toMatch(
+      /^sha256:[a-f0-9]{64}$/u,
+    );
     const notesModel = await readFile(
       join(target, 'src/features/notes/model.ts'),
       'utf8',
@@ -516,18 +619,66 @@ describe('Agentic Start generator', () => {
       'utf8',
     );
     expect(developerInstallation).toContain('OPENROUTER_API_KEY');
-    expect(developerInstallation).not.toContain('STRIPE_');
+    expect(developerInstallation).toContain('STRIPE_SECRET_KEY');
+    expect(developerInstallation).toContain('STRIPE_WEBHOOK_SECRET');
     const home = await readFile(
-      join(target, 'src/routes/index.tsx'),
+      join(target, 'src/routes/app.index.tsx'),
       'utf8',
     );
     expect(home).toContain('createApplicationTanStackConnection');
     expect(home).toContain('agent: NotesAssistant');
-    expect(home).not.toContain('notes.refresh()');
-    expect(home).toContain('without a manual refresh');
+    expect(home).toContain('notes.refresh()');
+    expect(home).toContain('live query will reconcile');
+    const appLayout = await readFile(
+      join(target, 'src/routes/app.tsx'),
+      'utf8',
+    );
+    expect(appLayout).toContain('<Outlet />');
+    const rootRoute = await readFile(
+      join(target, 'src/routes/__root.tsx'),
+      'utf8',
+    );
+    expect(rootRoute).toContain('errorComponent: RouteErrorBoundary');
+    expect(rootRoute).toContain('<AppShell><Outlet /></AppShell>');
     expect(
       await readFile(join(target, 'src/modules.ts'), 'utf8'),
-    ).toContain('application.include(operationsOverview)');
+    ).toContain('application.include(operationsControlCenter)');
+    const billingFeature = await readFile(
+      join(target, 'src/features/billing.tsx'),
+      'utf8',
+    );
+    const billingView = await readFile(
+      join(target, 'src/features/billing-view.tsx'),
+      'utf8',
+    );
+    expect(billingFeature).not.toContain(
+      'providerSubscriptionId: request.input.providerSubscriptionId',
+    );
+    expect(billingView).not.toContain(
+      'providerSubscriptionId:',
+    );
+    expect(
+      await readFile(join(target, 'src/features/workspaces/model.ts'), 'utf8'),
+    ).toContain("const workspaces = module(");
+    const workspaceRoute = await readFile(
+      join(target, 'src/routes/app.workspaces.$workspaceId.tsx'),
+      'utf8',
+    );
+    expect(workspaceRoute).toContain('beforeLoad: ({ params })');
+    expect(workspaceRoute).toContain('selectWorkspaceForRoute({');
+    expect(workspaceRoute).toContain(
+      "setCookie(workspaceCookieName, data.workspaceId",
+    );
+    expect(workspaceRoute).toContain("sameSite: 'lax'");
+    expect(workspaceRoute).toContain("secure: getRequestProtocol() === 'https'");
+    expect(
+      await readFile(
+        join(target, 'src/routes/invitations.$invitationId.tsx'),
+        'utf8',
+      ),
+    ).toContain(
+      'onClick={() => selectAgenticWorkspace(workspaceId)}',
+    );
     expect(
       await readFile(join(target, 'test/application.test.ts'), 'utf8'),
     ).toContain('explicit authority graph');
@@ -631,10 +782,134 @@ describe('Agentic Start generator', () => {
         expect.objectContaining({ kind: 'aiAgent', name: 'notes-assistant' }),
         expect.objectContaining({ kind: 'authorityManifest' }),
       ]));
-      expect(result.value.nodes.length).toBeLessThan(80);
-      expect(result.value.nodes).not.toEqual(expect.arrayContaining([
+      // The product Start intentionally includes the maintained SaaS modules;
+      // keep the complete inferred graph bounded as that baseline grows.
+      // The product includes one complete durable-decision vertical: model,
+      // workflow, signal, subscription, and terminal update. Keep a tight
+      // ceiling so future examples cannot hide graph sprawl behind generation.
+      expect(result.value.nodes.length).toBeLessThan(400);
+      expect(result.value.nodes).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'model', id: 'model.billing-plan' }),
+        expect.objectContaining({ kind: 'model', id: 'model.usage-fact' }),
         expect.objectContaining({ kind: 'model', id: 'model.conversation' }),
         expect.objectContaining({ kind: 'model', id: 'model.approval-review' }),
+        expect.objectContaining({ kind: 'model', id: 'model.data-lifecycle-request' }),
+        expect.objectContaining({ kind: 'streamProcessor', name: 'process-data-lifecycle-request-create' }),
+      ]));
+      const payments = result.value.nodes.find(
+        (node) =>
+          node.kind === 'provider'
+          && node.interface === 'PaymentProvider',
+      );
+      const billingServer = result.value.nodes.find(
+        (node) => node.kind === 'server' && node.name === 'billing',
+      );
+      const usageProcessor = result.value.nodes.find(
+        (node) =>
+          node.kind === 'streamProcessor'
+          && node.name === 'deliver-billable-usage-create',
+      );
+      const notificationProvider = result.value.nodes.find(
+        (node) =>
+          node.kind === 'provider'
+          && node.interface === 'NotificationDelivery',
+      );
+      const notificationProcessor = result.value.nodes.find(
+        (node) =>
+          node.kind === 'streamProcessor'
+          && node.name === 'deliver-requested-notification-create',
+      );
+      const invitationProcessor = result.value.nodes.find(
+        (node) =>
+          node.kind === 'streamProcessor'
+          && node.name === 'request-invitation-delivery-create',
+      );
+      expect(payments?.id).toBe(
+        'provider.payment-provider.v1alpha1.primary',
+      );
+      const billingProviderConsumers = billingServer?.kind === 'server'
+        ? billingServer.routes.map((route) => ({
+            id: route.id,
+            providerNodeIds:
+              route.functionNative?.providerBindings?.map(
+                (binding) => binding.provider.nodeId,
+              ) ?? [],
+          }))
+        : [];
+      expect(
+        billingProviderConsumers.every((route) =>
+          route.providerNodeIds.includes(payments?.id ?? ''),
+        ),
+        JSON.stringify(billingProviderConsumers),
+      ).toBe(true);
+      expect(usageProcessor?.kind === 'streamProcessor'
+        ? usageProcessor.providerBindings
+        : undefined).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            provider: expect.objectContaining({ nodeId: payments?.id }),
+          }),
+        ]),
+      );
+      expect(notificationProcessor?.kind === 'streamProcessor'
+        ? notificationProcessor.providerBindings
+        : undefined, JSON.stringify(notificationProcessor)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            provider: expect.objectContaining({
+              nodeId: notificationProvider?.id,
+            }),
+          }),
+        ]),
+      );
+      expect(notificationProcessor?.kind === 'streamProcessor'
+        ? notificationProcessor.operationBindings
+        : undefined).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            identifier: 'NotificationRequest.update',
+            operation: expect.objectContaining({
+              model: 'NotificationRequest',
+              operation: 'update',
+            }),
+          }),
+        ]),
+      );
+      expect(invitationProcessor?.kind === 'streamProcessor'
+        ? invitationProcessor.functionNativeTransaction?.modelBindings
+        : undefined).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            identifier: 'NotificationRequest.find',
+            model: { nodeId: 'model.notification-request' },
+            access: 'read',
+          }),
+        ]),
+      );
+      expect(invitationProcessor?.kind === 'streamProcessor'
+        ? invitationProcessor.operationBindings
+        : undefined).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            identifier: 'NotificationRequest.create',
+            operation: expect.objectContaining({
+              model: 'NotificationRequest',
+              operation: 'create',
+            }),
+          }),
+        ]),
+      );
+      expect(result.value.edges).toEqual(expect.arrayContaining([
+        {
+          from: { nodeId: payments?.id },
+          to: { nodeId: billingServer?.id },
+          relationship: 'provides',
+        },
+        {
+          from: { nodeId: payments?.id },
+          to: { nodeId: usageProcessor?.id },
+          relationship: 'provides',
+        },
       ]));
     },
     30_000,
@@ -727,6 +1002,12 @@ describe('Agentic Start generator', () => {
             },
             payments: {
               secretName: 'stripe-payments',
+            },
+            notifications: {
+              host: 'smtp.example.test',
+              secretName: 'smtp-notifications',
+              senderEmail: 'notifications@example.test',
+              credentialSource: { kind: 'existingSecret' },
             },
             inference: {
               endpoint: 'https://inference.example.test',
@@ -927,6 +1208,11 @@ describe('Agentic Start generator', () => {
             payments: {
               secretName: 'stripe-payments',
             },
+            notifications: {
+              host: 'smtp.example.test',
+              secretName: 'smtp-notifications',
+              senderEmail: 'notifications@example.test',
+            },
           },
         },
         artifacts: [],
@@ -1007,6 +1293,62 @@ describe('Agentic Start generator', () => {
         compiled.ok ? undefined : compiled.error.message,
       ).toBe(true);
       if (!compiled.ok) return;
+      const notificationWorker = compiled.value.artifacts.reactiveArtifacts.find(
+        (artifact) =>
+          artifact.kind === 'streamProcessorWorker'
+          && artifact.name.includes('deliver-requested-notification-create'),
+      );
+      expect(notificationWorker).toBeDefined();
+      const notificationWorkerSource = await readFile(
+        join(
+          notificationWorker?.sourcePath
+            ? dirname(notificationWorker.sourcePath)
+            : '',
+          'stream-processor.generated.ts',
+        ),
+        'utf8',
+      );
+      expect(notificationWorkerSource).toContain(
+        'executeFunctionNativePostgresTransaction',
+      );
+      expect(notificationWorkerSource).toContain(
+        'const functionNativeOperations = Object.freeze([Object.freeze({',
+      );
+      expect(notificationWorkerSource).toContain(
+        '"NotificationRequest": Object.freeze({ ...({ "update": createApplicationFunctionNativeOperationHandle',
+      );
+      expect(notificationWorkerSource).toContain(
+        '"notificationRequests": Object.freeze({ ...({ "update": createApplicationFunctionNativeOperationHandle',
+      );
+      const nestedOperationSource = notificationWorkerSource.slice(
+        notificationWorkerSource.indexOf('const functionNativeOperations'),
+        notificationWorkerSource.indexOf('const functionNativeCommands'),
+      );
+      expect(nestedOperationSource.match(/operationId:/g)).toHaveLength(1);
+      const invitationWorker = compiled.value.artifacts.reactiveArtifacts.find(
+        (artifact) =>
+          artifact.kind === 'streamProcessorWorker'
+          && artifact.name.includes('request-invitation-delivery-create'),
+      );
+      expect(invitationWorker).toBeDefined();
+      const invitationWorkerSource = await readFile(
+        join(
+          invitationWorker?.sourcePath
+            ? dirname(invitationWorker.sourcePath)
+            : '',
+          'stream-processor.generated.ts',
+        ),
+        'utf8',
+      );
+      expect(invitationWorkerSource).toContain(
+        "import { createApplicationNotificationRequestCallable } from '@applik8s/notifications';",
+      );
+      expect(invitationWorkerSource).toContain(
+        'hydrateApplicationCallable(functionNativeBindingsMutable, ["Notifications","request"], createApplicationNotificationRequestCallable(functionNativeLeafBindings));',
+      );
+      expect(invitationWorkerSource).not.toContain(
+        'import { Notifications } from',
+      );
       const searchWorker = compiled.value.artifacts.reactiveArtifacts.find(
         (artifact) => artifact.kind === 'searchProjectionWorker',
       );

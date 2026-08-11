@@ -1,9 +1,10 @@
 // typecast-file-boundary: Durable task payloads are decoded from validated JSON protocol envelopes into their declared generic schemas.
 import { createHash } from 'node:crypto';
 import type {
+  ApplicationAdmittedPrincipal,
   ApplicationAuthorizationReceipt,
+  ApplicationCausalPrincipalContext,
   ApplicationExecutionPrincipal,
-  ApplicationPrincipal,
   ApplicationScopeExpression,
   ApplicationWorkloadAuthorityEnvelope,
   JsonObject,
@@ -28,8 +29,11 @@ export interface ApplicationTaskOperationRuntimeContract {
   readonly idempotencyKey?: (input: object) => string;
 }
 
-export interface ApplicationTaskOperationPrincipal extends ApplicationPrincipal {
+export interface ApplicationTaskOperationPrincipal extends ApplicationAdmittedPrincipal {
   readonly trustedContext?: JsonObject;
+  readonly causalPrincipalId?: string;
+  readonly causalPrincipal?: ApplicationCausalPrincipalContext['identity'];
+  readonly causalGrantIds?: readonly string[];
 }
 
 export interface ApplicationTaskServicePrincipalInput {
@@ -47,6 +51,7 @@ export interface CanonicalApplicationTaskPrincipalOptions {
   readonly authorityRevision: string;
   readonly invocationId: string;
   readonly contextSecret: string;
+  readonly causalPrincipal?: ApplicationCausalPrincipalContext;
   readonly now?: () => Date;
 }
 
@@ -196,6 +201,15 @@ export function canonicalApplicationTaskServicePrincipal(
     authorizationVersion: authorityRevision,
     trustedContext: Object.freeze({ ...trustedContext }),
     sessionId: options.invocationId.trim(),
+    ...(options.causalPrincipal
+      ? {
+          causalPrincipalId: options.causalPrincipal.id,
+          causalPrincipal: options.causalPrincipal.identity,
+          causalGrantIds: Object.freeze([
+            ...options.causalPrincipal.grantIds,
+          ]),
+        }
+      : {}),
   });
 }
 

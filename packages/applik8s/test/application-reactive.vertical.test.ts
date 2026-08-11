@@ -1,10 +1,12 @@
 // typecast-file-boundary: reactive vertical fixtures inspect erased graph metadata after checking node identities and discriminators.
 import { AnalyticalDatabase, ApplicationHost, app, applicationGraphFor, Certificate, DnsPublication, event, HttpExposure, IdentityProvider, IndexStore, stream, WorkflowEngine, workflow } from '@applik8s/applik8s';
+import { bindApplicationCallableDependencies } from '@applik8s/applik8s/internal/provider-runtime';
 import { validateApplicationGraph, validateApplicationGraphCompatibilityPolicy } from '@applik8s/core';
 import { type } from 'arktype';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 import { testApplicationAdmission } from '../../../test-support/application-principal.js';
+import { expandApplicationCallbackDependencies } from '../src/application-callback.js';
 
 const AccountChanged = stream('accounts.changed.v1', {
   payload: type({ accountId: 'string', balance: 'number', revision: 'string' }),
@@ -325,6 +327,159 @@ describe('v0.6 streams, subscriptions, and projections', () => {
     ]));
     if (!graph) throw new Error('Expected function-native transaction graph.');
     expect(validateApplicationGraph(graph)).toEqual([]);
+  });
+
+  it('expands maintained dependency metadata attached directly to a processor handler', () => {
+    const records = pgTable('maintained_reactive_records', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const receipts = pgTable('maintained_reactive_receipts', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('maintained-reactive-handler');
+    const database = application.database.postgres('main', {
+      schema: { records, receipts },
+    });
+    const Record = application.model(records, {
+      name: 'Record',
+      database,
+    });
+    const Receipt = application.model(receipts, {
+      name: 'Receipt',
+      database,
+    });
+    async function persistReceipt(event: {
+      readonly identity: string;
+      readonly revision?: string;
+    }) {
+      await Receipt.create({
+        id: event.identity,
+        revision: event.revision ?? 'initial',
+      });
+    }
+    bindApplicationCallableDependencies(persistReceipt, [
+      { identifier: 'Receipt.create', value: Receipt.create },
+    ], { id: 'notifications.request.v1' });
+    const expanded = expandApplicationCallbackDependencies({
+      bindings: { 'Receipts.persist': persistReceipt },
+    });
+    expect(expanded.bindings['Receipt.create']).toBe(Receipt.create);
+    expect(expanded.callables).toEqual([{
+      identifier: 'Receipts.persist',
+      runtime: 'notifications.request.v1',
+      dependencies: ['Receipt.create'],
+    }]);
+    Record.on.create(
+      {
+        processor: { replicas: 1, concurrency: 1 },
+        __generatedBindings: { 'Receipts.persist': persistReceipt },
+      },
+      async function persistReceiptFromEvent(event) {
+        await persistReceipt(event);
+      },
+    );
+
+    const processor = applicationGraphFor(application.composition)?.nodes.find(
+      (node) =>
+        node.kind === 'streamProcessor'
+        && node.operationBindings?.some(
+          ({ identifier }) => identifier === 'Receipt.create',
+        ),
+    );
+    expect(processor).toMatchObject({
+      callableBindings: [{
+        identifier: 'Receipts.persist',
+        runtime: 'notifications.request.v1',
+        dependencies: ['Receipt.create'],
+      }],
+      operationBindings: [{
+        identifier: 'Receipt.create',
+        operation: { model: 'Receipt', operation: 'create' },
+        handler: { nodeId: 'command-handler.receipt-models.receipt.create.v1' },
+      }],
+    });
+  });
+
+  it('records directly called relational views as bounded processor query dependencies', () => {
+    const records = pgTable('processor_view_records', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('processor-view-capture');
+    const database = application.database.postgres('main', {
+      schema: { records },
+    });
+    const Record = application.model(records, { name: 'Record', database });
+    const RecordExists = Record.view({
+      input: type({ id: 'string' }),
+      output: type({ exists: 'boolean' }),
+      database,
+      reads: [Record],
+      authorize: ({ principal }) => principal.kind === 'execution',
+      budgets: { timeoutMs: 1_000, maxRows: 1, maxResultBytes: 1_024 },
+    }, async function recordExists(input) {
+      return { exists: input.id.length > 0 };
+    });
+    Record.on.create({
+      processor: { replicas: 1, concurrency: 1 },
+      __generatedBindings: { RecordExists },
+    }, async function inspectCreatedRecord(event) {
+      await RecordExists({ id: event.identity });
+    });
+
+    const processor = applicationGraphFor(application.composition)?.nodes.find(
+      (node) => node.kind === 'streamProcessor' && node.name === 'inspect-created-record-create',
+    );
+    expect(processor).toMatchObject({
+      queryBindings: [{
+        identifier: 'RecordExists',
+        query: { nodeId: 'query.Record.recordExists' },
+      }],
+    });
+  });
+
+  it('fails discovery when a lifecycle callback does not await a direct model operation', () => {
+    const parents = pgTable('unawaited_lifecycle_parents', {
+      id: text('id').primaryKey(),
+      revision: text('revision').notNull(),
+    });
+    const children = pgTable('unawaited_lifecycle_children', {
+      id: text('id').primaryKey(),
+      parentId: text('parent_id').notNull(),
+      revision: text('revision').notNull(),
+    });
+    const application = app('unawaited-lifecycle-operation');
+    const database = application.database.postgres('main', {
+      schema: { parents, children },
+    });
+    const Parent = application.model(parents, {
+      name: 'UnawaitedParent',
+      database,
+    });
+    const Child = application.model(children, {
+      name: 'UnawaitedChild',
+      database,
+    });
+    async function createChild(event: { readonly identity: string }) {
+      void Child.create({
+        id: event.identity,
+        parentId: event.identity,
+        revision: event.identity,
+      });
+    }
+    bindApplicationCallableDependencies(createChild, [
+      {
+        identifier: 'Child.create',
+        value: Child.create,
+        awaited: false,
+      },
+    ]);
+
+    expect(() => Parent.on.create(createChild)).toThrow(
+      /must await direct model operations \(Child\.create\).*provisional result.*roll back.*context\.send/s,
+    );
   });
 
   it('omits unconditional ClickHouse includeWhen literals that KRO cannot parse', () => {

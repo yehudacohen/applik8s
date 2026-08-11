@@ -1,0 +1,43 @@
+import { module } from '@applik8s/applik8s';
+import { type } from 'arktype';
+import { eq } from 'drizzle-orm';
+import { application } from '../../app';
+import { database } from '../../providers';
+import { Authenticated } from '../workspaces/model';
+import { OnboardingProgress as OnboardingProgressTable } from './schema';
+
+const onboarding = module('onboarding', OnboardingProgressTable, () => {
+  const OnboardingState = OnboardingProgressTable.view({
+    input: type({}),
+    output: type({
+      principalId: 'string',
+      completedSteps: 'string[]',
+      dismissed: 'boolean',
+      'completedAt?': 'string',
+    }).or('null'),
+    database,
+    authorize: ({ principal }) => principal.id.length > 0,
+  }, async function loadOnboardingState(_input, context) {
+    const [row] = await context.database(database).select({
+      principalId: OnboardingProgressTable.principalId,
+      completedSteps: OnboardingProgressTable.completedSteps,
+      dismissed: OnboardingProgressTable.dismissed,
+      completedAt: OnboardingProgressTable.completedAt,
+    }).from(OnboardingProgressTable).where(eq(
+      OnboardingProgressTable.principalId,
+      context.principal.id,
+    )).limit(1);
+    return row
+      ? { principalId: row.principalId, completedSteps: row.completedSteps, dismissed: row.dismissed, ...(row.completedAt ? { completedAt: row.completedAt } : {}) }
+      : null;
+  });
+
+  Authenticated.can(
+    OnboardingProgressTable.create.all(),
+    OnboardingProgressTable.update.all(),
+    OnboardingState,
+  );
+  return { OnboardingProgress: OnboardingProgressTable, OnboardingState };
+});
+
+export const { OnboardingProgress, OnboardingState } = application.include(onboarding);

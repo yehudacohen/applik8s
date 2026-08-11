@@ -25,3 +25,13 @@ spec:
       secretName: identity-start-payments
       apiKeyKey: apiKey
       webhookSecretKey: webhookSecret
+    notifications:
+      host: smtp.example.test
+      port: 587
+      secretName: identity-start-notifications
+      usernameKey: username
+      passwordKey: password
+      senderEmail: notifications@identity.example.test
+      senderName: Identity Start
+      credentialSource:
+        kind: existingSecret

@@ -1,0 +1,12 @@
+{
+  "apiVersion": "applik8s.agenticStartSourceBudget/v1alpha1",
+  "maximumNonblankLines": 400,
+  "maximumFilesPerFeature": 3,
+  "categories": {
+    "features": { "baseline": 21, "maximum": 21 },
+    "routes": { "baseline": 22, "maximum": 25 },
+    "design": { "baseline": 4, "maximum": 4 },
+    "deployment": { "baseline": 7, "maximum": 8 },
+    "other": { "baseline": 10, "maximum": 11 }
+  }
+}

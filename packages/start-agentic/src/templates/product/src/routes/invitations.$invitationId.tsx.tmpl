@@ -1,0 +1,61 @@
+import { selectAgenticWorkspace } from '@applik8s/start-agentic/react';
+import { createFileRoute, Link } from '@tanstack/react-router';
+import { useState } from 'react';
+import { Invitation } from '../application';
+
+export const Route = createFileRoute('/invitations/$invitationId')({
+  component: InvitationAcceptance,
+});
+
+function InvitationAcceptance() {
+  const { invitationId } = Route.useParams();
+  const accept = Invitation.update.useMutation();
+  const [workspaceId, setWorkspaceId] = useState<string>();
+  const [error, setError] = useState<string>();
+
+  async function acceptInvitation() {
+    setError(undefined);
+    try {
+      const result = await accept({
+        identity: invitationId,
+        patch: { state: 'accepted' },
+      });
+      setWorkspaceId(result.value.workspaceId);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : 'The invitation could not be accepted.',
+      );
+    }
+  }
+
+  return (
+    <article>
+      <p className="eyebrow">Workspace invitation</p>
+      <h1>Join this workspace</h1>
+      <p>
+        The invitation identifier is a single-use capability. Your authenticated
+        identity—not browser input—becomes the member recorded by the application.
+      </p>
+      {workspaceId ? (
+        <Link
+          to="/app/workspaces/$workspaceId"
+          params={{ workspaceId }}
+          onClick={() => selectAgenticWorkspace(workspaceId)}
+        >
+          Open workspace
+        </Link>
+      ) : (
+        <button
+          type="button"
+          disabled={accept.pending}
+          onClick={acceptInvitation}
+        >
+          {accept.pending ? 'Joining…' : 'Accept invitation'}
+        </button>
+      )}
+      {error ? <p role="alert">{error}</p> : null}
+    </article>
+  );
+}

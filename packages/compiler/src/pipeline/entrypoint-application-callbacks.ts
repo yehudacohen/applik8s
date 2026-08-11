@@ -116,24 +116,52 @@ export function decorateApplicationCallbackArguments(
   }
   const registrar = node.expression.name.text;
   if (
-    registrar === 'post'
+    (registrar === 'post' || registrar === 'webhook')
     && isApplicationHttpPostRegistrar(node.expression.expression, file)
     && node.arguments.length === 4
     && ts.isObjectLiteralExpression(node.arguments[2] as ts.Expression)
     && isApplicationCallbackExpression(node.arguments[3] as ts.Expression)
   ) {
+    const registrarName = registrar === 'webhook'
+      ? 'app.http.webhook'
+      : 'app.http.post';
+    const rawContract = node.arguments[2] as ts.ObjectLiteralExpression;
     const contract = ts.visitNode(
-      node.arguments[2] as ts.Expression,
+      rawContract,
       visit,
     ) as ts.ObjectLiteralExpression;
     const handler = node.arguments[3] as ts.Expression;
-    const analysis = directApplicationCallAnalysis(
-      handler,
-      file,
-      sourceFile,
-      'app.http.post',
-    );
-    const captures = analysis.calls.map((candidate) =>
+    const authentication = registrar === 'webhook'
+      ? rawContract.properties.find(
+          (property): property is ts.PropertyAssignment =>
+            ts.isPropertyAssignment(property)
+            && objectPropertyName(property.name) === 'authenticate'
+            && isApplicationCallbackExpression(property.initializer),
+        )?.initializer
+      : undefined;
+    const analyses = [handler, ...(authentication ? [authentication] : [])]
+      .map((callback) =>
+        directApplicationCallAnalysis(
+          callback,
+          file,
+          sourceFile,
+          registrarName,
+        ));
+    const calls = analyses.flatMap((analysis) => analysis.calls)
+      .filter(
+        (candidate, index, candidates) =>
+          candidates.findIndex(
+            (other) => other.getText(file) === candidate.getText(file),
+          ) === index,
+      );
+    const awaited = analyses.flatMap((analysis) => analysis.awaited)
+      .filter(
+        (candidate, index, candidates) =>
+          candidates.findIndex(
+            (other) => other.getText(file) === candidate.getText(file),
+          ) === index,
+      );
+    const captures = calls.map((candidate) =>
       ts.visitNode(candidate, visit) as ts.Expression);
     const generated = captures.length === 0
       ? []
@@ -152,12 +180,12 @@ export function decorateApplicationCallbackArguments(
                 )),
             ),
           ),
-          ...(analysis.awaited.length > 0
+          ...(awaited.length > 0
             ? [
                 ts.factory.createPropertyAssignment(
                   '__generatedAwaitedCalls',
                   ts.factory.createObjectLiteralExpression(
-                    analysis.awaited.map((capture) =>
+                    awaited.map((capture) =>
                       ts.factory.createPropertyAssignment(
                         ts.factory.createStringLiteral(capture.getText(file)),
                         ts.visitNode(capture, visit) as ts.Expression,
@@ -171,10 +199,10 @@ export function decorateApplicationCallbackArguments(
       if (index === 2) {
         const decorated = decorateApplicationCallbackObject(
           contract,
-          ['authorize'],
+          [registrar === 'webhook' ? 'authenticate' : 'authorize'],
           file,
           sourceFile,
-          'app.http.post',
+          registrarName,
         );
         return ts.factory.updateObjectLiteralExpression(decorated, [
           ...decorated.properties,
@@ -187,7 +215,7 @@ export function decorateApplicationCallbackArguments(
             visited,
             file,
             sourceFile,
-            'app.http.post',
+            registrarName,
             'handler',
           )
         : visited;
@@ -365,7 +393,7 @@ export function decorateApplicationCallbackArguments(
     return argumentsWithCallbacks;
   }
   if (
-    registrar === 'view' &&
+    (registrar === 'query' || registrar === 'view') &&
     node.arguments.length === 2 &&
     isApplicationCallbackExpression(node.arguments[1] as ts.Expression)
   ) {
@@ -518,6 +546,7 @@ export function applicationCallbackDependencyMetadataStatementsByName(
   file: ts.SourceFile,
   sourceFile: string,
   moduleIdentity: string,
+  deferDependencyValueReads = false,
 ): ReadonlyMap<string, readonly ts.Statement[]> {
   const statements = new Map<string, readonly ts.Statement[]>();
   for (const [name, callable] of topLevelApplicationCallables(file)) {
@@ -527,6 +556,7 @@ export function applicationCallbackDependencyMetadataStatementsByName(
       file,
       sourceFile,
       'application helper',
+      deferDependencyValueReads,
     );
     const awaited = new Set(
       analysis.awaited.map((candidate) => applicationNodeText(candidate, file)),
@@ -583,10 +613,22 @@ export function applicationCallbackDependencyMetadataStatementsByName(
                 'configurable',
                 ts.factory.createTrue(),
               ),
-              ts.factory.createPropertyAssignment(
-                'value',
-                ts.factory.createArrayLiteralExpression(dependencies),
-              ),
+              deferDependencyValueReads
+                ? ts.factory.createPropertyAssignment(
+                    'get',
+                    ts.factory.createArrowFunction(
+                      undefined,
+                      undefined,
+                      [],
+                      undefined,
+                      ts.factory.createToken(ts.SyntaxKind.EqualsGreaterThanToken),
+                      ts.factory.createArrayLiteralExpression(dependencies),
+                    ),
+                  )
+                : ts.factory.createPropertyAssignment(
+                    'value',
+                    ts.factory.createArrayLiteralExpression(dependencies),
+                  ),
             ]),
           ],
         ),
@@ -802,6 +844,7 @@ function directApplicationCallAnalysis(
   file: ts.SourceFile,
   sourceFile: string,
   registrar: string,
+  ignoreMutableModuleState = false,
 ): DirectApplicationCallAnalysis {
   const resolved = analyzableApplicationCallback(callback, file);
   if (!resolved) {
@@ -827,6 +870,9 @@ function directApplicationCallAnalysis(
   const awaited = new Map<string, ts.Expression>();
   const returned = new Map<string, ts.Expression>();
   const topLevelCallables = topLevelApplicationCallables(file);
+  const mutableModuleState = ignoreMutableModuleState
+    ? topLevelMutableApplicationBindings(file)
+    : new Set<string>();
   const resolvingHelpers = new Set<string>();
 
   function visit(node: ts.Node): void {
@@ -858,7 +904,28 @@ function directApplicationCallAnalysis(
       }
       const candidate = directCallTarget(node.expression);
       const root = candidate ? expressionRootIdentifier(candidate) : undefined;
-      if (candidate && root && !localNames.has(root.text) && !knownRuntimeGlobal(root.text)) {
+      if (
+        candidate
+        && root
+        && !localNames.has(root.text)
+        && !mutableModuleState.has(root.text)
+        && !knownRuntimeGlobal(root.text)
+      ) {
+        if (
+          ts.isPropertyAccessExpression(candidate)
+          && candidate.name.text === 'delete'
+        ) {
+          const owner = candidate.expression;
+          const ownerRoot = expressionRootIdentifier(owner);
+          if (
+            ownerRoot
+            && !localNames.has(ownerRoot.text)
+            && !mutableModuleState.has(ownerRoot.text)
+            && !knownRuntimeGlobal(ownerRoot.text)
+          ) {
+            candidates.set(applicationNodeText(owner, file), owner);
+          }
+        }
         const helperName = ts.isIdentifier(candidate)
           ? candidate.text
           : undefined;
@@ -908,6 +975,20 @@ function directApplicationCallAnalysis(
     awaited: [...awaited.values()],
     returned: [...returned.values()],
   };
+}
+
+function topLevelMutableApplicationBindings(file: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  for (const statement of file.statements) {
+    if (
+      !ts.isVariableStatement(statement)
+      || (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+    ) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      collectBindingNames(declaration.name, names);
+    }
+  }
+  return names;
 }
 
 function topLevelApplicationCallables(
@@ -1053,7 +1134,6 @@ function directCallTarget(expression: ts.LeftHandSideExpression): ts.Expression 
       'get',
       'find',
       'head',
-      'delete',
       'signUpload',
       'signDownload',
       'rebuild',

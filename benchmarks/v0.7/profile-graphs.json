@@ -274,20 +274,7 @@
           "source": {}
         },
         {
-          "id": "artifact.operator.apply-moderation-policy-create",
-          "kind": "artifact",
-          "scope": {
-            "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
-          },
-          "lifecycle": {
-            "ownership": "application",
-            "deletion": "retain",
-            "adoption": "createOrAdoptExact"
-          },
-          "source": {}
-        },
-        {
-          "id": "artifact.operator.apply-moderation-policy-update",
+          "id": "artifact.operator.moderation-policy-controller",
           "kind": "artifact",
           "scope": {
             "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
@@ -890,24 +877,13 @@
           "relationship": "publishes"
         },
         {
-          "from": "artifact.operator.apply-moderation-policy-create",
+          "from": "artifact.operator.moderation-policy-controller",
           "to": "kubernetes.application",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
         {
-          "from": "artifact.operator.apply-moderation-policy-create",
-          "to": "kubernetes.application",
-          "relationship": "publishes"
-        },
-        {
-          "from": "artifact.operator.apply-moderation-policy-update",
-          "to": "kubernetes.application",
-          "relationship": "requiresOutput",
-          "output": "immutableReference"
-        },
-        {
-          "from": "artifact.operator.apply-moderation-policy-update",
+          "from": "artifact.operator.moderation-policy-controller",
           "to": "kubernetes.application",
           "relationship": "publishes"
         },
@@ -1100,13 +1076,7 @@
         },
         {
           "from": "artifact.operator-host",
-          "to": "artifact.operator.apply-moderation-policy-create",
-          "relationship": "requiresOutput",
-          "output": "immutableReference"
-        },
-        {
-          "from": "artifact.operator-host",
-          "to": "artifact.operator.apply-moderation-policy-update",
+          "to": "artifact.operator.moderation-policy-controller",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
@@ -1127,12 +1097,7 @@
         },
         {
           "from": "external.provider.container-registry.v1alpha1.images.harbor-project",
-          "to": "artifact.operator.apply-moderation-policy-create",
-          "relationship": "requiresReady"
-        },
-        {
-          "from": "external.provider.container-registry.v1alpha1.images.harbor-project",
-          "to": "artifact.operator.apply-moderation-policy-update",
+          "to": "artifact.operator.moderation-policy-controller",
           "relationship": "requiresReady"
         },
         {
@@ -1414,20 +1379,7 @@
           "source": {}
         },
         {
-          "id": "artifact.operator.apply-moderation-policy-create",
-          "kind": "artifact",
-          "scope": {
-            "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
-          },
-          "lifecycle": {
-            "ownership": "application",
-            "deletion": "retain",
-            "adoption": "createOrAdoptExact"
-          },
-          "source": {}
-        },
-        {
-          "id": "artifact.operator.apply-moderation-policy-update",
+          "id": "artifact.operator.moderation-policy-controller",
           "kind": "artifact",
           "scope": {
             "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
@@ -2064,24 +2016,13 @@
           "relationship": "publishes"
         },
         {
-          "from": "artifact.operator.apply-moderation-policy-create",
+          "from": "artifact.operator.moderation-policy-controller",
           "to": "kubernetes.application",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
         {
-          "from": "artifact.operator.apply-moderation-policy-create",
-          "to": "kubernetes.application",
-          "relationship": "publishes"
-        },
-        {
-          "from": "artifact.operator.apply-moderation-policy-update",
-          "to": "kubernetes.application",
-          "relationship": "requiresOutput",
-          "output": "immutableReference"
-        },
-        {
-          "from": "artifact.operator.apply-moderation-policy-update",
+          "from": "artifact.operator.moderation-policy-controller",
           "to": "kubernetes.application",
           "relationship": "publishes"
         },
@@ -2274,13 +2215,7 @@
         },
         {
           "from": "artifact.operator-host",
-          "to": "artifact.operator.apply-moderation-policy-create",
-          "relationship": "requiresOutput",
-          "output": "immutableReference"
-        },
-        {
-          "from": "artifact.operator-host",
-          "to": "artifact.operator.apply-moderation-policy-update",
+          "to": "artifact.operator.moderation-policy-controller",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
@@ -2301,12 +2236,7 @@
         },
         {
           "from": "external.provider.container-registry.v1alpha1.images.harbor-project",
-          "to": "artifact.operator.apply-moderation-policy-create",
-          "relationship": "requiresReady"
-        },
-        {
-          "from": "external.provider.container-registry.v1alpha1.images.harbor-project",
-          "to": "artifact.operator.apply-moderation-policy-update",
+          "to": "artifact.operator.moderation-policy-controller",
           "relationship": "requiresReady"
         },
         {
@@ -2603,20 +2533,7 @@
           "source": {}
         },
         {
-          "id": "artifact.operator.apply-moderation-policy-create",
-          "kind": "artifact",
-          "scope": {
-            "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
-          },
-          "lifecycle": {
-            "ownership": "application",
-            "deletion": "retain",
-            "adoption": "createOrAdoptExact"
-          },
-          "source": {}
-        },
-        {
-          "id": "artifact.operator.apply-moderation-policy-update",
+          "id": "artifact.operator.moderation-policy-controller",
           "kind": "artifact",
           "scope": {
             "connectionDigest": "sha256:4212c1b73a5dc7d34c5b85a62b1c427c670d881b64eea7e780880764e43fe686"
@@ -3038,24 +2955,13 @@
           "relationship": "publishes"
         },
         {
-          "from": "artifact.operator.apply-moderation-policy-create",
+          "from": "artifact.operator.moderation-policy-controller",
           "to": "kubernetes.application",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
         {
-          "from": "artifact.operator.apply-moderation-policy-create",
-          "to": "kubernetes.application",
-          "relationship": "publishes"
-        },
-        {
-          "from": "artifact.operator.apply-moderation-policy-update",
-          "to": "kubernetes.application",
-          "relationship": "requiresOutput",
-          "output": "immutableReference"
-        },
-        {
-          "from": "artifact.operator.apply-moderation-policy-update",
+          "from": "artifact.operator.moderation-policy-controller",
           "to": "kubernetes.application",
           "relationship": "publishes"
         },
@@ -3248,13 +3154,7 @@
         },
         {
           "from": "artifact.operator-host",
-          "to": "artifact.operator.apply-moderation-policy-create",
-          "relationship": "requiresOutput",
-          "output": "immutableReference"
-        },
-        {
-          "from": "artifact.operator-host",
-          "to": "artifact.operator.apply-moderation-policy-update",
+          "to": "artifact.operator.moderation-policy-controller",
           "relationship": "requiresOutput",
           "output": "immutableReference"
         },
@@ -3663,6 +3563,12 @@
               "providerInterface": "IdentityProvider",
               "providerImplementation": "identity-provider",
               "execution": "runtime-only"
+            },
+            {
+              "sourceNodeId": "provider.notification-delivery.v1alpha1.transactional",
+              "providerInterface": "NotificationDelivery",
+              "providerImplementation": "local-inspectable",
+              "execution": "root-composition"
             },
             {
               "sourceNodeId": "provider.object-storage.v1alpha1.primary",
@@ -4579,6 +4485,12 @@
               "execution": "runtime-only"
             },
             {
+              "sourceNodeId": "provider.notification-delivery.v1alpha1.transactional",
+              "providerInterface": "NotificationDelivery",
+              "providerImplementation": "smtp",
+              "execution": "runtime-only"
+            },
+            {
               "sourceNodeId": "provider.object-storage.v1alpha1.primary",
               "providerInterface": "ObjectStorage",
               "providerImplementation": "s3",
@@ -5279,6 +5191,12 @@
               "sourceNodeId": "provider.identity-provider.v1alpha1.primary",
               "providerInterface": "IdentityProvider",
               "providerImplementation": "identity-provider",
+              "execution": "runtime-only"
+            },
+            {
+              "sourceNodeId": "provider.notification-delivery.v1alpha1.transactional",
+              "providerInterface": "NotificationDelivery",
+              "providerImplementation": "smtp",
               "execution": "runtime-only"
             },
             {

@@ -1,0 +1,100 @@
+import {
+  createApplicationTanStackConnection,
+  hydrateApplicationConversationMessage,
+} from '@applik8s/ai-tanstack/client';
+import { useChat } from '@tanstack/ai-react';
+import { Link, useNavigate } from '@tanstack/react-router';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { Conversation, ConversationDetail, NotesAssistant } from '../../application';
+import { Alert, Button, Card, EmptyState, PageHeader, Skeleton } from '../../components/ui';
+import { useProductJourneyStep } from '../onboarding/view';
+
+export function ConversationView({ conversationId }: { readonly conversationId: string }) {
+  const detail = ConversationDetail({ conversationId }).useQuery();
+  useProductJourneyStep('resume-conversation', detail.data !== undefined);
+  const update = Conversation.update.useMutation();
+  const navigate = useNavigate();
+  const connection = useMemo(() => createApplicationTanStackConnection({ agent: NotesAssistant }), []);
+  const initialMessages = useMemo(
+    () => detail.data?.messages.map(hydrateApplicationConversationMessage) ?? [],
+    [detail.data],
+  );
+  const { messages, sendMessage, isLoading, error, stop, setMessages } = useChat({
+    connection,
+    threadId: conversationId,
+    initialMessages,
+  });
+  const [draft, setDraft] = useState('');
+  const [title, setTitle] = useState('');
+
+  useEffect(() => setTitle(detail.data?.conversation.title ?? ''), [detail.data?.conversation.title]);
+  useEffect(() => {
+    if (detail.data && !isLoading) setMessages(initialMessages);
+  }, [detail.data, initialMessages, isLoading, setMessages]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = draft.trim();
+    if (!message) return;
+    setDraft('');
+    await sendMessage(message);
+  }
+
+  async function rename(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!title.trim()) return;
+    await update({ identity: conversationId, patch: { title: title.trim() } });
+    await detail.refresh();
+  }
+
+  async function archive() {
+    await update({ identity: conversationId, patch: { archivedAt: new Date().toISOString() } });
+    await navigate({ to: '/app' });
+  }
+
+  return (
+    <div>
+      <Link to="/app" className="text-sm font-semibold text-emerald-800">← Back to Copilot</Link>
+      <PageHeader eyebrow="Persistent conversation" title={detail.data?.conversation.title ?? 'New conversation'} description="This URL is stable. History is restored from the admitted identity scope after reload." />
+      {detail.error ? <Alert tone="warning" title="Conversation unavailable">The shell remains usable. Retry after the conversation provider recovers.</Alert> : null}
+      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+        <Card className="min-h-[32rem]">
+          {!detail.data && messages.length === 0 ? <><Skeleton className="h-16" /><Skeleton className="mt-3 h-24" /></> : null}
+          {messages.length === 0 && detail.data !== undefined ? <EmptyState title="Start this conversation" description="Ask the copilot to create, organize, or update a workspace document." /> : null}
+          <div className="space-y-3" aria-live="polite">
+            {messages.map(message => (
+              <article key={message.id} className={message.role === 'user' ? 'ml-auto max-w-[85%] rounded-2xl bg-emerald-900 p-4 text-white' : 'mr-auto max-w-[92%] rounded-2xl bg-stone-100 p-4 text-stone-900'}>
+                <strong className="text-xs uppercase tracking-wide opacity-70">{message.role}</strong>
+                {message.parts.map((part, index) => part.type === 'text' ? <p className="mt-1 whitespace-pre-wrap text-sm leading-6" key={index}>{part.content}</p> : null)}
+              </article>
+            ))}
+          </div>
+          {error ? <div className="mt-4"><Alert tone="danger" title="The response was interrupted">No product change is claimed unless it appears in the authoritative library.</Alert></div> : null}
+          <form onSubmit={submit} className="mt-5 grid gap-3 border-t border-stone-200 pt-5">
+            <label htmlFor="conversation-prompt" className="text-sm font-semibold">Ask, create, analyze, or update</label>
+            <textarea id="conversation-prompt" value={draft} onChange={event => setDraft(event.currentTarget.value)} disabled={isLoading} placeholder="Create a note about our launch plan" />
+            <div className="flex gap-2"><Button type="submit" disabled={isLoading || !draft.trim()}>{isLoading ? 'Working…' : 'Send'}</Button>{isLoading ? <Button type="button" variant="secondary" onClick={stop}>Stop</Button> : null}</div>
+          </form>
+        </Card>
+        <aside className="space-y-4">
+          {detail.data ? <Card><h2 className="font-semibold">Conversation</h2><form onSubmit={rename} className="mt-3 grid gap-2"><label htmlFor="conversation-title" className="text-sm">Title</label><input id="conversation-title" value={title} onChange={event => setTitle(event.currentTarget.value)} /><Button type="submit" variant="secondary" disabled={update.pending || !title.trim()}>Rename</Button></form><Button type="button" variant="ghost" className="mt-3 w-full" onClick={() => void archive()}>Archive</Button></Card> : null}
+          <Card>
+            <p className="eyebrow">Trust boundary</p>
+            <p className="mt-2 text-sm leading-6 text-stone-600">The assistant receives only its declared typed tools. Committed documents—not streamed text—are authoritative.</p>
+            <details className="mt-4 border-t border-stone-200 pt-4 text-sm">
+              <summary className="cursor-pointer font-semibold text-stone-900">How this execution works</summary>
+              <dl className="mt-3 grid gap-3 text-stone-600">
+                <div><dt className="font-semibold text-stone-800">Logical model</dt><dd>fast · deployment selects the qualified provider server-side</dd></div>
+                <div><dt className="font-semibold text-stone-800">Declared tools</dt><dd>Create and update documents through admitted model operations</dd></div>
+                <div><dt className="font-semibold text-stone-800">Authority</dt><dd>Every tool call is re-authorized with causal-principal lineage</dd></div>
+                <div><dt className="font-semibold text-stone-800">Data boundary</dt><dd>External profiles may send prompt content to the selected inference provider; Starter remains deterministic and local</dd></div>
+                <div><dt className="font-semibold text-stone-800">Completion</dt><dd>Stopping can leave provider completion uncertain. Only authoritative model changes are presented as committed work</dd></div>
+              </dl>
+              <Link to="/app/usage" className="mt-4 inline-block font-semibold text-emerald-800">Inspect usage evidence →</Link>
+            </details>
+          </Card>
+        </aside>
+      </div>
+    </div>
+  );
+}

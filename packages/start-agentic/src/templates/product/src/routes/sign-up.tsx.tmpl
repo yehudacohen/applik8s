@@ -1,0 +1,15 @@
+import { AgenticAccountSession } from '@applik8s/start-agentic/react';
+import { useApplicationIdentitySession } from '@applik8s/react/identity';
+import { createFileRoute } from '@tanstack/react-router';
+import { useEffect } from 'react';
+import { Card } from '../components/ui';
+
+export const Route = createFileRoute('/sign-up')({ component: SignUp });
+
+function SignUp() {
+  const session = useApplicationIdentitySession();
+  useEffect(() => {
+    if (session.data?.authenticated) globalThis.location.replace('/app');
+  }, [session.data?.authenticated]);
+  return <div className="mx-auto max-w-md py-12"><Card><p className="eyebrow">Start building</p><h1 className="mt-2 text-3xl font-semibold">Create your account</h1><p className="mt-2 mb-6 text-sm leading-6 text-stone-600">Starter uses deterministic local identity and needs no out-of-band verification.</p><AgenticAccountSession defaultMode="register" /></Card></div>;
+}

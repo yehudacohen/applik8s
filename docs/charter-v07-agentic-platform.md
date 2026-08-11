@@ -1,7 +1,7 @@
 # Charter: Applik8s v0.7 — Agentic Starts, Typed Authority, Search, and AI Infrastructure
 
-**Status:** Proposed program charter; maintainer approval authorizes bounded implementation RFPs, not
-release tagging
+**Status:** Accepted v0.7 program charter; implementation and release qualification remain in progress.
+This acceptance authorizes the bounded implementation RFPs but does not authorize release tagging.
 
 **Audience:** Applik8s maintainers, RFP owners, Start authors, TypeKro contributors, provider-adapter
 authors, and acceptance-application implementers
@@ -391,8 +391,10 @@ Every bounded RFP and generated example must preserve these source-level invaria
    golden path.
 9. **One closure grammar.** Model mutations are ordinary functions containing
    `Model.edit(key, transactionClosure)` or a conventional CRUD `beforeCommit` callback. Transactional
-   facts use `Event.emit(...)`; nested model commands use the explicit lint-safe
-   `void Command(...)` staging form and may not be awaited before commit. Free queries, workflow steps,
+   facts use `Event.emit(...)`. Committed model lifecycle handlers await ordinary same-authority CRUD
+   calls and receive typed provisional snapshots; the compiler rejects discarded promises and
+   cross-authority composition. Narrow `beforeCommit` policy callbacks retain the explicit lint-safe
+   `void Command(...)` outbox form and may not await another model operation. Free queries, workflow steps,
    and agents receive `(input, context)`; lifecycle observers receive `(event,
    context)`; raw routes receive `(request, context)`; and the golden-path
    `Resource.on.reconcile(resource => ...)` closure receives the typed
@@ -465,8 +467,12 @@ and safer alternative.
 
 1. **Starts are distributions, not forks.** A Start composes the public Applik8s graph and maintained
    packages. It does not create a second compiler, graph, runtime authority, or deployment language.
-2. **Generated projects remain small.** Runtime implementations, auth adapters, UI primitives, workflow
-   support, and operations pages live in versioned packages rather than hundreds of copied source files.
+2. **Generated projects remain reviewable and product-owned at the correct layer.** Runtime
+   implementations, auth adapters, workflow support, provider clients, and redacted operational query
+   contracts live in versioned packages. Generated applications own the visual tokens, used UI
+   primitives, shell, product copy, route composition, and onboarding definitions that a product team is
+   expected to customize. Behavior-heavy maintained components expose accessible, theme-neutral
+   controllers or render slots instead of imposing a framework theme.
 3. **The official TanStack Start generator remains the scaffold source.** The Start layers Applik8s onto
    an upstream project instead of maintaining a competing router/build scaffold.
 4. **One model and relationship graph is shared.** Drizzle relationships and ArkType-backed typed
@@ -2094,9 +2100,12 @@ bun applik8s status
 bun applik8s destroy
 ```
 
-`dev` preserves the upstream Vite/TanStack experience and starts only credential-free starter
-dependencies. The generated local installation selects the starter profile, so the first loop requires
-no profile flag; explicit dedicated/external selection appears in the deployment tutorial. `plan` is
+`dev` preserves the upstream Vite/TanStack experience and is side-effect-free with respect to the
+Kubernetes cluster. `dev:cluster` explicitly deploys the credential-free Starter graph and may apply
+reviewed local-development aspects such as filesystem mounts and watch commands only after cluster
+compatibility is proven. `dev:live` opts into selected credential-backed providers. The generated local
+installation selects the Starter profile, so the first cluster loop requires no profile flag; explicit
+Dedicated/External selection appears in the deployment tutorial. `plan` is
 effect-free and reports operation-catalog, authority, provider, workload,
 resource, image, lifecycle, data-retention, and destructive changes. `deploy`, `status`, and `destroy`
 operate through the application graph, TypeKro, and Alchemy.
@@ -2689,27 +2698,32 @@ v0.7 does not require:
 10. **Release scope.** The release is large. Phase gates must produce independently reviewable vertical
     increments without narrowing the final required experience silently.
 
-## Open design questions requiring maintainer review
+## Closed v0.7 decisions and deferred extensions
 
-1. Should the initial package be `@applik8s/start-agentic`, with `--start agentic`, or should the public
-   package be broader while retaining that generator name?
-2. Should an operation's implicit permission always be grantable, or must sensitive operations explicitly opt
-   into runtime grant creation?
-3. Which bounded runtime predicate forms are sufficient for v0.7 dynamic permission scopes?
-4. Which authorization checks must be transaction-local versus revalidated at gateway, processor, or
-   provider enforcement boundaries?
-5. Should Keto remain the default relationship store when PostgreSQL owns canonical grants, or should the
-   first profile use PostgreSQL relationships and qualify Keto as a production projection?
-6. Should the first OpenSearch TypeKro integration use the official operator, the official Helm chart, or
-   support both under one lifecycle contract?
-7. Which Envoy AI Gateway provider and credential paths can be required without external paid credentials
-   in continuous integration?
-8. What minimum billing/entitlement module belongs in the first Agentic Start versus a follow-on
-   module release?
-
-These questions may refine syntax and provider choice. They must not weaken the core semantic decisions:
-existing typed operations, static and dynamic grants, provider-neutral identity, durable authority,
-relationship-aware indexes, package-backed Starts, and complete live application evidence.
+1. The initial distribution is `@applik8s/start-agentic`, selected by `--start agentic`.
+2. Runtime grants never arise merely because an operation exists. The canonical `canGrant` authority,
+   exact operation revision, subject, scope, target, expiry, and use bounds are required. The framework
+   derives sensitivity from effect and authority metadata instead of requiring routine application code
+   to repeat a second grantability annotation.
+3. v0.7 runtime predicates are limited to typed equality, bounded membership, relationship membership,
+   target identity, and trusted-context fields present in the normalized operation graph. Arbitrary
+   executable predicates are deferred.
+4. Gateways admit the request and bind trusted context; authoritative model writes revalidate inside
+   their transaction; durable processors revalidate each admitted delivery; and every external effect
+   revalidates at the effect boundary. Long-lived subscriptions revalidate on resume and relevant
+   catalog/revocation changes.
+5. PostgreSQL is canonical for grants and application relationships. Keto is an optional qualified
+   projection and may not become an independent authority.
+6. The dedicated OpenSearch implementation uses the official operator through TypeKro. Alternative
+   chart ownership is a future provider refinement.
+7. Continuous integration uses deterministic AI and credential-free gateway paths. Paid OpenRouter or
+   other live credentials are opt-in exact-candidate qualification, never a default CI prerequisite.
+8. v0.7 includes application-owned plans and entitlements, provider-neutral subscription/usage
+   contracts, deterministic Starter billing, and the Stripe adapter. Pricing strategy remains
+   application-owned.
+9. Vector search, multi-use signals, arbitrary dynamic authorization predicates, automated generated
+   source rewriting, seamless stateful profile migration, and a general notification-campaign product
+   are explicitly deferred beyond v0.7.
 
 ## Definition of done
 
@@ -2728,6 +2742,21 @@ v0.7 is ready for maintainer release review when:
   statically discovered dependencies compile into exact least-privilege workload grants;
 - generated source is feature-first, the full command loop works from packed packages, `explain` derives
   from the deployment plan, and the beginner path does not require profile configuration;
+- public landing, sign-up/sign-in, verification, recovery, MFA, invitation continuation, and intended-
+  route resumption work through provider-neutral identity contracts, while transactional application
+  notifications use the ordinary outbox and a qualified `NotificationDelivery` provider;
+- application-operator access is a canonical typed grant with explicit bootstrap, revocation, expiry,
+  audit, and break-glass recovery; workspace ownership, email strings, and environment configuration do
+  not imply operator authority;
+- Launchpad receives only compiled public graph metadata, redacted digest-bound deployment receipts, and
+  authorized operations observations; it has no kubeconfig or browser-side mutation authority;
+- generated onboarding persistence is application-owned, mutable Documents remain distinct from
+  immutable object-backed Artifacts, and the product exposes bounded retention/export/deletion behavior;
+- the Start provides AI provider/data/tool/approval/budget/uncertain-completion trust UX and graph-derived
+  production obligations for DNS/TLS, courier, migrations, backup/restore, quotas, webhooks,
+  observability, rollback, and destruction;
+- `applik8s start update --check` reports lineage, compatibility, and security-relevant drift without
+  rewriting application-owned source;
 - `Index(...)` follows model relationships, maintains OpenSearch from committed changes, and rebuilds
   safely;
 - TanStack AI, Hatchet, and Envoy AI Gateway have non-overlapping authorities;
@@ -2739,6 +2768,8 @@ v0.7 is ready for maintainer release review when:
   through the generated Applik8s Start without a Stimp runtime dependency;
 - Chirp, GuestBook, and the agentic identity vertical slices pass locally and on OrbStack;
 - adversarial security, cleanup, upgrade, package-consumer, browser-boundary, and performance gates pass;
+- Chromium, Firefox, and WebKit product journeys pass keyboard/accessibility, slow-network/SSE recovery,
+  responsive/mobile, SSR/hydration, route-latency, layout-stability, and zero-console-error budgets;
 - the maintainer judges the resulting source examples succinct relative to the distributed behavior they
   express;
 - no release tag has been created before that review.

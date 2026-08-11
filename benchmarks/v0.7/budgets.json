@@ -19,7 +19,7 @@
   "identityStart": {
     "maximumBrowserJavaScriptGzipBytes": 150000,
     "maximumServerOutputBytes": 5242880,
-    "maximumApplicationGraphNodes": 250,
+    "maximumApplicationGraphNodes": 320,
     "maximumResourceGraphBytes": 524288
   }
 }

@@ -463,8 +463,14 @@ export const PostTrending = PostBase.view(
       try {
         const ranking = await context.source.aggregate({
           dimensions: ['postId'],
-          measures: { score: { operation: 'sum', field: 'delta' } },
-          orderBy: [{ field: 'score', direction: 'desc' }],
+          measures: {
+            score: { operation: 'sum', field: 'delta' },
+            latestChange: { operation: 'max', field: 'changedAtEpoch' },
+          },
+          orderBy: [
+            { field: 'score', direction: 'desc' },
+            { field: 'latestChange', direction: 'desc' },
+          ],
           limit,
         });
         rankedPostIds = ranking.items.filter(({ score }) => score > 0).map(({ postId }) => postId);

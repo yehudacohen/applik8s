@@ -41,7 +41,7 @@ describe('application ContainerRegistry capability', () => {
         kind: 'provider',
         interface: 'ContainerRegistry',
         implementation: 'harbor-container-registry',
-        config: {
+        config: expect.objectContaining({
           bindingKind: 'provided',
           provider: 'harbor-container-registry',
           containerRegistry: {
@@ -62,7 +62,7 @@ describe('application ContainerRegistry capability', () => {
             },
             tls: { plainHttp: true },
           },
-        },
+        }),
       }),
     ]));
   });

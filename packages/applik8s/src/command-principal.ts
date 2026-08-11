@@ -43,20 +43,39 @@ export function applicationCommandPrincipal(
 }
 
 /**
+ * Restores the reserved principal key inside a framework delivery context.
+ *
+ * Stream sources strip the key from the handler-visible trusted context so
+ * application code never observes it; framework hops fold it back when the
+ * durable command kernel receives the carried lineage.
+ */
+export function applicationCommandPrincipalValues(
+  principal: ApplicationCommandPrincipal,
+): Readonly<Record<string, JsonValue>> {
+  return Object.freeze({ [principalContextKey]: jsonPrincipal(principal) });
+}
+
+/**
  * Returns the trusted ownership-attribution principal for one durable command.
  *
- * The immediate execution principal remains the authorization actor. Only a
- * framework-admitted execution principal may redirect attribution to its
- * causal requester; ordinary request principals attribute to themselves.
+ * The immediate execution principal remains the authorization actor.
+ * Framework-admitted executions and canonical durable-task service principals
+ * may redirect attribution to their causal requester; ordinary request and
+ * service principals attribute to themselves.
  */
 export function applicationCommandCausalPrincipalId(
   principal: ApplicationCommandPrincipal | undefined,
 ): string | undefined {
   if (!principal) return undefined;
-  if (principal.kind !== 'execution') return principal.id;
-  const causalPrincipalId = 'causalPrincipalId' in principal
-    ? principal.causalPrincipalId
-    : undefined;
+  const frameworkManaged = principal.kind === 'execution'
+    || (
+      principal.kind === 'service'
+      && principal.authenticationMethod.startsWith(
+        'applik8s-task-service-principal/',
+      )
+    );
+  if (!frameworkManaged) return principal.id;
+  const causalPrincipalId = Reflect.get(principal, 'causalPrincipalId');
   return typeof causalPrincipalId === 'string' && causalPrincipalId.trim()
     ? causalPrincipalId
     : undefined;

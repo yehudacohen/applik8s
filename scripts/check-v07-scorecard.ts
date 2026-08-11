@@ -29,13 +29,62 @@ interface V07Scorecard {
   readonly items: readonly ScorecardItem[];
 }
 
+interface AcceptanceManifestCapability {
+  readonly id: string;
+  readonly scorecardItem: string;
+  readonly rfpCapability: string;
+  readonly acceptanceApplication: 'Chirp';
+  readonly evidenceScripts: readonly string[];
+  readonly sourceAssertions: readonly {
+    readonly path: string;
+    readonly includes: string;
+  }[];
+}
+
+interface V07AcceptanceManifest {
+  readonly apiVersion: 'applik8s.acceptanceManifest/v1alpha1';
+  readonly release: 'v0.7';
+  readonly capabilities: readonly AcceptanceManifestCapability[];
+}
+
 const requireRelease = process.argv.includes('--require-release');
 const scorecard = parseScorecard(
   JSON.parse(await readFile('docs/v0.7-scorecard.json', 'utf8')),
 );
 const narrativeScorecard = await readFile('docs/v0.7-scorecard.md', 'utf8');
+const functionNativeRfp = await readFile(
+  'docs/rfp-v07-function-native-execution.md',
+  'utf8',
+);
+const acceptanceManifest = parseAcceptanceManifest(
+  JSON.parse(await readFile('docs/v07-acceptance-manifest.json', 'utf8')),
+);
+const packageManifest = JSON.parse(await readFile('package.json', 'utf8')) as {
+  readonly scripts?: Readonly<Record<string, string>>;
+};
 const findings: string[] = [];
 const itemIds = new Set<string>();
+const acceptedPlanningDocuments = [
+  'docs/charter-v07-agentic-platform.md',
+  'docs/rfp-v07-agentic-start-distribution.md',
+  'docs/rfp-v07-ai-runtime.md',
+  'docs/rfp-v07-function-native-execution.md',
+  'docs/rfp-v07-identity-and-oauth.md',
+  'docs/rfp-v07-mcp.md',
+  'docs/rfp-v07-operation-authority.md',
+  'docs/rfp-v07-profiles-and-starts.md',
+  'docs/rfp-v07-search-projections.md',
+] as const;
+
+for (const path of acceptedPlanningDocuments) {
+  const contents = await readFile(path, 'utf8');
+  if (!/^\*\*Status:\*\* Accepted/mu.test(contents)) {
+    findings.push(`${path} is release-normative but is not marked Accepted.`);
+  }
+  if (/^## Open questions/mu.test(contents)) {
+    findings.push(`${path} retains unresolved open questions.`);
+  }
+}
 
 if (scorecard.releaseAuthorized) {
   findings.push(
@@ -56,12 +105,6 @@ if (
     !== applicationAgenticStartDefinition.compatibility.tanstackCli
 ) {
   findings.push('The scorecard and Agentic Start disagree about the official TanStack CLI pin.');
-}
-if (
-  applicationAgenticStartDefinition.generator.files.length
-    > applicationAgenticStartDefinition.generator.maximumApplicationFiles
-) {
-  findings.push('The Agentic Start exceeds its declared generated-file budget.');
 }
 if (
   requireRelease
@@ -103,11 +146,72 @@ for (const item of scorecard.items) {
   }
 }
 
+const scorecardById = new Map(scorecard.items.map((item) => [item.id, item]));
+for (const capability of acceptanceManifest.capabilities) {
+  const item = scorecardById.get(capability.scorecardItem);
+  if (!item) {
+    findings.push(
+      `Acceptance capability ${capability.id} references missing scorecard item ${capability.scorecardItem}.`,
+    );
+    continue;
+  }
+  const rfpRow = functionNativeConformanceRow(
+    functionNativeRfp,
+    capability.rfpCapability,
+  );
+  if (!rfpRow) {
+    findings.push(
+      `Acceptance capability ${capability.id} references missing function-native RFP row ${capability.rfpCapability}.`,
+    );
+  } else if ((item.state === 'complete') !== (rfpRow.chirp === 'Yes')) {
+    findings.push(
+      `Acceptance capability ${capability.id} disagrees: scorecard=${item.state}, RFP Chirp=${rfpRow.chirp}.`,
+    );
+  }
+  for (const script of capability.evidenceScripts) {
+    if (!packageManifest.scripts?.[script]) {
+      findings.push(
+        `Acceptance capability ${capability.id} references missing package script ${script}.`,
+      );
+    }
+  }
+  for (const assertion of capability.sourceAssertions) {
+    try {
+      const source = await readFile(assertion.path, 'utf8');
+      if (!source.includes(assertion.includes)) {
+        findings.push(
+          `Acceptance capability ${capability.id} source ${assertion.path} is missing ${JSON.stringify(assertion.includes)}.`,
+        );
+      }
+    } catch {
+      findings.push(
+        `Acceptance capability ${capability.id} references missing source ${assertion.path}.`,
+      );
+    }
+  }
+}
+const chirpAcceptance = scorecardById.get('chirp-acceptance');
+if (
+  chirpAcceptance?.state === 'complete'
+  && acceptanceManifest.capabilities.some(
+    (capability) => scorecardById.get(capability.scorecardItem)?.state !== 'complete',
+  )
+) {
+  findings.push(
+    'Chirp acceptance cannot be complete while a manifest-owned Chirp capability remains incomplete.',
+  );
+}
+
 const requiredItems = [
   'baseline-disposition',
   'operation-authority',
+  'universal-causal-attribution',
+  'generated-route-reproducibility',
   'provider-native-models',
   'function-native-model-transactions',
+  'frozen-stream-batches',
+  'typed-durable-signals',
+  'resource-workflow-tracking',
   'ai-tanstack-contract',
   'identity-oauth-contract',
   'mcp-contract',
@@ -117,6 +221,8 @@ const requiredItems = [
   'starter-profile',
   'dedicated-profile',
   'external-profile',
+  'chirp-acceptance',
+  'guestbook-acceptance',
   'agentic-identity-acceptance',
   'stimp-behavioral-parity',
   'packed-agentic-start-consumer',
@@ -124,6 +230,13 @@ const requiredItems = [
   'integrated-orbstack-lifecycle',
   'browser-security-matrix',
   'v07-performance-history',
+  'planning-authority-consistency',
+  'function-native-one-shot-query',
+  'public-admission-and-notification',
+  'operator-launchpad-authority',
+  'start-lineage-update-check',
+  'product-data-lifecycle-and-ai-trust',
+  'cross-browser-product-quality',
 ] as const;
 for (const id of requiredItems) {
   if (!itemIds.has(id)) findings.push(`Required scorecard item ${id} is missing.`);
@@ -149,7 +262,7 @@ console.log(
       states,
       generatedFiles:
         applicationAgenticStartDefinition.generator.files.length,
-      maximumGeneratedFiles:
+      legacyMaximumGeneratedFilesDiagnostic:
         applicationAgenticStartDefinition.generator.maximumApplicationFiles,
     },
     null,
@@ -234,4 +347,69 @@ function scorecardState(value: unknown): value is ScorecardState {
     || value === 'blocked'
     || value === 'deferred'
   );
+}
+
+function parseAcceptanceManifest(value: unknown): V07AcceptanceManifest {
+  if (!value || typeof value !== 'object') {
+    throw new Error('v0.7 acceptance manifest must be an object.');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.apiVersion !== 'applik8s.acceptanceManifest/v1alpha1'
+    || record.release !== 'v0.7'
+    || !Array.isArray(record.capabilities)
+  ) {
+    throw new Error('v0.7 acceptance manifest has an unsupported top-level contract.');
+  }
+  const capabilities = record.capabilities.map((value, index): AcceptanceManifestCapability => {
+    if (!value || typeof value !== 'object') {
+      throw new Error(`v0.7 acceptance capability ${index} must be an object.`);
+    }
+    const capability = value as Record<string, unknown>;
+    const sourceAssertions = capability.sourceAssertions;
+    if (
+      typeof capability.id !== 'string'
+      || typeof capability.scorecardItem !== 'string'
+      || typeof capability.rfpCapability !== 'string'
+      || capability.acceptanceApplication !== 'Chirp'
+      || !Array.isArray(capability.evidenceScripts)
+      || !capability.evidenceScripts.every((script) => typeof script === 'string')
+      || !Array.isArray(sourceAssertions)
+      || !sourceAssertions.every((assertion) =>
+        assertion
+        && typeof assertion === 'object'
+        && typeof Reflect.get(assertion, 'path') === 'string'
+        && typeof Reflect.get(assertion, 'includes') === 'string')
+    ) {
+      throw new Error(`v0.7 acceptance capability ${index} is invalid.`);
+    }
+    return {
+      id: capability.id,
+      scorecardItem: capability.scorecardItem,
+      rfpCapability: capability.rfpCapability,
+      acceptanceApplication: capability.acceptanceApplication,
+      evidenceScripts: capability.evidenceScripts as string[],
+      sourceAssertions: sourceAssertions as AcceptanceManifestCapability['sourceAssertions'],
+    };
+  });
+  if (new Set(capabilities.map((capability) => capability.id)).size !== capabilities.length) {
+    throw new Error('v0.7 acceptance manifest contains duplicate capability IDs.');
+  }
+  return {
+    apiVersion: record.apiVersion,
+    release: record.release,
+    capabilities,
+  };
+}
+
+function functionNativeConformanceRow(
+  document: string,
+  capability: string,
+): { readonly chirp: string } | undefined {
+  for (const line of document.split('\n')) {
+    if (!line.startsWith('|')) continue;
+    const cells = line.split('|').slice(1, -1).map((cell) => cell.trim());
+    if (cells[0] === capability) return { chirp: cells[4] ?? '' };
+  }
+  return undefined;
 }

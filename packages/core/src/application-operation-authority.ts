@@ -180,10 +180,16 @@ export interface ApplicationIdentityReference {
 
 export type ApplicationExecutionKind = 'agent' | 'task' | 'workflow' | 'processor' | 'reconcile';
 
-export interface ApplicationPrincipal {
+/** Identity kinds admitted directly from evidence without a framework-managed principal contract. */
+export type ApplicationAdmittedIdentityKind = Exclude<
+  ApplicationIdentityKind,
+  'execution' | 'pre-authentication-flow' | 'oauth-authorization-flow'
+>;
+
+/** Fields shared by every application principal variant. */
+export interface ApplicationPrincipalBase {
   readonly id: ApplicationPrincipalId;
   readonly identity: ApplicationIdentityReference;
-  readonly kind: ApplicationIdentityKind;
   readonly authenticationMethod: string;
   readonly audience: readonly string[];
   /** Provider-neutral application roles admitted and revision-bound by the identity boundary. */
@@ -200,13 +206,30 @@ export interface ApplicationPrincipal {
   readonly flowId?: string;
 }
 
+/** Principal admitted directly from identity evidence without a framework-managed execution or flow contract. */
+export interface ApplicationAdmittedPrincipal extends ApplicationPrincipalBase {
+  readonly kind: ApplicationAdmittedIdentityKind;
+}
+
+/**
+ * Discriminated principal contract admitted into the single operation-authority
+ * contract. `kind` narrows each variant, so framework-managed fields such as
+ * execution lineage stay off ordinary admitted principals and cannot be
+ * forged through the typed surface.
+ */
+export type ApplicationPrincipal =
+  | ApplicationAdmittedPrincipal
+  | ApplicationExecutionPrincipal
+  | ApplicationPreAuthenticationFlowPrincipal
+  | ApplicationOAuthAuthorizationFlowPrincipal;
+
 /** Authentication result admitted into the single operation-authority principal contract. */
 export interface ApplicationRequestAdmission {
   readonly principal: ApplicationPrincipal;
   readonly trustedContext: Readonly<Record<string, JsonValue>>;
 }
 
-export interface ApplicationExecutionPrincipal extends ApplicationPrincipal {
+export interface ApplicationExecutionPrincipal extends ApplicationPrincipalBase {
   readonly kind: 'execution';
   readonly executionKind: ApplicationExecutionKind;
   readonly executionId: string;
@@ -228,7 +251,55 @@ export interface ApplicationExecutionPrincipal extends ApplicationPrincipal {
   readonly effectiveAuthority: readonly ApplicationEffectiveAuthority[];
 }
 
-export interface ApplicationPreAuthenticationFlowPrincipal extends ApplicationPrincipal {
+/**
+ * Immutable attribution carried across managed execution boundaries.
+ *
+ * The causal principal is audit context, never ambient authority. A managed
+ * execution keeps the original initiating principal while authorization
+ * continues to use the current workload execution principal.
+ */
+export interface ApplicationCausalPrincipalContext {
+  readonly id: string;
+  readonly identity: ApplicationIdentityReference;
+  readonly grantIds: readonly string[];
+}
+
+/**
+ * Resolves the original initiating principal without collapsing nested
+ * execution lineage to the immediately calling workload.
+ *
+ * Execution principals must already carry framework-admitted causal evidence;
+ * silently substituting the execution identity would make attribution depend
+ * on how many managed hops happened to run.
+ */
+export function applicationCausalPrincipalContext(
+  principal: ApplicationPrincipal,
+): ApplicationCausalPrincipalContext {
+  if (principal.kind === 'execution') {
+    // Defensive reads tolerate canonical JSON-restored principals that predate
+    // a revision, while the admitted type already guarantees the fields.
+    if (
+      !principal.causalPrincipalId?.trim()
+      || !principal.causalPrincipal?.id.trim()
+    ) {
+      throw new Error(
+        `Managed ${principal.executionKind ?? 'unknown'} execution ${principal.executionId ?? principal.id} has no admitted causal principal.`,
+      );
+    }
+    return Object.freeze({
+      id: principal.causalPrincipalId,
+      identity: principal.causalPrincipal,
+      grantIds: Object.freeze([...(principal.causalGrantIds ?? [])]),
+    });
+  }
+  return Object.freeze({
+    id: principal.id,
+    identity: principal.identity,
+    grantIds: Object.freeze([]),
+  });
+}
+
+export interface ApplicationPreAuthenticationFlowPrincipal extends ApplicationPrincipalBase {
   readonly kind: 'pre-authentication-flow';
   readonly flowId: string;
   readonly browserBindingDigest: string;
@@ -236,7 +307,7 @@ export interface ApplicationPreAuthenticationFlowPrincipal extends ApplicationPr
   readonly allowedTransitions: readonly string[];
 }
 
-export interface ApplicationOAuthAuthorizationFlowPrincipal extends ApplicationPrincipal {
+export interface ApplicationOAuthAuthorizationFlowPrincipal extends ApplicationPrincipalBase {
   readonly kind: 'oauth-authorization-flow';
   readonly flowId: string;
   readonly resourceOwner: ApplicationIdentityReference;
@@ -627,7 +698,21 @@ export interface ApplicationStaticAuthorityManifest {
   readonly permissions: readonly ApplicationStaticPermissionDefinition[];
   readonly roles: readonly ApplicationStaticRoleDefinition[];
   readonly grants: readonly ApplicationStaticGrantDefinition[];
+  /**
+   * One-time role bootstraps admitted only after an identity provider proves
+   * the exact referenced identity. The authority runtime makes a bootstrap
+   * inert as soon as any active grant for that role exists.
+   */
+  readonly roleBootstraps?: readonly ApplicationStaticRoleBootstrapDefinition[];
   readonly outcomes: readonly ApplicationOutcomeDefinition[];
+}
+
+export interface ApplicationStaticRoleBootstrapDefinition {
+  readonly id: string;
+  readonly roleId: string;
+  readonly identity: ApplicationIdentityReference;
+  readonly issuedBy: ApplicationIdentityReference;
+  readonly reason: string;
 }
 
 export interface ApplicationStaticPermissionDefinition {

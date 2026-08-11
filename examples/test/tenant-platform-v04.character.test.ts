@@ -41,7 +41,13 @@ describe('Tenant Platform v0.4 longitudinal benchmark', () => {
           stateRevisionAuthority: 'modelRevision',
           reconciliationLink: 'modelRevisionWhenPresent',
         },
-        transaction: expect.objectContaining({ history: [{ nodeId: 'model.account' }], outbox: [{ nodeId: 'event.tenant-account.changed.v1' }] }),
+        transaction: expect.objectContaining({
+          history: [{ nodeId: 'model.account' }],
+          outbox: expect.arrayContaining([
+            { nodeId: 'event.tenant-account.changed.v1' },
+            { nodeId: 'event.models.account.rename.completed.v1' },
+          ]),
+        }),
       }),
       expect.objectContaining({
         kind: 'processor',

@@ -1,5 +1,6 @@
 // typecast-file-boundary: Generator configuration and package metadata are validated before typed template materialization.
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   mkdir,
   readFile,
@@ -94,8 +95,11 @@ export async function createApplicationAgenticStart(
     message: `Applying the Applik8s Agentic ${example} templates`,
   });
   const packageVersion = options.applik8sVersion ?? '^0.7.0';
-  const files = await agenticStartFiles(projectName, example);
-  for (const [path, source] of Object.entries(files)) {
+  const templates = await renderApplicationAgenticStartTemplates(
+    projectName,
+    example,
+  );
+  for (const [path, source] of Object.entries(templates)) {
     const output = resolve(targetDirectory, path);
     await mkdir(dirname(output), { recursive: true });
     await writeFile(output, source);
@@ -107,6 +111,42 @@ export async function createApplicationAgenticStart(
     options.context,
     example,
   );
+  const managedPackage = renderApplicationAgenticStartManagedPackage(
+    projectName,
+    example,
+    packageVersion,
+    options.context,
+  );
+  const fileDigests = Object.fromEntries(
+    Object.entries({ ...templates, 'package.json': managedPackage }).map(
+      ([path, source]) => [path, applicationStartTemplateDigest(source)],
+    ),
+  );
+  const templateRevision = applicationStartTemplateDigest(
+    JSON.stringify(fileDigests),
+  );
+  const lineagePath = resolve(
+    targetDirectory,
+    '.applik8s/start-lineage.json',
+  );
+  await mkdir(dirname(lineagePath), { recursive: true });
+  await writeFile(lineagePath, `${JSON.stringify({
+    apiVersion: 'applik8s.startLineage/v1alpha1',
+    start: applicationAgenticStartDefinition.name,
+    startVersion: applicationAgenticStartDefinition.version,
+    generatorVersion: applicationAgenticStartDefinition.version,
+    projectName,
+    example,
+    packageVersion,
+    ...(options.context?.trim() ? { context: options.context.trim() } : {}),
+    templateRevision,
+    files: fileDigests,
+    upstream: {
+      package: applicationAgenticStartDefinition.generator.upstream.package,
+      version: applicationAgenticStartDefinition.generator.upstream.version,
+    },
+    tanstackStart: applicationAgenticStartDefinition.compatibility.tanstackStart,
+  }, null, 2)}\n`);
   if (options.install !== false) {
     progress({
       phase: 'dependencies',
@@ -144,7 +184,11 @@ export async function createApplicationAgenticStart(
     targetDirectory,
     projectName,
     example,
-    files: Object.keys(files),
+    files: [
+      '.applik8s/start-lineage.json',
+      ...Object.keys(templates),
+      'package.json',
+    ],
     upstream: {
       package: upstream.package,
       version: upstream.version,
@@ -220,77 +264,159 @@ async function updateGeneratedPackage(
     devDependencies?: Record<string, string>;
     applik8s?: Record<string, string>;
   };
-  manifest.name = projectName;
+  const managed = managedApplicationAgenticStartPackage(
+    projectName,
+    example,
+    version,
+    context,
+  );
+  manifest.name = managed.name;
   manifest.scripts = {
     ...manifest.scripts,
-    build: manifest.scripts?.build ?? 'vite build',
-    typecheck: 'bun run generate-routes && tsc --noEmit',
-    test: 'vitest run',
-    lint: 'biome lint src test vite.config.ts vitest.config.ts',
-    'app:check': 'applik8s build src/application.ts --typekro --composition-name application --out-dir .applik8s/check',
-    'db:check': 'drizzle-kit check',
-    check: 'bun run typecheck && bun run lint && bun run test && bun run app:check && bun run db:check',
-    'db:generate': 'drizzle-kit generate',
-    plan: 'bun run build && applik8s plan',
-    deploy: 'bun run build && applik8s deploy',
-    'dev:cluster': 'bun run build && applik8s deploy --development --instance kubernetes/application.yaml',
-    'dev:live': 'bun run build && applik8s deploy --development --instance kubernetes/application.developer.yaml',
-    status: 'applik8s status',
-    destroy: 'applik8s destroy',
+    ...managed.scripts,
   };
-  manifest.applik8s = {
-    entrypoint: 'src/application.ts',
-    compositionName: 'application',
-    instance: 'kubernetes/application.yaml',
-    outDir: '.applik8s/deploy',
-    ...(context?.trim() ? { context: context.trim() } : {}),
-  };
+  manifest.applik8s = { ...managed.applik8s };
   manifest.dependencies = {
     ...manifest.dependencies,
-    '@tanstack/react-router':
-      applicationAgenticStartDefinition.compatibility.tanstackRouter,
-    '@tanstack/react-start':
-      applicationAgenticStartDefinition.compatibility.tanstackStart,
-    '@applik8s/ai': version,
-    '@applik8s/ai-tanstack': version,
-    '@applik8s/applik8s': version,
-    '@applik8s/operations-ui': version,
-    '@applik8s/react': version,
-    '@applik8s/start-agentic': version,
-    '@applik8s/tanstack-start': version,
-    ...(example === 'research'
-      ? {
-          '@applik8s/approvals': version,
-          '@applik8s/artifacts': version,
-          '@applik8s/billing': version,
-          '@applik8s/billing-stripe': version,
-          '@applik8s/conversations': version,
-          '@applik8s/evals': version,
-          '@applik8s/identity': version,
-          '@applik8s/runtime-opensearch': version,
-          '@applik8s/runtime-s3': version,
-          '@applik8s/search': version,
-          '@applik8s/usage': version,
-        }
-      : {}),
-    '@tanstack/ai': '0.42.0',
-    '@tanstack/ai-react':
-      applicationAgenticStartDefinition.compatibility.tanstackAIReact,
-    arktype: '^2.1.20',
-    'drizzle-orm': '^0.45.1',
+    ...managed.dependencies,
   };
   manifest.devDependencies = {
     ...manifest.devDependencies,
-    '@tanstack/router-cli':
-      applicationAgenticStartDefinition.compatibility.tanstackRouterCli,
-    '@applik8s/cli': version,
-    '@applik8s/testing': version,
-    '@biomejs/biome': '^2.2.2',
-    'drizzle-kit': '0.31.10',
-    nitro: agenticStartNitroVersion,
-    vitest: '^3.2.4',
+    ...managed.devDependencies,
   };
   await writeFile(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+interface ManagedApplicationAgenticStartPackage {
+  readonly name: string;
+  readonly scripts: Readonly<Record<string, string>>;
+  readonly applik8s: Readonly<Record<string, string>>;
+  readonly dependencies: Readonly<Record<string, string>>;
+  readonly devDependencies: Readonly<Record<string, string>>;
+}
+
+function managedApplicationAgenticStartPackage(
+  projectName: string,
+  example: ApplicationAgenticStartExample,
+  version: string,
+  context?: string,
+): ManagedApplicationAgenticStartPackage {
+  const maintainedDependencies = {
+    '@applik8s/approvals': version,
+    '@applik8s/artifacts': version,
+    '@applik8s/billing': version,
+    '@applik8s/billing-stripe': version,
+    '@applik8s/conversations': version,
+    '@applik8s/evals': version,
+    '@applik8s/identity': version,
+    '@applik8s/notifications': version,
+    '@applik8s/runtime-hatchet': version,
+    '@applik8s/runtime-s3': version,
+    '@applik8s/usage': version,
+  };
+  return Object.freeze({
+    name: projectName,
+    scripts: Object.freeze({
+      build: 'vite build',
+      'generate-routes': 'tsr generate',
+      typecheck: 'bun run generate-routes && tsc --noEmit',
+      test: 'vitest run',
+      lint: 'biome lint src test vite.config.ts vitest.config.ts',
+      'app:check': 'applik8s build src/application.ts --typekro --composition-name application --out-dir .applik8s/check',
+      'db:check': 'drizzle-kit check',
+      check: 'bun run typecheck && bun run lint && bun run test && bun run app:check && bun run db:check',
+      'db:generate': 'drizzle-kit generate',
+      doctor: 'applik8s doctor',
+      plan: 'bun run build && applik8s plan',
+      deploy: 'bun run build && applik8s deploy',
+      'dev:cluster': 'bun run build && applik8s deploy --development --instance kubernetes/application.yaml',
+      'dev:live': 'bun run build && applik8s deploy --development --instance kubernetes/application.developer.yaml',
+      status: 'applik8s status',
+      destroy: 'applik8s destroy',
+    }),
+    applik8s: Object.freeze({
+      entrypoint: 'src/application.ts',
+      compositionName: 'application',
+      instance: 'kubernetes/application.yaml',
+      outDir: '.applik8s/deploy',
+      ...(context?.trim() ? { context: context.trim() } : {}),
+    }),
+    dependencies: Object.freeze({
+      '@tanstack/react-router': applicationAgenticStartDefinition.compatibility.tanstackRouter,
+      '@tanstack/react-start': applicationAgenticStartDefinition.compatibility.tanstackStart,
+      '@applik8s/ai': version,
+      '@applik8s/ai-tanstack': version,
+      '@applik8s/applik8s': version,
+      '@applik8s/operations': version,
+      '@applik8s/operations-ui': version,
+      '@applik8s/react': version,
+      '@applik8s/start-agentic': version,
+      '@applik8s/tanstack-start': version,
+      ...maintainedDependencies,
+      ...(example === 'research'
+        ? {
+          '@applik8s/runtime-opensearch': version,
+          '@applik8s/search': version,
+        }
+        : {}),
+      '@tanstack/ai': '0.42.0',
+      '@tanstack/ai-react': applicationAgenticStartDefinition.compatibility.tanstackAIReact,
+      arktype: '^2.1.20',
+      'drizzle-orm': '^0.45.1',
+      postgres: '^3.4.7',
+    }),
+    devDependencies: Object.freeze({
+      '@tanstack/router-cli': applicationAgenticStartDefinition.compatibility.tanstackRouterCli,
+      '@applik8s/cli': version,
+      '@applik8s/testing': version,
+      '@biomejs/biome': '^2.2.2',
+      '@tailwindcss/vite': '4.3.3',
+      'drizzle-kit': '0.31.10',
+      nitro: agenticStartNitroVersion,
+      vitest: '^3.2.4',
+      tailwindcss: '4.3.3',
+    }),
+  });
+}
+
+export function renderApplicationAgenticStartManagedPackage(
+  projectName: string,
+  example: ApplicationAgenticStartExample,
+  version: string,
+  context?: string,
+): string {
+  return `${JSON.stringify(
+    managedApplicationAgenticStartPackage(projectName, example, version, context),
+    null,
+    2,
+  )}\n`;
+}
+
+export function projectApplicationAgenticStartManagedPackage(
+  source: string,
+  example: ApplicationAgenticStartExample,
+): string {
+  const parsed = JSON.parse(source) as Record<string, unknown>;
+  const shape = managedApplicationAgenticStartPackage(
+    typeof parsed.name === 'string' ? parsed.name : 'invalid-project',
+    example,
+    '__managed_version__',
+    '__managed_context__',
+  );
+  const select = (value: unknown, keys: readonly string[]) => {
+    const record = value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+    return Object.fromEntries(keys.filter(key => typeof record[key] === 'string').map(key => [key, record[key]]));
+  };
+  const projected = {
+    name: typeof parsed.name === 'string' ? parsed.name : '',
+    scripts: select(parsed.scripts, Object.keys(shape.scripts)),
+    applik8s: select(parsed.applik8s, Object.keys(shape.applik8s)),
+    dependencies: select(parsed.dependencies, Object.keys(shape.dependencies)),
+    devDependencies: select(parsed.devDependencies, Object.keys(shape.devDependencies)),
+  };
+  return `${JSON.stringify(projected, null, 2)}\n`;
 }
 
 function normalizedProjectName(value: string): string {
@@ -303,7 +429,12 @@ function normalizedProjectName(value: string): string {
   return normalized;
 }
 
-async function agenticStartFiles(
+/**
+ * Renders the maintained overlay without running the upstream scaffold or any
+ * application code. The read-only update checker uses this data-only boundary
+ * to compare a generated project with the current Start release.
+ */
+export async function renderApplicationAgenticStartTemplates(
   projectName: string,
   example: ApplicationAgenticStartExample,
 ): Promise<Readonly<Record<string, string>>> {
@@ -320,19 +451,11 @@ async function agenticStartFiles(
         .replaceAll('applik8s-template-project', projectName),
     ]),
   );
-  rendered['.applik8s/start-lineage.json'] = `${JSON.stringify({
-    apiVersion: 'applik8s.startLineage/v1alpha1',
-    start: applicationAgenticStartDefinition.name,
-    startVersion: applicationAgenticStartDefinition.version,
-    generatorVersion: applicationAgenticStartDefinition.version,
-    example,
-    upstream: {
-      package: applicationAgenticStartDefinition.generator.upstream.package,
-      version: applicationAgenticStartDefinition.generator.upstream.version,
-    },
-    tanstackStart: applicationAgenticStartDefinition.compatibility.tanstackStart,
-  }, null, 2)}\n`;
   return Object.freeze(rendered);
+}
+
+export function applicationStartTemplateDigest(source: string): string {
+  return `sha256:${createHash('sha256').update(source).digest('hex')}`;
 }
 
 async function readTemplateDirectory(

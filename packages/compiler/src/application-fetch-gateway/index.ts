@@ -117,6 +117,17 @@ export function generatedApplicationFetchGatewayModules(
 	const identity = identityCandidates.filter(
 		(node) => !node.config?.qualification,
 	);
+	const identityAuthorityDatabaseEnvironment =
+		applicationFetchGatewayIdentityAuthorityDatabaseEnvironment(graph);
+	const operationCatalog = identityAuthorityDatabaseEnvironment
+		? compileApplicationOperationCatalog(graph)
+		: undefined;
+	const authorityNode = graph.nodes.find(
+		(node) => node.kind === "authorityManifest",
+	);
+	const authorityManifest = authorityNode?.kind === "authorityManifest"
+		? authorityNode.manifest
+		: undefined;
 	const hasApplicationSurface =
 		queries.length > 0 ||
 		commands.length > 0 ||
@@ -162,12 +173,22 @@ export function generatedApplicationFetchGatewayModules(
 		imports.push(
 			"import { createApplicationIdentitySessionHandler } from '@applik8s/identity/server';",
 		);
+	if (operationCatalog && identityAuthorityDatabaseEnvironment) {
+		imports.push(
+			"import postgres from 'postgres';",
+			"import { createApplicationOperationAuthorityRuntime } from '@applik8s/operations';",
+		);
+	}
 	const identityConfig = objectConfig(
 		objectConfig(identity[0]?.config).identity,
 	);
 	const authenticationProfile = profiledCallbackConfig(
 		identityConfig.authenticationProfile,
 		"authentication",
+	);
+	const identityHttpProfile = profiledCallbackConfig(
+		identityConfig.identityHttpProfile,
+		"identityHttp",
 	);
 	const authenticate =
 		identity.length === 1
@@ -189,6 +210,26 @@ export function generatedApplicationFetchGatewayModules(
 							"authentication",
 						),
 					)
+			: undefined;
+	const identityHttp =
+		identity.length === 1
+			? identityHttpProfile
+				? graphProfiledCallback(
+						files,
+						imports,
+						identity[0]?.id ?? "IdentityProvider",
+						"identity-http",
+						identityHttpProfile,
+					)
+				: stringConfig(identityConfig.identityHttpSource)
+					? graphCallback(
+							files,
+							imports,
+							identity[0]?.id ?? "IdentityProvider",
+							"identity-http",
+							serializedCallbackConfig(identityConfig, "identityHttp"),
+						)
+					: undefined
 			: undefined;
 	const querySources = queries.map((query) => {
 		if (!query.kubernetes)
@@ -433,8 +474,40 @@ function requiredRuntimeNamespace() {
   return runtimeNamespace;
 }
 
+${operationCatalog && identityAuthorityDatabaseEnvironment ? `const operationAuthoritySql = postgres(requiredEnv(${JSON.stringify(identityAuthorityDatabaseEnvironment)}), {
+  max: 4,
+  idle_timeout: 20,
+  connect_timeout: 10,
+  prepare: false,
+});
+const operationAuthority = createApplicationOperationAuthorityRuntime({
+  sql: operationAuthoritySql,
+  application: ${JSON.stringify(graph.metadata.name)},
+  catalog: ${JSON.stringify(operationCatalog)},
+  ${authorityManifest ? `authorityManifest: ${JSON.stringify(authorityManifest)},` : ""}
+});
+async function admitApplicationIdentity(request) {
+  const admission = await ${authenticate}(request);
+  const principal = admission.principal;
+  return {
+    ...admission,
+    principal: await operationAuthority.admitPrincipal({
+      id: principal.id,
+      identity: principal.identity,
+      kind: principal.kind,
+      authenticationMethod: principal.authenticationMethod,
+      audience: principal.audience,
+      ...(principal.expiresAt ? { expiresAt: principal.expiresAt } : {}),
+      ...(principal.sessionId ? { sessionId: principal.sessionId } : {}),
+      ...(principal.clientId ? { clientId: principal.clientId } : {}),
+      ...(principal.flowId ? { flowId: principal.flowId } : {}),
+      ...(principal.roles ? { roles: principal.roles } : {}),
+      ...(principal.attributes ? { attributes: principal.attributes } : {}),
+    }, principal.trustedContextDigest),
+  };
+}` : ""}
 ${authenticate ? `const applicationIdentitySession = createApplicationIdentitySessionHandler({
-  authenticate: (request) => ${authenticate}(request),
+  authenticate: (request) => ${operationCatalog && identityAuthorityDatabaseEnvironment ? "admitApplicationIdentity" : authenticate}(request),
 });` : ""}
 
 const localGateway = ${localGateway};
@@ -483,6 +556,9 @@ export const gateway = {
     ${authenticate ? `if (url.pathname === '/__applik8s/v1/identity/session' && request.method === 'GET') {
       return applicationIdentitySession(request);
     }` : ""}
+    ${identityHttp ? `if (url.pathname.startsWith('/__applik8s/v1/identity/')) {
+      return ${identityHttp}(request);
+    }` : ""}
     ${
 			hasRemoteQueries
 				? `const multiplexResponse = await proxyApplicationQueryMultiplex(request, {
@@ -511,6 +587,7 @@ export const gateway = {
 };
 
 function applicationGatewayRoute(pathname) {
+  if (remoteRoutes.has('webhook:' + pathname)) return 'webhook:' + pathname;
   const parts = pathname.split('/').filter(Boolean);
   if (parts[0] === '__applik8s' && parts[1] === 'v1') parts.splice(0, 2);
   if (parts[0] === 'queries' && parts[1]) return \`query:\${decodeURIComponent(parts[1])}\`;
@@ -624,11 +701,12 @@ function applicationPublishedHttpRoutes(
 	for (const server of graph.nodes.filter(
 		(node): node is ApplicationServerNode => node.kind === "server",
 	)) {
-		const published = server.routes.filter(
+		const exposed = server.routes.filter(
 			(route) =>
-				route.functionNative?.publication?.boundary === "entrypoint-export",
+				route.functionNative?.publication?.boundary === "entrypoint-export"
+				|| Boolean(route.functionNative?.webhookAuthentication),
 		);
-		if (published.length === 0) continue;
+		if (exposed.length === 0) continue;
 		const namespace = applicationGatewayRuntimeNamespace(
 			server.deployment?.namespace ??
 				graph.metadata.namespace ??
@@ -642,7 +720,11 @@ function applicationPublishedHttpRoutes(
 			baseUrl,
 			path: "/readyz",
 		});
-		for (const route of published) {
+		for (const route of exposed) {
+			if (route.functionNative?.webhookAuthentication) {
+				routes.push([`webhook:${route.path}`, baseUrl]);
+				continue;
+			}
 			const id = applicationOperationId({
 				domain: "http",
 				owner: server.name,
@@ -794,6 +876,65 @@ function applicationFetchGatewayNamespaceSource(namespace: string): string {
 	return namespace === "${schema.spec.name}"
 		? "requiredRuntimeNamespace()"
 		: JSON.stringify(namespace);
+}
+
+function applicationFetchGatewayIdentityAuthorityDatabaseEnvironment(
+	graph: ApplicationGraph,
+): string | undefined {
+	const providerIds = new Set<string>();
+	for (const node of graph.nodes) {
+		if (node.kind !== "provider" || node.interface !== "IdentityProvider")
+			continue;
+		const runtime = objectConfig(node.config?.identityRuntime);
+		const database = objectConfig(runtime.databaseProvider);
+		const nodeId = stringConfig(database.nodeId);
+		if (nodeId) providerIds.add(nodeId);
+	}
+	if (providerIds.size === 0) {
+		const applicationEnvironments = new Set(
+			graph.nodes.flatMap((node) =>
+				node.kind === "model"
+				&& node.runtime?.authorityName === "application"
+					? [node.runtime.connectionEnvName]
+					: [],
+			),
+		);
+		if (applicationEnvironments.size === 0) return undefined;
+		if (applicationEnvironments.size !== 1) {
+			throw new Error(
+				`Generated application Fetch gateway resolves ${applicationEnvironments.size} canonical authority database environments; exactly one is required.`,
+			);
+		}
+		return [...applicationEnvironments][0];
+	}
+	if (providerIds.size !== 1) {
+		throw new Error(
+			`Generated application Fetch gateway identity resolves ${providerIds.size} authority databases; exactly one is required.`,
+		);
+	}
+	const providerId = [...providerIds][0]!;
+	const consumerIds = new Set(
+		graph.providerRequirements
+			.filter(
+				(requirement) =>
+					requirement.interface === "TransactionalDatabase" &&
+					requirement.provider?.nodeId === providerId,
+			)
+			.map((requirement) => requirement.consumer.nodeId),
+	);
+	const environments = new Set(
+		graph.nodes.flatMap((node) =>
+			node.kind === "model" && consumerIds.has(node.id) && node.runtime
+				? [node.runtime.connectionEnvName]
+				: [],
+		),
+	);
+	if (environments.size !== 1) {
+		throw new Error(
+			`Generated application Fetch gateway identity authority resolves ${environments.size} database environments; exactly one is required.`,
+		);
+	}
+	return [...environments][0];
 }
 
 function kubernetesName(value: string): string {

@@ -68,6 +68,7 @@ export type ApplicationOperationsCategory =
   | 'database'
   | 'gateway'
   | 'audit'
+  | 'goLive'
   | 'operational';
 
 export interface ApplicationOperationsPublicRecord {
@@ -126,6 +127,7 @@ export const applicationOperationsSnapshot = type({
   databases: applicationOperationsPublicRecords,
   gateways: applicationOperationsPublicRecords,
   audit: applicationOperationsPublicRecords,
+  goLive: applicationOperationsPublicRecords,
   operational: applicationOperationsPublicRecords,
 });
 
@@ -195,7 +197,7 @@ export interface ApplicationOperationsUsageModule {
 export interface ApplicationOperationsModuleOptions {
   readonly database: ApplicationDatabaseBinding;
   /** Provider-admitted role allowed to read the maintained control center. */
-  readonly administratorRole?: string;
+  readonly operatorRole?: string;
   readonly conversations: ApplicationOperationsConversationsModule;
   readonly approvals: ApplicationOperationsApprovalsModule;
   readonly artifacts: ApplicationOperationsArtifactsModule;
@@ -292,6 +294,7 @@ export function applicationOperationsOverviewSnapshot(
     audit: [
       ...applicationOperationsRedactedAuditRecords(audit, auditSearch),
     ],
+    goLive: inferred.filter((record) => record.category === 'goLive'),
     operational: [
       ...applicationOperationsRedactedRecords('operational', operational),
     ],
@@ -432,7 +435,8 @@ export function applicationOperationsInferredRecords(
   graph: ApplicationGraph | undefined,
 ): readonly ApplicationOperationsPublicRecord[] {
   if (!graph) return [];
-  return graph.nodes.flatMap((node) => {
+  return [
+    ...graph.nodes.flatMap((node) => {
     const domain = operationsDomainForNode(node);
     if (!domain) return [];
     return [Object.freeze({
@@ -442,7 +446,93 @@ export function applicationOperationsInferredRecords(
       state: 'unknown',
       authority: 'inferred',
     } satisfies ApplicationOperationsPublicRecord)];
-  });
+    }),
+    ...applicationGoLiveObligations(graph),
+  ];
+}
+
+/**
+ * Public graph-derived production obligations. These records prove that an
+ * obligation exists, not that it is satisfied; provider and receipt evidence
+ * must independently move the relevant capability out of Unknown.
+ */
+export function applicationGoLiveObligations(
+  graph: ApplicationGraph,
+): readonly ApplicationOperationsPublicRecord[] {
+  const has = (predicate: (node: ApplicationGraphNode) => boolean) =>
+    graph.nodes.some(predicate);
+  const modelNames = new Set(
+    graph.nodes
+      .filter((node) => node.kind === 'model')
+      .map((node) => node.name.toLowerCase()),
+  );
+  const obligations: { readonly id: string; readonly label: string; readonly required: boolean }[] = [
+    {
+      id: 'observability',
+      label: 'Operational evidence, alerting, and redacted causal diagnostics',
+      required: true,
+    },
+    {
+      id: 'rollback-destruction',
+      label: 'Rollback, recovery, retained-resource policy, and graph-backed destruction',
+      required: true,
+    },
+    {
+      id: 'database-migrations',
+      label: 'Database migrations and schema compatibility',
+      required: has((node) => node.kind === 'model'),
+    },
+    {
+      id: 'backup-restore',
+      label: 'Backup, restore, and retained-data recovery',
+      required: has((node) =>
+        node.kind === 'provider'
+        && (node.interface === 'TransactionalDatabase'
+          || node.interface === 'AnalyticalDatabase')),
+    },
+    {
+      id: 'dns-tls',
+      label: 'Public exposure, DNS, TLS issuance, and renewal',
+      required: has((node) =>
+        node.kind === 'exposure'
+        || (node.kind === 'provider'
+          && (node.interface === 'Certificate'
+            || node.interface === 'DnsPublication'))),
+    },
+    {
+      id: 'notification-courier',
+      label: 'Transactional notification courier, retries, and delivery visibility',
+      required: [...modelNames].some((name) =>
+        name.includes('notification') || name.includes('delivery')),
+    },
+    {
+      id: 'billing-webhooks',
+      label: 'Billing webhook authentication, replay safety, and provider reconciliation',
+      required: [...modelNames].some((name) =>
+        name.includes('billing') || name.includes('subscription') || name.includes('payment')),
+    },
+    {
+      id: 'quotas-budgets',
+      label: 'Usage quotas, entitlements, concurrency, and cost budgets',
+      required: has((node) => node.kind === 'aiAgent')
+        || [...modelNames].some((name) =>
+          name.includes('usage') || name.includes('entitlement')),
+    },
+    {
+      id: 'ai-trust',
+      label: 'AI provider/data/tool authority, approval, budget, cancellation, and uncertain-completion quarantine',
+      required: has((node) => node.kind === 'aiAgent'),
+    },
+  ];
+  return obligations
+    .filter((obligation) => obligation.required)
+    .map((obligation) => Object.freeze({
+      category: 'goLive' as const,
+      id: `obligation:${obligation.id}`,
+      label: obligation.label,
+      state: 'unknown',
+      authority: 'inferred' as const,
+    }));
 }
 
 function operationsDomainForNode(
@@ -537,7 +627,7 @@ function installOperationsControlCenter(
   );
   const inferredSource = JSON.stringify(inferred);
   const applicationName = application.name;
-  const administratorRole = options.administratorRole ?? 'administrator';
+  const operatorRole = options.operatorRole ?? 'application-operator';
   const database = options.database;
   const {
     Conversation,
@@ -582,10 +672,10 @@ function installOperationsControlCenter(
       maxResultBytes: 512 * 1_024,
     },
     authorize: ({ principal }) =>
-      principal.roles?.includes(administratorRole) === true,
+      principal.roles?.includes(operatorRole) === true,
     __generatedSources: {
       authorize: {
-        source: `({ principal }) => principal.roles?.includes(${JSON.stringify(administratorRole)}) === true`,
+        source: `({ principal }) => principal.roles?.includes(${JSON.stringify(operatorRole)}) === true`,
       },
       run: {
         invocation: 'request',
@@ -642,6 +732,7 @@ function installOperationsControlCenter(
     databases: [...applicationOperationsRedactedDomainRecords("database", "database", operational), ...inferred.filter(record => record.category === "database")],
     gateways: [...applicationOperationsRedactedDomainRecords("gateway", "gateway", operational), ...inferred.filter(record => record.category === "gateway")],
     audit: applicationOperationsRedactedAuditRecords(audit, input.auditSearch),
+    goLive: inferred.filter(record => record.category === "goLive"),
     operational: applicationOperationsRedactedRecords("operational", operational),
   };
 }`,
@@ -734,10 +825,11 @@ import { eq } from 'drizzle-orm';`,
       databases: [...applicationOperationsRedactedDomainRecords('database', 'database', operational), ...inferred.filter((record) => record.category === 'database')],
       gateways: [...applicationOperationsRedactedDomainRecords('gateway', 'gateway', operational), ...inferred.filter((record) => record.category === 'gateway')],
       audit: applicationOperationsRedactedAuditRecords(audit, input.auditSearch),
+      goLive: inferred.filter((record) => record.category === 'goLive'),
       operational: applicationOperationsRedactedRecords('operational', operational),
     };
   });
-  application.role(administratorRole).can(snapshot);
+  application.role(operatorRole).can(snapshot);
   return Object.freeze({
     snapshot,
     Conversation: Conversation as ApplicationOperationsModule['Conversation'],
@@ -769,11 +861,11 @@ function installOperationsOverview(
   >,
   options: {
     readonly database: ApplicationDatabaseBinding;
-    readonly administratorRole?: string;
+    readonly operatorRole?: string;
   },
 ): ApplicationOperationsOverviewModule {
   const applicationName = application.name;
-  const administratorRole = options.administratorRole ?? 'administrator';
+  const operatorRole = options.operatorRole ?? 'application-operator';
   const inferred = applicationOperationsInferredRecords(
     applicationGraphFor(application),
   );
@@ -810,10 +902,10 @@ function installOperationsOverview(
         maxResultBytes: 256 * 1_024,
       },
       authorize: ({ principal }) =>
-        principal.roles?.includes(administratorRole) === true,
+        principal.roles?.includes(operatorRole) === true,
       __generatedSources: {
         authorize: {
-          source: `({ principal }) => principal.roles?.includes(${JSON.stringify(administratorRole)}) === true`,
+          source: `({ principal }) => principal.roles?.includes(${JSON.stringify(operatorRole)}) === true`,
         },
         run: {
           invocation: 'request',
@@ -864,7 +956,7 @@ import { eq } from 'drizzle-orm';`,
       );
     },
   );
-  application.role(administratorRole).can(snapshot);
+  application.role(operatorRole).can(snapshot);
   return Object.freeze({ snapshot });
 }
 

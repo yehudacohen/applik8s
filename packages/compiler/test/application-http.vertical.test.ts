@@ -4,18 +4,19 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  EventLog,
-  IdentityProvider,
   app,
   applicationGraphFor,
+  EventLog,
+  IdentityProvider,
 } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
-import { text, pgTable } from 'drizzle-orm/pg-core';
+import { pgTable, text } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   applicationHttpProfileEnvironment,
   emitGeneratedApplicationHttpServers,
 } from '../src/application-http/index.js';
+import { applicationGraphJsonStringArray } from '../src/application-installation-values.js';
 import { compileApplicationOperationCatalog } from '../src/application-operations/index.js';
 import { compileTypeKroComposition } from '../src/pipeline/index.js';
 
@@ -108,6 +109,37 @@ describe('generated function-native HTTP worker', () => {
       async ({ input }) => Post.create(input),
     );
     createPost.public();
+    const listPosts = api.post(
+      'list-posts',
+      '/posts/list',
+      {
+        input: type({}),
+        output: type({ count: 'number' }),
+        authorize: (_request, context) => context.principal.id === 'alice',
+        // Compiler-equivalent transitive helper metadata.
+        __generatedBindings: { 'Post.find': Post.find },
+      },
+      async () => ({ count: (await Post.find({ limit: 10 })).length }),
+    );
+    listPosts.public();
+    api.webhook(
+      'receive-provider-event',
+      '/webhooks/provider',
+      {
+        event: type({ id: 'string > 0', state: "'ready' | 'failed'" }),
+        output: type({ received: 'true', id: 'string > 0' }),
+        authenticate: async request => {
+          if (request.headers['x-provider-signature'] !== 'accepted') {
+            throw new Error('invalid provider signature');
+          }
+          return {
+            id: new TextDecoder().decode(request.body),
+            state: 'ready' as const,
+          };
+        },
+      },
+      async ({ input }) => ({ received: true as const, id: input.id }),
+    );
     const previewGraph = applicationGraphFor(application);
     expect(
       previewGraph?.nodes.find(
@@ -115,16 +147,37 @@ describe('generated function-native HTTP worker', () => {
       ),
     ).toMatchObject({
       kind: 'server',
-      routes: [expect.objectContaining({ id: 'create-post' })],
+      routes: expect.arrayContaining([
+        expect.objectContaining({ id: 'create-post' }),
+      ]),
     });
     const graph = applicationGraphFor(application.composition);
     if (!graph) throw new Error('Expected an application graph.');
+    const selectedEventLogServer = {
+      expression:
+        'schema.spec.profile == "external" ? schema.spec.providers.events.server : "nats://events.generated-http.svc:4222"',
+    };
+    const graphWithSelectedEventLog = {
+      ...graph,
+      nodes: graph.nodes.map((node) =>
+        node.kind === 'provider' && node.interface === 'EventLog'
+          ? {
+              ...node,
+              config: {
+                ...node.config,
+                servers: [selectedEventLogServer],
+              },
+            }
+          : node),
+    };
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-http-worker-'));
     directories.push(outDir);
 
     const artifacts = await emitGeneratedApplicationHttpServers({
-      graph,
-      operationCatalog: compileApplicationOperationCatalog(graph),
+      graph: graphWithSelectedEventLog,
+      operationCatalog: compileApplicationOperationCatalog(
+        graphWithSelectedEventLog,
+      ),
       outDir,
     });
 
@@ -141,6 +194,23 @@ describe('generated function-native HTTP worker', () => {
     ]);
     const source = (await readFile(artifacts[0]!.sourcePath, 'utf8'))
       .replaceAll('\\\n', '');
+    const repeatedOutDir = await mkdtemp(
+      join(tmpdir(), 'applik8s-http-worker-repeat-'),
+    );
+    directories.push(repeatedOutDir);
+    const repeatedArtifacts = await emitGeneratedApplicationHttpServers({
+      graph: graphWithSelectedEventLog,
+      operationCatalog: compileApplicationOperationCatalog(
+        graphWithSelectedEventLog,
+      ),
+      outDir: repeatedOutDir,
+    });
+    expect(
+      await readFile(repeatedArtifacts[0]!.sourcePath, 'utf8'),
+    ).toBe(await readFile(artifacts[0]!.sourcePath, 'utf8'));
+    expect(repeatedArtifacts[0]!.container.image).toBe(
+      artifacts[0]!.container.image,
+    );
     const metafile = JSON.parse(
       await readFile(artifacts[0]!.metafilePath, 'utf8'),
     ) as { readonly inputs?: Readonly<Record<string, unknown>> };
@@ -148,11 +218,24 @@ describe('generated function-native HTTP worker', () => {
     expect(source).toContain('authorization_denied');
     expect(source).toContain('applik8s.runtime/v1alpha1');
     expect(source).toContain('invalid_runtime_envelope');
+    expect(source).toContain('provider-signed-webhook');
+    expect(source).toContain('webhook_authentication_failed');
+    expect(source).toContain('webhook_event_unsupported');
+    expect(source).toContain('webhook_payload_invalid');
+    expect(source).toContain('x-provider-signature');
+    expect(source).toContain('provider-event:');
     expect(
       Object.keys(metafile.inputs ?? {}).some((path) =>
         path.endsWith('/task-operation-runtime.ts')),
     ).toBe(true);
     expect(source).toContain('applik8s://models/Post/operations/create');
+    expect(source).toContain('Post.create');
+    expect(source).toContain('applicationPostgresModelReadClients');
+    expect(source).toContain('withApplicationNativeModelReadClients');
+    expect(source).toContain('trustedContext:{values:');
+    expect(source).toMatch(
+      /digest:[A-Za-z_$][\w$]*\.trustedContextDigest/u,
+    );
     expect(source).not.toContain('__generatedBindings');
     const deployment = artifacts[0]!.resources.find(
       (resource) => resource.kind === 'Deployment',
@@ -181,6 +264,17 @@ describe('generated function-native HTTP worker', () => {
       'APPLIK8S_NATS_SERVERS',
       'APPLIK8S_DATABASE_MAIN_URL',
     ]));
+    const natsServers = Array.isArray(environment)
+      ? environment.find(
+          (entry) => Reflect.get(entry, 'name') === 'APPLIK8S_NATS_SERVERS',
+        )
+      : undefined;
+    expect(Reflect.get(natsServers as object, 'value')).toBe(
+      applicationGraphJsonStringArray([selectedEventLogServer]),
+    );
+    expect(Reflect.get(natsServers as object, 'value')).not.toContain(
+      'applik8s-events',
+    );
   });
 
   it('compiles app.http into one OCI worker and removes the raw server bundle', async () => {

@@ -19,6 +19,7 @@ export const v07ReleaseEvidenceContract: Readonly<
   chirp: Object.freeze([
     ...v06ChirpEvidence,
     'frozen-microbatch-durable-receipt',
+    'resource-workflow-tracking-generation-convergence',
   ]),
   'v07-lifecycle': Object.freeze([
     'direct-apply-noop-update-resume-destroy',
@@ -76,10 +77,15 @@ export const v07ReleaseEvidenceContract: Readonly<
     'graph-backed-destroy',
   ]),
   'agentic-product-starter': Object.freeze([
+    'doctor',
     'migration-generation',
     'production-build',
     'graph-backed-deploy',
+    'graph-noop-redeploy',
     'causal-agent-note',
+    'application-notification-delivery',
+    'product-lifecycle-trust',
+    'cross-browser-product-quality',
     'graph-backed-destroy',
   ]),
 });

@@ -61,6 +61,10 @@ describe('application identity session boundary', () => {
         sessionId: 'session-1',
       },
       assurance: [],
+      capabilities: {
+        workspaceAdministration: true,
+        applicationOperations: false,
+      },
     });
   });
 

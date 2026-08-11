@@ -4,7 +4,10 @@ import {
 } from 'react';
 import {
   BillingDashboard,
+  CancelSubscription,
+  ChangeSubscription,
   OpenBillingPortal,
+  ResumeSubscription,
   StartCheckout,
 } from '../application';
 
@@ -20,15 +23,29 @@ export function BillingDashboardView() {
     event.preventDefault();
     setPending(true);
     try {
-      const result = await StartCheckout({
-        plan,
-        returnTo: globalThis.location.href,
-      });
-      setNotice(
-        result.mode === 'simulated'
-          ? 'Starter checkout is simulated and non-production.'
-          : 'Continue to the payment provider.',
-      );
+      const subscription = dashboard.data?.subscription;
+      if (subscription) {
+        const result = await ChangeSubscription({
+          plan,
+          timing: 'immediate',
+        });
+        setNotice(
+          result.state === 'scheduled'
+            ? `Plan change scheduled for ${result.effectiveAt}.`
+            : 'Plan changed.',
+        );
+      } else {
+        const result = await StartCheckout({
+          plan,
+          returnTo: globalThis.location.href,
+        });
+        setNotice(
+          result.mode === 'simulated'
+            ? 'Starter checkout is simulated and non-production.'
+            : 'Continue to the payment provider.',
+        );
+        if (result.mode === 'live') globalThis.location.assign(result.url);
+      }
     } finally {
       setPending(false);
     }
@@ -45,6 +62,33 @@ export function BillingDashboardView() {
           ? 'Starter billing portal is simulated and non-production.'
           : 'Continue to the payment provider.',
       );
+      if (result.mode === 'live') globalThis.location.assign(result.url);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function cancel() {
+    const subscription = dashboard.data?.subscription;
+    if (!subscription) return;
+    setPending(true);
+    try {
+      const result = await CancelSubscription({
+        timing: 'periodEnd',
+      });
+      setNotice(`Cancellation scheduled for ${result.effectiveAt}.`);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function resume() {
+    const subscription = dashboard.data?.subscription;
+    if (!subscription) return;
+    setPending(true);
+    try {
+      await ResumeSubscription({});
+      setNotice('Subscription resumed.');
     } finally {
       setPending(false);
     }
@@ -68,12 +112,22 @@ export function BillingDashboardView() {
         <button type="button" onClick={openPortal} disabled={pending}>
           Open billing portal
         </button>
+        {dashboard.data?.subscription?.status === 'cancelled' ? (
+          <button type="button" onClick={resume} disabled={pending}>
+            Resume subscription
+          </button>
+        ) : dashboard.data?.subscription ? (
+          <button type="button" onClick={cancel} disabled={pending}>
+            Cancel at period end
+          </button>
+        ) : null}
       </section>
       <section aria-label="Plans">
         <h2>Plans</h2>
         {dashboard.data?.plans.map(plan => (
           <form key={plan.id} onSubmit={event => choose(event, plan.id)}>
             <strong>{plan.name}</strong>
+            <p>{plan.description}</p>
             <button type="submit" disabled={pending}>
               Choose {plan.name}
             </button>

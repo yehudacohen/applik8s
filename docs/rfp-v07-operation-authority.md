@@ -1,6 +1,6 @@
 # RFP: Applik8s v0.7 — Typed Operations and Authority
 
-**Status:** Proposed; maintainer review required
+**Status:** Accepted v0.7 contract; implementation evidence remains governed by the release scorecard
 
 **Charter:** [`charter-v07-agentic-platform.md`](charter-v07-agentic-platform.md)
 
@@ -257,12 +257,15 @@ Generated aliases preserve compatibility and the underlying handle's execution s
 define the golden path or create another invocation system. Framework-owned operation adapters such as
 `Operation.http()` and MCP tools record the same dependency during graph construction.
 
-Transaction-local state mutation and fact production are intentionally not nested result-bearing
-invocations. `subject.patch(...)`, direct `Event.emit(...)`, lint-safe `void Command(...)` staging, and
-typed reconciliation-plan mutation retain their transaction/outbox/operator semantics. The compiler
-infers those statically reachable event and command contracts. `context.emit(...)` and
-`context.send(...)` remain compatibility spellings, while `await Command(...)` fails discovery because
-the nested command has no result until the owning transaction commits.
+Transaction-local state mutation and fact production are not all the same boundary. In a committed
+model lifecycle handler, `await Model.create/update/delete(...)` is a compiler-proven nested
+result-bearing invocation when it shares the PostgreSQL authority; its typed snapshot is provisional
+until the surrounding callback commits. Unawaited and cross-authority calls fail closed. Inside a
+narrow `beforeCommit` aggregate policy, `subject.patch(...)`, direct `Event.emit(...)`, and lint-safe
+`void Command(...)` retain their transaction/outbox semantics and another model operation cannot be
+awaited. Typed reconciliation-plan mutation retains operator semantics. `context.emit(...)` and
+`context.send(...)` remain explicit low-level spellings, with `context.send(...)` defining the
+post-commit asynchronous boundary.
 
 The authored closure grammar is:
 
@@ -746,6 +749,14 @@ principal, trusted-context digest, matched permission and grant, target, scope e
 revision, admission time, expiration, and reservation. Revalidation never trusts a previously serialized
 boolean decision.
 
+Receipt-backed command progress authenticates the requesting principal at every read, but binds its
+signed cursor and scope evidence to the persisted admission context rather than reconstructing that
+context from mutable application state. Current result-read authority is still revalidated against the
+receipt. This distinction is required when the admitted operation legitimately consumes its own context,
+such as deleting the workspace and membership that authorized a lifecycle request. It does not admit a
+stale browser selector for unrelated queries, subscriptions, commands, or routes, and it does not allow a
+different principal to inherit the receipt.
+
 ### HTTP routes
 
 Route declarations distinguish raw route operations from transport bindings of existing operations:
@@ -1079,16 +1090,21 @@ as policy.
 - Subscription and cursor reuse fails after principal, scope, grant, operation, or catalog revision changes.
 - Browser bundles contain neither policy implementations nor provider credentials.
 
-## Open questions
+## Closed v0.7 decisions
 
-1. Should sensitive operations opt into runtime grantability, with non-sensitive operations grantable by
-   default, or should all runtime grantability be explicit?
-2. Which bounded relationship predicates belong in the first runtime scope language?
-3. How long must catalog revisions be retained after every dependent grant and workflow expires?
-4. Which outcome states consume a grant permanently versus permit an explicit administrator-authorized
-   retry?
-5. Which application authorization projections, if any, are mandatory in the dedicated profile rather
-   than optional defense in depth?
+1. Runtime grant creation always requires canonical `canGrant` authority over the exact operation,
+   subject, scope, target, expiry, and use bounds. The framework derives sensitive effects from the
+   normalized operation graph rather than requiring ordinary application code to repeat grantability
+   metadata.
+2. The v0.7 predicate language contains typed equality, bounded membership, declared relationship
+   membership, target identity, and trusted-context fields. Arbitrary executable predicates are deferred.
+3. Catalog revisions remain available until every dependent grant, workflow, signal, receipt, and audit
+   retention obligation has expired. Deployments fail closed when that bound cannot be proven.
+4. A successfully committed effect consumes a single-use grant. A denied or pre-effect failed attempt
+   does not consume it; an uncertain external completion requires explicit administrator-authorized
+   recovery and never silently retries.
+5. PostgreSQL is canonical. Dedicated authorization projections are optional defense in depth and must
+   publish convergence/health rather than becoming an independent authority.
 
 ## Definition of done
 

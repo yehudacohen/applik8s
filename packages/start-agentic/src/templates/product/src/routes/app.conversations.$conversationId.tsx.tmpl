@@ -1,0 +1,9 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { ConversationView } from '../features/conversations/view';
+
+export const Route = createFileRoute('/app/conversations/$conversationId')({ component: ConversationRoute });
+
+function ConversationRoute() {
+  const { conversationId } = Route.useParams();
+  return <ConversationView conversationId={conversationId} />;
+}

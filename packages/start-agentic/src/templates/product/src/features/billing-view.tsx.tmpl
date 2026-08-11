@@ -1,0 +1,170 @@
+import {
+  type FormEvent,
+  useState,
+} from 'react';
+import {
+  BillingDashboard,
+  CancelSubscription,
+  ChangeSubscription,
+  OpenBillingPortal,
+  ResumeSubscription,
+  StartCheckout,
+} from '../application';
+import { Badge, Button, Card, EmptyState, PageHeader, Skeleton } from '../components/ui';
+
+export function BillingDashboardView() {
+  const dashboard = BillingDashboard({}).useQuery();
+  const [notice, setNotice] = useState<string>();
+  const [pending, setPending] = useState(false);
+
+  async function choose(
+    event: FormEvent<HTMLFormElement>,
+    plan: string,
+  ) {
+    event.preventDefault();
+    setPending(true);
+    try {
+      const subscription = dashboard.data?.subscription;
+      if (subscription) {
+        const result = await ChangeSubscription({
+          plan,
+          timing: 'immediate',
+        });
+        setNotice(
+          result.state === 'scheduled'
+            ? `Plan change scheduled for ${result.effectiveAt}.`
+            : 'Plan changed.',
+        );
+      } else {
+        const result = await StartCheckout({
+          plan,
+          returnTo: globalThis.location.href,
+        });
+        setNotice(
+          result.mode === 'simulated'
+            ? 'Starter checkout is simulated and non-production.'
+            : 'Continue to the payment provider.',
+        );
+        if (result.mode === 'live') globalThis.location.assign(result.url);
+      }
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function openPortal() {
+    setPending(true);
+    try {
+      const result = await OpenBillingPortal({
+        returnTo: globalThis.location.href,
+      });
+      setNotice(
+        result.mode === 'simulated'
+          ? 'Starter billing portal is simulated and non-production.'
+          : 'Continue to the payment provider.',
+      );
+      if (result.mode === 'live') globalThis.location.assign(result.url);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function cancel() {
+    const subscription = dashboard.data?.subscription;
+    if (!subscription) return;
+    setPending(true);
+    try {
+      const result = await CancelSubscription({
+        timing: 'periodEnd',
+      });
+      setNotice(`Cancellation scheduled for ${result.effectiveAt}.`);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function resume() {
+    const subscription = dashboard.data?.subscription;
+    if (!subscription) return;
+    setPending(true);
+    try {
+      await ResumeSubscription({});
+      setNotice('Subscription resumed.');
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div>
+      <PageHeader eyebrow="Provider-neutral billing" title="Plan, usage, and entitlements" description="Product state is canonical application data. Payment-provider details and credentials remain server-only." action={<Badge tone="warning">Starter · simulated</Badge>} />
+      {!dashboard.data ? <Skeleton className="h-40" /> : null}
+      <div className="grid gap-5 lg:grid-cols-2"><Card aria-label="Current subscription">
+        <h2 className="text-lg font-semibold">Subscription</h2>
+        <p>
+          {dashboard.data?.subscription
+            ? `${dashboard.data.subscription.planId} · ${dashboard.data.subscription.status}`
+            : 'No active subscription'}
+        </p>
+        <div className="mt-4 flex flex-wrap gap-2"><Button variant="secondary" type="button" onClick={openPortal} disabled={pending}>
+          Open billing portal
+        </Button>
+        {dashboard.data?.subscription?.status === 'cancelled' ? (
+          <Button type="button" onClick={resume} disabled={pending}>
+            Resume subscription
+          </Button>
+        ) : dashboard.data?.subscription ? (
+          <Button variant="ghost" type="button" onClick={cancel} disabled={pending}>
+            Cancel at period end
+          </Button>
+        ) : null}</div>
+      </Card>
+      <Card aria-label="Usage"><h2 className="text-lg font-semibold">Usage this period</h2><p className="mt-3 text-2xl font-semibold">{dashboard.data?.usage.inputTokens ?? 0} <span className="text-sm font-normal text-stone-500">input tokens</span></p><p className="mt-2 text-sm text-stone-600">{dashboard.data?.usage.outputTokens ?? 0} output tokens · {dashboard.data?.usage.costMicrounits ?? 0} cost µ-units</p></Card></div>
+      <section className="mt-8" aria-label="Plans">
+        <h2 className="text-xl font-semibold">Plans</h2>
+        <div className="mt-3 grid gap-4 md:grid-cols-3">
+        {dashboard.data?.plans.map(plan => (
+          <Card key={plan.id}><form onSubmit={event => choose(event, plan.id)} className="flex h-full flex-col">
+            <strong className="text-lg">{plan.name}</strong>
+            <p className="mt-2 flex-1 text-sm leading-6 text-stone-600">{plan.description}</p>
+            <Button className="mt-5" type="submit" disabled={pending}>
+              Choose {plan.name}
+            </Button>
+          </form></Card>
+        ))}
+        </div>
+        {dashboard.data?.plans.length === 0 ? <EmptyState title="No plans configured" description="Plans are application-owned product policy. Add one without coupling your domain to a payment provider." /> : null}
+      </section>
+      <Card className="mt-8" aria-label="Entitlements">
+        <h2 className="text-lg font-semibold">Entitlements</h2>
+        <div className="mt-3 flex flex-wrap gap-2">
+        {dashboard.data?.entitlements.map(entitlement => (
+          <Badge key={entitlement.capability} tone="info">{entitlement.capability}: {entitlement.limit ?? 'unlimited'}</Badge>
+        ))}
+        </div>
+      </Card>
+      {notice ? <p role="status" className="mt-4 text-sm text-stone-600">{notice}</p> : null}
+    </div>
+  );
+}
+
+export function UsageDashboardView() {
+  const dashboard = BillingDashboard({}).useQuery();
+  const input = dashboard.data?.usage.inputTokens ?? 0;
+  const output = dashboard.data?.usage.outputTokens ?? 0;
+  const total = input + output;
+  const inputShare = total > 0 ? Math.round(input / total * 100) : 0;
+  return <div>
+    <PageHeader eyebrow="Application usage" title="Usage" description="Every number comes from application-owned usage facts admitted for your current scope. Provider invoices are delivery observations, not the product source of truth." action={<Badge tone="warning">Starter · local evidence</Badge>} />
+    {!dashboard.data ? <div className="grid gap-4 sm:grid-cols-3"><Skeleton className="h-32" /><Skeleton className="h-32" /><Skeleton className="h-32" /></div> : null}
+    {dashboard.data ? <>
+      <div className="grid gap-4 sm:grid-cols-3"><Metric label="Input tokens" value={input.toLocaleString()} /><Metric label="Output tokens" value={output.toLocaleString()} /><Metric label="Cost" value={`${dashboard.data.usage.costMicrounits.toLocaleString()} µ-units`} /></div>
+      <Card className="mt-5"><div className="flex items-center justify-between gap-4"><div><h2 className="font-semibold">Token mix</h2><p className="mt-1 text-sm text-stone-600">Current admitted application history</p></div><Badge tone="info">{inputShare}% input</Badge></div><div className="mt-5 h-3 overflow-hidden rounded-full bg-stone-100" aria-label={`${inputShare}% input tokens`}><div className="h-full bg-emerald-700" style={{ width: `${inputShare}%` }} /></div><p className="mt-4 text-xs text-stone-500">Freshness follows the authoritative PostgreSQL usage projection. Live payment delivery may reconcile later.</p></Card>
+      {total === 0 ? <div className="mt-5"><EmptyState title="No usage has been recorded" description="Run the copilot once. Its typed inference operation emits the same provider-neutral usage fact used by quotas and billing." /></div> : null}
+    </> : null}
+  </div>;
+}
+
+function Metric({ label, value }: { readonly label: string; readonly value: string }) {
+  return <Card><p className="text-sm text-stone-500">{label}</p><p className="mt-2 text-2xl font-semibold tracking-tight">{value}</p></Card>;
+}

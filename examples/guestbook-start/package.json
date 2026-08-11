@@ -9,7 +9,7 @@
     "predev": "bun run --cwd ../.. build:packages",
     "dev": "vite dev --port 3000",
     "generate-routes": "tsr generate",
-    "typecheck": "bun run generate-routes && tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "prebuild": "bun run --cwd ../.. build:packages",
     "build": "vite build",
     "deploy:local": "applik8s deploy src/application.ts --context orbstack",
@@ -22,15 +22,15 @@
     "@applik8s/server": "workspace:*",
     "@applik8s/tanstack-start": "workspace:*",
     "@applik8s/vite": "workspace:*",
-    "@tanstack/react-router": "^1.170.18",
-    "@tanstack/react-start": "^1.168.28",
+    "@tanstack/react-router": "1.170.18",
+    "@tanstack/react-start": "1.168.28",
     "arktype": "^2.2.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },
   "devDependencies": {
     "@applik8s/cli": "workspace:*",
-    "@tanstack/router-cli": "^1.167.19",
+    "@tanstack/router-cli": "1.167.19",
     "@vitejs/plugin-react": "^6.0.3",
     "vite": "^8.1.5"
   }

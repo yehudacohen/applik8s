@@ -77,6 +77,10 @@
           "marker": "const denied = await page.request.get('/workspaces')"
         },
         {
+          "path": "packages/e2e/browser/agentic-product-golden-path.e2e.test.ts",
+          "marker": "renders maintained provider-neutral account security without generated provider plumbing"
+        },
+        {
           "path": "scripts/run-identity-start-dedicated-live.ts",
           "marker": "ory-human-session-admission"
         }
@@ -133,6 +137,10 @@
         {
           "path": "packages/e2e/browser/agentic-start-golden-path.e2e.test.ts",
           "marker": "renders provider-neutral billing and executes simulated checkout and portal calls"
+        },
+        {
+          "path": "packages/e2e/browser/agentic-product-golden-path.e2e.test.ts",
+          "marker": "uses the provider-neutral Starter billing path without Stripe credentials"
         },
         {
           "path": "packages/billing-stripe/test/stripe.vertical.test.ts",

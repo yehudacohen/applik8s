@@ -4,6 +4,7 @@ import {
   AccessRequest,
   Administrator,
   Reviewer,
+  StarterAdministrator,
   type AccessRequestCreated,
 } from './model';
 
@@ -35,7 +36,9 @@ export const AccessReviewRequests = AccessReview.subscribe(
     delivery: 'sse',
     authorize: ({ principal }) =>
       principal.roles?.some((role) =>
-        role === 'reviewer' || role === 'administrator',
+        role === 'reviewer'
+        || role === 'administrator'
+        || role === 'starter-administrator',
       ) === true,
   },
 );
@@ -46,6 +49,11 @@ Reviewer.can(
   AccessReview.reject,
 );
 Administrator.can(
+  AccessReview.read,
+  AccessReview.approve,
+  AccessReview.reject,
+);
+StarterAdministrator.can(
   AccessReview.read,
   AccessReview.approve,
   AccessReview.reject,
@@ -88,7 +96,11 @@ export const reviewAccessRequest = workflow(
       input,
       expiresIn: '24h',
       target: { requestId: input.requestId, operation: input.operation },
-      authorize: [{ role: 'reviewer' }, { role: 'administrator' }],
+      authorize: [
+        { role: 'reviewer' },
+        { role: 'administrator' },
+        { role: 'starter-administrator' },
+      ],
     });
     const decision = await review();
     return decision.match({

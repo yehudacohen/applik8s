@@ -1,6 +1,6 @@
 # RFP: Applik8s v0.7 — Function-Native Execution and Durable Closures
 
-**Status:** Accepted direction; implementation in progress. The conformance matrix below is the
+**Status:** Accepted v0.7 contract; implementation in progress. The conformance matrix below is the
 authoritative distinction between implemented compatibility foundations and the remaining golden-path
 surface.
 
@@ -34,20 +34,26 @@ acceptance evidence agree.
 | Model-first `model()`/`field` authoring | Yes | Yes: the typed database schema binding discovers Applik8s-authored models, installs their graph/runtime facets, and preserves the original Drizzle table identity without `app.model(...)` | Not applicable to CRD model | Yes |
 | Direct model CRUD handles | Yes | Yes | Yes | Yes |
 | Named model lifecycle facts without string identities | Yes | Yes | Yes | Yes |
-| Function-native query/view implementation argument | Yes | Partial: relational and Kubernetes-backed `Model.view(contract, implementation)` plus directly awaitable query handles exist; one-shot `Model.query` remains | Yes | Yes |
+| Function-native query/view implementation argument | Yes | Yes: relational, analytical, and Kubernetes-backed models expose distinct `Model.query(contract, implementation)` and `Model.view(contract, implementation)` declarations with named identity, compiler capture, shared authority/budgets, and graph-visible lifecycle semantics | Yes | Yes |
 | Direct callable dependency capture | Yes | Yes: compiler-captured workflow, operation, query, database, transaction-scoped model, event, projection, object-store, and recurring-schedule calls lower through execution-scoped runtimes; inline and same-file named callbacks share inference, while unresolved callback modules fail closed. The exact emitted event worker passes nested model/event hydration and duplicate recovery against live PostgreSQL. | Not exercised | Yes |
 | Single-step workflow lowering without public tasks | Yes | Yes | Not exercised | Yes |
 | Optionless named workflow authoring | Yes | Yes: `workflow(id, contract, handler)` omits placeholder options; the compiler inserts internal capture metadata when required | Not exercised | Yes |
-| Transaction-staged command safety | Yes | Yes: `void Command(input)` is the lint-safe staged form and an authored `await Command(input)` fails during application discovery | Not exercised | Yes |
+| Same-authority lifecycle operation composition | Yes | Yes: committed lifecycle handlers `await Model.create/update/delete(...)`, observe a typed provisional snapshot, and atomically commit or roll back every same-PostgreSQL write and durable effect; cross-authority and unawaited calls fail closed | Not exercised | Yes |
+| Before-commit staged command safety | Yes | Yes: aggregate policy callbacks retain explicit `void Command(input)` outbox staging and reject awaiting another model operation | Not exercised | Yes |
 | `Stream.onEvent(...)` | Yes | Yes: it lowers to the existing whole-handler processor/checkpoint contract; `process` remains deprecated compatibility | Not exercised | Yes |
-| Frozen whole-acknowledgement `Stream.onBatch(...)` | Yes | Yes | Focused authoring/runtime/compiler evidence; live qualification pending | No |
+| Frozen whole-acknowledgement `Stream.onBatch(...)` | Yes | Yes | Yes: Chirp's generated JetStream worker persists one frozen engagement batch through the durable transaction path and records its retry-stable receipt before whole-batch acknowledgement | Yes |
 | Single-transform projection write scope | Yes | Yes: one synchronous descriptor callback lowers to the existing projection runtime; fluent rebuild authority and retention remain graph-visible | Not exercised | Yes |
-| Typed signal event plus callable one-shot decision | Yes | Yes: contract-derived streams, transactional PostgreSQL state/outbox, generated workflow issuance/waits, server/browser action hydration, exact-instance gateway and query-output admission, framework-derived actors, redacted losing outcomes, expiry, execution-family-specific inert projection decoding, bounded model-backed `field.signal(...)` persistence, and exact live PostgreSQL restart/recovery evidence exist | Not exercised | No |
-| Canonical resource/workflow tracking | Yes | Yes: `Resource.on.reconcile` starts or adopts an idempotent run from canonical reserved CR status, uses framework-managed finalizers and bounded cancellation, preserves literal `supersede`/`cancel` generation semantics, and recovers through bounded exact-resource resync. The live Hatchet gate proved retry, worker replacement, terminal projection, and settled reconciliation; a progress push bridge is an optional latency optimization rather than required correctness state. | Not exercised | No |
+| Typed signal event plus callable one-shot decision | Yes | Yes: contract-derived streams, transactional PostgreSQL state/outbox, generated workflow issuance/waits, server/browser action hydration, exact-instance gateway and query-output admission, framework-derived actors, redacted losing outcomes, expiry, execution-family-specific inert projection decoding, bounded model-backed `field.signal(...)` persistence, and exact live PostgreSQL restart/recovery evidence exist | Yes: Chirp publishes the typed review issuance over SSE, survives reload, resolves the callable decision, and resumes its durable automation workflow | Yes |
+| Canonical resource/workflow tracking | Yes | Yes: `Resource.on.reconcile` starts or adopts an idempotent run from canonical reserved CR status, uses framework-managed finalizers and bounded cancellation, preserves literal `supersede`/`cancel` generation semantics, and recovers through bounded exact-resource resync. The live Hatchet gate proved retry, worker replacement, terminal projection, and settled reconciliation; a progress push bridge is an optional latency optimization rather than required correctness state. | Yes: Chirp's moderation CR converges through its private workflow gateway with UID/generation-scoped idempotency, stable run adoption, and terminal result projection | Yes |
 | Automatic TanStack Start loader hydration | Yes | Yes: the root adapter discovers typed snapshots in matched loader data; routes retain ordinary `snapshot()` and `useQuery()` calls | Yes | Yes |
 | Maintained Start capacity defaults | Yes | Yes: Starter, Dedicated, and External capacity policy lives in `@applik8s/start-agentic` and remains individually overrideable | Not applicable | Yes |
 | Packed-package build and generated browser facade | Yes | Yes | Yes | Yes |
 | Callback-native application modules | Yes | Yes: `module(name, setup)` and `module(name, { schema }, setup)` return exact inferred exports, validate and freeze the plain-object boundary internally, install once per application, infer returned top-level models/relations conservatively, and retain `defineApplicationModule` only as compatibility machinery | Not applicable | Yes |
+
+The rows above are release claims, not aspirational documentation. Frozen
+batches, typed durable signals, and resource/workflow tracking are complete only
+because the matrix, executable acceptance manifest, Chirp source, and exact
+candidate evidence now agree on the same public paths and assertion identities.
 
 This table must be updated in the same change that advances a row. Acceptance prose later in this
 document describes the required destination unless the corresponding row says `Yes`.
@@ -1765,30 +1771,65 @@ retry-stable durable identity and the canonical execution principal and
 authorization receipt. Two modules may export the same symbol name without
 colliding; a private helper is not silently promoted into a public operation.
 
-Inside managed model transactions, direct `Event.emit(payload)` and model-operation calls such as
-`CreateNotification(input)` are staged atomically. The compiler infers their outbox contracts and
-transaction participants from the closure; authors do not repeat `events`, `commands`, or alias maps.
-The framework assigns deterministic nested-command identity and rejects awaiting a staged command
-before commit because no result can exist yet. Explicit `context.emit(...)` and `context.send(...)`
-remain migration spellings, not the golden path.
+Inside committed model-lifecycle handlers, an awaited direct model operation joins the source
+event's compiler-owned PostgreSQL transaction when both models share one database authority. It
+returns the operation's ordinary typed snapshot immediately, but that snapshot is provisional until
+the lifecycle callback completes. A later exception, policy rejection, deadlock retry, or processor
+failure rolls back the nested result, model writes, durable command result, history, transitions, and
+outboxes together. The compiler assigns deterministic nested-command identities, deduplicates local
+aliases of the same operation, and rejects cross-database or cross-provider composition with guidance
+to use a workflow or a post-commit event boundary.
 
-Because a model-operation handle has its ordinary asynchronous type outside the transaction, the
-lint-safe authored staging form is explicit:
+Direct `Event.emit(payload)` remains atomic outbox staging inside an explicit `Model.edit(...)`
+transaction. `context.send(...)` remains the explicit post-commit asynchronous command boundary; it
+does not pretend to return the destination operation result.
+
+The canonical lifecycle form is therefore ordinary awaited TypeScript:
+
+```ts
+async function createOwningMembership(event: ModelEvent<typeof Workspace, "create">) {
+  const membership = await Membership.create({
+    id: `${event.identity}:owner`,
+    workspaceId: event.identity,
+    principalId: event.value.ownerPrincipalId,
+    role: "owner",
+  });
+
+  return membership.value;
+}
+
+Workspace.on.create(createOwningMembership);
+```
+
+Calling a direct model operation without `await` fails during application discovery: silently
+discarding a provisional result makes rollback intent unclear and looks indistinguishable from an
+accidental promise leak. Asynchronous delivery is explicit:
+
+```ts
+async function publishPost(event: ModelEvent<typeof Post, "create">, context: EventContext) {
+  context.send(NotifyFollowers, {
+    postId: event.identity,
+  }, {
+    targetKey: event.value.authorId,
+  });
+}
+
+Post.on.create(publishPost);
+```
+
+Before-commit policy callbacks are intentionally narrower than committed lifecycle handlers. They
+may mutate or reject the currently locked aggregate and stage its declared events, but may not await
+another model operation. That keeps policy evaluation local and prevents an authorization rule from
+quietly growing into distributed orchestration.
+
+Explicit transaction code continues to stage ordinary events:
 
 ```ts
 PostPublished.emit({
   postId: post.id,
   revision: post.revision,
 });
-
-void CreateNotification({
-  postId: post.id,
-  recipientId: post.authorId,
-});
 ```
-
-`await CreateNotification(...)` fails during application discovery with the `void
-CreateNotification(...)` remedy. The runtime retains the same rejection as defense in depth.
 
 Conventional CRUD `beforeCommit` callbacks remain ordinary policy closures. Throwing an ordinary error
 from one produces a framework-owned, durable `policyRejected` outcome, rolls back every staged model,
@@ -1802,9 +1843,12 @@ Committed model lifecycle is registered through typed create, update, and delete
 symbols supply local handler identity:
 
 ```ts
-export const moderateNewPost = Post.on.create(options, handler);
-export const reindexPost = Post.on.update(options, handler);
-export const retirePost = Post.on.delete(options, handler);
+export const moderateNewPost = Post.on.create(moderatePost);
+export const reindexPost = Post.on.update(reindexPostSearch);
+export const retirePost = Post.on.delete(removePostArtifacts);
+
+// Add deployment policy only when it differs from the application default.
+export const fanOutPost = Post.on.create({ concurrency: 20 }, fanOutPublishedPost);
 ```
 
 These are observed committed facts, unlike the model's callable CRUD methods and unlike Kubernetes
@@ -2506,7 +2550,9 @@ workflow, steps, and outcome.
   as inline callbacks;
 - unresolved imported callbacks fail closed with a supported local-callback or explicit
   authority-envelope remedy;
-- transaction-staged commands invoked through `await` fail discovery while `void Command(...)`
+- committed lifecycle handlers lower awaited same-authority model operations into one retryable
+  transaction and reject unawaited or cross-authority calls;
+- before-commit policy commands invoked through `await` fail discovery while `void Command(...)`
   remains captured and lowers to the command outbox;
 - helpers remain local calls;
 - dynamic relationships fail closed;

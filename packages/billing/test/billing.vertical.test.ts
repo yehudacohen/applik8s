@@ -29,11 +29,13 @@ describe('provider-neutral billing', () => {
     });
     const first = await payments.openPortal({
       principalScope: 'workspace:one',
+      providerCustomerId: 'local_customer_d6a17c58',
       returnTo: '/billing',
       idempotencyKey: 'portal-1',
     });
     const second = await payments.openPortal({
       principalScope: 'workspace:one',
+      providerCustomerId: 'local_customer_d6a17c58',
       returnTo: '/billing',
       idempotencyKey: 'portal-1',
     });
@@ -68,5 +70,42 @@ describe('provider-neutral billing', () => {
       periodEnd: '2026-01-01T00:00:00.000Z',
       rawType: 'customer.subscription.deleted',
     })).toBe(current);
+  });
+
+  it('keeps plan changes and metered delivery provider-neutral in Starter', async () => {
+    const payments = LocalPayments.simulated({
+      clock: () => new Date('2026-01-01T00:00:00.000Z'),
+    });
+    expect(payments.capabilities).toEqual({
+      checkout: true,
+      portal: true,
+      subscriptionChanges: true,
+      scheduledChanges: true,
+      meteredUsage: true,
+    });
+    await expect(payments.previewSubscriptionChange?.({
+      principalScope: 'workspace:one',
+      providerSubscriptionId: 'local-subscription',
+      items: [{ price: 'team-monthly', quantity: 3 }],
+      timing: 'periodEnd',
+      idempotencyKey: 'change-1',
+    })).resolves.toMatchObject({
+      provider: 'local',
+      amountDueMicrounits: 0,
+      effectiveAt: '2026-01-31T00:00:00.000Z',
+    });
+    await expect(payments.reportUsage?.({
+      principalScope: 'workspace:one',
+      providerCustomerId: 'local_customer_d6a17c58',
+      meter: 'ai_tokens',
+      quantity: 125,
+      occurredAt: '2026-01-01T00:00:00.000Z',
+      idempotencyKey: 'usage-1',
+    })).resolves.toEqual({
+      provider: 'local',
+      providerEventId: 'local_usage_5d182c24',
+      idempotencyKey: 'usage-1',
+      acceptedAt: '2026-01-01T00:00:00.000Z',
+    });
   });
 });

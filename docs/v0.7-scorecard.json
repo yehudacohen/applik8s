@@ -16,7 +16,7 @@
     "tanstackAIClient": "0.22.1",
     "tanstackAIReact": "0.18.1",
     "agUi": "0.0.52",
-    "typekro": "0.33.5"
+    "typekro": "0.33.6"
   },
   "items": [
     {
@@ -33,6 +33,33 @@
         "packages/operations/test/authority.vertical.test.ts",
         "packages/operations/test/execution-admission-transport.vertical.test.ts",
         "packages/applik8s/test/application-authority.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "universal-causal-attribution",
+      "owner": "compiler",
+      "state": "complete",
+      "evidence": [
+        "packages/core/test/application-operation-authority.vertical.test.ts",
+        "packages/applik8s/test/task-operation-runtime.vertical.test.ts",
+        "packages/runtime-ai/test/agent-gateway.vertical.test.ts",
+        "packages/runtime-hatchet/test/runtime.vertical.test.ts",
+        "packages/compiler/test/application-workflows.vertical.test.ts",
+        "packages/compiler/test/application-agents.vertical.test.ts",
+        "packages/compiler/test/application-reactive.vertical.test.ts",
+        "packages/applik8s/test/command-principal.vertical.test.ts",
+        "packages/e2e/test/causal-chain-generated-worker-live.e2e.test.ts"
+      ]
+    },
+    {
+      "id": "generated-route-reproducibility",
+      "owner": "start-agentic",
+      "state": "complete",
+      "evidence": [
+        "packages/start-agentic/src/definition.ts",
+        "scripts/check-generated-routes.mjs",
+        "scripts/package-consumer-smoke.mjs",
+        "examples/identity-start/src/routeTree.gen.ts"
       ]
     },
     {
@@ -84,7 +111,9 @@
       "evidence": [
         "packages/applik8s/test/application-reactive.vertical.test.ts",
         "packages/applik8s/test/stream-processor-runtime.vertical.test.ts",
-        "packages/compiler/test/application-reactive.vertical.test.ts"
+        "packages/compiler/test/application-reactive.vertical.test.ts",
+        "examples/chirp-start/src/streams/engagement.ts",
+        "packages/e2e/test/chirp-start-live.e2e.test.ts"
       ]
     },
     {
@@ -100,7 +129,9 @@
         "packages/e2e/test/signal-postgres-live.e2e.test.ts",
         "scripts/run-v07-signal-postgres-live.sh",
         "examples/chirp-start/src/automation/workflow.ts",
-        "scripts/check-chirp-start-build.mjs"
+        "scripts/check-chirp-start-build.mjs",
+        "packages/e2e/browser/chirp-golden-path.e2e.test.ts",
+        "scripts/write-chirp-browser-evidence.mjs"
       ]
     },
     {
@@ -112,7 +143,10 @@
         "packages/applik8s/test/application-workflows.vertical.test.ts",
         "packages/runtime-hatchet/test/runtime.vertical.test.ts",
         "packages/compiler/test/kubernetes-yaml.vertical.test.ts",
-        "packages/e2e/test/workflow-hatchet-live.e2e.test.ts"
+        "packages/e2e/test/workflow-hatchet-live.e2e.test.ts",
+        "packages/applik8s/test/workflow-gateway-binding.vertical.test.ts",
+        "examples/chirp-start/src/domain/moderation.ts",
+        "packages/e2e/test/chirp-start-live.e2e.test.ts"
       ]
     },
     {
@@ -186,14 +220,28 @@
       "owner": "start-agentic",
       "state": "complete",
       "evidence": [
+        "docs/v07-agentic-start-product-readiness-plan.md",
+        "docs/v07-agentic-start-experience-spec.md",
         "packages/start-agentic/src/generator.ts",
         "packages/start-agentic/src/definition.ts",
+        "packages/start-agentic/src/account.tsx",
+        "packages/start-agentic/src/templates/product/src/components/app-shell.tsx.tmpl",
+        "packages/start-agentic/src/templates/product/src/features/inbox/model.ts.tmpl",
+        "packages/start-agentic/src/templates/product/src/features/inbox/view.tsx.tmpl",
+        "packages/start-agentic/src/templates/product/src/features/onboarding/view.tsx.tmpl",
+        "packages/start-agentic/src/templates/product/src/features/library/view.tsx.tmpl",
+        "packages/start-agentic/src/templates/product/src/features/account/identity-flow.tsx.tmpl",
+        "packages/start-agentic/src/templates/product/src/features/conversations/view.tsx.tmpl",
+        "packages/start-agentic/src/templates/product/src/styles.css",
         "packages/start-agentic/src/templates/product/README.md",
         "packages/start-agentic/src/templates/product/test/application.test.ts.tmpl",
         "packages/start-agentic/src/templates/research/README.md",
         "packages/start-agentic/src/react.ts",
         "packages/start-agentic/test/generator.vertical.test.ts",
         "packages/start-agentic/test/react.vertical.test.ts",
+        "packages/e2e/browser/agentic-product-golden-path.e2e.test.ts",
+        "scripts/run-agentic-product-starter-live.ts",
+        "packages/vite/test/vite.vertical.test.ts",
         "scripts/package-consumer-smoke.mjs"
       ]
     },
@@ -238,6 +286,7 @@
         "examples/chirp-start/src/automation/workflow.ts",
         "scripts/check-chirp-start-build.mjs",
         "packages/e2e/browser/chirp-golden-path.e2e.test.ts",
+        "packages/e2e/test/chirp-start-live.e2e.test.ts",
         "scripts/write-chirp-browser-evidence.mjs",
         "scripts/deploy-v06-chirp-twice.mjs"
       ]
@@ -328,6 +377,106 @@
         "benchmarks/v0.7/baseline.json",
         "scripts/benchmark-v07.ts",
         "scripts/check-v07-performance-history.mjs"
+      ]
+    },
+    {
+      "id": "planning-authority-consistency",
+      "owner": "release",
+      "state": "complete",
+      "evidence": [
+        "docs/charter-v07-agentic-platform.md",
+        "docs/rfp-v07-function-native-execution.md",
+        "docs/v07-acceptance-manifest.json",
+        "docs/v0.7-scorecard.json",
+        "scripts/check-v07-scorecard.ts",
+        "scripts/v07-release-evidence-contract.ts"
+      ]
+    },
+    {
+      "id": "function-native-one-shot-query",
+      "owner": "applik8s",
+      "state": "complete",
+      "evidence": [
+        "docs/rfp-v07-function-native-execution.md",
+        "packages/applik8s/test/native-model-application.vertical.test.ts",
+        "packages/compiler/test/entrypoint-application-callbacks.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "public-admission-and-notification",
+      "owner": "start-agentic",
+      "state": "complete",
+      "evidence": [
+        "docs/v07-agentic-start-product-readiness-plan.md",
+        "docs/v07-agentic-start-experience-spec.md",
+        "docs/rfp-v07-identity-and-oauth.md",
+        "packages/notifications/src/index.ts",
+        "packages/notifications-smtp/src/index.ts",
+        "packages/start-agentic/src/templates/product/src/features/account/identity-flow.tsx.tmpl",
+        "packages/start-agentic/src/templates/product/src/routes/sign-in.tsx.tmpl",
+        "packages/start-agentic/test/identity-runtime.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "operator-launchpad-authority",
+      "owner": "operations",
+      "state": "complete",
+      "evidence": [
+        "docs/v07-agentic-start-product-readiness-plan.md",
+        "docs/v07-agentic-start-experience-spec.md",
+        "packages/applik8s/src/application-authority.ts",
+        "packages/operations/src/authority.ts",
+        "packages/operations/src/deployment-receipts.ts",
+        "packages/operations/test/authority.vertical.test.ts",
+        "packages/operations/test/deployment-receipts.vertical.test.ts",
+        "packages/compiler/src/application-fetch-gateway/index.ts",
+        "packages/compiler/test/application-fetch-gateway.vertical.test.ts",
+        "packages/cli/src/application-operator-authority-command.ts",
+        "packages/cli/src/application-deployment-evidence.ts",
+        "packages/start-agentic/src/templates/product/src/routes/app.setup.tsx.tmpl"
+      ]
+    },
+    {
+      "id": "start-lineage-update-check",
+      "owner": "start-agentic",
+      "state": "complete",
+      "evidence": [
+        "docs/rfp-v07-agentic-start-distribution.md",
+        "packages/start-agentic/src/generator.ts",
+        "packages/cli/src/application-start-update-command.ts",
+        "packages/cli/test/application-start-update.vertical.test.ts",
+        "scripts/check-agentic-start-source-budget.mjs",
+        "scripts/package-consumer-smoke.mjs"
+      ]
+    },
+    {
+      "id": "product-data-lifecycle-and-ai-trust",
+      "owner": "start-agentic",
+      "state": "complete",
+      "evidence": [
+        "docs/v07-agentic-start-product-readiness-plan.md",
+        "docs/v07-agentic-start-experience-spec.md",
+        "docs/rfp-v07-ai-runtime.md",
+        "packages/start-agentic/src/templates/product/src/features/lifecycle/model.ts.tmpl",
+        "packages/start-agentic/src/templates/product/src/features/lifecycle/schema.ts.tmpl",
+        "packages/start-agentic/src/templates/product/src/features/account/identity-flow.tsx.tmpl",
+        "packages/start-agentic/src/templates/product/src/features/conversations/view.tsx.tmpl",
+        "packages/e2e/browser/agentic-product-golden-path.e2e.test.ts",
+        "packages/compiler/src/application-agents/index.ts",
+        "packages/compiler/test/application-agents.vertical.test.ts",
+        "packages/operations-ui/src/index.ts",
+        "packages/operations-ui/test/module.vertical.test.ts"
+      ]
+    },
+    {
+      "id": "cross-browser-product-quality",
+      "owner": "e2e",
+      "state": "complete",
+      "evidence": [
+        "docs/v07-agentic-start-product-readiness-plan.md",
+        "docs/v07-agentic-start-experience-spec.md",
+        "packages/e2e/browser/agentic-product-golden-path.e2e.test.ts",
+        "scripts/run-agentic-product-starter-live.ts"
       ]
     },
     {

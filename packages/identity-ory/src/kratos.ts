@@ -45,6 +45,15 @@ export interface OryKratosSessionEvidence {
   readonly expiresAt?: string;
 }
 
+export interface OryKratosSessionDevice {
+  readonly id: string;
+  readonly active: boolean;
+  readonly authenticationMethods: readonly string[];
+  readonly authenticatedAt?: string;
+  readonly issuedAt?: string;
+  readonly expiresAt?: string;
+}
+
 export type OryKratosFlowKind =
   | 'register'
   | 'login'
@@ -105,10 +114,22 @@ export class OryKratosIdentityAdapter
         401,
       );
     }
+    const kind = evidence.identity.kind;
+    if (
+      kind === 'execution'
+      || kind === 'pre-authentication-flow'
+      || kind === 'oauth-authorization-flow'
+    ) {
+      throw new OryAdapterError(
+        'ORY_RESPONSE_INVALID',
+        'Ory session evidence cannot admit framework-managed principal kinds.',
+        500,
+      );
+    }
     return {
       id: `principal:${context.application}:ory:${evidence.identity.subject}`,
       identity: evidence.identity,
-      kind: evidence.identity.kind,
+      kind,
       authenticationMethod: evidence.authenticationMethod,
       audience: [...context.audience],
       trustedContextDigest: context.trustedContextDigest,
@@ -344,6 +365,22 @@ export class OryKratosIdentityAdapter
     }
   }
 
+  async identitySessions(
+    providerIdentityId: string,
+  ): Promise<readonly OryKratosSessionDevice[]> {
+    const identityId = requiredPathSegment(providerIdentityId, 'identity ID');
+    const { json } = await this.#transport.request(
+      new URL(`admin/identities/${identityId}/sessions`, this.#adminUrl),
+      { headers: { accept: 'application/json' } },
+    );
+    const values = Array.isArray(json)
+      ? json
+      : json && Array.isArray(json.sessions)
+        ? json.sessions
+        : [];
+    return values.map(normalizedKratosSessionDevice);
+  }
+
   async ready(): Promise<void> {
     await Promise.all([
       this.#transport.request(
@@ -358,6 +395,46 @@ export class OryKratosIdentityAdapter
       ),
     ]);
   }
+}
+
+function normalizedKratosSessionDevice(
+  value: unknown,
+): OryKratosSessionDevice {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new OryAdapterError(
+      'ORY_RESPONSE_INVALID',
+      'Ory identity session must be an object.',
+    );
+  }
+  const methodsValue = Reflect.get(value, 'authentication_methods');
+  const methods = Array.isArray(methodsValue)
+    ? methodsValue.flatMap((entry) => {
+        const method = entry && typeof entry === 'object'
+          ? Reflect.get(entry, 'method')
+          : undefined;
+        return typeof method === 'string' && method.trim() ? [method] : [];
+      })
+    : [];
+  const authenticatedAt = optionalOryString(
+    Reflect.get(value, 'authenticated_at'),
+    'identity session.authenticated_at',
+  );
+  const issuedAt = optionalOryString(
+    Reflect.get(value, 'issued_at'),
+    'identity session.issued_at',
+  );
+  const expiresAt = optionalOryString(
+    Reflect.get(value, 'expires_at'),
+    'identity session.expires_at',
+  );
+  return {
+    id: requiredOryString(Reflect.get(value, 'id'), 'identity session.id'),
+    active: Reflect.get(value, 'active') === true,
+    authenticationMethods: methods,
+    ...(authenticatedAt ? { authenticatedAt } : {}),
+    ...(issuedAt ? { issuedAt } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
+  };
 }
 
 function normalizedKratosSession(

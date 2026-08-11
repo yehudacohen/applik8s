@@ -3,6 +3,7 @@ import { artifacts } from '@applik8s/artifacts';
 import { billing } from '@applik8s/billing';
 import { conversations } from '@applik8s/conversations';
 import { evaluations } from '@applik8s/evals';
+import { notifications } from '@applik8s/notifications';
 import { operationsControlCenter } from '@applik8s/operations-ui';
 import { usage } from '@applik8s/usage';
 import { application } from './app';
@@ -13,6 +14,7 @@ export const Approvals = application.include(approvals);
 export const Artifacts = application.include(artifacts);
 export const Billing = application.include(billing);
 export const Evaluations = application.include(evaluations);
+export const Notifications = application.include(notifications);
 export const Usage = application.include(usage);
 export const ArtifactObjects = application.objectStore('agentic-artifacts', {
   provider: objects,
@@ -32,3 +34,11 @@ export const ArtifactObjects = application.objectStore('agentic-artifacts', {
 });
 export const Operations = application.include(operationsControlCenter);
 export const OperationsSnapshot = Operations.Conversation.operationsSnapshot;
+application.role('application-operator').bootstrap({
+  id: 'identity:deterministic:local-developer',
+  kind: 'human',
+  issuer: `applik8s://${application.name}/identity/deterministic`,
+  subject: 'local-developer',
+}, {
+  reason: 'Credential-free Starter operator bootstrap.',
+});

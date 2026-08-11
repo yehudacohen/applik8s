@@ -19,6 +19,8 @@ import type {
 import { intersectApplicationScopes } from '@applik8s/core';
 import {
   ApplicationAuthorityService,
+  type ApplicationBreakGlassRoleRequest,
+  type ApplicationRoleBootstrapRequest,
   type ApplicationAuthorizationResult,
 } from './authority.js';
 import { ApplicationOperationCatalogManager } from './catalog.js';
@@ -32,6 +34,10 @@ import {
   type ApplicationOperationalObservationInput,
   PostgresApplicationOperationalObservationRepository,
 } from './observations.js';
+import {
+  type ApplicationDeploymentEvidenceReceipt,
+  validateApplicationDeploymentEvidenceReceipt,
+} from './deployment-receipts.js';
 
 export interface ApplicationOperationAuthorityRuntimeOptions {
   readonly sql: ApplicationAuthorityPostgresSql;
@@ -179,7 +185,6 @@ export class ApplicationOperationAuthorityRuntime {
     trustedContextDigest: string,
   ): Promise<ApplicationPrincipal> {
     const catalog = await this.prepare();
-    const authority = await this.#authorityRepository.snapshot();
     const identity = admission.identity ?? {
       id: `identity:${admission.id}`,
       kind: admission.kind ?? 'external',
@@ -187,6 +192,38 @@ export class ApplicationOperationAuthorityRuntime {
       subject: admission.id,
     };
     const kind = admission.kind ?? identity.kind;
+    if (
+      kind === 'execution'
+      || kind === 'pre-authentication-flow'
+      || kind === 'oauth-authorization-flow'
+    ) {
+      throw new Error(
+        'Runtime authority cannot admit framework-managed principal kinds through the identity admission boundary.',
+      );
+    }
+    for (const bootstrap of this.#authorityManifest?.roleBootstraps ?? []) {
+      await this.#authority.bootstrapDeclaredRole(bootstrap, identity);
+    }
+    const [authority, grantedRoles] = await Promise.all([
+      this.#authorityRepository.snapshot(),
+      this.#authority.grantedRolesForIdentity(identity),
+    ]);
+    const bootstrapRoleIds = new Set(
+      (this.#authorityManifest?.roleBootstraps ?? []).map(
+        (bootstrap) => bootstrap.roleId,
+      ),
+    );
+    const canonicalOnlyRoleNames = new Set(
+      authority.roles
+        .filter((role) => bootstrapRoleIds.has(role.id))
+        .map((role) => role.name),
+    );
+    const roles = [...new Set([
+      ...(admission.roles ?? []).filter(
+        (role) => !canonicalOnlyRoleNames.has(role),
+      ),
+      ...grantedRoles,
+    ])].sort();
     return {
       id: admission.id,
       identity,
@@ -197,7 +234,7 @@ export class ApplicationOperationAuthorityRuntime {
       catalogRevision: catalog.revision,
       authorityRevision: authority.revision,
       admittedAt: new Date().toISOString(),
-      ...(admission.roles ? { roles: [...admission.roles] } : {}),
+      ...(roles.length > 0 ? { roles } : {}),
       ...(admission.attributes ? { attributes: admission.attributes } : {}),
       ...(admission.expiresAt ? { expiresAt: admission.expiresAt } : {}),
       ...(admission.sessionId ? { sessionId: admission.sessionId } : {}),
@@ -446,6 +483,40 @@ export class ApplicationOperationAuthorityRuntime {
     );
   }
 
+  async observeDeploymentReceipt(
+    receipt: ApplicationDeploymentEvidenceReceipt,
+  ): Promise<void> {
+    await this.prepare();
+    validateApplicationDeploymentEvidenceReceipt(receipt, {
+      application: this.#application,
+    });
+    await this.#observations.upsert({
+      id: `deployment-receipt:${receipt.action}:${receipt.installation.namespace}:${receipt.installation.name}`,
+      domain: 'installation',
+      subject: `${receipt.installation.namespace}/${receipt.installation.name}`,
+      authority: 'provider',
+      state: receipt.state === 'ready'
+        ? 'ready'
+        : receipt.state === 'action-required'
+          ? 'failed'
+          : 'unknown',
+      source: 'applik8s-cli-deployment-receipt',
+      causalId: receipt.id,
+      evidence: {
+        action: receipt.action,
+        sourceGraphDigest: receipt.sourceGraphDigest,
+        deploymentGraphDigest: receipt.deploymentGraphDigest,
+        artifactSetDigest: receipt.artifactSetDigest,
+        clusterDigest: receipt.cluster.digest,
+        installation: receipt.installation,
+        integrityDigest: receipt.integrity.digest,
+        schemaRevision: receipt.schemaRevision,
+      },
+      observedAt: receipt.observedAt,
+      expiresAt: receipt.expiresAt,
+    });
+  }
+
   async revalidate(
     receipt: ApplicationAuthorizationReceipt,
     boundary: Extract<ApplicationAuthorizationBoundary, 'execution' | 'protected-step' | 'pre-commit' | 'result-read' | 'subscription-resume'>,
@@ -524,6 +595,29 @@ export class ApplicationOperationAuthorityRuntime {
       transaction,
       () => this.#authority.revokeGrant(grantId, reason),
     );
+  }
+
+  async bootstrapRole(
+    request: ApplicationRoleBootstrapRequest,
+  ): Promise<readonly ApplicationGrantRecord[]> {
+    await this.prepare();
+    return this.#authority.bootstrapRole(request);
+  }
+
+  async assignBreakGlassRole(
+    request: ApplicationBreakGlassRoleRequest,
+  ): Promise<readonly ApplicationGrantRecord[]> {
+    await this.prepare();
+    return this.#authority.assignBreakGlassRole(request);
+  }
+
+  async revokeRoleForIdentity(
+    roleId: string,
+    identity: ApplicationIdentityReference,
+    reason: string,
+  ): Promise<readonly ApplicationGrantRecord[]> {
+    await this.prepare();
+    return this.#authority.revokeRoleForIdentity(roleId, identity, reason);
   }
 
   async releaseEnvelope(receipt: ApplicationAuthorizationReceipt, envelopeId: string): Promise<void> {

@@ -1,0 +1,290 @@
+import {
+  applicationCausalPrincipalContext,
+  type ApplicationModelViewContext,
+  module,
+} from '@applik8s/applik8s';
+import { applicationAIConversationPrincipalScope } from '@applik8s/conversations/runtime';
+import { type } from 'arktype';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { application } from '../../app';
+import { Artifacts, Billing, Conversations } from '../../modules';
+import { database } from '../../providers';
+import { Note } from '../notes/schema';
+import { Authenticated, Workspace } from '../workspaces/model';
+import { DataLifecycleRequest as DataLifecycleRequestTable } from './schema';
+
+const LifecycleRequestResult = type({
+  id: 'string',
+  scope: "'account' | 'workspace'",
+  targetId: 'string',
+  state: "'queued' | 'running' | 'actionRequired' | 'completed' | 'failed'",
+  deletedDocuments: 'number',
+  archivedConversations: 'number',
+  retainedArtifacts: 'number',
+  'consequence?': 'string',
+  requestedAt: 'string',
+  'startedAt?': 'string',
+  'completedAt?': 'string',
+});
+
+const LifecycleTargetsResult = type({
+  documents: 'string[]',
+  conversations: 'string[]',
+  retainedArtifacts: 'number',
+  ownedWorkspaces: 'string[]',
+  activeSubscription: 'boolean',
+});
+
+async function lifecycleTargets(
+  input: { readonly principalId: string; readonly principalScope: string },
+  context: ApplicationModelViewContext,
+) {
+  const client = context.database(database);
+  const [documents, conversations, artifactCount, ownedWorkspaces, subscriptions] = await Promise.all([
+    client.select({ id: Note.id })
+      .from(Note)
+      .where(eq(Note.ownerPrincipalId, input.principalId))
+      .limit(100),
+    client.select({ id: Conversations.Conversation.id })
+      .from(Conversations.Conversation)
+      .where(and(
+        eq(Conversations.Conversation.principalScope, input.principalScope),
+        isNull(Conversations.Conversation.archivedAt),
+      ))
+      .limit(100),
+    client.select({ count: sql<number>`count(*)` })
+      .from(Artifacts.Artifact)
+      .where(eq(Artifacts.Artifact.principalScope, input.principalScope)),
+    client.select({ id: Workspace.id })
+      .from(Workspace)
+      .where(eq(Workspace.ownerPrincipalId, input.principalId))
+      .limit(25),
+    client.select({ status: Billing.Subscription.status })
+      .from(Billing.Subscription)
+      .where(eq(Billing.Subscription.principalScope, input.principalId))
+      .limit(25),
+  ]);
+  return {
+    documents: documents.map(document => document.id),
+    conversations: conversations.map(conversation => conversation.id),
+    retainedArtifacts: Number(artifactCount[0]?.count ?? 0),
+    ownedWorkspaces: ownedWorkspaces.map(workspace => workspace.id),
+    activeSubscription: subscriptions.some(subscription =>
+      subscription.status !== 'cancelled'),
+  };
+}
+
+const lifecycle = module(
+  'data-lifecycle',
+  { schema: { DataLifecycleRequest: DataLifecycleRequestTable } },
+  currentApplication => {
+    const LifecycleTargets = DataLifecycleRequestTable.view(
+      {
+        input: type({ principalId: 'string', principalScope: 'string' }),
+        output: LifecycleTargetsResult,
+        database,
+        reads: [Note, Conversations.Conversation, Artifacts.Artifact, Workspace, Billing.Subscription],
+        authorize: ({ principal }) => principal.kind === 'execution',
+        budgets: { timeoutMs: 3_000, maxRows: 350, maxResultBytes: 256_000 },
+      },
+      lifecycleTargets,
+    );
+    const DataLifecycleRequests = DataLifecycleRequestTable.view(
+      {
+        input: type({}),
+        output: LifecycleRequestResult.array(),
+        database,
+        authorize: ({ principal }) => principal.id.length > 0,
+        budgets: { timeoutMs: 2_000, maxRows: 25, maxResultBytes: 128_000 },
+      },
+      async function listLifecycleRequests(_input, context) {
+        const rows = await context.database(database)
+          .select()
+          .from(DataLifecycleRequestTable)
+          .where(eq(
+            DataLifecycleRequestTable.requestedByPrincipalId,
+            applicationCausalPrincipalContext(context.principal).id,
+          ))
+          .orderBy(desc(DataLifecycleRequestTable.requestedAt))
+          .limit(25);
+        return rows.map(row => ({
+          id: row.id,
+          scope: row.scope,
+          targetId: row.targetId,
+          state: row.state,
+          deletedDocuments: row.deletedDocuments,
+          archivedConversations: row.archivedConversations,
+          retainedArtifacts: row.retainedArtifacts,
+          requestedAt: row.requestedAt,
+          ...(row.consequence ? { consequence: row.consequence } : {}),
+          ...(row.startedAt ? { startedAt: row.startedAt } : {}),
+          ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+        }));
+      },
+    );
+    DataLifecycleRequestTable.create.beforeCommit(
+      { history: true },
+      async function admitLifecycleRequest(request, input, context) {
+        if (!context.principal) {
+          throw new Error('A data lifecycle request requires an admitted principal.');
+        }
+        const serverOwned = [
+          'requestedByPrincipalId',
+          'principalScope',
+          'state',
+          'deletedDocuments',
+          'archivedConversations',
+          'retainedArtifacts',
+          'consequence',
+          'requestedAt',
+          'startedAt',
+          'completedAt',
+        ];
+        if (serverOwned.some(field => field in input)) {
+          throw new Error('Lifecycle ownership, progress, and consequences are server-owned.');
+        }
+        const principalId = applicationCausalPrincipalContext(context.principal).id;
+        if (request.value.scope === 'account' && request.value.targetId !== principalId) {
+          throw new Error('Account lifecycle requests must target the admitted causal principal.');
+        }
+        if (request.value.scope === 'workspace') {
+          if (
+            context.trustedContext.workspaceId !== request.value.targetId
+            || !context.principal.roles?.includes('workspace-owner')
+          ) {
+            throw new Error('Workspace deletion requires its admitted workspace owner.');
+          }
+        }
+        request.patch({
+          spec: {
+            requestedByPrincipalId: principalId,
+            principalScope: applicationAIConversationPrincipalScope(
+              context.principal,
+              context.trustedContext,
+            ),
+          },
+        });
+      },
+    );
+
+    const DataLifecycleProcessor = DataLifecycleRequestTable.on.create(
+      {
+        processor: { replicas: 1, concurrency: 4 },
+        retry: {
+          maxAttempts: 8,
+          initialDelayMs: 500,
+          maxDelayMs: 30_000,
+          deadLetter: true,
+        },
+        budgets: { timeoutMs: 120_000, maxInputBytes: 64_000 },
+      },
+      async function processDataLifecycleRequest(created) {
+        const current = await DataLifecycleRequestTable.require(created.identity);
+        if (current.value.state === 'completed') return;
+        const startedAt = new Date().toISOString();
+        await DataLifecycleRequestTable.update({
+          identity: created.identity,
+          patch: { state: 'running', startedAt, consequence: null },
+        });
+        try {
+          if (current.value.scope === 'workspace') {
+            const targets = await LifecycleTargets({
+              principalId: current.value.requestedByPrincipalId,
+              principalScope: current.value.principalScope,
+            });
+            if (targets.ownedWorkspaces.includes(current.value.targetId)) {
+              await Workspace.delete({ identity: current.value.targetId });
+            }
+            await DataLifecycleRequestTable.update({
+              identity: created.identity,
+              patch: {
+                state: 'completed',
+                completedAt: new Date().toISOString(),
+                consequence: 'Workspace membership and invitations were removed. Principal-owned documents, conversations, immutable artifacts, billing, and retained audit evidence were not deleted.',
+              },
+            });
+            return;
+          }
+
+          let deletedDocuments = current.value.deletedDocuments;
+          let archivedConversations = current.value.archivedConversations;
+          for (let batch = 0; batch < 100; batch += 1) {
+            const targets = await LifecycleTargets({
+              principalId: current.value.requestedByPrincipalId,
+              principalScope: current.value.principalScope,
+            });
+            if (targets.activeSubscription || targets.ownedWorkspaces.length > 0) {
+              const blockers = [
+                ...(targets.activeSubscription ? ['cancel the active subscription'] : []),
+                ...(targets.ownedWorkspaces.length > 0 ? ['transfer or delete owned workspaces'] : []),
+              ];
+              await DataLifecycleRequestTable.update({
+                identity: created.identity,
+                patch: {
+                  state: 'actionRequired',
+                  retainedArtifacts: targets.retainedArtifacts,
+                  consequence: `Before account-data removal, ${blockers.join(' and ')}. Immutable artifacts and required audit evidence remain governed by their retention policies.`,
+                },
+              });
+              return;
+            }
+            if (targets.documents.length === 0 && targets.conversations.length === 0) {
+              await DataLifecycleRequestTable.update({
+                identity: created.identity,
+                patch: {
+                  state: 'completed',
+                  deletedDocuments,
+                  archivedConversations,
+                  retainedArtifacts: targets.retainedArtifacts,
+                  completedAt: new Date().toISOString(),
+                  consequence: 'Mutable documents were deleted and active conversations were archived. Immutable artifacts, provider records, authorization receipts, and required audit evidence remain governed by their declared retention policies.',
+                },
+              });
+              return;
+            }
+            for (const identity of targets.documents) {
+              await Note.delete({ identity });
+            }
+            for (const identity of targets.conversations) {
+              await Conversations.Conversation.update({
+                identity,
+                patch: { archivedAt: new Date().toISOString() },
+              });
+            }
+            deletedDocuments += targets.documents.length;
+            archivedConversations += targets.conversations.length;
+            await DataLifecycleRequestTable.update({
+              identity: created.identity,
+              patch: { deletedDocuments, archivedConversations },
+            });
+          }
+          throw new Error('Lifecycle processing exceeded its bounded batch budget.');
+        } catch (error) {
+          await DataLifecycleRequestTable.update({
+            identity: created.identity,
+            patch: {
+              state: 'failed',
+              consequence: 'Lifecycle processing did not complete. No broader deletion is claimed; retry after the application operation boundary recovers.',
+            },
+          });
+          throw error;
+        }
+      },
+    );
+
+    Authenticated.can(DataLifecycleRequestTable.create, DataLifecycleRequests);
+    return {
+      DataLifecycleRequest: DataLifecycleRequestTable,
+      DataLifecycleRequests,
+      DataLifecycleProcessor,
+      LifecycleTargets,
+    };
+  },
+);
+
+export const DataLifecycle = application.include(lifecycle);
+export const {
+  DataLifecycleRequest,
+  DataLifecycleRequests,
+  DataLifecycleProcessor,
+} = DataLifecycle;

@@ -1,5 +1,5 @@
 import type {
-  ApplicationPrincipal,
+  ApplicationAdmittedPrincipal,
   ApplicationRequestAdmission,
   JsonValue,
 } from '@applik8s/core';
@@ -17,7 +17,7 @@ export function testApplicationPrincipal(
     readonly catalogRevision?: string;
     readonly trustedContext?: Readonly<Record<string, JsonValue>>;
   } = {},
-): ApplicationPrincipal {
+): ApplicationAdmittedPrincipal {
   return {
     ...createDeterministicApplicationPrincipal({
     mode: 'starter',

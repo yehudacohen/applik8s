@@ -45,11 +45,87 @@ export function generatedCallbackFactoryModule(
         `const ${identifier} = __applik8sBindings[${JSON.stringify(identifier)}];`,
     )
     .join('\n');
-  return `${dependencySource}${dependencySource ? '\n\n' : ''}export function ${options.exportName}(__applik8sBindings = {}) {
+  const dependencyModule = callbackDependencyModule(dependencySource);
+  return `${dependencyModule.imports}${dependencyModule.imports ? '\n\n' : ''}export function ${options.exportName}(__applik8sBindings = {}) {
 ${bindings}
+${dependencyModule.locals}
 return (${options.source});
 }
 `;
+}
+
+/**
+ * Imports remain at module scope, while executable helper declarations live
+ * in the callback factory beside admitted runtime handles. Recursive closure
+ * capture otherwise leaves helpers referring to module-scope `workflow`,
+ * model, signal, or operation aliases that only exist inside the factory.
+ */
+function callbackDependencyModule(source: string): {
+  readonly imports: string;
+  readonly locals: string;
+} {
+  if (!source.trim()) return { imports: '', locals: '' };
+  const file = ts.createSourceFile(
+    'applik8s-generated-callback-dependencies.ts',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const imports: ts.Statement[] = [];
+  const locals: ts.Statement[] = [];
+  for (const statement of file.statements) {
+    if (ts.isImportDeclaration(statement)) imports.push(statement);
+    else locals.push(localCallbackDependencyStatement(statement));
+  }
+  const print = (statements: readonly ts.Statement[]): string =>
+    ts.createPrinter({ newLine: ts.NewLineKind.LineFeed })
+      .printList(
+        ts.ListFormat.MultiLine,
+        ts.factory.createNodeArray(statements),
+        file,
+      )
+      .trim();
+  return { imports: print(imports), locals: print(locals) };
+}
+
+function localCallbackDependencyStatement(statement: ts.Statement): ts.Statement {
+  if (!ts.canHaveModifiers(statement)) return statement;
+  const modifiers = ts.getModifiers(statement)?.filter(
+    (modifier) =>
+      modifier.kind !== ts.SyntaxKind.ExportKeyword
+      && modifier.kind !== ts.SyntaxKind.DefaultKeyword,
+  );
+  if (ts.isFunctionDeclaration(statement)) {
+    return ts.factory.updateFunctionDeclaration(
+      statement,
+      modifiers,
+      statement.asteriskToken,
+      statement.name,
+      statement.typeParameters,
+      statement.parameters,
+      statement.type,
+      statement.body,
+    );
+  }
+  if (ts.isClassDeclaration(statement)) {
+    return ts.factory.updateClassDeclaration(
+      statement,
+      modifiers,
+      statement.name,
+      statement.typeParameters,
+      statement.heritageClauses,
+      statement.members,
+    );
+  }
+  if (ts.isVariableStatement(statement)) {
+    return ts.factory.updateVariableStatement(
+      statement,
+      modifiers,
+      statement.declarationList,
+    );
+  }
+  return statement;
 }
 
 /**

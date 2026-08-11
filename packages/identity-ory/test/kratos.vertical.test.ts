@@ -109,6 +109,40 @@ describe('Ory Kratos identity adapter', () => {
       ]);
   });
 
+  it('lists one identity session set through the admin boundary without exposing provider payloads', async () => {
+    const requests: Request[] = [];
+    const adapter = new OryKratosIdentityAdapter({
+      publicUrl: 'http://kratos-public.identity.svc/',
+      adminUrl: 'http://kratos-admin.identity.svc/',
+      issuer: 'https://identity.example.test',
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(request);
+        return Response.json({
+          sessions: [{
+            ...sessionFixture(),
+            tokenized: 'must-not-cross',
+          }],
+        });
+      },
+    });
+
+    const sessions = await adapter.identitySessions('human-1');
+
+    expect(requests[0]?.url).toBe(
+      'http://kratos-admin.identity.svc/admin/identities/human-1/sessions',
+    );
+    expect(sessions).toEqual([{
+      id: 'session-1',
+      active: true,
+      authenticationMethods: ['password', 'totp'],
+      authenticatedAt: '2026-07-29T00:00:00.000Z',
+      issuedAt: '2026-07-29T00:00:00.000Z',
+      expiresAt: '2026-07-29T01:00:00.000Z',
+    }]);
+    expect(JSON.stringify(sessions)).not.toContain('must-not-cross');
+  });
+
   it('rejects inactive or malformed session evidence', async () => {
     const adapter = new OryKratosIdentityAdapter({
       publicUrl: 'http://kratos-public.identity.svc/',

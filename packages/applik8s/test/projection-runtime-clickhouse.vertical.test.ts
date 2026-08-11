@@ -99,13 +99,37 @@ describe('ClickHouse analytical projection runtime', () => {
     expect(requests[1]?.query).toContain('ORDER BY (_applik8s_event_id, _applik8s_row_index)');
     expect(requests[1]?.query).toContain('`balance` Float64');
     expect(requests[1]?.query).toContain('`note` Nullable(String)');
-    expect(requests[2]?.query).toContain('`projection` String');
-    expect(requests[2]?.query).toContain('ReplacingMergeTree(`sequence`)');
+    expect(requests[2]?.query).toContain('ALTER TABLE `analytics`.`account_balances`');
+    expect(requests[2]?.query).toContain('ADD COLUMN IF NOT EXISTS `balance` Float64');
+    expect(requests[2]?.query).toContain('ADD COLUMN IF NOT EXISTS `note` Nullable(String)');
+    expect(requests[3]?.query).toContain('`projection` String');
+    expect(requests[3]?.query).toContain('ReplacingMergeTree(`sequence`)');
     const rowWrite = requests.findIndex((entry) => entry.query.includes('account_balances') && entry.query.startsWith('INSERT'));
     const checkpointWrite = requests.findIndex((entry) => entry.query.includes('applik8s_projection_checkpoints') && entry.query.startsWith('INSERT'));
     expect(rowWrite).toBeGreaterThan(0);
     expect(checkpointWrite).toBeGreaterThan(rowWrite);
     expect(JSON.parse(requests[rowWrite]?.body?.trim() ?? '{}')).toMatchObject({ _applik8s_event_id: 'event-1', _applik8s_row_index: 0, _applik8s_source_sequence: 1, accountId: 'account-1', balance: 42 });
+  });
+
+  it('reconciles additive columns without replacing durable projection data', async () => {
+    const queries: string[] = [];
+    const store = createClickHouseAnalyticalProjectionWriter({
+      endpoint: 'http://clickhouse.test:8123', database: 'analytics', table: 'events', projection: 'events', stream: 'events.v1',
+      schema: type({ eventId: 'string', changedAtEpoch: 'number', 'description?': 'string' }),
+      fetch: async (input) => {
+        queries.push(new URL(String(input)).searchParams.get('query') ?? '');
+        return new Response('', { status: 200 });
+      },
+    });
+
+    await store.prepare();
+    await store.prepare();
+
+    const alterations = queries.filter((query) => query.startsWith('ALTER TABLE `analytics`.`events`'));
+    expect(alterations).toHaveLength(1);
+    expect(alterations[0]).toContain('ADD COLUMN IF NOT EXISTS `changedAtEpoch` Float64');
+    expect(alterations[0]).toContain('ADD COLUMN IF NOT EXISTS `description` Nullable(String)');
+    expect(queries.every((query) => !query.includes('DROP') && !query.includes('TRUNCATE'))).toBe(true);
   });
 
   it('fails closed for nested analytical rows and cross-projection reset', async () => {

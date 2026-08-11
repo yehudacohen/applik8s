@@ -1,7 +1,11 @@
 import { application } from './app';
 import {
   BillingDashboard,
+  CancelSubscription,
+  ChangeSubscription,
   OpenBillingPortal,
+  ReceivePaymentWebhook,
+  ResumeSubscription,
   StartCheckout,
 } from './features/billing';
 import {
@@ -23,7 +27,7 @@ import {
   WorkspaceDashboard,
   WorkspaceList,
 } from './features/workspaces/model';
-import { OperationsSnapshot } from './modules';
+import { Notifications, OperationsSnapshot } from './modules';
 
 /**
  * Browser imports of these typed handles are discovered by the Applik8s Vite
@@ -33,11 +37,16 @@ import { OperationsSnapshot } from './modules';
  */
 export {
   BillingDashboard,
+  CancelSubscription,
+  ChangeSubscription,
   Conversation,
   ConversationDetail,
   ConversationInbox,
   OpenBillingPortal,
+  ReceivePaymentWebhook,
+  ResumeSubscription,
   OperationsSnapshot,
+  Notifications,
   PublicAssistant,
   Researcher,
   ResearchReview,

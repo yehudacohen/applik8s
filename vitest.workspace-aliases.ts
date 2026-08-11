@@ -9,6 +9,7 @@ import { fileURLToPath, URL } from 'node:url';
 export function workspaceAliases(): Record<string, string> {
   return {
     '@applik8s/applik8s/internal/provider-runtime': fileURLToPath(new URL('./packages/applik8s/src/application-provider-runtime.ts', import.meta.url)),
+    '@applik8s/applik8s/internal/historical-model-commands': fileURLToPath(new URL('./packages/applik8s/src/historical-model-commands.ts', import.meta.url)),
     '@applik8s/applik8s/deployment-registry': fileURLToPath(new URL('./packages/applik8s/src/deployment-registry.ts', import.meta.url)),
     '@applik8s/applik8s/processor-runtime': fileURLToPath(new URL('./packages/applik8s/src/processor-runtime.ts', import.meta.url)),
     '@applik8s/applik8s/event-log-runtime': fileURLToPath(new URL('./packages/applik8s/src/event-log-runtime.ts', import.meta.url)),
@@ -43,6 +44,9 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/artifacts': fileURLToPath(new URL('./packages/artifacts/src/index.ts', import.meta.url)),
     '@applik8s/billing': fileURLToPath(new URL('./packages/billing/src/index.ts', import.meta.url)),
     '@applik8s/billing-stripe': fileURLToPath(new URL('./packages/billing-stripe/src/index.ts', import.meta.url)),
+    '@applik8s/notifications': fileURLToPath(new URL('./packages/notifications/src/index.ts', import.meta.url)),
+    '@applik8s/notifications/runtime': fileURLToPath(new URL('./packages/notifications/src/runtime.ts', import.meta.url)),
+    '@applik8s/notifications-smtp': fileURLToPath(new URL('./packages/notifications-smtp/src/index.ts', import.meta.url)),
     '@applik8s/conversations': fileURLToPath(new URL('./packages/conversations/src/index.ts', import.meta.url)),
     '@applik8s/evals': fileURLToPath(new URL('./packages/evals/src/index.ts', import.meta.url)),
     '@applik8s/operations-ui/react': fileURLToPath(new URL('./packages/operations-ui/src/react.ts', import.meta.url)),
@@ -50,6 +54,7 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/start-agentic/react': fileURLToPath(new URL('./packages/start-agentic/src/react.ts', import.meta.url)),
     '@applik8s/start-agentic/identity-runtime': fileURLToPath(new URL('./packages/start-agentic/src/identity-runtime.ts', import.meta.url)),
     '@applik8s/start-agentic/payments-runtime': fileURLToPath(new URL('./packages/start-agentic/src/payments-runtime.ts', import.meta.url)),
+    '@applik8s/start-agentic/notifications-runtime': fileURLToPath(new URL('./packages/start-agentic/src/notifications-runtime.ts', import.meta.url)),
     '@applik8s/start-agentic': fileURLToPath(new URL('./packages/start-agentic/src/index.ts', import.meta.url)),
     '@applik8s/usage': fileURLToPath(new URL('./packages/usage/src/index.ts', import.meta.url)),
     '@applik8s/identity/client': fileURLToPath(new URL('./packages/identity/src/client.ts', import.meta.url)),

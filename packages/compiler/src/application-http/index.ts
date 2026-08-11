@@ -19,11 +19,16 @@ import {
   emitGeneratedApplicationContainer,
   type GeneratedApplicationContainerArtifact,
 } from '../application-containers/index.js';
-import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 import {
   applicationStaticAuthorityManifest,
   compileApplicationOperationCatalog,
 } from '../application-operations/index.js';
+import {
+  applicationGraphInterpolate,
+  applicationGraphJsonStringArray,
+  applicationGraphStringValue,
+} from '../application-installation-values.js';
+import { applik8sWorkspaceSourcePlugin } from '../bundling/index.js';
 
 const DEFAULT_GENERATED_HTTP_RUNTIME_IMAGE =
   'node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2';
@@ -51,6 +56,7 @@ export interface GeneratedApplicationHttpResource {
 interface HttpOperationBinding {
   readonly identifier: string;
   readonly operationId: string;
+  readonly runtimeOperationId?: string;
   readonly command: Extract<
     ApplicationGraph['nodes'][number],
     { readonly kind: 'command' }
@@ -185,6 +191,9 @@ function applicationHttpCompilerContract(
         return {
           identifier: binding.identifier,
           operationId: binding.operationId,
+          ...(binding.runtimeOperationId
+            ? { runtimeOperationId: binding.runtimeOperationId }
+            : {}),
           command,
           handler,
           model: model as ApplicationModelNode & {
@@ -258,6 +267,14 @@ async function emitHttpServer(
         `authorize-${index}`,
         route.route.functionNative.authorize.source,
         route.route.functionNative.authorize.dependencies,
+      );
+    }
+    if (route.route.functionNative.webhookAuthentication) {
+      await writeCallbackModule(
+        artifactDir,
+        `webhook-authenticate-${index}`,
+        route.route.functionNative.webhookAuthentication.source,
+        route.route.functionNative.webhookAuthentication.dependencies,
       );
     }
   }
@@ -348,6 +365,9 @@ function generatedHttpSource(contract: HttpServerCompilerContract): string {
     `import { createHandler as createHandler${index} } from './route-${index}.generated.js';
 ${route.route.functionNative.authorize
     ? `import { callback as authorize${index} } from './authorize-${index}.generated.js';`
+    : ''}
+${route.route.functionNative.webhookAuthentication
+    ? `import { callback as authenticateWebhook${index} } from './webhook-authenticate-${index}.generated.js';`
     : ''}`).join('\n');
   const hasTransactions = contract.routes.some(
     (route) => Boolean(route.route.functionNative.transaction),
@@ -370,14 +390,19 @@ ${route.route.functionNative.authorize
   ).join(',\n');
   const routeDefinitions = contract.routes.map((route, index) => {
     const bindings = applicationHttpRouteBindingsSource(contract.graph, route);
-    const aliases = Object.fromEntries(route.operationBindings.map((binding) => [
-      binding.operationId,
-      {
+    const aliases = Object.fromEntries(route.operationBindings.flatMap((binding) => {
+      const target = {
         commandId: `${binding.command.contract.name}.${binding.command.contract.version}`,
         operationId: binding.operationId,
         boundKeys: [],
-      },
-    ]));
+      };
+      return [
+        [binding.operationId, target],
+        ...(binding.runtimeOperationId
+          ? [[binding.runtimeOperationId, target] as const]
+          : []),
+      ] as const;
+    }));
     return `{
       id: ${JSON.stringify(route.route.id)},
       method: ${JSON.stringify(route.route.method)},
@@ -387,6 +412,7 @@ ${route.route.functionNative.authorize
       outputSchema: ${JSON.stringify(route.route.functionNative.output.jsonSchema)},
       createHandler: createHandler${index},
       authorize: ${route.route.functionNative.authorize ? `authorize${index}` : 'undefined'},
+      authenticateWebhook: ${route.route.functionNative.webhookAuthentication ? `authenticateWebhook${index}` : 'undefined'},
       bindings: ${bindings},
       operationAliases: ${JSON.stringify(aliases)},
       transaction: ${generatedHttpTransactionContract(contract.graph, route)},
@@ -404,7 +430,7 @@ ${hasOperations
     ? "import { createJetStreamEventLog } from '@applik8s/runtime-nats';\nimport { createApplicationTaskOperationRuntime } from '@applik8s/applik8s/task-operation-runtime';"
     : ''}
 ${hasTransactions
-    ? "import { applicationRelationalChangeScopes, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
+    ? "import { applicationPostgresModelReadClients, applicationRelationalChangeScopes, applicationRequestContextValues, createApplicationFunctionNativeEventHandle, editApplicationNativeModelObject, executeFunctionNativePostgresModelEdit, findApplicationNativeModelObjects, getApplicationNativeModelObject, requireApplicationNativeModelObject, withApplicationNativeModelReadClients, withApplicationNativeModelTransactionRuntime } from '@applik8s/applik8s/stream-worker-runtime';"
     : ''}
 import { callback as authenticate } from './identity.generated.js';
 ${routeImports}
@@ -580,7 +606,7 @@ function requestIdempotencyKey(request) {
   if (!value || value.length > 256) throw new HttpFailure(400, 'idempotency_key_required');
   return value;
 }
-async function readJson(request) {
+async function readBody(request) {
   const reader = request.body?.getReader();
   if (!reader) return {};
   const chunks = [];
@@ -598,14 +624,67 @@ async function readJson(request) {
     body.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  return body;
+}
+function parseJson(body) {
   try {
-    return size === 0 ? {} : JSON.parse(new TextDecoder().decode(body));
+    return body.byteLength === 0
+      ? {}
+      : JSON.parse(new TextDecoder().decode(body));
   } catch {
     throw new HttpFailure(400, 'invalid_json');
   }
 }
 async function invokeRoute(route, params, request, url, runtimeProtocol) {
-  const admission = await authenticate(request);
+  const body = await readBody(request);
+  let webhookEvent;
+  if (route.authenticateWebhook) {
+    try {
+      webhookEvent = await route.authenticateWebhook(Object.freeze({
+        body,
+        headers: Object.freeze(Object.fromEntries(request.headers)),
+        signal: request.signal,
+      }));
+    } catch (error) {
+      const code = error && typeof error === 'object'
+        ? Reflect.get(error, 'code')
+        : undefined;
+      if (code === 'APPLIK8S_WEBHOOK_AUTHENTICATION_FAILED') {
+        throw new HttpFailure(401, 'webhook_authentication_failed');
+      }
+      if (code === 'APPLIK8S_WEBHOOK_EVENT_UNSUPPORTED') {
+        // A valid provider event outside this route's bounded contract is
+        // terminally acknowledged so the provider does not retry forever.
+        throw new HttpFailure(202, 'webhook_event_unsupported');
+      }
+      if (code === 'APPLIK8S_WEBHOOK_PAYLOAD_INVALID') {
+        throw new HttpFailure(400, 'webhook_payload_invalid');
+      }
+      throw error;
+    }
+  }
+  const trustedContextDigest = webhookEvent
+    ? 'sha256:' + createHash('sha256')
+        .update(contract.application + '\\0' + route.id + '\\0' + String(webhookEvent.id))
+        .digest('hex')
+    : undefined;
+  const admission = webhookEvent
+    ? {
+        principal: await operationAuthority.admitPrincipal({
+          id: 'provider-webhook:' + contract.serverId + ':' + route.id,
+          kind: 'service',
+          roles: ['applik8s-provider-webhook'],
+          authenticationMethod: 'provider-signed-webhook',
+          audience: [contract.application],
+          attributes: {
+            providerEventId: String(webhookEvent.id),
+          },
+        }, trustedContextDigest),
+        trustedContext: Object.freeze({
+          providerEventId: String(webhookEvent.id),
+        }),
+      }
+    : await authenticate(request);
   if (!admission?.principal || !admission?.trustedContext) {
     throw new HttpFailure(401, 'authentication_failed');
   }
@@ -617,7 +696,7 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
     catalogRevision: contract.operationCatalog.revision,
   });
   enforceMutationRateLimit(route, principal);
-  const requestBody = await readJson(request);
+  const requestBody = webhookEvent ?? parseJson(body);
   if (
     runtimeProtocol
     && (
@@ -647,7 +726,9 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
   const applicationPolicyAllowed = route.authorize
     ? await route.authorize(requestValue, context)
     : true;
-  const idempotencyKey = requestIdempotencyKey(request);
+  const idempotencyKey = webhookEvent
+    ? 'provider-event:' + String(webhookEvent.id)
+    : requestIdempotencyKey(request);
   const inputDigest = 'sha256:' + createHash('sha256')
     .update(JSON.stringify(input))
     .digest('hex');
@@ -680,6 +761,10 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
           idempotencyKey,
           correlationId: invocationId,
           signal: request.signal,
+          trustedContext: {
+            values: admission.trustedContext,
+            digest: principal.trustedContextDigest,
+          },
         },
       )
     : {};
@@ -695,7 +780,13 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
     execute,
     () => handler(requestValue, context),
   );
-  const result = route.transaction
+  const invokeWithModelReads = route.transaction
+    ? async () => withApplicationNativeModelReadClients(
+        await applicationPostgresModelReadClients(sql, route.transaction.models),
+        invoke,
+      )
+    : invoke;
+  const result = route.transaction && route.transaction.mode !== 'read'
     ? await withApplicationNativeModelTransactionRuntime(
         Object.freeze({
           edit: modelRequest => executeFunctionNativePostgresModelEdit({
@@ -733,9 +824,9 @@ async function invokeRoute(route, params, request, url, runtimeProtocol) {
               ),
           }, modelRequest),
         }),
-        invoke,
+        invokeWithModelReads,
       )
-    : await invoke();
+    : await invokeWithModelReads();
   return validate(route.outputSchema, result, route.id + '.output');
 }
 
@@ -926,6 +1017,7 @@ function generatedHttpTransactionContract(
     };
   });
   return JSON.stringify({
+    mode: transaction.mode ?? 'write',
     bindingId: `${route.operation.placement.nodeId}:${route.route.id}`,
     model: primary.runtime,
     models,
@@ -1139,29 +1231,37 @@ function applicationHttpEventLogEnvironment(
   const config = provider.config ?? {};
   const secret = objectValue(config.connectionSecret);
   const servers = Array.isArray(config.servers)
-    ? config.servers.filter((value): value is string => typeof value === 'string')
+    ? config.servers.filter(
+        (value) => applicationGraphStringValue(value) !== undefined,
+      )
     : [];
-  const name = stringValue(config.name) ?? 'applik8s-events';
-  const namespace = stringValue(config.namespace);
+  const name = applicationGraphStringValue(config.name) ?? 'applik8s-events';
+  const namespace = applicationGraphStringValue(config.namespace);
   const environment: Record<string, unknown>[] = [
     {
       name: 'APPLIK8S_NATS_SERVERS',
-      value: JSON.stringify(
+      value: applicationGraphJsonStringArray(
         servers.length > 0
           ? servers
-          : [`nats://${name}${namespace ? `.${namespace}` : ''}.svc:4222`],
+          : [applicationGraphInterpolate(
+              'nats://',
+              name,
+              namespace ? '.' : '',
+              namespace,
+              '.svc:4222',
+            )],
       ),
     },
     {
       name: 'APPLIK8S_NATS_STREAM',
-      value: stringValue(config.stream) ?? 'APPLIK8S_EVENTS',
+      value: applicationGraphStringValue(config.stream) ?? 'APPLIK8S_EVENTS',
     },
     {
       name: 'APPLIK8S_NATS_SUBJECT_PREFIX',
-      value: stringValue(config.subjectPrefix) ?? 'applik8s',
+      value: applicationGraphStringValue(config.subjectPrefix) ?? 'applik8s',
     },
   ];
-  const secretName = stringValue(secret.name);
+  const secretName = applicationGraphStringValue(secret.name);
   if (!secretName) return environment;
   if ((stringValue(config.authMode) ?? 'token') === 'userPassword') {
     environment.push(
@@ -1313,57 +1413,54 @@ function nestedBindingsSource(
   }[],
   owner: string,
 ): string {
-  const roots = new Map<
-    string,
-    { direct?: { readonly value: string; readonly target: string }; properties: Map<string, { readonly value: string; readonly target: string }> }
-  >();
+  interface BindingNode {
+    direct?: { readonly value: string; readonly target: string };
+    readonly children: Map<string, BindingNode>;
+  }
+  const roots = new Map<string, BindingNode>();
   for (const entry of entries) {
-    const [root, ...rest] = entry.path.split('.');
-    if (!root || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(root)) {
+    const segments = entry.path.split('.');
+    if (
+      segments.length === 0
+      || segments.some(
+        (segment) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(segment),
+      )
+    ) {
       throw new Error(`${owner} binding ${entry.path} has no serializable root.`);
     }
-    const current = roots.get(root) ?? {
-      properties: new Map<
-        string,
-        { readonly value: string; readonly target: string }
-      >(),
+    const [root, ...rest] = segments as [string, ...string[]];
+    const rootNode: BindingNode = roots.get(root) ?? {
+      children: new Map<string, BindingNode>(),
     };
-    if (rest.length === 0) {
-      if (current.direct && current.direct.target !== entry.target) {
-        throw new Error(`${owner} binding ${root} is ambiguous.`);
-      }
-      current.direct = { value: entry.value, target: entry.target };
-    } else if (
-      rest.length === 1
-      && rest[0]
-      && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(rest[0])
-    ) {
-      const previous = current.properties.get(rest[0]);
-      if (previous && previous.target !== entry.target) {
-        throw new Error(`${owner} binding ${entry.path} is ambiguous.`);
-      }
-      current.properties.set(rest[0], {
-        value: entry.value,
-        target: entry.target,
-      });
-    } else {
-      throw new Error(
-        `${owner} binding ${entry.path} exceeds the supported one-level callable handle surface.`,
-      );
+    roots.set(root, rootNode);
+    let current = rootNode;
+    for (const segment of rest) {
+      const child: BindingNode = current.children.get(segment) ?? {
+        children: new Map<string, BindingNode>(),
+      };
+      current.children.set(segment, child);
+      current = child;
     }
-    roots.set(root, current);
+    if (current.direct && current.direct.target !== entry.target) {
+      throw new Error(`${owner} binding ${entry.path} is ambiguous.`);
+    }
+    current.direct = { value: entry.value, target: entry.target };
   }
-  return `{ ${[...roots.entries()].sort(([left], [right]) =>
-    left.localeCompare(right)).map(([root, binding]) => {
-    if (binding.direct && binding.properties.size === 0) {
-      return `${JSON.stringify(root)}: ${binding.direct.value}`;
-    }
-    const properties = [...binding.properties.entries()]
+
+  const sourceFor = (node: BindingNode): string => {
+    if (node.direct && node.children.size === 0) return node.direct.value;
+    const properties = [...node.children.entries()]
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([property, value]) => `${JSON.stringify(property)}: ${value.value}`)
+      .map(([property, child]) =>
+        `${JSON.stringify(property)}: ${sourceFor(child)}`)
       .join(', ');
-    return `${JSON.stringify(root)}: { ${binding.direct ? `...${binding.direct.value}, ` : ''}${properties} }`;
-  }).join(', ')} }`;
+    return `{ ${node.direct ? `...${node.direct.value}, ` : ''}${properties} }`;
+  };
+
+  return `{ ${[...roots.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([root, node]) => `${JSON.stringify(root)}: ${sourceFor(node)}`)
+    .join(', ')} }`;
 }
 
 function uniqueOperationBindings(

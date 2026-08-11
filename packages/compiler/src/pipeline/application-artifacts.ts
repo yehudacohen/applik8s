@@ -205,10 +205,22 @@ function applicationProviderLifecycleGraph(
       continue;
     }
     if (applicationTemplateKind(template) === 'Stream') {
-      depend(candidate, namespaceResources.find((other) =>
+      const namespaceController = namespaceResources.find((other) =>
         applicationHelmReleaseChart(other.template) === 'nack'
         || other.id === 'applik8sEventsNackHelmRelease'
-        || other.id?.startsWith('applik8sEventsNackHelmRelease_')));
+        || other.id?.startsWith('applik8sEventsNackHelmRelease_'));
+      const singletonController = indexed.find((other) =>
+        (other.id === 'applik8sEventsNackHelmRelease'
+          || other.id?.startsWith('applik8sEventsNackHelmRelease_'))
+        && applicationTemplateKind(other.template) === 'HelmRelease'
+        && applicationTemplateName(other.template) === 'nack'
+        && applicationTemplateNamespace(other.template) === 'typekro-nack-system');
+      // TypeKro >=0.33.4 owns NACK once per cluster, outside the workload
+      // namespace. Preserve support for older namespace-local controllers, but
+      // bind every managed Stream to the singleton when that is the observed
+      // prerequisite. The synthetic reference becomes a real KRO readiness and
+      // reverse-teardown edge.
+      depend(candidate, namespaceController ?? singletonController);
       continue;
     }
     if (applicationTemplateKind(template) === 'Consumer') {
@@ -685,7 +697,18 @@ function applicationRequiredExternalReferences(graph: ApplicationGraph): readonl
     }, provision);
     references.push(
       reference(`applik8sEventsNatsHelmRelease${identitySuffix}`, name),
-      reference(`applik8sEventsNackHelmRelease${identitySuffix}`, 'nack'),
+      applicationExternalReference(
+        `applik8sEventsNackHelmRelease${identitySuffix}`,
+        {
+          apiVersion: 'helm.toolkit.fluxcd.io/v2',
+          kind: 'HelmRelease',
+          name: 'nack',
+          // TypeKro >=0.33.4 owns NACK once per cluster. The application RGD
+          // observes that singleton instead of the retired per-NATS release.
+          namespace: 'typekro-nack-system',
+        },
+        provision,
+      ),
     );
   }
   const objectStorage = graph.nodes.find((node): node is ApplicationProviderNode<'ObjectStorage'> => node.kind === 'provider' && node.interface === 'ObjectStorage');

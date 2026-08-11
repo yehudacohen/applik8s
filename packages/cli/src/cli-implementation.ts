@@ -3,6 +3,7 @@ import { access } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Command, CommanderError } from 'commander';
+import { resolveApplicationBuildPackage } from './application-build-package.js';
 import type {
   ApplicationDeleteCommandOptions,
   ApplicationDeployCommandOptions,
@@ -14,7 +15,7 @@ import {
   resolveApplicationContext,
   resolveApplicationEntrypoint,
 } from './application-project-config.js';
-import { resolveApplicationBuildPackage } from './application-build-package.js';
+import { checkApplicationStartUpdate } from './application-start-update-command.js';
 
 interface CliIo extends ApplicationDeploymentCommandIo {}
 
@@ -51,6 +52,32 @@ interface ExplainCommandOptions {
   readonly json?: boolean;
 }
 
+interface DoctorCommandOptions {
+  readonly context?: string;
+  readonly json?: boolean;
+}
+
+interface StartUpdateCommandOptions {
+  readonly check?: boolean;
+  readonly json?: boolean;
+}
+
+interface OperatorIdentityCommandOptions {
+  readonly issuer: string;
+  readonly subject: string;
+  readonly identityId?: string;
+  readonly kind?: 'human' | 'service' | 'external';
+  readonly reason: string;
+  readonly outDir?: string;
+  readonly json?: boolean;
+}
+
+interface OperatorBreakGlassCommandOptions extends OperatorIdentityCommandOptions {
+  readonly incident: string;
+  readonly expiresIn: string;
+  readonly acknowledge: string;
+}
+
 interface ChildProcessOptions {
   readonly command: string;
   readonly args: readonly string[];
@@ -82,6 +109,84 @@ function createProgram(io: CliIo): Command {
     .configureOutput({
       writeOut: (message) => io.stdout(trimTrailingNewline(message)),
       writeErr: (message) => io.stderr(trimTrailingNewline(message)),
+    });
+
+  const start = program
+    .command('start')
+    .description('Inspect maintained Start lineage without mutating application source.');
+  start
+    .command('update')
+    .description('Compare generated source with the current maintained Start.')
+    .requiredOption('--check', 'perform a read-only update check')
+    .option('--json', 'print the machine-readable update report')
+    .action(async (options: StartUpdateCommandOptions) => {
+      if (!options.check) return;
+      const report = await checkApplicationStartUpdate(io.cwd);
+      if (options.json) {
+        io.stdout(JSON.stringify(report, null, 2));
+      } else {
+        io.stdout(
+          report.updateAvailable
+            ? `Agentic Start ${report.availableVersion} has template changes (${report.paths.filter(({ state }) => state !== 'unchanged').length} paths; ${report.conflicts ? 'conflicts require review' : 'no conflicts'}).`
+            : `Agentic Start ${report.installedVersion} is current; application-owned modifications are preserved.`,
+        );
+        for (const path of report.paths.filter(({ state }) => state !== 'unchanged')) {
+          io.stdout(
+            `${path.state.padEnd(20)} ${path.path}${path.securityRelevant ? ' [security]' : ''}${path.compatibilityChanging ? ' [compatibility]' : ''}`,
+          );
+        }
+      }
+    });
+
+  const operator = program
+    .command('operator')
+    .description('Manage canonical application-operator authority for an exact provider-verified identity.');
+  const identityOptions = (command: Command): Command => command
+    .requiredOption('--issuer <issuer>', 'exact identity-provider issuer; email addresses are not accepted as identity')
+    .requiredOption('--subject <subject>', 'exact provider-verified subject')
+    .option('--identity-id <id>', 'provider-normalized identity id; deterministically derived when omitted')
+    .option('--kind <kind>', 'identity kind: human, service, or external', 'human')
+    .requiredOption('--reason <reason>', 'non-empty reason retained in the authority audit')
+    .option('--out-dir <dir>', 'compiled deployment artifact directory', '.applik8s/deploy')
+    .option('--json', 'print the machine-readable authority result');
+  identityOptions(operator.command('bootstrap')
+    .description('Perform the one-time role-level bootstrap; inert after any initial assignee.'))
+    .action(async (options: OperatorIdentityCommandOptions) => {
+      // static-import-exception: canonical authority and PostgreSQL load only for explicit operator administration.
+      const { bootstrapApplicationOperator } = await import('./application-operator-authority-command.js');
+      await bootstrapApplicationOperator(options, io);
+    });
+  identityOptions(operator.command('revoke')
+    .description('Revoke every active canonical grant backing the role for one exact identity.'))
+    .action(async (options: OperatorIdentityCommandOptions) => {
+      // static-import-exception: canonical authority and PostgreSQL load only for explicit operator administration.
+      const { revokeApplicationOperator } = await import('./application-operator-authority-command.js');
+      await revokeApplicationOperator(options, io);
+    });
+  identityOptions(operator.command('break-glass')
+    .description('Create a bounded, audited exceptional role grant without reopening bootstrap.'))
+    .requiredOption('--incident <id>', 'stable incident or recovery identifier')
+    .requiredOption('--expires-in <duration>', 'bounded duration up to 24h, for example 30m or 4h')
+    .requiredOption('--acknowledge <text>', 'explicit acknowledgement of exceptional production authority')
+    .action(async (options: OperatorBreakGlassCommandOptions) => {
+      // static-import-exception: canonical authority and PostgreSQL load only for explicit operator administration.
+      const { breakGlassApplicationOperator } = await import('./application-operator-authority-command.js');
+      await breakGlassApplicationOperator(options, io);
+    });
+
+  program
+    .command('doctor')
+    .description('Check project, environment-name, and Kubernetes deployment prerequisites without applying effects.')
+    .option('--context <context>', 'explicit kubeconfig context; defaults to APPLIK8S_CONTEXT or package configuration')
+    .option('--out-dir <dir>', 'compiled deployment artifact directory', '.applik8s/deploy')
+    .option('--json', 'print the machine-readable doctor report')
+    .action(async (options: DoctorCommandOptions) => {
+      // static-import-exception: keep Kubernetes diagnostics out of CLI startup until doctor is selected.
+      const { runApplicationDoctor } = await import('./application-doctor-command.js');
+      const code = await runApplicationDoctor(options, io);
+      if (code !== 0) {
+        throw new CommanderError(code, 'applik8s.doctor.failed', 'Doctor found blocking prerequisites.');
+      }
     });
 
   program
@@ -583,16 +688,16 @@ function trimTrailingNewline(message: string): string {
 }
 
 export {
-  resolveGeneratedApplicationDeleteTarget,
-  stageExplicitApplicationInstance,
-} from './application-deployment-files.js';
-export {
   resolveApplicationBuildPackage,
   resolveApplicationProjectRoot,
 } from './application-build-package.js';
 export {
-  applicationInstanceSpec,
+  resolveGeneratedApplicationDeleteTarget,
+  stageExplicitApplicationInstance,
+} from './application-deployment-files.js';
+export {
   applicationInstallationReadiness,
+  applicationInstanceSpec,
   readApplicationInstance,
   readApplicationInstanceSpec,
   readResourceGraphDefinition,

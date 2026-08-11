@@ -89,6 +89,9 @@ describe('OAuth authorization-flow authority', () => {
       },
       kind: 'pre-authentication-flow',
       flowId: 'flow-1',
+      browserBindingDigest: 'browser-binding',
+      csrfBindingDigest: 'csrf-binding',
+      allowedTransitions: ['authenticate'],
     };
 
     await expect(

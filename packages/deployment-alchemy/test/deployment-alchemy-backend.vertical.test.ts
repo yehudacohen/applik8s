@@ -443,7 +443,7 @@ describe("Alchemy deployment backend", () => {
         },
         adapted: {
           adapter: {
-            typekro: "0.33.5",
+            typekro: "0.33.6",
             semanticPlanVersion: 1,
             artifactPlanVersion: 1,
           },

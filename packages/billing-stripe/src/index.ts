@@ -1,12 +1,19 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type {
   ApplicationPaymentProvider,
+  BillingUsageReport,
+  BillingUsageReportInput,
   PaymentCheckout,
   PaymentCheckoutInput,
   PaymentPortal,
   PaymentPortalInput,
   PaymentProviderEvent,
   PaymentWebhookInput,
+  SubscriptionCancellationInput,
+  SubscriptionCancellationResult,
+  SubscriptionChangeInput,
+  SubscriptionChangePreview,
+  SubscriptionChangeResult,
 } from '@applik8s/billing';
 
 export interface PaymentSecretReference {
@@ -36,9 +43,66 @@ interface StripeCheckoutResponse {
   readonly expires_at?: number;
 }
 
+interface StripePriceListResponse {
+  readonly data?: readonly {
+    readonly id?: string;
+  }[];
+}
+
 interface StripePortalResponse {
   readonly id: string;
   readonly url: string;
+}
+
+interface StripeSubscriptionResponse {
+  readonly id: string;
+  readonly cancel_at_period_end?: boolean;
+  readonly current_period_end?: number;
+}
+
+interface StripeInvoicePreviewResponse {
+  readonly currency: string;
+  readonly amount_due?: number;
+  readonly total?: number;
+  readonly lines?: {
+    readonly data?: readonly {
+      readonly description?: string;
+      readonly amount?: number;
+      readonly proration?: boolean;
+    }[];
+  };
+}
+
+interface StripeMeterEventResponse {
+  readonly identifier?: string;
+  readonly created?: number;
+}
+
+export class StripeWebhookAuthenticationError extends Error {
+  readonly code = 'APPLIK8S_WEBHOOK_AUTHENTICATION_FAILED';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'StripeWebhookAuthenticationError';
+  }
+}
+
+export class StripeWebhookPayloadError extends Error {
+  readonly code = 'APPLIK8S_WEBHOOK_PAYLOAD_INVALID';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'StripeWebhookPayloadError';
+  }
+}
+
+export class StripeWebhookUnsupportedEventError extends Error {
+  readonly code = 'APPLIK8S_WEBHOOK_EVENT_UNSUPPORTED';
+
+  constructor(readonly eventType: string) {
+    super(`Stripe webhook event ${eventType} is not consumed by billing.`);
+    this.name = 'StripeWebhookUnsupportedEventError';
+  }
 }
 
 export const StripePayments = Object.freeze({
@@ -48,16 +112,31 @@ export const StripePayments = Object.freeze({
     const clock = options.clock ?? (() => new Date());
     const tolerance = options.webhookToleranceSeconds ?? 300;
     return Object.freeze({
+      provider: 'stripe',
       kind: 'stripe',
       mode: 'live',
+      capabilities: {
+        checkout: true,
+        portal: true,
+        subscriptionChanges: true,
+        scheduledChanges: false,
+        meteredUsage: true,
+      },
       async startCheckout(
         input: PaymentCheckoutInput,
       ): Promise<PaymentCheckout> {
+        const apiKey = await options.resolveSecret(options.secrets.apiKey);
+        const price = await stripePriceReference(
+          request,
+          endpoint,
+          apiKey,
+          input.plan,
+        );
         const response = await stripeForm<StripeCheckoutResponse>(
           request,
           endpoint,
           '/checkout/sessions',
-          await options.resolveSecret(options.secrets.apiKey),
+          apiKey,
           input.idempotencyKey,
           {
             mode: 'subscription',
@@ -66,7 +145,13 @@ export const StripePayments = Object.freeze({
             client_reference_id: input.principalScope,
             'metadata[principalScope]': input.principalScope,
             'metadata[plan]': input.plan,
-            'line_items[0][price]': input.plan,
+            'subscription_data[metadata][principalScope]':
+              input.principalScope,
+            'subscription_data[metadata][plan]': input.plan,
+            ...(input.providerCustomerId
+              ? { customer: input.providerCustomerId }
+              : {}),
+            'line_items[0][price]': price,
             'line_items[0][quantity]': '1',
           },
         );
@@ -89,7 +174,7 @@ export const StripePayments = Object.freeze({
           await options.resolveSecret(options.secrets.apiKey),
           input.idempotencyKey,
           {
-            customer: input.principalScope,
+            customer: input.providerCustomerId,
             return_url: input.returnTo,
           },
         );
@@ -99,21 +184,197 @@ export const StripePayments = Object.freeze({
           mode: 'live',
         };
       },
+      async previewSubscriptionChange(
+        input: SubscriptionChangeInput,
+      ): Promise<SubscriptionChangePreview> {
+        if (input.timing !== 'immediate') {
+          throw new Error(
+            'Stripe period-end plan changes require a subscription-schedule adapter.',
+          );
+        }
+        const effectiveAt = clock().toISOString();
+        const apiKey = await options.resolveSecret(options.secrets.apiKey);
+        const items = await stripeSubscriptionItems(
+          request,
+          endpoint,
+          apiKey,
+          input.items,
+          'subscription_details[items]',
+        );
+        const response = await stripeForm<StripeInvoicePreviewResponse>(
+          request,
+          endpoint,
+          '/invoices/create_preview',
+          apiKey,
+          input.idempotencyKey,
+          {
+            subscription: input.providerSubscriptionId,
+            'subscription_details[proration_behavior]':
+              stripeProration(input.proration),
+            ...items,
+          },
+        );
+        return {
+          provider: 'stripe',
+          currency: response.currency,
+          amountDueMicrounits: minorToMicrounits(response.amount_due ?? 0),
+          totalMicrounits: minorToMicrounits(response.total ?? 0),
+          effectiveAt,
+          lines: (response.lines?.data ?? [])
+            .filter((line) => line.proration !== false)
+            .slice(0, 20)
+            .map((line) => ({
+              description: line.description ?? 'Subscription change',
+              amountMicrounits: minorToMicrounits(line.amount ?? 0),
+            })),
+        };
+      },
+      async changeSubscription(
+        input: SubscriptionChangeInput,
+      ): Promise<SubscriptionChangeResult> {
+        if (input.timing !== 'immediate') {
+          throw new Error(
+            'Stripe period-end plan changes require a subscription-schedule adapter.',
+          );
+        }
+        const apiKey = await options.resolveSecret(options.secrets.apiKey);
+        const items = await stripeSubscriptionItems(
+          request,
+          endpoint,
+          apiKey,
+          input.items,
+          'items',
+        );
+        const response = await stripeForm<StripeSubscriptionResponse>(
+          request,
+          endpoint,
+          `/subscriptions/${encodeURIComponent(input.providerSubscriptionId)}`,
+          apiKey,
+          input.idempotencyKey,
+          {
+            proration_behavior: stripeProration(input.proration),
+            payment_behavior: 'pending_if_incomplete',
+            'metadata[applik8sChangeId]': input.idempotencyKey,
+            ...(input.items.length === 1
+              ? { 'metadata[plan]': input.items[0]?.price ?? '' }
+              : {}),
+            ...items,
+          },
+        );
+        return {
+          provider: 'stripe',
+          providerSubscriptionId: response.id,
+          state: 'applied',
+          effectiveAt: clock().toISOString(),
+        };
+      },
+      async cancelSubscription(
+        input: SubscriptionCancellationInput,
+      ): Promise<SubscriptionCancellationResult> {
+        const apiKey = await options.resolveSecret(options.secrets.apiKey);
+        const response = input.timing === 'immediate'
+          ? await stripeDelete<StripeSubscriptionResponse>(
+              request,
+              endpoint,
+              `/subscriptions/${encodeURIComponent(
+                input.providerSubscriptionId,
+              )}`,
+              apiKey,
+              input.idempotencyKey,
+            )
+          : await stripeForm<StripeSubscriptionResponse>(
+              request,
+              endpoint,
+              `/subscriptions/${encodeURIComponent(
+                input.providerSubscriptionId,
+              )}`,
+              apiKey,
+              input.idempotencyKey,
+              {
+                cancel_at_period_end: 'true',
+                'metadata[applik8sCancellationId]': input.idempotencyKey,
+              },
+            );
+        return {
+          provider: 'stripe',
+          providerSubscriptionId: response.id,
+          cancelled: true,
+          effectiveAt: response.current_period_end
+            ? new Date(response.current_period_end * 1000).toISOString()
+            : clock().toISOString(),
+        };
+      },
+      async resumeSubscription(
+        input: Omit<SubscriptionCancellationInput, 'timing'>,
+      ): Promise<SubscriptionCancellationResult> {
+        const response = await stripeForm<StripeSubscriptionResponse>(
+          request,
+          endpoint,
+          `/subscriptions/${encodeURIComponent(input.providerSubscriptionId)}`,
+          await options.resolveSecret(options.secrets.apiKey),
+          input.idempotencyKey,
+          {
+            cancel_at_period_end: 'false',
+            'metadata[applik8sCancellationId]': input.idempotencyKey,
+          },
+        );
+        return {
+          provider: 'stripe',
+          providerSubscriptionId: response.id,
+          cancelled: false,
+          effectiveAt: clock().toISOString(),
+        };
+      },
+      async reportUsage(
+        input: BillingUsageReportInput,
+      ): Promise<BillingUsageReport> {
+        const response = await stripeForm<StripeMeterEventResponse>(
+          request,
+          endpoint,
+          '/billing/meter_events',
+          await options.resolveSecret(options.secrets.apiKey),
+          input.idempotencyKey,
+          {
+            event_name: input.meter,
+            identifier: input.idempotencyKey,
+            timestamp: String(
+              Math.floor(Date.parse(input.occurredAt) / 1000),
+            ),
+            'payload[stripe_customer_id]': input.providerCustomerId,
+            'payload[value]': String(input.quantity),
+          },
+        );
+        return {
+          provider: 'stripe',
+          providerEventId: response.identifier ?? input.idempotencyKey,
+          idempotencyKey: input.idempotencyKey,
+          acceptedAt: response.created
+            ? new Date(response.created * 1000).toISOString()
+            : clock().toISOString(),
+        };
+      },
       async verifyWebhook(
         input: PaymentWebhookInput,
       ): Promise<PaymentProviderEvent> {
         const secret = await options.resolveSecret(
           options.secrets.webhookSecret,
         );
-        const signature = header(input.headers, 'stripe-signature');
         assertStripeSignature(
           input.body,
-          signature,
+          stripeSignatureHeader(input.headers),
           secret,
           clock(),
           tolerance,
         );
-        return stripeEvent(JSON.parse(new TextDecoder().decode(input.body)));
+        let decoded: unknown;
+        try {
+          decoded = JSON.parse(new TextDecoder().decode(input.body));
+        } catch {
+          throw new StripeWebhookPayloadError(
+            'Stripe webhook body must contain valid JSON.',
+          );
+        }
+        return stripeEvent(decoded);
       },
     });
   },
@@ -135,10 +396,14 @@ export function assertStripeSignature(
   const timestamp = Number(entries.t);
   const signature = entries.v1;
   if (!Number.isSafeInteger(timestamp) || !signature) {
-    throw new Error('Stripe webhook signature is malformed.');
+    throw new StripeWebhookAuthenticationError(
+      'Stripe webhook signature is malformed.',
+    );
   }
   if (Math.abs(Math.floor(now.getTime() / 1000) - timestamp) > toleranceSeconds) {
-    throw new Error('Stripe webhook signature is outside the accepted timestamp window.');
+    throw new StripeWebhookAuthenticationError(
+      'Stripe webhook signature is outside the accepted timestamp window.',
+    );
   }
   const signed = new TextEncoder().encode(
     `${timestamp}.${new TextDecoder().decode(body)}`,
@@ -148,13 +413,17 @@ export function assertStripeSignature(
   try {
     actual = Buffer.from(signature, 'hex');
   } catch {
-    throw new Error('Stripe webhook signature is not hexadecimal.');
+    throw new StripeWebhookAuthenticationError(
+      'Stripe webhook signature is not hexadecimal.',
+    );
   }
   if (
     expected.byteLength !== actual.byteLength
     || !timingSafeEqual(expected, actual)
   ) {
-    throw new Error('Stripe webhook signature is invalid.');
+    throw new StripeWebhookAuthenticationError(
+      'Stripe webhook signature is invalid.',
+    );
   }
 }
 
@@ -184,36 +453,156 @@ async function stripeForm<T>(
   return await response.json() as T;
 }
 
+async function stripeDelete<T>(
+  request: typeof fetch,
+  endpoint: string,
+  path: string,
+  apiKey: string,
+  idempotencyKey: string,
+): Promise<T> {
+  const response = await request(new URL(path, endpoint), {
+    method: 'DELETE',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'idempotency-key': idempotencyKey,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Stripe request failed with HTTP ${response.status}.`);
+  }
+  // typecast: endpoint-specific response shape after HTTP success.
+  return await response.json() as T;
+}
+
+async function stripeGet<T>(
+  request: typeof fetch,
+  endpoint: string,
+  path: string,
+  apiKey: string,
+  search: Readonly<Record<string, string>>,
+): Promise<T> {
+  const url = new URL(path, endpoint);
+  for (const [key, value] of Object.entries(search)) {
+    url.searchParams.append(key, value);
+  }
+  const response = await request(url, {
+    headers: { authorization: `Bearer ${apiKey}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Stripe request failed with HTTP ${response.status}.`);
+  }
+  // typecast: endpoint-specific response shape after HTTP success.
+  return await response.json() as T;
+}
+
+async function stripePriceReference(
+  request: typeof fetch,
+  endpoint: string,
+  apiKey: string,
+  logicalPrice: string,
+): Promise<string> {
+  if (logicalPrice.startsWith('price_')) return logicalPrice;
+  const response = await stripeGet<StripePriceListResponse>(
+    request,
+    endpoint,
+    '/prices',
+    apiKey,
+    {
+      'lookup_keys[]': logicalPrice,
+      active: 'true',
+      limit: '1',
+    },
+  );
+  const price = response.data?.[0]?.id;
+  if (!price) {
+    throw new Error(
+      `Stripe has no active Price with lookup key ${logicalPrice}.`,
+    );
+  }
+  return price;
+}
+
+async function stripeSubscriptionItems(
+  request: typeof fetch,
+  endpoint: string,
+  apiKey: string,
+  items: SubscriptionChangeInput['items'],
+  prefix: 'items' | 'subscription_details[items]',
+): Promise<Readonly<Record<string, string>>> {
+  const resolved = await Promise.all(items.map(async (item) => ({
+    ...item,
+    price: await stripePriceReference(
+      request,
+      endpoint,
+      apiKey,
+      item.price,
+    ),
+  })));
+  return Object.fromEntries(resolved.flatMap((item, index) => [
+    ...(item.subscriptionItemId
+      ? [[`${prefix}[${index}][id]`, item.subscriptionItemId]]
+      : []),
+    [`${prefix}[${index}][price]`, item.price],
+    [`${prefix}[${index}][quantity]`, String(item.quantity ?? 1)],
+  ]));
+}
+
+function stripeProration(
+  value: SubscriptionChangeInput['proration'],
+): string {
+  if (value === 'alwaysInvoice') return 'always_invoice';
+  if (value === 'none') return 'none';
+  return 'create_prorations';
+}
+
+function minorToMicrounits(value: number): number {
+  return value * 10_000;
+}
+
 function absoluteReturnUrl(returnTo: string, outcome: string): string {
   const url = new URL(returnTo);
   url.searchParams.set('billing', outcome);
   return url.href;
 }
 
-function header(
+function stripeSignatureHeader(
   headers: Readonly<Record<string, string>>,
-  name: string,
 ): string {
   const value = Object.entries(headers).find(
-    ([key]) => key.toLowerCase() === name,
+    ([key]) => key.toLowerCase() === 'stripe-signature',
   )?.[1];
-  if (!value) throw new Error(`Missing ${name} header.`);
+  if (!value) {
+    throw new StripeWebhookAuthenticationError(
+      'Missing stripe-signature header.',
+    );
+  }
   return value;
 }
 
 function stripeEvent(value: unknown): PaymentProviderEvent {
   if (!value || typeof value !== 'object') {
-    throw new Error('Stripe webhook payload must be an object.');
+    throw new StripeWebhookPayloadError(
+      'Stripe webhook payload must be an object.',
+    );
   }
   const id = requiredString(value, 'id');
   const type = requiredString(value, 'type');
+  if (
+    type !== 'customer.subscription.created'
+    && type !== 'customer.subscription.updated'
+    && type !== 'customer.subscription.deleted'
+  ) {
+    throw new StripeWebhookUnsupportedEventError(type);
+  }
   const created = requiredNumber(value, 'created');
   const data = Reflect.get(value, 'data');
   const object = data && typeof data === 'object'
     ? Reflect.get(data, 'object')
     : undefined;
   if (!object || typeof object !== 'object') {
-    throw new Error('Stripe webhook data.object is required.');
+    throw new StripeWebhookPayloadError(
+      'Stripe webhook data.object is required.',
+    );
   }
   const metadata = Reflect.get(object, 'metadata');
   const currentPeriodStart = Reflect.get(object, 'current_period_start');
@@ -246,7 +635,9 @@ function requiredString(value: unknown, key: string): string {
     ? Reflect.get(value, key)
     : undefined;
   if (typeof field !== 'string' || field.length === 0) {
-    throw new Error(`Stripe webhook ${key} must be a non-empty string.`);
+    throw new StripeWebhookPayloadError(
+      `Stripe webhook ${key} must be a non-empty string.`,
+    );
   }
   return field;
 }
@@ -256,14 +647,18 @@ function requiredNumber(value: unknown, key: string): number {
     ? Reflect.get(value, key)
     : undefined;
   if (typeof field !== 'number' || !Number.isSafeInteger(field)) {
-    throw new Error(`Stripe webhook ${key} must be an integer.`);
+    throw new StripeWebhookPayloadError(
+      `Stripe webhook ${key} must be an integer.`,
+    );
   }
   return field;
 }
 
 function requiredUnixSeconds(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
-    throw new Error('Stripe subscription period must be an integer timestamp.');
+    throw new StripeWebhookPayloadError(
+      'Stripe subscription period must be an integer timestamp.',
+    );
   }
   return value;
 }

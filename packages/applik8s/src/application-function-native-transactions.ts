@@ -13,11 +13,11 @@ import { kubernetesNameSegment } from './application-identifiers.js';
 import { declaredSchema } from './application-workflow-serialization.js';
 import { applicationEventDefinitionFor } from './dsl.js';
 import {
-  nativeApplicationModelBindingFor,
-} from './native-models.js';
-import {
   applicationNativeModelMethodDependencyFor,
 } from './native-model-execution.js';
+import {
+  nativeApplicationModelBindingFor,
+} from './native-models.js';
 
 type ExpandedApplicationCallbackDependencies = ReturnType<
   typeof expandApplicationCallbackDependencies
@@ -77,7 +77,6 @@ export function inferApplicationFunctionNativeTransaction(
   const writeModels = [...new Map(
     writes.map(({ model }) => [model.name, model] as const),
   ).values()];
-  if (writeModels.length === 0) return undefined;
   if (writeModels.length > 1) {
     throw new Error(
       `${label} reaches Model.edit(...) for multiple authoritative models (${writeModels.map((model) => model.name).sort().join(', ')}). One managed callback must have exactly one atomic model boundary.`,
@@ -131,9 +130,10 @@ export function inferApplicationFunctionNativeTransaction(
       },
     });
   }
-  const primary = writeModels[0];
+  const primary = writeModels[0] ?? models[0];
   if (!primary) return undefined;
   return {
+    mode: writeModels.length > 0 ? 'write' : 'read',
     primaryModel: { nodeId: functionNativeNodeId('model', primary.name) },
     models: models
       .map((model) => ({ nodeId: functionNativeNodeId('model', model.name) }))

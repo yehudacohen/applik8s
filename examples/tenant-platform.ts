@@ -2,8 +2,12 @@ import { createHash } from 'node:crypto';
 import { type ApplicationModelBinding, type ApplicationV03PressureTestContract, app, applicationGraphFor, DnsPublication, type KubernetesApplicationBuilder, sdk, WorkflowEngine } from '@applik8s/applik8s';
 import { dns, externalDnsPublicationMetadata, externalDnsPublicationName } from '@applik8s/applik8s/dns';
 import { command, entity, event, type, workflow } from '@applik8s/applik8s/dsl';
+import { createApplicationMutationOperation, type ApplicationMutationOperation } from '@applik8s/client';
 import { type ApplicationDurableStatusOwnershipContract, type ApplicationProviderCompatibilityMatrixContract, type ApplicationProviderInterfaceContract, type ResourceDefinition, serializeApplicationGraph } from '@applik8s/core';
 import * as k8s from '@kubernetes/client-node';
+// Historical-character-fixture exception: v0.4 evidence intentionally uses
+// the compiler's retained lowering seam without restoring it to the root API.
+import { applicationModelCommandRegistrar } from '@applik8s/applik8s/internal/historical-model-commands';
 
 export interface TenantPlatformExampleOptions {
   readonly apiGroup?: string;
@@ -383,6 +387,10 @@ export interface TenantPlatformExample {
     readonly Invitation: ApplicationModelBinding<InvitationSpec, InvitationStatus>;
     readonly UsageSample: ApplicationModelBinding<UsageSampleSpec, UsageSampleStatus>;
   };
+  /** Historical v0.4 custom-operation fixture; current examples prefer direct model operations. */
+  readonly commands?: {
+    readonly renameAccount: ApplicationMutationOperation<RenameTenantAccountInput, RenameTenantAccountOutput>;
+  };
 }
 
 export function createTenantPlatformExample(options: TenantPlatformExampleOptions = {}): TenantPlatformExample {
@@ -500,6 +508,37 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
       retention: { mode: 'ttl', ttlSeconds: 60 * 60 * 24 * 14 },
     },
   });
+  const accountCommandRegistrar = applicationModelCommandRegistrar(Account);
+  if (config.durableBehavior && !accountCommandRegistrar) {
+    throw new Error('The historical v0.4 Account fixture is missing its internal command-lowering registrar.');
+  }
+  const renameAccountBinding = config.durableBehavior ? accountCommandRegistrar?.(RenameTenantAccount, {
+    key: ({ accountId }) => accountId,
+    ordering: 'serial',
+    processor: { replicas: 2, concurrency: 4 },
+    idempotencyKey: ({ requestId }) => requestId,
+    missing: 'reject',
+    transaction: { history: [Account], outbox: [TenantAccountChanged] },
+  }, async (account, input, context) => {
+    const changed = account.spec.displayName !== input.displayName;
+    account.patch({ spec: { displayName: input.displayName } });
+    context.emit(TenantAccountChanged, { tenant: input.tenant, accountId: input.accountId, displayName: input.displayName });
+    return { changed, displayName: input.displayName };
+  }) : undefined;
+  const renameAccount = renameAccountBinding
+    ? createApplicationMutationOperation<RenameTenantAccountInput, RenameTenantAccountOutput>({
+        apiVersion: 'applik8s.operation/v1alpha1',
+        kind: 'applicationOperation',
+        id: 'tenant-account.rename.v1',
+        model: 'Account',
+        name: 'rename',
+        operation: 'custom',
+        transport: 'command',
+      }, undefined, {
+        input: RenameTenantAccount.input,
+        output: RenameTenantAccount.output,
+      })
+    : undefined;
   if (config.durableWorkflows) {
     tenantPlatform.provide(DnsPublication, DnsPublication.externalDns());
     tenantPlatform.provide(WorkflowEngine, WorkflowEngine.hatchet({
@@ -625,7 +664,11 @@ export function createTenantPlatformExample(options: TenantPlatformExampleOption
   tenantPlatform.job('tenant-platform-repair', { taskKind: 'repair', image: 'postgres:16-alpine', command: ['sh', '-c'], args: ['echo repair tenant platform status'] });
   tenantPlatform.schedule('tenant-platform-cleanup', { taskKind: 'cleanup', cron: '*/15 * * * *', image: 'postgres:16-alpine', concurrencyPolicy: 'forbid', missedRunPolicy: 'failClosed' });
 
-  return { composition: tenantPlatform.composition, models: { TenantLifecycle, Account, AuditRecord, Invitation, UsageSample } };
+  return {
+    composition: tenantPlatform.composition,
+    models: { TenantLifecycle, Account, AuditRecord, Invitation, UsageSample },
+    ...(renameAccount ? { commands: { renameAccount } } : {}),
+  };
 }
 
 export function createTenantPlatformV04Example(options: TenantPlatformExampleOptions = {}): TenantPlatformExample {

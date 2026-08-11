@@ -1,0 +1,13 @@
+import {
+  authenticatedPrincipalId,
+  field,
+  model,
+} from '@applik8s/applik8s/drizzle';
+
+export const OnboardingProgress = model('onboarding_progress', {
+  principalId: field.text('principal_id').primaryKey().default(authenticatedPrincipalId),
+  completedSteps: field.text('completed_steps').array().notNull().default([]),
+  dismissed: field.boolean('dismissed').notNull().default(false),
+  completedAt: field.timestamp('completed_at', { withTimezone: true, mode: 'string' }),
+  updatedAt: field.timestamp('updated_at', { withTimezone: true, mode: 'string' }).notNull().defaultNow(),
+}, { name: 'OnboardingProgress', revision: false });
