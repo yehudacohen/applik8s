@@ -629,6 +629,20 @@ describe('Agentic Start generator', () => {
     expect(home).toContain('agent: NotesAssistant');
     expect(home).toContain('notes.refresh()');
     expect(home).toContain('live query will reconcile');
+    const libraryView = await readFile(
+      join(target, 'src/features/library/view.tsx'),
+      'utf8',
+    );
+    expect(libraryView).toContain("library.phase === 'error'");
+    expect(libraryView).toContain("library.phase === 'reconnecting'");
+    expect(libraryView).toContain('The empty result is authoritative.');
+    expect(libraryView).toContain('library.data.artifacts.length === 0');
+    expect(
+      await readFile(join(target, 'src/routes/app.documents.$documentId.tsx'), 'utf8'),
+    ).toContain("detail.phase === 'error'");
+    expect(
+      await readFile(join(target, 'src/routes/app.artifacts.$artifactId.tsx'), 'utf8'),
+    ).toContain("detail.phase === 'reconnecting'");
     const appLayout = await readFile(
       join(target, 'src/routes/app.tsx'),
       'utf8',
