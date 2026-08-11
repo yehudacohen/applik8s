@@ -2,6 +2,7 @@ import {
   AgenticAccountSettings,
   AgenticStartOnboarding,
   clearAgenticWorkspaceSelection,
+  readAgenticWorkspaceSelection,
   selectAgenticWorkspace,
 } from '@applik8s/start-agentic/react';
 import { createElement } from 'react';
@@ -60,5 +61,17 @@ describe('Agentic Start onboarding', () => {
       'applik8s_workspace=; Path=/; SameSite=Lax; Max-Age=0; Secure',
     ]);
     expect(writes.join(' ')).not.toMatch(/role|principal|authorization/i);
+  });
+
+  it('exposes only the validated untrusted selector for browser-local scoping', () => {
+    vi.stubGlobal('document', {
+      cookie: 'theme=dark; applik8s_workspace=9D389C54-4E6E-4E69-995F-C663946CEF3E; ignored=value',
+    });
+    expect(readAgenticWorkspaceSelection()).toBe(
+      '9d389c54-4e6e-4e69-995f-c663946cef3e',
+    );
+
+    vi.stubGlobal('document', { cookie: 'applik8s_workspace=not-authority' });
+    expect(readAgenticWorkspaceSelection()).toBeUndefined();
   });
 });

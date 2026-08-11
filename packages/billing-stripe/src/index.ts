@@ -435,7 +435,7 @@ async function stripeForm<T>(
   idempotencyKey: string,
   values: Readonly<Record<string, string>>,
 ): Promise<T> {
-  const response = await request(new URL(path, endpoint), {
+  const response = await request(stripeApiUrl(endpoint, path), {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,
@@ -460,7 +460,7 @@ async function stripeDelete<T>(
   apiKey: string,
   idempotencyKey: string,
 ): Promise<T> {
-  const response = await request(new URL(path, endpoint), {
+  const response = await request(stripeApiUrl(endpoint, path), {
     method: 'DELETE',
     headers: {
       authorization: `Bearer ${apiKey}`,
@@ -481,7 +481,7 @@ async function stripeGet<T>(
   apiKey: string,
   search: Readonly<Record<string, string>>,
 ): Promise<T> {
-  const url = new URL(path, endpoint);
+  const url = stripeApiUrl(endpoint, path);
   for (const [key, value] of Object.entries(search)) {
     url.searchParams.append(key, value);
   }
@@ -560,9 +560,33 @@ function minorToMicrounits(value: number): number {
 }
 
 function absoluteReturnUrl(returnTo: string, outcome: string): string {
-  const url = new URL(returnTo);
+  let url: URL;
+  try {
+    url = new URL(returnTo);
+  } catch {
+    throw new Error('Billing return URL must be an absolute HTTP(S) URL.');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('Billing return URL must be an absolute HTTP(S) URL.');
+  }
   url.searchParams.set('billing', outcome);
   return url.href;
+}
+
+function stripeApiUrl(endpoint: string, path: string): URL {
+  let base: URL;
+  try {
+    base = new URL(endpoint);
+  } catch {
+    throw new Error('Stripe API endpoint must be an absolute HTTP(S) URL.');
+  }
+  if (base.protocol !== 'http:' && base.protocol !== 'https:') {
+    throw new Error('Stripe API endpoint must be an absolute HTTP(S) URL.');
+  }
+  base.pathname = `${base.pathname.replace(/\/+$/u, '')}/${path.replace(/^\/+/, '')}`;
+  base.search = '';
+  base.hash = '';
+  return base;
 }
 
 function stripeSignatureHeader(

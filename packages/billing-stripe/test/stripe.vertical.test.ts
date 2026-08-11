@@ -193,21 +193,21 @@ describe('Stripe payment adapter', () => {
       providerEventId: 'usage-1',
     });
     expect(requests).toEqual([
-      'GET https://api.stripe.test/prices?lookup_keys%5B%5D=team_monthly&active=true&limit=1',
-      'POST https://api.stripe.test/checkout/sessions',
-      'POST https://api.stripe.test/billing_portal/sessions',
-      'GET https://api.stripe.test/prices?lookup_keys%5B%5D=team_monthly&active=true&limit=1',
-      'POST https://api.stripe.test/subscriptions/sub_2',
-      'POST https://api.stripe.test/billing/meter_events',
+      'GET https://api.stripe.test/v1/prices?lookup_keys%5B%5D=team_monthly&active=true&limit=1',
+      'POST https://api.stripe.test/v1/checkout/sessions',
+      'POST https://api.stripe.test/v1/billing_portal/sessions',
+      'GET https://api.stripe.test/v1/prices?lookup_keys%5B%5D=team_monthly&active=true&limit=1',
+      'POST https://api.stripe.test/v1/subscriptions/sub_2',
+      'POST https://api.stripe.test/v1/billing/meter_events',
     ]);
     expect(
-      bodies.get('https://api.stripe.test/billing_portal/sessions'),
+      bodies.get('https://api.stripe.test/v1/billing_portal/sessions'),
     ).toContain('customer=cus_2');
     expect(
-      bodies.get('https://api.stripe.test/subscriptions/sub_2'),
+      bodies.get('https://api.stripe.test/v1/subscriptions/sub_2'),
     ).toContain('items%5B0%5D%5Bprice%5D=price_resolved');
     expect(
-      bodies.get('https://api.stripe.test/billing/meter_events'),
+      bodies.get('https://api.stripe.test/v1/billing/meter_events'),
     ).toContain('payload%5Bstripe_customer_id%5D=cus_2');
   });
 
@@ -250,5 +250,46 @@ describe('Stripe payment adapter', () => {
         created: timestamp,
       }))),
     ).rejects.toBeInstanceOf(StripeWebhookUnsupportedEventError);
+  });
+
+  it('fails closed with actionable URL diagnostics before making a request', async () => {
+    const unreachable: typeof fetch = Object.assign(
+      async () => {
+        throw new Error('request should not be reached');
+      },
+      {
+        preconnect(_url: string | URL) {
+          // Validation fails before transport selection.
+        },
+      },
+    );
+    const provider = (endpoint: string) => StripePayments.fromSecret({
+      endpoint,
+      secrets: {
+        apiKey: { name: 'stripe', key: 'apiKey' },
+        webhookSecret: { name: 'stripe', key: 'webhookSecret' },
+      },
+      async resolveSecret() {
+        return 'server-secret';
+      },
+      fetch: unreachable,
+    });
+
+    await expect(provider('not-an-absolute-url').startCheckout({
+      principalScope: 'workspace:one',
+      plan: 'price_pro',
+      returnTo: 'https://app.example.test/billing',
+      idempotencyKey: 'invalid-endpoint',
+    })).rejects.toThrow(
+      'Stripe API endpoint must be an absolute HTTP(S) URL.',
+    );
+    await expect(provider('https://api.stripe.test/v1').startCheckout({
+      principalScope: 'workspace:one',
+      plan: 'price_pro',
+      returnTo: '/billing',
+      idempotencyKey: 'invalid-return',
+    })).rejects.toThrow(
+      'Billing return URL must be an absolute HTTP(S) URL.',
+    );
   });
 });

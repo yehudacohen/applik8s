@@ -36,6 +36,7 @@ interface StoreEntry<TInput = unknown, TValue = unknown> {
   lastUsed: number;
   snapshotGeneratedAt: number;
   invalidationEpoch: number;
+  activated: boolean;
 }
 
 export class ApplicationQueryClient {
@@ -59,7 +60,7 @@ export class ApplicationQueryClient {
     const key = queryCacheKey(query, input);
     let entry = this.#entries.get(key) as StoreEntry<TInput, TValue> | undefined;
     if (!entry) {
-      entry = { key, query, input, listeners: new Set(), seenEvents: new Set(), state: { phase: 'idle', stale: true, revision: 0 }, controller: undefined, refresh: undefined, reconnectAttempt: 0, lastEventSequence: 0, reconnectTimer: undefined, lastUsed: ++this.#clock, snapshotGeneratedAt: 0, invalidationEpoch: 0 };
+      entry = { key, query, input, listeners: new Set(), seenEvents: new Set(), state: { phase: 'idle', stale: true, revision: 0 }, controller: undefined, refresh: undefined, reconnectAttempt: 0, lastEventSequence: 0, reconnectTimer: undefined, lastUsed: ++this.#clock, snapshotGeneratedAt: 0, invalidationEpoch: 0, activated: false };
       this.#entries.set(key, entry);
       this.#evict();
     }
@@ -69,10 +70,17 @@ export class ApplicationQueryClient {
     return {
       getSnapshot: () => selected.state,
       subscribe: (listener) => {
+        const reactivating = selected.activated && selected.listeners.size === 0;
         selected.listeners.add(listener);
+        selected.activated = true;
         if (selected.state.phase === 'idle') {
           void this.#refresh(selected).catch(() => undefined);
         }
+        // A cache entry can be dormant while authoritative state changes. Its
+        // old cursor is only a replay hint; it is not proof that a newly
+        // attached route has observed every invalidation. Revalidate the
+        // snapshot whenever an inactive entry becomes observable again.
+        else if (reactivating) void this.#refresh(selected).catch(() => undefined);
         else if (selected.state.cursor && !selected.controller) this.#connect(selected);
         return () => {
           selected.listeners.delete(listener);
@@ -93,7 +101,7 @@ export class ApplicationQueryClient {
       const existing = this.#entries.get(key);
       const generatedAt = snapshotTimestamp(snapshot);
       if (existing?.state.phase === 'ready' && existing.snapshotGeneratedAt >= generatedAt) continue;
-      const entry: StoreEntry = existing ?? { key, query: snapshot.query, input: undefined, listeners: new Set(), seenEvents: new Set(), state: { phase: 'idle', stale: true, revision: 0 }, controller: undefined, refresh: undefined, reconnectAttempt: 0, lastEventSequence: 0, reconnectTimer: undefined, lastUsed: ++this.#clock, snapshotGeneratedAt: 0, invalidationEpoch: 0 };
+      const entry: StoreEntry = existing ?? { key, query: snapshot.query, input: undefined, listeners: new Set(), seenEvents: new Set(), state: { phase: 'idle', stale: true, revision: 0 }, controller: undefined, refresh: undefined, reconnectAttempt: 0, lastEventSequence: 0, reconnectTimer: undefined, lastUsed: ++this.#clock, snapshotGeneratedAt: 0, invalidationEpoch: 0, activated: false };
       entry.state = { phase: 'ready', value: snapshot.value, cursor: snapshot.cursor, stale: false, revision: entry.state.revision + 1 };
       entry.snapshotGeneratedAt = generatedAt;
       this.#entries.set(key, entry);

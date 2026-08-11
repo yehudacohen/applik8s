@@ -110,9 +110,16 @@ export async function proxyApplicationQueryMultiplex(
         if (closed) return;
         closed = true;
         request.signal.removeEventListener('abort', abortFromRequest);
+        const cancelled = request.signal.aborted
+          || abort.signal.aborted
+          || isAbortError(error);
         abort.abort();
-        notifyUpstreamError(options, error, targetGroups.map(({ target }) => target.id));
         await Promise.allSettled(readers.map((reader) => reader.cancel()));
+        if (cancelled) {
+          try { controller.close(); } catch { /* The browser may already have cancelled its reader. */ }
+          return;
+        }
+        notifyUpstreamError(options, error, targetGroups.map(({ target }) => target.id));
         controller.error(error);
       });
     },
@@ -128,6 +135,10 @@ export async function proxyApplicationQueryMultiplex(
     status: 200,
     headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store, no-transform', connection: 'keep-alive', 'x-content-type-options': 'nosniff' },
   });
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 function notifyUpstreamError(options: ApplicationQueryMultiplexProxyOptions, error: unknown, targets: readonly string[]): void {

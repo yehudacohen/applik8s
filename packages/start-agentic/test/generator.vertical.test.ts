@@ -637,6 +637,9 @@ describe('Agentic Start generator', () => {
     );
     expect(home).toContain('createApplicationTanStackConnection');
     expect(home).toContain('agent: NotesAssistant');
+    expect(home).toContain('readAgenticWorkspaceSelection()');
+    expect(home).toContain('<NotesAssistantCard key={threadId}');
+    expect(home).not.toContain('pending-conversation');
     expect(home).toContain('notes.refresh()');
     expect(home).toContain('live query will reconcile');
     const libraryView = await readFile(

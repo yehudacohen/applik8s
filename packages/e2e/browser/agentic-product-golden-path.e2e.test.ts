@@ -10,21 +10,19 @@ test(
     const consoleErrors: string[] = [];
     const pageErrors: string[] = [];
 
-    for (const path of [
-      '/',
-      '/app',
-      '/app/setup',
-      '/app/inbox',
-      '/app/library',
-      '/app/account',
-      '/app/billing',
-      '/app/usage',
-      '/app/operations',
-      '/sign-in?returnTo=%2Fapp',
-      '/sign-up',
-      '/recover',
-      '/verify',
-    ]) {
+    const routes = [
+      ['/', /Build the product/u],
+      ['/app', 'Make useful work appear.'],
+      ['/app/setup', 'Deployment intent, evidence, and the next honest action'],
+      ['/app/inbox', 'Inbox'],
+      ['/app/library', 'Documents and artifacts'],
+      ['/app/account', 'Account'],
+      ['/app/billing', 'Plan, usage, and entitlements'],
+      ['/app/usage', 'Usage'],
+      ['/app/operations', 'agentic-product-evidence operations'],
+      ['/app/workspaces', 'Workspaces'],
+    ] as const;
+    for (const [path, heading] of routes) {
       const context = await browser.newContext(baseURL ? { baseURL } : {});
       const page = await context.newPage();
       page.on('console', (message) => {
@@ -33,6 +31,30 @@ test(
         }
       });
       page.on('pageerror', (error) => pageErrors.push(`${path}: ${error.message}`));
+      try {
+        const response = await page.goto(path, { waitUntil: 'domcontentloaded' });
+        expect(response?.status(), `${path} returned no successful document`).toBeLessThan(500);
+        await expect(page.getByRole('heading', { name: heading }).first()).toBeVisible({
+          timeout: 90_000,
+        });
+        await expect(page.locator('body')).not.toContainText('Server Error');
+        await expect(page.locator('body')).not.toContainText('Internal Server Error');
+        await expect(page.locator('body')).not.toContainText('HTTP 403');
+        await expect(page.locator('body')).not.toContainText('temporarily unavailable');
+        await expect(page.locator('body')).not.toContainText('snapshot failed');
+      } finally {
+        await context.close();
+      }
+    }
+
+    for (const path of [
+      '/sign-in?returnTo=%2Fapp',
+      '/sign-up',
+      '/recover',
+      '/verify',
+    ]) {
+      const context = await browser.newContext(baseURL ? { baseURL } : {});
+      const page = await context.newPage();
       try {
         const response = await page.goto(path, { waitUntil: 'domcontentloaded' });
         expect(response?.status(), `${path} returned no successful document`).toBeLessThan(500);
@@ -180,6 +202,9 @@ test(
       page.getByRole('region', { name: 'Current subscription' }),
     ).toContainText('No active subscription');
     await expect(
+      page.getByRole('button', { name: 'Open billing portal' }),
+    ).toHaveCount(0);
+    await expect(
       page.getByRole('region', { name: 'Plans' }),
     ).toContainText('Free');
     await expect(
@@ -188,11 +213,7 @@ test(
 
     await page.getByRole('button', { name: 'Choose Team' }).click();
     await expect(page.getByRole('status')).toContainText(
-      'Starter checkout is simulated and non-production.',
-    );
-    await page.getByRole('button', { name: 'Open billing portal' }).click();
-    await expect(page.getByRole('status')).toContainText(
-      'Starter billing portal is simulated and non-production.',
+      'local returned a simulated, non-production checkout.',
     );
     await expect(page.locator('body')).not.toContainText('STRIPE_SECRET_KEY');
   },

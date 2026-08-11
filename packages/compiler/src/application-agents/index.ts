@@ -6,6 +6,7 @@ import type {
   ApplicationGraph,
   ApplicationHandlerDependencies,
   ApplicationModelNode,
+  ApplicationModelRuntimeContract,
   ApplicationOperationCatalog,
   ApplicationOperationDescriptor,
   ApplicationProviderNode,
@@ -72,6 +73,7 @@ interface ApplicationAgentCompilerContract {
   }[];
   readonly namespace: string;
   readonly state: NonNullable<ApplicationModelNode['runtime']>;
+  readonly usage?: ApplicationModelRuntimeContract;
   readonly route: JsonObject;
 }
 
@@ -203,6 +205,12 @@ function applicationAgentCompilerContract(
     );
   }
   const namespace = graph.metadata.namespace ?? stringValue(providerConfig.namespace) ?? 'default';
+  const usage = graph.nodes.find(
+    (node): node is ApplicationModelNode & { readonly runtime: ApplicationModelRuntimeContract } =>
+      node.kind === 'model'
+      && node.database.nodeId === agent.state.nodeId
+      && node.runtime?.tableName === 'applik8s_usage_facts',
+  )?.runtime;
   return {
     graph,
     application: graph.metadata.name,
@@ -213,6 +221,7 @@ function applicationAgentCompilerContract(
     tools,
     namespace,
     state: stateRuntime,
+    ...(usage ? { usage } : {}),
     route: applicationAgentRoute(agent, providerConfig),
   };
 }
@@ -402,6 +411,7 @@ const contract = ${JSON.stringify({
     provider: contract.providerConfig,
     route: contract.route,
     state: contract.state,
+    ...(contract.usage ? { usage: contract.usage } : {}),
     tools: contract.tools,
     budgets: contract.agent.budgets,
     executionPolicy: contract.agent.executionPolicy,
@@ -485,6 +495,63 @@ const operationAuthority = createApplicationOperationAuthorityRuntime({
   catalog: ${JSON.stringify(contract.operationCatalog)},
   ${applicationStaticAuthorityManifest(contract.graph) ? `authorityManifest: ${JSON.stringify(applicationStaticAuthorityManifest(contract.graph))},` : ''}
 });
+function quotedIdentifier(value) {
+  return '"' + String(value).replaceAll('"', '""') + '"';
+}
+async function recordUsageFact(reservation, usage) {
+  if (!contract.usage || !usage) return;
+  if (!reservation.principalScope) {
+    throw new Error('AI usage requires the admitted causal principal scope.');
+  }
+  const pricingRevision = usage.pricingRevision
+    ?? selectedRoute.pricingRevision
+    ?? 'provider-unpriced';
+  const row = {
+    id: 'ai:' + reservation.attemptId + ':' + pricingRevision,
+    principalScope: reservation.principalScope,
+    operationId: 'agent:' + contract.name,
+    invocationId: reservation.invocationId,
+    attemptId: reservation.attemptId,
+    provider: selectedBackend?.name ?? selectedProvider.name ?? selectedProvider.kind,
+    backend: selectedBackend?.endpoint ?? selectedBackend?.name ?? selectedProvider.name ?? selectedProvider.kind,
+    logicalModel: contract.model.name,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    reasoningTokens: usage.reasoningTokens,
+    costMicrounits: usage.costMicrounits,
+    pricingRevision,
+    confidence: usage.confidence,
+    dimensions: {
+      agent: contract.name,
+      providerClass: selectedProvider.kind,
+      route: selectedBackend?.name ?? selectedProvider.name ?? selectedProvider.kind,
+    },
+    occurredAt: new Date().toISOString(),
+  };
+  const columns = new Map(
+    contract.usage.nativeRelational.columns.map((column) => [column.property, column.column]),
+  );
+  const entries = Object.entries(row).filter(([property, value]) =>
+    value !== undefined && columns.has(property));
+  const table = [contract.usage.nativeRelational.schema, contract.usage.tableName]
+    .filter(Boolean)
+    .map(quotedIdentifier)
+    .join('.');
+  const names = entries.map(([property]) => quotedIdentifier(columns.get(property)));
+  const placeholders = entries.map(([property], index) =>
+    '$' + (index + 1) + (property === 'dimensions' ? '::jsonb' : ''));
+  const values = entries.map(([property, value]) =>
+    property === 'dimensions' ? JSON.stringify(value) : value);
+  const attemptColumn = quotedIdentifier(columns.get('attemptId'));
+  const pricingColumn = quotedIdentifier(columns.get('pricingRevision'));
+  await sql.unsafe(
+    'INSERT INTO ' + table + ' (' + names.join(', ') + ') VALUES ('
+      + placeholders.join(', ') + ') ON CONFLICT (' + attemptColumn + ', '
+      + pricingColumn + ') DO NOTHING',
+    values,
+  );
+}
 ${localToolRuntime}
 const placementRoutes = new Map([${routeEntries}]);
 const invokeOperation = createApplicationAIOperationExecutor({
@@ -673,6 +740,7 @@ const handle = createApplicationAIAgentRequestHandler({
       invocationId,
       attemptId: decision.attempt.id,
       version: decision.attempt.version,
+      principalScope: applicationCausalPrincipalContext(principal).id,
     };
   },
   recovery: {
@@ -715,9 +783,21 @@ const handle = createApplicationAIAgentRequestHandler({
             ...(Number.isInteger(terminal.usage.reasoningTokens)
               ? { reasoningTokens: terminal.usage.reasoningTokens }
               : {}),
-            confidence: 'provider-reported',
+            ...(Number.isInteger(terminal.usage.costMicrounits)
+              ? { costMicrounits: terminal.usage.costMicrounits }
+              : {}),
+            ...(typeof terminal.usage.pricingRevision === 'string'
+              && terminal.usage.pricingRevision
+              ? { pricingRevision: terminal.usage.pricingRevision }
+              : {}),
+            confidence: terminal.usage.confidence === 'calculated'
+              ? 'calculated'
+              : terminal.usage.confidence === 'unknown'
+              ? 'unknown'
+              : 'provider-reported',
           }
         : undefined;
+      await recordUsageFact(reservation, usage);
       const attempt = await attemptRuntime.transition(
         reservation.invocationId,
         reservation.attemptId,

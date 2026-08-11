@@ -12,6 +12,7 @@ export {
 } from './account.js';
 
 const workspaceCookieName = 'applik8s_workspace';
+const workspaceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
  * Selects the browser's requested workspace. This is deliberately only a
@@ -20,9 +21,7 @@ const workspaceCookieName = 'applik8s_workspace';
  */
 export function selectAgenticWorkspace(workspaceId: string): void {
   if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      workspaceId,
-    )
+    !workspaceIdPattern.test(workspaceId)
   ) {
     throw new Error('Agentic workspace selector must be a UUID.');
   }
@@ -35,6 +34,29 @@ export function selectAgenticWorkspace(workspaceId: string): void {
   document.cookie =
     `${workspaceCookieName}=${encodeURIComponent(workspaceId.toLowerCase())}`
     + `; Path=/; SameSite=Lax${secure}`;
+}
+
+/**
+ * Reads the browser's untrusted workspace selector for browser-local scoping.
+ * The returned value is never authority; the server independently admits it
+ * against the authenticated principal on every request.
+ */
+export function readAgenticWorkspaceSelection(): string | undefined {
+  if (typeof document === 'undefined') return undefined;
+  const prefix = `${workspaceCookieName}=`;
+  const encoded = document.cookie
+    .split(';')
+    .map(part => part.trim())
+    .find(part => part.startsWith(prefix))
+    ?.slice(prefix.length);
+  if (!encoded) return undefined;
+  let value: string;
+  try {
+    value = decodeURIComponent(encoded);
+  } catch {
+    return undefined;
+  }
+  return workspaceIdPattern.test(value) ? value.toLowerCase() : undefined;
 }
 
 /** Clears the untrusted selector without changing workspace membership. */

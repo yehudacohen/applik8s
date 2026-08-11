@@ -15,6 +15,7 @@ import { Badge, Button, Card, EmptyState, PageHeader, Skeleton } from '../compon
 export function BillingDashboardView() {
   const dashboard = BillingDashboard({}).useQuery();
   const [notice, setNotice] = useState<string>();
+  const [failure, setFailure] = useState<string>();
   const [pending, setPending] = useState(false);
 
   async function choose(
@@ -22,6 +23,7 @@ export function BillingDashboardView() {
     plan: string,
   ) {
     event.preventDefault();
+    setFailure(undefined);
     setPending(true);
     try {
       const subscription = dashboard.data?.subscription;
@@ -42,17 +44,21 @@ export function BillingDashboardView() {
         });
         setNotice(
           result.mode === 'simulated'
-            ? 'Starter checkout is simulated and non-production.'
-            : 'Continue to the payment provider.',
+            ? `${result.provider} returned a simulated, non-production checkout.`
+            : `${result.provider} created a live checkout. Continuing to the payment provider.`,
         );
         if (result.mode === 'live') globalThis.location.assign(result.url);
       }
+    } catch (error) {
+      setFailure(actionFailure(error, 'Checkout could not be started.'));
     } finally {
       setPending(false);
     }
   }
 
   async function openPortal() {
+    if (!dashboard.data?.subscription) return;
+    setFailure(undefined);
     setPending(true);
     try {
       const result = await OpenBillingPortal({
@@ -60,10 +66,12 @@ export function BillingDashboardView() {
       });
       setNotice(
         result.mode === 'simulated'
-          ? 'Starter billing portal is simulated and non-production.'
-          : 'Continue to the payment provider.',
+          ? `${result.provider} returned a simulated, non-production portal.`
+          : `${result.provider} created a live portal session. Continuing to the payment provider.`,
       );
       if (result.mode === 'live') globalThis.location.assign(result.url);
+    } catch (error) {
+      setFailure(actionFailure(error, 'The billing portal is not available.'));
     } finally {
       setPending(false);
     }
@@ -72,12 +80,15 @@ export function BillingDashboardView() {
   async function cancel() {
     const subscription = dashboard.data?.subscription;
     if (!subscription) return;
+    setFailure(undefined);
     setPending(true);
     try {
       const result = await CancelSubscription({
         timing: 'periodEnd',
       });
       setNotice(`Cancellation scheduled for ${result.effectiveAt}.`);
+    } catch (error) {
+      setFailure(actionFailure(error, 'The subscription could not be cancelled.'));
     } finally {
       setPending(false);
     }
@@ -86,10 +97,13 @@ export function BillingDashboardView() {
   async function resume() {
     const subscription = dashboard.data?.subscription;
     if (!subscription) return;
+    setFailure(undefined);
     setPending(true);
     try {
       await ResumeSubscription({});
       setNotice('Subscription resumed.');
+    } catch (error) {
+      setFailure(actionFailure(error, 'The subscription could not be resumed.'));
     } finally {
       setPending(false);
     }
@@ -97,7 +111,7 @@ export function BillingDashboardView() {
 
   return (
     <div>
-      <PageHeader eyebrow="Provider-neutral billing" title="Plan, usage, and entitlements" description="Product state is canonical application data. Payment-provider details and credentials remain server-only." action={<Badge tone="warning">Starter · simulated</Badge>} />
+      <PageHeader eyebrow="Provider-neutral billing" title="Plan, usage, and entitlements" description="Product state is canonical application data. The active profile resolves payment delivery and keeps provider credentials server-only." action={<Badge tone="info">Provider resolved server-side</Badge>} />
       {!dashboard.data ? <Skeleton className="h-40" /> : null}
       <div className="grid gap-5 lg:grid-cols-2"><Card aria-label="Current subscription">
         <h2 className="text-lg font-semibold">Subscription</h2>
@@ -106,9 +120,9 @@ export function BillingDashboardView() {
             ? `${dashboard.data.subscription.planId} · ${dashboard.data.subscription.status}`
             : 'No active subscription'}
         </p>
-        <div className="mt-4 flex flex-wrap gap-2"><Button variant="secondary" type="button" onClick={openPortal} disabled={pending}>
+        <div className="mt-4 flex flex-wrap gap-2">{dashboard.data?.subscription ? <Button variant="secondary" type="button" onClick={openPortal} disabled={pending}>
           Open billing portal
-        </Button>
+        </Button> : null}
         {dashboard.data?.subscription?.status === 'cancelled' ? (
           <Button type="button" onClick={resume} disabled={pending}>
             Resume subscription
@@ -143,9 +157,17 @@ export function BillingDashboardView() {
         ))}
         </div>
       </Card>
+      {failure ? <p role="alert" className="mt-4 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800">{failure}</p> : null}
       {notice ? <p role="status" className="mt-4 text-sm text-stone-600">{notice}</p> : null}
     </div>
   );
+}
+
+function actionFailure(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) {
+    return `${fallback} ${error.message}`;
+  }
+  return fallback;
 }
 
 export function UsageDashboardView() {
@@ -155,7 +177,7 @@ export function UsageDashboardView() {
   const total = input + output;
   const inputShare = total > 0 ? Math.round(input / total * 100) : 0;
   return <div>
-    <PageHeader eyebrow="Application usage" title="Usage" description="Every number comes from application-owned usage facts admitted for your current scope. Provider invoices are delivery observations, not the product source of truth." action={<Badge tone="warning">Starter · local evidence</Badge>} />
+    <PageHeader eyebrow="Application usage" title="Usage" description="Every number comes from application-owned usage facts admitted for your current scope. Provider invoices are delivery observations, not the product source of truth." action={<Badge tone="info">Application-owned evidence</Badge>} />
     {!dashboard.data ? <div className="grid gap-4 sm:grid-cols-3"><Skeleton className="h-32" /><Skeleton className="h-32" /><Skeleton className="h-32" /></div> : null}
     {dashboard.data ? <>
       <div className="grid gap-4 sm:grid-cols-3"><Metric label="Input tokens" value={input.toLocaleString()} /><Metric label="Output tokens" value={output.toLocaleString()} /><Metric label="Cost" value={`${dashboard.data.usage.costMicrounits.toLocaleString()} µ-units`} /></div>

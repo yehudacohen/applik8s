@@ -82,7 +82,7 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
             </nav>
           ) : <div className="mt-9 text-sm leading-6 text-stone-600">Sign in to enter your workspace copilot.</div>}
           <div className="mt-auto border-t border-stone-200 pt-4">
-            {operator ? <Badge tone="warning">Starter · non-production</Badge> : null}
+            {operator ? <Badge tone="info">Operator access</Badge> : null}
             <div className="mt-3"><ThemeControl /></div>
             <div className="mt-3"><AgenticAccountSession /></div>
           </div>

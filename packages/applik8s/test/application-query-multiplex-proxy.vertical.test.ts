@@ -53,6 +53,43 @@ describe('application-host query multiplex proxy', () => {
     expect(excessive?.status).toBe(400);
     expect(target).not.toHaveBeenCalled();
   });
+
+  it('treats browser disconnect cancellation as ordinary lifecycle, not an upstream failure', async () => {
+    const requestAbort = new AbortController();
+    const upstreamAbort = new Error('browser disconnected');
+    upstreamAbort.name = 'AbortError';
+    const onUpstreamError = vi.fn();
+    const response = await proxyApplicationQueryMultiplex(
+      new Request('https://chirp.test/__applik8s/v1/queries/multiplex', {
+        method: 'POST',
+        body: JSON.stringify({ subscriptions: [
+          { id: 'notes', query: 'Note.list', input: {}, cursor: 'cursor' },
+        ] }),
+        signal: requestAbort.signal,
+      }),
+      {
+        resolve: () => ({
+          id: 'notes',
+          async handle(request) {
+            return new Response(new ReadableStream({
+              start(controller) {
+                request.signal.addEventListener(
+                  'abort',
+                  () => controller.error(upstreamAbort),
+                  { once: true },
+                );
+              },
+            }), { headers: { 'content-type': 'text/event-stream' } });
+          },
+        }),
+        onUpstreamError,
+      },
+    );
+    const read = response?.body?.getReader().read();
+    requestAbort.abort();
+    await expect(read).resolves.toMatchObject({ done: true });
+    expect(onUpstreamError).not.toHaveBeenCalled();
+  });
 });
 
 function requestFor(subscriptions: readonly unknown[]): Request {

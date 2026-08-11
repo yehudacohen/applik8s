@@ -44,6 +44,32 @@ describe('browser-safe application query client', () => {
     unsubscribe();
   });
 
+  test('revalidates a retained snapshot when a dormant query becomes observable again', async () => {
+    const transport = new FakeTransport();
+    const client = new ApplicationQueryClient(transport);
+    const store = client.query<Readonly<Record<string, never>>, readonly { id: string }[]>(
+      'workspaces.list.v1',
+      {},
+    );
+
+    const unsubscribe = store.subscribe(() => undefined);
+    await settle();
+    expect(store.getSnapshot().value).toEqual([{ id: 'card-1', name: 'First' }]);
+    unsubscribe();
+
+    transport.nextValue = [{ id: 'workspace-created-while-inactive' }];
+    const unsubscribeAgain = store.subscribe(() => undefined);
+    await settle();
+
+    expect(transport.snapshots).toHaveLength(2);
+    expect(store.getSnapshot()).toMatchObject({
+      phase: 'ready',
+      stale: false,
+      value: [{ id: 'workspace-created-while-inactive' }],
+    });
+    unsubscribeAgain();
+  });
+
   test('accepts a newer hydration snapshot and rejects an older navigation snapshot', () => {
     const transport = new FakeTransport();
     const client = new ApplicationQueryClient(transport);

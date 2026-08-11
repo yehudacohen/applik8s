@@ -1,5 +1,6 @@
 import { createApplicationTanStackConnection } from '@applik8s/ai-tanstack/client';
 import { useApplicationIdentitySession } from '@applik8s/react/identity';
+import { readAgenticWorkspaceSelection } from '@applik8s/start-agentic/react';
 import { useChat } from '@tanstack/ai-react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
@@ -17,34 +18,28 @@ function CopilotHome() {
   const createNote = Note.create.useMutation();
   const session = useApplicationIdentitySession();
   const [body, setBody] = useState('');
-  const [prompt, setPrompt] = useState('');
   const [notice, setNotice] = useState<string>();
-  const [threadId, setThreadId] = useState('pending-conversation');
+  const [threadId, setThreadId] = useState<string>();
   useEffect(() => {
     const principal = session.data?.principal?.id;
     if (!principal) return;
-    const key = `applik8s:copilot:${principal}`;
+    const workspace = readAgenticWorkspaceSelection() ?? 'personal';
+    const key = `applik8s:copilot:${principal}:${workspace}`;
     const existing = globalThis.localStorage.getItem(key);
     const next = existing ?? crypto.randomUUID();
     if (!existing) globalThis.localStorage.setItem(key, next);
     setThreadId(next);
   }, [session.data?.principal?.id]);
-  const connection = useMemo(
-    () => createApplicationTanStackConnection({ agent: NotesAssistant }),
-    [],
-  );
-  const { messages, sendMessage, isLoading, error, stop, setMessages } = useChat({
-    connection,
-    threadId,
-  });
-
   function beginConversation() {
     const principal = session.data?.principal?.id;
     if (!principal) return;
     const next = crypto.randomUUID();
-    globalThis.localStorage.setItem(`applik8s:copilot:${principal}`, next);
+    const workspace = readAgenticWorkspaceSelection() ?? 'personal';
+    globalThis.localStorage.setItem(
+      `applik8s:copilot:${principal}:${workspace}`,
+      next,
+    );
     setThreadId(next);
-    setMessages([]);
     setNotice('A new persistent conversation is ready. Previous conversations remain in your history.');
   }
 
@@ -59,14 +54,6 @@ function CopilotHome() {
     }
   }
 
-  async function askAssistant(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const message = prompt.trim();
-    if (!message) return;
-    setPrompt('');
-    await sendMessage(message);
-  }
-
   return (
     <div>
       <ProductJourney documentCount={notes.data?.length ?? 0} />
@@ -74,7 +61,7 @@ function CopilotHome() {
         eyebrow="Workspace copilot"
         title="Make useful work appear."
         description="Start with a note yourself, or ask the assistant to use the same typed model operation."
-        action={<Badge tone="warning">Local assistant · non-production</Badge>}
+        action={<Badge tone="info">Provider resolved server-side</Badge>}
       />
       {notes.phase === 'error' ? (
         <RouteState
@@ -110,36 +97,14 @@ function CopilotHome() {
               ))}
             </div>
           </Card>
-          <Card surface="unstyled" className="border-emerald-900/15 bg-emerald-950 text-emerald-50" aria-labelledby="assistant-title">
-            <p className="eyebrow !text-emerald-300">Typed agent</p>
-            <h2 id="assistant-title" className="mt-1 text-xl font-semibold">Notes assistant</h2>
-            <p className="mt-2 text-sm leading-6 text-emerald-100/75">Try “Create a note about shipping our first version.” Its tool writes through the same authority and model boundary.</p>
-            <div className="mt-5 min-h-48 space-y-3 rounded-xl bg-black/15 p-3" aria-live="polite">
-              {messages.length === 0 ? <p className="text-sm text-emerald-100/60">The conversation will appear here.</p> : null}
-              {messages.map(message => (
-                <article key={message.id} className="rounded-lg bg-white/10 p-3 text-sm" data-role={message.role}>
-                  <strong className="text-xs uppercase tracking-wide text-emerald-200">{message.role}</strong>
-                  {message.parts.map((part, index) => part.type === 'text' ? <p className="mt-1 leading-6" key={index}>{part.content}</p> : null)}
-                </article>
-              ))}
-              {error ? <p role="alert" className="text-sm text-red-200">The assistant could not complete this request. Your product data was not changed unless a committed note appears.</p> : null}
-            </div>
-            <form onSubmit={askAssistant} className="mt-4 grid gap-3">
-              <label htmlFor="assistant-prompt" className="text-sm font-medium">Message</label>
-              <textarea id="assistant-prompt" value={prompt} onChange={event => setPrompt(event.currentTarget.value)} disabled={isLoading || threadId === 'pending-conversation'} placeholder="Create a note about shipping the first version" className="border-white/20 bg-white/10 text-white placeholder:text-emerald-100/45" />
-              <div className="flex gap-2">
-                <Button type="submit" className="bg-emerald-100 text-emerald-950 hover:bg-white" disabled={isLoading || !prompt.trim()}>{isLoading ? 'Working…' : 'Send'}</Button>
-                {isLoading ? <Button type="button" variant="ghost" className="text-white hover:bg-white/10" onClick={stop}>Stop</Button> : null}
-              </div>
-            </form>
-          </Card>
+          {threadId ? <NotesAssistantCard key={threadId} threadId={threadId} /> : <Card surface="unstyled" className="border-emerald-900/15 bg-emerald-950 text-emerald-50"><Skeleton className="h-72 bg-white/10" /></Card>}
         </div>
       )}
       <section className="mt-8" aria-labelledby="recent-conversations-title">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <h2 id="recent-conversations-title" className="text-xl font-semibold">Continue working</h2>
           <div className="flex items-center gap-3">
-            {threadId !== 'pending-conversation' ? <Link to="/app/conversations/$conversationId" params={{ conversationId: threadId }} className="text-sm font-semibold text-emerald-800">Open current conversation →</Link> : null}
+            {threadId ? <Link to="/app/conversations/$conversationId" params={{ conversationId: threadId }} className="text-sm font-semibold text-emerald-800">Open current conversation →</Link> : null}
             <Button type="button" variant="secondary" onClick={beginConversation}>New conversation</Button>
           </div>
         </div>
@@ -149,4 +114,48 @@ function CopilotHome() {
       {notice ? <p role="status" className="mt-4 text-sm text-stone-600">{notice}</p> : null}
     </div>
   );
+}
+
+function NotesAssistantCard({ threadId }: { readonly threadId: string }) {
+  const [prompt, setPrompt] = useState('');
+  const connection = useMemo(
+    () => createApplicationTanStackConnection({ agent: NotesAssistant }),
+    [],
+  );
+  const { messages, sendMessage, isLoading, error, stop } = useChat({
+    connection,
+    threadId,
+  });
+
+  async function askAssistant(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = prompt.trim();
+    if (!message) return;
+    setPrompt('');
+    await sendMessage(message);
+  }
+
+  return <Card surface="unstyled" className="border-emerald-900/15 bg-emerald-950 text-emerald-50" aria-labelledby="assistant-title">
+    <p className="eyebrow !text-emerald-300">Typed agent</p>
+    <h2 id="assistant-title" className="mt-1 text-xl font-semibold">Notes assistant</h2>
+    <p className="mt-2 text-sm leading-6 text-emerald-100/75">Try “Create a note about shipping our first version.” Its tool writes through the same authority and model boundary.</p>
+    <div className="mt-5 min-h-48 space-y-3 rounded-xl bg-black/15 p-3" aria-live="polite">
+      {messages.length === 0 ? <p className="text-sm text-emerald-100/60">The conversation will appear here.</p> : null}
+      {messages.map(message => (
+        <article key={message.id} className="rounded-lg bg-white/10 p-3 text-sm" data-role={message.role}>
+          <strong className="text-xs uppercase tracking-wide text-emerald-200">{message.role}</strong>
+          {message.parts.map((part, index) => part.type === 'text' ? <p className="mt-1 leading-6" key={index}>{part.content}</p> : null)}
+        </article>
+      ))}
+      {error ? <p role="alert" className="text-sm text-red-200">The assistant could not complete this request. Your product data was not changed unless a committed note appears.</p> : null}
+    </div>
+    <form onSubmit={askAssistant} className="mt-4 grid gap-3">
+      <label htmlFor="assistant-prompt" className="text-sm font-medium">Message</label>
+      <textarea id="assistant-prompt" value={prompt} onChange={event => setPrompt(event.currentTarget.value)} disabled={isLoading} placeholder="Create a note about shipping the first version" className="border-white/20 bg-white/10 text-white placeholder:text-emerald-100/45" />
+      <div className="flex gap-2">
+        <Button type="submit" className="bg-emerald-100 text-emerald-950 hover:bg-white" disabled={isLoading || !prompt.trim()}>{isLoading ? 'Working…' : 'Send'}</Button>
+        {isLoading ? <Button type="button" variant="ghost" className="text-white hover:bg-white/10" onClick={stop}>Stop</Button> : null}
+      </div>
+    </form>
+  </Card>;
 }

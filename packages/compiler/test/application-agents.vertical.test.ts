@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import { AI } from '@applik8s/ai';
 import { app, applicationGraphFor, IdentityProvider } from '@applik8s/applik8s';
 import { type } from '@applik8s/applik8s/dsl';
+import { usage } from '@applik8s/usage';
 import { pgTable, text } from 'drizzle-orm/pg-core';
 import { afterEach, describe, expect, it } from 'vitest';
 import { emitGeneratedApplicationAgents } from '../src/application-agents/index.js';
@@ -300,6 +301,7 @@ describe('generated application AI agents', () => {
       schema: { posts },
       migrations: { path: './drizzle' },
     });
+    application.include(usage);
     const Post = application.model(posts, { name: 'Post', database });
     const identity = application.serviceIdentity('researcher');
     application.agent(
@@ -483,6 +485,9 @@ describe('generated application AI agents', () => {
     expect(generatedSource).toContain(
       'createApplicationAIAgentConversationPersistence',
     );
+    expect(generatedSource).toContain('async function recordUsageFact');
+    expect(generatedSource).toContain('applik8s_usage_facts');
+    expect(generatedSource).toContain('await recordUsageFact(reservation, usage)');
     expect(generatedSource).toContain('await conversationStore.prepare()');
     expect(generatedSource).toContain('persistence: conversationPersistence');
     expect(generatedSource).toContain(
