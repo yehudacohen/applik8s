@@ -18,8 +18,11 @@ describe('Agentic Start onboarding', () => {
 
     expect(html).toContain('Provider-neutral identity');
     expect(html).toContain('Account security');
+    expect(html).toContain('agentic-account-settings');
+    expect(html).toContain('Signed in as');
     expect(html).toContain('Multi-factor authentication');
     expect(html).toContain('Verification and recovery');
+    expect(html).not.toContain('account-recovery-email');
     expect(html).not.toContain('<main');
     expect(html).not.toContain('Ory');
   });

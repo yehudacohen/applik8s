@@ -81,19 +81,36 @@ textarea:focus, input:focus, select:focus {
 }
 .skip-link:focus { top: 1rem; }
 
-.account-surface main { margin: 0; }
-.account-surface main > .eyebrow,
-.account-surface main > h1,
-.account-surface main > h1 + p { display: none; }
-.account-surface main > section {
-  margin-top: 1rem;
+.account-surface .agentic-account-settings { display: grid; gap: 0; }
+.account-surface .agentic-account-intro { padding-bottom: 1.25rem; }
+.account-surface .agentic-account-intro h2 { margin: .35rem 0 0; font-size: 1.25rem; }
+.account-surface .agentic-account-intro > p:last-child { margin: .5rem 0 0; max-width: 48rem; color: var(--text-muted); font-size: .875rem; line-height: 1.6; }
+.account-surface .agentic-account-section {
+  margin: 0;
   border-top: 1px solid var(--border);
-  padding-top: 1rem;
+  padding: 1.25rem 0;
 }
-.account-surface main > section:first-of-type { margin-top: 0; border-top: 0; padding-top: 0; }
-.account-surface main h2 { margin: 0 0 .75rem; font-size: 1rem; }
-.account-surface main p { color: var(--text-muted); font-size: .875rem; line-height: 1.5; }
-.account-surface main button { margin: .25rem .5rem .25rem 0; border: 1px solid var(--border); border-radius: .75rem; background: var(--surface); padding: .6rem .8rem; font-weight: 700; }
+.account-surface .agentic-account-section h2 { margin: 0 0 .85rem; font-size: 1rem; }
+.account-surface .agentic-account-section p { margin: 0; color: var(--text-muted); font-size: .875rem; line-height: 1.6; }
+.account-surface .agentic-account-facts { display: grid; margin: 0; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); }
+.account-surface .agentic-account-facts > div { border-radius: .85rem; background: var(--surface-muted); padding: .85rem 1rem; }
+.account-surface .agentic-account-facts dt { color: var(--text-muted); font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
+.account-surface .agentic-account-facts dd { margin: .25rem 0 0; overflow-wrap: anywhere; font-size: .925rem; font-weight: 700; }
+.account-surface .agentic-account-list { display: grid; gap: .65rem; }
+.account-surface .agentic-account-list-item { display: flex; min-height: 3.25rem; align-items: center; justify-content: space-between; gap: 1rem; border-radius: .85rem; background: var(--surface-muted); padding: .75rem 1rem; }
+.account-surface .agentic-account-list-item strong { font-size: .875rem; }
+.account-surface .agentic-account-list-item p { margin-top: .15rem; font-size: .78rem; }
+.account-surface .agentic-account-state { flex: none; border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, transparent); padding: .3rem .6rem; color: var(--accent); font-size: .7rem; font-weight: 800; }
+.account-surface .agentic-account-form { display: grid; max-width: 36rem; gap: .65rem; }
+.account-surface .agentic-account-form label { font-size: .8rem; font-weight: 700; }
+.account-surface .agentic-account-actions { display: flex; flex-wrap: wrap; gap: .6rem; margin-top: .85rem; }
+.account-surface .agentic-account-settings button { border: 1px solid var(--border); border-radius: .75rem; background: var(--surface); padding: .6rem .8rem; color: var(--text); font-weight: 700; }
+.account-surface .agentic-account-settings button:not(:disabled):hover { border-color: var(--accent); color: var(--accent); }
+.account-surface .agentic-account-settings button:disabled { cursor: not-allowed; opacity: .5; }
+.account-surface .agentic-account-notice,
+.account-surface .agentic-account-error { margin: 1rem 0 0; border-radius: .75rem; padding: .8rem 1rem; font-size: .875rem; }
+.account-surface .agentic-account-notice { background: #ecfdf5; color: #065f46; }
+.account-surface .agentic-account-error { background: #fef2f2; color: #991b1b; }
 
 html.dark {
   --canvas: #0c0a09;

@@ -560,6 +560,9 @@ describe('Agentic Start generator', () => {
     const environment = await readFile(join(target, '.env.example'), 'utf8');
     expect(environment).not.toContain('APPLIK8S_PROFILE=');
     expect(environment).not.toContain('APPLIK8S_CONTEXT=');
+    expect(
+      await readFile(join(target, 'src/styles.css'), 'utf8'),
+    ).toContain('.account-surface .agentic-account-settings');
     const databaseSchema = await readFile(
       join(target, 'src/database-schema.ts'),
       'utf8',

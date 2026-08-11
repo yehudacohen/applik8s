@@ -226,107 +226,88 @@ export function AgenticAccountSettings(
   }
 
   return (
-    <div>
-      <p className="eyebrow">Provider-neutral identity</p>
-      <h1>{props.title ?? 'Account security'}</h1>
-      <p>
-        {props.description
-          ?? 'Verification, recovery, MFA, and session credentials remain behind the framework identity boundary.'}
-      </p>
-      <section aria-label="Identity">
+    <div className="agentic-account-settings">
+      <header className="agentic-account-intro">
+        <p className="eyebrow">Provider-neutral identity</p>
+        <h2>{props.title ?? 'Account security'}</h2>
+        <p>
+          {props.description
+            ?? 'Verification, recovery, MFA, and session credentials remain behind the framework identity boundary.'}
+        </p>
+      </header>
+      <section className="agentic-account-section" aria-label="Identity">
         <h2>Identity</h2>
-        <p>{account?.identity.subject ?? 'Loading account…'}</p>
-        <p>{account?.authenticationMethods.join(', ')}</p>
+        <dl className="agentic-account-facts">
+          <div><dt>Signed in as</dt><dd>{account?.identity.subject ?? 'Loading account…'}</dd></div>
+          <div><dt>Authentication</dt><dd>{account?.authenticationMethods.map(identityMethodLabel).join(', ') || 'Provider managed'}</dd></div>
+        </dl>
       </section>
-      <section aria-label="Sessions">
+      <section className="agentic-account-section" aria-label="Sessions">
         <h2>Sessions</h2>
-        {sessions.map((session) => (
-          <p key={session.id}>
-            {session.current ? 'Current session' : session.id}
-            {' · '}
-            {session.authenticationMethods.join(', ')}
-            {session.current || !account?.capabilities.sessionRevocation
-              ? null
-              : (
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() => void revoke(session.id)}
-                >
-                  Revoke
-                </button>
-              )}
-          </p>
-        ))}
+        <div className="agentic-account-list">
+          {sessions.length === 0 ? <p>{account ? 'No active sessions were reported.' : 'Loading sessions…'}</p> : null}
+          {sessions.map((session) => (
+            <div className="agentic-account-list-item" key={session.id}>
+              <div><strong>{session.current ? 'Current session' : 'Active session'}</strong><p>{session.authenticationMethods.map(identityMethodLabel).join(', ') || 'Provider managed'}</p></div>
+              {session.current || !account?.capabilities.sessionRevocation
+                ? <span className="agentic-account-state">{session.current ? 'This device' : 'Managed by provider'}</span>
+                : (
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => void revoke(session.id)}
+                  >
+                    Revoke
+                  </button>
+                )}
+            </div>
+          ))}
+        </div>
       </section>
-      <section aria-label="Multi-factor authentication">
+      <section className="agentic-account-section" aria-label="Multi-factor authentication">
         <h2>Multi-factor authentication</h2>
-        {account?.mfa.map((method) => (
-          <p key={method.id}>{method.label ?? method.kind}</p>
-        ))}
+        {account?.mfa.length ? <div className="agentic-account-list">{account.mfa.map((method) => (
+          <div className="agentic-account-list-item" key={method.id}><strong>{method.label ?? method.kind}</strong><span className="agentic-account-state">Enrolled</span></div>
+        ))}</div> : null}
         {account?.capabilities.mfaEnrollment ? (
           <>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() => void enroll('totp')}
-            >
-              Add authenticator app
-            </button>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() => void enroll('webauthn')}
-            >
-              Add security key
-            </button>
+            <p>Add another factor without exposing provider-specific enrollment flows to application code.</p>
+            <div className="agentic-account-actions">
+              <button type="button" disabled={pending} onClick={() => void enroll('totp')}>Add authenticator app</button>
+              <button type="button" disabled={pending} onClick={() => void enroll('webauthn')}>Add security key</button>
+            </div>
           </>
-        ) : (
+        ) : account ? (
           <p>
-            Multi-factor enrollment is not available in this identity profile.
+            This identity profile does not offer multi-factor enrollment. Production profiles can expose authenticator and security-key enrollment here.
           </p>
-        )}
+        ) : <p>Loading multi-factor capabilities…</p>}
       </section>
-      <section aria-label="Account recovery">
+      <section className="agentic-account-section" aria-label="Account recovery">
         <h2>Verification and recovery</h2>
-        <form
-          onSubmit={(event: FormEvent<HTMLFormElement>) => {
-            event.preventDefault();
-            void beginRecovery('verify');
-          }}
-        >
-          <label htmlFor="account-recovery-email">Email</label>
-          <input
-            id="account-recovery-email"
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.currentTarget.value)}
-          />
-          <button
-            type="submit"
-            disabled={
-              pending
-              || !email.trim()
-              || !account?.capabilities.verification
-            }
+        {account && (account.capabilities.verification || account.capabilities.recovery) ? (
+          <form
+            className="agentic-account-form"
+            onSubmit={(event: FormEvent<HTMLFormElement>) => {
+              event.preventDefault();
+              void beginRecovery('verify');
+            }}
           >
-            Verify email
-          </button>
-          <button
-            type="button"
-            disabled={
-              pending
-              || !email.trim()
-              || !account?.capabilities.recovery
-            }
-            onClick={() => void beginRecovery('recover')}
-          >
-            Recover account
-          </button>
-        </form>
+            <label htmlFor="account-recovery-email">Account email</label>
+            <input id="account-recovery-email" type="email" value={email} onChange={(event) => setEmail(event.currentTarget.value)} />
+            <div className="agentic-account-actions">
+              {account.capabilities.verification ? <button type="submit" disabled={pending || !email.trim()}>Verify email</button> : null}
+              {account.capabilities.recovery ? <button type="button" disabled={pending || !email.trim()} onClick={() => void beginRecovery('recover')}>Recover account</button> : null}
+            </div>
+          </form>
+        ) : account ? (
+          <p>
+            Email verification and account recovery are intentionally unavailable for the credential-free Starter identity. Select a managed identity profile to enable these flows.
+          </p>
+        ) : <p>Loading verification and recovery capabilities…</p>}
       </section>
-      {notice ? <p role="status">{notice}</p> : null}
-      {error ? <p role="alert">{error}</p> : null}
+      {notice ? <p className="agentic-account-notice" role="status">{notice}</p> : null}
+      {error ? <p className="agentic-account-error" role="alert">{error}</p> : null}
     </div>
   );
 }
@@ -335,4 +316,18 @@ function identityErrorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error && cause.message.trim()
     ? cause.message
     : fallback;
+}
+
+function identityMethodLabel(method: string): string {
+  switch (method) {
+    case 'deterministic-starter': return 'Local development identity';
+    case 'password': return 'Password';
+    case 'totp': return 'Authenticator app';
+    case 'webauthn': return 'Security key or passkey';
+    default: return method
+      .split(/[-_]/u)
+      .filter(Boolean)
+      .map(part => `${part[0]?.toUpperCase() ?? ''}${part.slice(1)}`)
+      .join(' ');
+  }
 }
