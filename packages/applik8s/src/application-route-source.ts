@@ -2,10 +2,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { JsonObject } from '@applik8s/core';
-import { transformSync } from 'esbuild';
-import { blockCommentEnd, escapeRegExp, isDeclarationIdentifier, isRegexLiteralStart, lineCommentEnd, matchingDelimiter, nextNonWhitespace, previousNonWhitespace, quotedSourceEnd, regexLiteralEnd, splitTopLevelArguments, templateSourceEnd, unique } from './application-route-source-utilities.js';
+import { blockCommentEnd, escapeRegExp, isDeclarationIdentifier, isRegexLiteralStart, lineCommentEnd, matchingDelimiter, nextNonWhitespace, previousNonWhitespace, quotedSourceEnd, regexLiteralEnd, splitTopLevelArguments, templateSourceEnd, transpileApplicationCallbackExpression, transpileApplicationRouteModuleForDependencies, unique } from './application-route-source-utilities.js';
 
-export { matchingDelimiter, splitTopLevelArguments } from './application-route-source-utilities.js';
+export { matchingDelimiter, normalizeSerializableFunctionSource, splitTopLevelArguments, transpileApplicationCallbackExpression } from './application-route-source-utilities.js';
 export interface ApplicationRouteSourceLocation {
   readonly file: string;
   readonly line: number;
@@ -120,13 +119,6 @@ interface ApplicationRouteTopLevelBinding {
   readonly analysisSource: string;
   readonly kind: 'declaration' | 'import';
   readonly position: number;
-}
-
-export function normalizeSerializableFunctionSource(source: string): string {
-  if (/^async\s*\(/.test(source)) {
-    return source.replace(/^async\s*\(/, 'async (');
-  }
-  return /^[$A-Z_a-z][$\w]*\s*\(/.test(source) ? `function ${source}` : source;
 }
 
 export function analyzeApplicationServerRouteSource(source: string): ApplicationServerRouteSourceAnalysis {
@@ -550,14 +542,6 @@ function applicationRouteTopLevelBindings(source: string, bindingNames: Readonly
     index += 1;
   }
   return bindings;
-}
-
-function transpileApplicationRouteModuleForDependencies(source: string, file: string): string {
-  try {
-    return transformSync(source, { loader: file.endsWith('.tsx') || file.endsWith('.jsx') ? 'tsx' : file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.cjs') ? 'js' : 'ts', format: 'esm', target: 'node22' }).code;
-  } catch (_error) {
-    return source;
-  }
 }
 
 function topLevelImportBindingAt(source: string, index: number): { readonly names: readonly string[]; readonly source: string; readonly end: number } | undefined {
@@ -1198,16 +1182,4 @@ function sourceOffsetForLineColumn(source: string, line: number, column: number)
     offset += 1;
   }
   return Math.min(source.length, offset + Math.max(0, column - 1));
-}
-
-export function transpileApplicationCallbackExpression(source: string): string {
-  const wrapped = `const __applik8sRouteHandler = (${source});\nexport { __applik8sRouteHandler };\n`;
-  const output = transformSync(wrapped, { loader: 'ts', format: 'esm', target: 'node22' }).code.trim();
-  const prefix = 'const __applik8sRouteHandler = ';
-  const start = output.indexOf(prefix);
-  const end = output.lastIndexOf(';\nexport');
-  if (start < 0 || end < 0 || end <= start + prefix.length) {
-    throw new Error('Generated server route source transform did not produce the expected wrapper.');
-  }
-  return output.slice(start + prefix.length, end).trim();
 }

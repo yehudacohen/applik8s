@@ -1,5 +1,5 @@
 import {
-  AgenticWorkspaceAdmissionError,
+  type AgenticWorkspaceAdmissionError,
   authenticateAgenticProfileRequest,
   authenticateAgenticStarterRequest,
   handleAgenticProfileIdentityRequest,
@@ -163,6 +163,27 @@ describe('Agentic Start identity runtime', () => {
         current: true,
         active: true,
       }],
+    });
+  });
+
+  it('keeps Starter identity recovery independent from stale workspace selectors', async () => {
+    vi.stubEnv('APPLIK8S_APPLICATION_NAME', 'notes');
+
+    const flow = await handleAgenticStarterIdentityRequest(
+      new Request(
+        'http://notes.example.test/__applik8s/v1/identity/flows/login',
+        {
+          method: 'POST',
+          headers: { cookie: 'applik8s_workspace=deleted-workspace' },
+        },
+      ),
+    );
+
+    expect(flow.status).toBe(201);
+    await expect(flow.json()).resolves.toMatchObject({
+      kind: 'flow',
+      flowKind: 'login',
+      state: 'active',
     });
   });
 

@@ -1,3 +1,32 @@
+import { transformSync } from 'esbuild';
+
+export function normalizeSerializableFunctionSource(source: string): string {
+  if (/^async\s*\(/.test(source)) {
+    return source.replace(/^async\s*\(/, 'async (');
+  }
+  return /^[$A-Z_a-z][$\w]*\s*\(/.test(source) ? `function ${source}` : source;
+}
+
+export function transpileApplicationCallbackExpression(source: string): string {
+  const wrapped = `const __applik8sRouteHandler = (${source});\nexport { __applik8sRouteHandler };\n`;
+  const output = transformSync(wrapped, { loader: 'ts', format: 'esm', target: 'node22' }).code.trim();
+  const prefix = 'const __applik8sRouteHandler = ';
+  const start = output.indexOf(prefix);
+  const end = output.lastIndexOf(';\nexport');
+  if (start < 0 || end < 0 || end <= start + prefix.length) {
+    throw new Error('Generated server route source transform did not produce the expected wrapper.');
+  }
+  return output.slice(start + prefix.length, end).trim();
+}
+
+export function transpileApplicationRouteModuleForDependencies(source: string, file: string): string {
+  try {
+    return transformSync(source, { loader: file.endsWith('.tsx') || file.endsWith('.jsx') ? 'tsx' : file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.cjs') ? 'js' : 'ts', format: 'esm', target: 'node22' }).code;
+  } catch (_error) {
+    return source;
+  }
+}
+
 export function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

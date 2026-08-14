@@ -101,7 +101,7 @@ import {
   createApplicationProfileRuntime,
 } from './application-profiles.js';
 import type { ApplicationAnalyticalDatabaseProvider, ApplicationDefaults, ApplicationDefaultsBinding, ApplicationHostBinding, ApplicationHostProvider, ApplicationHttpExposureProvider, ApplicationIndexBackend, ApplicationPostgresTransactionalDatabaseOptions, ApplicationProviderBinding, ApplicationProviderState, ApplicationProviderToken, ApplicationQualifiedProviderToken, ApplicationTransactionalDatabaseProvider, ApplicationValkeyIndexBackend } from './application-providers.js';
-import { ApplicationHost, applicationAnalyticalDatabaseImplementation, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationEventLogImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationPostgresClusterSpec, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applicationTransactionalDatabaseImplementation, applicationWorkflowEngineImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
+import { ApplicationHost, applicationAnalyticalDatabaseImplementation, applicationCertificateImplementation, applicationDnsPublicationImplementation, applicationEventLogImplementation, applicationHostBinding, applicationHttpExposureImplementation, applicationIndexBackend, applicationObjectStorageImplementation, applicationPostgresClusterSpec, applicationProviderQualificationFor, applicationProviderSelectionFor, applicationProviderSelectionSatisfies, applicationProviderTokenName, applicationSearchProviderImplementation, applicationTransactionalDatabaseImplementation, applyApplicationProvider, defaultApplicationEventLogProvider, defaultApplicationIndexBackend, defaultApplicationIndexProvider, defaultApplicationProviders, IndexStore, isApplicationProviderSelection, isApplicationQualifiedProviderToken, isValkeyIndexDefault, TransactionalDatabase } from './application-providers.js';
 import { type ApplicationQueryBinding, type ApplicationQueryOptions, type ApplicationQueryPrincipal, type ApplicationQuerySourceBinding, applicationQueryBindingForOperation, registerApplicationModelView, registerApplicationQuery } from './application-queries.js';
 import { type ApplicationAnalyticalProjectionBinding, type ApplicationAnalyticalProjectionOptions, type ApplicationGatewayBinding, type ApplicationGatewayOptions, type ApplicationOnlineProjectionBinding, type ApplicationOnlineProjectionDraft, type ApplicationOnlineProjectionOptions, type ApplicationOnlineProjectionRetentionPolicy, type ApplicationOnlineProjectionTransform, type ApplicationProjectionOptions, type ApplicationProjectionOutput, type ApplicationProjectionRebuildModel, type ApplicationProjectionRebuildScope, type ApplicationProjectionTransform, type ApplicationStreamBatchHandler, type ApplicationStreamBatchOptions, type ApplicationStreamBinding, type ApplicationStreamOptions, type ApplicationStreamProcessHandler, type ApplicationStreamProcessOptions, type ApplicationSubscriptionBinding, type ApplicationSubscriptionOptions, registerApplicationGateway, registerApplicationProjection, registerApplicationStream, registerApplicationStreamBatchProcessor, registerApplicationStreamProcessor, registerApplicationSubscription } from './application-reactive.js';
 import {
@@ -135,11 +135,10 @@ import { generatedApplicationServerRuntimeSource, runtimeIndexTable } from './ap
 import type { ApplicationGeneratedJobStatusProjectionState, ApplicationStatusReconcilerAppResourceTarget } from './application-status-reconciler.js';
 import { emitApplicationGeneratedJobStatusReconcilers } from './application-status-reconciler.js';
 import { applicationTypeKroExpressionValue, applicationTypeKroGraphValue, applicationTypeKroString, applicationTypeKroValueIdentity, applyApplicationTypeKroIncludeWhen } from './application-typekro-values.js';
-import type { ApplicationTaskBinding, ApplicationTaskHandler, ApplicationTaskObjectStores, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjections, ApplicationTaskQueries, ApplicationTaskReference, ApplicationWorkflowBinding, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference } from './application-workflows.js';
+import type { ApplicationTaskHandler, ApplicationTaskObjectStores, ApplicationTaskOperations, ApplicationTaskOptions, ApplicationTaskProjections, ApplicationTaskQueries, ApplicationTaskReference, ApplicationWorkflowBinding, ApplicationWorkflowHandler, ApplicationWorkflowOptions, ApplicationWorkflowReference } from './application-workflows.js';
 import { type ApplicationWorkflowState, registerApplicationSingleStepWorkflow, registerApplicationWorkflow } from './application-workflows.js';
 import { applicationNativeModelMethodDependencyFor } from './native-model-execution.js';
 import { workflow as defineWorkflow, type EntityDefinition, type EventDefinition, type StreamDefinition, type WorkflowDefinition } from './dsl.js';
-import type { ApplicationWorkflowTaskDefinition as TaskDefinition } from './application-workflow-internal.js';
 import { type ApplicationKubernetesCreatePolicy, applicationModelCommandBindingForOperation, applicationModelViewRegistrar, bindApplicationModelViews, bindNativeApplicationModelBeforeCommit, bindNativeApplicationModelBinding, bindNativeApplicationModelCommands, bindNativeApplicationModelLifecycle, bindNativeKubernetesLifecycle, type DrizzleAnalyticalApplicationModelFacet, getApplicationModelFacet, getRequiredDrizzleApplicationModelFacet, nativeApplicationModelBeforeCommitRegistrar, nativeApplicationModelCommandRegistrar, nativeApplicationModelLifecycleRegistrar, nativeKubernetesLifecycleRegistrar, type PromoteAnalyticalDrizzleTableOptions, type PromoteDrizzleTableOptions, type PromotedAnalyticalDrizzleTable, type PromotedDrizzleTable, type PromotedKubernetesResource, promoteAnalyticalDrizzleTable, promoteDrizzleTable, promoteKubernetesResource } from './native-models.js';
 import {
   applicationRelationalModelOptionsFor,
@@ -825,9 +824,9 @@ interface ApplicationDeploymentStatusProjection {
 
 export interface ApplicationServer {
   get(name: string, path: string, handler: ApplicationRouteHandler): ApplicationRawHttpRoute;
-  post(name: string, path: string, handler: ApplicationRouteHandler): ApplicationRawHttpRoute;
   /** @deprecated Give the route a stable name: get(name, path, handler). Removed at 1.0. */
   get(path: string, handler: ApplicationRouteHandler): ApplicationRawHttpRoute;
+  post(name: string, path: string, handler: ApplicationRouteHandler): ApplicationRawHttpRoute;
   /** @deprecated Give the route a stable name: post(name, path, handler). Removed at 1.0. */
   post(path: string, handler: ApplicationRouteHandler): ApplicationRawHttpRoute;
 }
@@ -3587,7 +3586,8 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       const searchSelection =
         applicationProviderSelectionFor(configuredSearch);
       const search = applicationSearchProviderImplementation(configuredSearch);
-      if (!search && !searchSelection) {
+      const resolvedSearch = searchSelection ?? search;
+      if (!resolvedSearch) {
         throw new Error(
           'app.defaults({ search: ... }) requires Search.postgres(...), Search.openSearch(...), or Search.externalOpenSearch(...).',
         );
@@ -3597,7 +3597,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
         state,
         'Search',
         'default',
-        searchSelection ?? search!,
+        resolvedSearch,
         undefined,
         undefined,
         applicationQualifiedProviderAliasNodeId('Search', configuredSearch),
@@ -3608,7 +3608,8 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       const analyticalDatabase = applicationAnalyticalDatabaseImplementation(configuredAnalytics);
       const analyticsSelection =
         applicationProviderSelectionFor(configuredAnalytics);
-      if (!analyticalDatabase && !analyticsSelection) {
+      const resolvedAnalytics = analyticsSelection ?? analyticalDatabase;
+      if (!resolvedAnalytics) {
         throw new Error('app.defaults({ analytics: ... }) requires AnalyticalDatabase.clickhouse(...).');
       }
       state.defaults.analytics = configuredAnalytics;
@@ -3616,7 +3617,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
         state,
         'AnalyticalDatabase',
         'default',
-        analyticsSelection ?? analyticalDatabase!,
+        resolvedAnalytics,
         undefined,
         undefined,
         applicationQualifiedProviderAliasNodeId(
@@ -3795,7 +3796,7 @@ function createApplicationContext<TSpec extends KroCompatibleType, TStatus exten
       ? {
           kind: 'applik8sEntity',
           name: entityOrName,
-          spec: namedOptions!.spec,
+          spec: (options as ApplicationNamedCrdOptions<TSpec, TStatus>).spec,
           ...(namedOptions?.status ? { status: namedOptions.status } : {}),
         }
       : entityOrName;
@@ -4494,7 +4495,8 @@ function applicationGraphBoolean(operator: '&&' | '||', identity: boolean, condi
   if (operator === '||' && concrete.some((term) => term.condition === true)) return true;
   const dynamic = terms.filter((term) => term.expression !== undefined);
   if (dynamic.length === 0) return identity;
-  if (dynamic.length === 1) return dynamic[0]!.condition;
+  const [onlyDynamic] = dynamic;
+  if (onlyDynamic && dynamic.length === 1) return onlyDynamic.condition;
   return Cel.expr<boolean>(dynamic.map((term) => `(${term.expression})`).join(` ${operator} `));
 }
 

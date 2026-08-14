@@ -31,14 +31,10 @@ export interface AgenticWorkspaceAccess {
     | 'workspace-member';
 }
 
-export interface AgenticWorkspaceAccessLookup {
-  (
-    input: {
-      readonly workspaceId: string;
-      readonly principalId: string;
-    },
-  ): Promise<AgenticWorkspaceAccess | undefined>;
-}
+export type AgenticWorkspaceAccessLookup = (input: {
+  readonly workspaceId: string;
+  readonly principalId: string;
+}) => Promise<AgenticWorkspaceAccess | undefined>;
 
 export interface AuthenticateAgenticStarterRequestOptions {
   /**
@@ -67,27 +63,7 @@ export async function authenticateAgenticStarterRequest(
   request: Request,
   options: AuthenticateAgenticStarterRequestOptions = {},
 ): Promise<ApplicationRequestAdmission> {
-  const application = requiredEnv(
-    'APPLIK8S_APPLICATION_NAME',
-    'Agentic Starter identity requires APPLIK8S_APPLICATION_NAME.',
-  );
-  const issuer = `applik8s://${application}/identity/deterministic`;
-  const admission = createDeterministicApplicationAdmission({
-      mode: 'starter',
-      application,
-      subject: 'local-developer',
-      audience: [application],
-      // Product authentication is provider evidence. Application-operator
-      // authority is bootstrapped separately into the canonical grant store.
-      roles: ['authenticated'],
-      trustedContext: { issuer },
-      catalogRevision:
-        process.env.APPLIK8S_OPERATION_CATALOG_REVISION?.trim()
-        || `${application}-catalog-v1`,
-      authorityRevision:
-        process.env.APPLIK8S_AUTHORITY_REVISION?.trim()
-        || `${application}-authority-v1`,
-    });
+  const admission = agenticStarterAdmission();
   if (isReceiptBackedCommandProgress(request)) {
     return freezeAdmission(
       withRoles(admission.principal, ['authenticated']),
@@ -104,7 +80,10 @@ export async function authenticateAgenticStarterRequest(
   }
   if (options.bootstrap) {
     const access = await options.bootstrap({
-      application,
+      application: requiredEnv(
+        'APPLIK8S_APPLICATION_NAME',
+        'Agentic Starter identity requires APPLIK8S_APPLICATION_NAME.',
+      ),
       principalId: admission.principal.id,
     });
     return admissionWithAgenticWorkspaceAccess(admission, access);
@@ -113,6 +92,30 @@ export async function authenticateAgenticStarterRequest(
     withRoles(admission.principal, ['authenticated']),
     admission.trustedContext,
   );
+}
+
+function agenticStarterAdmission(): ApplicationRequestAdmission {
+  const application = requiredEnv(
+    'APPLIK8S_APPLICATION_NAME',
+    'Agentic Starter identity requires APPLIK8S_APPLICATION_NAME.',
+  );
+  const issuer = `applik8s://${application}/identity/deterministic`;
+  return createDeterministicApplicationAdmission({
+      mode: 'starter',
+      application,
+      subject: 'local-developer',
+      audience: [application],
+      // Product authentication is provider evidence. Application-operator
+      // authority is bootstrapped separately into the canonical grant store.
+      roles: ['authenticated'],
+      trustedContext: { issuer },
+      catalogRevision:
+        process.env.APPLIK8S_OPERATION_CATALOG_REVISION?.trim()
+        || `${application}-catalog-v1`,
+      authorityRevision:
+        process.env.APPLIK8S_AUTHORITY_REVISION?.trim()
+        || `${application}-authority-v1`,
+    });
 }
 
 /** Server-only runtime adapter used by generated identity callbacks. */
@@ -250,7 +253,15 @@ export async function handleAgenticStarterIdentityRequest(
     if (path[0] === 'session' && request.method === 'DELETE') {
       return identityJson(anonymousIdentitySession());
     }
-    const admission = await authenticateAgenticStarterRequest(request);
+    // Identity admission is deliberately independent from the product's
+    // workspace selector. A stale, deleted, or malformed workspace cookie must
+    // never prevent a user from signing in, recovering an account, or choosing
+    // a different workspace after authentication.
+    const baseAdmission = agenticStarterAdmission();
+    const admission = freezeAdmission(
+      withRoles(baseAdmission.principal, ['authenticated']),
+      baseAdmission.trustedContext,
+    );
     if (path[0] === 'account' && path.length === 1 && request.method === 'GET') {
       return identityJson(identityAccount(admission.principal));
     }
