@@ -445,7 +445,7 @@ export const AgenticStarter = Object.freeze({
         tool: {
           index: 0,
           input: {
-            body: 'Starter tool-created note.',
+            body: 'Starter tool-created document.',
           },
         },
       },

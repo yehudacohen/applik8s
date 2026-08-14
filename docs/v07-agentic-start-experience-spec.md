@@ -31,7 +31,7 @@ sequencing, framework boundaries, correctness work, and release gates.
 
 ## Audience and surface partition
 
-The experience has four related surfaces, each protected by ordinary typed
+The experience has five related surfaces, each protected by ordinary typed
 Applik8s authority:
 
 ```text
@@ -46,6 +46,11 @@ Workspace administration
 ├── Usage and billing
 └── Workspace settings
 
+Product administration
+├── Tenant directory and tenant detail
+├── Product catalog
+└── Tenant-scoped subscription and usage state
+
 Builder Launchpad
 ├── Source orientation
 ├── Provider and profile setup
@@ -59,7 +64,7 @@ Operations
 ```
 
 Product members see only the first surface. Workspace owners receive the first
-two. Application operators receive Launchpad and Operations in addition to any
+two. Application operators receive product administration, Launchpad, and Operations in addition to any
 product roles they separately hold. The UI does not infer operator authority
 from a local URL, workspace ownership, a Kubernetes namespace, or visibility of
 an installation.
@@ -207,7 +212,7 @@ An unexpected root-session failure uses a minimal branded recovery shell.
 - A single compact journey header establishes progress without becoming a
   dashboard banner.
 - Conversation, documents, immutable artifacts, and assistant remain the actual product, not a
-  simulated tutorial. Notes are the first readable document type rather than
+  simulated tutorial. Documents are the first readable content type rather than
   the product's entire identity.
 - The assistant offers two or three useful prompt chips only while empty.
 - “What will happen?” previews the agent/tool/model/live-view chain in plain
@@ -220,11 +225,11 @@ An unexpected root-session failure uses a minimal branded recovery shell.
 
 ### Loading and empty behavior
 
-- Notes render skeleton rows during the initial query.
+- Documents render skeleton rows during the initial query.
 - The assistant input remains usable only after its connection is ready.
 - If live AI is not selected, Starter presents its deterministic assistant as a
   real local capability, clearly labeled “Local assistant.”
-- If the assistant is unavailable, manual notes remain usable and the journey
+- If the assistant is unavailable, manual documents remain usable and the journey
   offers an explicit retry; the route does not fail.
 
 ## View 3: First-success moment
@@ -232,7 +237,7 @@ An unexpected root-session failure uses a minimal branded recovery shell.
 **Route:** `/app`, immediately after the assistant creates the document
 
 The new document enters the list with a short highlighted edge and an “Added by
-NotesAssistant for you” provenance line. A compact success panel replaces the
+WorkspaceAssistant for you” provenance line. A compact success panel replaces the
 journey header:
 
 ```text
@@ -256,16 +261,16 @@ Desktop uses a right-side sheet; mobile uses a full-screen sheet.
 ```text
 How this worked
 
-● You asked NotesAssistant                         10:42:13
+● You asked WorkspaceAssistant                         10:42:13
 │ Authenticated as Yehuda · workspace Acme
 │
 ● CreateNote was authorized                        10:42:13
-│ Agent execution received only Note.create
+│ Agent execution received only Document.create
 │
-● Note.create committed                            10:42:14
+● Document.create committed                            10:42:14
 │ PostgreSQL · idempotent operation op_…
 │
-● NoteList invalidated and re-queried               10:42:14
+● DocumentList invalidated and re-queried               10:42:14
 │ Browser cursor resumed · 1 row changed
 
 [Open full operation]  [View source map]
@@ -516,7 +521,7 @@ Each row shows:
 
 ```text
 AI generation       OpenRouter                 Action required
-Required by         NotesAssistant
+Required by         WorkspaceAssistant
 Accepted sources    .env · Secret reference
 Missing             OPENROUTER_API_KEY
 [Copy .env name] [Configure Secret reference] [Why is this needed?]

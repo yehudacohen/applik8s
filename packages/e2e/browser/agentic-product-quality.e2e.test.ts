@@ -14,6 +14,9 @@ const representativeRoutes = [
   '/app/account',
   '/app/billing',
   '/app/setup',
+  '/admin',
+  '/admin/tenants',
+  '/admin/catalog',
 ] as const;
 
 test.describe.configure({ mode: 'serial' });
@@ -130,7 +133,7 @@ test('exposes a keyboard-usable, semantically named first-run experience', async
 
 test('preserves intentional custom surfaces and readable contrast', async ({ page }) => {
   await page.goto('/app', { waitUntil: 'domcontentloaded' });
-  const assistant = page.getByRole('region', { name: 'Notes assistant' });
+  const assistant = page.getByRole('region', { name: 'Workspace assistant' });
   await expect(assistant).toBeVisible();
 
   const surface = await assistant.evaluate(element => {
@@ -177,7 +180,7 @@ test('preserves product meaning in dark mode and reduced motion', async ({ page 
   await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
   await page.goto('/app', { waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('heading', { name: 'Make useful work appear.' })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Your notes', exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Your documents', exact: true })).toBeVisible();
   await expect(page.locator('body')).not.toContainText('Internal Server Error');
 });
 
@@ -212,7 +215,7 @@ test('preserves SSR content, bounded navigation, and live-query recovery on a de
   await expect.poll(() => multiplexAttempts, { timeout: 15_000 })
     .toBeGreaterThanOrEqual(2);
   await expect(
-    page.getByRole('region', { name: 'Your notes', exact: true }),
+    page.getByRole('region', { name: 'Your documents', exact: true }),
   ).toBeVisible();
 
   const transitionStartedAt = Date.now();

@@ -56,6 +56,13 @@ export async function applicationDevelopmentAspects(
                 requests: { cpu: '100m', memory: '256Mi' },
                 limits: { cpu: '2', memory: '2Gi' },
               },
+              env: [
+                ...(container.env ?? []),
+                {
+                  name: 'TSR_TMP_DIR',
+                  value: `${workspace.applicationRoot}/src/.tanstack/tmp`,
+                },
+              ],
               securityContext: {
                 ...container.securityContext,
                 readOnlyRootFilesystem: false,

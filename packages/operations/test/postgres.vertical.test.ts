@@ -191,6 +191,14 @@ describe('PostgreSQL operation authority repositories', () => {
         }),
         expect.objectContaining({
           application: 'chirp',
+          id: 'database:transactional-authority',
+          domain: 'database',
+          subject: 'TransactionalDatabase',
+          authority: 'canonical',
+          state: 'ready',
+        }),
+        expect.objectContaining({
+          application: 'chirp',
           domain: 'authority',
           subject: 'applik8s://models/Post/operations/publish',
           authority: 'canonical',

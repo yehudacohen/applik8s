@@ -9,7 +9,7 @@ import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { application } from '../../app';
 import { Artifacts, Billing, Conversations } from '../../modules';
 import { database } from '../../providers';
-import { Note } from '../notes/schema';
+import { Document } from '../documents/schema';
 import { Authenticated, Workspace } from '../workspaces/model';
 import { DataLifecycleRequest as DataLifecycleRequestTable } from './schema';
 
@@ -41,9 +41,9 @@ async function lifecycleTargets(
 ) {
   const client = context.database(database);
   const [documents, conversations, artifactCount, ownedWorkspaces, subscriptions] = await Promise.all([
-    client.select({ id: Note.id })
-      .from(Note)
-      .where(eq(Note.ownerPrincipalId, input.principalId))
+    client.select({ id: Document.id })
+      .from(Document)
+      .where(eq(Document.ownerPrincipalId, input.principalId))
       .limit(100),
     client.select({ id: Conversations.Conversation.id })
       .from(Conversations.Conversation)
@@ -83,7 +83,7 @@ const lifecycle = module(
         input: type({ principalId: 'string', principalScope: 'string' }),
         output: LifecycleTargetsResult,
         database,
-        reads: [Note, Conversations.Conversation, Artifacts.Artifact, Workspace, Billing.Subscription],
+        reads: [Document, Conversations.Conversation, Artifacts.Artifact, Workspace, Billing.Subscription],
         authorize: ({ principal }) => principal.kind === 'execution',
         budgets: { timeoutMs: 3_000, maxRows: 350, maxResultBytes: 256_000 },
       },
@@ -243,7 +243,7 @@ const lifecycle = module(
               return;
             }
             for (const identity of targets.documents) {
-              await Note.delete({ identity });
+              await Document.delete({ identity });
             }
             for (const identity of targets.conversations) {
               await Conversations.Conversation.update({

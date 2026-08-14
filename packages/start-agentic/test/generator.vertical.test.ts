@@ -419,7 +419,7 @@ describe('Agentic Start generator', () => {
   it('generates the smaller product shell with truthful lineage, scripts, context, and documentation', async () => {
     const parent = await mkdtemp(join(tmpdir(), 'applik8s-agentic-product-'));
     temporaryDirectories.push(parent);
-    const target = join(parent, 'notes-product');
+    const target = join(parent, 'documents-product');
     const progress: string[] = [];
 
     const result = await createApplicationAgenticStart({
@@ -452,7 +452,9 @@ describe('Agentic Start generator', () => {
     expect(result.files).toEqual(
       expect.arrayContaining(applicationAgenticStartDefinition.generator.files),
     );
-    expect(result.files).toHaveLength(67);
+    expect(result.files).toHaveLength(
+      applicationAgenticStartDefinition.generator.maximumApplicationFiles,
+    );
     expect(result.files.length).toBeLessThanOrEqual(
       applicationAgenticStartDefinition.generator.maximumApplicationFiles,
     );
@@ -494,7 +496,7 @@ describe('Agentic Start generator', () => {
     expect(lifecycleModel).toContain(
       "state: 'actionRequired'",
     );
-    expect(lifecycleModel).toContain('await Note.delete({ identity });');
+    expect(lifecycleModel).toContain('await Document.delete({ identity });');
     expect(lifecycleModel).toContain(
       'await Conversations.Conversation.update({',
     );
@@ -598,22 +600,22 @@ describe('Agentic Start generator', () => {
     };
     expect(lineage).toMatchObject({
       example: 'product',
-      projectName: 'notes-product',
+      projectName: 'documents-product',
       templateRevision: expect.stringMatching(/^sha256:[a-f0-9]{64}$/u),
     });
     expect(lineage.files['src/routes/index.tsx']).toMatch(
       /^sha256:[a-f0-9]{64}$/u,
     );
     const notesModel = await readFile(
-      join(target, 'src/features/notes/model.ts'),
+      join(target, 'src/features/documents/model.ts'),
       'utf8',
     );
-    expect(notesModel).toContain("const notes = module(");
-    expect(notesModel).toContain("'notes',\n  NoteTable,");
+    expect(notesModel).toContain("const documents = module(");
+    expect(notesModel).toContain("'documents',\n  DocumentTable,");
     expect(notesModel).not.toContain('ApplicationModelViewContext');
-    expect(notesModel).not.toContain('{ schema: { Note: NoteTable } }');
+    expect(notesModel).not.toContain('{ schema: { Document: DocumentTable } }');
     const notesSchema = await readFile(
-      join(target, 'src/features/notes/schema.ts'),
+      join(target, 'src/features/documents/schema.ts'),
       'utf8',
     );
     expect(notesSchema).toContain(
@@ -636,12 +638,14 @@ describe('Agentic Start generator', () => {
       'utf8',
     );
     expect(home).toContain('createApplicationTanStackConnection');
-    expect(home).toContain('agent: NotesAssistant');
+    expect(home).toContain('agent: WorkspaceAssistant');
     expect(home).toContain('readAgenticWorkspaceSelection()');
-    expect(home).toContain('<NotesAssistantCard key={threadId}');
+    expect(home).toContain('<WorkspaceAssistantCard key={threadId}');
     expect(home).not.toContain('pending-conversation');
-    expect(home).toContain('notes.refresh()');
+    expect(home).toContain('documents.refresh()');
     expect(home).toContain('live query will reconcile');
+    expect(home).toContain('Workspace assistant');
+    expect(home).not.toMatch(/\bNotes assistant\b/u);
     const libraryView = await readFile(
       join(target, 'src/features/library/view.tsx'),
       'utf8',
@@ -650,9 +654,32 @@ describe('Agentic Start generator', () => {
     expect(libraryView).toContain("library.phase === 'reconnecting'");
     expect(libraryView).toContain('The empty result is authoritative.');
     expect(libraryView).toContain('library.data.artifacts.length === 0');
+    const administrationModel = await readFile(
+      join(target, 'src/features/administration/model.ts'),
+      'utf8',
+    );
+    expect(administrationModel).toContain('PlatformTenants');
+    expect(administrationModel).toContain('PlatformCatalog');
+    expect(administrationModel).not.toContain('providerCustomerId');
+    const administrationView = await readFile(
+      join(target, 'src/features/administration/view.tsx'),
+      'utf8',
+    );
+    expect(administrationView).toContain('export function TenantDirectory');
+    expect(administrationView).toContain('Product catalog');
+    expect(
+      await readFile(join(target, 'src/routes/admin.tenants.$tenantId.tsx'), 'utf8'),
+    ).toContain('TenantAdministration');
     expect(
       await readFile(join(target, 'src/routes/app.documents.$documentId.tsx'), 'utf8'),
     ).toContain("detail.phase === 'error'");
+    const markdownDocument = await readFile(
+      join(target, 'src/components/markdown-document.tsx'),
+      'utf8',
+    );
+    expect(markdownDocument).toContain('export function documentTitle');
+    expect(markdownDocument).toContain('<table');
+    expect(markdownDocument).not.toContain('dangerouslySetInnerHTML');
     expect(
       await readFile(join(target, 'src/routes/app.artifacts.$artifactId.tsx'), 'utf8'),
     ).toContain("detail.phase === 'reconnecting'");
@@ -770,7 +797,7 @@ describe('Agentic Start generator', () => {
         join(temporaryRoot, 'agentic-product-discovery-'),
       );
       temporaryDirectories.push(parent);
-      const target = join(parent, 'notes-product');
+      const target = join(parent, 'documents-product');
 
       await createApplicationAgenticStart({
         targetDirectory: target,
@@ -803,10 +830,10 @@ describe('Agentic Start generator', () => {
         true,
       );
       if (!result.ok) return;
-      expect(result.value.metadata.name).toBe('notes-product');
+      expect(result.value.metadata.name).toBe('documents-product');
       expect(result.value.nodes).toEqual(expect.arrayContaining([
-        expect.objectContaining({ kind: 'model', id: 'model.note' }),
-        expect.objectContaining({ kind: 'aiAgent', name: 'notes-assistant' }),
+        expect.objectContaining({ kind: 'model', id: 'model.document' }),
+        expect.objectContaining({ kind: 'aiAgent', name: 'workspace-assistant' }),
         expect.objectContaining({ kind: 'authorityManifest' }),
       ]));
       // The product Start intentionally includes the maintained SaaS modules;

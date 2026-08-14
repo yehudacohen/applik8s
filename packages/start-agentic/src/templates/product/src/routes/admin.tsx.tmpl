@@ -1,0 +1,12 @@
+import { useApplicationIdentitySession } from '@applik8s/react/identity';
+import { createFileRoute, Link, Outlet } from '@tanstack/react-router';
+import { RouteState } from '../components/ui';
+
+export const Route = createFileRoute('/admin')({ component: AdminBoundary });
+
+function AdminBoundary() {
+  const session = useApplicationIdentitySession();
+  if (!session.data) return <RouteState title="Loading administration" description="Application authority is being resolved." />;
+  if (session.data?.capabilities?.applicationOperations !== true) return <RouteState tone="warning" title="Application-operator access required" description="Workspace ownership does not grant product-wide administration." action={<Link to="/app" className="button-link">Return to product</Link>} />;
+  return <Outlet />;
+}

@@ -1,7 +1,8 @@
 import { Link, createFileRoute } from '@tanstack/react-router';
 import { type FormEvent, useEffect, useState } from 'react';
-import { Note, NoteDetail } from '../application';
+import { Document, DocumentDetail } from '../application';
 import { Alert, Badge, Button, Card, PageHeader, Skeleton } from '../components/ui';
+import { documentTitle, MarkdownDocument } from '../components/markdown-document';
 
 export const Route = createFileRoute('/app/documents/$documentId')({
   component: DocumentDetailRoute,
@@ -9,9 +10,10 @@ export const Route = createFileRoute('/app/documents/$documentId')({
 
 function DocumentDetailRoute() {
   const { documentId } = Route.useParams();
-  const detail = NoteDetail({ id: documentId }).useQuery();
-  const update = Note.update.useMutation();
+  const detail = DocumentDetail({ id: documentId }).useQuery();
+  const update = Document.update.useMutation();
   const [body, setBody] = useState('');
+  const [editing, setEditing] = useState(false);
   const [notice, setNotice] = useState<string>();
   useEffect(() => setBody(detail.data?.body ?? ''), [detail.data?.body]);
 
@@ -21,6 +23,7 @@ function DocumentDetailRoute() {
       await update({ identity: documentId, patch: { body } });
       await detail.refresh();
       setNotice('Document committed. Subscribers now observe the authoritative revision.');
+      setEditing(false);
     } catch {
       setNotice('The document was not changed. Check your authority and retry.');
     }
@@ -28,12 +31,12 @@ function DocumentDetailRoute() {
 
   return <div>
     <Link to="/app/library" className="text-sm font-semibold text-emerald-800">← Back to Library</Link>
-    <PageHeader eyebrow="Mutable document" title="Document" description="This application model can change through the same typed operation whether a human or an admitted agent acts." action={<Badge tone={detail.phase === 'reconnecting' ? 'warning' : 'info'}>{detail.phase === 'reconnecting' ? 'Reconnecting…' : 'Authoritative model'}</Badge>} />
+    <PageHeader eyebrow="Mutable document" title={detail.data ? documentTitle(detail.data.body) : 'Document'} description="This application model can change through the same typed operation whether a human or an admitted agent acts." action={<Badge tone={detail.phase === 'reconnecting' ? 'warning' : 'info'}>{detail.phase === 'reconnecting' ? 'Reconnecting…' : 'Authoritative model'}</Badge>} />
     {detail.phase === 'error' ? <Alert tone="warning" title="Document unavailable">The library remains usable. Retry after the query provider recovers.</Alert> : null}
     {detail.data === undefined && detail.phase !== 'error' ? <Skeleton className="h-72" /> : null}
     {detail.data === null ? <Alert tone="warning" title="Document not found">It may have been removed or belong to another admitted scope.</Alert> : null}
     {detail.data ? <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
-      <Card><form onSubmit={save} className="grid gap-3"><label htmlFor="document-body" className="text-sm font-semibold">Content</label><textarea id="document-body" className="min-h-64" value={body} onChange={event => setBody(event.currentTarget.value)} /><Button type="submit" disabled={update.pending || !body.trim()}>{update.pending ? 'Saving…' : 'Save document'}</Button></form>{notice ? <p role="status" className="mt-3 text-sm text-stone-600">{notice}</p> : null}</Card>
+      <Card><div className="mb-5 flex items-center justify-between gap-3"><div><p className="eyebrow">Content</p><p className="mt-1 text-sm text-stone-600">Readable Markdown with an authoritative editable source.</p></div><Button variant="secondary" type="button" onClick={() => setEditing(value => !value)}>{editing ? 'Preview' : 'Edit'}</Button></div>{editing ? <form onSubmit={save} className="grid gap-3"><label htmlFor="document-body" className="sr-only">Document source</label><textarea id="document-body" className="min-h-96 font-mono text-sm leading-6" value={body} onChange={event => setBody(event.currentTarget.value)} /><Button type="submit" disabled={update.pending || !body.trim()}>{update.pending ? 'Saving…' : 'Save document'}</Button></form> : <MarkdownDocument source={detail.data.body} />}{notice ? <p role="status" className="mt-5 border-t border-stone-100 pt-4 text-sm text-stone-600">{notice}</p> : null}</Card>
       <aside className="space-y-4"><Card><p className="eyebrow">Provenance</p><dl className="mt-3 grid gap-3 text-sm"><div><dt className="text-stone-500">Owner</dt><dd className="mt-1 break-all font-medium">{detail.data.ownerPrincipalId}</dd></div><div><dt className="text-stone-500">Acting creator</dt><dd className="mt-1 break-all font-medium">{detail.data.createdByPrincipalId}</dd></div><div><dt className="text-stone-500">Created</dt><dd className="mt-1 font-medium">{new Date(detail.data.createdAt).toLocaleString()}</dd></div></dl></Card><Card><p className="text-sm leading-6 text-stone-600">Ownership comes from the framework-admitted causal principal. Agent provenance remains distinct from human ownership.</p></Card></aside>
     </div> : null}
   </div>;

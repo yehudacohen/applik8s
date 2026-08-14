@@ -5,7 +5,7 @@ import {
   model,
 } from '@applik8s/applik8s/drizzle';
 
-export const Note = model('notes', {
+export const Document = model('documents', {
   id: field.uuid('id').defaultRandom().primaryKey(),
   ownerPrincipalId: field.text('owner_principal_id').notNull().default(causalPrincipalId),
   createdByPrincipalId: field.text('created_by_principal_id').notNull().default(authenticatedPrincipalId),

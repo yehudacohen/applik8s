@@ -606,6 +606,11 @@ export const signalProof = platform.composition;
       expect(source).toContain('terminalStatus');
       expect(source).toContain('workflowExecutionId');
       expect(source).toContain('hatchet-workflow-runtime');
+      expect(source).toContain('observeWorkflowRuntime');
+      expect(source).toContain('workflow-engine:provider.workflow-engine');
+      expect(source).toContain('workflow-worker:workflow-worker.applik8s-hatchet');
+      expect(source).toContain('expiresAt');
+      expect(source).toContain('worker-stopping');
       expect(source).toContain('executionId');
       expect(source).not.toContain("import { app");
       const handlerSource = await readFile(

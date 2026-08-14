@@ -56,13 +56,14 @@ The first useful loop is the tutorial.
 
 ### Audience contract
 
-Agentic Start serves three audiences whose needs must not be collapsed into one
+Agentic Start serves four audiences whose needs must not be collapsed into one
 dashboard:
 
 | Audience | Primary goal | Visible surface |
 | --- | --- | --- |
 | Product member | Accomplish work with the agent | Copilot, conversations, library, Inbox, account |
 | Workspace owner | Operate the SaaS workspace | Member surface plus members, roles, usage, billing, workspace settings |
+| Product administrator | Operate the multi-tenant SaaS product | Tenant directory, product catalog, tenant subscription and usage state |
 | Application operator | Build and operate the deployment | Explicitly authorized Launchpad, Setup, Operations, deployment and causal evidence |
 
 The same person may hold all three roles during local development, but the UI
@@ -72,11 +73,19 @@ deployment profiles, environment variables, TypeKro, Alchemy, `doctor`, or
 they can administer product membership or billing. Operator routes and links
 are absent when authority is absent, not disabled decoration.
 
+Product administration is distinct from workspace ownership. The generated
+application includes an application-operator tenant directory, product catalog,
+and tenant-scoped subscription and usage view. It never exposes provider
+customer identifiers, credentials, Kubernetes state, or mutation-capable
+deployment machinery to the browser.
+
 ### Default product: a workspace copilot
 
-Notes remain the smallest readable mutable document model, but the
-generated product is a workspace copilot rather than a notes application with a
-chat box. Its default product loop includes:
+Documents are the single mutable content concept in the generated product. A
+builder may later add specialized document kinds, but the starter does not ask
+users to distinguish a “note” from a “document.” The generated product is a
+workspace copilot rather than a CRUD application with a chat box. Its default
+product loop includes:
 
 - persistent, resumable conversations;
 - streaming responses with stop, retry, and reconnect behavior;
@@ -115,7 +124,7 @@ does not know which tasks the user completed, does not establish prerequisites,
 does not guide the user through the product, and does not connect actions to
 their resulting models, events, workflows, or deployment graph.
 
-The generated home page presents notes and an assistant, but neither is framed
+The generated home page presents documents and an assistant, but neither is framed
 as a deliberate golden journey. Account, workspace, billing, and operations
 feel like adjacent examples rather than stages of one product.
 
@@ -225,7 +234,7 @@ controllers and readiness descriptors, not canonical product-user persistence.
 Launchpad readiness derives from deployment evidence rather than the onboarding
 table.
 
-A mutable Note or Document is not an immutable Artifact. Documents retain
+A mutable Document is not an immutable Artifact. Documents retain
 ordinary model revision and collaboration semantics. Artifacts require object
 storage identity, digest, provenance, producing run, and retention. The Library
 may present both, but the schemas and lifecycle remain distinct.
@@ -373,7 +382,7 @@ src/
     copilot/
     conversations/
     library/
-    documents/           # mutable application-owned notes/documents
+    documents/           # mutable application-owned documents
     artifacts/           # immutable object-backed run outputs
     inbox/
     workspaces/

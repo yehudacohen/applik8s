@@ -374,6 +374,37 @@ async function observeWorkflowExecution(execution, workflowName, state, reason) 
     observedAt: new Date().toISOString(),
   });
 }
+async function observeWorkflowRuntime(state, reason) {
+  if (!operationAuthority) return;
+  const observedAt = new Date();
+  const expiresAt = new Date(observedAt.getTime() + 90_000).toISOString();
+  await Promise.all([
+    operationAuthority.observe({
+      id: 'workflow-engine:${contract.provider.id}',
+      domain: 'workflow',
+      subject: ${JSON.stringify(contract.provider.name)},
+      authority: 'provider',
+      state,
+      ...(reason ? { reason } : {}),
+      source: 'hatchet-workflow-runtime',
+      evidence: { engine: ${JSON.stringify(contract.engineName)} },
+      observedAt: observedAt.toISOString(),
+      expiresAt,
+    }),
+    operationAuthority.observe({
+      id: 'workflow-worker:${contract.worker.id}',
+      domain: 'workflow',
+      subject: ${JSON.stringify(contract.worker.name)},
+      authority: 'provider',
+      state,
+      ...(reason ? { reason } : {}),
+      source: 'hatchet-workflow-runtime',
+      evidence: { worker: ${JSON.stringify(contract.worker.name)} },
+      observedAt: observedAt.toISOString(),
+      expiresAt,
+    }),
+  ]);
+}
 
 async function canonicalTaskPrincipal(principal, context) {
   if (!principal || !operationAuthority) return principal;
@@ -571,9 +602,16 @@ const worker = await retryStartup('Hatchet worker initialization', () => hatchet
 const running = worker.start();
 await worker.waitUntilReady(60_000);
 ready = true;
+await observeWorkflowRuntime('ready');
+const workflowObservationHeartbeat = setInterval(() => {
+  observeWorkflowRuntime('ready').catch((error) => console.error('Workflow observation heartbeat failed', error));
+}, 30_000);
+workflowObservationHeartbeat.unref?.();
 async function shutdown() {
   if (stopping) return;
   stopping = true; ready = false;
+  clearInterval(workflowObservationHeartbeat);
+  await observeWorkflowRuntime('waiting', 'worker-stopping');
   if (signalBridgeController) signalBridgeController.abort();
   await worker.stop();
   if (signalBridgeTask) await signalBridgeTask;

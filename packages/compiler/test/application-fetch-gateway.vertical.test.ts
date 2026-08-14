@@ -171,7 +171,10 @@ describe("application host Fetch gateway", () => {
 			"postgres(requiredEnv(\"APPLIK8S_DATABASE_APPLICATION_URL\")",
 		);
 		expect(source).toContain("async function admitApplicationIdentity(request)");
-		expect(source).toContain("principal: await operationAuthority.admitPrincipal({");
+		expect(source).toContain("const admittedPrincipal = await operationAuthority.admitPrincipal({");
+		expect(source).toContain('observeApplicationCapability');
+		expect(source).toContain("source: 'application-fetch-gateway'");
+		expect(source).toContain("'identity:provider'");
 		expect(source).toContain("roleBootstraps");
 		expect(source).toContain("authenticate: (request) => admitApplicationIdentity(request)");
 	});

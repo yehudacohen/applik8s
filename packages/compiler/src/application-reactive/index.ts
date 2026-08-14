@@ -4105,7 +4105,7 @@ function consolidatedReactiveGatewayResources(
     const portName = `http-${index}`;
     return {
       ...original,
-      name: kubernetesName(artifact.name),
+      name: kubernetesContainerName(artifact.name),
       env: [
         ...arrayValue(original.env),
         { name: 'APPLIK8S_HTTP_PORT', value: String(ports[index]) },
@@ -4203,7 +4203,7 @@ function consolidatedReactiveWorkerResources(
     const healthPortName = `health-${index}`;
     return {
       ...original,
-      name: kubernetesName(artifact.name),
+      name: kubernetesContainerName(artifact.name),
       env: [
         ...arrayValue(original.env),
         { name: 'APPLIK8S_HEALTH_PORT', value: String(healthPorts[index]) },
@@ -5258,3 +5258,11 @@ function absoluteDependencyImports(source: string, resolveDir: string): string {
 function objectConfig(value: unknown): Readonly<Record<string, unknown>> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Readonly<Record<string, unknown>> : {}; }
 function stringConfig(value: unknown): string { return typeof value === 'string' ? value : ''; }
 function kubernetesName(value: string): string { return value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '') || 'app'; }
+
+export function kubernetesContainerName(value: string): string {
+  const normalized = kubernetesName(value);
+  if (normalized.length <= 63) return normalized;
+  const digest = createHash('sha256').update(normalized).digest('hex').slice(0, 8);
+  const prefix = normalized.slice(0, 54).replace(/[-.]+$/g, '');
+  return `${prefix}-${digest}`;
+}

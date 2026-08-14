@@ -31,54 +31,24 @@ import {
   applicationOperationalObservations,
   applicationOperationsSchema,
 } from './schema.js';
+import {
+  applicationOperationsMergeObservedAndInferredDomainRecords,
+  applicationOperationsOverviewSnapshot,
+  applicationOperationsRedactedAuditRecords,
+  applicationOperationsRedactedRecords,
+} from './redaction.js';
+import type {
+  ApplicationOperationsCategory,
+  ApplicationOperationsPublicRecord,
+} from './redaction.js';
 
 export * from './schema.js';
+export * from './redaction.js';
 
 export const applicationOperationsSnapshotInput = type({
   'limit?': '1 <= number.integer <= 100',
   'auditSearch?': 'string',
 });
-
-export type ApplicationOperationsCategory =
-  | 'conversation'
-  | 'message'
-  | 'run'
-  | 'runEvent'
-  | 'memory'
-  | 'approval'
-  | 'outcome'
-  | 'artifact'
-  | 'evaluationDataset'
-  | 'evaluationCase'
-  | 'evaluationScorer'
-  | 'evaluation'
-  | 'evaluationResult'
-  | 'usage'
-  | 'entitlement'
-  | 'installation'
-  | 'provider'
-  | 'workflow'
-  | 'eventConsumer'
-  | 'projection'
-  | 'ai'
-  | 'mcp'
-  | 'authority'
-  | 'identity'
-  | 'objectStore'
-  | 'database'
-  | 'gateway'
-  | 'audit'
-  | 'goLive'
-  | 'operational';
-
-export interface ApplicationOperationsPublicRecord {
-  readonly category: ApplicationOperationsCategory;
-  readonly id: string;
-  readonly label?: string;
-  readonly state?: string;
-  readonly authority?: 'canonical' | 'delivery' | 'provider' | 'inferred';
-  readonly observedAt?: string;
-}
 
 export const applicationOperationsPublicRecord = type({
   category: 'string',
@@ -234,196 +204,6 @@ export interface ApplicationOperationsOverviewModule {
  * authority, and graph visibility without inheriting conversations, billing,
  * approvals, evaluations, artifacts, or usage models.
  */
-export function applicationOperationsOverviewSnapshot(
-  operational: readonly unknown[],
-  audit: readonly unknown[],
-  inferred: readonly ApplicationOperationsPublicRecord[],
-  auditSearch?: string,
-): ApplicationOperationsSnapshot {
-  const domain = (
-    category: ApplicationOperationsCategory,
-    name:
-      | 'installation'
-      | 'provider'
-      | 'workflow'
-      | 'eventConsumer'
-      | 'projection'
-      | 'ai'
-      | 'mcp'
-      | 'authority'
-      | 'identity'
-      | 'objectStore'
-      | 'database'
-      | 'gateway',
-  ) => [
-    ...applicationOperationsRedactedDomainRecords(
-      category,
-      name,
-      operational,
-    ),
-    ...inferred.filter((record) => record.category === category),
-  ];
-  return {
-    conversations: [],
-    messages: [],
-    runs: [],
-    runEvents: [],
-    memory: [],
-    approvals: [],
-    outcomes: [],
-    artifacts: [],
-    evaluationDatasets: [],
-    evaluationCases: [],
-    evaluationScorers: [],
-    evaluations: [],
-    evaluationResults: [],
-    usage: [],
-    entitlements: [],
-    installations: domain('installation', 'installation'),
-    providers: domain('provider', 'provider'),
-    workflows: domain('workflow', 'workflow'),
-    eventConsumers: domain('eventConsumer', 'eventConsumer'),
-    projections: domain('projection', 'projection'),
-    ai: domain('ai', 'ai'),
-    mcp: domain('mcp', 'mcp'),
-    authority: domain('authority', 'authority'),
-    identity: domain('identity', 'identity'),
-    objectStores: domain('objectStore', 'objectStore'),
-    databases: domain('database', 'database'),
-    gateways: domain('gateway', 'gateway'),
-    audit: [
-      ...applicationOperationsRedactedAuditRecords(audit, auditSearch),
-    ],
-    goLive: inferred.filter((record) => record.category === 'goLive'),
-    operational: [
-      ...applicationOperationsRedactedRecords('operational', operational),
-    ],
-  };
-}
-
-/**
- * Projects a provider row into the only browser-visible maintained-operations
- * shape. The allowlist is intentionally tiny; adding a field requires an
- * explicit public contract and a redaction review.
- */
-export function applicationOperationsRedactedRecords(
-  category: ApplicationOperationsCategory,
-  rows: readonly unknown[],
-): readonly ApplicationOperationsPublicRecord[] {
-  return rows.map((value, index) => {
-    const row = isRecord(value) ? value : {};
-    const authority = publicAuthority(row.authority);
-    const label = firstPublicString(row, [
-      'name',
-      'subject',
-      'operationId',
-      'kind',
-      'type',
-    ]);
-    const recordedState = firstPublicString(row, [
-      'status',
-      'state',
-      'phase',
-      'confidence',
-    ]);
-    const expiresAt = firstPublicString(row, ['expiresAt', 'expires_at']);
-    const state =
-      expiresAt && new Date(expiresAt).getTime() <= Date.now()
-        ? 'unknown'
-        : recordedState;
-    const observedAt = firstPublicString(row, [
-      'observedAt',
-      'occurredAt',
-      'updatedAt',
-      'createdAt',
-      'startedAt',
-      'completedAt',
-    ]);
-    return Object.freeze({
-      category,
-      id:
-        firstPublicString(row, ['id', 'runId', 'grantRequestId'])
-        ?? `${category}:${index}`,
-      ...(label ? { label } : {}),
-      ...(state ? { state } : {}),
-      ...(authority ? { authority } : {}),
-      ...(observedAt ? { observedAt } : {}),
-    });
-  });
-}
-
-export function applicationOperationsRedactedDomainRecords(
-  category: ApplicationOperationsCategory,
-  domain:
-    | 'installation'
-    | 'provider'
-    | 'workflow'
-    | 'eventConsumer'
-    | 'projection'
-    | 'ai'
-    | 'mcp'
-    | 'authority'
-    | 'identity'
-    | 'objectStore'
-    | 'database'
-    | 'gateway',
-  rows: readonly unknown[],
-): readonly ApplicationOperationsPublicRecord[] {
-  return applicationOperationsRedactedRecords(
-    category,
-    rows.filter(
-      (value) => isRecord(value) && value.domain === domain,
-    ),
-  );
-}
-
-/**
- * Produces a searchable audit timeline without exposing principals, targets,
- * arbitrary details, or authority evidence to the browser.
- */
-export function applicationOperationsRedactedAuditRecords(
-  rows: readonly unknown[],
-  search?: string,
-): readonly ApplicationOperationsPublicRecord[] {
-  const needle = search?.trim().toLowerCase();
-  if (needle && needle.length > 200) {
-    throw new Error('Operations audit search must not exceed 200 characters.');
-  }
-  return rows.flatMap((value) => {
-    if (!isRecord(value)) return [];
-    const document = isRecord(value.document) ? value.document : {};
-    const principal = isRecord(document.principal) ? document.principal : {};
-    const searchable = [
-      value.id,
-      document.kind,
-      document.operationId,
-      document.targetDigest,
-      principal.id,
-      principal.subject,
-    ].filter((candidate): candidate is string => typeof candidate === 'string');
-    if (
-      needle
-      && !searchable.some((candidate) =>
-        candidate.toLowerCase().includes(needle))
-    ) {
-      return [];
-    }
-    const id = firstPublicString(value, ['id']) ?? 'audit:unknown';
-    const kind = firstPublicString(document, ['kind']) ?? 'audit.recorded';
-    const observedAt =
-      firstPublicString(value, ['occurredAt', 'occurred_at'])
-      ?? firstPublicString(document, ['occurredAt']);
-    return [Object.freeze({
-      category: 'audit' as const,
-      id,
-      label: kind,
-      state: 'recorded',
-      authority: 'canonical' as const,
-      ...(observedAt ? { observedAt } : {}),
-    })];
-  });
-}
-
 /**
  * Produces the framework-known half of the operations model directly from the
  * canonical application graph. These records deliberately remain
@@ -437,6 +217,7 @@ export function applicationOperationsInferredRecords(
   if (!graph) return [];
   return [
     ...graph.nodes.flatMap((node) => {
+    if (node.kind === 'provider' && node.config?.qualification) return [];
     const domain = operationsDomainForNode(node);
     if (!domain) return [];
     return [Object.freeze({
@@ -719,18 +500,18 @@ function installOperationsControlCenter(
     evaluationResults: applicationOperationsRedactedRecords("evaluationResult", evaluationResults),
     usage: applicationOperationsRedactedRecords("usage", usage),
     entitlements: applicationOperationsRedactedRecords("entitlement", entitlements),
-    installations: [...applicationOperationsRedactedDomainRecords("installation", "installation", operational), ...inferred.filter(record => record.category === "installation")],
-    providers: [...applicationOperationsRedactedDomainRecords("provider", "provider", operational), ...inferred.filter(record => record.category === "provider")],
-    workflows: [...applicationOperationsRedactedDomainRecords("workflow", "workflow", operational), ...inferred.filter(record => record.category === "workflow")],
-    eventConsumers: [...applicationOperationsRedactedDomainRecords("eventConsumer", "eventConsumer", operational), ...inferred.filter(record => record.category === "eventConsumer")],
-    projections: [...applicationOperationsRedactedDomainRecords("projection", "projection", operational), ...inferred.filter(record => record.category === "projection")],
-    ai: [...applicationOperationsRedactedDomainRecords("ai", "ai", operational), ...inferred.filter(record => record.category === "ai")],
-    mcp: [...applicationOperationsRedactedDomainRecords("mcp", "mcp", operational), ...inferred.filter(record => record.category === "mcp")],
-    authority: [...applicationOperationsRedactedDomainRecords("authority", "authority", operational), ...inferred.filter(record => record.category === "authority")],
-    identity: [...applicationOperationsRedactedDomainRecords("identity", "identity", operational), ...inferred.filter(record => record.category === "identity")],
-    objectStores: [...applicationOperationsRedactedDomainRecords("objectStore", "objectStore", operational), ...inferred.filter(record => record.category === "objectStore")],
-    databases: [...applicationOperationsRedactedDomainRecords("database", "database", operational), ...inferred.filter(record => record.category === "database")],
-    gateways: [...applicationOperationsRedactedDomainRecords("gateway", "gateway", operational), ...inferred.filter(record => record.category === "gateway")],
+    installations: applicationOperationsMergeObservedAndInferredDomainRecords("installation", "installation", operational, inferred),
+    providers: applicationOperationsMergeObservedAndInferredDomainRecords("provider", "provider", operational, inferred),
+    workflows: applicationOperationsMergeObservedAndInferredDomainRecords("workflow", "workflow", operational, inferred),
+    eventConsumers: applicationOperationsMergeObservedAndInferredDomainRecords("eventConsumer", "eventConsumer", operational, inferred),
+    projections: applicationOperationsMergeObservedAndInferredDomainRecords("projection", "projection", operational, inferred),
+    ai: applicationOperationsMergeObservedAndInferredDomainRecords("ai", "ai", operational, inferred),
+    mcp: applicationOperationsMergeObservedAndInferredDomainRecords("mcp", "mcp", operational, inferred),
+    authority: applicationOperationsMergeObservedAndInferredDomainRecords("authority", "authority", operational, inferred),
+    identity: applicationOperationsMergeObservedAndInferredDomainRecords("identity", "identity", operational, inferred),
+    objectStores: applicationOperationsMergeObservedAndInferredDomainRecords("objectStore", "objectStore", operational, inferred),
+    databases: applicationOperationsMergeObservedAndInferredDomainRecords("database", "database", operational, inferred),
+    gateways: applicationOperationsMergeObservedAndInferredDomainRecords("gateway", "gateway", operational, inferred),
     audit: applicationOperationsRedactedAuditRecords(audit, input.auditSearch),
     goLive: inferred.filter(record => record.category === "goLive"),
     operational: applicationOperationsRedactedRecords("operational", operational),
@@ -741,7 +522,8 @@ function installOperationsControlCenter(
 import { applicationArtifacts } from '@applik8s/artifacts';
 import { applicationConversationMemory, applicationConversationMessages, applicationConversationRunEvents, applicationConversationRuns, applicationConversations } from '@applik8s/conversations';
 import { applicationEvaluationCases, applicationEvaluationDatasets, applicationEvaluationResults, applicationEvaluationRuns, applicationEvaluationScorers } from '@applik8s/evals';
-import { applicationAuthorityAudit, applicationOperationalObservations, applicationOperationsRedactedAuditRecords, applicationOperationsRedactedDomainRecords, applicationOperationsRedactedRecords } from '@applik8s/operations-ui';
+import { applicationAuthorityAudit, applicationOperationalObservations } from '@applik8s/operations-ui/schema';
+import { applicationOperationsMergeObservedAndInferredDomainRecords, applicationOperationsRedactedAuditRecords, applicationOperationsRedactedRecords } from '@applik8s/operations-ui/redaction';
 import { applicationEntitlements, applicationUsageFacts } from '@applik8s/usage';
 import { eq } from 'drizzle-orm';`,
           resolveDir: process.cwd(),
@@ -812,18 +594,18 @@ import { eq } from 'drizzle-orm';`,
       evaluationResults: applicationOperationsRedactedRecords('evaluationResult', evaluationResults),
       usage: applicationOperationsRedactedRecords('usage', usage),
       entitlements: applicationOperationsRedactedRecords('entitlement', entitlements),
-      installations: [...applicationOperationsRedactedDomainRecords('installation', 'installation', operational), ...inferred.filter((record) => record.category === 'installation')],
-      providers: [...applicationOperationsRedactedDomainRecords('provider', 'provider', operational), ...inferred.filter((record) => record.category === 'provider')],
-      workflows: [...applicationOperationsRedactedDomainRecords('workflow', 'workflow', operational), ...inferred.filter((record) => record.category === 'workflow')],
-      eventConsumers: [...applicationOperationsRedactedDomainRecords('eventConsumer', 'eventConsumer', operational), ...inferred.filter((record) => record.category === 'eventConsumer')],
-      projections: [...applicationOperationsRedactedDomainRecords('projection', 'projection', operational), ...inferred.filter((record) => record.category === 'projection')],
-      ai: [...applicationOperationsRedactedDomainRecords('ai', 'ai', operational), ...inferred.filter((record) => record.category === 'ai')],
-      mcp: [...applicationOperationsRedactedDomainRecords('mcp', 'mcp', operational), ...inferred.filter((record) => record.category === 'mcp')],
-      authority: [...applicationOperationsRedactedDomainRecords('authority', 'authority', operational), ...inferred.filter((record) => record.category === 'authority')],
-      identity: [...applicationOperationsRedactedDomainRecords('identity', 'identity', operational), ...inferred.filter((record) => record.category === 'identity')],
-      objectStores: [...applicationOperationsRedactedDomainRecords('objectStore', 'objectStore', operational), ...inferred.filter((record) => record.category === 'objectStore')],
-      databases: [...applicationOperationsRedactedDomainRecords('database', 'database', operational), ...inferred.filter((record) => record.category === 'database')],
-      gateways: [...applicationOperationsRedactedDomainRecords('gateway', 'gateway', operational), ...inferred.filter((record) => record.category === 'gateway')],
+      installations: applicationOperationsMergeObservedAndInferredDomainRecords('installation', 'installation', operational, inferred),
+      providers: applicationOperationsMergeObservedAndInferredDomainRecords('provider', 'provider', operational, inferred),
+      workflows: applicationOperationsMergeObservedAndInferredDomainRecords('workflow', 'workflow', operational, inferred),
+      eventConsumers: applicationOperationsMergeObservedAndInferredDomainRecords('eventConsumer', 'eventConsumer', operational, inferred),
+      projections: applicationOperationsMergeObservedAndInferredDomainRecords('projection', 'projection', operational, inferred),
+      ai: applicationOperationsMergeObservedAndInferredDomainRecords('ai', 'ai', operational, inferred),
+      mcp: applicationOperationsMergeObservedAndInferredDomainRecords('mcp', 'mcp', operational, inferred),
+      authority: applicationOperationsMergeObservedAndInferredDomainRecords('authority', 'authority', operational, inferred),
+      identity: applicationOperationsMergeObservedAndInferredDomainRecords('identity', 'identity', operational, inferred),
+      objectStores: applicationOperationsMergeObservedAndInferredDomainRecords('objectStore', 'objectStore', operational, inferred),
+      databases: applicationOperationsMergeObservedAndInferredDomainRecords('database', 'database', operational, inferred),
+      gateways: applicationOperationsMergeObservedAndInferredDomainRecords('gateway', 'gateway', operational, inferred),
       audit: applicationOperationsRedactedAuditRecords(audit, input.auditSearch),
       goLive: inferred.filter((record) => record.category === 'goLive'),
       operational: applicationOperationsRedactedRecords('operational', operational),
@@ -921,7 +703,8 @@ function installOperationsOverview(
   return applicationOperationsOverviewSnapshot(operational, audit, inferred, input.auditSearch);
 }`,
           dependencies: {
-            source: `import { applicationAuthorityAudit, applicationOperationalObservations, applicationOperationsOverviewSnapshot } from '@applik8s/operations-ui';
+            source: `import { applicationAuthorityAudit, applicationOperationalObservations } from '@applik8s/operations-ui/schema';
+import { applicationOperationsOverviewSnapshot } from '@applik8s/operations-ui/redaction';
 import { eq } from 'drizzle-orm';`,
             resolveDir: process.cwd(),
           },
@@ -983,29 +766,3 @@ export const applicationOperationsRouteContribution = Object.freeze({
   authority: 'application-operation',
   operation: 'Conversation.operationsSnapshot',
 } as const);
-
-function firstPublicString(
-  row: Readonly<Record<string, unknown>>,
-  keys: readonly string[],
-): string | undefined {
-  for (const key of keys) {
-    const value = row[key];
-    if (typeof value === 'string' && value.length > 0) return value;
-  }
-  return undefined;
-}
-
-function publicAuthority(
-  value: unknown,
-): ApplicationOperationsPublicRecord['authority'] | undefined {
-  return value === 'canonical'
-    || value === 'delivery'
-    || value === 'provider'
-    || value === 'inferred'
-    ? value
-    : undefined;
-}
-
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}

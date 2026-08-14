@@ -720,7 +720,7 @@ const handle = createApplicationAIAgentRequestHandler({
     await operationAuthority.observe({
       id: 'ai:attempt:' + decision.attempt.id,
       domain: 'ai',
-      subject: 'agent:' + contract.name,
+      subject: contract.name,
       authority: 'canonical',
       state: 'running',
       source: 'application-ai-attempt-runtime',
@@ -819,7 +819,7 @@ const handle = createApplicationAIAgentRequestHandler({
       await operationAuthority.observe({
         id: 'ai:attempt:' + reservation.attemptId,
         domain: 'ai',
-        subject: 'agent:' + contract.name,
+        subject: contract.name,
         authority: 'canonical',
         state: 'succeeded',
         source: 'application-ai-attempt-runtime',
@@ -844,7 +844,7 @@ const handle = createApplicationAIAgentRequestHandler({
         await operationAuthority.observe({
           id: 'ai:attempt:' + reservation.attemptId,
           domain: 'ai',
-          subject: 'agent:' + contract.name,
+          subject: contract.name,
           authority: 'canonical',
           state: 'cancelled',
           reason: 'cancelled',
@@ -875,7 +875,7 @@ const handle = createApplicationAIAgentRequestHandler({
       await operationAuthority.observe({
         id: 'ai:attempt:' + reservation.attemptId,
         domain: 'ai',
-        subject: 'agent:' + contract.name,
+        subject: contract.name,
         authority: 'canonical',
         state: failure.classification === 'completion-uncertain'
           ? 'degraded'

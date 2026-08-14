@@ -20,14 +20,17 @@ const record = process.argv.includes('--record');
 const snapshotPath = join(root, 'benchmarks/v0.7/profile-graphs.json');
 
 if (!reuseBuild) {
+  await buildApplicationHost('examples/guestbook-start');
   await build(
     'examples/guestbook-start/src/application.ts',
     'dist/examples/guestbook-start',
   );
+  await buildApplicationHost('examples/chirp-start');
   await build(
     'examples/chirp-start/src/application.ts',
     'dist/examples/chirp',
   );
+  await buildApplicationHost('examples/identity-start');
   await build(
     'examples/identity-start/src/application.ts',
     'dist/examples/identity-start',
@@ -64,6 +67,10 @@ if (record) {
     `v0.7 profile graphs match: ${snapshots.profiles.map((profile) =>
       `${profile.name}=${profile.nodes.length} nodes/${profile.edges.length} edges`).join(', ')}.`,
   );
+}
+
+async function buildApplicationHost(example: string): Promise<void> {
+  await run('bun', ['run', '--cwd', example, 'build']);
 }
 
 async function build(

@@ -9,11 +9,11 @@ import {
   StartCheckout,
 } from './features/billing';
 import {
-  Note,
-  NoteDetail,
-  NoteList,
-  NotesAssistant,
-} from './features/notes/model';
+  Document,
+  DocumentDetail,
+  DocumentList,
+  WorkspaceAssistant,
+} from './features/documents/model';
 import { Conversation, ConversationDetail, ConversationList } from './features/conversations/model';
 import {
   DecisionInbox,
@@ -26,6 +26,11 @@ import {
   DataLifecycleRequests,
 } from './features/lifecycle/model';
 import { OnboardingProgress, OnboardingState } from './features/onboarding/model';
+import {
+  PlatformCatalog,
+  PlatformTenant,
+  PlatformTenants,
+} from './features/administration/model';
 import {
   AcceptInvitation,
   Invitation,
@@ -40,10 +45,10 @@ export {
   BillingDashboard,
   CancelSubscription,
   ChangeSubscription,
-  Note,
-  NoteDetail,
-  NoteList,
-  NotesAssistant,
+  Document,
+  DocumentDetail,
+  DocumentList,
+  WorkspaceAssistant,
   Conversation,
   ConversationDetail,
   ConversationList,
@@ -56,6 +61,9 @@ export {
   WorkspaceLibrary,
   OnboardingProgress,
   OnboardingState,
+  PlatformCatalog,
+  PlatformTenant,
+  PlatformTenants,
   OpenBillingPortal,
   ResumeSubscription,
   ReceivePaymentWebhook,

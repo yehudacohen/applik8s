@@ -77,6 +77,17 @@ export function generatedApplicationFetchGatewayModules(
 	const objectStores = graph.nodes.filter(
 		(node): node is ApplicationObjectStoreNode => node.kind === "objectStore",
 	);
+	const objectStorageProviderNames = graph.nodes.flatMap((node) =>
+		node.kind === "provider" && node.interface === "ObjectStorage"
+			&& !node.config?.qualification
+			? [node.name]
+			: [],
+	);
+	const gatewayObservationSubjects = graph.nodes.flatMap((node) =>
+		node.kind === "gateway" || node.kind === "server" || node.kind === "exposure"
+			? [node.name]
+			: [],
+	);
 	const agents = graph.nodes.filter(
 		(node): node is ApplicationAIAgentNode => node.kind === "aiAgent",
 	);
@@ -486,26 +497,49 @@ const operationAuthority = createApplicationOperationAuthorityRuntime({
   catalog: ${JSON.stringify(operationCatalog)},
   ${authorityManifest ? `authorityManifest: ${JSON.stringify(authorityManifest)},` : ""}
 });
+async function observeApplicationCapability(id, domain, subject, state, reason, evidence = {}) {
+  await operationAuthority.observe({
+    id,
+    domain,
+    subject,
+    authority: 'provider',
+    state,
+    ...(reason ? { reason } : {}),
+    source: 'application-fetch-gateway',
+    evidence,
+    observedAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 90_000).toISOString(),
+  });
+}
 async function admitApplicationIdentity(request) {
   const admission = await ${authenticate}(request);
   const principal = admission.principal;
+  const admittedPrincipal = await operationAuthority.admitPrincipal({
+    id: principal.id,
+    identity: principal.identity,
+    kind: principal.kind,
+    authenticationMethod: principal.authenticationMethod,
+    audience: principal.audience,
+    ...(principal.expiresAt ? { expiresAt: principal.expiresAt } : {}),
+    ...(principal.sessionId ? { sessionId: principal.sessionId } : {}),
+    ...(principal.clientId ? { clientId: principal.clientId } : {}),
+    ...(principal.flowId ? { flowId: principal.flowId } : {}),
+    ...(principal.roles ? { roles: principal.roles } : {}),
+    ...(principal.attributes ? { attributes: principal.attributes } : {}),
+  }, principal.trustedContextDigest);
+  await observeApplicationCapability(
+    'identity:provider',
+    'identity',
+    ${JSON.stringify(identity[0]?.name ?? 'IdentityProvider')},
+    'ready',
+    undefined,
+    { admitted: true },
+  );
   return {
     ...admission,
-    principal: await operationAuthority.admitPrincipal({
-      id: principal.id,
-      identity: principal.identity,
-      kind: principal.kind,
-      authenticationMethod: principal.authenticationMethod,
-      audience: principal.audience,
-      ...(principal.expiresAt ? { expiresAt: principal.expiresAt } : {}),
-      ...(principal.sessionId ? { sessionId: principal.sessionId } : {}),
-      ...(principal.clientId ? { clientId: principal.clientId } : {}),
-      ...(principal.flowId ? { flowId: principal.flowId } : {}),
-      ...(principal.roles ? { roles: principal.roles } : {}),
-      ...(principal.attributes ? { attributes: principal.attributes } : {}),
-    }, principal.trustedContextDigest),
+    principal: admittedPrincipal,
   };
-}` : ""}
+}` : `async function observeApplicationCapability() {}`}
 ${authenticate ? `const applicationIdentitySession = createApplicationIdentitySessionHandler({
   authenticate: (request) => ${operationCatalog && identityAuthorityDatabaseEnvironment ? "admitApplicationIdentity" : authenticate}(request),
 });` : ""}
@@ -544,13 +578,38 @@ export const gateway = {
         }
       }));
       let localReady = true;
+      let objectStorageReady = true;
       try {
         localReady = !localGateway || (await localGateway.handle(request.clone())).ok;
         await objectGateway?.ready();
       } catch {
         localReady = false;
+        objectStorageReady = false;
       }
       const ready = localReady && remoteResults.every((dependency) => dependency.ready);
+      await Promise.all([
+        ...${JSON.stringify(objectStorageProviderNames)}.map((subject) => observeApplicationCapability(
+          'object-storage-provider:' + subject,
+          'objectStore',
+          subject,
+          objectStorageReady ? 'ready' : 'degraded',
+          objectStorageReady ? undefined : 'readiness-check-failed',
+        )),
+        ...${JSON.stringify(objectStores.map((store) => store.name))}.map((subject) => observeApplicationCapability(
+          'object-store:' + subject,
+          'objectStore',
+          subject,
+          objectStorageReady ? 'ready' : 'degraded',
+          objectStorageReady ? undefined : 'readiness-check-failed',
+        )),
+        ...${JSON.stringify(gatewayObservationSubjects)}.map((subject) => observeApplicationCapability(
+          'gateway:' + subject,
+          'gateway',
+          subject,
+          ready ? 'ready' : 'degraded',
+          ready ? undefined : 'dependency-not-ready',
+        )),
+      ]);
       return new Response(JSON.stringify({ ready, dependencies: remoteResults }), { status: ready ? 200 : 503, headers: { 'content-type': 'application/json' } });
     }
     ${authenticate ? `if (url.pathname === '/__applik8s/v1/identity/session' && request.method === 'GET') {

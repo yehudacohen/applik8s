@@ -1,0 +1,50 @@
+import { Link } from '@tanstack/react-router';
+import { Badge, Card, EmptyState, Metric, PageHeader, RouteState } from '../../components/ui';
+import { PlatformCatalog, PlatformTenant, PlatformTenants } from '../../application';
+
+export function AdministrationOverview() {
+  const tenants = PlatformTenants({}).useQuery();
+  const catalog = PlatformCatalog({}).useQuery();
+  if (tenants.error || catalog.error) return <RouteState tone="warning" title="Administration is temporarily unavailable" description="Tenant and product state remains authoritative while the query provider recovers." />;
+  if (!tenants.data || !catalog.data) return <RouteState title="Loading administration" description="Tenant, subscription, and usage summaries are being assembled." />;
+  const activeSubscriptions = tenants.data.filter(tenant => tenant.subscriptionState === 'active').length;
+  const totalUsage = tenants.data.reduce((sum, tenant) => sum + tenant.inputTokens + tenant.outputTokens, 0);
+  return <div>
+    <PageHeader eyebrow="Application administration" title="Product control center" description="Operate tenants, product plans, subscriptions, and usage without crossing into Kubernetes or provider credentials." />
+    <div className="grid gap-4 sm:grid-cols-3"><Metric label="Tenants" value={String(tenants.data.length)} /><Metric label="Active subscriptions" value={String(activeSubscriptions)} /><Metric label="Recorded tokens" value={totalUsage.toLocaleString()} /></div>
+    <div className="mt-6 grid gap-5 lg:grid-cols-2">
+      <Card><h2 className="text-lg font-semibold">Tenant management</h2><p className="mt-2 text-sm text-stone-600">Membership, plan state, and admitted usage stay attached to the application tenant.</p><Link className="mt-4 inline-block font-semibold text-emerald-800" to="/admin/tenants">Open tenants →</Link></Card>
+      <Card><h2 className="text-lg font-semibold">Product catalog</h2><p className="mt-2 text-sm text-stone-600">{catalog.data.length} application-owned plans resolve through the active billing provider.</p><Link className="mt-4 inline-block font-semibold text-emerald-800" to="/admin/catalog">Open catalog →</Link></Card>
+    </div>
+  </div>;
+}
+
+export function TenantDirectory() {
+  const tenants = PlatformTenants({}).useQuery();
+  if (tenants.error) return <RouteState tone="warning" title="Tenants unavailable" description="Retry after the application database recovers." />;
+  if (!tenants.data) return <RouteState title="Loading tenants" description="The application is assembling tenant summaries." />;
+  return <div><PageHeader eyebrow="Application administration" title="Tenants" description="A tenant is an application workspace with its own membership, product plan, and admitted usage." />
+    {tenants.data.length === 0 ? <EmptyState title="No tenants yet" description="The first workspace created by a product user will appear here." /> : <div className="grid gap-3">{tenants.data.map(tenant => <Card key={tenant.id} className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-center"><div><Link className="font-semibold text-emerald-900" to="/admin/tenants/$tenantId" params={{ tenantId: tenant.id }}>{tenant.name}</Link><p className="mt-1 text-sm text-stone-600">{tenant.slug} · {tenant.memberCount} member{tenant.memberCount === 1 ? '' : 's'}</p></div><div className="flex flex-wrap gap-2"><Badge>{tenant.planId ?? 'No plan'}</Badge><Badge tone={tenant.subscriptionState === 'active' ? 'success' : 'warning'}>{tenant.subscriptionState ?? 'Not subscribed'}</Badge></div></Card>)}</div>}
+  </div>;
+}
+
+export function TenantAdministration({ tenantId }: { readonly tenantId: string }) {
+  const detail = PlatformTenant({ tenantId }).useQuery();
+  if (detail.error) return <RouteState tone="warning" title="Tenant unavailable" description="The tenant query failed without exposing provider details." />;
+  if (detail.data === undefined) return <RouteState title="Loading tenant" description="Membership, subscription, and usage are being assembled." />;
+  if (detail.data === null) return <RouteState tone="warning" title="Tenant not found" description="The tenant may have been removed or the link may be stale." action={<Link to="/admin/tenants" className="button-link">Return to tenants</Link>} />;
+  const { tenant, members } = detail.data;
+  return <div><PageHeader eyebrow="Tenant administration" title={tenant.name} description="Product state and provider delivery remain distinct and traceable." action={<Badge tone={tenant.subscriptionState === 'active' ? 'success' : 'warning'}>{tenant.subscriptionState ?? 'No subscription'}</Badge>} />
+    <div className="grid gap-4 sm:grid-cols-3"><Metric label="Members" value={String(tenant.memberCount)} /><Metric label="Plan" value={tenant.planId ?? 'None'} /><Metric label="Tokens" value={(tenant.inputTokens + tenant.outputTokens).toLocaleString()} /></div>
+    <div className="mt-6 grid gap-5 lg:grid-cols-2"><Card><h2 className="text-lg font-semibold">People and roles</h2><div className="mt-3 space-y-2">{members.map(member => <div key={member.id} className="flex justify-between gap-3 border-b border-stone-100 py-2 text-sm"><span>{member.identityId}</span><Badge>{member.role}</Badge></div>)}</div></Card><Card><h2 className="text-lg font-semibold">Subscription and usage</h2><dl className="mt-3 grid grid-cols-2 gap-3 text-sm"><dt className="text-stone-500">Plan</dt><dd>{tenant.planId ?? 'No plan'}</dd><dt className="text-stone-500">State</dt><dd>{tenant.subscriptionState ?? 'Not subscribed'}</dd><dt className="text-stone-500">Input tokens</dt><dd>{tenant.inputTokens.toLocaleString()}</dd><dt className="text-stone-500">Output tokens</dt><dd>{tenant.outputTokens.toLocaleString()}</dd><dt className="text-stone-500">Cost</dt><dd>{tenant.costMicrounits.toLocaleString()} µ-units</dd></dl></Card></div>
+  </div>;
+}
+
+export function ProductCatalogAdministration() {
+  const catalog = PlatformCatalog({}).useQuery();
+  if (catalog.error) return <RouteState tone="warning" title="Catalog unavailable" description="Product plans remain unchanged while the query provider recovers." />;
+  if (!catalog.data) return <RouteState title="Loading product catalog" description="Application-owned plans are being loaded." />;
+  return <div><PageHeader eyebrow="Product management" title="Catalog" description="Plans and entitlements are application-owned. Stripe or another payment provider delivers the selected catalog server-side." />
+    <div className="grid gap-4 lg:grid-cols-3">{catalog.data.map(plan => <Card key={plan.id}><div className="flex items-start justify-between gap-3"><h2 className="text-lg font-semibold">{plan.name}</h2><Badge tone={plan.active ? 'success' : 'warning'}>{plan.active ? 'Active' : 'Inactive'}</Badge></div><p className="mt-2 min-h-12 text-sm text-stone-600">{plan.description}</p><p className="mt-5 text-2xl font-semibold">{(plan.priceMicrounits / 1_000_000).toLocaleString(undefined, { style: 'currency', currency: plan.currency.toUpperCase() })}<span className="text-sm font-normal text-stone-500">/{plan.interval}</span></p></Card>)}</div>
+  </div>;
+}

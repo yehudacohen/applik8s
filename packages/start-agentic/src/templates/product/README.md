@@ -42,8 +42,10 @@ Environment-backed credentials are not limited to development. A Dedicated
 installation may explicitly set `credentialSource.kind: hostEnvironment` and
 use the same `.env`-to-Kubernetes-Secret flow without enabling the hot-reload
 aspect. Choose `existingSecret` when credentials are managed outside Applik8s.
-In both cases, secret values stay out of YAML, the deployment graph, and Alchemy
-state.
+`applik8s deploy` loads application-root `.env` and optional `.env.local` files
+in its Node operation host. `.env.local` overrides `.env`; values explicitly
+exported by the invoking process take precedence over both. In all cases,
+secret values stay out of YAML, the deployment graph, and Alchemy state.
 
 The CLI never adopts kubectl's ambient context. Generate with
 `--context <name>`, add `applik8s.context` to `package.json`, or pass

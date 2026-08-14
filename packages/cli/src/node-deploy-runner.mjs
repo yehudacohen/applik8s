@@ -2,6 +2,7 @@ import { access } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
+import { loadApplicationEnvironmentFile } from './application-environment-file.mjs';
 
 const request = JSON.parse(process.argv[2] ?? '{}');
 const cwd = resolve(request.cwd ?? process.cwd());
@@ -14,6 +15,9 @@ const command = request.command === 'delete'
     : 'deploy';
 
 process.chdir(cwd);
+if (command === 'deploy') {
+  await loadApplicationEnvironmentFile(cwd);
+}
 
 const cli = await resolveNodeCliEntrypoint();
 const registerTypescript = join(

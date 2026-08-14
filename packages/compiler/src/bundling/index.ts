@@ -261,6 +261,8 @@ export function applik8sWorkspaceSourcePlugin(): Plugin {
     ['@applik8s/usage/schema', resolve(workspaceRoot, 'packages/usage/src/schema.ts')],
     ['@applik8s/operations-ui', resolve(workspaceRoot, 'packages/operations-ui/src/index.ts')],
     ['@applik8s/operations-ui/react', resolve(workspaceRoot, 'packages/operations-ui/src/react.ts')],
+    ['@applik8s/operations-ui/redaction', resolve(workspaceRoot, 'packages/operations-ui/src/redaction.ts')],
+    ['@applik8s/operations-ui/schema', resolve(workspaceRoot, 'packages/operations-ui/src/schema.ts')],
     ['@applik8s/client', resolve(workspaceRoot, 'packages/client/src/index.ts')],
     ['@applik8s/identity', resolve(workspaceRoot, 'packages/identity/src/index.ts')],
     ['@applik8s/identity/server', resolve(workspaceRoot, 'packages/identity/src/server.ts')],

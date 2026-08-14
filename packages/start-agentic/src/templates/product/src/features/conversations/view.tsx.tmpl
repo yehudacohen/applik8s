@@ -5,7 +5,7 @@ import {
 import { useChat } from '@tanstack/ai-react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
-import { Conversation, ConversationDetail, NotesAssistant } from '../../application';
+import { Conversation, ConversationDetail, WorkspaceAssistant } from '../../application';
 import { Alert, Button, Card, EmptyState, PageHeader, Skeleton } from '../../components/ui';
 import { useProductJourneyStep } from '../onboarding/view';
 
@@ -14,7 +14,7 @@ export function ConversationView({ conversationId }: { readonly conversationId: 
   useProductJourneyStep('resume-conversation', detail.data !== undefined);
   const update = Conversation.update.useMutation();
   const navigate = useNavigate();
-  const connection = useMemo(() => createApplicationTanStackConnection({ agent: NotesAssistant }), []);
+  const connection = useMemo(() => createApplicationTanStackConnection({ agent: WorkspaceAssistant }), []);
   const initialMessages = useMemo(
     () => detail.data?.messages.map(hydrateApplicationConversationMessage) ?? [],
     [detail.data],
@@ -72,7 +72,7 @@ export function ConversationView({ conversationId }: { readonly conversationId: 
           {error ? <div className="mt-4"><Alert tone="danger" title="The response was interrupted">No product change is claimed unless it appears in the authoritative library.</Alert></div> : null}
           <form onSubmit={submit} className="mt-5 grid gap-3 border-t border-stone-200 pt-5">
             <label htmlFor="conversation-prompt" className="text-sm font-semibold">Ask, create, analyze, or update</label>
-            <textarea id="conversation-prompt" value={draft} onChange={event => setDraft(event.currentTarget.value)} disabled={isLoading} placeholder="Create a note about our launch plan" />
+            <textarea id="conversation-prompt" value={draft} onChange={event => setDraft(event.currentTarget.value)} disabled={isLoading} placeholder="Create a document about our launch plan" />
             <div className="flex gap-2"><Button type="submit" disabled={isLoading || !draft.trim()}>{isLoading ? 'Working…' : 'Send'}</Button>{isLoading ? <Button type="button" variant="secondary" onClick={stop}>Stop</Button> : null}</div>
           </form>
         </Card>

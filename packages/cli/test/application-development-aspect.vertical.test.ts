@@ -42,6 +42,8 @@ describe('Application development TypeKro aspect', () => {
     expect(encoded).toContain('node:22.22.1-bookworm-slim');
     expect(encoded).toContain('npx --yes bun@1.3.13 install');
     expect(encoded).toContain('npm run dev');
+    expect(encoded).toContain('TSR_TMP_DIR');
+    expect(encoded).toContain('/src/.tanstack/tmp');
     expect(encoded).toContain('"memory":"2Gi"');
   });
 

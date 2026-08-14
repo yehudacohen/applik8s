@@ -74,7 +74,11 @@ export function AppShell({ children }: { readonly children: ReactNode }) {
               ) : null}
               {operator ? (
                 <div className="mt-7">
-                  <p className="nav-label">Operator</p>
+                  <p className="nav-label">Admin</p>
+                  <NavLink to="/admin" label="Overview" icon="▦" />
+                  <NavLink to="/admin/tenants" label="Tenants" icon="◇" />
+                  <NavLink to="/admin/catalog" label="Catalog" icon="◫" />
+                  <p className="nav-label mt-7">Operator</p>
                   <NavLink to="/app/setup" label="Launchpad" icon="△" />
                   <NavLink to="/app/operations" label="Operations" icon="⌁" />
                 </div>
@@ -162,7 +166,7 @@ function NavLink({
   icon,
   compact = false,
 }: {
-  readonly to: '/' | '/app' | '/app/library' | '/app/inbox' | '/app/workspaces' | '/app/usage' | '/app/billing' | '/app/account' | '/app/setup' | '/app/operations';
+  readonly to: '/' | '/app' | '/app/library' | '/app/inbox' | '/app/workspaces' | '/app/usage' | '/app/billing' | '/app/account' | '/app/setup' | '/app/operations' | '/admin' | '/admin/tenants' | '/admin/catalog';
   readonly label: string;
   readonly icon: string;
   readonly compact?: boolean;

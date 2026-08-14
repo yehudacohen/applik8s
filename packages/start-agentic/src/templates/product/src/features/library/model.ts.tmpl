@@ -5,9 +5,9 @@ import { and, desc, eq } from 'drizzle-orm';
 import { Artifacts } from '../../modules';
 import { database } from '../../providers';
 import { Authenticated } from '../workspaces/model';
-import { Note } from '../notes/schema';
+import { Document } from '../documents/schema';
 
-export const WorkspaceLibrary = Note.view({
+export const WorkspaceLibrary = Document.view({
   input: type({}),
   output: type({
     documents: type({
@@ -37,12 +37,12 @@ export const WorkspaceLibrary = Note.view({
   const principalScope = applicationAIConversationPrincipalScope(context.principal, context.trustedContext);
   const [documents, artifacts] = await Promise.all([
     client.select({
-      id: Note.id,
-      body: Note.body,
-      ownerPrincipalId: Note.ownerPrincipalId,
-      createdByPrincipalId: Note.createdByPrincipalId,
-      createdAt: Note.createdAt,
-    }).from(Note).where(eq(Note.ownerPrincipalId, context.principal.id)).orderBy(desc(Note.createdAt)).limit(100),
+      id: Document.id,
+      body: Document.body,
+      ownerPrincipalId: Document.ownerPrincipalId,
+      createdByPrincipalId: Document.createdByPrincipalId,
+      createdAt: Document.createdAt,
+    }).from(Document).where(eq(Document.ownerPrincipalId, context.principal.id)).orderBy(desc(Document.createdAt)).limit(100),
     client.select({
       id: Artifacts.Artifact.id,
       kind: Artifacts.Artifact.kind,

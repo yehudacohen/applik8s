@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router';
 import { WorkspaceLibrary } from '../../application';
 import { Badge, Button, Card, EmptyState, PageHeader, RouteState, Skeleton } from '../../components/ui';
 import { useProductJourneyStep } from '../onboarding/view';
+import { documentExcerpt, documentTitle } from '../../components/markdown-document';
 
 export function LibraryView() {
   const library = WorkspaceLibrary({}).useQuery();
@@ -49,7 +50,8 @@ export function LibraryView() {
                   <Link key={document.id} to="/app/documents/$documentId" params={{ documentId: document.id }} className="text-stone-950 no-underline">
                     <Card className="h-full transition hover:border-emerald-300">
                       <div className="flex items-center justify-between"><Badge tone="info">Mutable document</Badge><span className="text-xs text-stone-500">{new Date(document.createdAt).toLocaleDateString()}</span></div>
-                      <p className="mt-4 line-clamp-5 whitespace-pre-wrap text-sm leading-6">{document.body}</p>
+                      <h3 className="mt-4 text-lg font-semibold">{documentTitle(document.body)}</h3>
+                      <p className="mt-2 line-clamp-4 text-sm leading-6 text-stone-600">{documentExcerpt(document.body)}</p>
                       <p className="mt-4 text-xs text-stone-500">Owner {document.ownerPrincipalId === document.createdByPrincipalId ? 'created this directly' : 'received an agent-created result'}</p>
                     </Card>
                   </Link>

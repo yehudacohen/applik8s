@@ -441,7 +441,7 @@ export function getRouter() {
   );
   if (
     ![
-      'model.note',
+      'model.document',
       'model.workspace',
       'model.conversation',
       'model.approval-review',

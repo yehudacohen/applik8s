@@ -1,0 +1,149 @@
+import type { ApplicationModelViewContext } from '@applik8s/applik8s';
+import { type } from 'arktype';
+import { desc, eq, inArray, sql } from 'drizzle-orm';
+import { application } from '../../app';
+import { ApplicationOperator, Billing, Usage, database } from '../../modules';
+import { Membership, Workspace } from '../workspaces/model';
+
+const TenantSummary = type({
+  id: 'string',
+  slug: 'string',
+  name: 'string',
+  ownerPrincipalId: 'string',
+  createdAt: 'string',
+  memberCount: 'number',
+  planId: 'string | null',
+  subscriptionState: 'string | null',
+  inputTokens: 'number',
+  outputTokens: 'number',
+  costMicrounits: 'number',
+});
+
+const TenantDetail = type({
+  tenant: TenantSummary,
+  members: type({
+    id: 'string',
+    identityId: 'string',
+    role: 'string',
+    createdAt: 'string',
+  }).array(),
+}).or('null');
+
+const CatalogPlan = type({
+  id: 'string',
+  name: 'string',
+  description: 'string',
+  interval: 'string',
+  priceMicrounits: 'number',
+  currency: 'string',
+  active: 'boolean',
+}).array();
+
+async function listTenants(_input: object, context: ApplicationModelViewContext) {
+  const client = context.database(database);
+  const workspaces = await client.select().from(Workspace).orderBy(desc(Workspace.createdAt)).limit(100);
+  if (workspaces.length === 0) return [];
+  const workspaceIds = workspaces.map(workspace => workspace.id);
+  const owners = [...new Set(workspaces.map(workspace => workspace.ownerPrincipalId))];
+  const [memberCounts, subscriptions, usage] = await Promise.all([
+    client.select({
+      workspaceId: Membership.workspaceId,
+      count: sql<number>`count(*)::int`,
+    }).from(Membership).where(inArray(Membership.workspaceId, workspaceIds)).groupBy(Membership.workspaceId),
+    client.select({
+      principalScope: Billing.Subscription.principalScope,
+      planId: Billing.Subscription.planId,
+      status: Billing.Subscription.status,
+      updatedAt: Billing.Subscription.updatedAt,
+    }).from(Billing.Subscription).where(inArray(Billing.Subscription.principalScope, owners)).orderBy(desc(Billing.Subscription.updatedAt)).limit(250),
+    client.select({
+      principalScope: Usage.UsageFact.principalScope,
+      inputTokens: sql<number>`coalesce(sum(${Usage.UsageFact.inputTokens}), 0)`,
+      outputTokens: sql<number>`coalesce(sum(${Usage.UsageFact.outputTokens}), 0)`,
+      costMicrounits: sql<number>`coalesce(sum(${Usage.UsageFact.costMicrounits}), 0)`,
+    }).from(Usage.UsageFact).where(inArray(Usage.UsageFact.principalScope, owners)).groupBy(Usage.UsageFact.principalScope),
+  ]);
+  const memberCount = new Map(memberCounts.map(row => [row.workspaceId, Number(row.count)]));
+  const subscription = new Map<string, (typeof subscriptions)[number]>();
+  for (const row of subscriptions) if (!subscription.has(row.principalScope)) subscription.set(row.principalScope, row);
+  const usageByOwner = new Map(usage.map(row => [row.principalScope, row]));
+  return workspaces.map(workspace => {
+    const currentSubscription = subscription.get(workspace.ownerPrincipalId);
+    const currentUsage = usageByOwner.get(workspace.ownerPrincipalId);
+    return {
+      id: workspace.id,
+      slug: workspace.slug,
+      name: workspace.name,
+      ownerPrincipalId: workspace.ownerPrincipalId,
+      createdAt: workspace.createdAt,
+      memberCount: Math.max(1, memberCount.get(workspace.id) ?? 0),
+      planId: currentSubscription?.planId ?? null,
+      subscriptionState: currentSubscription?.status ?? null,
+      inputTokens: Number(currentUsage?.inputTokens ?? 0),
+      outputTokens: Number(currentUsage?.outputTokens ?? 0),
+      costMicrounits: Number(currentUsage?.costMicrounits ?? 0),
+    };
+  });
+}
+
+export const PlatformTenants = Workspace.view(
+  {
+    input: type({}),
+    output: TenantSummary.array(),
+    database,
+    reads: [Membership, Billing.Subscription, Usage.UsageFact],
+    authorize: ({ principal }) => principal.roles?.includes('application-operator') === true,
+    budgets: { timeoutMs: 3_000, maxRows: 600, maxResultBytes: 512_000 },
+  },
+  listTenants,
+);
+
+export const PlatformTenant = Workspace.view(
+  {
+    input: type({ tenantId: 'string' }),
+    output: TenantDetail,
+    database,
+    reads: [Membership, Billing.Subscription, Usage.UsageFact],
+    authorize: ({ principal }) => principal.roles?.includes('application-operator') === true,
+    budgets: { timeoutMs: 3_000, maxRows: 600, maxResultBytes: 512_000 },
+  },
+  async function tenantDetail(input, context) {
+    const tenants = await listTenants({}, context);
+    const tenant = tenants.find(candidate => candidate.id === input.tenantId);
+    if (!tenant) return null;
+    const members = await context.database(database).select({
+      id: Membership.id,
+      identityId: Membership.identityId,
+      role: Membership.role,
+      createdAt: Membership.createdAt,
+    }).from(Membership).where(eq(Membership.workspaceId, input.tenantId)).limit(250);
+    return { tenant, members };
+  },
+);
+
+export const PlatformCatalog = Billing.BillingPlan.view(
+  {
+    input: type({}),
+    output: CatalogPlan,
+    database,
+    authorize: ({ principal }) => principal.roles?.includes('application-operator') === true,
+    budgets: { timeoutMs: 2_000, maxRows: 100, maxResultBytes: 128_000 },
+  },
+  async function productCatalog(_input, context) {
+    return context.database(database).select({
+      id: Billing.BillingPlan.id,
+      name: Billing.BillingPlan.name,
+      description: Billing.BillingPlan.description,
+      interval: Billing.BillingPlan.interval,
+      priceMicrounits: Billing.BillingPlan.priceMicrounits,
+      currency: Billing.BillingPlan.currency,
+      active: Billing.BillingPlan.active,
+    }).from(Billing.BillingPlan).orderBy(Billing.BillingPlan.sortOrder).limit(100);
+  },
+);
+
+ApplicationOperator.can(
+  PlatformTenants,
+  PlatformTenant,
+  PlatformCatalog,
+);

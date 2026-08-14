@@ -506,6 +506,8 @@ describe('generated application AI agents', () => {
     expect(generatedSource).toContain(
       "source: 'application-ai-attempt-runtime'",
     );
+    expect(generatedSource).toContain('subject: contract.name');
+    expect(generatedSource).not.toContain("subject: 'agent:' + contract.name");
     expect(generatedSource).toContain(
       "'operator-review-required'",
     );

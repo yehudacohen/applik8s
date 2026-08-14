@@ -18,7 +18,7 @@ INSERT INTO applik8s_billing_plans (
     'month',
     0,
     'usd',
-    '["notes","assistant","local-inference"]'::jsonb,
+    '["documents","assistant","local-inference"]'::jsonb,
     0,
     true
   ),
@@ -29,7 +29,7 @@ INSERT INTO applik8s_billing_plans (
     'month',
     25000000,
     'usd',
-    '["notes","assistant","live-inference","metered-usage"]'::jsonb,
+    '["documents","assistant","live-inference","metered-usage"]'::jsonb,
     1,
     true
   )
@@ -105,17 +105,17 @@ INSERT INTO applik8s_billing_catalog_entitlements (
   constraints
 ) VALUES
   (
-    'agentic_free_notes',
+    'agentic_free_documents',
     'agentic_free_v1',
-    'notes',
+    'documents',
     true,
     1000,
     '{}'::jsonb
   ),
   (
-    'agentic_team_notes',
+    'agentic_team_documents',
     'agentic_team_monthly_v1',
-    'notes',
+    'documents',
     true,
     null,
     '{}'::jsonb

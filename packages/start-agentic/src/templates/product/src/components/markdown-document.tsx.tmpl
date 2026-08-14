@@ -1,0 +1,107 @@
+import type { ReactNode } from 'react';
+
+/** Small, dependency-free Markdown presentation for generated product documents. */
+export function MarkdownDocument({ source }: { readonly source: string }) {
+  const lines = source.replaceAll('\r\n', '\n').split('\n');
+  const blocks: ReactNode[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index] ?? '';
+    if (!line.trim()) { index += 1; continue; }
+    if (line.startsWith('```')) {
+      const code: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index]?.startsWith('```')) {
+        code.push(lines[index] ?? ''); index += 1;
+      }
+      blocks.push(<pre key={`code-${index}`} className="overflow-x-auto rounded-xl bg-stone-950 p-4 text-sm text-stone-100"><code>{code.join('\n')}</code></pre>);
+      index += 1; continue;
+    }
+    const heading = /^(#{1,4})\s+(.+)$/.exec(line);
+    if (heading) {
+      const level = heading[1]?.length ?? 2;
+      const className = level === 1 ? 'text-3xl' : level === 2 ? 'text-2xl' : 'text-lg';
+      blocks.push(<h2 key={`heading-${index}`} className={`${className} mt-7 font-semibold tracking-tight first:mt-0`}>{renderInline(heading[2] ?? '')}</h2>);
+      index += 1; continue;
+    }
+    if (/^[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^[-*]\s+/.test(lines[index] ?? '')) {
+        items.push((lines[index] ?? '').replace(/^[-*]\s+/, '')); index += 1;
+      }
+      blocks.push(<ul key={`list-${index}`} className="list-disc space-y-2 pl-6 text-stone-700">{items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}</ul>);
+      continue;
+    }
+    if (/^\d+\.\s+/.test(line)) {
+      const items: string[] = [];
+      while (index < lines.length && /^\d+\.\s+/.test(lines[index] ?? '')) {
+        items.push((lines[index] ?? '').replace(/^\d+\.\s+/, '')); index += 1;
+      }
+      blocks.push(<ol key={`ordered-${index}`} className="list-decimal space-y-2 pl-6 text-stone-700">{items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}</ol>);
+      continue;
+    }
+    if (line.startsWith('> ')) {
+      const quote: string[] = [];
+      while (index < lines.length && (lines[index] ?? '').startsWith('> ')) {
+        quote.push((lines[index] ?? '').slice(2)); index += 1;
+      }
+      blocks.push(<blockquote key={`quote-${index}`} className="border-l-4 border-emerald-300 pl-4 italic text-stone-600">{renderInline(quote.join(' '))}</blockquote>);
+      continue;
+    }
+    if (line.includes('|') && /^\s*\|?\s*:?-+/.test(lines[index + 1] ?? '')) {
+      const rows: string[][] = [];
+      rows.push(splitTableRow(line)); index += 2;
+      while (index < lines.length && (lines[index] ?? '').includes('|')) {
+        rows.push(splitTableRow(lines[index] ?? '')); index += 1;
+      }
+      const [headers = [], ...body] = rows;
+      blocks.push(<div key={`table-${index}`} className="overflow-x-auto"><table className="w-full border-collapse text-left text-sm"><thead><tr>{headers.map((cell, cellIndex) => <th key={cellIndex} className="border-b border-stone-300 px-3 py-2 font-semibold">{renderInline(cell)}</th>)}</tr></thead><tbody>{body.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} className="border-b border-stone-100 px-3 py-2 text-stone-700">{renderInline(cell)}</td>)}</tr>)}</tbody></table></div>);
+      continue;
+    }
+    const paragraph: string[] = [line.trim()]; index += 1;
+    while (index < lines.length && lines[index]?.trim() && !startsBlock(lines[index] ?? '')) {
+      paragraph.push((lines[index] ?? '').trim()); index += 1;
+    }
+    blocks.push(<p key={`paragraph-${index}`} className="leading-7 text-stone-700">{renderInline(paragraph.join(' '))}</p>);
+  }
+  return <article className="grid gap-4">{blocks}</article>;
+}
+
+function splitTableRow(line: string) {
+  return line.trim().replace(/^\||\|$/g, '').split('|').map(cell => cell.trim());
+}
+
+function startsBlock(line: string) {
+  return /^(#{1,4})\s+|^```|^[-*]\s+|^\d+\.\s+|^>\s+/.test(line) || line.includes('|');
+}
+
+export function documentTitle(source: string) {
+  const first = source.split(/\r?\n/u).find(line => line.trim().length > 0)?.trim() ?? 'Untitled document';
+  return first.replace(/^#{1,4}\s+/u, '').replace(/^[-*>]\s+/u, '').slice(0, 96);
+}
+
+export function documentExcerpt(source: string) {
+  const lines = source.split(/\r?\n/u).map(line => line.trim()).filter(Boolean);
+  const body = lines.slice(lines[0]?.startsWith('#') ? 1 : 0).join(' ');
+  return (body || documentTitle(source)).replace(/[*_`>#]/gu, '').slice(0, 240);
+}
+
+function renderInline(source: string): ReactNode[] {
+  const output: ReactNode[] = [];
+  const pattern = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\(https?:\/\/[^\s)]+\)|\*[^*]+\*)/gu;
+  let cursor = 0;
+  for (const match of source.matchAll(pattern)) {
+    const start = match.index ?? 0;
+    if (start > cursor) output.push(source.slice(cursor, start));
+    const token = match[0];
+    if (token.startsWith('**')) output.push(<strong key={`${start}-strong`}>{token.slice(2, -2)}</strong>);
+    else if (token.startsWith('`')) output.push(<code key={`${start}-code`} className="rounded bg-stone-100 px-1 py-0.5 text-[.9em]">{token.slice(1, -1)}</code>);
+    else if (token.startsWith('[')) {
+      const link = /^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/u.exec(token);
+      if (link) output.push(<a key={`${start}-link`} href={link[2]} rel="noreferrer" target="_blank" className="font-medium text-emerald-800 underline">{link[1]}</a>);
+    } else output.push(<em key={`${start}-em`}>{token.slice(1, -1)}</em>);
+    cursor = start + token.length;
+  }
+  if (cursor < source.length) output.push(source.slice(cursor));
+  return output;
+}

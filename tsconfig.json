@@ -35,6 +35,8 @@
       "@applik8s/start-agentic/notifications-runtime": ["packages/start-agentic/src/notifications-runtime.ts"],
       "@applik8s/operations-ui": ["packages/operations-ui/src/index.ts"],
       "@applik8s/operations-ui/react": ["packages/operations-ui/src/react.ts"],
+      "@applik8s/operations-ui/redaction": ["packages/operations-ui/src/redaction.ts"],
+      "@applik8s/operations-ui/schema": ["packages/operations-ui/src/schema.ts"],
       "@applik8s/evals": ["packages/evals/src/index.ts"],
       "@applik8s/usage": ["packages/usage/src/index.ts"],
       "@applik8s/identity": ["packages/identity/src/index.ts"],

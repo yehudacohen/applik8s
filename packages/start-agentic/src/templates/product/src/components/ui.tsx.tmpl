@@ -210,6 +210,10 @@ export function Progress({ value, label }: { readonly value: number; readonly la
   );
 }
 
+export function Metric({ label, value }: { readonly label: string; readonly value: string }) {
+  return <Card><p className="text-sm text-stone-500">{label}</p><p className="mt-2 text-2xl font-semibold tracking-tight">{value}</p></Card>;
+}
+
 export function Separator() {
   return <hr className="my-5 border-0 border-t border-stone-200" />;
 }

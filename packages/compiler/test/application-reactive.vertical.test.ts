@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
   consolidateGeneratedApplicationReactiveResources,
   emitGeneratedApplicationReactive,
+  kubernetesContainerName,
 } from '../src/application-reactive/index.js';
 import {
   compileTypeKroComposition,
@@ -25,6 +26,16 @@ const database = { name: 'catalog', connectionEnvName: 'APPLIK8S_DATABASE_CATALO
 const reactiveRuntimeBundleBudgetBytes = 570_000;
 
 describe('generated v0.6 reactive workloads', () => {
+  it('generates bounded collision-resistant container names for long workload identities', () => {
+    const first = kubernetesContainerName(`agentic-product-${'document-projection-'.repeat(5)}primary`);
+    const second = kubernetesContainerName(`agentic-product-${'document-projection-'.repeat(5)}secondary`);
+
+    expect(first).toMatch(/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/u);
+    expect(first.length).toBeLessThanOrEqual(63);
+    expect(second.length).toBeLessThanOrEqual(63);
+    expect(first).not.toBe(second);
+  });
+
   it('preserves module-local Drizzle captures through CLI-style discovery and singleton-owns shared ClickHouse infrastructure', async () => {
     const outDir = await mkdtemp(join(tmpdir(), 'applik8s-v06-discovery-'));
     const previousNamespace = process.env.APPLIK8S_E2E_NAMESPACE;

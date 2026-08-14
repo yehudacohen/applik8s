@@ -21,6 +21,9 @@ test(
       ['/app/usage', 'Usage'],
       ['/app/operations', 'agentic-product-evidence operations'],
       ['/app/workspaces', 'Workspaces'],
+      ['/admin', 'Product control center'],
+      ['/admin/tenants', 'Tenants'],
+      ['/admin/catalog', 'Catalog'],
     ] as const;
     for (const [path, heading] of routes) {
       const context = await browser.newContext(baseURL ? { baseURL } : {});
@@ -88,6 +91,13 @@ test(
       );
       await expect(page.locator('body')).not.toContainText('HTTP 403');
 
+      await page.goto('/admin');
+      await expect(page.getByRole('heading', { name: 'Product control center' })).toBeVisible();
+      await expect(page.locator('body')).not.toContainText('Application-operator access required');
+      await page.goto('/admin/catalog');
+      await expect(page.getByRole('heading', { name: 'Catalog', exact: true })).toBeVisible();
+      await expect(page.locator('body')).toContainText('Team');
+
       await page.goto('/app/operations');
       await expect(
         page.getByRole('heading', {
@@ -105,7 +115,7 @@ test(
 );
 
 test(
-  'attributes an agent-created note to its human requester and reactively renders it',
+  'attributes an agent-created document to its human requester and reactively renders it',
   async ({ page }) => {
     const consoleErrors: string[] = [];
     const pageErrors: string[] = [];
@@ -125,23 +135,23 @@ test(
       Reflect.set(globalThis, '__agenticProductHydration', 'alive');
     });
 
-    const notes = page.getByRole('region', {
-      name: 'Your notes',
+    const documents = page.getByRole('region', {
+      name: 'Your documents',
       exact: true,
     });
-    await expect(notes).not.toContainText('Starter tool-created note.');
+    await expect(documents).not.toContainText('Starter tool-created document.');
 
     await page.getByLabel('Message').fill(
-      'Create a note through your declared typed tool.',
+      'Create a document through your declared typed tool.',
     );
     await page.getByRole('button', { name: 'Send' }).click();
 
-    await expect(notes).toContainText(
-      'Starter tool-created note.',
+    await expect(documents).toContainText(
+      'Starter tool-created document.',
       { timeout: 90_000 },
     );
     await expect(
-      page.getByRole('region', { name: 'Notes assistant' }),
+      page.getByRole('region', { name: 'Workspace assistant' }),
     ).toContainText('Credential-free starter inference.');
     await expect.poll(
       () =>
@@ -152,7 +162,7 @@ test(
 
     const authoritative = await page.evaluate(async () => {
       const response = await fetch(
-        '/__applik8s/v1/queries/Note.listNotes/snapshot',
+        '/__applik8s/v1/queries/Document.listDocuments/snapshot',
         {
           method: 'POST',
           credentials: 'same-origin',
@@ -162,7 +172,7 @@ test(
       );
       if (!response.ok) {
         throw new Error(
-          `NoteList returned ${response.status}: ${await response.text()}`,
+          `DocumentList returned ${response.status}: ${await response.text()}`,
         );
       }
       const payload = await response.json() as {
@@ -174,12 +184,12 @@ test(
         }[];
       };
       return payload.value?.find(
-        (note) => note.body === 'Starter tool-created note.',
+        (document) => document.body === 'Starter tool-created document.',
       );
     });
     expect(authoritative).toMatchObject({
       id: expect.any(String),
-      body: 'Starter tool-created note.',
+      body: 'Starter tool-created document.',
       ownerPrincipalId: expect.any(String),
       createdByPrincipalId: expect.any(String),
     });
@@ -231,7 +241,7 @@ test(
     });
     await expect(multiFactor).toBeVisible();
     await expect(multiFactor).toContainText(
-      'Multi-factor enrollment is not available in this identity profile.',
+      'This identity profile does not offer multi-factor enrollment.',
     );
     await expect(
       page.getByRole('region', { name: 'Account recovery' }),
@@ -337,20 +347,29 @@ test(
     await expect(
       page.getByRole('heading', { name: 'Documents' }),
     ).toBeVisible();
-    const createdDocument = page.getByText('Starter tool-created note.', {
-      exact: true,
-    });
+    const createdDocument = page.getByRole('link', {
+      name: /Mutable document/u,
+    }).filter({ hasText: 'Starter tool-created document.' });
     await expect(createdDocument).toBeVisible();
     await createdDocument.click();
 
     await expect(
-      page.getByRole('heading', { name: 'Document', exact: true }),
+      page.getByRole('heading', { name: 'Starter tool-created document.', exact: true }),
     ).toBeVisible();
-    const content = page.getByLabel('Content');
-    await expect(content).toHaveValue('Starter tool-created note.');
-    await content.fill('Starter tool-created note, reviewed in the product journey.');
+    await page.getByRole('button', { name: 'Edit' }).click();
+    const content = page.getByLabel('Document source');
+    await expect(content).toHaveValue('Starter tool-created document.');
+    await content.fill('# Release brief\n\nStarter tool-created document, reviewed in the product journey.\n\n| State | Owner |\n| --- | --- |\n| Ready | Product team |');
     await page.getByRole('button', { name: 'Save document' }).click();
     await expect(page.getByRole('status')).toContainText('Document committed.');
+    await expect(
+      page.getByRole('heading', {
+        name: 'Release brief',
+        exact: true,
+        level: 2,
+      }),
+    ).toBeVisible();
+    await expect(page.getByRole('table')).toContainText('Product team');
 
     await page.goto('/app');
     await expect(page.getByText('Continue working')).toBeVisible();
@@ -390,7 +409,7 @@ test(
     await expect(page.getByText(/immutable artifacts.*retention policies/iu)).toBeVisible();
     await page.goto('/app/library');
     await expect(page.getByText(
-      'Starter tool-created note, reviewed in the product journey.',
+      'Starter tool-created document, reviewed in the product journey.',
     )).toBeVisible();
     await page.goto('/app/workspaces');
     const firstWorkspace = page.locator('section[aria-label="Your workspaces"] a').first();

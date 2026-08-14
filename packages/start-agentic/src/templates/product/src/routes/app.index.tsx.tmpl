@@ -5,7 +5,7 @@ import { useChat } from '@tanstack/ai-react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { Badge, Button, Card, EmptyState, PageHeader, RouteState, Skeleton } from '../components/ui';
-import { ConversationList, Note, NoteList, NotesAssistant } from '../application';
+import { ConversationList, Document, DocumentList, WorkspaceAssistant } from '../application';
 import { ProductJourney } from '../features/onboarding/view';
 
 export const Route = createFileRoute('/app/')({
@@ -13,9 +13,9 @@ export const Route = createFileRoute('/app/')({
 });
 
 function CopilotHome() {
-  const notes = NoteList({}).useQuery();
+  const documents = DocumentList({}).useQuery();
   const conversations = ConversationList({}).useQuery();
-  const createNote = Note.create.useMutation();
+  const createDocument = Document.create.useMutation();
   const session = useApplicationIdentitySession();
   const [body, setBody] = useState('');
   const [notice, setNotice] = useState<string>();
@@ -46,58 +46,58 @@ function CopilotHome() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
-      await createNote({ body });
+      await createDocument({ body });
       setBody('');
-      setNotice('Note committed. The live query will reconcile this list.');
+      setNotice('Document committed. The live query will reconcile this list.');
     } catch {
-      setNotice('The note was not committed. Check your session and retry.');
+      setNotice('The document was not committed. Check your session and retry.');
     }
   }
 
   return (
     <div>
-      <ProductJourney documentCount={notes.data?.length ?? 0} />
+      <ProductJourney documentCount={documents.data?.length ?? 0} />
       <PageHeader
         eyebrow="Workspace copilot"
         title="Make useful work appear."
-        description="Start with a note yourself, or ask the assistant to use the same typed model operation."
+        description="Start with a document yourself, or ask the assistant to use the same typed model operation."
         action={<Badge tone="info">Provider resolved server-side</Badge>}
       />
-      {notes.phase === 'error' ? (
+      {documents.phase === 'error' ? (
         <RouteState
           tone="warning"
-          title="Your notes are temporarily unavailable"
+          title="Your documents are temporarily unavailable"
           description="The product shell and assistant remain available while the query provider recovers."
-          action={<Button variant="secondary" onClick={() => void notes.refresh()}>Retry notes</Button>}
+          action={<Button variant="secondary" onClick={() => void documents.refresh()}>Retry documents</Button>}
         />
       ) : (
         <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(22rem,.95fr)]">
-          <Card aria-label="Your notes">
+          <Card aria-label="Your documents">
             <div className="flex items-center justify-between gap-3">
-              <div><p className="eyebrow">Documents</p><h2 id="notes-title" className="mt-1 text-xl font-semibold">Recent work</h2></div>
-              <Badge tone={notes.phase === 'reconnecting' ? 'warning' : notes.data?.length ? 'success' : 'neutral'}>
-                {notes.phase === 'reconnecting' ? 'Reconnecting…' : `${notes.data?.length ?? 0} notes`}
+              <div><p className="eyebrow">Documents</p><h2 id="documents-title" className="mt-1 text-xl font-semibold">Recent work</h2></div>
+              <Badge tone={documents.phase === 'reconnecting' ? 'warning' : documents.data?.length ? 'success' : 'neutral'}>
+                {documents.phase === 'reconnecting' ? 'Reconnecting…' : `${documents.data?.length ?? 0} documents`}
               </Badge>
             </div>
             <form onSubmit={submit} className="mt-5 grid gap-3">
-              <label htmlFor="note-body" className="text-sm font-medium">Create manually</label>
-              <textarea id="note-body" value={body} onChange={event => setBody(event.currentTarget.value)} placeholder="Something worth remembering" />
-              <Button type="submit" disabled={!body.trim() || createNote.pending}>
-                {createNote.pending ? 'Saving…' : 'Save note'}
+              <label htmlFor="document-body" className="text-sm font-medium">Create manually</label>
+              <textarea id="document-body" value={body} onChange={event => setBody(event.currentTarget.value)} placeholder="Something worth remembering" />
+              <Button type="submit" disabled={!body.trim() || createDocument.pending}>
+                {createDocument.pending ? 'Saving…' : 'Save document'}
               </Button>
             </form>
-            <div aria-label="Notes" aria-live="polite" className="mt-6 space-y-3">
-              {!notes.data ? <><Skeleton className="h-20" /><Skeleton className="h-20" /></> : null}
-              {notes.data?.length === 0 ? <EmptyState title="No documents yet" description="Your assistant can create the first one through the same typed model operation." /> : null}
-              {notes.data?.map(note => (
-                <article key={note.id} className="rounded-xl border border-stone-200 bg-stone-50/60 p-4">
-                  <p className="whitespace-pre-wrap text-sm leading-6">{note.body}</p>
-                  <small className="mt-2 block text-xs text-stone-500">{new Date(note.createdAt).toLocaleString()}</small>
+            <div aria-label="Documents" aria-live="polite" className="mt-6 space-y-3">
+              {!documents.data ? <><Skeleton className="h-20" /><Skeleton className="h-20" /></> : null}
+              {documents.data?.length === 0 ? <EmptyState title="No documents yet" description="Your assistant can create the first one through the same typed model operation." /> : null}
+              {documents.data?.map(document => (
+                <article key={document.id} className="rounded-xl border border-stone-200 bg-stone-50/60 p-4">
+                  <p className="whitespace-pre-wrap text-sm leading-6">{document.body}</p>
+                  <small className="mt-2 block text-xs text-stone-500">{new Date(document.createdAt).toLocaleString()}</small>
                 </article>
               ))}
             </div>
           </Card>
-          {threadId ? <NotesAssistantCard key={threadId} threadId={threadId} /> : <Card surface="unstyled" className="border-emerald-900/15 bg-emerald-950 text-emerald-50"><Skeleton className="h-72 bg-white/10" /></Card>}
+          {threadId ? <WorkspaceAssistantCard key={threadId} threadId={threadId} /> : <Card surface="unstyled" className="border-emerald-900/15 bg-emerald-950 text-emerald-50"><Skeleton className="h-72 bg-white/10" /></Card>}
         </div>
       )}
       <section className="mt-8" aria-labelledby="recent-conversations-title">
@@ -116,10 +116,10 @@ function CopilotHome() {
   );
 }
 
-function NotesAssistantCard({ threadId }: { readonly threadId: string }) {
+function WorkspaceAssistantCard({ threadId }: { readonly threadId: string }) {
   const [prompt, setPrompt] = useState('');
   const connection = useMemo(
-    () => createApplicationTanStackConnection({ agent: NotesAssistant }),
+    () => createApplicationTanStackConnection({ agent: WorkspaceAssistant }),
     [],
   );
   const { messages, sendMessage, isLoading, error, stop } = useChat({
@@ -137,8 +137,8 @@ function NotesAssistantCard({ threadId }: { readonly threadId: string }) {
 
   return <Card surface="unstyled" className="border-emerald-900/15 bg-emerald-950 text-emerald-50" aria-labelledby="assistant-title">
     <p className="eyebrow !text-emerald-300">Typed agent</p>
-    <h2 id="assistant-title" className="mt-1 text-xl font-semibold">Notes assistant</h2>
-    <p className="mt-2 text-sm leading-6 text-emerald-100/75">Try “Create a note about shipping our first version.” Its tool writes through the same authority and model boundary.</p>
+    <h2 id="assistant-title" className="mt-1 text-xl font-semibold">Workspace assistant</h2>
+    <p className="mt-2 text-sm leading-6 text-emerald-100/75">Try “Create a document about shipping our first version.” Its tool writes through the same authority and model boundary.</p>
     <div className="mt-5 min-h-48 space-y-3 rounded-xl bg-black/15 p-3" aria-live="polite">
       {messages.length === 0 ? <p className="text-sm text-emerald-100/60">The conversation will appear here.</p> : null}
       {messages.map(message => (
@@ -147,11 +147,11 @@ function NotesAssistantCard({ threadId }: { readonly threadId: string }) {
           {message.parts.map((part, index) => part.type === 'text' ? <p className="mt-1 leading-6" key={index}>{part.content}</p> : null)}
         </article>
       ))}
-      {error ? <p role="alert" className="text-sm text-red-200">The assistant could not complete this request. Your product data was not changed unless a committed note appears.</p> : null}
+      {error ? <p role="alert" className="text-sm text-red-200">The assistant could not complete this request. Your product data was not changed unless a committed document appears.</p> : null}
     </div>
     <form onSubmit={askAssistant} className="mt-4 grid gap-3">
       <label htmlFor="assistant-prompt" className="text-sm font-medium">Message</label>
-      <textarea id="assistant-prompt" value={prompt} onChange={event => setPrompt(event.currentTarget.value)} disabled={isLoading} placeholder="Create a note about shipping the first version" className="border-white/20 bg-white/10 text-white placeholder:text-emerald-100/45" />
+      <textarea id="assistant-prompt" value={prompt} onChange={event => setPrompt(event.currentTarget.value)} disabled={isLoading} placeholder="Create a document about shipping the first version" className="border-white/20 bg-white/10 text-white placeholder:text-emerald-100/45" />
       <div className="flex gap-2">
         <Button type="submit" className="bg-emerald-100 text-emerald-950 hover:bg-white" disabled={isLoading || !prompt.trim()}>{isLoading ? 'Working…' : 'Send'}</Button>
         {isLoading ? <Button type="button" variant="ghost" className="text-white hover:bg-white/10" onClick={stop}>Stop</Button> : null}

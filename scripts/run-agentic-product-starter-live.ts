@@ -1,7 +1,14 @@
 // typecast-file-boundary: the release runner validates generated manifests,
 // Kubernetes objects, and Playwright reports before using their fields.
 import { createHash, randomUUID } from 'node:crypto';
-import { readdir, readFile, rm } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { createApplicationAgenticStart } from '../packages/start-agentic/src/index.js';
 import {
@@ -32,6 +39,12 @@ const context = process.env.APPLIK8S_E2E_CONTEXT ?? 'orbstack';
 const projectName = 'agentic-product-evidence';
 const target = join(root, '.applik8s-tmp', projectName);
 const namespace = `${projectName}-system`;
+const environmentFile = process.env.APPLIK8S_AGENTIC_PRODUCT_ENV_FILE;
+const developerProfile = environmentFile !== undefined;
+const instancePath = developerProfile
+  ? 'kubernetes/application.developer.yaml'
+  : 'kubernetes/application.yaml';
+const instanceName = developerProfile ? `${projectName}-developer` : projectName;
 const execution = {
   root,
   context,
@@ -55,11 +68,24 @@ const observed = new Map<
 >();
 let deployed = false;
 let tunnel: IdentityStartServiceTunnel | undefined;
+let preservedEnvironmentPath: string | undefined;
 
 await discardV06Evidence(evidencePath);
 
 try {
-  if (
+  await runIdentityStartCommand(
+    execution,
+    'build publishable Applik8s packages and the CLI',
+    'node',
+    ['scripts/build-publishable-packages.mjs'],
+    root,
+    { NODE_OPTIONS: '--max-old-space-size=8192' },
+  );
+  const priorDeploymentGraphPath = join(
+    target,
+    '.applik8s/deploy/typekro/application-deployment-graph.json',
+  );
+  const priorDeploymentExists =
     await identityStartResourceExists(
       execution,
       `resourcegraphdefinition/${projectName}`,
@@ -67,11 +93,16 @@ try {
     || await identityStartResourceExists(
       execution,
       `namespace/${namespace}`,
-    )
-  ) {
+    );
+  if (priorDeploymentExists) {
+    if (!await Bun.file(priorDeploymentGraphPath).exists()) {
+      throw new Error(
+        'A prior generated product is still deployed, but its local Alchemy/TypeKro lifecycle state is absent. Restore the matching generated project and run `applik8s destroy`; refusing to reconcile a newly generated migration history over the retained database.',
+      );
+    }
     await runIdentityStartCommand(
       execution,
-      'destroy a prior or interrupted generated product graph',
+      'destroy the prior generated product through its preserved Alchemy and TypeKro state',
       cli,
       ['destroy', '--context', context],
       target,
@@ -89,7 +120,15 @@ try {
       timeoutMs,
     );
   }
-
+  const generatedEnvironmentPath = join(target, '.env');
+  if (await Bun.file(generatedEnvironmentPath).exists()) {
+    preservedEnvironmentPath = join(
+      root,
+      '.applik8s-tmp',
+      `${projectName}.${runId}.env.preserved`,
+    );
+    await rename(generatedEnvironmentPath, preservedEnvironmentPath);
+  }
   await rm(target, { recursive: true, force: true });
   await createApplicationAgenticStart({
     targetDirectory: target,
@@ -109,15 +148,24 @@ try {
       await writeOfficialTanStackScaffold(target, projectName);
     },
   });
+  if (preservedEnvironmentPath) {
+    await rename(preservedEnvironmentPath, join(target, '.env'));
+    preservedEnvironmentPath = undefined;
+    observed.set('environment-preservation', {
+      test: 'an existing generated-project .env was mechanically preserved across regeneration without reading, logging, or overwriting it',
+      observedAt: new Date().toISOString(),
+    });
+  } else if (environmentFile) {
+    if (!await Bun.file(environmentFile).exists()) {
+      throw new Error(`The requested mechanical environment source does not exist: ${environmentFile}`);
+    }
+    await copyFile(environmentFile, join(target, '.env'));
+    observed.set('environment-copy', {
+      test: 'the requested environment file was mechanically copied without inspecting or logging its values',
+      observedAt: new Date().toISOString(),
+    });
+  }
 
-  await runIdentityStartCommand(
-    execution,
-    'build publishable Applik8s packages and the CLI',
-    'node',
-    ['scripts/build-publishable-packages.mjs'],
-    root,
-    { NODE_OPTIONS: '--max-old-space-size=8192' },
-  );
   await runIdentityStartCommand(
     execution,
     'run read-only generated product prerequisite diagnostics',
@@ -145,7 +193,7 @@ try {
     );
   }
   observed.set('migration-generation', {
-    test: 'Drizzle generated the Notes schema from its model declaration',
+    test: 'Drizzle generated the Document schema from its model declaration',
     observedAt: new Date().toISOString(),
   });
   await runIdentityStartCommand(
@@ -180,7 +228,7 @@ try {
     execution,
     'deploy the generated product through Alchemy and TypeKro',
     cli,
-    ['deploy', '--context', context, '--skip-app-build'],
+    ['deploy', '--context', context, '--instance', instancePath, '--skip-app-build'],
     target,
     { NODE_OPTIONS: '--max-old-space-size=8192' },
   );
@@ -196,7 +244,7 @@ try {
   );
   const reapply = await captureIdentityStartCommand(
     cli,
-    ['deploy', '--context', context, '--skip-app-build'],
+    ['deploy', '--context', context, '--instance', instancePath, '--skip-app-build'],
     target,
     { NODE_OPTIONS: '--max-old-space-size=8192' },
   );
@@ -245,7 +293,7 @@ try {
       'route-reliability',
     ],
     [
-      'attributes an agent-created note to its human requester and reactively renders it',
+      'attributes an agent-created document to its human requester and reactively renders it',
       'causal-agent-note',
     ],
     [
@@ -341,7 +389,7 @@ try {
     collectV06ClusterIdentity(context),
     collectV06InstallationIdentity({
       context,
-      resource: `agenticproductevidence/${projectName}`,
+      resource: `agenticproductevidence/${instanceName}`,
       namespace: 'default',
     }),
     collectV06ArtifactIdentity(deploymentGraphPath),
@@ -396,7 +444,7 @@ try {
       controlPlaneNamespace: 'default',
       installation: projectName,
       applicationNamespace: namespace,
-      profile: 'starter',
+      profile: developerProfile ? 'developer' : 'starter',
       deployment: 'ApplicationDeploymentGraph -> Alchemy -> TypeKro',
     },
     assertionEvidence: createV06AssertionEvidence(
@@ -475,6 +523,11 @@ try {
         'Generated product qualification and cleanup both failed.',
       );
     }
+  }
+  if (preservedEnvironmentPath) {
+    await mkdir(target, { recursive: true });
+    await rename(preservedEnvironmentPath, join(target, '.env'));
+    preservedEnvironmentPath = undefined;
   }
   throw error;
 }

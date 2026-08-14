@@ -1,0 +1,4 @@
+import { createFileRoute } from '@tanstack/react-router';
+import { TenantAdministration } from '../features/administration/view';
+export const Route = createFileRoute('/admin/tenants/$tenantId')({ component: TenantRoute });
+function TenantRoute() { const { tenantId } = Route.useParams(); return <TenantAdministration tenantId={tenantId} />; }

@@ -89,7 +89,8 @@ export const ArtifactObjects = application.objectStore('agentic-artifacts', {
 });
 export const Operations = application.include(operationsControlCenter);
 export const OperationsSnapshot = Operations.Conversation.operationsSnapshot;
-application.role('application-operator').bootstrap({
+export const ApplicationOperator = application.role('application-operator');
+ApplicationOperator.bootstrap({
   id: 'identity:deterministic:local-developer',
   kind: 'human',
   issuer: `applik8s://${application.name}/identity/deterministic`,

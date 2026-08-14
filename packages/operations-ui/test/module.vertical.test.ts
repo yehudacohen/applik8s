@@ -29,6 +29,7 @@ import {
   applicationOperationalObservations,
   applicationAuthorityAudit,
   applicationOperationsInferredRecords,
+  applicationOperationsMergeObservedAndInferredDomainRecords,
   applicationOperationsRouteContribution,
   applicationOperationsRedactedDomainRecords,
   applicationOperationsRedactedAuditRecords,
@@ -258,6 +259,46 @@ describe('maintained operations control center', () => {
     expect(JSON.stringify(rows)).not.toMatch(
       /private|grant-private|credential-private/,
     );
+  });
+
+  it('replaces graph-inferred Unknown rows with canonical observations for the same subject', () => {
+    const rows = applicationOperationsMergeObservedAndInferredDomainRecords(
+      'database',
+      'database',
+      [{
+        id: 'database:transactional-authority',
+        domain: 'database',
+        subject: 'TransactionalDatabase',
+        authority: 'canonical',
+        state: 'ready',
+        observedAt: '2026-08-14T12:00:00.000Z',
+      }],
+      [{
+        category: 'database',
+        id: 'graph:provider.database',
+        label: 'TransactionalDatabase',
+        state: 'unknown',
+        authority: 'inferred',
+      }, {
+        category: 'database',
+        id: 'graph:provider.analytics',
+        label: 'AnalyticalDatabase',
+        state: 'unknown',
+        authority: 'inferred',
+      }],
+    );
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: 'database:transactional-authority',
+        label: 'TransactionalDatabase',
+        state: 'ready',
+      }),
+      expect.objectContaining({
+        id: 'graph:provider.analytics',
+        state: 'unknown',
+      }),
+    ]);
   });
 
   it('surfaces uncertain AI completion as redacted operator attention without provider content', () => {

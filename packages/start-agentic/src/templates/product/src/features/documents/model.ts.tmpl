@@ -5,13 +5,13 @@ import { chat } from '@tanstack/ai';
 import { and, desc, eq } from 'drizzle-orm';
 import { application } from '../../app';
 import { database, inference } from '../../providers';
-import { Note as NoteTable } from './schema';
+import { Document as DocumentTable } from './schema';
 
-const notes = module(
-  'notes',
-  NoteTable,
+const documents = module(
+  'documents',
+  DocumentTable,
   (application) => {
-    const NoteList = NoteTable.view(
+    const DocumentList = DocumentTable.view(
       {
         input: type({}),
         output: type({
@@ -24,22 +24,22 @@ const notes = module(
         database,
         authorize: ({ principal }) => principal.id.length > 0,
       },
-      async function listNotes(_input, context) {
+      async function listDocuments(_input, context) {
         return context.database(database)
           .select({
-            id: NoteTable.id,
-            ownerPrincipalId: NoteTable.ownerPrincipalId,
-            createdByPrincipalId: NoteTable.createdByPrincipalId,
-            body: NoteTable.body,
-            createdAt: NoteTable.createdAt,
+            id: DocumentTable.id,
+            ownerPrincipalId: DocumentTable.ownerPrincipalId,
+            createdByPrincipalId: DocumentTable.createdByPrincipalId,
+            body: DocumentTable.body,
+            createdAt: DocumentTable.createdAt,
           })
-          .from(NoteTable)
-          .where(eq(NoteTable.ownerPrincipalId, context.principal.id))
-          .orderBy(desc(NoteTable.createdAt))
+          .from(DocumentTable)
+          .where(eq(DocumentTable.ownerPrincipalId, context.principal.id))
+          .orderBy(desc(DocumentTable.createdAt))
           .limit(100);
       },
     );
-    const NoteDetail = NoteTable.view(
+    const DocumentDetail = DocumentTable.view(
       {
         input: type({ id: 'string' }),
         output: type({
@@ -52,25 +52,25 @@ const notes = module(
         database,
         authorize: ({ principal }) => principal.id.length > 0,
       },
-      async function loadNote(input, context) {
-        const [note] = await context.database(database)
+      async function loadDocument(input, context) {
+        const [document] = await context.database(database)
           .select({
-            id: NoteTable.id,
-            ownerPrincipalId: NoteTable.ownerPrincipalId,
-            createdByPrincipalId: NoteTable.createdByPrincipalId,
-            body: NoteTable.body,
-            createdAt: NoteTable.createdAt,
+            id: DocumentTable.id,
+            ownerPrincipalId: DocumentTable.ownerPrincipalId,
+            createdByPrincipalId: DocumentTable.createdByPrincipalId,
+            body: DocumentTable.body,
+            createdAt: DocumentTable.createdAt,
           })
-          .from(NoteTable)
+          .from(DocumentTable)
           .where(and(
-            eq(NoteTable.id, input.id),
-            eq(NoteTable.ownerPrincipalId, context.principal.id),
+            eq(DocumentTable.id, input.id),
+            eq(DocumentTable.ownerPrincipalId, context.principal.id),
           ))
           .limit(1);
-        return note ?? null;
+        return document ?? null;
       },
     );
-    NoteTable.create.beforeCommit({ history: true }, async (note, input, context) => {
+    DocumentTable.create.beforeCommit({ history: true }, async (document, input, context) => {
       if (!context.principal) throw new Error('Document creation requires an admitted principal.');
       if (
         input.ownerPrincipalId !== undefined
@@ -78,14 +78,14 @@ const notes = module(
         || input.createdAt !== undefined
       ) throw new Error('Document ownership, provenance, and timestamps are server-owned.');
       const causal = applicationCausalPrincipalContext(context.principal);
-      if (note.value.ownerPrincipalId !== causal.id) {
+      if (document.value.ownerPrincipalId !== causal.id) {
         throw new Error('The document owner must match the admitted causal principal.');
       }
-      if (note.value.createdByPrincipalId !== context.principal.id) {
+      if (document.value.createdByPrincipalId !== context.principal.id) {
         throw new Error('Document creator provenance must match the acting principal.');
       }
     });
-    NoteTable.update.beforeCommit({ history: true }, async (note, input, context) => {
+    DocumentTable.update.beforeCommit({ history: true }, async (document, input, context) => {
       if (!context.principal) throw new Error('Document updates require an admitted principal.');
       if (
         'id' in input.patch
@@ -93,29 +93,29 @@ const notes = module(
         || 'createdByPrincipalId' in input.patch
         || 'createdAt' in input.patch
       ) throw new Error('Document identity, ownership, provenance, and timestamps are immutable.');
-      if (note.value.ownerPrincipalId !== applicationCausalPrincipalContext(context.principal).id) {
+      if (document.value.ownerPrincipalId !== applicationCausalPrincipalContext(context.principal).id) {
         throw new Error('Only the document owner, or an admitted execution acting for that owner, may update it.');
       }
     });
-    NoteTable.delete.beforeCommit({ history: true }, async (note, _input, context) => {
+    DocumentTable.delete.beforeCommit({ history: true }, async (document, _input, context) => {
       if (!context.principal) throw new Error('Document deletion requires an admitted principal.');
-      if (note.value.ownerPrincipalId !== applicationCausalPrincipalContext(context.principal).id) {
+      if (document.value.ownerPrincipalId !== applicationCausalPrincipalContext(context.principal).id) {
         throw new Error('Only the document owner, or an admitted execution acting for that owner, may delete it.');
       }
     });
     const Authenticated = application.role('authenticated');
-    const AssistantIdentity = application.serviceIdentity('notes-assistant');
+    const AssistantIdentity = application.serviceIdentity('workspace-assistant');
     const FastModel = AI.model('fast', {
       inference,
       capabilities: [AI.chat, AI.tools, AI.streaming],
     });
-    const NotesAssistant = application.agent(
-      'notes-assistant',
+    const WorkspaceAssistant = application.agent(
+      'workspace-assistant',
       {
         identity: AssistantIdentity,
         model: FastModel,
-        instructions: 'Help the user organize concise notes.',
-        tools: [NoteTable.create, NoteTable.update],
+        instructions: 'Help the user create and refine useful workspace documents. Use the admitted document tools whenever the user asks you to create or update durable work.',
+        tools: [DocumentTable.create, DocumentTable.update],
       },
       async (request, context) => chat({
         adapter: context.tanstack.adapter,
@@ -127,14 +127,14 @@ const notes = module(
       }),
     );
 
-    Authenticated.can(NoteTable.create, NoteTable.update, NoteTable.delete, NoteList, NoteDetail);
-    AssistantIdentity.can(NoteTable.create, NoteTable.update);
+    Authenticated.can(DocumentTable.create, DocumentTable.update, DocumentTable.delete, DocumentList, DocumentDetail);
+    AssistantIdentity.can(DocumentTable.create, DocumentTable.update);
 
     return {
-      Note: NoteTable,
-      NoteList,
-      NoteDetail,
-      NotesAssistant,
+      Document: DocumentTable,
+      DocumentList,
+      DocumentDetail,
+      WorkspaceAssistant,
       Authenticated,
       AssistantIdentity,
     };
@@ -142,10 +142,10 @@ const notes = module(
 );
 
 export const {
-  Note,
-  NoteList,
-  NoteDetail,
-  NotesAssistant,
+  Document,
+  DocumentList,
+  DocumentDetail,
+  WorkspaceAssistant,
   Authenticated,
   AssistantIdentity,
-} = application.include(notes);
+} = application.include(documents);

@@ -185,7 +185,7 @@ describe('pinned Stimp product-contract parity', () => {
         response: 'Credential-free starter inference.',
         tool: {
           index: 0,
-          input: { body: 'Starter tool-created note.' },
+          input: { body: 'Starter tool-created document.' },
         },
       },
     });

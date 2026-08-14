@@ -50,6 +50,8 @@ export function workspaceAliases(): Record<string, string> {
     '@applik8s/conversations': fileURLToPath(new URL('./packages/conversations/src/index.ts', import.meta.url)),
     '@applik8s/evals': fileURLToPath(new URL('./packages/evals/src/index.ts', import.meta.url)),
     '@applik8s/operations-ui/react': fileURLToPath(new URL('./packages/operations-ui/src/react.ts', import.meta.url)),
+    '@applik8s/operations-ui/redaction': fileURLToPath(new URL('./packages/operations-ui/src/redaction.ts', import.meta.url)),
+    '@applik8s/operations-ui/schema': fileURLToPath(new URL('./packages/operations-ui/src/schema.ts', import.meta.url)),
     '@applik8s/operations-ui': fileURLToPath(new URL('./packages/operations-ui/src/index.ts', import.meta.url)),
     '@applik8s/start-agentic/react': fileURLToPath(new URL('./packages/start-agentic/src/react.ts', import.meta.url)),
     '@applik8s/start-agentic/identity-runtime': fileURLToPath(new URL('./packages/start-agentic/src/identity-runtime.ts', import.meta.url)),

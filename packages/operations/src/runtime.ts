@@ -690,6 +690,19 @@ export class ApplicationOperationAuthorityRuntime {
       },
       observedAt: new Date().toISOString(),
     });
+    await this.#observations.upsert({
+      id: 'database:transactional-authority',
+      domain: 'database',
+      subject: 'TransactionalDatabase',
+      authority: 'canonical',
+      state: 'ready',
+      source: 'application-operation-authority-runtime',
+      evidence: {
+        prepared: true,
+        catalogRevision: activated.catalog.revision,
+      },
+      observedAt: new Date().toISOString(),
+    });
     return activated.catalog;
   }
 
