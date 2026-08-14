@@ -718,7 +718,7 @@ const handle = createApplicationAIAgentRequestHandler({
         : 'never',
     });
     await operationAuthority.observe({
-      id: 'ai:attempt:' + decision.attempt.id,
+      id: ${JSON.stringify(`ai-agent:${contract.agent.id}`)},
       domain: 'ai',
       subject: contract.name,
       authority: 'canonical',
@@ -817,7 +817,7 @@ const handle = createApplicationAIAgentRequestHandler({
         terminal.messageId,
       );
       await operationAuthority.observe({
-        id: 'ai:attempt:' + reservation.attemptId,
+        id: ${JSON.stringify(`ai-agent:${contract.agent.id}`)},
         domain: 'ai',
         subject: contract.name,
         authority: 'canonical',
@@ -842,7 +842,7 @@ const handle = createApplicationAIAgentRequestHandler({
           failure.reason,
         );
         await operationAuthority.observe({
-          id: 'ai:attempt:' + reservation.attemptId,
+          id: ${JSON.stringify(`ai-agent:${contract.agent.id}`)},
           domain: 'ai',
           subject: contract.name,
           authority: 'canonical',
@@ -873,7 +873,7 @@ const handle = createApplicationAIAgentRequestHandler({
         },
       );
       await operationAuthority.observe({
-        id: 'ai:attempt:' + reservation.attemptId,
+        id: ${JSON.stringify(`ai-agent:${contract.agent.id}`)},
         domain: 'ai',
         subject: contract.name,
         authority: 'canonical',

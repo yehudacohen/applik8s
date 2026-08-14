@@ -1,6 +1,7 @@
 import { createApplicationTanStackConnection } from '@applik8s/ai-tanstack/client';
 import { useApplicationIdentitySession } from '@applik8s/react/identity';
 import { readAgenticWorkspaceSelection } from '@applik8s/start-agentic/react';
+import type { MessagePart } from '@tanstack/ai';
 import { useChat } from '@tanstack/ai-react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
@@ -118,6 +119,9 @@ function CopilotHome() {
 
 function WorkspaceAssistantCard({ threadId }: { readonly threadId: string }) {
   const [prompt, setPrompt] = useState('');
+  const [lastPrompt, setLastPrompt] = useState<string>();
+  const [startedAt, setStartedAt] = useState<number>();
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const connection = useMemo(
     () => createApplicationTanStackConnection({ agent: WorkspaceAssistant }),
     [],
@@ -126,13 +130,29 @@ function WorkspaceAssistantCard({ threadId }: { readonly threadId: string }) {
     connection,
     threadId,
   });
+  useEffect(() => {
+    if (!isLoading || startedAt === undefined) {
+      if (!isLoading) setElapsedSeconds(0);
+      return;
+    }
+    const update = () => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1_000));
+    update();
+    const timer = globalThis.setInterval(update, 1_000);
+    return () => globalThis.clearInterval(timer);
+  }, [isLoading, startedAt]);
 
   async function askAssistant(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const message = prompt.trim();
     if (!message) return;
+    setLastPrompt(message);
+    setStartedAt(Date.now());
     setPrompt('');
-    await sendMessage(message);
+    try {
+      await sendMessage(message);
+    } finally {
+      setStartedAt(undefined);
+    }
   }
 
   return <Card surface="unstyled" className="border-emerald-900/15 bg-emerald-950 text-emerald-50" aria-labelledby="assistant-title">
@@ -144,10 +164,11 @@ function WorkspaceAssistantCard({ threadId }: { readonly threadId: string }) {
       {messages.map(message => (
         <article key={message.id} className="rounded-lg bg-white/10 p-3 text-sm" data-role={message.role}>
           <strong className="text-xs uppercase tracking-wide text-emerald-200">{message.role}</strong>
-          {message.parts.map((part, index) => part.type === 'text' ? <p className="mt-1 leading-6" key={index}>{part.content}</p> : null)}
+          {message.parts.map((part, index) => <AssistantPart key={index} part={part} />)}
         </article>
       ))}
-      {error ? <p role="alert" className="text-sm text-red-200">The assistant could not complete this request. Your product data was not changed unless a committed document appears.</p> : null}
+      {isLoading ? <div role="status" className="rounded-lg border border-emerald-300/20 bg-emerald-300/10 p-3 text-sm text-emerald-50"><strong>{elapsedSeconds > 45 ? 'This is taking longer than expected.' : 'The assistant is working.'}</strong><p className="mt-1 text-emerald-100/70">Tool calls and committed results appear here as the durable run advances. {elapsedSeconds > 45 ? 'You can stop safely; only results already visible in Documents are committed.' : `${elapsedSeconds}s elapsed.`}</p></div> : null}
+      {error ? <div role="alert" className="rounded-lg border border-red-300/25 bg-red-950/35 p-3 text-sm text-red-100"><strong>Assistant run ended</strong><p className="mt-1">{assistantFailureMessage(error)} No result is complete unless it appears in Documents.</p>{lastPrompt ? <Button type="button" variant="ghost" className="mt-2 text-white hover:bg-white/10" onClick={() => setPrompt(lastPrompt)}>Restore prompt</Button> : null}</div> : null}
     </div>
     <form onSubmit={askAssistant} className="mt-4 grid gap-3">
       <label htmlFor="assistant-prompt" className="text-sm font-medium">Message</label>
@@ -158,4 +179,28 @@ function WorkspaceAssistantCard({ threadId }: { readonly threadId: string }) {
       </div>
     </form>
   </Card>;
+}
+
+function AssistantPart({ part }: { readonly part: MessagePart }) {
+  if (part.type === 'text') return <p className="mt-1 whitespace-pre-wrap leading-6">{part.content}</p>;
+  if (part.type === 'tool-call') return <p className="mt-2 rounded-md bg-black/15 px-3 py-2 text-xs text-emerald-100"><strong>{humanizeToolName(part.name)}</strong> · {humanizeToolState(part.state)}</p>;
+  if (part.type === 'tool-result') return <p className="mt-2 rounded-md bg-black/15 px-3 py-2 text-xs text-emerald-100">Tool result · {part.error ? 'failed' : humanizeToolState(part.state)}</p>;
+  if (part.type === 'thinking') return <p className="mt-2 text-xs text-emerald-100/60">Planning the next admitted step…</p>;
+  return null;
+}
+
+function humanizeToolName(value: string) {
+  return value.replace(/^.*[/:]/, '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]+/g, ' ').replace(/^./, character => character.toUpperCase());
+}
+
+function humanizeToolState(value: string) {
+  return value.replace(/[-_]+/g, ' ');
+}
+
+function assistantFailureMessage(error: Error) {
+  const message = error.message.toLowerCase();
+  if (/credential|unauthorized|\b401\b|\b403\b/.test(message)) return 'The selected inference provider rejected its server-side credential.';
+  if (/timeout|abort/.test(message)) return 'The run exceeded its bounded wait or was cancelled.';
+  if (/\b5\d\d\b|unavailable|backend|provider|inference|network|fetch/.test(message)) return 'The inference runtime or selected provider is temporarily unavailable.';
+  return 'The inference runtime did not return a usable terminal result. Check provider status in Launchpad or retry.';
 }

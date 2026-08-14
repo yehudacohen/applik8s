@@ -358,7 +358,7 @@ function requiredEnv(name) {
 async function observeWorkflowExecution(execution, workflowName, state, reason) {
   if (!operationAuthority) return;
   await operationAuthority.observe({
-    id: 'workflow:' + workflowName + ':' + execution.invocationId,
+    id: 'workflow-execution:' + workflowName,
     domain: 'workflow',
     subject: workflowName,
     authority: 'provider',
@@ -924,7 +924,7 @@ async function revokeSignalGrants(signal, transaction) {
 async function observeSignalTerminal({ signal, terminal }, { transaction }) {
   await revokeSignalGrants(signal, transaction);
   await operationAuthority.observe({
-    id: 'signal:' + signal.id,
+    id: 'workflow-signal:' + signal.contract.id,
     domain: 'workflow',
     subject: signal.contract.id,
     authority: 'canonical',
@@ -1092,7 +1092,7 @@ function workflowSignalApi(context, execution) {
           }
         }
         await operationAuthority.observe({
-          id: 'signal:' + authorityContext.signalId,
+          id: 'workflow-signal:' + request.definition.id,
           domain: 'workflow',
           subject: request.definition.id,
           authority: 'canonical',

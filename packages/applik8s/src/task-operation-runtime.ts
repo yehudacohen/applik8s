@@ -502,7 +502,16 @@ export class ApplicationTaskOperationResultTimeoutError extends Error {
 
 function validateInput(command: ApplicationTaskOperationRuntimeContract, input: unknown): object {
   const result = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: `${command.id}.input` }, schema: command.inputSchema }, `${command.id}.input`).validate(input as never);
-  if (!result.ok || !result.value || typeof result.value !== 'object' || Array.isArray(result.value)) throw new Error(`Application task operation ${command.id} input validation failed.`);
+  if (!result.ok) {
+    throw new Error(
+      `Application task operation ${command.id} input validation failed: ${result.error.message}`,
+    );
+  }
+  if (!result.value || typeof result.value !== 'object' || Array.isArray(result.value)) {
+    throw new Error(
+      `Application task operation ${command.id} input validation failed: the validated input was not an object.`,
+    );
+  }
   return result.value;
 }
 

@@ -716,9 +716,11 @@ export class ApplicationOperationAuthorityRuntime {
       | ApplicationExecutionAuthorizationResult,
   ): Promise<void> {
     await this.#observations.upsert({
-      id: authorization.allowed
-        ? `authority:receipt:${authorization.receipt.id}`
-        : `authority:denial:${operationId}:${inputDigest}`,
+      // This table is a current-state register, not the authority audit log.
+      // Reusing one identity per operation prevents high-frequency queries from
+      // flooding the bounded operational snapshot with their own receipts.
+      // The canonical authority tables retain every receipt and denial.
+      id: `authority:operation:${operationId}`,
       domain: 'authority',
       subject: operationId,
       authority: 'canonical',

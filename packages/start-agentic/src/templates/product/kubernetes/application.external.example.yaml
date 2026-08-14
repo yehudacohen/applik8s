@@ -39,6 +39,7 @@ spec:
       adminUrl: https://identity-admin.example.test
     payments:
       secretName: product-payments
+      endpoint: https://api.stripe.com/v1
     notifications:
       host: smtp.example.test
       port: 587

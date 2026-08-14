@@ -467,6 +467,14 @@ describe('Agentic Start generator', () => {
       "import { AgenticAccountSettings } from '@applik8s/start-agentic/react';",
     );
     expect(accountRoute).toContain('<AgenticAccountSettings');
+    const accountSessionLoader = await readFile(
+      join(target, 'src/features/account/session-loader.ts'),
+      'utf8',
+    );
+    expect(accountSessionLoader).toContain('return undefined;');
+    expect(accountSessionLoader).not.toContain(
+      'applicationIdentityHttpProtocol',
+    );
     await expect(
       stat(join(target, 'src/features/account/settings.tsx')),
     ).rejects.toThrow();
@@ -633,6 +641,9 @@ describe('Agentic Start generator', () => {
     expect(developerInstallation).toContain('OPENROUTER_API_KEY');
     expect(developerInstallation).toContain('STRIPE_SECRET_KEY');
     expect(developerInstallation).toContain('STRIPE_WEBHOOK_SECRET');
+    expect(developerInstallation).toContain(
+      'endpoint: https://api.stripe.com/v1',
+    );
     const home = await readFile(
       join(target, 'src/routes/app.index.tsx'),
       'utf8',

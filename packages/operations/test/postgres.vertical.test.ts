@@ -179,7 +179,21 @@ describe('PostgreSQL operation authority repositories', () => {
       'sha256:context',
       sql,
     )).resolves.toMatchObject({ allowed: true });
+    await expect(runtime.authorize({
+      principal,
+      operationId: 'applik8s://models/Post/operations/publish',
+      target: { kind: 'all' },
+      audience: 'chirp-api',
+      transport: 'http',
+      inputDigest: 'sha256:input-2',
+      trustedContextDigest: 'sha256:context',
+      commandId: 'command-2',
+      idempotencyKey: 'twice',
+      targetDigest: 'sha256:post-2',
+    })).resolves.toMatchObject({ allowed: true });
     expect((await new PostgresApplicationOperationCatalogRepository(sql).references('chirp', 'runtime-r1')).envelopeIds).toContain('command-1');
+    expect([...sql.operationalObservations.values()].filter(({ id }) =>
+      id === 'authority:operation:applik8s://models/Post/operations/publish')).toHaveLength(1);
     expect([...sql.operationalObservations.values()]).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -199,6 +213,7 @@ describe('PostgreSQL operation authority repositories', () => {
         }),
         expect.objectContaining({
           application: 'chirp',
+          id: 'authority:operation:applik8s://models/Post/operations/publish',
           domain: 'authority',
           subject: 'applik8s://models/Post/operations/publish',
           authority: 'canonical',

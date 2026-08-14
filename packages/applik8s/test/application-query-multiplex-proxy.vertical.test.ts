@@ -90,6 +90,45 @@ describe('application-host query multiplex proxy', () => {
     await expect(read).resolves.toMatchObject({ done: true });
     expect(onUpstreamError).not.toHaveBeenCalled();
   });
+
+  it('treats cancellation while establishing upstream subscriptions as ordinary lifecycle', async () => {
+    const requestAbort = new AbortController();
+    const onUpstreamError = vi.fn();
+    let beginUpstream: (() => void) | undefined;
+    const upstreamStarted = new Promise<void>((resolve) => { beginUpstream = resolve; });
+    const responsePromise = proxyApplicationQueryMultiplex(
+      new Request('https://chirp.test/__applik8s/v1/queries/multiplex', {
+        method: 'POST',
+        body: JSON.stringify({ subscriptions: [
+          { id: 'notes', query: 'Note.list', input: {}, cursor: 'cursor' },
+        ] }),
+        signal: requestAbort.signal,
+      }),
+      {
+        resolve: () => ({
+          id: 'notes',
+          async handle(request) {
+            beginUpstream?.();
+            return new Promise<Response>((_resolve, reject) => {
+              request.signal.addEventListener('abort', () => {
+                const wrapped = new Error('upstream request cancelled', {
+                  cause: new DOMException('browser disconnected', 'AbortError'),
+                });
+                reject(wrapped);
+              }, { once: true });
+            });
+          },
+        }),
+        onUpstreamError,
+      },
+    );
+    await upstreamStarted;
+    requestAbort.abort();
+
+    const response = await responsePromise;
+    expect(response?.status).toBe(502);
+    expect(onUpstreamError).not.toHaveBeenCalled();
+  });
 });
 
 function requestFor(subscriptions: readonly unknown[]): Request {

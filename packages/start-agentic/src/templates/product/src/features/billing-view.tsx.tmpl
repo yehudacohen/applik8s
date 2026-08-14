@@ -14,6 +14,8 @@ import { Badge, Button, Card, EmptyState, PageHeader, Skeleton } from '../compon
 
 export function BillingDashboardView() {
   const dashboard = BillingDashboard({}).useQuery();
+  const subscription = dashboard.data?.subscription;
+  const includedPlan = dashboard.data?.plans.find(plan => plan.priceMicrounits === 0);
   const [notice, setNotice] = useState<string>();
   const [failure, setFailure] = useState<string>();
   const [pending, setPending] = useState(false);
@@ -113,21 +115,23 @@ export function BillingDashboardView() {
     <div>
       <PageHeader eyebrow="Provider-neutral billing" title="Plan, usage, and entitlements" description="Product state is canonical application data. The active profile resolves payment delivery and keeps provider credentials server-only." action={<Badge tone="info">Provider resolved server-side</Badge>} />
       {!dashboard.data ? <Skeleton className="h-40" /> : null}
-      <div className="grid gap-5 lg:grid-cols-2"><Card aria-label="Current subscription">
-        <h2 className="text-lg font-semibold">Subscription</h2>
+      <div className="grid gap-5 lg:grid-cols-2"><Card aria-label="Current plan">
+        <h2 className="text-lg font-semibold">Current plan</h2>
         <p>
-          {dashboard.data?.subscription
-            ? `${dashboard.data.subscription.planId} · ${dashboard.data.subscription.status}`
-            : 'No active subscription'}
+          {subscription
+            ? `${subscription.planId} · ${subscription.status}`
+            : includedPlan
+              ? `${includedPlan.name} · included`
+              : 'No plan configured'}
         </p>
-        <div className="mt-4 flex flex-wrap gap-2">{dashboard.data?.subscription ? <Button variant="secondary" type="button" onClick={openPortal} disabled={pending}>
+        <div className="mt-4 flex flex-wrap gap-2">{subscription ? <Button variant="secondary" type="button" onClick={openPortal} disabled={pending}>
           Open billing portal
         </Button> : null}
-        {dashboard.data?.subscription?.status === 'cancelled' ? (
+        {subscription?.status === 'cancelled' ? (
           <Button type="button" onClick={resume} disabled={pending}>
             Resume subscription
           </Button>
-        ) : dashboard.data?.subscription ? (
+        ) : subscription ? (
           <Button variant="ghost" type="button" onClick={cancel} disabled={pending}>
             Cancel at period end
           </Button>
@@ -137,15 +141,19 @@ export function BillingDashboardView() {
       <section className="mt-8" aria-label="Plans">
         <h2 className="text-xl font-semibold">Plans</h2>
         <div className="mt-3 grid gap-4 md:grid-cols-3">
-        {dashboard.data?.plans.map(plan => (
-          <Card key={plan.id}><form onSubmit={event => choose(event, plan.id)} className="flex h-full flex-col">
+        {dashboard.data?.plans.map(plan => {
+          const current = subscription
+            ? subscription.planId === plan.id
+            : plan.priceMicrounits === 0;
+          return <Card key={plan.id}><div className="flex h-full flex-col">
             <strong className="text-lg">{plan.name}</strong>
             <p className="mt-2 flex-1 text-sm leading-6 text-stone-600">{plan.description}</p>
-            <Button className="mt-5" type="submit" disabled={pending}>
-              Choose {plan.name}
-            </Button>
-          </form></Card>
-        ))}
+            {current ? <div className="mt-5"><Badge tone="success">Current plan</Badge></div>
+              : plan.priceMicrounits === 0
+                ? <p className="mt-5 text-xs text-stone-500">Becomes current after the paid subscription ends.</p>
+                : <form onSubmit={event => choose(event, plan.id)}><Button className="mt-5 w-full" type="submit" disabled={pending}>Choose {plan.name}</Button></form>}
+          </div></Card>;
+        })}
         </div>
         {dashboard.data?.plans.length === 0 ? <EmptyState title="No plans configured" description="Plans are application-owned product policy. Add one without coupling your domain to a payment provider." /> : null}
       </section>

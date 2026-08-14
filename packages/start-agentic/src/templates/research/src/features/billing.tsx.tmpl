@@ -127,7 +127,7 @@ const CheckoutInput = type({
 });
 const CheckoutOutput = type({
   provider: 'string',
-  providerCustomerId: 'string',
+  'providerCustomerId?': 'string',
   providerCheckoutId: 'string',
   url: 'string',
   mode: "'simulated' | 'live'",

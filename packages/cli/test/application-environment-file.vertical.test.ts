@@ -17,12 +17,16 @@ describe('application environment files', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'applik8s-environment-file-'));
     temporaryDirectories.push(cwd);
     await writeFile(
+      join(cwd, '.env.defaults'),
+      'IMPORTED_DEFAULT=default-value\nFROM_APPLICATION_FILE=default-value\n',
+    );
+    await writeFile(
       join(cwd, '.env'),
-      'FROM_APPLICATION_FILE=file-value\nEXPLICIT_OPERATION_HOST=file-value\n',
+      'FROM_APPLICATION_FILE=file-value\nPRESERVED_SECRET=secret-value\nEXPLICIT_OPERATION_HOST=file-value\n',
     );
     await writeFile(
       join(cwd, '.env.local'),
-      'FROM_APPLICATION_FILE=local-value\nLOCAL_ONLY=local-value\nEXPLICIT_OPERATION_HOST=local-value\n',
+      'FROM_APPLICATION_FILE=local-value\nPRESERVED_SECRET=\nLOCAL_ONLY=local-value\nEXPLICIT_OPERATION_HOST=local-value\n',
     );
     const helper = pathToFileURL(
       resolve('packages/cli/src/application-environment-file.mjs'),
@@ -34,7 +38,7 @@ describe('application environment files', () => {
         '--eval',
         `const { loadApplicationEnvironmentFile } = await import(${JSON.stringify(helper)});\n`
           + `const loaded = await loadApplicationEnvironmentFile(${JSON.stringify(cwd)});\n`
-          + 'console.log(JSON.stringify({ loaded, fromFile: process.env.FROM_APPLICATION_FILE, localOnly: process.env.LOCAL_ONLY, explicit: process.env.EXPLICIT_OPERATION_HOST }));',
+          + 'console.log(JSON.stringify({ loaded, importedDefault: process.env.IMPORTED_DEFAULT, fromFile: process.env.FROM_APPLICATION_FILE, preservedSecret: process.env.PRESERVED_SECRET, localOnly: process.env.LOCAL_ONLY, explicit: process.env.EXPLICIT_OPERATION_HOST }));',
       ],
       {
         cwd,
@@ -49,7 +53,9 @@ describe('application environment files', () => {
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout.trim())).toEqual({
       loaded: true,
+      importedDefault: 'default-value',
       fromFile: 'local-value',
+      preservedSecret: 'secret-value',
       localOnly: 'local-value',
       explicit: 'exported-value',
     });

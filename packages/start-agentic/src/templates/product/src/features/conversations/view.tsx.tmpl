@@ -25,6 +25,7 @@ export function ConversationView({ conversationId }: { readonly conversationId: 
     initialMessages,
   });
   const [draft, setDraft] = useState('');
+  const [lastPrompt, setLastPrompt] = useState<string>();
   const [title, setTitle] = useState('');
 
   useEffect(() => setTitle(detail.data?.conversation.title ?? ''), [detail.data?.conversation.title]);
@@ -36,6 +37,7 @@ export function ConversationView({ conversationId }: { readonly conversationId: 
     event.preventDefault();
     const message = draft.trim();
     if (!message) return;
+    setLastPrompt(message);
     setDraft('');
     await sendMessage(message);
   }
@@ -69,7 +71,7 @@ export function ConversationView({ conversationId }: { readonly conversationId: 
               </article>
             ))}
           </div>
-          {error ? <div className="mt-4"><Alert tone="danger" title="The response was interrupted">No product change is claimed unless it appears in the authoritative library.</Alert></div> : null}
+          {error ? <div className="mt-4"><Alert tone="danger" title="Assistant run ended"><p>{assistantFailureMessage(error)} No product change is complete unless it appears in Documents.</p>{lastPrompt ? <Button type="button" variant="secondary" className="mt-3" onClick={() => setDraft(lastPrompt)}>Restore prompt</Button> : null}</Alert></div> : null}
           <form onSubmit={submit} className="mt-5 grid gap-3 border-t border-stone-200 pt-5">
             <label htmlFor="conversation-prompt" className="text-sm font-semibold">Ask, create, analyze, or update</label>
             <textarea id="conversation-prompt" value={draft} onChange={event => setDraft(event.currentTarget.value)} disabled={isLoading} placeholder="Create a document about our launch plan" />
@@ -97,4 +99,21 @@ export function ConversationView({ conversationId }: { readonly conversationId: 
       </div>
     </div>
   );
+}
+
+function assistantFailureMessage(error: Error) {
+  const message = error.message.toLowerCase();
+  if (/credential|unauthorized|forbidden|\b401\b|\b403\b/.test(message)) {
+    return 'The selected inference provider rejected its server-side credential.';
+  }
+  if (/timeout/.test(message)) {
+    return 'The run exceeded its bounded wait. You can restore the prompt and retry.';
+  }
+  if (/abort|cancel/.test(message)) {
+    return 'The run was cancelled before the framework observed a terminal provider result.';
+  }
+  if (/\b5\d\d\b|unavailable|backend|provider|inference|network|fetch/.test(message)) {
+    return 'The inference runtime or selected provider is temporarily unavailable.';
+  }
+  return 'The inference runtime did not return a usable terminal result. Check provider status in Launchpad or retry.';
 }

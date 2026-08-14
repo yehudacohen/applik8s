@@ -72,9 +72,14 @@ export async function proxyApplicationQueryMultiplex(
   const settled = await Promise.allSettled(upstreamRequests);
   const rejected = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
   if (rejected) {
+    const cancelled = request.signal.aborted
+      || abort.signal.aborted
+      || isAbortError(rejected.reason);
     request.signal.removeEventListener('abort', abortFromRequest);
     abort.abort();
-    notifyUpstreamError(options, rejected.reason, targetGroups.map(({ target }) => target.id));
+    if (!cancelled) {
+      notifyUpstreamError(options, rejected.reason, targetGroups.map(({ target }) => target.id));
+    }
     await Promise.allSettled(settled.flatMap((result) => result.status === 'fulfilled' ? [result.value.body?.cancel()] : []));
     return json({ error: 'upstream_unavailable' }, 502, { 'retry-after': '1' });
   }
@@ -138,7 +143,10 @@ export async function proxyApplicationQueryMultiplex(
 }
 
 function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'AbortError';
+  if (!error || typeof error !== 'object') return false;
+  if (Reflect.get(error, 'name') === 'AbortError') return true;
+  const cause = Reflect.get(error, 'cause');
+  return cause !== error && Boolean(cause) && isAbortError(cause);
 }
 
 function notifyUpstreamError(options: ApplicationQueryMultiplexProxyOptions, error: unknown, targets: readonly string[]): void {

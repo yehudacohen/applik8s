@@ -13,6 +13,8 @@ import {
 
 export function BillingDashboardView() {
   const dashboard = BillingDashboard({}).useQuery();
+  const subscription = dashboard.data?.subscription;
+  const includedPlan = dashboard.data?.plans.find(plan => plan.priceMicrounits === 0);
   const [notice, setNotice] = useState<string>();
   const [pending, setPending] = useState(false);
 
@@ -102,21 +104,23 @@ export function BillingDashboardView() {
         Product state is canonical application data. Payment-provider details
         and credentials remain server-only.
       </p>
-      <section aria-label="Current subscription">
-        <h2>Subscription</h2>
+      <section aria-label="Current plan">
+        <h2>Current plan</h2>
         <p>
-          {dashboard.data?.subscription
-            ? `${dashboard.data.subscription.planId} · ${dashboard.data.subscription.status}`
-            : 'No active subscription'}
+          {subscription
+            ? `${subscription.planId} · ${subscription.status}`
+            : includedPlan
+              ? `${includedPlan.name} · included`
+              : 'No plan configured'}
         </p>
-        <button type="button" onClick={openPortal} disabled={pending}>
+        {subscription ? <button type="button" onClick={openPortal} disabled={pending}>
           Open billing portal
-        </button>
-        {dashboard.data?.subscription?.status === 'cancelled' ? (
+        </button> : null}
+        {subscription?.status === 'cancelled' ? (
           <button type="button" onClick={resume} disabled={pending}>
             Resume subscription
           </button>
-        ) : dashboard.data?.subscription ? (
+        ) : subscription ? (
           <button type="button" onClick={cancel} disabled={pending}>
             Cancel at period end
           </button>
@@ -124,15 +128,19 @@ export function BillingDashboardView() {
       </section>
       <section aria-label="Plans">
         <h2>Plans</h2>
-        {dashboard.data?.plans.map(plan => (
-          <form key={plan.id} onSubmit={event => choose(event, plan.id)}>
+        {dashboard.data?.plans.map(plan => {
+          const current = subscription
+            ? subscription.planId === plan.id
+            : plan.priceMicrounits === 0;
+          return <div key={plan.id}>
             <strong>{plan.name}</strong>
             <p>{plan.description}</p>
-            <button type="submit" disabled={pending}>
-              Choose {plan.name}
-            </button>
-          </form>
-        ))}
+            {current ? <strong>Current plan</strong>
+              : plan.priceMicrounits === 0
+                ? <p>Becomes current after the paid subscription ends.</p>
+                : <form onSubmit={event => choose(event, plan.id)}><button type="submit" disabled={pending}>Choose {plan.name}</button></form>}
+          </div>;
+        })}
       </section>
       <section aria-label="Usage">
         <h2>Usage</h2>

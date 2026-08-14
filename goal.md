@@ -9,6 +9,39 @@ the graph-backed TypeKro/Alchemy lifecycle established below. Vasco is a
 dependent customer-zero project after the framework is complete; it is not an
 Applik8s v0.7 release fixture.
 
+### 2026-08-14 exact-candidate stabilization checkpoint
+
+The final product-correction cohort is implemented and locally qualified:
+
+- all 36 executable v0.7 scorecard contracts are complete, with only the
+  intentionally deferred second-cluster lane outside this release;
+- the packed-consumer gate installs 49 coordinated packages, imports 79 public
+  entrypoints, generates Agentic Start, discovers and compiles its graph, and
+  builds its browser and server artifacts outside the monorepo;
+- TypeKro 0.33.6, Alchemy, profile topology, performance history, STIMP parity,
+  browser security, identity acceptance, GuestBook, Chirp, Identity Start, and
+  the full Rust host/bridge cohort pass;
+- the generated Developer application is live on OrbStack with identity,
+  workspaces, Documents, Library, Inbox, object storage, workflows, event
+  consumers, billing, tenant/product administration, Launchpad, and Operations
+  verified in the browser;
+- Launchpad now separates graph intent from bounded runtime evidence and
+  recognizes healthy `running` consumers; Operations uses a bounded
+  current-state register keyed by stable operation identity while retaining
+  execution history in the canonical audit log;
+- the included Free plan no longer invokes Stripe, while Team checkout reaches
+  Stripe's test checkout through the server-side payment provider; and
+- ordinary browser cancellation during multiplex subscription establishment is
+  treated as lifecycle rather than an upstream incident.
+
+The exact live AI success journey is the sole external-input blocker. The
+Developer graph fails closed because `OPENROUTER_API_KEY` is not present in its
+canonical deployment environment. No environment file was read, rewritten, or
+deleted. Once that variable is supplied, the remaining exact-candidate work is
+one deploy, the human → agent/tool → Document → live-query browser journey,
+and refreshed immutable release receipts. No release or tag is authorized
+before that evidence is captured and reviewed.
+
 ### 2026-08-08 Agentic Start product-readiness correction
 
 #### Current stabilization checkpoint

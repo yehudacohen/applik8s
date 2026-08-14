@@ -30,4 +30,28 @@ describe('maintained operations React surface', () => {
     expect(html).toContain('aria-label="Example operations"');
     expect(html).toContain('Example operations');
   });
+
+  it('keeps declared topology out of incident attention until evidence exists', () => {
+    const snapshot = (() => ({
+      useQuery: () => ({
+        phase: 'success',
+        data: applicationOperationsOverviewSnapshot([], [], [{
+          category: 'workflow',
+          id: 'graph:workflow.example',
+          label: 'ExampleWorkflow',
+          state: 'unknown',
+          authority: 'inferred',
+        }]),
+      }),
+    })) as unknown as ApplicationOperationsSnapshotOperation;
+
+    const html = renderToStaticMarkup(createElement(
+      ApplicationOperationsControlCenter,
+      { snapshot, title: 'Example operations' },
+    ));
+
+    expect(html).toContain('Declared topology');
+    expect(html).toContain('ExampleWorkflow');
+    expect(html).toContain('No observed failures, blocked work, degraded providers, or unresolved runtime waits.');
+  });
 });

@@ -57,22 +57,16 @@ function ApplicationOperationsDashboard(
       createElement('p', { key: 'empty', role: 'status' }, 'No operational snapshot is available.'),
     ]);
   }
-  const sections = [
+  const activitySections = [
     ['Conversations', snapshot.conversations, 'Canonical product state'],
-    ['Messages', snapshot.messages, 'Canonical conversation content state'],
     ['Runs', snapshot.runs, 'Execution and delivery state'],
-    ['Run events', snapshot.runEvents, 'Resumable causal delivery state'],
-    ['Memory', snapshot.memory, 'Scoped retained memory state'],
     ['Approvals', snapshot.approvals, 'Authority and review state'],
-    ['Outcomes', snapshot.outcomes, 'Independent outcome verification state'],
     ['Artifacts', snapshot.artifacts, 'Object and provenance state'],
-    ['Evaluation datasets', snapshot.evaluationDatasets, 'Versioned quality inputs'],
-    ['Evaluation cases', snapshot.evaluationCases, 'Bounded quality cases'],
-    ['Evaluation scorers', snapshot.evaluationScorers, 'Versioned scoring authority'],
     ['Evaluations', snapshot.evaluations, 'Quality and result state'],
-    ['Evaluation results', snapshot.evaluationResults, 'Scored evidence state'],
     ['Usage', snapshot.usage, 'Provider usage and cost facts'],
     ['Entitlements', snapshot.entitlements, 'Canonical quota and entitlement state'],
+  ] as const;
+  const runtimeSections = [
     ['Installations', snapshot.installations, 'Graph and installation convergence state'],
     ['Providers', snapshot.providers, 'Provider-reported readiness and failure state'],
     ['Workflows', snapshot.workflows, 'Queue, wait, retry, cancellation, and terminal state'],
@@ -85,11 +79,28 @@ function ApplicationOperationsDashboard(
     ['Object stores', snapshot.objectStores, 'Object authority and provider readiness'],
     ['Databases', snapshot.databases, 'Canonical database readiness and recovery state'],
     ['Gateways', snapshot.gateways, 'Admission and exposure readiness'],
+  ] as const;
+  const governanceSections = [
     ['Go-live obligations', snapshot.goLive, 'Graph-derived production duties; intent remains Unknown until independent evidence arrives'],
     ['Audit', snapshot.audit, 'Searchable redacted causal authority timeline'],
-    ['Operational observations', snapshot.operational, 'Authority-classified readiness, delivery, provider, and inferred state'],
   ] as const;
-  const attention = sections
+  const detailSections = [
+    ['Messages', snapshot.messages, 'Canonical conversation content state'],
+    ['Run events', snapshot.runEvents, 'Resumable causal delivery state'],
+    ['Memory', snapshot.memory, 'Scoped retained memory state'],
+    ['Outcomes', snapshot.outcomes, 'Independent outcome verification state'],
+    ['Evaluation datasets', snapshot.evaluationDatasets, 'Versioned quality inputs'],
+    ['Evaluation cases', snapshot.evaluationCases, 'Bounded quality cases'],
+    ['Evaluation scorers', snapshot.evaluationScorers, 'Versioned scoring authority'],
+    ['Evaluation results', snapshot.evaluationResults, 'Scored evidence state'],
+  ] as const;
+  const declared = runtimeSections.flatMap(([, rows]) => rows.filter(isInferred));
+  const observedRuntimeSections = runtimeSections.map(([name, rows, description]) =>
+    [name, rows.filter((row) => !isInferred(row)), description] as const);
+  const visibleActivity = [...activitySections, ...detailSections].filter(([, rows]) => rows.length > 0);
+  const visibleRuntime = observedRuntimeSections.filter(([, rows]) => rows.length > 0);
+  const visibleGovernance = governanceSections.filter(([, rows]) => rows.length > 0);
+  const attention = [...activitySections, ...observedRuntimeSections]
     .flatMap(([section, rows]) =>
       rows
         .filter(needsAttention)
@@ -103,8 +114,14 @@ function ApplicationOperationsDashboard(
     createElement(
       'p',
       { key: 'boundary', style: styles.boundary },
-      'Canonical application state is shown separately from delivery, authority, object, quality, and provider facts. Missing evidence is never reported as healthy.',
+      'Observed runtime health, canonical product activity, and declared topology are separate. A declared component is never presented as healthy—or as an incident—until evidence exists.',
     ),
+    createElement('div', { key: 'summary', style: styles.summaryGrid }, [
+      summaryMetric('Product records', visibleActivity.reduce((total, [, rows]) => total + rows.length, 0)),
+      summaryMetric('Runtime observations', visibleRuntime.reduce((total, [, rows]) => total + rows.length, 0)),
+      summaryMetric('Declared components', declared.length),
+      summaryMetric('Needs attention', attention.length),
+    ]),
     createElement('section', {
       key: 'attention',
       style: styles.attention,
@@ -118,7 +135,7 @@ function ApplicationOperationsDashboard(
         ? createElement(
             'p',
             { key: 'attention-empty', style: styles.empty },
-            'No failed, blocked, waiting, degraded, or unknown observations.',
+            'No observed failures, blocked work, degraded providers, or unresolved runtime waits.',
           )
         : createElement(
             'ol',
@@ -135,18 +152,42 @@ function ApplicationOperationsDashboard(
             ),
           ),
     ]),
-    createElement(
-      'div',
-      { key: 'grid', style: styles.grid },
-      sections.map(([name, rows, description]) =>
-        createElement(OperationsSection, {
-          key: name,
-          name,
-          description,
-          rows,
-        }),
-      ),
-    ),
+    operationsGroup('Product activity', 'What people and managed executions have actually done.', visibleActivity),
+    operationsGroup('Runtime health', 'Current provider and delivery evidence. Absent observations stay absent rather than becoming synthetic incidents.', visibleRuntime),
+    operationsGroup('Deployment contract', 'Declared graph components and go-live duties are intent, not runtime health.', [
+      ['Declared topology', declared, 'Components inferred from the compiled application graph'],
+      ...visibleGovernance,
+    ]),
+  ]);
+}
+
+function summaryMetric(label: string, value: number): ReactNode {
+  return createElement('div', { key: label, style: styles.metric }, [
+    createElement('strong', { key: 'value', style: styles.metricValue }, String(value)),
+    createElement('span', { key: 'label', style: styles.metricLabel }, label),
+  ]);
+}
+
+function operationsGroup(
+  title: string,
+  description: string,
+  sections: readonly (readonly [string, readonly unknown[], string])[],
+): ReactNode {
+  return createElement('section', { key: title, style: styles.group, 'aria-label': title }, [
+    createElement('div', { key: 'heading', style: styles.groupHeading }, [
+      createElement('h2', { key: 'title', style: styles.groupTitle }, title),
+      createElement('p', { key: 'description', style: styles.description }, description),
+    ]),
+    sections.length === 0
+      ? createElement('p', { key: 'empty', style: styles.empty }, 'No records in this area yet.')
+      : createElement('div', { key: 'grid', style: styles.grid }, sections.map(([name, rows, sectionDescription]) =>
+          createElement(OperationsSection, {
+            key: name,
+            name,
+            description: sectionDescription,
+            rows,
+          }),
+        )),
   ]);
 }
 
@@ -249,7 +290,12 @@ function recordKey(value: unknown, index: number): string {
 }
 
 function needsAttention(value: unknown): boolean {
+  if (isInferred(value)) return false;
   return attentionPriority(value) < 2;
+}
+
+function isInferred(value: unknown): boolean {
+  return isRecord(value) && value.authority === 'inferred';
 }
 
 function attentionPriority(value: unknown): number {
@@ -320,6 +366,25 @@ const styles = {
     color: 'var(--applik8s-operations-text, var(--text, #13241f))',
     lineHeight: 1.55,
   },
+  summaryGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+    gap: 12,
+    marginTop: 20,
+  },
+  metric: {
+    display: 'grid',
+    gap: 3,
+    padding: 16,
+    border: '1px solid var(--applik8s-operations-border, var(--border, #dce7e2))',
+    borderRadius: 14,
+    background: 'var(--applik8s-operations-surface, var(--surface, #fff))',
+  },
+  metricValue: { fontSize: 24, letterSpacing: '-0.03em' },
+  metricLabel: {
+    color: 'var(--applik8s-operations-muted-text, var(--text-muted, #60706a))',
+    fontSize: 12,
+  },
   attention: {
     marginTop: 20,
     padding: 18,
@@ -356,8 +421,11 @@ const styles = {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(310px, 1fr))',
     gap: 16,
-    marginTop: 24,
+    marginTop: 16,
   },
+  group: { marginTop: 30 },
+  groupHeading: { maxWidth: 720 },
+  groupTitle: { margin: 0, fontSize: 24, letterSpacing: '-0.02em' },
   card: {
     border: '1px solid var(--applik8s-operations-border, var(--border, #dce7e2))',
     borderRadius: 16,

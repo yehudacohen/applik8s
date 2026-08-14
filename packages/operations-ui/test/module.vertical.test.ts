@@ -30,6 +30,7 @@ import {
   applicationAuthorityAudit,
   applicationOperationsInferredRecords,
   applicationOperationsMergeObservedAndInferredDomainRecords,
+  applicationOperationsOverviewSnapshot,
   applicationOperationsRouteContribution,
   applicationOperationsRedactedDomainRecords,
   applicationOperationsRedactedAuditRecords,
@@ -298,6 +299,31 @@ describe('maintained operations control center', () => {
         id: 'graph:provider.analytics',
         state: 'unknown',
       }),
+    ]);
+  });
+
+  it('preserves authority markers so presentation can separate topology from health', () => {
+    const snapshot = applicationOperationsOverviewSnapshot(
+      [{
+        id: 'workflow-engine:hatchet',
+        domain: 'workflow',
+        subject: 'Hatchet',
+        authority: 'provider',
+        state: 'ready',
+      }],
+      [],
+      [{
+        category: 'workflow',
+        id: 'graph:workflow.example',
+        label: 'ExampleWorkflow',
+        state: 'unknown',
+        authority: 'inferred',
+      }],
+    );
+
+    expect(snapshot.workflows).toEqual([
+      expect.objectContaining({ label: 'Hatchet', state: 'ready', authority: 'provider' }),
+      expect.objectContaining({ label: 'ExampleWorkflow', authority: 'inferred' }),
     ]);
   });
 

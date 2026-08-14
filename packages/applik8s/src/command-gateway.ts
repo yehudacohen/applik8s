@@ -512,7 +512,16 @@ async function admitted<TPrincipal extends ApplicationQueryPrincipal>(options: A
 function validateCommandInput(command: ApplicationGatewayCommandRuntimeContract, value: unknown): object {
   // typecast: normalizeSchema is the runtime authority for the command input boundary.
   const result = normalizeSchema({ kind: 'jsonSchema', ref: { kind: 'jsonSchema', exportName: `${command.id}.input` }, schema: command.inputSchema }, `${command.id}.input`).validate(value as never);
-  if (!result.ok || !result.value || typeof result.value !== 'object' || Array.isArray(result.value)) throw new Error(`Application command ${command.id} input validation failed.`);
+  if (!result.ok) {
+    throw new Error(
+      `Application command ${command.id} input validation failed: ${result.error.message}`,
+    );
+  }
+  if (!result.value || typeof result.value !== 'object' || Array.isArray(result.value)) {
+    throw new Error(
+      `Application command ${command.id} input validation failed: the validated input was not an object.`,
+    );
+  }
   return result.value;
 }
 

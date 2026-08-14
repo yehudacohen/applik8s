@@ -22,6 +22,7 @@ spec:
       deviceStorageClassName: ceph-block
     payments:
       secretName: product-payments
+      endpoint: https://api.stripe.com/v1
       apiKeyKey: apiKey
       webhookSecretKey: webhookSecret
       credentialSource:

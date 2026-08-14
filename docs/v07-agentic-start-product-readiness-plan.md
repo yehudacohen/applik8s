@@ -1,6 +1,6 @@
 # Agentic Start product-readiness plan
 
-**Status:** Normative v0.7 release work
+**Status:** Implementation complete; exact-candidate AI live evidence pending
 **Audience:** framework maintainers and generated-application contributors
 **Purpose:** turn Agentic Start from a broad capability demonstration into an
 exceptional, production-ready first experience for a new Applik8s builder.
@@ -13,6 +13,46 @@ routes and framework facts rather than as one reliable, coherent journey.
 The page-by-page layout, visual hierarchy, route states, transitions, and
 responsive behavior are normative in
 [`v07-agentic-start-experience-spec.md`](./v07-agentic-start-experience-spec.md).
+
+## 2026-08-14 execution status
+
+This plan has been executed through the source, package, production-build, and
+non-AI OrbStack lanes. The sections below retain the original baseline gaps and
+acceptance rationale; they are not a claim that those gaps remain open.
+
+Completed evidence includes:
+
+- reliable direct navigation across Copilot, Library, Inbox, Workspaces,
+  Account, Usage, Billing, tenant/product administration, Launchpad, and
+  Operations with no unexpected 5xx response;
+- a cohesive source-owned product shell and component language, persistent
+  conversations, one mutable Document concept, immutable Artifacts, durable
+  decisions, workspace administration, and audience-shaped navigation;
+- provider-neutral billing with an included Free plan and a successful live
+  Stripe test checkout for Team, without exposing provider identity or
+  credentials to the browser;
+- graph-derived Launchpad intent paired with bounded live observations for
+  identity, database, running event consumers, ready workflows, object stores,
+  and gateways;
+- a bounded operational current-state register keyed by stable logical
+  identities, with receipt/run history retained in canonical audit and product
+  tables rather than flooding readiness state;
+- clean rapid-navigation logs: client disconnects during initial query
+  multiplex connection are ordinary cancellation, not upstream failures;
+- 83 focused product/runtime tests, workspace typecheck across 51 packages,
+  lint/release audits, 179 contract tests, 49-package packed-consumer smoke,
+  36 complete scorecard contracts, profile/performance/TypeKro/STIMP/security/
+  identity gates, all maintained production application builds, and 155 Rust
+  tests.
+
+The remaining release action is deliberately narrow. The Developer
+installation declares a host-environment OpenRouter credential and fails
+closed while `OPENROUTER_API_KEY` is absent. The framework did not inspect or
+modify the user's environment files. After that canonical variable is present,
+rerun the normal graph deployment and prove the exact human → assistant → typed
+tool → authoritative Document → live query journey. Then refresh immutable
+candidate receipts and perform maintainer visual review. This is qualification,
+not new capability work.
 
 The v0.7 release is not ready merely because the application graph compiles,
 deploys, and has evidence for individual capabilities. A generated application
@@ -101,7 +141,7 @@ agentic application framework over a conventional CRUD starter with chat
 added. It remains small enough that the first model, tool, view, workflow, and
 authority declaration can be understood together.
 
-## Current gaps
+## Baseline gaps addressed by this plan
 
 ### 1. Route reliability and failure semantics
 

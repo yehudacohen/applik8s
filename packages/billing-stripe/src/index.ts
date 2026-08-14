@@ -39,7 +39,7 @@ export interface StripePaymentsOptions {
 interface StripeCheckoutResponse {
   readonly id: string;
   readonly url: string;
-  readonly customer: string;
+  readonly customer: string | null;
   readonly expires_at?: number;
 }
 
@@ -157,7 +157,9 @@ export const StripePayments = Object.freeze({
         );
         return {
           provider: 'stripe',
-          providerCustomerId: response.customer,
+          ...(response.customer
+            ? { providerCustomerId: response.customer }
+            : {}),
           providerCheckoutId: response.id,
           url: response.url,
           mode: 'live',

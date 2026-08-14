@@ -7,13 +7,13 @@ import { Badge, Card, PageHeader, RouteState } from '../components/ui';
 export const Route = createFileRoute('/app/setup')({ component: Launchpad });
 
 const obligationGroups = [
-  ['Identity and authority', 'identity', 'Provider admission, canonical operator grants, and recovery'],
-  ['Application database', 'databases', 'Transactional authority, migration, backup, and restore evidence'],
-  ['Event delivery', 'eventConsumers', 'JetStream delivery, checkpoints, retries, and dead letters'],
-  ['Durable workflows', 'workflows', 'Hatchet workers, waits, signals, cancellation, and recovery'],
-  ['Object storage', 'objectStores', 'Object authority, retention, and provider readiness'],
-  ['AI runtime', 'ai', 'Logical model resolution, provider boundary, budget, and uncertain completion'],
-  ['Public gateway', 'gateways', 'Exposure, DNS, TLS, identity admission, and route readiness'],
+  ['Identity and authority', 'identity', 'identity', 'Provider admission, canonical operator grants, and recovery'],
+  ['Application database', 'databases', 'database', 'Transactional authority, migration, backup, and restore evidence'],
+  ['Event delivery', 'eventConsumers', 'eventConsumer', 'JetStream delivery, checkpoints, retries, and dead letters'],
+  ['Durable workflows', 'workflows', 'workflow', 'Hatchet workers, waits, signals, cancellation, and recovery'],
+  ['Object storage', 'objectStores', 'objectStore', 'Object authority, retention, and provider readiness'],
+  ['AI runtime', 'ai', 'ai', 'Logical model resolution, provider boundary, budget, and uncertain completion'],
+  ['Public gateway', 'gateways', 'gateway', 'Exposure, DNS, TLS, identity admission, and route readiness'],
 ] as const;
 
 function Launchpad() {
@@ -34,12 +34,13 @@ function AuthorizedLaunchpad() {
   }
   const data = snapshot.data;
   const obligations = obligationGroups
-    .map(([name, key, description]) => ({
+    .map(([name, key, category, description]) => ({
       name,
       description,
-      records: data[key],
+      declared: data[key].filter(record => record.category === category && record.authority === 'inferred'),
+      evidence: data[key].filter(record => record.authority !== 'inferred'),
     }))
-    .filter(({ records }) => records.length > 0);
+    .filter(({ declared, evidence }) => declared.length > 0 || evidence.length > 0);
   return <div>
     <PageHeader
       eyebrow="Builder Launchpad"
@@ -61,13 +62,13 @@ function AuthorizedLaunchpad() {
         </Card>
         {obligations.length === 0
           ? <Card><h2 className="font-semibold">No graph obligations discovered</h2><p className="mt-2 text-sm text-stone-600">Build the application candidate before treating any capability as ready.</p></Card>
-          : obligations.map(({ name, description, records }) => {
-              const state = obligationState(records);
+          : obligations.map(({ name, description, declared, evidence }) => {
+              const state = obligationState(evidence);
               return <Card key={name} className="flex items-start justify-between gap-4">
                 <div>
                   <h2 className="font-semibold">{name}</h2>
                   <p className="mt-1 text-sm text-stone-600">{description}</p>
-                  <p className="mt-2 text-xs text-stone-500">{records.length} graph or receipt record{records.length === 1 ? '' : 's'}</p>
+                  <p className="mt-2 text-xs text-stone-500">{declared.length} declared component{declared.length === 1 ? '' : 's'} · {evidence.length} live observation{evidence.length === 1 ? '' : 's'}</p>
                 </div>
                 <Badge tone={state === 'Ready' ? 'success' : state === 'Action required' ? 'danger' : 'warning'}>{state}</Badge>
               </Card>;
@@ -97,7 +98,10 @@ function AuthorizedLaunchpad() {
 function obligationState(records: readonly { readonly state?: string; readonly authority?: string }[]): 'Ready' | 'Action required' | 'Unknown' {
   const states = records.map(({ state }) => state?.toLowerCase());
   if (states.some((state) => state && /failed|degraded|blocked|denied/.test(state))) return 'Action required';
-  if (records.some(({ state, authority }) => authority !== 'inferred' && state?.toLowerCase() === 'ready')) return 'Ready';
+  if (records.some(({ state, authority }) =>
+    authority !== 'inferred'
+    && state !== undefined
+    && /^(ready|running|succeeded)$/u.test(state.toLowerCase()))) return 'Ready';
   return 'Unknown';
 }
 

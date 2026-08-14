@@ -68,7 +68,7 @@ describe('Stripe payment adapter', () => {
         return new Response(JSON.stringify({
             id: 'cs_1',
             url: 'https://checkout.stripe.test/cs_1',
-            customer: 'cus_1',
+            customer: null,
           }), { status: 200 });
       },
       {
@@ -88,12 +88,13 @@ describe('Stripe payment adapter', () => {
       },
       fetch: request,
     });
-    await provider.startCheckout({
+    const checkout = await provider.startCheckout({
       principalScope: 'workspace:one',
       plan: 'price_pro',
       returnTo: 'https://app.example.test/billing',
       idempotencyKey: 'checkout-1',
     });
+    expect(checkout.providerCustomerId).toBeUndefined();
     expect(requestInit?.headers).toMatchObject({
       authorization: 'Bearer server-secret',
       'idempotency-key': 'checkout-1',

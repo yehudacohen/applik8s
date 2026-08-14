@@ -1,5 +1,4 @@
 import { loadApplicationIdentitySession } from '@applik8s/tanstack-start/server';
-import { applicationIdentityHttpProtocol } from '@applik8s/identity/client';
 import { createServerFn } from '@tanstack/react-start';
 
 export const getApplicationIdentitySession = createServerFn({ method: 'GET' })
@@ -8,13 +7,8 @@ export const getApplicationIdentitySession = createServerFn({ method: 'GET' })
       return await loadApplicationIdentitySession();
     } catch {
       // Identity availability must not turn the public shell into an SSR 500.
-      // The browser retries through the same provider-neutral client and shows
-      // its ordinary sign-in/degraded state without exposing provider details.
-      return {
-        protocol: applicationIdentityHttpProtocol,
-        kind: 'session' as const,
-        authenticated: false,
-        assurance: [],
-      };
+      // Undefined means "not hydrated" so the provider-neutral browser client
+      // retries instead of pinning the application to an anonymous SSR result.
+      return undefined;
     }
   });

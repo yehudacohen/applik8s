@@ -54,7 +54,11 @@ export interface PaymentCheckoutInput {
 
 export interface PaymentCheckout {
   readonly provider: string;
-  readonly providerCustomerId: string;
+  /**
+   * Checkout providers may not allocate a customer until the hosted checkout
+   * completes. The authenticated webhook establishes that durable mapping.
+   */
+  readonly providerCustomerId?: string;
   readonly providerCheckoutId: string;
   readonly url: string;
   readonly mode: PaymentMode;
@@ -477,11 +481,13 @@ function installBilling(
         ? { providerCustomerId: customer.providerCustomerId }
         : {}),
     });
-    await recordBillingCustomer(
-      input.principalScope,
-      checkout.provider,
-      checkout.providerCustomerId,
-    );
+    if (checkout.providerCustomerId) {
+      await recordBillingCustomer(
+        input.principalScope,
+        checkout.provider,
+        checkout.providerCustomerId,
+      );
+    }
     return checkout;
   }
 

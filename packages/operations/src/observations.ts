@@ -73,6 +73,18 @@ export const applicationOperationalObservationPostgresSchemaStatements = [
    ON applik8s_operational_observations (application, domain, state, observed_at)`,
   `CREATE INDEX IF NOT EXISTS applik8s_operational_observations_subject_idx
    ON applik8s_operational_observations (application, subject, observed_at)`,
+  // v0.7 originally copied execution history into this current-state register.
+  // Canonical workflow, signal, AI, and authority-audit stores already own that
+  // history. Remove only those framework-authored legacy rows; new aggregate
+  // IDs are stable by capability and are updated in place. In particular, an
+  // operations-page poll must not create another observation that can evict
+  // provider readiness from the same bounded snapshot.
+  `DELETE FROM applik8s_operational_observations
+   WHERE (source = 'hatchet-workflow-runtime' AND id LIKE 'workflow:%:%')
+      OR (source = 'application-signal-runtime' AND id LIKE 'signal:%')
+      OR (source = 'application-ai-attempt-runtime' AND id LIKE 'ai:attempt:%')
+      OR (source = 'application-operation-authority-runtime' AND id LIKE 'authority:receipt:%')
+      OR (source = 'application-operation-authority-runtime' AND id LIKE 'authority:denial:%')`,
 ] as const;
 
 export async function prepareApplicationOperationalObservationPostgres(
@@ -84,12 +96,14 @@ export async function prepareApplicationOperationalObservationPostgres(
 }
 
 /**
- * Canonical, provider-neutral operational observation store.
+ * Canonical, provider-neutral current-state observation register.
  *
  * The application name is fixed at construction so a runtime cannot
  * accidentally write into another application's administrative view. The
  * maintained browser query exposes only a separate redacted projection of
- * these rows.
+ * these rows. It is deliberately not an execution log: workflow runs, signal
+ * decisions, AI attempts, and authority receipts remain in their canonical
+ * domain stores while one stable row per capability reports current health.
  */
 export class PostgresApplicationOperationalObservationRepository {
   readonly #sql: ApplicationAuthorityPostgresSql;

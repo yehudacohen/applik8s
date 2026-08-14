@@ -30,6 +30,7 @@
         "@applik8s/mcp": "0.7.0",
         "@applik8s/notifications": "0.7.0",
         "@applik8s/notifications-smtp": "0.7.0",
+        "@applik8s/operations": "0.7.0",
         "@applik8s/operations-ui": "0.7.0",
         "@applik8s/react": "0.7.0",
         "@applik8s/runtime-ai": "0.7.0",

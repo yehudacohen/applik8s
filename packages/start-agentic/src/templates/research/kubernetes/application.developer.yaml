@@ -17,6 +17,7 @@ spec:
         variable: OPENROUTER_API_KEY
     payments:
       secretName: applik8s-template-project-payments
+      endpoint: https://api.stripe.com/v1
       apiKeyKey: apiKey
       webhookSecretKey: webhookSecret
       credentialSource:
