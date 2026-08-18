@@ -175,7 +175,10 @@ test(
     );
     const assistant = conversation.locator('[data-role="assistant"]');
     await expect(assistant).toHaveCount(1);
-    await expect(assistant).toContainText(
+    const authoritativeResponse = assistant.filter({
+      hasText: 'authoritative result',
+    });
+    await expect(authoritativeResponse).toContainText(
       'authoritative result',
     );
     // Assistant tokens are intentionally visible while the durable stream is
@@ -188,10 +191,15 @@ test(
     await expect(conversation.locator('[data-role="user"]')).toContainText(
       prompt,
     );
-    await expect(assistant).toHaveCount(1);
-    await expect(assistant).toContainText(
+    await expect(authoritativeResponse).toHaveCount(1);
+    await expect(authoritativeResponse).toContainText(
       'authoritative result',
     );
+    expect(
+      (await assistant.allTextContents()).every(
+        text => text.trim().toLowerCase() !== 'assistant',
+      ),
+    ).toBe(true);
 
     await page.getByLabel('Conversation title').fill(title);
     await page.getByRole('button', { name: 'Rename' }).click();

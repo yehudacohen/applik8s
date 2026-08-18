@@ -136,7 +136,7 @@ function WorkspaceAssistantCard({ threadId, onSettled }: { readonly threadId: st
     <p className="mt-2 text-sm leading-6 text-emerald-100/75">Try “Create a document about shipping our first version.” Its tool writes through the same authority and model boundary.</p>
     <div className="mt-5 min-h-48 space-y-3 rounded-xl bg-black/15 p-3" aria-live="polite">
       {messages.length === 0 ? <p className="text-sm text-emerald-100/60">The conversation will appear here.</p> : null}
-      {messages.map(message => (
+      {messages.filter(message => message.parts.length > 0).map(message => (
         <article key={message.id} className="rounded-lg bg-white/10 p-3 text-sm" data-role={message.role}>
           <strong className="text-xs uppercase tracking-wide text-emerald-200">{message.role}</strong>
           {message.parts.map(part => <AssistantPart key={`${message.id}:${JSON.stringify(part)}`} part={part} />)}

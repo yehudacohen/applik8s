@@ -1,5 +1,6 @@
 import { createApplicationTanStackConnection } from '@applik8s/ai-tanstack/client';
 import { AgenticStartOnboarding } from '@applik8s/start-agentic/react';
+import type { MessagePart } from '@tanstack/ai';
 import { useChat } from '@tanstack/ai-react';
 import { Link, useNavigate } from '@tanstack/react-router';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
@@ -163,14 +164,12 @@ export function ResearchConversation({
         </form>
       ) : null}
       <section aria-label="Research conversation">
-        {messages.map((message) => (
+        {messages.filter(message => message.parts.length > 0).map((message) => (
           <article key={message.id} data-role={message.role}>
             <strong>{message.role}</strong>
-            {message.parts.map((part, index) =>
-              part.type === 'text'
-                ? <p key={index}>{part.content}</p>
-                : null,
-            )}
+            {message.parts.map((part, index) => (
+              <ResearchMessagePart key={index} part={part} />
+            ))}
           </article>
         ))}
         {error ? <p role="alert">{error.message}</p> : null}
@@ -190,4 +189,16 @@ export function ResearchConversation({
       </form>
     </main>
   );
+}
+
+function ResearchMessagePart({ part }: { readonly part: MessagePart }) {
+  if (part.type === 'text') return <p>{part.content}</p>;
+  if (part.type === 'tool-call') {
+    return <p>Tool {part.name}: {part.state}</p>;
+  }
+  if (part.type === 'tool-result') {
+    return <p>Tool result: {part.error ? 'failed' : part.state}</p>;
+  }
+  if (part.type === 'thinking') return <p>Planning the next step…</p>;
+  return <p>Recorded agent activity.</p>;
 }
