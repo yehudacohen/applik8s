@@ -78,7 +78,7 @@ export function ConversationView({ conversationId }: { readonly conversationId: 
           {!detail.data && messages.length === 0 ? <><Skeleton className="h-16" /><Skeleton className="mt-3 h-24" /></> : null}
           {messages.length === 0 && detail.data !== undefined ? <EmptyState title="Start this conversation" description="Ask the copilot to create, organize, or update a workspace document." /> : null}
           <div className="space-y-3" aria-live="polite">
-            {messages.map(message => (
+            {messages.filter(message => message.parts.length > 0).map(message => (
               <article key={message.id} className={message.role === 'user' ? 'ml-auto max-w-[85%] rounded-2xl bg-emerald-900 p-4 text-white' : 'mr-auto max-w-[92%] rounded-2xl bg-stone-100 p-4 text-stone-900'}>
                 <strong className="text-xs uppercase tracking-wide opacity-70">{message.role}</strong>
                 {message.parts.map(part => <ConversationPart key={`${message.id}:${JSON.stringify(part)}`} part={part} />)}
