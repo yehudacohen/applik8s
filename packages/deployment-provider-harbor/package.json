@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/deployment-provider-harbor",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Harbor Alchemy provider resources for Applik8s deployment.",
   "license": "Apache-2.0",
   "type": "module",

@@ -3,7 +3,7 @@ import { publishablePackageManifestPaths } from './publishable-packages.mjs';
 
 const publishablePackages = publishablePackageManifestPaths;
 
-const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.7.0';
+const expectedVersion = process.env.APPLIK8S_RELEASE_VERSION ?? '0.7.1';
 const releaseLabel = `v${expectedVersion}`;
 const publishablePackageNames = new Set();
 const publishableManifests = new Map();

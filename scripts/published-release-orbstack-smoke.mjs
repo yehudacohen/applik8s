@@ -3,6 +3,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:f
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { publishablePackageNames } from './publishable-packages.mjs';
 
 const execFileAsync = promisify(execFile);
 const root = resolve(process.cwd());
@@ -18,6 +19,7 @@ const deployment = 'published-host-smoke';
 const workDir = await mkdtemp(join(tmpdir(), `applik8s-published-${version}-`));
 const outDir = join(workDir, 'dist');
 const kubernetesDir = join(outDir, 'kubernetes');
+const npmCache = join(workDir, 'npm-cache');
 let contextValidated = false;
 let failure;
 
@@ -31,14 +33,23 @@ try {
     contextValidated = true;
   }
 
-  const dependencies = candidate ? await packCandidatePackages() : { '@applik8s/applik8s': version };
+  const dependencies = candidate
+    ? await packCandidatePackages()
+    : {
+        '@applik8s/applik8s': version,
+        '@applik8s/cli': version,
+      };
   await writeFile(join(workDir, 'package.json'), `${JSON.stringify({
     name: 'applik8s-published-release-smoke',
     private: true,
     type: 'module',
     dependencies,
   }, null, 2)}\n`);
-  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: workDir, timeout: 300_000 });
+  await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund'], {
+    cwd: workDir,
+    timeout: 900_000,
+    env: { ...process.env, npm_config_cache: npmCache },
+  });
 
   const entrypoint = join(workDir, 'operator.ts');
   await writeFile(entrypoint, `import { sdk } from '@applik8s/applik8s/operator';
@@ -164,9 +175,28 @@ function imageRefString(ref) {
 }
 
 async function packCandidatePackages() {
-  const packageDirs = ['core', 'runtime-contract', 'typetainer', 'sdk', 'compiler', 'testing', 'runtime', 'typekro-adapter', 'client', 'react', 'server', 'vite', 'tanstack-start', 'applik8s'];
+  const packageByName = new Map();
+  for (const packageDir of publishablePackageNames) {
+    const manifest = JSON.parse(await readFile(join(root, 'packages', packageDir, 'package.json'), 'utf8'));
+    packageByName.set(manifest.name, { packageDir, manifest });
+  }
+  const packageDirs = [];
+  const pending = ['@applik8s/applik8s', '@applik8s/cli'];
+  const included = new Set();
+  while (pending.length > 0) {
+    const packageName = pending.shift();
+    if (!packageName || included.has(packageName)) continue;
+    const candidatePackage = packageByName.get(packageName);
+    if (!candidatePackage) throw new Error(`Candidate package closure contains unknown package ${packageName}.`);
+    included.add(packageName);
+    packageDirs.push(candidatePackage.packageDir);
+    for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+      for (const dependencyName of Object.keys(candidatePackage.manifest[field] ?? {})) {
+        if (packageByName.has(dependencyName)) pending.push(dependencyName);
+      }
+    }
+  }
   const packDir = join(workDir, 'packs');
-  const npmCache = join(workDir, 'npm-cache');
   await mkdir(packDir, { recursive: true });
   await run(process.execPath, [join(root, 'scripts/build-publishable-packages.mjs')], { cwd: root, timeout: 300_000 });
   const dependencies = {};
@@ -279,7 +309,8 @@ async function run(command, args, options = {}) {
     });
   } catch (error) {
     const output = [error?.stdout, error?.stderr].filter(Boolean).join('\n');
-    throw new Error(`${command} ${args.join(' ')} failed${output ? `:\n${output}` : '.'}`);
+    const execution = [error?.code, error?.signal].filter(Boolean).join('/');
+    throw new Error(`${command} ${args.join(' ')} failed${execution ? ` (${execution})` : ''}${output ? `:\n${output}` : '.'}`);
   }
 }
 

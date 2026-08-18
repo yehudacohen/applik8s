@@ -1,6 +1,6 @@
 {
   "name": "@applik8s/identity-postgres",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Durable PostgreSQL storage for Applik8s identity admission and OAuth authorization flows.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,7 +23,7 @@
     }
   },
   "dependencies": {
-    "@applik8s/identity": "0.7.0",
+    "@applik8s/identity": "0.7.1",
     "postgres": "^3.4.7"
   }
 }
